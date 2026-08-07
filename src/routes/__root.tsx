@@ -312,7 +312,7 @@ function RootLayout() {
         ],
       },
     ],
-    [t, checkForUpdates, createNewTab, keyMap, openNewFile, toggleFullscreen],
+    [t, createNewTab, keyMap, openNewFile, toggleFullscreen],
   );
 
   const { data: menu } = useSWRImmutable(["menu", menuActions], () => createMenu(menuActions));
