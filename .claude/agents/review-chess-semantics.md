@@ -58,8 +58,9 @@ recent fixes (`7ff0646f`, `d250925f`) *re-fix* classes 1 and 3 rather than closi
 * **Metadata lost across a round trip.** `d4efe5fa` (non-standard headers dropped), `167d8cf0`
   (`[%timestamp]` left in comment text because chessops only strips `[%clk]`).
 
-Read the root `CLAUDE.md` and `CHESS_LOGIC_MAP.md` before reviewing; a subagent loads neither
-automatically.
+Read `.claude/rules/chess-tree-semantics.md` before reviewing — it is the source of truth for the
+invariants this lens enforces, and it is what the implementing agent was supposed to have followed.
+Read the root `CLAUDE.md` and `CHESS_LOGIC_MAP.md` too; a subagent loads none of them automatically.
 
 ## What to hunt
 

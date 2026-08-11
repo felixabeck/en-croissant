@@ -51,7 +51,10 @@ Every class below is a real, verified regression in this repository.
   changed the invoke key from `file` to `filePath`. Any caller not regenerated breaks only at
   runtime.
 
-Read the root `CLAUDE.md` before reviewing; a subagent loads none of it automatically. Note that
+Read `.claude/rules/ipc-events.md` before reviewing — it is the source of truth for the invariants
+this lens enforces, including the current shape of `ProgressEvent` and the `search_progress`
+exception above, and it is what the implementing agent was supposed to have followed. Read the root
+`CLAUDE.md` too; a subagent loads neither automatically. Note that
 `pnpm tauri:boundary:check` already enforces facade discipline (no direct `@tauri-apps/*` import,
 no raw `listen()` outside `src/platform/`) and `pnpm bindings:check` already proves the generated
 file is byte-exact. Do not spend findings re-reporting what those gates block; hunt what they

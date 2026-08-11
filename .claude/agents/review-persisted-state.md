@@ -53,7 +53,9 @@ Every class below is a real, verified regression in this repository.
   debounced writes survive quitting; anything that changes the debounce must keep that flush
   correct.
 
-Read the root `CLAUDE.md` before reviewing; a subagent loads none of it automatically.
+Read `.claude/rules/persisted-state.md` before reviewing — it is the source of truth for the
+invariants this lens enforces, and what the implementing agent was supposed to have followed. Read
+the root `CLAUDE.md` too; a subagent loads neither automatically.
 
 ## What to hunt
 

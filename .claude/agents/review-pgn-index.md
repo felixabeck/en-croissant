@@ -58,7 +58,10 @@ Every class below is a real, verified regression in this repository.
   `Fen::from_ascii(...).unwrap()` crashed the whole import on one malformed tag; `d12f43cc` is the
   same class for `Unrated` ratings.
 
-Read the root `CLAUDE.md` before reviewing; a subagent loads none of it automatically.
+Read `.claude/rules/pgn-scanning.md` and `.claude/rules/async-resource-invariants.md` before
+reviewing — they are the source of truth for the invariants this lens enforces, and what the
+implementing agent was supposed to have followed. Read the root `CLAUDE.md` too; a subagent loads
+none of them automatically.
 
 ## What to hunt
 

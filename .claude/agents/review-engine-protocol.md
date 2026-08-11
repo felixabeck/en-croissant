@@ -57,8 +57,10 @@ Every class below is a real, verified regression in this repository.
 * **Cancellation.** `849ac5f0` added cancel flags for game reports; `06c23b6a` shows the adjacent
   search path checking cancellation too late.
 
-Read the root `CLAUDE.md` and `CHESS_LOGIC_MAP.md` before reviewing; a subagent loads neither
-automatically.
+Read `.claude/rules/engine-lifecycle.md` and `.claude/rules/async-resource-invariants.md` before
+reviewing — they are the source of truth for the invariants this lens enforces, and what the
+implementing agent was supposed to have followed. Read the root `CLAUDE.md` and `CHESS_LOGIC_MAP.md`
+too; a subagent loads none of them automatically.
 
 ## What to hunt
 

@@ -21,6 +21,28 @@ error history this project learns from; foreign upstream changes are never rewri
 produced most of the current tooling; `CHESS_LOGIC_MAP.md` describes the engine/database/streaming
 architecture.
 
+## Domain rules — `.claude/rules/*.md` (MANDATORY, all agents)
+
+These carry the write-time invariants of this codebase: the facts that stop the defect from being
+written, as opposed to the review lenses below, which catch it afterwards. Each file states one rule
+and the incidents that produced it.
+
+| File | Read before working on | Loads |
+| --- | --- | --- |
+| `async-resource-invariants.md` | any command, spawned process, subscription, or registry | **always** — it applies to nearly every diff, so it is deliberately not path-scoped |
+| `chess-tree-semantics.md` | position comparison, move paths, move numbering, colour parity | `src/utils/{treeReducer,chess,chessops,repertoire}.ts`, `src/state/store/tree.ts`, `GameNotation.tsx`, `panels/practice/**`, `chess.rs`, `game.rs` |
+| `engine-lifecycle.md` | spawning/killing engines, UCI info aggregation, cached options, result routing | `src-tauri/src/engine/**`, `chess.rs`, `components/engines/**`, `panels/analysis/**`, `EvalListener.tsx`, `src/utils/engines.ts` |
+| `ipc-events.md` | any `#[tauri::command]`, emit, listen, progress report, or capability scope | `src-tauri/src/{main,progress}.rs`, `db/search.rs`, `src/platform/**`, `src/bindings/**`, `capabilities/**`, `tauri.conf.json` |
+| `persisted-state.md` | anything written to session/local storage, persisted atoms, tab lifecycle | `src/state/**`, `src/hooks/**`, `src/utils/tabs.ts`, `src/components/tabs/**` |
+| `pgn-scanning.md` | PGN boundaries, the byte-offset index, move encoding, search predicates, imports | `src-tauri/src/{pgn,lexer,opening,puzzle}.rs`, `db/**`, `ImportModal.tsx`, `src/utils/db.ts` |
+
+Claude Code loads `async-resource-invariants.md` in every session and pulls the other five in
+automatically the moment it touches a matching path (`paths:` frontmatter in each file).
+**This is a delivery mechanism, not a scope limit: the rule binds whether or not it happens to be in
+context.** Codex and review subagents auto-load none of them — open the file yourself before working
+in that area. A path that should trigger one of these but does not is a bug in the frontmatter — add
+the glob to the file rather than working around it.
+
 ## Gates
 
 **`.agents/skills/push/SKILL.md` is the single source for which gate runs for which changed path.**
@@ -85,7 +107,8 @@ Treat every path above as foreign work: do not commit, revert, or reformat it as
 ## Conventions
 
 - Rust talks to the renderer only through Specta-registered commands and events; a new event must be
-  added to `collect_events!` in `src-tauri/src/main.rs`, not emitted by a bare string.
+  added to `collect_events!` in `src-tauri/src/main.rs`, not emitted by a bare string — full rule and
+  the one known violation in `.claude/rules/ipc-events.md`.
 - The renderer reaches native capability only through `src/platform/`.
 - Filesystem and HTTP reach are declared in `src-tauri/capabilities/main.json` and
   `src-tauri/tauri.conf.json`; widening a scope is a security decision, not a build fix.
