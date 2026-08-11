@@ -5,7 +5,7 @@ description: Validate, independently review, remediate, commit, and ordinarily p
 
 # Push En Croissant
 
-Complete the push autonomously. Read `~/.claude/rules/push-review-policy.md` first; it is the single source for authorization, attribution, review lenses, model allocation, triage, remediation, and red-gate behavior. This skill adds only En-Croissant mechanics.
+Complete the push autonomously. Read `~/.claude/references/push-review-policy.md` first; it is the single source for authorization, attribution, review lenses, model allocation, triage, remediation, and red-gate behavior. This skill adds only En-Croissant mechanics.
 
 ## 1. Establish the exact push scope
 
