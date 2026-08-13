@@ -293,7 +293,7 @@ whose counts predated the catalogue, checker and E2E work below.
 - Frontend: `pnpm lint:ci` (tsgo, oxfmt, oxlint, i18next extraction, untranslated-JSX,
   catalogue completeness), `pnpm bindings:check`, Tauri/UI boundary checks,
   `pnpm coverage:report:test` (13), `pnpm bundle:report:test` (3), and
-  **252/252 Vitest tests across 58 files** pass. All 16 catalogues pass extraction
+  **257/257 Vitest tests across 59 files** pass. All 16 catalogues pass extraction
   and completeness.
 - Coverage: frontend and backend LCOV area ratchets pass with baselines unchanged.
 - Bundle: gzip entry 511.5 KiB / 537.1 KiB, largest lazy route 706.7 KiB / 732.4 KiB
@@ -360,6 +360,14 @@ earlier tree and are not evidence for the committed one.
   can see an event that has a producer and no consumer.
 
 #### Open frontend items
+
+- `src/App.tsx` has no tests at all (0 of 75 lines). The coverage ratchet
+  surfaced this the moment a single line was added to it. `useDocumentLanguage`
+  was extracted to `src/hooks/` and tested to unblock that, but the startup
+  sequence — `useAppStartup`, `preloadReferenceDb`, the update check, the
+  telemetry gate and the splashscreen `finally` — is still untested and still
+  lives in the composition file. Extracting and testing it is the next piece of
+  real work in this area.
 
 - **The 320px / 200% font-scale layout is broken, and the committed screenshots
   record it rather than contradict it.** Both `async-errors` baselines show clipped

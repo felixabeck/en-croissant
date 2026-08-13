@@ -5,9 +5,7 @@
       {
         "id": "backend",
         "root": "src-tauri/src",
-        "include": [
-          "src-tauri/src/**/*.rs"
-        ],
+        "include": ["src-tauri/src/**/*.rs"],
         "exclude": [
           "src-tauri/src/db/schema.rs",
           "src-tauri/src/engine/mod.rs",
@@ -19,11 +17,7 @@
       {
         "id": "app-infrastructure",
         "source": "backend",
-        "paths": [
-          "src-tauri/src/error.rs",
-          "src-tauri/src/infra/**",
-          "src-tauri/src/main.rs"
-        ]
+        "paths": ["src-tauri/src/error.rs", "src-tauri/src/infra/**", "src-tauri/src/main.rs"]
       },
       {
         "id": "filesystem-native-boundaries",
@@ -49,18 +43,12 @@
       {
         "id": "database-search",
         "source": "backend",
-        "paths": [
-          "src-tauri/src/db/**"
-        ]
+        "paths": ["src-tauri/src/db/**"]
       },
       {
         "id": "engine-game-chess",
         "source": "backend",
-        "paths": [
-          "src-tauri/src/chess.rs",
-          "src-tauri/src/engine/**",
-          "src-tauri/src/game.rs"
-        ]
+        "paths": ["src-tauri/src/chess.rs", "src-tauri/src/engine/**", "src-tauri/src/game.rs"]
       },
       {
         "id": "auxiliary-domain-services",

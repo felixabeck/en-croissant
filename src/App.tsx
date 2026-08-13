@@ -39,11 +39,11 @@ const colorSchemeManager = localStorageColorSchemeManager({
 
 import ErrorComponent from "@/components/ErrorComponent";
 import { useConversionProgress } from "@/hooks/useConversionProgress";
+import { useDocumentLanguage } from "@/hooks/useDocumentLanguage";
 import { checkForUpdates } from "@/platform/updater";
 import { initUserAgent } from "@/utils/http";
 import { routeTree } from "./routeTree.gen";
 import { appCssVariablesResolver, createAppTheme } from "./styles/theme";
-import i18n from "./i18n";
 
 const router = createRouter({
   routeTree,
@@ -137,17 +137,6 @@ function useAppStartup() {
       controller.abort();
       if (detachFn) detachFn();
     };
-  }, []);
-}
-
-function useDocumentLanguage() {
-  useEffect(() => {
-    const updateLanguage = (language: string) => {
-      document.documentElement.lang = language;
-    };
-    updateLanguage(i18n.resolvedLanguage || i18n.language || "en-US");
-    i18n.on("languageChanged", updateLanguage);
-    return () => i18n.off("languageChanged", updateLanguage);
   }, []);
 }
 
