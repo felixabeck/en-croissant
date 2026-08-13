@@ -64,6 +64,12 @@ export function playSound(capture: boolean, check: boolean) {
     if (isLinux()) {
         getSoundServerPort()
             .then((port) => {
+                // Port 0 means the backend has no sound server — no bundled sound resources, or
+                // the server failed to start. Requesting http://127.0.0.1:0/ would only produce a
+                // console error per move.
+                if (port === 0) {
+                    return;
+                }
                 const url = `http://127.0.0.1:${port}/${collection}/${type}.mp3`;
                 playWithUrl(url);
             })

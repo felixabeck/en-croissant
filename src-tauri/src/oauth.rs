@@ -387,7 +387,7 @@ impl OAuthServices for ProdOAuthServices {
         let router = Router::new()
             .route("/callback", get(authorize))
             .layer(Extension(lifecycle));
-        let server = axum::Server::from_tcp(listener)
+        let server = crate::infra::runtime::with_reactor(|| axum::Server::from_tcp(listener))
             .map_err(|source| {
                 error!("OAuth callback server construction failed: {source}");
                 Error::OAuthFailure(OAUTH_FAILURE.into())

@@ -1330,13 +1330,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ))));
 
                 if sound_dir.exists() {
-                    if let Ok((port, server)) = sound::create_sound_server(sound_dir, shutdown_rx) {
-                        tauri::async_runtime::spawn(server);
-                        app.manage(sound::SoundServerPort(port));
-                    } else {
-                        app.manage(sound::SoundServerPort(0));
+                    // Port 0 means "no sound server"; the renderer skips playback rather than
+                    // requesting http://127.0.0.1:0/.  A construction failure is logged because it
+                    // is otherwise indistinguishable from a build without sound resources — that
+                    // silence is how the reactor panic in this very call reached a release.
+                    match sound::create_sound_server(sound_dir, shutdown_rx) {
+                        Ok((port, server)) => {
+                            tauri::async_runtime::spawn(server);
+                            app.manage(sound::SoundServerPort(port));
+                        }
+                        Err(error) => {
+                            log::error!("sound server could not be started: {error}");
+                            app.manage(sound::SoundServerPort(0));
+                        }
                     }
                 } else {
+                    log::info!("no bundled sound resources found, sound stays disabled");
                     app.manage(sound::SoundServerPort(0));
                 }
             }

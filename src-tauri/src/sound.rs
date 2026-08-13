@@ -219,14 +219,9 @@ mod server {
                 Ok((port, listener))
             },
             |listener, app, rx| {
-                // `from_tcp` registers the listener with the Tokio reactor, so it panics with
-                // "there is no reactor running" unless a runtime context is active. `setup()` calls
-                // this from the main thread, off the runtime, so enter it here rather than relying
-                // on every caller to do so.
-                let handle = tauri::async_runtime::handle();
-                let _runtime_guard = handle.inner().enter();
-                let server = axum::Server::from_tcp(listener)
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                let server =
+                    crate::infra::runtime::with_reactor(|| axum::Server::from_tcp(listener))
+                        .map_err(|e| std::io::Error::other(e.to_string()))?;
                 Ok(async move {
                     if let Err(e) = server
                         .serve(app.into_make_service())
@@ -350,7 +345,7 @@ mod tests {
     /// production does not have — reintroducing the panic would leave the test green.
     #[cfg(target_os = "linux")]
     #[test]
-    fn real_sound_server_binds_without_an_ambient_runtime() {
+    fn test_real_sound_server_binds_without_an_ambient_runtime() {
         let (_tx, rx) = tokio::sync::oneshot::channel();
         let (port, _server_future) =
             server::create_sound_server(std::path::PathBuf::from("/nonexistent"), rx)
