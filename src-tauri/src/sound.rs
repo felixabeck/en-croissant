@@ -342,6 +342,22 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::Other);
     }
 
+    /// The seam tests above drive `create_sound_server_with_seam` with fakes, so nothing covered
+    /// the real `from_tcp` wiring and a startup panic shipped unnoticed.
+    ///
+    /// This must stay a plain `#[test]`: `setup()` calls `create_sound_server` from the main
+    /// thread with no ambient runtime, and `#[tokio::test]` would supply the reactor that
+    /// production does not have — reintroducing the panic would leave the test green.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn real_sound_server_binds_without_an_ambient_runtime() {
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        let (port, _server_future) =
+            server::create_sound_server(std::path::PathBuf::from("/nonexistent"), rx)
+                .expect("sound server must be constructible outside a Tokio runtime");
+        assert_ne!(port, 0);
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn test_serve_sound_handler() {
