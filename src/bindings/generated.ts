@@ -13,7 +13,318 @@ async closeSplashscreen() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async getBestMoves(id: string, engine: string, tab: string, goMode: GoMode, options: EngineOptions) : Promise<Result<[number, BestMoves[]] | null, string>> {
+async issuePgnWorkspace() : Promise<Result<FileWorkspaceDescriptor, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_pgn_workspace") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Native-only save destination picker for database export. The selection is immediately
+ * persisted as an exact ReadPgn+WritePgn workspace, so the renderer never receives a path and
+ * can safely open the exported file after writing it.
+ */
+async issuePgnExportDestination() : Promise<Result<FileWorkspaceDescriptor, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_pgn_export_destination") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Native save dialog and atomic export for a renderer-produced board image.
+ */
+async saveBoardSnapshot(bytes: number[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_board_snapshot", { bytes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Native save dialog and atomic export for renderer-selected engine logs.
+ */
+async saveEngineLogs(text: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_engine_logs", { text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Opens the fixed project documentation URL without granting arbitrary URL authority to the
+ * renderer.
+ */
+async openDocumentation() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_documentation") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Opens the application-owned log file without exposing its native path to the renderer.
+ */
+async openAppLog() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_app_log") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The native picker creates a persistent, least-privilege root for one-file downloads.
+ * The renderer receives only the opaque capability ID, never a filesystem path.
+ */
+async issueDownloadDestination() : Promise<Result<PathRef, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_download_destination") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Native-only database-root selection.  A directory is promoted immediately
+ * to a persistent database workspace and the renderer receives only its
+ * opaque handle.
+ */
+async issueDatabaseWorkspace() : Promise<Result<DatabaseRootHandle, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_database_workspace") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Returns the app-owned default database root.  Unlike the picker command it
+ * never receives a renderer path and is stable across restarts.
+ */
+async getDatabaseWorkspace() : Promise<Result<DatabaseRootHandle, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_database_workspace") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listWorkspaceDatabases(root: DatabaseRootHandle) : Promise<Result<DatabaseDescriptor[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_workspace_databases", { root }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async createWorkspaceDatabase(root: DatabaseRootHandle, filename: string) : Promise<Result<DatabaseHandle, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_workspace_database", { root, filename }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async databaseDownloadDestination(root: DatabaseRootHandle) : Promise<Result<PathRef, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("database_download_destination", { root }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async issueEngineWorkspace() : Promise<Result<EngineRootHandle, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_engine_workspace") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getEngineWorkspace() : Promise<Result<EngineRootHandle, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_engine_workspace") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async issueEngineBinary() : Promise<Result<EngineHandle, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_engine_binary") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Native-only resource picker for UCI file/directory options.  The dialog
+ * selection is immediately bound to a no-follow persistent capability.
+ */
+async issueEngineResource(directory: boolean) : Promise<Result<EngineResourceHandle, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_engine_resource", { directory }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Copies a picker-selected raster image into app-owned storage. The original
+ * physical path is consumed natively and never serialized to the renderer.
+ */
+async issueEngineImage() : Promise<Result<EngineImageHandle, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_engine_image") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async readEngineImage(image: EngineImageHandle) : Promise<Result<EngineImageData, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("read_engine_image", { image }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async issueOpeningBook() : Promise<Result<OpeningBookHandle, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_opening_book") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async engineArchiveDestination(root: EngineRootHandle) : Promise<Result<PathRef, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("engine_archive_destination", { root }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async registerInstalledEngine(root: EngineRootHandle, relativePath: string) : Promise<Result<EngineHandle, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("register_installed_engine", { root, relativePath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async openEngineWorkspace(root: EngineRootHandle) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_engine_workspace", { root }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async issueFileWorkspace() : Promise<Result<FileWorkspaceDescriptor, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_file_workspace") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listFileWorkspace(workspace: FileWorkspaceHandle) : Promise<Result<WorkspaceEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_file_workspace", { workspace }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async createWorkspaceFile(workspace: FileWorkspaceHandle, parent: FileWorkspaceHandle, name: string, metadata: WorkspaceMetadata, pgn: string) : Promise<Result<WorkspaceEntry, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_workspace_file", { workspace, parent, name, metadata, pgn }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async createWorkspaceDirectory(workspace: FileWorkspaceHandle, parent: FileWorkspaceHandle, name: string) : Promise<Result<WorkspaceEntry, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_workspace_directory", { workspace, parent, name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async moveWorkspaceEntry(workspace: FileWorkspaceHandle, entry: FileWorkspaceHandle, targetDirectory: FileWorkspaceHandle) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("move_workspace_entry", { workspace, entry, targetDirectory }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async renameWorkspaceFile(workspace: FileWorkspaceHandle, entry: FileWorkspaceHandle, name: string, metadata: WorkspaceMetadata) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_workspace_file", { workspace, entry, name, metadata }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async trashWorkspaceEntry(workspace: FileWorkspaceHandle, entry: FileWorkspaceHandle) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("trash_workspace_entry", { workspace, entry }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async restoreWorkspaceEntry(workspace: FileWorkspaceHandle, entry: FileWorkspaceHandle) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restore_workspace_entry", { workspace, entry }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async permanentlyDeleteWorkspaceEntry(workspace: FileWorkspaceHandle, entry: FileWorkspaceHandle) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("permanently_delete_workspace_entry", { workspace, entry }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listPathCapabilities() : Promise<Result<PathDescriptor[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_path_capabilities") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async revokePathCapability(id: PathRef) : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("revoke_path_capability", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async promotePathCapability(id: PathRef, pathClass: PathClass, displayName: string, operations: PathOperation[]) : Promise<Result<PathCommit, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("promote_path_capability", { id, pathClass, displayName, operations }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getBestMoves(id: string, engine: EngineHandle, tab: string, goMode: GoMode, options: EngineOptions) : Promise<Result<[number, BestMoves[]] | null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_best_moves", { id, engine, tab, goMode, options }) };
 } catch (e) {
@@ -21,7 +332,7 @@ async getBestMoves(id: string, engine: string, tab: string, goMode: GoMode, opti
     else return { status: "error", error: e  as any };
 }
 },
-async analyzeGame(id: string, engine: string, goMode: GoMode, options: AnalysisOptions, uciOptions: EngineOption[]) : Promise<Result<MoveAnalysis[], string>> {
+async analyzeGame(id: string, engine: EngineHandle, goMode: GoMode, options: AnalysisOptions, uciOptions: EngineOption[]) : Promise<Result<MoveAnalysis[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("analyze_game", { id, engine, goMode, options, uciOptions }) };
 } catch (e) {
@@ -72,9 +383,41 @@ async getEngineLogs(engine: string, tab: string) : Promise<Result<EngineLog[], s
 async memorySize() : Promise<number> {
     return await TAURI_INVOKE("memory_size");
 },
-async getPuzzle(file: string, minRating: number, maxRating: number, theme: string | null) : Promise<Result<Puzzle, string>> {
+async getPuzzle(file: PathRef, minRating: number, maxRating: number, theme: string | null) : Promise<Result<Puzzle, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_puzzle", { file, minRating, maxRating, theme }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async issuePuzzleDownloadDestination() : Promise<Result<PathRef, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_puzzle_download_destination") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async issuePuzzleWorkspace() : Promise<Result<PuzzleRootDescriptor, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("issue_puzzle_workspace") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getPuzzleWorkspace() : Promise<Result<PuzzleRootDescriptor, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_puzzle_workspace") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listPuzzleDatabases() : Promise<Result<PuzzleDatabaseInfo[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_puzzle_databases") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -112,7 +455,7 @@ async getOpeningFromName(name: string) : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async getPlayersGameInfo(file: string, id: number) : Promise<Result<PlayerGameInfo, string>> {
+async getPlayersGameInfo(file: DatabaseHandle, id: number) : Promise<Result<PlayerGameInfo, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_players_game_info", { file, id }) };
 } catch (e) {
@@ -120,39 +463,31 @@ async getPlayersGameInfo(file: string, id: number) : Promise<Result<PlayerGameIn
     else return { status: "error", error: e  as any };
 }
 },
-async getLatestGameTimestamp(file: string) : Promise<Result<number | null, string>> {
+async getEngineConfig(engine: EngineHandle) : Promise<Result<EngineConfig, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_latest_game_timestamp", { file }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_engine_config", { engine }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getEngineConfig(path: string) : Promise<Result<EngineConfig, string>> {
+async fileExists(file: PathRef) : Promise<Result<boolean, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_engine_config", { path }) };
+    return { status: "ok", data: await TAURI_INVOKE("file_exists", { file }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async fileExists(path: string) : Promise<Result<boolean, string>> {
+async getFileMetadata(file: PathRef) : Promise<Result<FileMetadata, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("file_exists", { path }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_file_metadata", { file }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getFileMetadata(path: string) : Promise<Result<FileMetadata, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("get_file_metadata", { path }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async mergePlayers(file: string, player1: number, player2: number) : Promise<Result<null, string>> {
+async mergePlayers(file: DatabaseHandle, player1: number, player2: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("merge_players", { file, player1, player2 }) };
 } catch (e) {
@@ -160,15 +495,15 @@ async mergePlayers(file: string, player1: number, player2: number) : Promise<Res
     else return { status: "error", error: e  as any };
 }
 },
-async convertPgn(files: string[], dbPath: string, timestamp: number | null, title: string, description: string | null) : Promise<Result<null, string>> {
+async convertPgn(files: FileWorkspaceHandle[], database: DatabaseHandle, timestamp: number | null, title: string, description: string | null) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("convert_pgn", { files, dbPath, timestamp, title, description }) };
+    return { status: "ok", data: await TAURI_INVOKE("convert_pgn", { files, database, timestamp, title, description }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getPlayer(file: string, id: number) : Promise<Result<Player | null, string>> {
+async getPlayer(file: DatabaseHandle, id: number) : Promise<Result<Player | null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_player", { file, id }) };
 } catch (e) {
@@ -176,7 +511,7 @@ async getPlayer(file: string, id: number) : Promise<Result<Player | null, string
     else return { status: "error", error: e  as any };
 }
 },
-async countPgnGames(file: string) : Promise<Result<number, string>> {
+async countPgnGames(file: FileWorkspaceHandle) : Promise<Result<number, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("count_pgn_games", { file }) };
 } catch (e) {
@@ -184,7 +519,7 @@ async countPgnGames(file: string) : Promise<Result<number, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async readGames(file: string, start: number, end: number) : Promise<Result<string[], string>> {
+async readGames(file: FileWorkspaceHandle, start: number, end: number) : Promise<Result<string[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("read_games", { file, start, end }) };
 } catch (e) {
@@ -203,7 +538,7 @@ async lexPgn(pgn: string) : Promise<Result<Token[], string>> {
 async isBmi2Compatible() : Promise<boolean> {
     return await TAURI_INVOKE("is_bmi2_compatible");
 },
-async deleteGame(file: string, n: number) : Promise<Result<null, string>> {
+async deleteGame(file: FileWorkspaceHandle, n: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_game", { file, n }) };
 } catch (e) {
@@ -211,7 +546,7 @@ async deleteGame(file: string, n: number) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async deleteDuplicatedGames(file: string) : Promise<Result<null, string>> {
+async deleteDuplicatedGames(file: DatabaseHandle) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_duplicated_games", { file }) };
 } catch (e) {
@@ -219,7 +554,7 @@ async deleteDuplicatedGames(file: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async deleteEmptyGames(file: string) : Promise<Result<null, string>> {
+async deleteEmptyGames(file: DatabaseHandle) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_empty_games", { file }) };
 } catch (e) {
@@ -230,15 +565,15 @@ async deleteEmptyGames(file: string) : Promise<Result<null, string>> {
 async clearGames() : Promise<void> {
     await TAURI_INVOKE("clear_games");
 },
-async setFileAsExecutable(path: string) : Promise<Result<null, string>> {
+async setFileAsExecutable(file: PathRef) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_file_as_executable", { path }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_file_as_executable", { file }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async deleteIndexes(file: string) : Promise<Result<null, string>> {
+async deleteIndexes(file: DatabaseHandle) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_indexes", { file }) };
 } catch (e) {
@@ -246,7 +581,7 @@ async deleteIndexes(file: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async createIndexes(file: string) : Promise<Result<null, string>> {
+async createIndexes(file: DatabaseHandle) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("create_indexes", { file }) };
 } catch (e) {
@@ -254,7 +589,7 @@ async createIndexes(file: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async editDbInfo(file: string, title: string | null, description: string | null) : Promise<Result<null, string>> {
+async editDbInfo(file: DatabaseHandle, title: string | null, description: string | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("edit_db_info", { file, title, description }) };
 } catch (e) {
@@ -262,7 +597,7 @@ async editDbInfo(file: string, title: string | null, description: string | null)
     else return { status: "error", error: e  as any };
 }
 },
-async deleteDbGame(file: string, gameId: number) : Promise<Result<null, string>> {
+async deleteDbGame(file: DatabaseHandle, gameId: number) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_db_game", { file, gameId }) };
 } catch (e) {
@@ -270,7 +605,7 @@ async deleteDbGame(file: string, gameId: number) : Promise<Result<null, string>>
     else return { status: "error", error: e  as any };
 }
 },
-async writeDbGame(file: string, gameId: number, pgn: string) : Promise<Result<null, string>> {
+async writeDbGame(file: DatabaseHandle, gameId: number, pgn: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("write_db_game", { file, gameId, pgn }) };
 } catch (e) {
@@ -278,7 +613,7 @@ async writeDbGame(file: string, gameId: number, pgn: string) : Promise<Result<nu
     else return { status: "error", error: e  as any };
 }
 },
-async deleteDatabase(file: string) : Promise<Result<null, string>> {
+async deleteDatabase(file: DatabaseHandle) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_database", { file }) };
 } catch (e) {
@@ -286,15 +621,15 @@ async deleteDatabase(file: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async exportToPgn(file: string, destFile: string) : Promise<Result<null, string>> {
+async exportToPgn(file: DatabaseHandle, destination: FileWorkspaceHandle) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("export_to_pgn", { file, destFile }) };
+    return { status: "ok", data: await TAURI_INVOKE("export_to_pgn", { file, destination }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async authenticate(username: string) : Promise<Result<null, string>> {
+async authenticate(username: string) : Promise<Result<AuthenticationJob, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("authenticate", { username }) };
 } catch (e) {
@@ -302,23 +637,111 @@ async authenticate(username: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async writeGame(filePath: string, n: number, pgn: string) : Promise<Result<null, string>> {
+async getAuthenticationStatus(job: AuthenticationJob) : Promise<Result<AuthenticationStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("write_game", { filePath, n, pgn }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_authentication_status", { job }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async downloadFile(id: string, url: string, path: string, token: string | null, finalize: boolean | null, totalSize: number | null) : Promise<Result<null, string>> {
+async listLichessAccounts() : Promise<LichessAccountMetadata[]> {
+    return await TAURI_INVOKE("list_lichess_accounts");
+},
+async removeLichessAccount(handle: LichessAccountHandle) : Promise<Result<LichessAccountRemoval, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("download_file", { id, url, path, token, finalize, totalSize }) };
+    return { status: "ok", data: await TAURI_INVOKE("remove_lichess_account", { handle }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getTournaments(file: string, query: TournamentQuery) : Promise<Result<QueryResponse<Event[]>, string>> {
+/**
+ * One-way bridge for pre-credential-store renderer records. The caller must erase the supplied
+ * legacy token from Web Storage after this succeeds; this command never returns it.
+ */
+async migrateLegacyLichessToken(username: string, token: string) : Promise<Result<LichessAccountMetadata, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("migrate_legacy_lichess_token", { username, token }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getAuthenticatedLichessAccount(handle: LichessAccountHandle) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_authenticated_lichess_account", { handle }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getAuthenticatedLichessExplorer(handle: LichessAccountHandle, endpoint: LichessExplorerEndpoint, query: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_authenticated_lichess_explorer", { handle, endpoint, query }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getPublicLichessJson(request: PublicLichessRequest) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_public_lichess_json", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async writeGame(file: FileWorkspaceHandle, n: number, pgn: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("write_game", { file, n, pgn }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async downloadFile(id: string, url: string, destination: PathRef, filename: string, totalSize: number | null, jobId: string, integrity: ArtifactIntegrity | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("download_file", { id, url, destination, filename, totalSize, jobId, integrity }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Downloads and atomically installs an engine archive into an authority-managed directory.
+ * Archive extraction occurs entirely in a private staging directory; the sealed authority API
+ * commits the completed tree only after all archive validation succeeds.
+ */
+async downloadEngineArchive(id: string, url: string, destination: PathRef, directoryName: string, jobId: string, integrity: ArtifactIntegrity) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("download_engine_archive", { id, url, destination, directoryName, jobId, integrity }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Authenticated Lichess export. The opaque handle is resolved in the native credential store;
+ * neither its bearer token nor a native destination path crosses IPC.
+ */
+async downloadLichessGames(handle: LichessAccountHandle, destination: PathRef, filename: string, player: string, sinceMs: bigint | null, estimatedSize: number | null, jobId: string) : Promise<Result<ArtifactPublication, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("download_lichess_games", { handle, destination, filename, player, sinceMs, estimatedSize, jobId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async cancelDownload(id: string) : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_download", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getTournaments(file: DatabaseHandle, query: TournamentQuery) : Promise<Result<QueryResponse<Event[]>, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_tournaments", { file, query }) };
 } catch (e) {
@@ -326,7 +749,7 @@ async getTournaments(file: string, query: TournamentQuery) : Promise<Result<Quer
     else return { status: "error", error: e  as any };
 }
 },
-async getDbInfo(file: string) : Promise<Result<DatabaseInfo, string>> {
+async getDbInfo(file: DatabaseHandle) : Promise<Result<DatabaseInfo, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_db_info", { file }) };
 } catch (e) {
@@ -334,7 +757,7 @@ async getDbInfo(file: string) : Promise<Result<DatabaseInfo, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async getGames(file: string, query: GameQuery) : Promise<Result<QueryResponse<NormalizedGame[]>, string>> {
+async getGames(file: DatabaseHandle, query: GameQuery) : Promise<Result<QueryResponse<NormalizedGame[]>, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_games", { file, query }) };
 } catch (e) {
@@ -342,7 +765,15 @@ async getGames(file: string, query: GameQuery) : Promise<Result<QueryResponse<No
     else return { status: "error", error: e  as any };
 }
 },
-async searchPosition(file: string, query: GameQuery, tabId: string) : Promise<Result<[PositionStats[], NormalizedGame[]], string>> {
+async getLatestGameTimestamp(file: DatabaseHandle) : Promise<Result<number | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_latest_game_timestamp", { file }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async searchPosition(file: DatabaseHandle, query: GameQuery, tabId: string) : Promise<Result<[PositionStats[], NormalizedGame[]], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("search_position", { file, query, tabId }) };
 } catch (e) {
@@ -350,7 +781,7 @@ async searchPosition(file: string, query: GameQuery, tabId: string) : Promise<Re
     else return { status: "error", error: e  as any };
 }
 },
-async getPlayers(file: string, query: PlayerQuery) : Promise<Result<QueryResponse<Player[]>, string>> {
+async getPlayers(file: DatabaseHandle, query: PlayerQuery) : Promise<Result<QueryResponse<Player[]>, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_players", { file, query }) };
 } catch (e) {
@@ -358,7 +789,7 @@ async getPlayers(file: string, query: PlayerQuery) : Promise<Result<QueryRespons
     else return { status: "error", error: e  as any };
 }
 },
-async getPuzzleDbInfo(file: string) : Promise<Result<PuzzleDatabaseInfo, string>> {
+async getPuzzleDbInfo(file: PathRef) : Promise<Result<PuzzleDatabaseInfo, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_puzzle_db_info", { file }) };
 } catch (e) {
@@ -366,7 +797,7 @@ async getPuzzleDbInfo(file: string) : Promise<Result<PuzzleDatabaseInfo, string>
     else return { status: "error", error: e  as any };
 }
 },
-async getPuzzleThemes(file: string) : Promise<Result<string[], string>> {
+async getPuzzleThemes(file: PathRef) : Promise<Result<string[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_puzzle_themes", { file }) };
 } catch (e) {
@@ -374,7 +805,7 @@ async getPuzzleThemes(file: string) : Promise<Result<string[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async getThemesForPuzzle(file: string, puzzleId: number) : Promise<Result<string[], string>> {
+async getThemesForPuzzle(file: PathRef, puzzleId: number) : Promise<Result<string[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_themes_for_puzzle", { file, puzzleId }) };
 } catch (e) {
@@ -382,7 +813,7 @@ async getThemesForPuzzle(file: string, puzzleId: number) : Promise<Result<string
     else return { status: "error", error: e  as any };
 }
 },
-async deletePuzzleDatabase(file: string) : Promise<Result<null, string>> {
+async deletePuzzleDatabase(file: PathRef) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_puzzle_database", { file }) };
 } catch (e) {
@@ -398,55 +829,55 @@ async startGame(gameId: string, config: GameConfig) : Promise<Result<GameState, 
     else return { status: "error", error: e  as any };
 }
 },
-async getGameState(gameId: string) : Promise<Result<GameState, string>> {
+async getGameState(gameId: string, expectedSession: bigint) : Promise<Result<GameState, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_game_state", { gameId }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_game_state", { gameId, expectedSession }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async makeGameMove(gameId: string, uci: string) : Promise<Result<GameState, string>> {
+async makeGameMove(gameId: string, expectedSession: bigint, uci: string) : Promise<Result<GameState, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("make_game_move", { gameId, uci }) };
+    return { status: "ok", data: await TAURI_INVOKE("make_game_move", { gameId, expectedSession, uci }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async takeBackGameMove(gameId: string) : Promise<Result<GameState, string>> {
+async takeBackGameMove(gameId: string, expectedSession: bigint) : Promise<Result<GameState, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("take_back_game_move", { gameId }) };
+    return { status: "ok", data: await TAURI_INVOKE("take_back_game_move", { gameId, expectedSession }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async resignGame(gameId: string, color: string) : Promise<Result<GameState, string>> {
+async resignGame(gameId: string, expectedSession: bigint, color: string) : Promise<Result<GameState, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("resign_game", { gameId, color }) };
+    return { status: "ok", data: await TAURI_INVOKE("resign_game", { gameId, expectedSession, color }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async abortGame(gameId: string) : Promise<Result<null, string>> {
+async abortGame(gameId: string, expectedSession: bigint) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("abort_game", { gameId }) };
+    return { status: "ok", data: await TAURI_INVOKE("abort_game", { gameId, expectedSession }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getGameEngineLogs(gameId: string, color: string) : Promise<Result<EngineLog[], string>> {
+async getGameEngineLogs(gameId: string, expectedSession: bigint, color: string) : Promise<Result<EngineLog[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_game_engine_logs", { gameId, color }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_game_engine_logs", { gameId, expectedSession, color }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async preloadReferenceDb(file: string) : Promise<Result<null, string>> {
+async preloadReferenceDb(file: DatabaseHandle) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("preload_reference_db", { file }) };
 } catch (e) {
@@ -457,12 +888,49 @@ async preloadReferenceDb(file: string) : Promise<Result<null, string>> {
 async getProgress(id: string) : Promise<ProgressItem | null> {
     return await TAURI_INVOKE("get_progress", { id });
 },
-async clearProgress(id: string) : Promise<void> {
-    await TAURI_INVOKE("clear_progress", { id });
+async startProgress(id: string) : Promise<Result<ProgressLease, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_progress", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setProgressState(lease: ProgressLease, progress: number, progressState: ProgressState) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_progress_state", { lease, progress, progressState }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async clearProgress(id: string) : Promise<Result<bigint, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clear_progress", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async getSoundServerPort() : Promise<Result<number, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_sound_server_port") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async downloadChessComGames(destination: PathRef, filename: string, player: string, sinceMs: bigint | null, jobId: string) : Promise<Result<ArtifactPublication, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("download_chess_com_games", { destination, filename, player, sinceMs, jobId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getPublicChessComJson(request: PublicChessComRequest) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_public_chess_com_json", { request }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -476,6 +944,7 @@ async getSoundServerPort() : Promise<Result<number, string>> {
 export const events = __makeEvents__<{
 bestMovesPayload: BestMovesPayload,
 clockUpdateEvent: ClockUpdateEvent,
+convertProgress: ConvertProgress,
 databaseProgress: DatabaseProgress,
 gameMoveEvent: GameMoveEvent,
 gameOverEvent: GameOverEvent,
@@ -483,6 +952,7 @@ progressEvent: ProgressEvent
 }>({
 bestMovesPayload: "best-moves-payload",
 clockUpdateEvent: "clock-update-event",
+convertProgress: "convert-progress",
 databaseProgress: "database-progress",
 gameMoveEvent: "game-move-event",
 gameOverEvent: "game-over-event",
@@ -495,48 +965,165 @@ progressEvent: "progress-event"
 
 /** user-defined types **/
 
-export type AnalysisOptions = { fen: string; moves: string[]; annotateNovelties: boolean; referenceDb: string | null; reversed: boolean }
-export type BestMoves = { nodes: number; depth: number; score: Score; uciMoves: string[]; sanMoves: string[]; multipv: number; nps: number }
+export type AnalysisOptions = { fen: string; moves: string[]; annotateNovelties: boolean; referenceDb: DatabaseHandle | null; reversed: boolean }
+/**
+ * A release-key signed artifact digest. The signature binds URL and hash.
+ */
+export type ArtifactIntegrity = { sha256: string; signature: string }
+/**
+ * A completed native download with a usable opaque file capability. Durability uncertainty is
+ * reported without asking callers to retry a mutation that may already have committed.
+ */
+export type ArtifactPublication = { handle: FileWorkspaceHandle; durability: CommitDurability }
+export type AuthenticationJob = string
+export type AuthenticationStatus = { state: "pending" } | { state: "succeeded"; account: LichessAccountMetadata } | { state: "failed" }
+export type BestMoves = { nodes: bigint; depth: number; score: Score; uciMoves: string[]; sanMoves: string[]; multipv: number; nps: bigint }
 export type BestMovesPayload = { bestLines: BestMoves[]; engine: string; tab: string; fen: string; moves: string[]; progress: number }
-export type ClockUpdateEvent = { gameId: string; whiteTime: bigint | null; blackTime: bigint | null }
+export type ClockUpdateEvent = { gameId: string; session: bigint; revision: bigint; whiteTime: bigint | null; blackTime: bigint | null }
+/**
+ * Persistence result paired with a committed path identifier. `DurabilityUncertain` means the
+ * replacement happened but syncing its parent directory failed; callers must not retry.
+ */
+export type CommitDurability = "Durable" | { DurabilityUncertain: string }
+/**
+ * Import progress for a PGN-to-database conversion. A conversion has no total
+ * to divide by until it finishes, so this reports the counters the UI shows
+ * rather than a percentage.
+ */
+export type ConvertProgress = { imported_games: number; elapsed_ms: number; source_file_name: string | null }
+export type DatabaseDescriptor = { handle: DatabaseHandle; filename: string; availability: PathAvailability }
+/**
+ * Opaque handle for one exact database file.  It is deliberately a distinct
+ * type from a generic path capability so a database command cannot accidentally
+ * be called with a PGN, puzzle, or download destination capability.
+ */
+export type DatabaseHandle = { id: PathRef; kind: DatabaseHandleKind }
+export type DatabaseHandleKind = "database"
 export type DatabaseInfo = { title: string; description: string; player_count: number; event_count: number; game_count: number; storage_size: bigint; filename: string; indexed: boolean }
 export type DatabaseProgress = { id: string; progress: number }
+/**
+ * Opaque handle for a database root.  A root is the only capability that may
+ * create or discover database children; the renderer never supplies a path or
+ * a relative component.
+ */
+export type DatabaseRootHandle = { id: PathRef; kind: DatabaseRootHandleKind }
+export type DatabaseRootHandleKind = "databaseRoot"
 export type DrawReason = "stalemate" | "insufficientMaterial" | "threefoldRepetition" | "fiftyMoveRule" | "agreement"
 export type EngineConfig = { name: string; options: UciOptionConfig[] }
-export type EngineLog = { type: "gui"; value: string } | { type: "engine"; value: string }
-export type EngineOption = { name: string; value: string }
+/**
+ * Opaque exact executable capability. It is distinct from its installation root.
+ */
+export type EngineHandle = { id: PathRef; kind: EngineHandleKind }
+export type EngineHandleKind = "engine"
+export type EngineImageData = { bytes: number[]; mimeType: string }
+/**
+ * Opaque app-owned engine-image asset. Native code alone knows the copied
+ * image path; the renderer can safely persist only this handle.
+ */
+export type EngineImageHandle = { id: PathRef; kind: EngineImageHandleKind }
+export type EngineImageHandleKind = "engineImage"
+/**
+ * Engine transcript entries include explicit truncation metadata when bounded
+ * retention has discarded older output.
+ */
+export type EngineLog = { type: "gui"; value: string } | { type: "engine"; value: string } | { type: "truncated"; value: { droppedEntries: bigint } }
+/**
+ * Renderer-persisted option input. Native resources are opaque capabilities,
+ * never UCI path strings.
+ */
+export type EngineOption = { type: "string"; name: string; value: string } | { type: "resource"; name: string; resources: EngineResourceHandle[] }
 export type EngineOptions = { fen: string; moves: string[]; extraOptions: EngineOption[] }
+/**
+ * Opaque, persistent native resource used as a UCI option value.  It is
+ * intentionally distinct from executables and workspaces: a resource picker
+ * can grant only a file or directory to an engine option, never authority to
+ * execute it or inspect siblings.
+ */
+export type EngineResourceHandle = { id: PathRef; kind: EngineResourceHandleKind; displayName: string }
+export type EngineResourceHandleKind = "file" | "directory"
+/**
+ * Opaque authority-managed engine installation root.
+ */
+export type EngineRootHandle = { id: PathRef; kind: EngineRootHandleKind }
+export type EngineRootHandleKind = "engineRoot"
 export type Event = { id: number; name: string | null }
 export type FileMetadata = { last_modified: number }
+export type FileWorkspaceDescriptor = { handle: FileWorkspaceHandle; displayName: string; availability: PathAvailability }
+/**
+ * Renderer-safe handle for one authority-managed file workspace. It cannot contain a native
+ * path, and PGN commands accept this type rather than a generic capability id.
+ */
+export type FileWorkspaceHandle = { id: PathRef; kind: FileWorkspaceHandleKind }
+export type FileWorkspaceHandleKind = "fileWorkspace"
 export type GameConfig = { white: PlayerConfig; black: PlayerConfig; whiteTimeControl: TimeControl | null; blackTimeControl: TimeControl | null; initialFen: string | null; initialMoves?: string[]; openingBook: OpeningBookConfig | null }
 export type GameEndReason = "checkmate" | "timeout" | "resignation" | "abandonment"
 export type GameMove = { uci: string; san: string; fenAfter: string; clock: bigint | null; whiteTime: bigint | null; blackTime: bigint | null }
-export type GameMoveEvent = { gameId: string; moves: GameMove[]; fen: string; whiteTime: bigint | null; blackTime: bigint | null }
+export type GameMoveEvent = { gameId: string; session: bigint; revision: bigint; moves: GameMove[]; fen: string; whiteTime: bigint | null; blackTime: bigint | null }
 export type GameOutcome = "Won" | "Drawn" | "Lost"
-export type GameOverEvent = { gameId: string; result: GameResult; moves: GameMove[] }
+export type GameOverEvent = { gameId: string; session: bigint; revision: bigint; result: GameResult; moves: GameMove[] }
 export type GameQuery = { options?: QueryOptions<GameSort> | null; player1?: number | null; player2?: number | null; tournament_id?: number | null; start_date?: string | null; end_date?: string | null; range1?: [number, number] | null; range2?: [number, number] | null; sides?: Sides | null; outcome?: string | null; position?: PositionQueryJs | null; wanted_result?: string | null }
 export type GameResult = { type: "whiteWins"; reason: GameEndReason } | { type: "blackWins"; reason: GameEndReason } | { type: "draw"; reason: DrawReason }
 export type GameSort = "id" | "date" | "whiteElo" | "blackElo" | "ply_count"
-export type GameState = { gameId: string; status: GameStatus; initialFen: string; moves: GameMove[]; currentFen: string; ply: number; turn: string; whiteTime: bigint | null; blackTime: bigint | null; whitePlayer: string; blackPlayer: string }
+export type GameState = { gameId: string; session: bigint; revision: bigint; status: GameStatus; initialFen: string; moves: GameMove[]; currentFen: string; ply: number; turn: string; whiteTime: bigint | null; blackTime: bigint | null; whitePlayer: string; blackPlayer: string }
 export type GameStatus = "playing" | { finished: { result: GameResult } }
 export type GoMode = { t: "PlayersTime"; c: PlayersTime } | { t: "Depth"; c: number } | { t: "Time"; c: number } | { t: "Nodes"; c: number } | { t: "Infinite" }
+export type LichessAccountHandle = string
+export type LichessAccountMetadata = { handle: LichessAccountHandle; username: string }
+export type LichessAccountRemoval = "not_found" | "removed" | "removed_revocation_pending"
+export type LichessExplorerEndpoint = "lichess" | "masters" | "player"
 export type MoveAnalysis = { best: BestMoves[]; novelty: boolean; is_sacrifice: boolean }
 export type NormalizedGame = { id: number; fen: string; event: string; event_id: number; site: string; site_id: number; date?: string | null; time?: string | null; round?: string | null; white: string; white_id: number; white_elo?: number | null; black: string; black_id: number; black_elo?: number | null; result: Outcome; time_control?: string | null; eco?: string | null; ply_count?: number | null; moves: string }
-export type OpeningBookConfig = { path: string; maxPly?: bigint }
+export type OpeningBookConfig = { book: OpeningBookHandle; maxPly?: bigint }
+/**
+ * Opaque exact opening-book file. It cannot be used where an executable or generic file
+ * capability is expected.
+ */
+export type OpeningBookHandle = { id: PathRef; kind: OpeningBookHandleKind }
+export type OpeningBookHandleKind = "openingBook"
 export type OutOpening = { name: string; fen: string }
 export type Outcome = "1-0" | "0-1" | "1/2-1/2" | "*"
+export type PathAvailability = "available" | "unavailable"
+/**
+ * The lifetime and scope of a path capability.
+ */
+export type PathClass = "appOwnedRoot" | "persistentCustomRoot" | "persistentFile" | "singleDialogGrant" | "boundedDialogGrant"
+export type PathCommit = { id: PathRef; durability: CommitDurability }
+/**
+ * The only path metadata intentionally exposed to the renderer.
+ */
+export type PathDescriptor = { id: PathRef; displayName: string; class: PathClass; availability: PathAvailability }
+/**
+ * Exact least-privilege operation accepted by a capability.
+ */
+export type PathOperation = "readPgn" | "writePgn" | "databaseRead" | "databaseMutate" | "databaseCreate" | "databaseExport" | "puzzleRead" | "puzzleDelete" | "engineExecute" | "engineConfigure" | "engineResourceRead" | "openingBookRead" | "imageRead" | "downloadFile" | "downloadArchive" | "engineInstall" | "snapshotWrite" | "logWrite" | "openShell"
+/**
+ * Opaque renderer-safe identifier. It deliberately has no path parsing API.
+ */
+export type PathRef = { id: string }
 export type Player = { id: number; name: string | null; elo: number | null }
-export type PlayerConfig = { type: "human"; name: string } | { type: "engine"; name: string; path: string; options?: EngineOption[]; go: GoMode | null }
+export type PlayerConfig = { type: "human"; name: string } | { type: "engine"; name: string; handle: EngineHandle; options?: EngineOption[]; go: GoMode | null }
 export type PlayerGameInfo = { site_stats_data: SiteStatsData[] }
 export type PlayerQuery = { options: QueryOptions<PlayerSort>; name?: string | null; range?: [number, number] | null }
 export type PlayerSort = "id" | "name" | "elo"
 export type PlayersTime = { white: number; black: number; winc: number; binc: number }
 export type PositionQueryJs = { fen: string; type_: string }
 export type PositionStats = { move: string; white: number; draw: number; black: number }
-export type ProgressEvent = { id: string; progress: number; finished: boolean }
-export type ProgressItem = { id: string; progress: number; finished: boolean }
+export type ProgressEvent = { id: string; generation: bigint; progress: number; finished: boolean; state: ProgressState; cleared: boolean }
+export type ProgressItem = { id: string; generation: bigint; progress: number; finished: boolean; state: ProgressState }
+export type ProgressLease = { id: string; generation: bigint }
+export type ProgressState = "running" | "succeeded" | "failed" | "cancelled"
+export type PublicChessComRequest = { kind: "account"; player: string } | { kind: "game"; game_type: string; game_id: string }
+export type PublicLichessRequest = { kind: "account"; username: string } | { kind: "cloud_eval"; fen: string; multi_pv: number } | { kind: "game"; game_id: string } | { kind: "tablebase"; fen: string } | { kind: "fide"; query: string }
 export type Puzzle = { id: number; fen: string; moves: string; rating: number; rating_deviation: number; popularity: number; nb_plays: number }
-export type PuzzleDatabaseInfo = { title: string; description: string; puzzleCount: number; storageSize: bigint; path: string }
+export type PuzzleDatabaseInfo = { title: string; description: string; puzzleCount: number; storageSize: bigint; path: PathRef }
+export type PuzzleRootDescriptor = { root: PuzzleRootHandle; displayName: string }
+/**
+ * Opaque handle for the active puzzle-database directory. It is deliberately
+ * distinct from the game-database root so puzzle commands cannot be routed to
+ * a general database workspace by mistake.
+ */
+export type PuzzleRootHandle = { id: PathRef; kind: PuzzleRootHandleKind }
+export type PuzzleRootHandleKind = "puzzleRoot"
 export type QueryOptions<SortT> = { skipCount: boolean; page?: number | null; pageSize?: number | null; sort: SortT; direction: SortDirection }
 export type QueryResponse<T> = { data: T; count: number | null }
 export type Score = { value: ScoreValue; 
@@ -633,6 +1220,10 @@ name: string;
  * The default value of this string option.
  */
 default: string | null } }
+export type WorkspaceEntry = { handle: FileWorkspaceHandle; kind: WorkspaceEntryKind; name: string; children: WorkspaceEntry[]; metadata: WorkspaceMetadata | null; gameCount: number | null; lastModified: bigint }
+export type WorkspaceEntryKind = "file" | "directory"
+export type WorkspaceFileType = "repertoire" | "game" | "tournament" | "puzzle" | "other"
+export type WorkspaceMetadata = { type: WorkspaceFileType; tags: string[] }
 
 /** tauri-specta globals **/
 
