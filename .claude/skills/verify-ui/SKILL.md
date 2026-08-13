@@ -1,55 +1,48 @@
 ---
 name: verify-ui
-description: Verify UI changes in a real browser — measure layout, inspect console, and check the main case plus a regression anchor. Invoke after every UI code change; tsc green + vitest green is not enough for layout correctness.
+description: Verify En Croissant UI changes. Automated proof is Playwright e2e; the live product is the Tauri window. Chrome MCP is not a valid verifier for this desktop app.
 ---
 
 # Verify UI (En Croissant)
 
-This file is the source of truth for the shared contract and for the Claude and Grok browser branches. Codex reads this file for the shared contract, then follows `.agents/skills/verify-ui/SKILL.md` for its own browser runtime.
+This file is the source of truth. Codex follows
+`.agents/skills/verify-ui/SKILL.md` after reading this contract.
 
-Invoke after UI-relevant code changes. TypeScript + vitest catch code correctness, not layout rendering. `pnpm test:e2e` is the committed visual matrix; this skill is the live-browser pass.
+TypeScript + vitest catch code correctness, not layout. Chrome MCP cannot
+attach to the Tauri webview. There is no documented remote-devtools path.
 
-## Shared: renderer lifecycle
+## What counts as proof
 
-1. Target `http://localhost:1420`, the Vite URL printed by `pnpm start-vite` (`vite.config.ts` port 1420, `strictPort: true`). On this host that binds `[::1]:1420` only — `http://127.0.0.1:1420` is refused. Do not probe or guess another port.
-2. Reuse a renderer already serving that URL. If nothing is listening, start `pnpm start-vite`, remember that this verification owns that process, and stop only that process at the end. This repo has no `scripts/dev-up.sh` / `dev-down.sh` — do not invent one, and do not run `pnpm dev` for Chrome MCP. `pnpm dev` opens the Tauri webview, which neither Chrome profile can attach to.
-3. Vite-only mode has no Tauri backend. `TopBar.tsx` calls `getCurrentWebviewWindow()` at module scope, so the home shell currently crashes with `Cannot read properties of undefined (reading 'metadata')` and stays blank. Invoke failures, missing splash close, and empty native lists are also expected unless the change is in `src/platform/`. Do not treat those as layout regressions. The committed Playwright suite (`pnpm test:e2e`, preview on `:4173`) is the mocked-native visual matrix; do not invent a second login or Tauri-mock driver for Chrome MCP.
+1. **Automated visual matrix:** `pnpm test:e2e`. Playwright builds the
+   renderer, serves preview on `http://127.0.0.1:4173`, and mocks native
+   commands. That is the committed screenshot suite. Do not invent a
+   second login or Tauri-mock driver.
+2. **Live product window:** `pnpm dev` opens the Tauri webview. The agent
+   cannot attach Chrome MCP (Claude-in-chrome or user-wide
+   chrome-devtools) to that window. Say so and ask Felix to look, or stop
+   at the e2e evidence. Do not report the Tauri window as browser-verified.
+3. **Invalid evidence:** `pnpm start-vite` on `http://localhost:1420`
+   plus any Chrome MCP. Vite-only has no Tauri backend. `TopBar.tsx` calls
+   `getCurrentWebviewWindow()` at module scope and crashes with
+   `Cannot read properties of undefined (reading 'metadata')`. A blank
+   page is not a layout check.
 
-There is no authenticated local page. Do not invent a login driver.
+There is no authenticated local page. Do not invent a login driver. This
+repo has no `scripts/dev-up.sh`.
 
-## Browser branch
+## After a visible UI change
 
-Pick exactly one branch. Never mix the two Chrome profiles. Never fall back from Grok to claude-in-chrome.
-
-### Claude (claude-in-chrome)
-
-4. **`chrome-bereitmachen`** — run it every time before touching a browser tool (one word, exit 0 = ready). Never start Chrome by hand: a Chrome process that hung during startup still holds the profile's singleton lock, and every further start then only prints "Wird in einer aktuellen Browsersitzung geöffnet" and exits without a window — for the agent and for Felix alike. That state is exactly what this tool detects and repairs. Do not judge Chrome by `pgrep -f google-chrome`; it matches the crashpad handler's arguments and reports a running Chrome when none exists.
-5. `mcp__claude-in-chrome__tabs_context_mcp` — get tab state. Read the reply literally: `Browser extension is not connected` = broken (report it as a blocker), `No tab group exists` **or** a tab list = connected.
-6. Navigate to the affected route via `mcp__claude-in-chrome__navigate`.
-7. Screenshot with `mcp__claude-in-chrome__read_page`.
-8. Measure with `mcp__claude-in-chrome__javascript_tool`: `getBoundingClientRect`, computed `grid-template-columns`, overflow state.
-
-### Grok (chrome-devtools)
-
-4. Use the already-configured user-wide `chrome-devtools` MCP. Do **not** run `chrome-bereitmachen` — that tool repairs the visible claude-in-chrome profile. chrome-devtools is headless and has its own profile under `~/.cache/chrome-devtools-mcp/chrome-profile`. If chrome-devtools cannot connect, fix the headless server; do not fall back to claude-in-chrome.
-5. `chrome-devtools__list_pages` — confirm the headless browser is up. Open or reuse a tab with `chrome-devtools__new_page` / `chrome-devtools__select_page`.
-6. Navigate to the affected route via `chrome-devtools__navigate_page` (`type=url`).
-7. Screenshot with `chrome-devtools__take_screenshot`.
-8. Measure with `chrome-devtools__evaluate_script` (`getBoundingClientRect`, computed `grid-template-columns`, overflow state) and `chrome-devtools__take_snapshot` for the live DOM.
-
-### Codex
-
-Codex does not use either branch above. Follow `.agents/skills/verify-ui/SKILL.md`.
-
-## Shared: what to verify
-
-9. Navigate to the page affected by the change. Cheap unauthenticated smoke page is `/`. Other renderer routes: `/settings`, `/files`, `/databases`, `/engines`, `/accounts`.
-10. Measure layout. Do not rely on screenshot vibe-check alone for grid/flex changes. For responsive work, check desktop (1440) and the 320px viewport. The 320px / 200% font-scale layout is a known open defect (clipped headings); a screenshot that records the clip is not evidence that it is fixed.
-11. Main case + regression anchor: the specific change plus at least one mode or route that could silently regress (usually `/` or `/settings`).
-12. Screenshot the verified end state so the result is visually auditable.
-13. Read the console (`chrome-devtools__list_console_messages` on Grok; Claude's console/read-page path on Claude). Filter expected Vite-only Tauri invoke noise and HMR residue; real renderer exceptions are not ignorable.
-14. If this verification started `pnpm start-vite`, stop that process. Leave a pre-existing renderer untouched.
+4. Run `pnpm test:e2e` (or the affected Playwright project). Keep the
+   snapshots. Missing snapshots are not evidence that layout is correct.
+5. For responsive work, the committed matrix already includes 320px and
+   200% font-scale. That layout is a known open defect (clipped headings);
+   a screenshot that records the clip is not evidence that it is fixed.
+6. If the change can only be judged in the real webview (native dialogs,
+   engine process, window chrome), start `pnpm dev` if it is not already
+   running and name the window check as Felix's, not the agent's.
 
 ## Report
 
-Report done only when layout matches the intended end state — not "tsc green, done". Include the route, screenshot path, console result, and what was measured.
+Name the e2e command and result, which snapshots moved, and whether a
+Tauri window check is still needed. Do not claim Chrome MCP verified the
+app.
