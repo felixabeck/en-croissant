@@ -219,6 +219,12 @@ mod server {
                 Ok((port, listener))
             },
             |listener, app, rx| {
+                // `from_tcp` registers the listener with the Tokio reactor, so it panics with
+                // "there is no reactor running" unless a runtime context is active. `setup()` calls
+                // this from the main thread, off the runtime, so enter it here rather than relying
+                // on every caller to do so.
+                let handle = tauri::async_runtime::handle();
+                let _runtime_guard = handle.inner().enter();
                 let server = axum::Server::from_tcp(listener)
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
                 Ok(async move {
