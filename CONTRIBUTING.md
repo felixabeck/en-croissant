@@ -40,6 +40,13 @@ The following steps will get you setup to contribute changes to this repo:
 `pnpm dev`
 
 - Starts the app in development mode to see changes in real time
+- Merges `src-tauri/tauri.dev.conf.json`, which overrides the bundle identifier to
+  `org.encroissant.app.dev`. Every path Tauri derives from the identifier — the database directory,
+  engines, engine images, credentials, logs, web storage — therefore points at
+  `org.encroissant.app.dev` instead of the installed release's data. Development cannot corrupt a
+  real database, and a dev build may run alongside an installed release without two processes
+  writing the same SQLite files. Seed the dev directory by copying what you need out of the release
+  directory.
 
 `pnpm test`
 

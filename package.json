@@ -7,7 +7,7 @@
     "start-vite": "vite",
     "build-vite": "tsgo --noEmit && vite build",
     "build": "tauri build --no-bundle",
-    "dev": "tauri dev",
+    "dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "tauri": "tauri",
     "bindings:generate": "cargo run --manifest-path src-tauri/Cargo.toml --bin en-croissant -- --export-bindings-only",
     "bindings:check": "node scripts/check-bindings.mjs",
