@@ -85,7 +85,7 @@ src-tauri/Cargo.lock
 
 Triage every ≥80-confidence finding as `Fix` or `Skip(reason)`, repair every genuine long-term gain, inspect each repair diff, and rerun every gate invalidated by the repair. Security and filesystem refusal paths must be exercised, not merely read.
 
-En-Croissant runtime compatibility addition: if Codex's agent API does not expose the shared policy's literal Sonnet/Opus model names, use independent typed reviewer agents with the smallest self-contained context and disclose that the review used the same model family. Do not silently run the lenses inline while fan-out exists. AntiGravity reviews follow Felix's configured quota order: Gemini first, then Claude Opus at its second-highest reasoning level; never Sonnet or GPT there.
+En-Croissant runtime compatibility addition: the lens executor, its model rungs and the fallback switch are governed by `~/.claude/references/review-lens-contract.md` — Codex by default (`gpt-5.6-sol`/`medium` on sensitive paths, `gpt-5.6-luna`/`xhigh` otherwise), Claude `Agent` fan-out with pinned `model:` only on the named fallback triggers. A Codex-orchestrated run uses its own read-only subagents on the same rung instead of a nested `codex exec`. If a runtime exposes none of those model names, use independent typed reviewer agents with the smallest self-contained context and disclose that the review used the same model family as the author. Do not silently run the lenses inline while fan-out exists. AntiGravity reviews follow Felix's configured quota order: Gemini first, then Claude Opus at its second-highest reasoning level; never Sonnet or GPT there.
 
 ## 4. Commit, push, and verify
 
