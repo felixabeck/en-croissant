@@ -1,8 +1,8 @@
+import { tauri } from "@/platform/tauri";
 import { rem, Slider } from "@mantine/core";
 import { IconGripVertical } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import useSWRImmutable from "swr/immutable";
-import { commands } from "@/bindings";
 import { formatBytes } from "@/utils/format";
 
 export default function HashSlider(props: {
@@ -17,7 +17,7 @@ export default function HashSlider(props: {
   }, [props.value]);
 
   const { data: memorySize } = useSWRImmutable("memory", async () => {
-    return (await commands.memorySize()) / 2;
+    return (await tauri.memorySize()) / 2;
   });
 
   return (

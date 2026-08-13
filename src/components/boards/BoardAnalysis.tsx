@@ -1,3 +1,4 @@
+import { tauri } from "@/platform/tauri";
 import { Paper, Portal, Stack, Tabs } from "@mantine/core";
 import { useHotkeys, useToggle } from "@mantine/hooks";
 import {
@@ -7,8 +8,6 @@ import {
   IconTargetArrow,
   IconZoomCheck,
 } from "@tabler/icons-react";
-import { useLoaderData } from "@tanstack/react-router";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
 import type { Piece } from "chessops";
 import { useAtom, useAtomValue } from "jotai";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
@@ -23,6 +22,7 @@ import {
   currentTabAtom,
   currentTabSelectedAtom,
   enableAllAtom,
+  practiceMoveControllerAtom,
   practiceStateAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
@@ -51,7 +51,6 @@ function BoardAnalysis() {
   const tabFile = getTabFile(currentTab);
   const hasPersistentOrigin = currentTab?.gameOrigin.kind !== "none";
   const autoSave = useAtomValue(autoSaveAtom);
-  const { documentDir } = useLoaderData({ from: "/" });
   const boardRef = useRef(null);
 
   const store = useContext(TreeStateContext)!;
@@ -64,21 +63,19 @@ function BoardAnalysis() {
 
   const saveFile = useCallback(async () => {
     saveToFile({
-      dir: documentDir,
       setCurrentTab,
       tab: currentTab,
       store,
     });
-  }, [setCurrentTab, currentTab, documentDir, store]);
+  }, [setCurrentTab, currentTab, store]);
   const userSaveFile = useCallback(async () => {
     saveToFile({
-      dir: documentDir,
       setCurrentTab,
       tab: currentTab,
       store,
       isUserSave: true,
     });
-  }, [setCurrentTab, currentTab, documentDir, store]);
+  }, [setCurrentTab, currentTab, store]);
   useEffect(() => {
     if (hasPersistentOrigin && autoSave && dirty) {
       saveFile();
@@ -104,9 +101,7 @@ function BoardAnalysis() {
       };
     });
     reset();
-    writeTextFile(tabFile.path, `\n\n${defaultPGN()}\n\n`, {
-      append: true,
-    });
+    void tauri.writeGame(tabFile.handle, tabFile.numGames, defaultPGN());
   }, [setCurrentTab, reset, tabFile]);
 
   const [, enable] = useAtom(enableAllAtom);
@@ -121,6 +116,7 @@ function BoardAnalysis() {
   const isRepertoire = tabFile?.metadata.type === "repertoire";
   const practicing = currentTabSelected === "practice" && practiceTabSelected === "train";
   const practiceState = useAtomValue(practiceStateAtom);
+  const practiceMoveController = useAtomValue(practiceMoveControllerAtom);
   const isPracticeRating = practicing && practiceState.phase === "correct";
 
   const setPracticePath = useStore(store, (s) => s.setPracticePath);
@@ -144,7 +140,7 @@ function BoardAnalysis() {
     [
       keyMap.PRACTICE_TAB.keys,
       () => {
-        isRepertoire && setCurrentTabSelected("practice");
+        if (isRepertoire) setCurrentTabSelected("practice");
       },
     ],
     [keyMap.ANALYSIS_TAB.keys, () => setCurrentTabSelected("analysis")],
@@ -174,7 +170,7 @@ function BoardAnalysis() {
       <EvalListener />
       <Portal target="#left" style={{ height: "100%" }}>
         <Board
-          practicing={practicing}
+          practiceMove={practicing ? (practiceMoveController ?? undefined) : undefined}
           editingMode={editingMode}
           boardRef={boardRef}
           selectedPiece={selectedPiece}

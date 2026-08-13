@@ -1,5 +1,6 @@
 import { Group, Stack, Text } from "@mantine/core";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Area,
   AreaChart,
@@ -49,6 +50,7 @@ function RatingsPanel({
   info: PlayerGameInfo;
   isDatabase?: boolean;
 }) {
+  const { t } = useTranslation();
   const [dateRange, setDateRange] = useState<string | null>(DateRange.AllTime);
   const [timeControl, setTimeControl] = useState<string | null>(null);
   const [website, setWebsite] = useState<string | null>(null);
@@ -126,7 +128,7 @@ function RatingsPanel({
       },
       ratingData,
     ];
-  }, [info.site_stats_data, website, account, timeControl, timeRange]);
+  }, [info.site_stats_data, website, account, timeControl, timeRange, dates]);
 
   const playerEloDomain =
     ratingData.length === 0
@@ -161,7 +163,7 @@ function RatingsPanel({
       <DateRangeTabs timeRange={dateRange} onTimeRangeChange={setDateRange} />
 
       <Text pt="md" fw="bold" fz="lg" ta="center">
-        {summary.games} Games
+        {summary.games} {t("Common.Games")}
       </Text>
       {dates.length > 1 && (
         <>

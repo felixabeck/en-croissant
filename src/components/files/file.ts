@@ -1,93 +1,55 @@
-import { BaseDirectory, basename, join } from "@tauri-apps/api/path";
-import { type DirEntry, exists, readDir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { z } from "zod";
-import { commands } from "@/bindings";
-import { unwrap } from "@/utils/unwrap";
+import type { FileWorkspaceHandle, WorkspaceEntry } from "@/bindings";
+import { fileWorkspaceHandleSchema } from "@/utils/pathCapabilities";
 
 const fileTypeSchema = z.enum(["repertoire", "game", "tournament", "puzzle", "other"]);
-
 export type FileType = z.infer<typeof fileTypeSchema>;
 
-const fileInfoMetadataSchema = z.object({
+export const fileInfoMetadataSchema = z.object({
     type: fileTypeSchema,
     tags: z.array(z.string()),
 });
-
 export type FileInfoMetadata = z.infer<typeof fileInfoMetadataSchema>;
 
 export const fileMetadataSchema = z.object({
     type: z.literal("file"),
+    handle: fileWorkspaceHandleSchema,
     name: z.string(),
-    path: z.string(),
     numGames: z.number(),
     metadata: fileInfoMetadataSchema,
     lastModified: z.number(),
 });
-
 export type FileMetadata = z.infer<typeof fileMetadataSchema>;
-
-export type FileData = {
-    metadata: FileInfoMetadata;
-    games: string[];
-};
-
-async function readFileMetadata(path: string): Promise<FileMetadata | null> {
-    if (!path.endsWith(".pgn")) {
-        return null;
-    }
-    const metadataPath = path.replace(".pgn", ".info");
-    let metadata: FileInfoMetadata;
-    if (await exists(metadataPath)) {
-        metadata = JSON.parse(await readTextFile(metadataPath));
-    } else {
-        metadata = {
-            type: "other",
-            tags: [],
-        };
-        await writeTextFile(metadataPath, JSON.stringify(metadata));
-    }
-    const fileMetadata = unwrap(await commands.getFileMetadata(path));
-    const numGames = unwrap(await commands.countPgnGames(path));
-    return {
-        type: "file",
-        path,
-        name: (await basename(path)).replace(".pgn", ""),
-        numGames,
-        metadata,
-        lastModified: fileMetadata.last_modified,
-    };
-}
 
 export type Directory = {
     type: "directory";
+    handle: FileWorkspaceHandle;
     children: (FileMetadata | Directory)[];
-    path: string;
     name: string;
+    lastModified: number;
 };
 
-export async function processEntriesRecursively(parent: string, entries: DirEntry[]) {
-    const processedEntries = await Promise.all(
-        entries.map(async (entry) => {
-            if (entry.isFile) {
-                return await readFileMetadata(await join(parent, entry.name));
-            }
-            if (entry.isDirectory) {
-                const dir = await join(parent, entry.name);
-                const newEntries = await processEntriesRecursively(
-                    dir,
-                    await readDir(dir, { baseDir: BaseDirectory.AppLocalData }),
-                );
-                const directory: Directory = {
-                    type: "directory",
-                    name: entry.name,
-                    path: dir,
-                    children: newEntries,
-                };
-                return directory;
-            }
-            return null;
-        }),
-    );
+export type Entry = FileMetadata | Directory;
 
-    return processedEntries.filter((entry): entry is FileMetadata | Directory => entry !== null);
+export function workspaceEntryToEntry(entry: WorkspaceEntry): Entry {
+    if (entry.kind === "directory") {
+        return {
+            type: "directory",
+            handle: entry.handle,
+            name: entry.name,
+            children: entry.children.map(workspaceEntryToEntry),
+            lastModified: Number(entry.lastModified),
+        };
+    }
+    if (!entry.metadata || entry.gameCount === null) {
+        throw new Error("Native workspace returned an incomplete PGN entry");
+    }
+    return {
+        type: "file",
+        handle: entry.handle,
+        name: entry.name,
+        numGames: entry.gameCount,
+        metadata: { type: entry.metadata.type, tags: entry.metadata.tags },
+        lastModified: Number(entry.lastModified),
+    };
 }

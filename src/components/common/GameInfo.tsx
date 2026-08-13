@@ -49,20 +49,22 @@ function GameInfo({
       <Group w="100%" wrap="nowrap">
         {!simplified && (
           <Text
+            component="button"
+            type="button"
             c="dimmed"
             tt="uppercase"
             fw="bold"
             className={classes.colorHover}
             onClick={() => setWhiteOpened(true)}
           >
-            White
+            {t("Fen.White")}
           </Text>
         )}
         <Group wrap="nowrap" justify={simplified ? "start" : "center"} w="100%">
           <InlineInput
             disabled={disabled}
             value={event}
-            placeholder={simplified ? "Enter Opening Title" : "Unknown Event"}
+            placeholder={simplified ? t("GameInfo.EnterOpeningTitle") : t("GameInfo.UnknownEvent")}
             className={classes.input}
             onChange={(e) => {
               setHeaders({
@@ -79,7 +81,7 @@ function GameInfo({
               {"-"}
               <Group gap={0} wrap="nowrap">
                 <Text c="dimmed" size="sm" mr="xs">
-                  Round
+                  {t("GameInfo.Round")}
                 </Text>
                 <input
                   className={classes.roundInput}
@@ -99,6 +101,8 @@ function GameInfo({
         </Group>
         {!simplified && (
           <Text
+            component="button"
+            type="button"
             c="dimmed"
             tt="uppercase"
             fw="bold"
@@ -106,7 +110,7 @@ function GameInfo({
             onClick={() => setBlackOpened(true)}
             className={classes.colorHover}
           >
-            Black
+            {t("Fen.Black")}
           </Text>
         )}
       </Group>
@@ -170,7 +174,7 @@ function GameInfo({
             ) : (
               <InlineInput
                 className={classes.input}
-                placeholder="Unknown Site"
+                placeholder={t("GameInfo.UnknownSite")}
                 value={site}
                 onFocus={(e) => e.target.select()}
                 onChange={(e) =>
@@ -213,14 +217,14 @@ function GameInfo({
           />
           <input
             className={classes.textInput}
-            placeholder="Unknown ELO"
-            value={headers.white_elo === 0 ? "Unrated" : headers.white_elo || ""}
+            placeholder={t("GameInfo.UnknownElo")}
+            value={headers.white_elo === 0 ? t("GameInfo.Unrated") : headers.white_elo || ""}
             onChange={(n) => {
               const val = n.currentTarget.value;
               setHeaders({
                 ...headers,
                 white_elo:
-                  val.toLowerCase() === "unrated" || val === "-"
+                  val.toLowerCase() === t("GameInfo.Unrated").toLowerCase() || val === "-"
                     ? 0
                     : val === "" || Number.isNaN(Number.parseInt(val))
                       ? undefined
@@ -229,7 +233,11 @@ function GameInfo({
             }}
             disabled={disabled}
           />
+          <label className={classes.visuallyHidden} htmlFor="game-result">
+            {t("GameInfo.Result")}
+          </label>
           <Select
+            id="game-result"
             readOnly={disabled}
             allowDeselect={false}
             data={["1-0", "0-1", "1/2-1/2", "*"]}
@@ -249,14 +257,14 @@ function GameInfo({
           />
           <input
             className={cx(classes.textInput, classes.right)}
-            placeholder="Unknown ELO"
-            value={headers.black_elo === 0 ? "Unrated" : headers.black_elo || ""}
+            placeholder={t("GameInfo.UnknownElo")}
+            value={headers.black_elo === 0 ? t("GameInfo.Unrated") : headers.black_elo || ""}
             onChange={(n) => {
               const val = n.currentTarget.value;
               setHeaders({
                 ...headers,
                 black_elo:
-                  val.toLowerCase() === "unrated" || val === "-"
+                  val.toLowerCase() === t("GameInfo.Unrated").toLowerCase() || val === "-"
                     ? 0
                     : val === "" || Number.isNaN(Number.parseInt(val))
                       ? undefined

@@ -1,8 +1,17 @@
-import { fetch } from "@tauri-apps/plugin-http";
-import type { Platform } from "@tauri-apps/plugin-os";
+import { tauri } from "@/platform/tauri";
+import { remoteHttp } from "@/platform/http";
+import type { Platform } from "@/platform/native";
 import useSWR from "swr";
 import { z } from "zod";
-import { type BestMoves, commands, type EngineOptions, type GoMode } from "@/bindings";
+import {
+    type BestMoves,
+    type EngineHandle,
+    type EngineImageHandle,
+    type EngineResourceHandle,
+    type EngineOption,
+    type EngineOptions,
+    type GoMode,
+} from "@/bindings";
 import { unwrap } from "./unwrap";
 
 export const requiredEngineSettings = ["MultiPV", "Threads", "Hash"];
@@ -25,43 +34,109 @@ const goModeSchema: z.ZodSchema<GoMode> = z.union([
     }),
 ]);
 
-const engineSettingsSchema = z.array(
-    z.object({
-        name: z.string(),
-        value: z.string().or(z.number()).or(z.boolean()).nullable(),
-    }),
+const engineResourceHandleSchema: z.ZodType<EngineResourceHandle> = z.object({
+    id: z.object({ id: z.string().min(1) }),
+    kind: z.enum(["file", "directory"]),
+    displayName: z.string().min(1),
+});
+const engineSettingsSchema: z.ZodType<EngineOption[]> = z.array(
+    z.discriminatedUnion("type", [
+        z.object({ type: z.literal("string"), name: z.string(), value: z.string() }),
+        z.object({
+            type: z.literal("resource"),
+            name: z.string(),
+            resources: z.array(engineResourceHandleSchema).min(1),
+        }),
+    ]),
 );
 
 export type EngineSettings = z.infer<typeof engineSettingsSchema>;
+
+export function isEngineResourceOptionName(name: string): boolean {
+    const normalized = name.toLocaleLowerCase();
+    return normalized.includes("path") || normalized.includes("file");
+}
+
+export function engineOptionValue(option: EngineOption): string | undefined {
+    return option.type === "string"
+        ? option.value
+        : option.resources.map((resource) => resource.displayName).join(":");
+}
+
+const persistedEngineSettingsSchema = engineSettingsSchema.transform((settings) =>
+    settings.filter(
+        (option) => option.type === "resource" || !isEngineResourceOptionName(option.name),
+    ),
+);
+
+const engineImageHandleSchema: z.ZodType<EngineImageHandle> = z.object({
+    id: z.object({ id: z.string().min(1) }),
+    kind: z.literal("engineImage"),
+});
 
 const localEngineSchema = z.object({
     type: z.literal("local"),
     id: z.string().default(() => crypto.randomUUID()),
     name: z.string(),
     version: z.string(),
-    path: z.string(),
-    image: z.string().nullish(),
+    handle: z.custom<EngineHandle>(),
+    filename: z.string().min(1),
+    imageHandle: engineImageHandleSchema.nullish(),
     elo: z.number().nullish(),
     downloadSize: z.number().nullish(),
     downloadLink: z.string().nullish(),
     loaded: z.boolean().nullish(),
     go: goModeSchema.nullish(),
     enabled: z.boolean().nullish(),
-    settings: engineSettingsSchema.nullish(),
+    settings: persistedEngineSettingsSchema.nullish(),
 });
 
 export type LocalEngine = z.output<typeof localEngineSchema>;
+
+/** Server manifest entry used only during installation; it is never persisted as an engine. */
+export type DefaultEngine = Omit<LocalEngine, "handle" | "filename"> & {
+    path: string;
+    sha256: string;
+    signature: string;
+    imageUrl?: string;
+};
+
+const defaultEngineManifestSchema = z
+    .object({
+        type: z.literal("local"),
+        name: z.string().min(1),
+        version: z.string(),
+        path: z.string().min(1),
+        downloadLink: z.string().url(),
+        sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
+        signature: z.string().min(1),
+        imageUrl: z.string().url().optional(),
+        os: z.enum([
+            "linux",
+            "macos",
+            "ios",
+            "freebsd",
+            "dragonfly",
+            "netbsd",
+            "openbsd",
+            "solaris",
+            "android",
+            "windows",
+        ]),
+        bmi2: z.boolean(),
+    })
+    .passthrough();
 
 const remoteEngineSchema = z.object({
     type: z.enum(["chessdb", "lichess"]),
     id: z.string().default(() => crypto.randomUUID()),
     name: z.string(),
     url: z.string(),
-    image: z.string().nullish(),
+    imageHandle: engineImageHandleSchema.nullish(),
     loaded: z.boolean().nullish(),
     enabled: z.boolean().nullish(),
     go: goModeSchema.nullish(),
-    settings: engineSettingsSchema.nullish(),
+    settings: persistedEngineSettingsSchema.nullish(),
 });
 
 export type RemoteEngine = z.output<typeof remoteEngineSchema>;
@@ -70,13 +145,13 @@ export const engineSchema = z.union([localEngineSchema, remoteEngineSchema]);
 export type Engine = z.output<typeof engineSchema>;
 
 export function stopEngine(engine: LocalEngine, tab: string): Promise<void> {
-    return commands.stopEngine(engine.id, tab).then((r) => {
+    return tauri.stopEngine(engine.id, tab).then((r) => {
         unwrap(r);
     });
 }
 
 export function killEngine(engine: LocalEngine, tab: string): Promise<void> {
-    return commands.killEngine(engine.id, tab).then((r) => {
+    return tauri.killEngine(engine.id, tab).then((r) => {
         unwrap(r);
     });
 }
@@ -87,26 +162,26 @@ export function getBestMoves(
     goMode: GoMode,
     options: EngineOptions,
 ): Promise<[number, BestMoves[]] | null> {
-    return commands
-        .getBestMoves(engine.id, engine.path, tab, goMode, options)
+    return tauri
+        .getBestMoves(engine.id, engine.handle, tab, goMode, options)
         .then((r) => unwrap(r));
 }
 
 export function useDefaultEngines(os: Platform | undefined, opened: boolean) {
     const { data, error, isLoading } = useSWR(opened ? os : null, async (os: Platform) => {
-        const bmi2: boolean = await commands.isBmi2Compatible();
-        const data = await fetch(`https://www.encroissant.org/engines?os=${os}&bmi2=${bmi2}`, {
-            method: "GET",
+        const bmi2: boolean = await tauri.isBmi2Compatible();
+        const url = new URL("/engines", "https://www.encroissant.org");
+        url.searchParams.set("os", os);
+        url.searchParams.set("bmi2", String(bmi2));
+        const data = await remoteHttp.get(url.toString(), {
+            schema: z.array(defaultEngineManifestSchema),
         });
-        if (!data.ok) {
-            throw new Error("Failed to fetch engines");
-        }
-        return (await data.json()).filter(
-            (e: { os: Platform; bmi2: boolean }) => e.os === os && e.bmi2 === bmi2,
-        );
+        return data.filter(
+            (engine) => engine.os === os && engine.bmi2 === bmi2,
+        ) as unknown as DefaultEngine[];
     });
     return {
-        defaultEngines: data as LocalEngine[],
+        defaultEngines: data,
         error,
         isLoading,
     };

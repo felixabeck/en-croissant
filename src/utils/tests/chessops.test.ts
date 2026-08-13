@@ -1,7 +1,7 @@
 import { parseSquare } from "chessops";
 import { parseFen } from "chessops/fen";
 import { expect, test } from "vitest";
-import { getCastlingSquare } from "../chessops";
+import { getCastlingSquare, normalizeEditedFen } from "../chessops";
 
 test("should get the correct castling square in the starting position", () => {
     const setup = parseFen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
@@ -41,4 +41,16 @@ test("should get the correct castling square in FRC 608", () => {
     expect(getCastlingSquare(setup, "w", "q")).toBe(parseSquare("a1"));
     expect(getCastlingSquare(setup, "b", "k")).toBe(parseSquare("e8"));
     expect(getCastlingSquare(setup, "b", "q")).toBe(parseSquare("a8"));
+});
+
+test("normalizes transient editor state while preserving valid Chess960 castling rooks", () => {
+    expect(normalizeEditedFen("rqnkrnbb/pppppppp/8/8/8/8/PPPPPPPP/RQNKRNBB w EAea e3 12 3")).toBe(
+        "rqnkrnbb/pppppppp/8/8/8/8/PPPPPPPP/RQNKRNBB w KQkq - 12 3",
+    );
+});
+
+test("editor normalization removes rights when the referenced rook was removed", () => {
+    expect(normalizeEditedFen("4k3/8/8/8/8/8/8/4K3 w KQkq e3 0 1")).toBe(
+        "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+    );
 });

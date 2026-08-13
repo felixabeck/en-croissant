@@ -17,8 +17,72 @@
 .item {
   padding-top: var(--mantine-spacing-sm);
   margin-top: var(--mantine-spacing-sm);
+  align-items: center;
+}
+
+.item[data-highlighted] {
+  background-color: var(--mantine-color-yellow-light);
+}
+
+.settingCopy {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.settingControl {
+  flex: 0 1 auto;
+  min-width: min(100%, 12rem);
 }
 
 .title {
   line-height: 1;
+}
+
+.searchRow {
+  flex: 0 0 auto;
+}
+
+.settingsTabs {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settingsContent {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settingsScroll {
+  min-height: 0;
+  height: 100%;
+}
+
+@media (max-width: 50rem) {
+  .settingsTabs {
+    flex-direction: column;
+    overflow: auto;
+  }
+
+  .settingsTabs [role="tablist"] {
+    display: flex;
+    flex-direction: row;
+    height: auto;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .settingsTabs [role="tab"] {
+    flex: 0 0 auto;
+  }
+
+  .item {
+    align-items: stretch;
+    flex-direction: column;
+    gap: var(--mantine-spacing-sm);
+  }
+
+  .settingControl {
+    width: 100%;
+    min-width: 0;
+  }
 }

@@ -1,4 +1,4 @@
-import { getVersion } from "@tauri-apps/api/app";
+import { getVersion } from "@/platform/native";
 
 const APP_NAME = "EnCroissant";
 const APP_REPO = "https://github.com/franciscoBSalgueiro/en-croissant";

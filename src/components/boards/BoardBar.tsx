@@ -1,4 +1,4 @@
-import { Group, Text } from "@mantine/core";
+import { Group, Text, UnstyledButton } from "@mantine/core";
 import type { ReactNode } from "react";
 
 interface BoardBarProps {
@@ -10,12 +10,18 @@ interface BoardBarProps {
 }
 
 export function BoardBar({ name, rating, onNameClick, height, children }: BoardBarProps) {
+  const hasPlayerName = name.trim().length > 0 && name !== "?";
+
   return (
     <Group ml="2.5rem" mr="xs" h={height} justify="space-between" wrap="nowrap" align="flex-end">
       <Group gap={6} align="baseline">
-        <Text fw="bold" size="md" style={{ cursor: "pointer" }} onClick={onNameClick}>
-          {name !== "?" && name}
-        </Text>
+        {hasPlayerName && (
+          <UnstyledButton type="button" onClick={onNameClick}>
+            <Text fw="bold" size="md">
+              {name}
+            </Text>
+          </UnstyledButton>
+        )}
         {rating && (
           <Text size="xs" c="dimmed">
             ({rating})

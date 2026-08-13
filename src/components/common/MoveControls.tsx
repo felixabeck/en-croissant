@@ -1,4 +1,4 @@
-import { ActionIcon, Group } from "@mantine/core";
+import { Group } from "@mantine/core";
 import {
   IconChevronLeft,
   IconChevronRight,
@@ -8,12 +8,15 @@ import {
 import { useAtomValue } from "jotai";
 import { memo, useContext } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { keyMapAtom } from "@/state/keybinds";
 import { TreeStateContext } from "./TreeStateContext";
+import IconAction from "./IconAction";
 
 function MoveControls({ readOnly }: { readOnly?: boolean }) {
   const store = useContext(TreeStateContext)!;
+  const { t } = useTranslation();
   const next = useStore(store, (s) => s.goToNext);
   const previous = useStore(store, (s) => s.goToPrevious);
   const start = useStore(store, (s) => s.goToStart);
@@ -41,18 +44,38 @@ function MoveControls({ readOnly }: { readOnly?: boolean }) {
 
   return (
     <Group grow gap="xs">
-      <ActionIcon variant="default" size="lg" onClick={start}>
+      <IconAction
+        label={t("Common.MoveControls.GoToStart", { defaultValue: "Go to start" })}
+        variant="default"
+        size="lg"
+        onClick={start}
+      >
         <IconChevronsLeft />
-      </ActionIcon>
-      <ActionIcon variant="default" size="lg" onClick={previous}>
+      </IconAction>
+      <IconAction
+        label={t("Common.MoveControls.Previous", { defaultValue: "Previous move" })}
+        variant="default"
+        size="lg"
+        onClick={previous}
+      >
         <IconChevronLeft />
-      </ActionIcon>
-      <ActionIcon variant="default" size="lg" onClick={next}>
+      </IconAction>
+      <IconAction
+        label={t("Common.MoveControls.Next", { defaultValue: "Next move" })}
+        variant="default"
+        size="lg"
+        onClick={next}
+      >
         <IconChevronRight />
-      </ActionIcon>
-      <ActionIcon variant="default" size="lg" onClick={end}>
+      </IconAction>
+      <IconAction
+        label={t("Common.MoveControls.GoToEnd", { defaultValue: "Go to end" })}
+        variant="default"
+        size="lg"
+        onClick={end}
+      >
         <IconChevronsRight />
-      </ActionIcon>
+      </IconAction>
     </Group>
   );
 }

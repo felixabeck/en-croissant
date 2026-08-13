@@ -3,7 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useAtom, useSetAtom } from "jotai";
 import { DataTable } from "mantine-datatable";
 import { memo, useEffect, useState } from "react";
-import type { NormalizedGame } from "@/bindings";
+import type { DatabaseHandle, NormalizedGame } from "@/bindings";
 import { activeTabAtom, tabsAtom } from "@/state/atoms";
 import { createTab } from "@/utils/tabs";
 
@@ -14,7 +14,7 @@ function GamesTable({
 }: {
   games: NormalizedGame[];
   loading: boolean;
-  databasePath?: string | null;
+  databasePath?: DatabaseHandle | null;
 }) {
   const [, setTabs] = useAtom(tabsAtom);
   const setActiveTab = useSetAtom(activeTabAtom);

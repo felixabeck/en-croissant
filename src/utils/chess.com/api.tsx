@@ -1,19 +1,16 @@
+import { tauri } from "@/platform/tauri";
 import { notifications } from "@mantine/notifications";
 import { IconX } from "@tabler/icons-react";
-import { resolve } from "@tauri-apps/api/path";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
-import { fetch } from "@tauri-apps/plugin-http";
-import { error, info } from "@tauri-apps/plugin-log";
+import { error } from "@/platform/native";
 import { Chess } from "chessops";
 import { ChildNode, defaultGame, makePgn, type PgnNodeData } from "chessops/pgn";
 import { makeSan } from "chessops/san";
 import { z } from "zod";
-import { events } from "@/bindings";
-import { apiHeaders } from "@/utils/http";
-import { getDatabasesDir } from "../directories";
+import { type PathRef } from "@/bindings";
+import i18n from "@/i18n";
 import { decodeTCN } from "./tcn";
 
-const baseURL = "https://api.chess.com";
+const t = i18n.t.bind(i18n);
 
 const ChessComPerf = z.object({
   last: z.object({
@@ -36,55 +33,15 @@ const ChessComStatsSchema = z.object({
 });
 export type ChessComStats = z.infer<typeof ChessComStatsSchema>;
 
-type Archive = {
-  archives: string[];
-};
-
-const ChessComPlayer = z.object({
-  rating: z.number(),
-  result: z.string(),
-  username: z.string(),
-});
-
-const ChessComGames = z.object({
-  games: z.array(
-    z.object({
-      url: z.string(),
-      pgn: z.string().nullish(),
-      time_control: z.string(),
-      end_time: z.number(),
-      rated: z.boolean(),
-      initial_setup: z.string(),
-      fen: z.string(),
-      rules: z.string(),
-      white: ChessComPlayer,
-      black: ChessComPlayer,
-    }),
-  ),
-});
-
 export async function getChessComAccount(player: string): Promise<ChessComStats | null> {
-  const url = `${baseURL}/pub/player/${player.toLowerCase()}/stats`;
-  const response = await fetch(url, { headers: apiHeaders(), method: "GET" });
-  if (!response.ok) {
-    error(`Failed to fetch Chess.com account: ${response.status} ${response.url}`);
-    notifications.show({
-      title: "Failed to fetch Chess.com account",
-      message: `Could not find account "${player}" on chess.com`,
-      color: "red",
-      icon: <IconX />,
-    });
-    return null;
-  }
-  const data = await response.json();
+  const response = await tauri.getPublicChessComJson({ kind: "account", player });
+  const data = JSON.parse(response);
   const stats = ChessComStatsSchema.safeParse(data);
   if (!stats.success) {
-    error(
-      `Invalid response for Chess.com account: ${response.status} ${response.url}\n${stats.error}`,
-    );
+    error(`Invalid response for Chess.com account: ${stats.error}`);
     notifications.show({
-      title: "Failed to fetch Chess.com account",
-      message: `Invalid response for "${player}" on chess.com`,
+      title: t("ChessCom.FetchAccountFailed"),
+      message: t("ChessCom.InvalidResponse", { value: player }),
       color: "red",
       icon: <IconX />,
     });
@@ -93,60 +50,22 @@ export async function getChessComAccount(player: string): Promise<ChessComStats 
   return stats.data;
 }
 
-async function getGameArchives(player: string) {
-  const url = `${baseURL}/pub/player/${player}/games/archives`;
-  const response = await fetch(url, { headers: apiHeaders(), method: "GET" });
-  return (await response.json()) as Archive;
-}
-
-export async function downloadChessCom(player: string, timestamp: number | null) {
-  const timestampDate = new Date(timestamp ?? 0);
-  const approximateDate = new Date(timestampDate.getFullYear(), timestampDate.getMonth(), 1);
-  const archives = await getGameArchives(player);
-  const file = await resolve(await getDatabasesDir(), `${player}_chesscom.pgn`);
-  info(`Found ${archives.archives.length} archives for ${player}`);
-  writeTextFile(file, "", {
-    append: false,
-  });
-  const filteredArchives = archives.archives.filter((archive) => {
-    const [year, month] = archive.split("/").slice(-2);
-    const archiveDate = new Date(Number.parseInt(year), Number.parseInt(month) - 1);
-    return archiveDate >= approximateDate;
-  });
-
-  for (const archive of filteredArchives) {
-    info(`Fetching games for ${player} from ${archive}`);
-    const response = await fetch(archive, {
-      headers: apiHeaders(),
-      method: "GET",
-    });
-    const games = ChessComGames.safeParse(await response.json());
-
-    if (!games.success) {
-      error(`Failed to fetch Chess.com games: ${response.status} ${response.url}`);
-      notifications.show({
-        title: "Failed to fetch Chess.com games",
-        message: `Could not find games for "${player}" on chess.com for ${archive}`,
-        color: "red",
-        icon: <IconX />,
-      });
-      return;
-    }
-
-    writeTextFile(file, games.data.games.map((g) => g.pgn).join("\n"), {
-      append: true,
-    });
-    events.progressEvent.emit({
-      finished: false,
-      id: `chesscom_${player}`,
-      progress: (filteredArchives.indexOf(archive) / filteredArchives.length) * 100,
-    });
-  }
-  events.progressEvent.emit({
-    finished: false,
-    id: `chesscom_${player}`,
-    progress: 100,
-  });
+export async function downloadChessCom(
+  destination: PathRef,
+  player: string,
+  timestamp: number | null,
+) {
+  const result = await tauri.downloadChessComGames(
+    destination,
+    `${player}_chesscom.pgn`,
+    player,
+    timestamp === null ? null : BigInt(timestamp),
+    crypto.randomUUID(),
+  );
+  // `durabilityUncertain` means the native rename committed but its parent-directory fsync
+  // acknowledgement was interrupted.  The capability is already durable/reconciled; retrying
+  // would overwrite it, so consumers proceed with this exact committed artifact.
+  return result.handle;
 }
 
 const chessComGameSchema = z.object({
@@ -165,8 +84,8 @@ export async function getChesscomGame(gameURL: string) {
     if (gameURL.match(eventRegex)) {
       error(`Event URLs are not supported: ${gameURL}`);
       notifications.show({
-        title: "Event URLs not supported",
-        message: "Event URLs cannot be imported directly. Please import the PGN instead.",
+        title: t("ChessCom.EventUrlUnsupported"),
+        message: t("ChessCom.EventUrlUnsupportedMessage"),
         color: "red",
         icon: <IconX />,
       });
@@ -174,9 +93,8 @@ export async function getChesscomGame(gameURL: string) {
     }
     error(`Unsupported Chess.com URL format: ${gameURL}`);
     notifications.show({
-      title: "Unsupported URL format",
-      message:
-        "The URL format is not recognized. Please use a direct game link like https://www.chess.com/game/live/12345",
+      title: t("ChessCom.UnsupportedUrlFormat"),
+      message: t("ChessCom.UnsupportedUrlFormatMessage"),
       color: "red",
       icon: <IconX />,
     });
@@ -186,31 +104,19 @@ export async function getChesscomGame(gameURL: string) {
   const gameType = match[1] || "live";
   const gameId = match[2];
 
-  const response = await fetch(`https://www.chess.com/callback/${gameType}/game/${gameId}`, {
-    headers: apiHeaders(),
-    method: "GET",
+  const response = await tauri.getPublicChessComJson({
+    kind: "game",
+    game_type: gameType,
+    game_id: gameId,
   });
 
-  if (!response.ok) {
-    error(`Failed to fetch Chess.com game: ${response.status} ${response.url}`);
-    notifications.show({
-      title: "Failed to fetch Chess.com game",
-      message: `Could not find game "${gameURL}" on chess.com`,
-      color: "red",
-      icon: <IconX />,
-    });
-    return null;
-  }
-
-  const apiData = await response.json();
+  const apiData = JSON.parse(response);
   const gameData = chessComGameSchema.safeParse(apiData);
   if (!gameData.success) {
-    error(
-      `Invalid response for Chess.com game: ${response.status} ${response.url}\n${gameData.error}`,
-    );
+    error(`Invalid response for Chess.com game: ${gameData.error}`);
     notifications.show({
-      title: "Failed to fetch Chess.com game",
-      message: `Invalid response for "${gameURL}" on chess.com`,
+      title: t("ChessCom.FetchGameFailed"),
+      message: t("ChessCom.InvalidResponse", { value: gameURL }),
       color: "red",
       icon: <IconX />,
     });
@@ -248,25 +154,25 @@ export function getStats(stats: ChessComStats) {
   if (stats.chess_bullet) {
     statsArray.push({
       value: stats.chess_bullet.last.rating,
-      label: "Bullet",
+      label: t("TimeControl.Bullet"),
     });
   }
   if (stats.chess_blitz) {
     statsArray.push({
       value: stats.chess_blitz.last.rating,
-      label: "Blitz",
+      label: t("TimeControl.Blitz"),
     });
   }
   if (stats.chess_rapid) {
     statsArray.push({
       value: stats.chess_rapid.last.rating,
-      label: "Rapid",
+      label: t("TimeControl.Rapid"),
     });
   }
   if (stats.chess_daily) {
     statsArray.push({
       value: stats.chess_daily.last.rating,
-      label: "Daily",
+      label: t("TimeControl.Correspondence"),
     });
   }
   return statsArray;

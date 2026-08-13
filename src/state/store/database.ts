@@ -130,6 +130,10 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
                 set(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.games.query = query;
+                        // A filter/sort change can make the old row either absent or refer to
+                        // a different page. Selection belongs to the result set, never to a
+                        // bare game ID surviving an unrelated query.
+                        state.games.selectedGame = undefined;
                     }),
                 );
             },
@@ -152,6 +156,7 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
                 set(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.players.query = query;
+                        state.players.selectedPlayer = undefined;
                     }),
                 );
             },
@@ -174,6 +179,7 @@ export const activeDatabaseViewStore = createStore<DatabaseViewStore>()(
                 set(
                     produce((state: Draft<DatabaseViewStore>) => {
                         state.tournaments.query = query;
+                        state.tournaments.selectedTournament = undefined;
                     }),
                 );
             },

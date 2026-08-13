@@ -1,9 +1,10 @@
-import { ActionIcon, Group, Paper, Text, Tooltip, useMantineTheme } from "@mantine/core";
+import { Group, Paper, Text, useMantineTheme } from "@mantine/core";
 import { IconPinnedOff, IconPlayerPause, IconPlayerPlay } from "@tabler/icons-react";
 import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import { useAtom, useAtomValue } from "jotai";
 import { memo, useContext, useDeferredValue, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { GoMode } from "@/bindings";
@@ -12,7 +13,6 @@ import {
   currentDetachedEngineAtom,
   currentThreatAtom,
   engineMovesFamily,
-  engineProgressFamily,
   enginesAtom,
   tabEngineSettingsFamily,
 } from "@/state/atoms";
@@ -20,6 +20,7 @@ import { getVariationLine } from "@/utils/chess";
 import { positionFromFen, swapMove } from "@/utils/chessops";
 import type { EngineSettings } from "@/utils/engines";
 import ScoreBubble from "../panels/analysis/ScoreBubble";
+import IconAction from "./IconAction";
 import { TreeStateContext } from "./TreeStateContext";
 
 function DetachedEval() {
@@ -57,6 +58,7 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
   defaultGo?: GoMode;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const activeTab = useAtomValue(activeTabAtom);
   const threat = useAtomValue(currentThreatAtom);
   const store = useContext(TreeStateContext)!;
@@ -113,18 +115,20 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
     <Paper withBorder px="sm" py={6}>
       <Group gap="xs" wrap="nowrap" justify="space-between">
         <Group gap="xs" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
-          <ActionIcon
+          <IconAction
+            label={t(settings.enabled ? "Engine.PauseAnalysis" : "Engine.StartAnalysis")}
             size="sm"
             variant={settings.enabled ? "filled" : "transparent"}
             color={theme.primaryColor}
             onClick={() => setSettings((s) => ({ ...s, enabled: !s.enabled }))}
+            pressed={settings.enabled}
           >
             {settings.enabled ? (
               <IconPlayerPause size="0.875rem" />
             ) : (
               <IconPlayerPlay size="0.875rem" />
             )}
-          </ActionIcon>
+          </IconAction>
           <Text fw={700} fz="sm" style={{ whiteSpace: "nowrap" }}>
             {engineName}
           </Text>
@@ -147,15 +151,13 @@ const DetachedEvalInner = memo(function DetachedEvalInner({
             </>
           ) : (
             <Text fz="xs" c="dimmed" lh={"1.6rem"}>
-              {isGameOver ? "Game over" : "—"}
+              {isGameOver ? t("Board.Analysis.GameOver") : "—"}
             </Text>
           )}
         </Group>
-        <Tooltip label="Unpin engine">
-          <ActionIcon size="sm" variant="subtle" onClick={onClose}>
-            <IconPinnedOff size="0.875rem" />
-          </ActionIcon>
-        </Tooltip>
+        <IconAction label={t("Engine.Unpin")} size="sm" variant="subtle" onClick={onClose}>
+          <IconPinnedOff size="0.875rem" />
+        </IconAction>
       </Group>
     </Paper>
   );

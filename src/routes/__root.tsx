@@ -1,28 +1,23 @@
 import { AppShell } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { createRootRouteWithContext, Outlet, useNavigate } from "@tanstack/react-router";
-import { TauriEvent } from "@tauri-apps/api/event";
-import { Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/menu";
-import { appLogDir, resolve } from "@tauri-apps/api/path";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ask, message, open } from "@tauri-apps/plugin-dialog";
-import { platform } from "@tauri-apps/plugin-os";
-import { exit, relaunch } from "@tauri-apps/plugin-process";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
-import { check } from "@tauri-apps/plugin-updater";
+import { ask, Menu, MenuItem, PredefinedMenuItem, Submenu } from "@/platform/native";
+import { getCurrentWindow } from "@/platform/native";
+import { platform } from "@/platform/native";
+import { exit } from "@/platform/native";
+import { tauri } from "@/platform/tauri";
+import { checkForUpdates as checkForUpdatesService } from "@/platform/updater";
 import { useAtom, useAtomValue } from "jotai";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
-import { match } from "ts-pattern";
-import type { Dirs } from "@/App";
 import AboutModal from "@/components/About";
 import { SideBar } from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import { activeTabAtom, nativeBarAtom, tabsAtom } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
-import { openFile } from "@/utils/files";
+import { openFile, pickPgnFile } from "@/utils/files";
 import { createTab } from "@/utils/tabs";
 
 type MenuGroup = {
@@ -30,7 +25,7 @@ type MenuGroup = {
   options: MenuAction[];
 };
 
-type MenuAction = {
+type MenuItemAction = {
   id?: string;
   label: string;
   shortcut?: string;
@@ -38,32 +33,22 @@ type MenuAction = {
   item?: "Hide" | "Copy" | "Cut" | "Paste" | "SelectAll" | "Undo" | "Redo" | "Quit";
 };
 
+type MenuAction = MenuItemAction | { kind: "separator" };
+const menuEllipsis = String.fromCodePoint(0x2026);
+
 async function createMenu(menuActions: MenuGroup[]) {
   const items = await Promise.all(
     menuActions.map(async (group) => {
       const submenuItems = await Promise.all(
         group.options.map(async (option) => {
-          return match(option.label)
-            .with("divider", () =>
-              PredefinedMenuItem.new({
-                item: "Separator",
-              }),
-            )
-            .otherwise(() => {
-              if (option.item) {
-                return PredefinedMenuItem.new({
-                  text: option.label,
-                  item: option.item,
-                });
-              }
-
-              return MenuItem.new({
-                id: option.id,
-                text: option.label,
-                accelerator: option.shortcut,
-                action: option.action,
-              });
-            });
+          if ("kind" in option) return PredefinedMenuItem.new({ item: "Separator" });
+          if (option.item) return PredefinedMenuItem.new({ text: option.label, item: option.item });
+          return MenuItem.new({
+            id: option.id,
+            text: option.label,
+            accelerator: option.shortcut,
+            action: option.action,
+          });
         }),
       );
 
@@ -79,9 +64,7 @@ async function createMenu(menuActions: MenuGroup[]) {
   });
 }
 
-export const Route = createRootRouteWithContext<{
-  loadDirs: () => Promise<Dirs>;
-}>()({
+export const Route = createRootRouteWithContext<Record<string, never>>()({
   component: RootLayout,
 });
 
@@ -95,11 +78,8 @@ function RootLayout() {
   const { t } = useTranslation();
 
   const openNewFile = useCallback(async () => {
-    const selected = await open({
-      multiple: false,
-      filters: [{ name: "PGN file", extensions: ["pgn"] }],
-    });
-    if (typeof selected === "string") {
+    const selected = await pickPgnFile();
+    if (selected) {
       navigate({ to: "/" });
       openFile(selected, setTabs, setActiveTab);
     }
@@ -115,19 +95,33 @@ function RootLayout() {
   }, [navigate, setActiveTab, setTabs, t]);
 
   const checkForUpdates = useCallback(async () => {
-    const update = await check();
-    if (update) {
-      const yes = await ask("Do you want to install the new version now?", {
-        title: "New version available",
-      });
-      if (yes) {
-        await update.downloadAndInstall();
-        await relaunch();
-      }
-    } else {
-      await message("No updates available");
-    }
+    await checkForUpdatesService({
+      interactive: true,
+      onError: (error) =>
+        notifications.show({
+          color: "red",
+          message: error.message,
+        }),
+    });
   }, []);
+
+  const runNativeMenuAction = useCallback(
+    async (command: () => Promise<unknown>, successMessage?: string) => {
+      try {
+        await command();
+        if (successMessage) {
+          notifications.show({ message: successMessage });
+        }
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: t("Common.Error"),
+          message: error instanceof Error ? error.message : t("Common.Error"),
+        });
+      }
+    },
+    [t],
+  );
 
   const openSettings = useCallback(async () => {
     navigate({ to: "/settings" });
@@ -147,81 +141,93 @@ function RootLayout() {
 
   const isMacOS = platform() === "macos";
 
-  const aboutOption = {
-    label: t("Menu.Help.About"),
-    id: "about",
-    action: () => setOpened(true),
-  };
+  const aboutOption = useMemo(
+    () => ({
+      label: t("Menu.Help.About"),
+      id: "about",
+      action: () => setOpened(true),
+    }),
+    [t],
+  );
 
-  const checkForUpdatesOption = {
-    label: t("Menu.Help.CheckUpdate"),
-    id: "check_for_updates",
-    action: checkForUpdates,
-  };
+  const checkForUpdatesOption = useMemo(
+    () => ({
+      label: t("Menu.Help.CheckUpdate"),
+      id: "check_for_updates",
+      action: checkForUpdates,
+    }),
+    [checkForUpdates, t],
+  );
 
-  const appMenu: MenuGroup = {
-    label: "Application Menu",
-    options: [
-      {
-        label: t("Menu.Application.About", {
-          defaultValue: t("Menu.Help.About"),
-        }),
-        id: aboutOption.id,
-        action: aboutOption.action,
-      },
-      checkForUpdatesOption,
-      { label: "divider" },
-      {
-        label: t("SideBar.Settings") + "...",
-        id: "settings",
-        shortcut: "cmd+,",
-        action: openSettings,
-      },
-      {
-        label: t("Menu.Application.Hide"),
-        item: "Hide",
-      },
-      { label: "divider" },
-      {
-        label: t("Menu.Application.Quit", {
-          defaultValue: t("Menu.File.Exit"),
-        }),
-        item: "Quit",
-      },
-    ],
-  };
+  const appMenu = useMemo<MenuGroup>(
+    () => ({
+      label: t("Menu.Application.Menu"),
+      options: [
+        {
+          label: t("Menu.Application.About", {
+            defaultValue: t("Menu.Help.About"),
+          }),
+          id: aboutOption.id,
+          action: aboutOption.action,
+        },
+        checkForUpdatesOption,
+        { kind: "separator" },
+        {
+          label: `${t("SideBar.Settings")}${menuEllipsis}`,
+          id: "settings",
+          shortcut: "cmd+,",
+          action: openSettings,
+        },
+        {
+          label: t("Menu.Application.Hide"),
+          item: "Hide",
+        },
+        { kind: "separator" },
+        {
+          label: t("Menu.Application.Quit", {
+            defaultValue: t("Menu.File.Exit"),
+          }),
+          item: "Quit",
+        },
+      ],
+    }),
+    [aboutOption, checkForUpdatesOption, openSettings, t],
+  );
 
-  const macOSEditMenu: MenuGroup = {
-    label: t("Menu.Edit"),
-    options: [
-      {
-        label: t("Menu.Edit.Undo"),
-        item: "Undo",
-      },
-      {
-        label: t("Menu.Edit.Redo"),
-        item: "Redo",
-      },
-      { label: "divider" },
-      {
-        label: t("Menu.Edit.Copy"),
-        item: "Copy",
-      },
-      {
-        label: t("Menu.Edit.Cut"),
-        item: "Cut",
-      },
-      {
-        label: t("Menu.Edit.Paste"),
-        item: "Paste",
-      },
-      { label: "divider" },
-      {
-        label: t("Menu.Edit.SelectAll"),
-        item: "SelectAll",
-      },
-    ],
-  };
+  const macOSEditMenu = useMemo<MenuGroup>(
+    () => ({
+      label: t("Menu.Edit"),
+      options: [
+        {
+          label: t("Menu.Edit.Undo"),
+          item: "Undo",
+        },
+        {
+          label: t("Menu.Edit.Redo"),
+          item: "Redo",
+        },
+        { kind: "separator" },
+        {
+          label: t("Menu.Edit.Copy"),
+          item: "Copy",
+        },
+        {
+          label: t("Menu.Edit.Cut"),
+          item: "Cut",
+        },
+        {
+          label: t("Menu.Edit.Paste"),
+          item: "Paste",
+        },
+        { kind: "separator" },
+        {
+          label: t("Menu.Edit.SelectAll"),
+          item: "SelectAll",
+        },
+      ],
+    }),
+    [t],
+  );
 
   const menuActions: MenuGroup[] = useMemo(
     () => [
@@ -263,9 +269,7 @@ function RootLayout() {
             action: () => location.reload(),
           },
           {
-            label: t("Menu.View.Fullscreen", {
-              defaultValue: "Toggle Fullscreen",
-            }),
+            label: t("Menu.View.Fullscreen"),
             id: "toggle_fullscreen",
             shortcut: isMacOS ? "Ctrl+Cmd+F" : "F11",
             action: toggleFullscreen,
@@ -278,14 +282,14 @@ function RootLayout() {
           {
             label: t("Menu.Help.Documentation"),
             id: "documentation",
-            action: () => openUrl("https://encroissant.org/docs/"),
+            action: () => void runNativeMenuAction(() => tauri.openDocumentation()),
           },
           {
             label: t("Menu.Help.ClearSavedData"),
             id: "clear_saved_data",
             action: () => {
-              ask("Are you sure you want to clear all saved data?", {
-                title: "Clear data",
+              ask(t("Menu.Help.ClearSavedData.Confirm"), {
+                title: t("Menu.Help.ClearSavedData.Title"),
               }).then((res) => {
                 if (res) {
                   localStorage.clear();
@@ -298,21 +302,27 @@ function RootLayout() {
           {
             label: t("Menu.Help.OpenLogs"),
             id: "logs",
-            action: async () => {
-              const path = await resolve(await appLogDir(), "en-croissant.log");
-              notifications.show({
-                title: "Logs",
-                message: `Opened logs in ${path}`,
-              });
-              await openPath(path);
-            },
+            action: () =>
+              void runNativeMenuAction(() => tauri.openAppLog(), t("Menu.Help.OpenLogs")),
           },
-          { label: "divider" },
+          { kind: "separator" },
           ...(!isMacOS ? [checkForUpdatesOption, aboutOption] : []),
         ],
       },
     ],
-    [t, createNewTab, keyMap, openNewFile, toggleFullscreen],
+    [
+      aboutOption,
+      appMenu,
+      checkForUpdatesOption,
+      createNewTab,
+      isMacOS,
+      keyMap,
+      macOSEditMenu,
+      openNewFile,
+      runNativeMenuAction,
+      t,
+      toggleFullscreen,
+    ],
   );
 
   const { data: menu } = useSWRImmutable(["menu", menuActions], () => createMenu(menuActions));
@@ -330,26 +340,6 @@ function RootLayout() {
       getCurrentWindow().setDecorations(false);
     }
   }, [menu, isNative]);
-
-  useEffect(() => {
-    const unlisten = getCurrentWindow().listen(TauriEvent.DRAG_DROP, (event) => {
-      const payload = event.payload as { paths: string[] };
-      if (payload?.paths) {
-        const pgnFiles = payload.paths.filter((path) => path.toLowerCase().endsWith(".pgn"));
-
-        if (pgnFiles.length > 0) {
-          navigate({ to: "/" });
-          for (const file of pgnFiles) {
-            openFile(file, setTabs, setActiveTab);
-          }
-        }
-      }
-    });
-
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [navigate, setTabs, setActiveTab]);
 
   return (
     <AppShell

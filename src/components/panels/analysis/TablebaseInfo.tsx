@@ -18,28 +18,15 @@ function TablebaseInfo({ fen, turn }: { fen: string; turn: "white" | "black" }) 
     async ([_, fen]) => await getTablebaseInfo(fen),
   );
 
-  const sortedMoves = data?.moves.sort((a, b) => {
-    if (a.category === "win" && b.category !== "win") {
-      return 1;
-    }
-    if (a.category !== "win" && b.category === "win") {
-      return -1;
-    }
-    if (a.category === "loss" && b.category !== "loss") {
-      return -1;
-    }
-    if (a.category !== "loss" && b.category === "loss") {
-      return 1;
-    }
-    return 0;
-  });
+  // SWR owns `data`; sorting it in place changes the cache seen by every view.
+  const sortedMoves = data ? [...data.moves].sort(compareTablebaseMoves) : undefined;
 
   return (
     <Paper withBorder>
       <Accordion
         styles={{
           label: {
-            padding: "0.5rem",
+            padding: 8,
           },
         }}
       >
@@ -95,6 +82,24 @@ function TablebaseInfo({ fen, turn }: { fen: string; turn: "white" | "black" }) 
       </Accordion>
     </Paper>
   );
+}
+
+const tablebaseRank: Record<TablebaseCategory, number> = {
+  win: 0,
+  "cursed-win": 1,
+  draw: 2,
+  "blessed-loss": 3,
+  loss: 4,
+  "maybe-win": 5,
+  "maybe-loss": 6,
+  unknown: 7,
+};
+
+export function compareTablebaseMoves(
+  a: { category: TablebaseCategory; san: string },
+  b: { category: TablebaseCategory; san: string },
+) {
+  return tablebaseRank[a.category] - tablebaseRank[b.category] || a.san.localeCompare(b.san);
 }
 
 function OutcomeBadge({

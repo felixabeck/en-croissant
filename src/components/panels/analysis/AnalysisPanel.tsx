@@ -1,7 +1,6 @@
 import { DragDropContext, Draggable, Droppable } from "@hello-pangea/dnd";
 import {
   Accordion,
-  ActionIcon,
   Button,
   Card,
   Group,
@@ -26,6 +25,7 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
+import { IconAction } from "@/components/common/IconAction";
 import {
   activeTabAtom,
   allEnabledAtom,
@@ -131,13 +131,22 @@ function AnalysisPanel() {
             {loadedEngines.length > 1 && (
               <Paper withBorder p="xs" flex={1}>
                 <Group w="100%" gap="xs" wrap="nowrap">
-                  <ActionIcon size="lg" variant="default" onClick={() => enable(!allEnabled)}>
+                  <IconAction
+                    label={t(
+                      allEnabled
+                        ? "Board.Analysis.PauseAllEngines"
+                        : "Board.Analysis.EnableAllEngines",
+                    )}
+                    size="lg"
+                    variant="default"
+                    onClick={() => enable(!allEnabled)}
+                  >
                     {allEnabled ? (
                       <IconPlayerPause size="1.25rem" />
                     ) : (
                       <IconChevronsRight size="1.25rem" />
                     )}
-                  </ActionIcon>
+                  </IconAction>
                   <Group grow flex={1} gap="xs">
                     {loadedEngines.map((engine, i) => (
                       <EngineSummary
@@ -228,9 +237,13 @@ function AnalysisPanel() {
                 </Button>
                 <Popover width={250} position="top-end" shadow="md">
                   <Popover.Target>
-                    <ActionIcon variant="default" size="lg">
+                    <IconAction
+                      label={t("Board.Analysis.SelectEngines")}
+                      variant="default"
+                      size="lg"
+                    >
                       <IconSelector />
-                    </ActionIcon>
+                    </IconAction>
                   </Popover.Target>
 
                   <Popover.Dropdown>

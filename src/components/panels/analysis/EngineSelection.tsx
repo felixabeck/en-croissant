@@ -27,8 +27,8 @@ function EngineBox({ engine, toggleEnabled }: { engine: Engine; toggleEnabled: (
     >
       <Group wrap="nowrap">
         <Checkbox checked={!!engine.loaded} onChange={() => {}} />
-        {engine.image ? (
-          <LocalImage src={engine.image} alt={engine.name} w="1.5rem" />
+        {engine.imageHandle ? (
+          <LocalImage image={engine.imageHandle} alt={engine.name} w="1.5rem" />
         ) : engine.type !== "local" ? (
           <IconCloud size="1.5rem" />
         ) : (

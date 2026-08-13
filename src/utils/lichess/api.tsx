@@ -1,23 +1,18 @@
+import { tauri } from "@/platform/tauri";
 import type { Color } from "@lichess-org/chessground/types";
-import { notifications } from "@mantine/notifications";
-import { IconX } from "@tabler/icons-react";
-import { resolve } from "@tauri-apps/api/path";
-import { fetch } from "@tauri-apps/plugin-http";
-import { error } from "@tauri-apps/plugin-log";
 import { parseUci } from "chessops";
 import { makeFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
-import { match, P } from "ts-pattern";
+import { z } from "zod";
 import {
   type BestMoves,
-  commands,
   type EngineOptions,
   type GoMode,
   type NormalizedGame,
+  type PathRef,
 } from "@/bindings";
 import { parsePGN, uciNormalize } from "@/utils/chess";
 import { positionFromFen } from "@/utils/chessops";
-import { apiHeaders } from "@/utils/http";
 import {
   getLichessGamesQueryParams,
   getMasterGamesQueryParams,
@@ -25,11 +20,6 @@ import {
   type MasterGamesOptions,
 } from "@/utils/lichess/explorer";
 import { countMainPly } from "@/utils/treeReducer";
-import { getDatabasesDir } from "../directories";
-
-const baseURL = "https://lichess.org/api";
-const explorerURL = "https://explorer.lichess.org";
-const tablebaseURL = "https://tablebase.lichess.org";
 
 export const MIN_DATE = new Date(1952, 0, 1);
 
@@ -147,6 +137,38 @@ export type LichessAccount = {
   followsYou: boolean;
 };
 
+const lichessAccountSchema = z
+  .object({
+    id: z.string().min(1),
+    username: z.string().min(1),
+  })
+  .passthrough();
+
+const positionDataSchema = z
+  .object({
+    white: z.number(),
+    black: z.number(),
+    draws: z.number(),
+    moves: z.array(
+      z.object({
+        uci: z.string(),
+        san: z.string(),
+        averageRating: z.number(),
+        white: z.number(),
+        black: z.number(),
+        draws: z.number(),
+      }),
+    ),
+  })
+  .passthrough();
+
+function parseNativeJson<T>(body: string, schema: z.ZodType<T>): T {
+  const parsed = JSON.parse(body) as unknown;
+  const result = schema.safeParse(parsed);
+  if (!result.success) throw new Error("Lichess returned an invalid response");
+  return result.data;
+}
+
 type PositionGames = {
   uci: string;
   id: string;
@@ -184,9 +206,7 @@ export async function convertToNormalized(data: PositionGames): Promise<Normaliz
       return normalized;
     }),
   );
-  return results
-    .filter((r) => r.status === "fulfilled")
-    .map((r) => (r as PromiseFulfilledResult<NormalizedGame>).value);
+  return results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
 }
 
 type PositionData = {
@@ -206,33 +226,28 @@ type PositionData = {
 };
 
 export async function getLichessAccount({
-  token,
+  handle,
   username,
 }: {
-  token?: string;
+  handle?: string;
   username?: string;
 }): Promise<LichessAccount | null> {
-  let response: Response;
-  if (token) {
-    response = await fetch(`${baseURL}/account`, {
-      method: "GET",
-      headers: apiHeaders({ Authorization: `Bearer ${token}` }),
-    });
+  if (handle) {
+    const result = await tauri.getAuthenticatedLichessAccount(handle);
+    try {
+      return parseNativeJson(result, lichessAccountSchema) as LichessAccount;
+    } catch {
+      return null;
+    }
   } else {
-    const url = `${baseURL}/user/${username}`;
-    response = await fetch(url, { headers: apiHeaders() });
+    if (!username) return null;
+    const result = await tauri.getPublicLichessJson({ kind: "account", username });
+    try {
+      return parseNativeJson(result, lichessAccountSchema) as LichessAccount;
+    } catch {
+      return null;
+    }
   }
-  if (!response.ok) {
-    error(`Failed to fetch Lichess account: ${response.status} ${response.url}`);
-    notifications.show({
-      title: "Failed to fetch Lichess account",
-      message: `Could not find account "${username}" on lichess.org`,
-      color: "red",
-      icon: <IconX />,
-    });
-    return null;
-  }
-  return response.json();
 }
 
 export async function getBestMoves(
@@ -253,7 +268,13 @@ export async function getBestMoves(
   }
   const data = await getCloudEvaluation(
     makeFen(pos.toSetup()),
-    Number.parseInt(options.extraOptions.find((o) => o.name === "MultiPV")?.value ?? "1"),
+    Number.parseInt(
+      (
+        options.extraOptions.find((o) => o.name === "MultiPV" && o.type === "string") as
+          | { value: string }
+          | undefined
+      )?.value ?? "1",
+    ),
   );
   return [
     100,
@@ -275,10 +296,10 @@ export async function getBestMoves(
           value: "cp" in m ? { type: "cp", value: m.cp } : { type: "mate", value: m.mate },
           wdl: null,
         },
-        nodes: data.knodes * 1000,
+        nodes: BigInt(data.knodes) * 1000n,
         depth: data.depth,
         multipv: i + 1,
-        nps: 0,
+        nps: 0n,
         sanMoves,
         uciMoves: normalizedUciMoves,
       };
@@ -309,12 +330,8 @@ async function getCloudEvaluation(fen: string, multipv: number): Promise<Lichess
   if (cache.has(`${fen}-${multipv}`)) {
     return cache.get(`${fen}-${multipv}`)!;
   }
-  const url = new URL(`${baseURL}/cloud-eval`);
-  url.searchParams.append("fen", fen);
-  url.searchParams.append("multiPv", multipv.toString());
-
-  const response = await fetch(url.toString(), { headers: apiHeaders() });
-  const data = (await response.json()) as LichessCloudData;
+  const result = await tauri.getPublicLichessJson({ kind: "cloud_eval", fen, multi_pv: multipv });
+  const data = JSON.parse(result) as LichessCloudData;
   cache.set(`${fen}-${multipv}`, data);
   return data;
 }
@@ -322,127 +339,77 @@ async function getCloudEvaluation(fen: string, multipv: number): Promise<Lichess
 export async function getLichessGames(
   fen: string,
   options: LichessGamesOptions,
-  token?: string,
+  handle: string,
 ): Promise<PositionData> {
-  const url = match(options.player)
-    .with(
-      P.union(undefined, ""),
-      () => `${explorerURL}/lichess?${getLichessGamesQueryParams(fen, options)}`,
-    )
-    .otherwise(() => `${explorerURL}/player?${getLichessGamesQueryParams(fen, options)}`);
-  const res = await fetch(url, {
-    headers: apiHeaders(
-      token
-        ? {
-            Authorization: `Bearer ${token}`,
-          }
-        : undefined,
-    ),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch Lichess games: ${res.status} ${res.statusText}`);
-  }
-  return await res.json();
+  const endpoint = options.player ? "player" : "lichess";
+  const result = await tauri.getAuthenticatedLichessExplorer(
+    handle,
+    endpoint,
+    getLichessGamesQueryParams(fen, options),
+  );
+  return parseNativeJson(result, positionDataSchema) as PositionData;
 }
 
 export async function getMasterGames(
   fen: string,
   options: MasterGamesOptions,
-  token?: string,
+  handle: string,
 ): Promise<PositionData> {
-  const url = `${explorerURL}/masters?${getMasterGamesQueryParams(fen, options)}`;
-  const res = await fetch(url, {
-    headers: apiHeaders(
-      token
-        ? {
-            Authorization: `Bearer ${token}`,
-          }
-        : undefined,
-    ),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch master games: ${res.status} ${res.statusText}`);
-  }
-  return await res.json();
+  const result = await tauri.getAuthenticatedLichessExplorer(
+    handle,
+    "masters",
+    getMasterGamesQueryParams(fen, options),
+  );
+  return parseNativeJson(result, positionDataSchema) as PositionData;
 }
 
-export async function getPlayerGames(fen: string, player: string, color: Color, token?: string) {
-  const res = await fetch(`${explorerURL}/player?fen=${fen}&player=${player}&color=${color}`, {
-    headers: apiHeaders(
-      token
-        ? {
-            Authorization: `Bearer ${token}`,
-          }
-        : undefined,
-    ),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch player games: ${res.status} ${res.statusText}`);
-  }
-  return await res.json();
+export async function getPlayerGames(fen: string, player: string, color: Color, handle: string) {
+  const params = new URLSearchParams({ fen, player, color });
+  const result = await tauri.getAuthenticatedLichessExplorer(handle, "player", params.toString());
+  return parseNativeJson(result, positionDataSchema) as PositionData;
 }
 
 export async function downloadLichess(
+  handle: string,
+  destination: PathRef,
   player: string,
   timestamp: number | null,
   games: number,
-  setProgress: (progress: number) => void,
-  token?: string,
 ) {
-  let url = `${baseURL}/games/user/${player}?perfType=ultraBullet,bullet,blitz,rapid,classical,correspondence&rated=true&sort=dateAsc`;
-  if (timestamp) {
-    url += `&since=${timestamp}`;
-  }
-  const path = await resolve(await getDatabasesDir(), `${player}_lichess.pgn`);
-
-  await commands.downloadFile(
-    `lichess_${player}`,
-    url,
-    path,
-    token ?? null,
-    null,
-    games > 0 ? games * 900 : null, // approx. size of a game
+  // The destination command is supplied by the native download authority.  The opaque handle
+  // selects the credential in the OS keyring; renderer code never forms an Authorization header.
+  const result = await tauri.downloadLichessGames(
+    handle,
+    destination,
+    `${player}_lichess.pgn`,
+    player,
+    timestamp === null ? null : BigInt(timestamp),
+    games > 0 ? games * 900 : null,
+    crypto.randomUUID(),
   );
+  // Native publication treats durability uncertainty as committed and returns the recovered
+  // capability. Never retry this operation from the renderer.
+  return result.handle;
 }
 
 export async function getLichessGame(gameId: string): Promise<string> {
-  const response = await fetch(`https://lichess.org/game/export/${gameId.slice(0, 8)}`);
-  if (!response.ok) {
-    throw new Error(`Failed to load lichess game ${gameId} - ${response.statusText}`);
-  }
-  return await response.text();
+  const result = await tauri.getPublicLichessJson({ kind: "game", game_id: gameId });
+  return result;
 }
 
 export async function getTablebaseInfo(fen: string): Promise<TablebaseData> {
-  const res = await fetch(`${tablebaseURL}/standard?fen=${fen}`, {
-    headers: apiHeaders(),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to load tablebase info for ${fen}.`);
-  }
-  return res.json();
+  const result = await tauri.getPublicLichessJson({ kind: "tablebase", fen });
+  return JSON.parse(result) as TablebaseData;
 }
 
 export async function getFidePlayer(query: string) {
   if (!Number.isNaN(Number(query))) {
-    const res = await fetch(`${baseURL}/fide/player/${query}`, {
-      headers: apiHeaders({
-        Accept: "application/json",
-      }),
-    });
-    if (res.ok) {
-      return await res.json();
-    }
+    const result = await tauri.getPublicLichessJson({ kind: "fide", query });
+    return JSON.parse(result);
   } else {
-    const res = await fetch(`${baseURL}/fide/player?q=${query}`, {
-      headers: apiHeaders({
-        Accept: "application/json",
-      }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      return data[0];
-    }
+    const result = await tauri.getPublicLichessJson({ kind: "fide", query });
+    const data = JSON.parse(result);
+    return data[0];
   }
   throw new Error("Player not found");
 }

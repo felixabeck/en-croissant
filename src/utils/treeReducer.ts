@@ -44,24 +44,27 @@ export function* treeIterator(node: TreeNode): Generator<ListNode> {
     }
 }
 
-export function findFen(fen: string, node: TreeNode): number[] {
+/**
+ * Resolves a position in a repertoire tree. `[]` is deliberately reserved for
+ * the root node; callers must treat `undefined` as a removed or unknown card.
+ */
+export function findFen(fen: string, node: TreeNode): number[] | undefined {
     const iterator = treeIterator(node);
     for (const item of iterator) {
         if (item.node.fen === fen) {
             return item.position;
         }
     }
-    return [];
+    return undefined;
 }
 
 export function* treeIteratorMainLine(node: TreeNode): Generator<ListNode> {
-    let current: ListNode | undefined = { position: [], node };
-    while (current?.node) {
-        yield current;
-        current = {
-            position: [...current.position, 0],
-            node: current.node.children[0],
-        };
+    let currentNode: TreeNode | undefined = node;
+    let position: number[] = [];
+    while (currentNode) {
+        yield { position, node: currentNode };
+        currentNode = currentNode.children[0];
+        position = [...position, 0];
     }
 }
 
@@ -76,13 +79,14 @@ export function countMainPly(node: TreeNode): number {
 }
 
 export function defaultTree(fen?: string): TreeState {
-    const [pos] = positionFromFen(fen ?? INITIAL_FEN);
+    const normalizedFen = fen?.trim() || INITIAL_FEN;
+    const [pos] = positionFromFen(normalizedFen);
 
     return {
         dirty: false,
         position: [],
         root: {
-            fen: fen?.trim() ?? INITIAL_FEN,
+            fen: normalizedFen,
             move: null,
             san: null,
             children: [],
@@ -95,7 +99,7 @@ export function defaultTree(fen?: string): TreeState {
         },
         headers: {
             id: 0,
-            fen: fen ?? INITIAL_FEN,
+            fen: normalizedFen,
             black: "",
             white: "",
             result: "*",
@@ -126,7 +130,7 @@ export function createNode({
         fen,
         move,
         san,
-        clock: clock ? clock / 1000 : undefined,
+        clock: clock === undefined ? undefined : clock / 1000,
         children: [],
         score: null,
         depth: null,
@@ -187,7 +191,7 @@ export function buildTranspositionMaps(
     startPath: number[] = [],
 ): Record<string, { node: TreeNode; path: number[] }[]> {
     const map: Record<string, { node: TreeNode; path: number[] }[]> = {};
-    const startNode = startPath.length > 0 ? getNodeAtPath(root, startPath) : root;
+    const startNode = getNodeAtPath(root, startPath);
 
     function traverse(node: TreeNode, path: number[]) {
         const boardFen = getBoardState(node.fen);

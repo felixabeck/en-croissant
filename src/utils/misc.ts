@@ -1,36 +1,5 @@
-import { BaseDirectory, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import type React from "react";
-import { useEffect, useState } from "react";
-
-type StorageValue<T> = [T, React.Dispatch<React.SetStateAction<T>>];
-
-export function useLocalFile<T>(filename: string, defaultValue: T): StorageValue<T> {
-    const [state, setState] = useState<T>(defaultValue);
-    const [loaded, setLoaded] = useState(false);
-
-    useEffect(() => {
-        readTextFile(filename, {
-            baseDir: BaseDirectory.AppData,
-        }).then((text) => {
-            setLoaded(true);
-            if (text === "") {
-                return;
-            }
-            const data = JSON.parse(text);
-            setState(data);
-        });
-    }, [filename]);
-
-    useEffect(() => {
-        if (loaded) {
-            writeTextFile(filename, JSON.stringify(state), {
-                baseDir: BaseDirectory.AppData,
-            });
-        }
-    }, [filename, state, loaded]);
-
-    return [state, setState];
-}
+import { useEffect } from "react";
 
 export function isPrefix<T>(shorter: T[], longer: T[]): boolean {
     if (shorter.length > longer.length) {

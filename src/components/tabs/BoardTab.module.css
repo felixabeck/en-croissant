@@ -1,5 +1,13 @@
+.tabItem {
+  display: flex;
+  align-items: stretch;
+  height: 2.2rem;
+}
+
 .tab {
-  padding-right: 9px;
+  min-width: 5rem;
+  max-width: 14rem;
+  padding-right: 0.25rem;
   height: 2.2rem;
 }
 
@@ -46,26 +54,34 @@
   background-color: var(--mantine-color-dark-7);
 }
 
-.input {
-  all: unset;
+.tabLabel {
+  display: block;
   min-width: 5rem;
   font-size: 0.8rem;
-  padding-top: 0.4rem;
-  padding-bottom: 0.4rem;
-  outline: none;
   text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+.renameInput {
+  width: 10rem;
+}
+
+.tabAction,
 .closeTabBtn {
   box-sizing: content-box;
   padding: 0.3rem;
+  border-radius: 0;
   transition: background-color 100ms ease;
 }
 
+[data-mantine-color-scheme="light"] .tabAction:hover,
 [data-mantine-color-scheme="light"] .closeTabBtn:hover {
   background-color: rgba(0, 0, 0, 0.05);
 }
 
+[data-mantine-color-scheme="dark"] .tabAction:hover,
 [data-mantine-color-scheme="dark"] .closeTabBtn:hover {
   background-color: rgba(255, 255, 255, 0.1);
 }

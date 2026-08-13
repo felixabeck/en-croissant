@@ -3,14 +3,53 @@
   cursor: pointer;
 }
 
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.colorHover {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
 .input {
-  all: unset;
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   text-align: center;
 }
 
 .textInput {
-  all: unset;
-  outline: none;
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.input:focus-visible,
+.textInput:focus-visible,
+.eloInput:focus-visible,
+.roundInput:focus-visible,
+.colorHover:focus-visible {
+  outline: 3px solid var(--mantine-primary-color-filled);
+  outline-offset: 2px;
 }
 
 .textInput:disabled {
@@ -40,7 +79,12 @@
 }
 
 .eloInput {
-  all: unset;
+  appearance: none;
+  border: 0;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   height: auto;
   opacity: 75%;
   padding: 0;
@@ -74,7 +118,13 @@
 }
 
 .roundInput {
-  all: unset;
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   font-size: var(--mantine-font-size-md);
   width: 3rem;
 }

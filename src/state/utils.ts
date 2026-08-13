@@ -1,5 +1,4 @@
-import { BaseDirectory, readTextFile, remove, writeTextFile } from "@tauri-apps/plugin-fs";
-import { warn } from "@tauri-apps/plugin-log";
+import { warn } from "@/platform/native";
 import equal from "fast-deep-equal";
 import type {
     AsyncStorage,
@@ -7,24 +6,7 @@ import type {
     SyncStorage,
     SyncStringStorage,
 } from "jotai/vanilla/utils/atomWithStorage";
-import type { z } from "zod";
-
-const options = { baseDir: BaseDirectory.AppData };
-export const fileStorage: AsyncStringStorage = {
-    async getItem(key) {
-        try {
-            return await readTextFile(key, options);
-        } catch (error) {
-            return null;
-        }
-    },
-    async setItem(key, newValue) {
-        await writeTextFile(key, newValue, options);
-    },
-    async removeItem(key) {
-        await remove(key, options);
-    },
-};
+import { z } from "zod";
 
 export function createZodStorage<Value>(
     schema: z.ZodType<Value>,
@@ -44,7 +26,7 @@ export function createZodStorage<Value>(
                 }
                 return parsedValue;
             } catch {
-                warn(`Invalid value for ${key}: ${storedValue}`);
+                warn(`Invalid persisted value for ${key}`);
                 this.setItem(key, initialValue);
                 return initialValue;
             }
@@ -56,6 +38,37 @@ export function createZodStorage<Value>(
             storage.removeItem(key);
         },
     };
+}
+
+function schemaForDefault(value: unknown): z.ZodTypeAny {
+    if (typeof value === "string") return z.string();
+    if (typeof value === "number") return z.number().finite();
+    if (typeof value === "boolean") return z.boolean();
+    if (value === null) return z.null();
+    if (Array.isArray(value)) {
+        // Empty preference arrays have no element exemplar; their consumers own the
+        // richer domain validation. They still cannot hydrate as a scalar/object.
+        return z.array(value.length === 1 ? schemaForDefault(value[0]) : z.unknown());
+    }
+    if (typeof value === "object") {
+        const shape = Object.fromEntries(
+            Object.entries(value).map(([key, item]) => [key, schemaForDefault(item)]),
+        );
+        return Object.keys(shape).length > 0 ? z.object(shape) : z.record(z.unknown());
+    }
+    return z.unknown();
+}
+
+/**
+ * Baseline validation for simple user preferences. Domain-shaped records use a
+ * dedicated schema at their declaration; this prevents raw atomWithStorage
+ * values from crashing module initialization or leaking stale scalar types.
+ */
+export function createPreferenceStorage<Value>(
+    initialValue: Value,
+    storage: SyncStringStorage = localStorage,
+): SyncStorage<Value> {
+    return createZodStorage(schemaForDefault(initialValue) as z.ZodType<Value>, storage);
 }
 
 export function createAsyncZodStorage<Input, Output>(
@@ -77,11 +90,11 @@ export function createAsyncZodStorage<Input, Output>(
                     }
                     return res.data;
                 }
-                warn(`Invalid value for ${key}: ${storedValue}\n${res.error}`);
+                warn(`Invalid persisted value for ${key}`);
                 await this.setItem(key, initialValue);
                 return initialValue;
-            } catch (error) {
-                warn(`Error getting ${key}: ${error}`);
+            } catch {
+                warn(`Unable to read persisted value for ${key}`);
                 return initialValue;
             }
         },

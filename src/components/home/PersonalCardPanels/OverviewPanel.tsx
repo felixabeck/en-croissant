@@ -1,5 +1,6 @@
 import { Group, Stack, Text } from "@mantine/core";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Bar,
   BarChart,
@@ -89,6 +90,7 @@ function OverviewPanel({
   info: PlayerGameInfo;
   isDatabase?: boolean;
 }) {
+  const { t } = useTranslation();
   const [website, setWebsite] = useState<string | null>("All websites");
   const [account, setAccount] = useState<string | null>("All accounts");
   const [timeControl, setTimeControl] = useState<string | null>(null);
@@ -125,7 +127,7 @@ function OverviewPanel({
       </Group>
 
       <Text pt="md" fw="bold" fz="lg" ta="center">
-        {total} Games
+        {total} {t("Common.Games")}
       </Text>
 
       {total > 0 && (
@@ -144,6 +146,7 @@ const DateChartTooltip = ({
   label,
   isYearSelected,
 }: TooltipContentProps<ValueType, NameType> & { isYearSelected: boolean }) => {
+  const { t } = useTranslation();
   if (active && payload && payload.length) {
     return (
       <div
@@ -163,7 +166,7 @@ const DateChartTooltip = ({
           }}
         >{`${payload?.[0].name} : ${payload?.[0].value}`}</p>
         <p style={{ fontSize: "0.75rem", margin: "0", color: "grey" }}>
-          Click to {isYearSelected ? "see the month details" : "return to the years view"}.
+          {t(isYearSelected ? "Home.Personal.Chart.OpenMonths" : "Home.Personal.Chart.OpenYears")}
         </p>
       </div>
     );
@@ -173,6 +176,7 @@ const DateChartTooltip = ({
 };
 
 function DateChart({ dataPerMonth }: { dataPerMonth: { name: string; count: number }[] }) {
+  const { t } = useTranslation();
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
 
   let data = fillMissingMonths(dataPerMonth);
@@ -206,7 +210,7 @@ function DateChart({ dataPerMonth }: { dataPerMonth: { name: string; count: numb
             stroke: "1px solid var(--chart-grid-color)",
           }}
         />
-        <Bar dataKey="count" fill="var(--mantine-color-blue-filled)" name="Games" />
+        <Bar dataKey="count" fill="var(--mantine-color-blue-filled)" name={t("Common.Games")} />
       </BarChart>
     </ResponsiveContainer>
   );

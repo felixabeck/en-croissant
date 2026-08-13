@@ -66,10 +66,10 @@ export function formatThemeLabel(theme: string) {
         .join(" ");
 }
 
-export function formatNodes(nodes: number, decimals = 0) {
+export function formatNodes(nodes: number | bigint, decimals = 0) {
     const units = ["", "k", "M", "B", "T"];
     let i = 0;
-    let value = nodes;
+    let value = Number(nodes);
 
     while (value >= 1000 && i < units.length - 1) {
         value /= 1000;

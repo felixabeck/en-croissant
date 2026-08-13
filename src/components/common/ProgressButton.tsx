@@ -1,7 +1,9 @@
-import { ActionIcon, Box, Button, Group, Progress } from "@mantine/core";
+import { Box, Button, Group, Progress } from "@mantine/core";
 import { IconX } from "@tabler/icons-react";
 import { memo, useCallback, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { useProgress } from "@/hooks/useProgress";
+import IconAction from "./IconAction";
 import classes from "./ProgressButton.module.css";
 
 type Props = {
@@ -34,6 +36,7 @@ function ProgressButton({
   inProgress,
   setInProgress,
 }: Props) {
+  const { t } = useTranslation();
   const { progress, finished, isActive, clear } = useProgress(id);
   const completed = initInstalled || finished;
 
@@ -45,12 +48,16 @@ function ProgressButton({
     }
   }, [finished, setInProgress]);
 
-  const handleCancel = useCallback(() => {
+  const handleCancel = useCallback(async () => {
     if (onCancel) {
       onCancel();
     }
-    clear();
-    setInProgress(false);
+    try {
+      await clear();
+      setInProgress(false);
+    } catch {
+      // Keep the running UI if native cancellation could not be acknowledged.
+    }
   }, [onCancel, clear, setInProgress]);
 
   let label: string;
@@ -85,9 +92,14 @@ function ProgressButton({
         )}
       </Button>
       {showProgress && onCancel && (
-        <ActionIcon variant="default" size="lg" onClick={handleCancel} title="Cancel">
+        <IconAction
+          label={t("Common.Cancel", { defaultValue: "Cancel" })}
+          variant="default"
+          size="lg"
+          onClick={() => void handleCancel()}
+        >
           <IconX size="1rem" />
-        </ActionIcon>
+        </IconAction>
       )}
     </Group>
   );

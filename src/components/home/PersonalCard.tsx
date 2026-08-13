@@ -1,13 +1,4 @@
-import {
-  ActionIcon,
-  Box,
-  Flex,
-  Tooltip as MTTooltip,
-  Paper,
-  Select,
-  Tabs,
-  Text,
-} from "@mantine/core";
+import { Box, Flex, Paper, Select, Tabs, Text } from "@mantine/core";
 import { IconInfoCircle } from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
 import { useContext, useState } from "react";
@@ -15,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import type { PlayerGameInfo } from "@/bindings";
 import { sessionsAtom } from "@/state/atoms";
+import { IconAction } from "@/components/common/IconAction";
 import type { DatabaseViewStore } from "@/state/store/database";
 import { DatabaseViewStateContext } from "../databases/DatabaseViewStateContext";
 import FideInfo from "../databases/FideInfo";
@@ -55,11 +47,14 @@ function PersonalPlayerCard({
       <FideInfo key={name} opened={opened} setOpened={setOpened} name={name} />
       <Box pos="relative">
         {name !== "Stats" && (
-          <MTTooltip label={t("Databases.FIDE.Info")}>
-            <ActionIcon pos="absolute" right={0} onClick={() => setOpened(true)}>
-              <IconInfoCircle />
-            </ActionIcon>
-          </MTTooltip>
+          <IconAction
+            label={t("Databases.FIDE.Info")}
+            pos="absolute"
+            right={0}
+            onClick={() => setOpened(true)}
+          >
+            <IconInfoCircle />
+          </IconAction>
         )}
         {setName ? (
           <Flex justify="center">

@@ -1,6 +1,7 @@
 import type { Key } from "@lichess-org/chessground/types";
-import { ActionIcon, Box, CopyButton, Flex, Portal, rem, Table, Tooltip } from "@mantine/core";
+import { Box, CopyButton, Flex, Portal, rem, Table } from "@mantine/core";
 import { useForceUpdate } from "@mantine/hooks";
+import { IconAction } from "@/components/common/IconAction";
 import { IconCheck, IconChevronDown, IconCopy } from "@tabler/icons-react";
 import { chessgroundMove } from "chessops/compat";
 import { makeFen } from "chessops/fen";
@@ -67,7 +68,7 @@ function AnalysisRow({
     };
   }, [reset]);
 
-  useEffect(() => reset(), [open]);
+  useEffect(() => reset(), [open, reset]);
 
   const [evalDisplay, setEvalDisplay] = useAtom(scoreTypeFamily(engine));
 
@@ -114,7 +115,9 @@ function AnalysisRow({
         </Table.Td>
         <Table.Th>
           <Flex direction="column" align="center" gap={4}>
-            <ActionIcon
+            <IconAction
+              label={open ? t("Board.Analysis.Collapse") : t("Board.Analysis.Expand")}
+              pressed={open}
               style={{
                 transition: "transform 200ms ease",
                 transform: open ? "rotate(180deg)" : "none",
@@ -122,28 +125,22 @@ function AnalysisRow({
               onClick={() => setOpen(!open)}
             >
               <IconChevronDown size={16} />
-            </ActionIcon>
+            </IconAction>
             {open && (
               <CopyButton value={engineOutput} timeout={2000}>
                 {({ copied, copy }) => (
-                  <Tooltip
+                  <IconAction
                     label={copied ? t("Common.Copied") : t("Menu.Edit.Copy")}
-                    withArrow
-                    position="right"
+                    color={copied ? "teal" : undefined}
+                    variant="subtle"
+                    onClick={copy}
                   >
-                    <ActionIcon
-                      color={copied ? "teal" : undefined}
-                      variant="subtle"
-                      onClick={copy}
-                      aria-label={copied ? t("Common.Copied") : t("Menu.Edit.Copy")}
-                    >
-                      {copied ? (
-                        <IconCheck style={{ width: rem(16) }} />
-                      ) : (
-                        <IconCopy style={{ width: rem(16) }} />
-                      )}
-                    </ActionIcon>
-                  </Tooltip>
+                    {copied ? (
+                      <IconCheck style={{ width: rem(16) }} />
+                    ) : (
+                      <IconCopy style={{ width: rem(16) }} />
+                    )}
+                  </IconAction>
                 )}
               </CopyButton>
             )}

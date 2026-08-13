@@ -1,14 +1,5 @@
-import {
-  Accordion,
-  ActionIcon,
-  Box,
-  Divider,
-  Group,
-  ScrollArea,
-  Stack,
-  Text,
-  Tooltip,
-} from "@mantine/core";
+import { tauri } from "@/platform/tauri";
+import { Accordion, Box, Divider, Group, ScrollArea, Stack, Text } from "@mantine/core";
 import { useToggle } from "@mantine/hooks";
 import { IconPlus } from "@tabler/icons-react";
 import { useAtom, useAtomValue } from "jotai";
@@ -16,8 +7,9 @@ import { use, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
-import { commands } from "@/bindings";
+import { type DatabaseHandle } from "@/bindings";
 import GameInfo from "@/components/common/GameInfo";
+import { IconAction } from "@/components/common/IconAction";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import ConfirmChangesModal from "@/components/tabs/ConfirmChangesModal";
 import { currentTabAtom } from "@/state/atoms";
@@ -25,7 +17,6 @@ import { keyMapAtom } from "@/state/keybinds";
 import { parsePGN } from "@/utils/chess";
 import { formatNumber } from "@/utils/format";
 import { getTabFile, getTabGameNumber } from "@/utils/tabs";
-import { unwrap } from "@/utils/unwrap";
 import FenSearch from "./FenSearch";
 import FileInfo from "./FileInfo";
 import GameSelector from "./GameSelector";
@@ -33,7 +24,8 @@ import classes from "./InfoPanel.module.css";
 import PgnInput from "./PgnInput";
 import { getStats } from "@/utils/repertoire";
 import useSWR from "swr";
-import { getDatabases } from "@/utils/db";
+import { getDatabases, sameDatabaseHandle } from "@/utils/db";
+import { databaseHandleKey } from "@/utils/db";
 import { useNavigate } from "@tanstack/react-router";
 import { useActiveDatabaseViewStore } from "@/state/store/database";
 
@@ -89,11 +81,11 @@ function InfoPanel({ addGame }: { addGame?: () => void }) {
   );
 }
 
-function DatabaseInfo({ path, id: _id }: { path: string; id: number }) {
+function DatabaseInfo({ path, id: _id }: { path: DatabaseHandle; id: number }) {
   const { t } = useTranslation();
   const { data: databases, isLoading } = useSWR("databases", () => getDatabases());
 
-  const dbInfo = databases?.find((db) => db.file === path);
+  const dbInfo = databases?.find((db) => sameDatabaseHandle(db.file, path));
   const navigate = useNavigate();
   const setActiveDatabase = useActiveDatabaseViewStore((store) => store.setDatabase);
 
@@ -108,7 +100,7 @@ function DatabaseInfo({ path, id: _id }: { path: string; id: number }) {
           await navigate({
             to: "/databases/$databaseId",
             params: {
-              databaseId: dbInfo.title,
+              databaseId: databaseHandleKey(dbInfo.file),
             },
           });
           setActiveDatabase(dbInfo);
@@ -167,7 +159,7 @@ function GameSelectorAccordion({
   });
 
   if (!tabFile) return null;
-  const filePath = tabFile.path;
+  const filePath = tabFile.handle;
 
   async function setPage(page: number, forced?: boolean) {
     if (!forced && dirty) {
@@ -176,7 +168,7 @@ function GameSelectorAccordion({
       return;
     }
 
-    const data = unwrap(await commands.readGames(filePath, page, page));
+    const data = await tauri.readGames(filePath, page, page);
     const tree = await parsePGN(data[0]);
     setState(tree);
 
@@ -195,7 +187,7 @@ function GameSelectorAccordion({
   }
 
   async function deleteGame(index: number) {
-    await commands.deleteGame(filePath, index);
+    await tauri.deleteGame(filePath, index);
     setCurrentTab((prev) => {
       if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
         return prev;
@@ -238,19 +230,18 @@ function GameSelectorAccordion({
                 {formatNumber(gameNumber + 1)}. {currentName}
               </Text>
               {addGame && (
-                <Tooltip label={t("Board.Action.AddGame")}>
-                  <ActionIcon
-                    size="sm"
-                    variant="subtle"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      addGame();
-                    }}
-                  >
-                    <IconPlus size="0.9rem" />
-                  </ActionIcon>
-                </Tooltip>
+                <IconAction
+                  label={t("Board.Action.AddGame")}
+                  size="sm"
+                  variant="subtle"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    addGame();
+                  }}
+                >
+                  <IconPlus size="0.9rem" />
+                </IconAction>
               )}
             </Group>
           </Accordion.Control>

@@ -1,4 +1,5 @@
 import { Tabs } from "@mantine/core";
+import { useTranslation } from "react-i18next";
 
 export enum DateRange {
   SevenDays = "7d",
@@ -8,20 +9,20 @@ export enum DateRange {
   AllTime = "all",
 }
 
-const DEFAULT_TIME_RANGES = [
-  { value: DateRange.SevenDays, label: "7 days" },
-  { value: DateRange.ThirtyDays, label: "30 days" },
-  { value: DateRange.NinetyDays, label: "90 days" },
-  { value: DateRange.OneYear, label: "1 year" },
-  { value: DateRange.AllTime, label: "All time" },
-];
-
 interface DateRangeTabsProps {
   timeRange: string | null;
   onTimeRangeChange: (value: string | null) => void;
 }
 
 const DateRangeTabs = ({ timeRange, onTimeRangeChange }: DateRangeTabsProps) => {
+  const { t } = useTranslation();
+  const timeRanges = [
+    { value: DateRange.SevenDays, label: t("Home.Personal.DateRange.Days", { count: 7 }) },
+    { value: DateRange.ThirtyDays, label: t("Home.Personal.DateRange.Days", { count: 30 }) },
+    { value: DateRange.NinetyDays, label: t("Home.Personal.DateRange.Days", { count: 90 }) },
+    { value: DateRange.OneYear, label: t("Home.Personal.DateRange.OneYear") },
+    { value: DateRange.AllTime, label: t("Home.Personal.DateRange.AllTime") },
+  ];
   return (
     <Tabs pt="md" value={timeRange} onChange={onTimeRangeChange}>
       <Tabs.List
@@ -31,7 +32,7 @@ const DateRangeTabs = ({ timeRange, onTimeRangeChange }: DateRangeTabsProps) => 
           width: "100%",
         }}
       >
-        {DEFAULT_TIME_RANGES.map((range) => (
+        {timeRanges.map((range) => (
           <Tabs.Tab key={range.value} value={range.value}>
             {range.label}
           </Tabs.Tab>

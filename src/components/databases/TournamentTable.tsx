@@ -1,3 +1,4 @@
+import { tauri } from "@/platform/tauri";
 import { Center, Flex, Text, TextInput } from "@mantine/core";
 import { IconSearch } from "@tabler/icons-react";
 import { DataTable } from "mantine-datatable";
@@ -6,8 +7,7 @@ import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr";
 import { useStore } from "zustand";
-import { commands, type Event, type TournamentSort } from "@/bindings";
-import { unwrap } from "@/utils/unwrap";
+import { type Event, type TournamentSort } from "@/bindings";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GridLayout from "./GridLayout";
 import classes from "./styles.module.css";
@@ -24,7 +24,7 @@ function TournamentTable() {
   const setSelected = useStore(store, (s) => s.setTournamentsSelectedTournament);
 
   const { data, error, isLoading } = useSWR(["tournaments", file, query], () =>
-    commands.getTournaments(file, query).then(unwrap),
+    tauri.getTournaments(file, query),
   );
   const tournaments = data?.data ?? [];
   const count = data?.count;

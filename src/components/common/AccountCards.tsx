@@ -1,31 +1,25 @@
-import {
-  ActionIcon,
-  Divider,
-  Group,
-  ScrollArea,
-  SimpleGrid,
-  Stack,
-  Text,
-  TextInput,
-} from "@mantine/core";
+import { tauri } from "@/platform/tauri";
+import { Divider, Group, ScrollArea, Stack, Text, TextInput } from "@mantine/core";
 import { IconCheck, IconEdit, IconX } from "@tabler/icons-react";
 import { useAtom, useAtomValue } from "jotai";
 import { useEffect, useRef, useState } from "react";
-import type { DatabaseInfo } from "@/bindings";
+import { useTranslation } from "react-i18next";
 import { sessionsAtom } from "@/state/atoms";
 import { getChessComAccount, getStats } from "@/utils/chess.com/api";
+import type { ManagedDatabaseInfo } from "@/utils/db";
 import { getLichessAccount } from "@/utils/lichess/api";
 import type { Session } from "@/utils/session";
 import { AccountCard } from "../home/AccountCard";
 import { EmptyAccounts } from "../home/EmptyAccounts";
+import IconAction from "./IconAction";
 
 function AccountCards({
   databases,
   setDatabases,
   onAddAccount,
 }: {
-  databases: DatabaseInfo[];
-  setDatabases: React.Dispatch<React.SetStateAction<DatabaseInfo[]>>;
+  databases: ManagedDatabaseInfo[];
+  setDatabases: React.Dispatch<React.SetStateAction<ManagedDatabaseInfo[]>>;
   onAddAccount: () => void;
 }) {
   const sessions = useAtomValue(sessionsAtom);
@@ -69,9 +63,10 @@ function PlayerSession({
 }: {
   name: string;
   sessions: Session[];
-  databases: DatabaseInfo[];
-  setDatabases: React.Dispatch<React.SetStateAction<DatabaseInfo[]>>;
+  databases: ManagedDatabaseInfo[];
+  setDatabases: React.Dispatch<React.SetStateAction<ManagedDatabaseInfo[]>>;
 }) {
+  const { t } = useTranslation();
   const [, setSessions] = useAtom(sessionsAtom);
   const [edit, setEdit] = useState(false);
   const [text, setText] = useState(name);
@@ -105,7 +100,8 @@ function PlayerSession({
         )}
         <Group>
           {edit ? (
-            <ActionIcon
+            <IconAction
+              label={t("Accounts.SaveName", { defaultValue: "Save player name" })}
               size="sm"
               variant="subtle"
               color="green"
@@ -125,9 +121,10 @@ function PlayerSession({
               }}
             >
               <IconCheck />
-            </ActionIcon>
+            </IconAction>
           ) : (
-            <ActionIcon
+            <IconAction
+              label={t("Accounts.EditName", { defaultValue: "Edit player name" })}
               size="sm"
               variant="subtle"
               color="gray"
@@ -136,9 +133,10 @@ function PlayerSession({
               }}
             >
               <IconEdit />
-            </ActionIcon>
+            </IconAction>
           )}
-          <ActionIcon
+          <IconAction
+            label={t("Accounts.Remove", { defaultValue: "Remove account" })}
             size="sm"
             variant="subtle"
             color="red"
@@ -154,7 +152,7 @@ function PlayerSession({
             }
           >
             <IconX />
-          </ActionIcon>
+          </IconAction>
         </Group>
       </Group>
       <Divider />
@@ -180,8 +178,8 @@ function LichessOrChessCom({
   setSessions,
 }: {
   session: Session;
-  databases: DatabaseInfo[];
-  setDatabases: React.Dispatch<React.SetStateAction<DatabaseInfo[]>>;
+  databases: ManagedDatabaseInfo[];
+  setDatabases: React.Dispatch<React.SetStateAction<ManagedDatabaseInfo[]>>;
   setSessions: React.Dispatch<React.SetStateAction<Session[]>>;
 }) {
   if (session.lichess?.account) {
@@ -214,21 +212,29 @@ function LichessOrChessCom({
     return (
       <AccountCard
         key={account.id}
-        token={lichessSession.accessToken}
+        authenticated={Boolean(lichessSession.handle)}
+        accountHandle={lichessSession.handle}
         type="lichess"
         database={databases.find((db) => db.filename === `${account.username}_lichess.db3`) ?? null}
         title={account.username}
         updatedAt={session.updatedAt}
         total={totalGames}
-        logout={() => {
+        logout={async () => {
+          if (lichessSession.handle) {
+            const removal = await tauri.removeLichessAccount(lichessSession.handle);
+            // Do not claim a logout that the native credential manager could not commit.  A
+            // `removed_revocation_pending` result is still locally logged out truthfully.
+            if (removal === "not_found") return;
+          }
           setSessions((sessions) => sessions.filter((s) => s.lichess?.account.id !== account.id));
         }}
         setDatabases={setDatabases}
         reload={async () => {
-          const account = await getLichessAccount({
-            token: lichessSession.accessToken,
-            username: lichessSession.username,
-          });
+          const account = await getLichessAccount(
+            lichessSession.handle
+              ? { handle: lichessSession.handle }
+              : { username: lichessSession.username },
+          );
           if (!account) return;
           setSessions((sessions) =>
             sessions.map((s) =>
@@ -238,7 +244,7 @@ function LichessOrChessCom({
                     lichess: {
                       account: account,
                       username: lichessSession.username,
-                      accessToken: lichessSession.accessToken,
+                      handle: lichessSession.handle,
                     },
                     updatedAt: Date.now(),
                   }

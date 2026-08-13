@@ -1,13 +1,15 @@
+import { tauri } from "@/platform/tauri";
 import { Combobox, Group, InputBase, Loader, ScrollArea, Text, useCombobox } from "@mantine/core";
 import { type FenError, parseFen } from "chessops/fen";
 import { use, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import { useStore } from "zustand";
-import { commands } from "@/bindings";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { chessopsError } from "@/utils/chessops";
 
 export default function FenSearch({ currentFen: currentFenInput }: { currentFen?: string }) {
+  const { t } = useTranslation();
   const combobox = useCombobox({
     onDropdownClose: () => combobox.resetSelectedOption(),
   });
@@ -49,13 +51,7 @@ export default function FenSearch({ currentFen: currentFenInput }: { currentFen?
 
   const { data, isLoading } = useSWRImmutable(
     hasTyped ? ["search_opening_name", search] : null,
-    async ([, search]) => {
-      const res = await commands.searchOpeningName(search);
-      if (res.status === "ok") {
-        return res.data;
-      }
-      throw new Error(res.error);
-    },
+    async ([, search]) => tauri.searchOpeningName(search),
   );
 
   const exactOptionMatch = data?.some((item) => item.fen === search);
@@ -120,7 +116,7 @@ export default function FenSearch({ currentFen: currentFenInput }: { currentFen?
             }
             prev.current = event.nativeEvent.code;
           }}
-          placeholder="Enter FEN"
+          placeholder={t("Fen.Enter")}
           rightSectionPointerEvents="none"
         />
       </Combobox.Target>

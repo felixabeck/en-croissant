@@ -1,4 +1,4 @@
-import { ActionIcon, Paper, Stack, Tabs, Text, useMantineTheme } from "@mantine/core";
+import { Paper, Stack, Tabs, Text, useMantineTheme } from "@mantine/core";
 import { IconEye } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom, useSetAtom } from "jotai";
@@ -8,7 +8,8 @@ import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
-import type { Event, NormalizedGame } from "@/bindings";
+import type { DatabaseHandle, Event, NormalizedGame } from "@/bindings";
+import { IconAction } from "@/components/common/IconAction";
 import { activeTabAtom, tabsAtom } from "@/state/atoms";
 import type { DatabaseViewStore } from "@/state/store/database";
 import { getTournamentGames } from "@/utils/db";
@@ -30,7 +31,7 @@ const gamePoints = (game: NormalizedGame, player: string) => {
     .otherwise(() => 0);
 };
 
-function TournamentCard({ tournament, file }: { tournament: Event; file: string }) {
+function TournamentCard({ tournament, file }: { tournament: Event; file: DatabaseHandle }) {
   const { t } = useTranslation();
   const store = useContext(DatabaseViewStateContext)!;
   const tournamentsActiveTab = useStore(store, (s) => s.tournaments.activeTab);
@@ -45,7 +46,7 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: string 
 
   const { data: games, isLoading } = useSWRImmutable(
     ["tournament-games", file, tournament.id],
-    async ([key, file, id]) => {
+    async ([_key, file, id]) => {
       const games = await getTournamentGames(file, id);
       return games.data;
     },
@@ -139,7 +140,8 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: string 
                   accessor: "actions",
                   title: "",
                   render: (game) => (
-                    <ActionIcon
+                    <IconAction
+                      label={t("Common.Open")}
                       variant="filled"
                       color={theme.primaryColor}
                       onClick={() => {
@@ -162,7 +164,7 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: string 
                       }}
                     >
                       <IconEye size="1rem" stroke={1.5} />
-                    </ActionIcon>
+                    </IconAction>
                   ),
                 },
                 {
@@ -207,7 +209,7 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: string 
               columns={[
                 {
                   accessor: "rank",
-                  title: "#",
+                  title: t("Databases.Tournament.Rank"),
                   width: "2.5rem",
                   render: (player, index) => (
                     <Text size="sm" fw={500}>
@@ -217,7 +219,7 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: string 
                 },
                 {
                   accessor: "name",
-                  title: "Player",
+                  title: t("Databases.Tournament.Player"),
                   render: (player) => (
                     <Text size="sm" fw={500}>
                       {player.name}
@@ -226,7 +228,7 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: string 
                 },
                 {
                   accessor: "points",
-                  title: "Points",
+                  title: t("Databases.Tournament.Points"),
                   render: (player) => (
                     <Text size="sm" fw={500}>
                       {player.points}

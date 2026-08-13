@@ -1,13 +1,4 @@
-import {
-  ActionIcon,
-  Center,
-  Collapse,
-  Flex,
-  Group,
-  NumberInput,
-  Text,
-  TextInput,
-} from "@mantine/core";
+import { Center, Collapse, Flex, Group, NumberInput, Text, TextInput } from "@mantine/core";
 import { IconDotsVertical, IconSearch } from "@tabler/icons-react";
 import { DataTable } from "mantine-datatable";
 import { useContext, useState } from "react";
@@ -16,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import useSWR from "swr";
 import { useStore } from "zustand";
 import type { Player, PlayerSort } from "@/bindings";
+import { IconAction } from "@/components/common/IconAction";
 import { query_players } from "@/utils/db";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GridLayout from "./GridLayout";
@@ -82,9 +74,14 @@ function PlayerTable() {
                 })
               }
             />
-            <ActionIcon style={{ flexGrow: 0 }} onClick={() => setOpen((prev) => !prev)}>
+            <IconAction
+              label={t("Common.MoreOptions")}
+              pressed={open}
+              style={{ flexGrow: 0 }}
+              onClick={() => setOpen((prev) => !prev)}
+            >
               <IconDotsVertical size="1rem" />
-            </ActionIcon>
+            </IconAction>
           </Flex>
 
           <Collapse in={open}>

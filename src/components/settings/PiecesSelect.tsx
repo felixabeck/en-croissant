@@ -1,17 +1,9 @@
-import {
-  Box,
-  Combobox,
-  Flex,
-  Input,
-  InputBase,
-  ScrollArea,
-  Text,
-  useCombobox,
-} from "@mantine/core";
+import { Box, Flex, Text } from "@mantine/core";
 import { useAtom } from "jotai";
 import { useTranslation } from "react-i18next";
 import { pieceSetAtom } from "@/state/atoms";
 import PieceComponent from "../common/Piece";
+import { SettingsCombobox } from "./SettingsCombobox";
 
 type Item = {
   label: string;
@@ -66,66 +58,26 @@ function DisplayPieces() {
 
 export default function PiecesSelect() {
   const { t } = useTranslation();
-  const combobox = useCombobox({
-    onDropdownClose: () => combobox.resetSelectedOption(),
-  });
-
   const [pieceSet, setPieceSet] = useAtom(pieceSetAtom);
 
-  const options = pieceSets.map((item) => (
-    <Combobox.Option
-      value={item.value}
-      key={item.value}
-      onMouseOver={() => setPieceSet(item.value)}
-    >
-      <Text fz="sm" fw={500}>
-        {item.label}
-      </Text>
-    </Combobox.Option>
-  ));
-
-  const selected = pieceSets.find((p) => p.value === pieceSet);
-
   return (
-    <div>
-      <Flex justify="space-between" align="center" gap="md">
-        <DisplayPieces />
-        <Combobox
-          store={combobox}
-          withinPortal={false}
-          onOptionSubmit={(val) => {
-            setPieceSet(val);
-            combobox.closeDropdown();
-          }}
-        >
-          <Combobox.Target>
-            <InputBase
-              component="button"
-              type="button"
-              pointer
-              onClick={() => combobox.toggleDropdown()}
-              multiline
-              w="10rem"
-            >
-              {selected ? (
-                <Text fz="sm" fw={500}>
-                  {selected.label}
-                </Text>
-              ) : (
-                <Input.Placeholder>{t("Common.PickValue")}</Input.Placeholder>
-              )}
-            </InputBase>
-          </Combobox.Target>
-
-          <Combobox.Dropdown>
-            <Combobox.Options>
-              <ScrollArea.Autosize mah={200} type="always" scrollbars="y">
-                {options}
-              </ScrollArea.Autosize>
-            </Combobox.Options>
-          </Combobox.Dropdown>
-        </Combobox>
-      </Flex>
-    </div>
+    <Flex justify="space-between" align="center" gap="md" wrap="wrap">
+      <DisplayPieces />
+      <SettingsCombobox
+        ariaLabel={t("Settings.Appearance.PieceSet")}
+        value={pieceSet}
+        width="10rem"
+        data={pieceSets.map((item) => ({
+          value: item.value,
+          label: (
+            <Text fz="sm" fw={500}>
+              {item.label}
+            </Text>
+          ),
+        }))}
+        onPreview={setPieceSet}
+        onCommit={setPieceSet}
+      />
+    </Flex>
   );
 }

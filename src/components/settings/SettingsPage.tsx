@@ -1,5 +1,5 @@
+import { tauri } from "@/platform/tauri";
 import {
-  ActionIcon,
   Card,
   Group,
   ScrollArea,
@@ -10,9 +10,9 @@ import {
   Tabs,
   Text,
   TextInput,
-  Tooltip,
+  Title,
 } from "@mantine/core";
-import { useHotkeys } from "@mantine/hooks";
+import { useHotkeys, useMediaQuery } from "@mantine/hooks";
 import {
   IconBook,
   IconBrush,
@@ -27,12 +27,12 @@ import {
   IconVolume,
 } from "@tabler/icons-react";
 import { useLoaderData } from "@tanstack/react-router";
-import { open } from "@tauri-apps/plugin-dialog";
+import { notifications } from "@mantine/notifications";
 import { useAtom } from "jotai";
 import { RESET } from "jotai/utils";
-import posthog from "posthog-js";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { changeLocale } from "@/i18n";
 import {
   autoPromoteAtom,
   autoSaveAtom,
@@ -55,21 +55,24 @@ import {
   showVariationArrowsAtom,
   snapArrowsAtom,
   spellCheckAtom,
-  storedDatabasesDirAtom,
-  storedDocumentDirAtom,
-  storedEnginesDirAtom,
-  storedPuzzlesDirAtom,
+  fileWorkspaceAtom,
+  fileWorkspaceDisplayNameAtom,
   telemetryEnabledAtom,
+  puzzleWorkspaceGenerationAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
-import FileInput from "../common/FileInput";
+import { analytics } from "@/platform/analytics";
+import { normalizeError } from "@/platform/errors";
+import { IconAction } from "../common/IconAction";
 import BoardSelect from "./BoardSelect";
 import ColorControl from "./ColorControl";
 import FontSizeSlider from "./FontSizeSlider";
 import KeybindInput from "./KeybindInput";
 import PiecesSelect from "./PiecesSelect";
 import RepertoireMinGamesSetting from "./RepertoireMinGamesSetting";
+import { DirectorySetting } from "./DirectorySetting";
 import classes from "./SettingsPage.module.css";
+import { SettingRow } from "./SettingsLayout";
 import SettingsSwitch from "./SettingsSwitch";
 import SoundSelect from "./SoundSelect";
 import ThemeButton from "./ThemeButton";
@@ -95,41 +98,12 @@ interface SettingItem {
   render: () => React.ReactNode;
 }
 
-function SettingRow({
-  title,
-  description,
-  children,
-  highlight,
-}: {
-  title: string;
-  description: string;
-  children: React.ReactNode;
-  highlight?: boolean;
-}) {
-  return (
-    <Group
-      justify="space-between"
-      wrap="nowrap"
-      gap="xl"
-      className={classes.item}
-      style={highlight ? { backgroundColor: "var(--mantine-color-yellow-light)" } : undefined}
-    >
-      <div>
-        <Text>{title}</Text>
-        <Text size="xs" c="dimmed">
-          {description}
-        </Text>
-      </div>
-      {children}
-    </Group>
-  );
-}
-
 function TelemetrySwitch() {
   const { t } = useTranslation();
   const [enabled, setEnabled] = useAtom(telemetryEnabledAtom);
   return (
     <Switch
+      aria-label={t("Settings.Privacy.Telemetry")}
       onLabel={t("Common.On")}
       offLabel={t("Common.Off")}
       size="lg"
@@ -137,14 +111,12 @@ function TelemetrySwitch() {
       onChange={(event) => {
         const newValue = event.currentTarget.checked;
         setEnabled(newValue);
-        if (newValue) {
-          posthog.opt_in_capturing();
-        } else {
-          posthog.opt_out_capturing();
-        }
+        if (newValue) analytics.enable();
+        else analytics.disable();
       }}
       styles={{
         track: { cursor: "pointer" },
+        thumb: { pointerEvents: "none" },
       }}
     />
   );
@@ -152,28 +124,36 @@ function TelemetrySwitch() {
 
 export default function Page() {
   const { t, i18n } = useTranslation();
+  const compactTabs = useMediaQuery("(max-width: 50rem)");
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const [keyMap, setKeyMap] = useAtom(keyMapAtom);
   const [isNative, setIsNative] = useAtom(nativeBarAtom);
-  const {
-    dirs: {
-      documentDir,
-      databasesDir: defaultDatabasesDir,
-      enginesDir: defaultEnginesDir,
-      puzzlesDir: defaultPuzzlesDir,
+  const { version } = useLoaderData({ from: "/settings" });
+  const [, setFileWorkspace] = useAtom(fileWorkspaceAtom);
+  const [fileWorkspaceDisplayName, setFileWorkspaceDisplayName] = useAtom(
+    fileWorkspaceDisplayNameAtom,
+  );
+  const [databasesDirectory, setDatabasesDirectory] = useState("Databases");
+  const [enginesDirectory, setEnginesDirectory] = useState("Engines");
+  const [puzzleWorkspaceName, setPuzzleWorkspaceName] = useState("Puzzles");
+  const [, setPuzzleWorkspaceGeneration] = useAtom(puzzleWorkspaceGenerationAtom);
+  const showDirectoryError = useCallback(
+    (error: unknown) => {
+      const normalized = normalizeError(error);
+      if (normalized.category !== "cancelled") {
+        notifications.show({ color: "red", title: t("Common.Error"), message: normalized.message });
+      }
     },
-    version,
-  } = useLoaderData({ from: "/settings" });
-  let [filesDirectory, setFilesDirectory] = useAtom(storedDocumentDirAtom);
-  filesDirectory = filesDirectory || documentDir;
-  let [databasesDirectory, setDatabasesDirectory] = useAtom(storedDatabasesDirAtom);
-  databasesDirectory = databasesDirectory || defaultDatabasesDir;
-  let [enginesDirectory, setEnginesDirectory] = useAtom(storedEnginesDirAtom);
-  enginesDirectory = enginesDirectory || defaultEnginesDir;
-  let [puzzlesDirectory, setPuzzlesDirectory] = useAtom(storedPuzzlesDirAtom);
-  puzzlesDirectory = puzzlesDirectory || defaultPuzzlesDir;
+    [t],
+  );
+  useEffect(() => {
+    void tauri
+      .getPuzzleWorkspace()
+      .then((workspace) => setPuzzleWorkspaceName(workspace.displayName))
+      .catch(() => {});
+  }, []);
 
   const [moveMethod, setMoveMethod] = useAtom(moveMethodAtom);
   const [moveNotationType, setMoveNotationType] = useAtom(moveNotationTypeAtom);
@@ -397,6 +377,7 @@ export default function Page() {
         keywords: ["language", "locale", "translation"],
         render: () => (
           <Select
+            aria-label={t("Settings.Appearance.Language")}
             allowDeselect={false}
             data={[
               { value: "be_BY", label: "Belarusian" },
@@ -416,9 +397,9 @@ export default function Page() {
               { value: "ko_KR", label: "한국어" },
               { value: "de_DE", label: "Deutsch" },
             ]}
-            value={i18n.language.replace("-", "_")}
+            value={(i18n.resolvedLanguage || i18n.language || "en-US").replace("-", "_")}
             onChange={(val) => {
-              i18n.changeLanguage(val?.replace("_", "-") || "en-US");
+              void changeLocale(val?.replace("_", "-") || "en-US");
             }}
           />
         ),
@@ -433,6 +414,7 @@ export default function Page() {
               keywords: ["title", "bar", "native", "custom"],
               render: () => (
                 <Select
+                  aria-label={t("Settings.Appearance.TitleBar")}
                   allowDeselect={false}
                   data={[
                     {
@@ -542,16 +524,15 @@ export default function Page() {
         description: t("Settings.Directories.Files.Desc"),
         keywords: ["files", "directory", "folder", "path"],
         render: () => (
-          <FileInput
-            onClick={async () => {
-              const selected = await open({
-                multiple: false,
-                directory: true,
-              });
-              if (!selected || typeof selected !== "string") return;
-              setFilesDirectory(selected);
+          <DirectorySetting
+            value={fileWorkspaceDisplayName || null}
+            issueWorkspace={async () => {
+              const workspace = await tauri.issueFileWorkspace();
+              setFileWorkspace(workspace.handle);
+              return workspace.displayName;
             }}
-            filename={filesDirectory || null}
+            onSelect={setFileWorkspaceDisplayName}
+            onError={showDirectoryError}
           />
         ),
       },
@@ -562,16 +543,14 @@ export default function Page() {
         description: t("Settings.Directories.Databases.Desc"),
         keywords: ["databases", "directory", "folder", "path"],
         render: () => (
-          <FileInput
-            onClick={async () => {
-              const selected = await open({
-                multiple: false,
-                directory: true,
-              });
-              if (!selected || typeof selected !== "string") return;
-              setDatabasesDirectory(selected);
+          <DirectorySetting
+            value={databasesDirectory || null}
+            issueWorkspace={async () => {
+              await tauri.issueDatabaseWorkspace();
+              return "Databases";
             }}
-            filename={databasesDirectory || null}
+            onSelect={setDatabasesDirectory}
+            onError={showDirectoryError}
           />
         ),
       },
@@ -582,16 +561,14 @@ export default function Page() {
         description: t("Settings.Directories.Engines.Desc"),
         keywords: ["engines", "directory", "folder", "path"],
         render: () => (
-          <FileInput
-            onClick={async () => {
-              const selected = await open({
-                multiple: false,
-                directory: true,
-              });
-              if (!selected || typeof selected !== "string") return;
-              setEnginesDirectory(selected);
+          <DirectorySetting
+            value={enginesDirectory}
+            issueWorkspace={async () => {
+              await tauri.issueEngineWorkspace();
+              return "Engines";
             }}
-            filename={enginesDirectory || null}
+            onSelect={setEnginesDirectory}
+            onError={showDirectoryError}
           />
         ),
       },
@@ -602,16 +579,14 @@ export default function Page() {
         description: t("Settings.Directories.Puzzles.Desc"),
         keywords: ["puzzles", "directory", "folder", "path"],
         render: () => (
-          <FileInput
-            onClick={async () => {
-              const selected = await open({
-                multiple: false,
-                directory: true,
-              });
-              if (!selected || typeof selected !== "string") return;
-              setPuzzlesDirectory(selected);
+          <DirectorySetting
+            value={puzzleWorkspaceName}
+            issueWorkspace={async () => (await tauri.issuePuzzleWorkspace()).displayName}
+            onSelect={(name) => {
+              setPuzzleWorkspaceName(name);
+              setPuzzleWorkspaceGeneration((generation) => generation + 1);
             }}
-            filename={puzzlesDirectory || null}
+            onError={showDirectoryError}
           />
         ),
       },
@@ -633,21 +608,23 @@ export default function Page() {
       isNative,
       showCoordinates,
       materialDisplay,
-      filesDirectory,
+      fileWorkspaceDisplayName,
       databasesDirectory,
       enginesDirectory,
-      puzzlesDirectory,
+      puzzleWorkspaceName,
       setMoveNotationType,
       setMoveMethod,
       setIsNative,
-      setFilesDirectory,
+      setFileWorkspace,
+      setFileWorkspaceDisplayName,
       setDatabasesDirectory,
       setEnginesDirectory,
-      setPuzzlesDirectory,
+      setPuzzleWorkspaceGeneration,
       setShowCoordinates,
       setMaterialDisplay,
       practiceAutoDifficulty,
       setPracticeAutoDifficulty,
+      showDirectoryError,
     ],
   );
 
@@ -727,7 +704,7 @@ export default function Page() {
       return (
         <Card withBorder p="lg" className={classes.card} w="100%">
           <Text c="dimmed" ta="center">
-            No settings found for "{searchQuery}"
+            {t("Settings.Search.NoResults", { query: searchQuery })}
           </Text>
         </Card>
       );
@@ -777,7 +754,10 @@ export default function Page() {
 
   return (
     <Stack h="100%" gap={0}>
-      <Group px="md" pt="md" pb="sm">
+      <Group px="md" pt="md" pb="sm" className={classes.searchRow}>
+        <Title order={1} size="h3">
+          {t("SideBar.Settings")}
+        </Title>
         <TextInput
           ref={searchInputRef}
           placeholder={t("Common.Search")}
@@ -800,15 +780,15 @@ export default function Page() {
         <ScrollArea flex={1} px="md">
           {renderSearchResults()}
           <Text size="xs" c="dimmed" ta="right" py="md">
-            En Croissant v{version}
+            {t("Settings.Version", { version })}
           </Text>
         </ScrollArea>
       ) : (
         <Tabs
           defaultValue="board"
-          orientation="vertical"
+          orientation={compactTabs ? "horizontal" : "vertical"}
           flex={1}
-          style={{ overflow: "hidden" }}
+          className={classes.settingsTabs}
           styles={{
             tabLabel: {
               textAlign: "left",
@@ -844,8 +824,8 @@ export default function Page() {
               {t("Settings.Privacy")}
             </Tabs.Tab>
           </Tabs.List>
-          <Stack flex={1} px="md">
-            <ScrollArea>
+          <Stack flex={1} px="md" className={classes.settingsContent}>
+            <ScrollArea className={classes.settingsScroll}>
               <Card withBorder p="lg" className={classes.card} w="100%">
                 <Tabs.Panel value="board">
                   <Text size="lg" fw={500} className={classes.title}>
@@ -902,11 +882,9 @@ export default function Page() {
                     <Text size="lg" fw={500} className={classes.title}>
                       {t("Settings.Keybinds")}
                     </Text>
-                    <Tooltip label={t("Common.Reset")}>
-                      <ActionIcon onClick={() => setKeyMap(RESET)}>
-                        <IconReload size="1rem" />
-                      </ActionIcon>
-                    </Tooltip>
+                    <IconAction label={t("Common.Reset")} onClick={() => setKeyMap(RESET)}>
+                      <IconReload size="1rem" />
+                    </IconAction>
                   </Group>
                   <Text size="xs" c="dimmed" mt={3} mb="lg">
                     {t("Settings.Keybinds.Desc")}
@@ -965,7 +943,7 @@ export default function Page() {
               </Card>
             </ScrollArea>
             <Text size="xs" c="dimmed" ta="right">
-              En Croissant v{version}
+              {t("Settings.Version", { version })}
             </Text>
           </Stack>
         </Tabs>

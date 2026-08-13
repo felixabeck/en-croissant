@@ -1,12 +1,13 @@
-import { ActionIcon, Box, Group, Kbd } from "@mantine/core";
+import { Button, Group, Kbd } from "@mantine/core";
 import { IconCheck, IconX } from "@tabler/icons-react";
-import { platform } from "@tauri-apps/plugin-os";
+import { platform } from "@/platform/native";
 import cx from "clsx";
 import { useAtom } from "jotai";
 import { useState } from "react";
 import { useRecordHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { keyMapAtom } from "@/state/keybinds";
+import { IconAction } from "../common/IconAction";
 import classes from "./KeybindInput.module.css";
 
 function KeybindInput({
@@ -26,13 +27,16 @@ function KeybindInput({
   return (
     <>
       {!isRecording ? (
-        <Box
+        <Button
+          variant="subtle"
+          color="gray"
+          aria-label={keybind.name}
           onMouseEnter={() => setHovering(true)}
           onMouseLeave={() => setHovering(false)}
           onClick={() => start()}
         >
           <KbdDisplay keys={keybind.keys} hovering={hovering} />
-        </Box>
+        </Button>
       ) : (
         <ShortcutInput keys={keys} stop={stop} action={action} />
       )}
@@ -94,7 +98,8 @@ function ShortcutInput({
       ) : (
         <KbdDisplay keys={stringed} hovering={false} />
       )}
-      <ActionIcon
+      <IconAction
+        label={t("Common.Cancel")}
         variant="outline"
         color="red"
         onClick={() => {
@@ -102,8 +107,9 @@ function ShortcutInput({
         }}
       >
         <IconX />
-      </ActionIcon>
-      <ActionIcon
+      </IconAction>
+      <IconAction
+        label={t("Common.Save")}
         variant="outline"
         color="green"
         disabled={stringed === ""}
@@ -119,7 +125,7 @@ function ShortcutInput({
         }}
       >
         <IconCheck />
-      </ActionIcon>
+      </IconAction>
     </Group>
   );
 }

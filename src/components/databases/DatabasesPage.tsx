@@ -1,5 +1,5 @@
+import { tauri } from "@/platform/tauri";
 import {
-  ActionIcon,
   Box,
   Button,
   Center,
@@ -24,33 +24,33 @@ import {
 import { useDebouncedValue, useToggle } from "@mantine/hooks";
 import { IconArrowRight, IconDatabase, IconPlus, IconSearch } from "@tabler/icons-react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { basename } from "@tauri-apps/api/path";
-import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { useAtom } from "jotai";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import useSWR from "swr";
-import type { DatabaseInfo } from "@/bindings";
-import { commands } from "@/bindings";
+import useSWR, { useSWRConfig } from "swr";
+import type { DatabaseHandle, DatabaseInfo } from "@/bindings";
+import { IconAction } from "@/components/common/IconAction";
+import { databaseConversionStateAtom, referenceDbAtom } from "@/state/atoms";
+import { activeDatabaseViewStore, useActiveDatabaseViewStore } from "@/state/store/database";
 import {
-  databaseConversionStateAtom,
-  referenceDbAtom,
-  storedDatabasesDirAtom,
-} from "@/state/atoms";
-import { useActiveDatabaseViewStore } from "@/state/store/database";
-import { getDatabases, type SuccessDatabaseInfo } from "@/utils/db";
+  databaseHandleKey,
+  getDatabases,
+  sameDatabaseHandle,
+  type SuccessDatabaseInfo,
+} from "@/utils/db";
+import { pickPgnFile } from "@/utils/files";
 import { formatBytes, formatNumber } from "@/utils/format";
-import { unwrap } from "@/utils/unwrap";
 import ConfirmModal from "../common/ConfirmModal";
 import GenericCard from "../common/GenericCard";
-import OpenFolderButton from "../common/OpenFolderButton";
 import AddDatabase from "./AddDatabase";
+import { deleteDatabaseAndInvalidate, invalidateDeletedDatabase } from "./databaseMutation";
 import { PlayerSearchInput } from "./PlayerSearchInput";
 
 export default function DatabasesPage() {
   const { t } = useTranslation();
 
-  const { data: databases, isLoading, mutate } = useSWR("databases", () => getDatabases());
+  const { data: databases, error, isLoading, mutate } = useSWR("databases", () => getDatabases());
+  const { mutate: mutateCache } = useSWRConfig();
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -58,7 +58,7 @@ export default function DatabasesPage() {
   const [referenceDatabase, setReferenceDatabase] = useAtom(referenceDbAtom);
   const [conversionState, setConversionState] = useAtom(databaseConversionStateAtom);
   const selectedDatabase = useMemo(
-    () => (databases ?? []).find((db) => db.file === selected) ?? null,
+    () => (databases ?? []).find((db) => databaseHandleKey(db.file) === selected) ?? null,
     [databases, selected],
   );
   const visibleDatabases = useMemo(() => {
@@ -67,7 +67,7 @@ export default function DatabasesPage() {
         return true;
       }
 
-      return item.file !== conversionState.targetDatabasePath;
+      return !sameDatabaseHandle(item.file, conversionState.targetDatabasePath);
     });
   }, [databases, conversionState.inProgress, conversionState.targetDatabasePath]);
   const filteredDatabases = useMemo(() => {
@@ -79,7 +79,6 @@ export default function DatabasesPage() {
     return visibleDatabases.filter((item) => {
       const values = [
         item.filename,
-        item.file,
         item.type === "success" ? item.title : item.error,
         item.type === "success" ? item.description : "",
       ];
@@ -88,18 +87,51 @@ export default function DatabasesPage() {
     });
   }, [visibleDatabases, search]);
   const hasSearch = search.trim().length > 0;
-  const [databaseDir] = useAtom(storedDatabasesDirAtom);
   // const [, setStorageSelected] = useAtom(selectedDatabaseAtom);
   const setActiveDatabase = useActiveDatabaseViewStore((store) => store.setDatabase);
 
-  const isReference = referenceDatabase === selectedDatabase?.file;
+  const isReference = sameDatabaseHandle(referenceDatabase, selectedDatabase?.file);
 
-  const [deleteModal, toggleDeleteModal] = useToggle();
+  const [deleteModal, setDeleteModal] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
 
-  function changeReferenceDatabase(file: string) {
-    commands.clearGames();
-    if (file === referenceDatabase) {
+  function invalidateDeletedDatabaseState(deleted: DatabaseHandle) {
+    setSelected(
+      (currentSelected) =>
+        invalidateDeletedDatabase(deleted, {
+          selected: currentSelected,
+          reference: referenceDatabase,
+          active: activeDatabaseViewStore.getState().database,
+        }).selected,
+    );
+    if (sameDatabaseHandle(referenceDatabase, deleted)) {
+      setReferenceDatabase(null);
+      void tauri.clearGames();
+    }
+    if (sameDatabaseHandle(activeDatabaseViewStore.getState().database?.file, deleted)) {
+      activeDatabaseViewStore.getState().clearDatabase();
+    }
+    // Clear every result-set cache bound to this exact opaque handle. A later
+    // revalidation must never resurrect data belonging to the deleted database.
+    void mutateCache(
+      (key) =>
+        Array.isArray(key) &&
+        key.length > 1 &&
+        typeof key[1] === "object" &&
+        key[1] !== null &&
+        "id" in key[1] &&
+        "kind" in key[1] &&
+        key[1].kind === "database" &&
+        sameDatabaseHandle(key[1] as DatabaseHandle, deleted),
+      undefined,
+      { revalidate: false },
+    );
+    void mutate();
+  }
+
+  function changeReferenceDatabase(file: DatabaseHandle) {
+    void tauri.clearGames();
+    if (sameDatabaseHandle(file, referenceDatabase)) {
       setReferenceDatabase(null);
     } else {
       setReferenceDatabase(file);
@@ -108,19 +140,19 @@ export default function DatabasesPage() {
   const navigate = useNavigate();
 
   return (
-    <Stack h="100%">
+    <Stack h="100%" style={{ overflow: "auto" }}>
       <ConfirmModal
         title={t("Databases.Delete.Title")}
         description={t("Databases.Delete.Message")}
         opened={deleteModal}
-        onClose={toggleDeleteModal}
-        onConfirm={() => {
+        onClose={() => setDeleteModal(false)}
+        onConfirm={async () => {
           if (!selectedDatabase) return;
-          commands.deleteDatabase(selectedDatabase.file).then(() => {
-            mutate();
-            setSelected(null);
-          });
-          toggleDeleteModal();
+          await deleteDatabaseAndInvalidate(
+            selectedDatabase.file,
+            tauri.deleteDatabase,
+            invalidateDeletedDatabaseState,
+          );
         }}
       />
 
@@ -150,11 +182,23 @@ export default function DatabasesPage() {
 
       <Group align="baseline" pl="lg" py="sm">
         <Title>{t("Databases.Title")}</Title>
-        <OpenFolderButton base="Database" folder={databaseDir} />
       </Group>
 
-      <Group grow flex={1} style={{ overflow: "hidden" }} align="start" px="md" pb="md">
-        <Paper withBorder style={{ borderWidth: 2 }} h="100%">
+      <SimpleGrid
+        cols={{ base: 1, sm: 2 }}
+        flex={1}
+        px="md"
+        pb="md"
+        mih={0}
+        style={{ minWidth: 0 }}
+      >
+        <Paper
+          withBorder
+          style={{ borderWidth: 2 }}
+          miw={0}
+          mih={{ base: "20rem", sm: 0 }}
+          h={{ sm: "100%" }}
+        >
           <Stack gap={0} h="100%" style={{ overflow: "hidden" }}>
             <Group p="xs" gap="xs">
               <Input
@@ -165,16 +209,15 @@ export default function DatabasesPage() {
                 value={search}
                 onChange={(e) => setSearch(e.currentTarget.value)}
               />
-              <Tooltip label={t("Common.AddNew")}>
-                <ActionIcon
-                  variant="default"
-                  size="lg"
-                  onClick={() => setOpen(true)}
-                  disabled={conversionState.inProgress}
-                >
-                  <IconPlus size="1rem" />
-                </ActionIcon>
-              </Tooltip>
+              <IconAction
+                label={t("Common.AddNew")}
+                variant="default"
+                size="lg"
+                onClick={() => setOpen(true)}
+                disabled={conversionState.inProgress}
+              >
+                <IconPlus size="1rem" />
+              </IconAction>
             </Group>
             <Divider />
             {conversionState.inProgress && (
@@ -190,7 +233,7 @@ export default function DatabasesPage() {
                   </Group>
                   {conversionState.totalGames > 0 && (
                     <Text size="xs" c="dimmed">
-                      {conversionState.totalGames} games
+                      {t("Files.GameCountSuffix", { number: conversionState.totalGames })}
                       {conversionState.elapsedSeconds > 0
                         ? ` • ${(conversionState.totalGames / conversionState.elapsedSeconds).toFixed(1)} games/s`
                         : ""}
@@ -200,7 +243,17 @@ export default function DatabasesPage() {
                 <Divider />
               </>
             )}
-            <ScrollArea flex={1}>
+            <ScrollArea
+              flex={1}
+              viewportProps={{ tabIndex: 0, "aria-label": t("Databases.Title") }}
+            >
+              {error && (
+                <Text role="alert" c="red" p="md">
+                  {t("Databases.LoadError", {
+                    defaultValue: "Could not load databases. Please try again.",
+                  })}
+                </Text>
+              )}
               <SimpleGrid cols={{ base: 1, md: 2 }} spacing={{ base: "md", md: "sm" }} p="xs">
                 {isLoading && (
                   <>
@@ -212,9 +265,9 @@ export default function DatabasesPage() {
                 {!isLoading &&
                   filteredDatabases?.map((item) => (
                     <GenericCard
-                      id={item.file}
-                      key={item.filename}
-                      isSelected={selectedDatabase?.filename === item.filename}
+                      id={databaseHandleKey(item.file)}
+                      key={databaseHandleKey(item.file)}
+                      isSelected={sameDatabaseHandle(selectedDatabase?.file, item.file)}
                       setSelected={setSelected}
                       error={item.type === "error" ? item.error : ""}
                       onDoubleClick={() => {
@@ -222,7 +275,7 @@ export default function DatabasesPage() {
                         navigate({
                           to: "/databases/$databaseId",
                           params: {
-                            databaseId: item.title,
+                            databaseId: databaseHandleKey(item.file),
                           },
                         });
                         setActiveDatabase(item);
@@ -237,12 +290,12 @@ export default function DatabasesPage() {
                                 {item.type === "success" ? item.title : item.error}
                               </Text>
                               <Text size="xs" c="dimmed" style={{ wordWrap: "break-word" }}>
-                                {item.type === "error" ? item.file : item.description}
+                                {item.type === "error" ? item.filename : item.description}
                               </Text>
                             </Box>
                           </Group>
                           <Rating
-                            value={referenceDatabase === item.file ? 1 : 0}
+                            value={sameDatabaseHandle(referenceDatabase, item.file) ? 1 : 0}
                             count={1}
                             onChange={() => {
                               changeReferenceDatabase(item.file);
@@ -286,7 +339,14 @@ export default function DatabasesPage() {
         </Paper>
 
         {selectedDatabase === null ? (
-          <Paper withBorder style={{ borderWidth: 2 }} p="md" h="100%">
+          <Paper
+            withBorder
+            style={{ borderWidth: 2 }}
+            p="md"
+            miw={0}
+            mih={{ base: "20rem", sm: 0 }}
+            h={{ sm: "100%" }}
+          >
             <Center h="100%">
               <Stack align="center" gap="sm">
                 <ThemeIcon size={80} radius="100%" variant="light" color="gray">
@@ -299,7 +359,14 @@ export default function DatabasesPage() {
             </Center>
           </Paper>
         ) : (
-          <Paper withBorder style={{ borderWidth: 2 }} p="md" h="100%">
+          <Paper
+            withBorder
+            style={{ borderWidth: 2 }}
+            p="md"
+            miw={0}
+            mih={{ base: "20rem", sm: 0 }}
+            h={{ sm: "100%" }}
+          >
             <ScrollArea h="100%" offsetScrollbars>
               <Stack>
                 {selectedDatabase.type === "error" ? (
@@ -370,7 +437,7 @@ export default function DatabasesPage() {
                       {selectedDatabase.type === "success" && (
                         <Button
                           component={Link}
-                          to={`/databases/${selectedDatabase.title}`}
+                          to={`/databases/${databaseHandleKey(selectedDatabase.file)}`}
                           onClick={() => setActiveDatabase(selectedDatabase)}
                           fullWidth
                           variant="default"
@@ -398,20 +465,10 @@ export default function DatabasesPage() {
                         variant="default"
                         rightSection={<IconPlus size="1rem" />}
                         onClick={async () => {
-                          const selected = await openDialog({
-                            multiple: true,
-                            filters: [{ name: "PGN", extensions: ["pgn", "pgn.zst"] }],
-                          });
+                          const selected = await pickPgnFile();
                           if (!selected) return;
-
-                          const files = Array.isArray(selected) ? selected : [selected];
-                          if (files.length === 0) return;
-
-                          const firstFileName = await basename(files[0]);
-                          const sourceFileName =
-                            files.length > 1
-                              ? `${firstFileName} (+${files.length - 1})`
-                              : firstFileName;
+                          const files = [selected.handle];
+                          const sourceFileName = selected.name;
                           setConversionState((prev) => ({
                             ...prev,
                             inProgress: true,
@@ -420,8 +477,8 @@ export default function DatabasesPage() {
                             sourceFileName,
                           }));
                           try {
-                            await commands.convertPgn(files, selectedDatabase.file, null, "", null);
-                            mutate();
+                            await tauri.convertPgn(files, selectedDatabase.file, null, "", null);
+                            await mutate();
                           } finally {
                             setConversionState((prev) => ({
                               ...prev,
@@ -442,20 +499,20 @@ export default function DatabasesPage() {
                         variant="default"
                         loading={exportLoading}
                         onClick={async () => {
-                          const destFile = await save({
-                            filters: [{ name: "PGN", extensions: ["pgn"] }],
-                          });
-                          if (!destFile) return;
                           setExportLoading(true);
-                          await commands.exportToPgn(selectedDatabase.file, destFile);
-                          setExportLoading(false);
+                          try {
+                            const destination = await tauri.issuePgnExportDestination();
+                            await tauri.exportToPgn(selectedDatabase.file, destination.handle);
+                          } finally {
+                            setExportLoading(false);
+                          }
                         }}
                       >
                         {t("Databases.Settings.ExportPGN")}
                       </Button>
                     </Group>
                   )}
-                  <Button onClick={() => toggleDeleteModal()} color="red">
+                  <Button onClick={() => setDeleteModal(true)} color="red">
                     {t("Common.Delete")}
                   </Button>
                 </Group>
@@ -463,7 +520,7 @@ export default function DatabasesPage() {
             </ScrollArea>
           </Paper>
         )}
-      </Group>
+      </SimpleGrid>
     </Stack>
   );
 }
@@ -484,10 +541,10 @@ function GeneralSettings({
   const [debouncedDescription] = useDebouncedValue(description, 300);
 
   useEffect(() => {
-    commands
+    tauri
       .editDbInfo(selectedDatabase.file, debouncedTitle ?? null, debouncedDescription ?? null)
       .then(() => mutate());
-  }, [debouncedTitle, debouncedDescription]);
+  }, [debouncedTitle, debouncedDescription, mutate, selectedDatabase.file]);
 
   return (
     <>
@@ -533,9 +590,11 @@ function PlayerMerger({ selectedDatabase }: { selectedDatabase: DatabaseInfo }) 
       return;
     }
     setLoading(true);
-    const res = await commands.mergePlayers(selectedDatabase.file, player1, player2);
-    setLoading(false);
-    unwrap(res);
+    try {
+      await tauri.mergePlayers(selectedDatabase.file, player1, player2);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -588,7 +647,7 @@ function DuplicateRemover({
           loading={loading}
           onClick={async () => {
             setLoading(true);
-            commands
+            void tauri
               .deleteDuplicatedGames(selectedDatabase.file)
               .then(() => {
                 setLoading(false);
@@ -607,7 +666,7 @@ function DuplicateRemover({
           loading={loading}
           onClick={async () => {
             setLoading(true);
-            commands
+            void tauri
               .deleteEmptyGames(selectedDatabase.file)
               .then(() => {
                 setLoading(false);
@@ -632,7 +691,7 @@ function IndexInput({
   setDatabases,
 }: {
   indexed: boolean;
-  file: string;
+  file: DatabaseHandle;
   setDatabases: (dbs: DatabaseInfo[]) => void;
 }) {
   const { t } = useTranslation();
@@ -647,8 +706,8 @@ function IndexInput({
           checked={indexed}
           onChange={(e) => {
             setLoading(true);
-            const fn = e.currentTarget.checked ? commands.createIndexes : commands.deleteIndexes;
-            fn(file).then(() => {
+            const fn = e.currentTarget.checked ? tauri.createIndexes : tauri.deleteIndexes;
+            void fn(file).then(() => {
               getDatabases().then((dbs) => {
                 setDatabases(dbs);
                 setLoading(false);

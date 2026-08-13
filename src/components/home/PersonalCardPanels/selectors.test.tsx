@@ -1,0 +1,141 @@
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+
+const sessions = [
+  {
+    player: "Ada",
+    chessCom: { username: "ada-chess" },
+    lichess: { username: "ada-lichess" },
+  },
+];
+
+vi.mock("@/state/atoms", () => ({ sessionsAtom: Symbol("sessions") }));
+vi.mock("jotai", () => ({ useAtomValue: () => sessions }));
+vi.mock("@mantine/core", () => {
+  return {
+    Box: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
+      <div {...props}>{children}</div>
+    ),
+    Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    Menu: Object.assign(({ children }: { children: React.ReactNode }) => <div>{children}</div>, {
+      Item: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+        <button {...props}>{children}</button>
+      ),
+      Target: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+      Dropdown: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    }),
+    Select: ({
+      label,
+      value,
+      onChange,
+      data,
+    }: {
+      label: string;
+      value: string | null;
+      onChange: (value: string) => void;
+      data: Array<string | { value: string; label: string }>;
+    }) => (
+      <label>
+        {label}
+        <select
+          aria-label={label}
+          value={value ?? ""}
+          onChange={(event) => onChange(event.currentTarget.value)}
+        >
+          {data.map((item) => {
+            const option = typeof item === "string" ? { value: item, label: item } : item;
+            return (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            );
+          })}
+        </select>
+      </label>
+    ),
+    UnstyledButton: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+      <button {...props}>{children}</button>
+    ),
+  };
+});
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+let container: HTMLDivElement;
+let root: Root;
+
+beforeEach(() => {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
+
+afterEach(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+describe("personal card selectors", () => {
+  test("notifies a replacement time-control callback with the current selection", async () => {
+    const TimeControlSelector = (await import("./TimeControlSelector")).default;
+    const firstCallback = vi.fn();
+    const replacementCallback = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <TimeControlSelector
+          website="Lichess"
+          allowAll={false}
+          onTimeControlChange={firstCallback}
+        />,
+      );
+    });
+    await act(async () => {
+      root.render(
+        <TimeControlSelector
+          website="Lichess"
+          allowAll={false}
+          onTimeControlChange={replacementCallback}
+        />,
+      );
+    });
+
+    expect(firstCallback).toHaveBeenCalledWith("rapid");
+    expect(replacementCallback).toHaveBeenCalledWith("rapid");
+  });
+
+  test("notifies replacement website and account callbacks without changing selections", async () => {
+    const WebsiteAccountSelector = (await import("./WebsiteAccountSelector")).default;
+    const firstWebsiteCallback = vi.fn();
+    const firstAccountCallback = vi.fn();
+    const replacementWebsiteCallback = vi.fn();
+    const replacementAccountCallback = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <WebsiteAccountSelector
+          playerName="Ada"
+          allowAll={false}
+          onWebsiteChange={firstWebsiteCallback}
+          onAccountChange={firstAccountCallback}
+        />,
+      );
+    });
+    await act(async () => {
+      root.render(
+        <WebsiteAccountSelector
+          playerName="Ada"
+          allowAll={false}
+          onWebsiteChange={replacementWebsiteCallback}
+          onAccountChange={replacementAccountCallback}
+        />,
+      );
+    });
+
+    expect(firstWebsiteCallback).toHaveBeenCalledWith("Chess.com");
+    expect(firstAccountCallback).toHaveBeenCalledWith("All accounts");
+    expect(replacementWebsiteCallback).toHaveBeenCalledWith("Chess.com");
+    expect(replacementAccountCallback).toHaveBeenCalledWith("All accounts");
+  });
+});

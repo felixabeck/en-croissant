@@ -8,7 +8,7 @@ function calculateProgress(
     clock: number | null,
     tc: TimeControlField | null,
 ) {
-    if (!clock) {
+    if (clock === null) {
         return 0;
     }
     if (tc) {
@@ -17,7 +17,7 @@ function calculateProgress(
     if (timeControl) {
         return clock / (timeControl[0].seconds / 1000);
     }
-    if (root.children.length > 0 && root.children[0].clock) {
+    if (root.children.length > 0 && root.children[0].clock !== undefined) {
         return clock / root.children[0].clock;
     }
     return 0;
@@ -115,18 +115,18 @@ export function getClockInfo({
     if (position.length <= 1 && timeControl) {
         if (timeControl.length > 0) {
             const seconds = timeControl[0].seconds / 1000;
-            if (!whiteSeconds) {
+            if (whiteSeconds === undefined) {
                 whiteSeconds = seconds;
             }
-            if (!blackSeconds) {
+            if (blackSeconds === undefined) {
                 blackSeconds = seconds;
             }
         }
     }
-    if (whiteTime) {
+    if (whiteTime !== undefined) {
         whiteSeconds = whiteTime / 1000;
     }
-    if (blackTime) {
+    if (blackTime !== undefined) {
         blackSeconds = blackTime / 1000;
     }
 

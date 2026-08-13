@@ -43,8 +43,9 @@ cg-board square.oc.move-dest:hover {
   -webkit-user-select: none;
 }
 
-:focus {
-  outline: none;
+:focus-visible {
+  outline: 3px solid var(--mantine-primary-color-filled);
+  outline-offset: 3px;
 }
 
 html,
@@ -55,4 +56,10 @@ body {
 
 .mantine-ScrollArea-viewport {
   overscroll-behavior: none;
+}
+
+/* The visually hidden switch input owns pointer interaction and semantics. */
+.mantine-Switch-track,
+.mantine-Switch-thumb {
+  pointer-events: none;
 }

@@ -1,7 +1,8 @@
+import { tauri } from "@/platform/tauri";
 import { Autocomplete } from "@mantine/core";
 import { IconSearch } from "@tabler/icons-react";
-import { type ReactNode, useEffect, useState } from "react";
-import { commands, type Player } from "@/bindings";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type DatabaseHandle, type Player } from "@/bindings";
 import { query_players } from "@/utils/db";
 import { unwrap } from "@/utils/unwrap";
 
@@ -14,25 +15,32 @@ export function PlayerSearchInput({
 }: {
   label: string;
   value?: number;
-  file: string;
+  file: DatabaseHandle;
   rightSection?: ReactNode;
   setValue: (val: number | undefined) => void;
 }) {
   const [tempValue, setTempValue] = useState("");
   const [data, setData] = useState<Player[]>([]);
+  const playerLookupVersion = useRef(0);
 
   useEffect(() => {
-    if (value !== undefined) {
-      commands.getPlayer(file, value).then((res) => {
-        const player = unwrap(res);
-        if (player?.name) {
-          setTempValue(player.name);
-        }
-      });
+    const lookupVersion = ++playerLookupVersion.current;
+    if (value === undefined) {
+      setTempValue("");
+      return;
     }
-  }, [value]);
+
+    tauri.getPlayer(file, value).then((res) => {
+      if (playerLookupVersion.current !== lookupVersion) return;
+      const player = unwrap(res);
+      if (player?.name) {
+        setTempValue(player.name);
+      }
+    });
+  }, [file, value]);
 
   async function handleChange(val: string) {
+    playerLookupVersion.current++;
     setTempValue(val);
     if (val.trim().length === 0) {
       setValue(undefined);

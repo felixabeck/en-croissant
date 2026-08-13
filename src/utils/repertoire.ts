@@ -1,4 +1,5 @@
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
+import type { DatabaseHandle } from "@/bindings";
 import { searchPosition } from "./db";
 import { getNodeAtPath, type TreeNode, treeIterator, getBoardState } from "./treeReducer";
 import { TreeStoreState } from "@/state/store/tree";
@@ -18,7 +19,7 @@ export type PositionMove = {
 };
 
 export async function fetchPositionMoves(
-    dbPath: string,
+    dbPath: DatabaseHandle,
     fen: string,
 ): Promise<{
     moves: { move: string; white: number; draw: number; black: number }[];
@@ -61,7 +62,11 @@ type DbCache = Map<
     }
 >;
 
-async function buildDbCache(root: TreeNode, startPath: number[], dbPath: string): Promise<DbCache> {
+async function buildDbCache(
+    root: TreeNode,
+    startPath: number[],
+    dbPath: DatabaseHandle,
+): Promise<DbCache> {
     const startNode = startPath.length > 0 ? getNodeAtPath(root, startPath) : root;
 
     const fenSet = new Set<string>();
@@ -232,7 +237,7 @@ function buildPathMaps(
 export async function computeTreeCoverage(
     root: TreeNode,
     userColor: "white" | "black",
-    dbPath: string,
+    dbPath: DatabaseHandle,
     minGames: number,
     startPath: number[],
     stateMoves: Map<string, Map<string, string>>,
@@ -248,10 +253,8 @@ export async function computeTreeCoverage(
     const dbCache = await buildDbCache(root, startPath, dbPath);
 
     const memo = new Map<string, { coverage: number; missing: number }>();
-    let computedCount = 0;
     for (const fen of dbCache.keys()) {
         computeCoverageForFen(fen, dbCache, stateMoves, userColor, minGames, memo);
-        computedCount++;
     }
 
     const pathMaps = buildPathMaps(root, startPath, memo, dbCache);

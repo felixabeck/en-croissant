@@ -437,14 +437,20 @@ test("should handle setScore", () => {
 
 test("should handle setShapes", () => {
     store.getState().setState({ ...treeE4D5(), position: [0] });
-    store.getState().setShapes([{ brush: "red", orig: "e4", dest: "d5" }]);
+    store.getState().setShapes([
+        { brush: "red", orig: "e4", dest: "d5" },
+        { brush: "green", orig: "a1", dest: undefined },
+    ]);
 
     const mutatedRoot: TreeNode = {
         ...treeE4D5().root,
         children: [
             {
                 ...treeE4D5().root.children[0],
-                shapes: [{ brush: "red", orig: "e4", dest: "d5" }],
+                shapes: [
+                    { brush: "red", orig: "e4", dest: "d5" },
+                    { brush: "green", orig: "a1", dest: undefined },
+                ],
             },
         ],
     };
@@ -458,6 +464,31 @@ test("should handle setShapes", () => {
     });
 });
 
+test("declares threefold only on the third occurrence of the normal root", () => {
+    for (const uci of ["g1f3", "g8f6", "f3g1", "f6g8"]) {
+        store.getState().makeMove({ payload: parseUci(uci)! });
+    }
+    expect(store.getState().headers.result).toBe("*");
+
+    for (const uci of ["g1f3", "g8f6", "f3g1", "f6g8"]) {
+        store.getState().makeMove({ payload: parseUci(uci)! });
+    }
+    expect(store.getState().headers.result).toBe("1/2-1/2");
+});
+
+test("counts the actual custom root for threefold repetition", () => {
+    store.getState().setFen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+    for (const uci of ["g8f6", "g1f3", "f6g8", "f3g1"]) {
+        store.getState().makeMove({ payload: parseUci(uci)! });
+    }
+    expect(store.getState().headers.result).toBe("*");
+
+    for (const uci of ["g8f6", "g1f3", "f6g8", "f3g1"]) {
+        store.getState().makeMove({ payload: parseUci(uci)! });
+    }
+    expect(store.getState().headers.result).toBe("1/2-1/2");
+});
+
 test("should handle addAnalysis", () => {
     store.getState().setState({ ...treeE4D5(), position: [0] });
     store.getState().addAnalysis([
@@ -466,7 +497,7 @@ test("should handle addAnalysis", () => {
                 {
                     depth: 1,
                     multipv: 1,
-                    nodes: 1,
+                    nodes: 1n,
                     score: {
                         value: {
                             type: "cp",
@@ -474,7 +505,7 @@ test("should handle addAnalysis", () => {
                         },
                         wdl: null,
                     },
-                    nps: 1000,
+                    nps: 1000n,
                     sanMoves: ["e4"],
                     uciMoves: ["e2e4"],
                 },
@@ -487,7 +518,7 @@ test("should handle addAnalysis", () => {
                 {
                     depth: 1,
                     multipv: 1,
-                    nodes: 1,
+                    nodes: 1n,
                     score: {
                         value: {
                             type: "cp",
@@ -495,7 +526,7 @@ test("should handle addAnalysis", () => {
                         },
                         wdl: null,
                     },
-                    nps: 1000,
+                    nps: 1000n,
                     sanMoves: ["d5"],
                     uciMoves: ["d7d5"],
                 },

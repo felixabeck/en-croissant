@@ -1,4 +1,31 @@
+.root {
+  min-height: 2.25rem;
+  width: 100%;
+  flex-wrap: nowrap;
+}
+
+.menuArea,
+.dragRegion {
+  min-width: 0;
+}
+
+.menuArea {
+  flex: 0 1 auto;
+}
+
+.dragRegion {
+  flex: 1 1 auto;
+  align-self: stretch;
+}
+
+.windowControls {
+  flex: 0 0 auto;
+}
+
 .icon {
+  height: 2.25rem;
+  width: 2.8125rem;
+  border-radius: 0;
   transition: background-color 100ms ease;
 }
 
@@ -7,6 +34,9 @@
 }
 
 .close {
+  height: 2.25rem;
+  width: 2.8125rem;
+  border-radius: 0;
   transition: background-color 100ms ease;
 }
 

@@ -1,5 +1,4 @@
 import {
-  ActionIcon,
   Box,
   Center,
   Collapse,
@@ -23,6 +22,7 @@ import { useTranslation } from "react-i18next";
 import useSWR from "swr";
 import { useStore } from "zustand";
 import type { GameSort, NormalizedGame, Outcome } from "@/bindings";
+import { IconAction } from "@/components/common/IconAction";
 import { activeTabAtom, tabsAtom } from "@/state/atoms";
 import { query_games } from "@/utils/db";
 import { createTab } from "@/utils/tabs";
@@ -98,7 +98,7 @@ function GameTable() {
                   <SideInput
                     sides={query.sides!}
                     setSides={(value) => setQuery({ ...query, sides: value })}
-                    label="Player"
+                    role="player"
                   />
                 }
                 label={t("Common.Search")}
@@ -111,7 +111,7 @@ function GameTable() {
                   <SideInput
                     sides={query.sides!}
                     setSides={(value) => setQuery({ ...query, sides: value })}
-                    label="Opponent"
+                    role="opponent"
                   />
                 }
                 label={t("Common.Search")}
@@ -127,9 +127,9 @@ function GameTable() {
                       min={0}
                       max={3000}
                       marks={[
-                        { value: 1000, label: "1000" },
-                        { value: 2000, label: "2000" },
-                        { value: 3000, label: "3000" },
+                        { value: 1000, label: String(1000) },
+                        { value: 2000, label: String(2000) },
+                        { value: 3000, label: String(3000) },
                       ]}
                       value={query.range1 ?? undefined}
                       onChangeEnd={(value) => setQuery({ ...query, range1: value })}
@@ -142,9 +142,9 @@ function GameTable() {
                       min={0}
                       max={3000}
                       marks={[
-                        { value: 1000, label: "1000" },
-                        { value: 2000, label: "2000" },
-                        { value: 3000, label: "3000" },
+                        { value: 1000, label: String(1000) },
+                        { value: 2000, label: String(2000) },
+                        { value: 3000, label: String(3000) },
                       ]}
                       value={query.range2 ?? undefined}
                       onChangeEnd={(value) => setQuery({ ...query, range2: value })}
@@ -152,7 +152,7 @@ function GameTable() {
                   </InputWrapper>
                 </Group>
                 <Select
-                  label="Result"
+                  label={t("Board.Database.Local.Result")}
                   value={query.outcome}
                   onChange={(value) =>
                     setQuery({
@@ -161,17 +161,17 @@ function GameTable() {
                     })
                   }
                   clearable
-                  placeholder="Select result"
+                  placeholder={t("Common.PickValue")}
                   data={[
-                    { label: "White wins", value: "1-0" },
-                    { label: "Black wins", value: "0-1" },
-                    { label: "Draw", value: "1/2-1/2" },
+                    { label: t("Board.Analysis.Tablebase.WhiteWins"), value: "1-0" },
+                    { label: t("Board.Analysis.Tablebase.BlackWins"), value: "0-1" },
+                    { label: t("Board.Analysis.Tablebase.Draw"), value: "1/2-1/2" },
                   ]}
                 />
                 <Group>
                   <DateInput
-                    label="From"
-                    placeholder="Start date"
+                    label={t("Common.From")}
+                    placeholder={t("Common.StartDate")}
                     clearable
                     valueFormat="YYYY-MM-DD"
                     value={query.start_date ? dayjs(query.start_date, "YYYY.MM.DD").toDate() : null}
@@ -183,8 +183,8 @@ function GameTable() {
                     }
                   />
                   <DateInput
-                    label="To"
-                    placeholder="End date"
+                    label={t("Common.To")}
+                    placeholder={t("Common.EndDate")}
                     clearable
                     valueFormat="YYYY-MM-DD"
                     value={query.end_date ? dayjs(query.end_date, "YYYY.MM.DD").toDate() : null}
@@ -199,9 +199,14 @@ function GameTable() {
               </Stack>
             </Collapse>
           </Box>
-          <ActionIcon style={{ flexGrow: 0 }} onClick={() => toggleOpenedSettings()}>
+          <IconAction
+            label={t("Common.MoreOptions")}
+            pressed={openedSettings}
+            style={{ flexGrow: 0 }}
+            onClick={() => toggleOpenedSettings()}
+          >
             <IconDotsVertical size="1rem" />
-          </ActionIcon>
+          </IconAction>
         </Flex>
       }
       table={
@@ -260,7 +265,7 @@ function GameTable() {
               accessor: "result",
               render: ({ result }) => result?.replaceAll("1/2", "½"),
             },
-            { accessor: "ply_count", title: "Plies", sortable: true },
+            { accessor: "ply_count", title: t("Databases.Game.Plies"), sortable: true },
             { accessor: "event" },
             { accessor: "site" },
           ]}

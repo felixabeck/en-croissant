@@ -1,20 +1,11 @@
-import {
-  ActionIcon,
-  Collapse,
-  Divider,
-  Group,
-  ScrollArea,
-  Stack,
-  Text,
-  Tooltip,
-  useMantineTheme,
-} from "@mantine/core";
+import { Collapse, Divider, Group, ScrollArea, Stack, Text, useMantineTheme } from "@mantine/core";
 import { IconChevronDown } from "@tabler/icons-react";
 import { atom, useAtom } from "jotai";
 import { memo, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
+import { IconAction } from "@/components/common/IconAction";
 import { ANNOTATION_INFO, type Annotation, isBasicAnnotation } from "@/utils/annotation";
 import { getNodeAtPath } from "@/utils/treeReducer";
 import AnnotationEditor from "./AnnotationEditor";
@@ -34,15 +25,14 @@ const SymbolButton = memo(function SymbolButton({
   const isActive = curAnnotations.includes(annotation);
   const theme = useMantineTheme();
   return (
-    <Tooltip label={translationKey ? t(`Annotate.${translationKey}`) : name} position="bottom">
-      <ActionIcon
-        onClick={() => setAnnotation(annotation)}
-        variant={isActive ? "filled" : "default"}
-        color={isBasicAnnotation(annotation) ? color : theme.primaryColor}
-      >
-        <Text>{annotation}</Text>
-      </ActionIcon>
-    </Tooltip>
+    <IconAction
+      label={translationKey ? t(`Annotate.${translationKey}`) : name}
+      onClick={() => setAnnotation(annotation)}
+      variant={isActive ? "filled" : "default"}
+      color={isBasicAnnotation(annotation) ? color : theme.primaryColor}
+    >
+      <Text>{annotation}</Text>
+    </IconAction>
   );
 });
 
@@ -53,6 +43,7 @@ const ADVANTAGE = ["+-", "±", "⩲", "=", "∞", "⩱", "∓", "-+"] as const;
 const EXTRA = ["N", "↑↑", "↑", "→", "⇆", "=∞", "⊕", "∆", "□", "⨀", "⊗"] as const;
 
 function AnnotationPanel() {
+  const { t } = useTranslation();
   const store = useContext(TreeStateContext)!;
   const root = useStore(store, (s) => s.root);
   const position = useStore(store, (s) => s.position);
@@ -75,7 +66,9 @@ function AnnotationPanel() {
         </Group>
         <Divider
           label={
-            <ActionIcon
+            <IconAction
+              label={showMoreSymbols ? t("Annotate.ShowLess") : t("Annotate.ShowMore")}
+              pressed={showMoreSymbols}
               mx="auto"
               onClick={() => setShowMoreSymbols(!showMoreSymbols)}
               color="dimmed"
@@ -85,7 +78,7 @@ function AnnotationPanel() {
               }}
             >
               <IconChevronDown size="1rem" />
-            </ActionIcon>
+            </IconAction>
           }
         />
       </Stack>

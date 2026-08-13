@@ -44,6 +44,28 @@ export function swapMove(fen: string, color?: Color) {
     return makeFen(setup);
 }
 
+/**
+ * A piece editor must not carry transient game state into a different board.
+ * Castling rights are limited to rooks that still exist on their own back rank;
+ * en-passant is always a consequence of the last move and is therefore cleared.
+ * Chessops serializes non-corner rooks as file letters, so this also preserves
+ * valid Chess960 rights without inventing any new ones.
+ */
+export function normalizeEditedFen(fen: string): string | null {
+    const parsed = parseFen(fen);
+    if (parsed.isErr) return null;
+    const setup = parsed.value;
+    setup.epSquare = undefined;
+    setup.castlingRights = setup.castlingRights.intersect(setup.board.rook);
+    for (const color of ["white", "black"] as const) {
+        const king = setup.board.kingOf(color);
+        if (king === undefined) {
+            setup.castlingRights = setup.castlingRights.diff(SquareSet.backrank(color));
+        }
+    }
+    return makeFen(setup);
+}
+
 export function squareToCoordinates(square: Square, orientation: "white" | "black") {
     let file = squareFile(square) + 1;
     let rank = squareRank(square) + 1;

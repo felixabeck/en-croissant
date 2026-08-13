@@ -1,18 +1,8 @@
-import { ActionIcon, Button, Menu } from "@mantine/core";
-import { useClickOutside, useHotkeys, useToggle } from "@mantine/hooks";
-import {
-  IconChess,
-  IconCopy,
-  IconDatabase,
-  IconEdit,
-  IconPuzzle,
-  IconX,
-  IconZoomCheck,
-} from "@tabler/icons-react";
+import { Tabs } from "@mantine/core";
+import type { DraggableProvidedDragHandleProps } from "@hello-pangea/dnd";
+import { IconChess, IconDatabase, IconPuzzle, IconZoomCheck } from "@tabler/icons-react";
 import cx from "clsx";
-import { useEffect } from "react";
 import type { Tab } from "@/utils/tabs";
-import { InlineInput } from "../common/InlineInput";
 import classes from "./BoardTab.module.css";
 import { FileIcon } from "../files/FileIcon";
 import { useTranslation } from "react-i18next";
@@ -21,111 +11,30 @@ export function BoardTab({
   tab,
   tabType,
   setActiveTab,
-  closeTab,
-  renameTab,
-  duplicateTab,
   selected,
+  dragHandleProps,
 }: {
   tab: Tab;
   tabType: string;
   setActiveTab: (v: string) => void;
-  closeTab: (v: string) => void;
-  renameTab: (v: string, n: string) => void;
-  duplicateTab: (v: string) => void;
   selected: boolean;
+  dragHandleProps: DraggableProvidedDragHandleProps | null | undefined;
 }) {
   const { t } = useTranslation();
-  const [open, toggleOpen] = useToggle();
-  const [renaming, toggleRenaming] = useToggle();
-
-  const ref = useClickOutside(() => {
-    toggleOpen(false);
-    toggleRenaming(false);
-  });
-
-  useHotkeys([
-    [
-      "F2",
-      () => {
-        if (selected) toggleRenaming();
-      },
-    ],
-  ]);
-
-  useEffect(() => {
-    if (renaming) ref.current?.focus();
-  }, [renaming, ref]);
+  const { role: _dragRole, tabIndex: _dragTabIndex, ...tabDragHandleProps } = dragHandleProps ?? {};
 
   return (
-    <Menu opened={open} shadow="md" width={200} closeOnClickOutside>
-      <Menu.Target>
-        <Button
-          component="div"
-          className={cx(classes.tab, { [classes.selected]: selected })}
-          variant="default"
-          fw="normal"
-          radius={0}
-          leftSection={<TabIcon tab={tab} tabType={tabType} />}
-          rightSection={
-            <ActionIcon
-              component="div"
-              className={classes.closeTabBtn}
-              onClick={(e) => {
-                closeTab(tab.value);
-                e.stopPropagation();
-              }}
-              size="0.875rem"
-            >
-              <IconX />
-            </ActionIcon>
-          }
-          onPointerDown={(e) => {
-            if (e.button === 0) setActiveTab(tab.value);
-          }}
-          onDoubleClick={() => toggleRenaming(true)}
-          onAuxClick={(e) => {
-            if (e.button === 1) closeTab(tab.value);
-          }}
-          onContextMenu={(e) => {
-            toggleOpen();
-            e.preventDefault();
-          }}
-        >
-          <InlineInput
-            ref={ref}
-            disabled={!renaming}
-            value={t(tab.name, { defaultValue: tab.name })}
-            className={classes.input}
-            onChange={(e) => renameTab(tab.value, e.target.value)}
-            onFocus={(e) => e.target.select()}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                toggleRenaming(false);
-                e.preventDefault();
-              }
-            }}
-          />
-        </Button>
-      </Menu.Target>
-      <Menu.Dropdown>
-        <Menu.Item
-          leftSection={<IconCopy size="0.875rem" />}
-          onClick={() => duplicateTab(tab.value)}
-        >
-          Duplicate Tab
-        </Menu.Item>
-        <Menu.Item leftSection={<IconEdit size="0.875rem" />} onClick={() => toggleRenaming(true)}>
-          Rename Tab
-        </Menu.Item>
-        <Menu.Item
-          color="red"
-          leftSection={<IconX size="0.875rem" />}
-          onClick={() => closeTab(tab.value)}
-        >
-          Close Tab
-        </Menu.Item>
-      </Menu.Dropdown>
-    </Menu>
+    <div className={classes.tabItem} role="presentation">
+      <Tabs.Tab
+        {...tabDragHandleProps}
+        value={tab.value}
+        className={cx(classes.tab, { [classes.selected]: selected })}
+        leftSection={<TabIcon tab={tab} tabType={tabType} />}
+        onClick={() => setActiveTab(tab.value)}
+      >
+        <span className={classes.tabLabel}>{t(tab.name, { defaultValue: tab.name })}</span>
+      </Tabs.Tab>
+    </div>
   );
 }
 

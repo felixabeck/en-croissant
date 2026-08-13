@@ -1,14 +1,5 @@
-import {
-  ActionIcon,
-  Badge,
-  Card,
-  Group,
-  Progress,
-  SimpleGrid,
-  Stack,
-  Text,
-  Tooltip,
-} from "@mantine/core";
+import { tauri, tauriSubscriptions } from "@/platform/tauri";
+import { Badge, Card, Group, Progress, SimpleGrid, Stack, Text, Tooltip } from "@mantine/core";
 import {
   IconArrowDownRight,
   IconArrowRight,
@@ -19,25 +10,22 @@ import {
   IconRefresh,
   IconTrash,
 } from "@tabler/icons-react";
-import { basename } from "@tauri-apps/api/path";
-import { resolve } from "@tauri-apps/api/path";
-import { info } from "@tauri-apps/plugin-log";
 import { useAtom } from "jotai";
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { DatabaseInfo } from "@/bindings";
-import { commands, events } from "@/bindings";
-import { databaseConversionStateAtom, storedDatabasesDirAtom } from "@/state/atoms";
+import type { DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
+import { IconAction } from "@/components/common/IconAction";
+import { databaseConversionStateAtom, downloadDestinationAtom } from "@/state/atoms";
 import { downloadChessCom } from "@/utils/chess.com/api";
-import { getDatabases } from "@/utils/db";
+import { getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
 import { capitalize } from "@/utils/format";
 import { downloadLichess } from "@/utils/lichess/api";
-import { unwrap } from "@/utils/unwrap";
+import { useTauriListener } from "@/platform/useTauriListener";
 import LichessLogo from "./LichessLogo";
 
 interface AccountCardProps {
   type: "lichess" | "chesscom";
-  database: DatabaseInfo | null;
+  database: ManagedDatabaseInfo | null;
   title: string;
   updatedAt: number;
   total: number;
@@ -46,10 +34,26 @@ interface AccountCardProps {
     label: string;
     diff?: number;
   }[];
-  logout: () => void;
+  logout: () => void | Promise<void>;
   reload: () => void;
-  setDatabases: (databases: DatabaseInfo[]) => void;
-  token?: string;
+  setDatabases: (databases: ManagedDatabaseInfo[]) => void;
+  authenticated?: boolean;
+  accountHandle?: string;
+}
+
+/**
+ * An account with no games at all leaves the total at zero. The unguarded
+ * division rendered `aria-valuenow="NaN"` and a `NaN%` bar width, which Axe
+ * reports as an invalid ARIA attribute value.
+ */
+export function downloadProgressPercent(downloaded: number, total: number): number {
+  return total === 0 ? 0 : (downloaded / total) * 100;
+}
+
+function isPathRef(value: unknown): value is PathRef {
+  return (
+    typeof value === "object" && value !== null && "id" in value && typeof value.id === "string"
+  );
 }
 
 export function AccountCard({
@@ -62,7 +66,8 @@ export function AccountCard({
   logout,
   reload,
   setDatabases,
-  token,
+  authenticated,
+  accountHandle,
 }: AccountCardProps) {
   const { t } = useTranslation();
   const items = stats.map((stat) => {
@@ -98,67 +103,80 @@ export function AccountCard({
   });
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
-  const [databaseDir] = useAtom(storedDatabasesDirAtom);
+  const [downloadDestination, setDownloadDestination] = useAtom(downloadDestinationAtom);
   const [, setConversionState] = useAtom(databaseConversionStateAtom);
 
-  async function convert(filepath: string, timestamp: number | null) {
-    info(`converting ${filepath} ${timestamp}`);
-    const filename = title + (type === "lichess" ? " Lichess" : " Chess.com");
-    const dbPath = await resolve(
-      databaseDir,
-      `${filepath
-        .split(/(\\|\/)/g)
-        .pop()
-        ?.replace(".pgn", ".db3")}`,
+  async function ensureDatabaseHandle(): Promise<DatabaseHandle> {
+    const existing = database?.file;
+    if (existing) return existing;
+    const root = await tauri.getDatabaseWorkspace();
+    const filename = `${title}_${type}.db3`;
+    const registered = (await tauri.listWorkspaceDatabases(root)).find(
+      (candidate) => candidate.filename === filename,
     );
-    const sourceFileName = await basename(filepath);
-    setConversionState((prev) => ({
-      ...prev,
-      inProgress: true,
-      targetDatabasePath: dbPath,
-      targetDatabaseTitle: filename,
-      sourceFileName,
-    }));
-    unwrap(
-      await commands.convertPgn(
-        [filepath],
-        dbPath,
-        timestamp ? timestamp / 1000 : null,
-        filename,
-        null,
-      ),
-    );
-    events.progressEvent.emit({
-      id: `${type}_${title}`,
-      progress: 100,
-      finished: true,
-    });
+    return registered?.handle ?? (await tauri.createWorkspaceDatabase(root, filename));
   }
 
-  useEffect(() => {
-    const unlisten = events.progressEvent.listen(async (e) => {
-      if (e.payload.id === `${type}_${title}`) {
-        setProgress(e.payload.progress);
-        if (e.payload.finished) {
-          setLoading(false);
-          setDatabases(await getDatabases());
-        } else {
-          setLoading(true);
-        }
+  async function convert(
+    source: FileWorkspaceHandle,
+    timestamp: number | null,
+  ): Promise<DatabaseHandle> {
+    const filename = title + (type === "lichess" ? " Lichess" : " Chess.com");
+    const databaseHandle = await ensureDatabaseHandle();
+    const progressLease = await tauri.startProgress(`${type}_${title}`);
+    try {
+      setConversionState((prev) => ({
+        ...prev,
+        inProgress: true,
+        targetDatabasePath: databaseHandle,
+        targetDatabaseTitle: filename,
+        sourceFileName: `${title}_${type}.pgn`,
+      }));
+      await tauri.convertPgn(
+        [source],
+        databaseHandle,
+        timestamp === null ? null : timestamp / 1000,
+        filename,
+        null,
+      );
+      await tauri.setProgressState(progressLease, 100, "succeeded");
+      return databaseHandle;
+    } catch (caught) {
+      await tauri.setProgressState(progressLease, 0, "failed");
+      throw caught;
+    }
+  }
+
+  const subscribeProgress = useCallback(
+    (listener: Parameters<typeof tauriSubscriptions.progress>[0]) =>
+      tauriSubscriptions.progress(listener),
+    [],
+  );
+  useTauriListener(subscribeProgress, async (e) => {
+    if (e.payload.id === `${type}_${title}`) {
+      setProgress(e.payload.progress);
+      if (e.payload.finished) {
+        setLoading(false);
+        setDatabases(await getDatabases());
+      } else {
+        setLoading(true);
       }
-    });
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, [setDatabases]);
+    }
+  });
 
   const downloadedGames = database?.type === "success" ? database.game_count : 0;
   const effectiveTotal = Math.max(total, downloadedGames);
-  const percentage =
-    effectiveTotal === 0 ? "0.00" : ((downloadedGames / effectiveTotal) * 100).toFixed(2);
 
-  async function getLastGameDate({ database }: { database: DatabaseInfo }) {
-    return unwrap(await commands.getLatestGameTimestamp(database.file));
+  async function getLastGameDate({ database }: { database: ManagedDatabaseInfo }) {
+    return await tauri.getLatestGameTimestamp(database.file);
+  }
+
+  async function ensureDownloadDestination(): Promise<PathRef> {
+    if (isPathRef(downloadDestination)) return downloadDestination;
+    if (downloadDestination !== null) setDownloadDestination(null);
+    const result = await tauri.issueDownloadDestination();
+    setDownloadDestination(result);
+    return result;
   }
 
   return (
@@ -174,7 +192,7 @@ export function AccountCard({
             <Text fw={600} size="sm">
               {title}
             </Text>
-            {type === "lichess" && token && (
+            {type === "lichess" && authenticated && (
               <Tooltip label={t("Home.Accounts.Authenticated")}>
                 <Text c="green" lh={0} style={{ cursor: "default" }}>
                   <IconCircleCheckFilled size="1.1rem" />
@@ -183,60 +201,66 @@ export function AccountCard({
             )}
           </Group>
           <Group gap={4}>
-            <Tooltip label={t("Home.Accounts.UpdateStats")}>
-              <ActionIcon variant="subtle" color="gray" onClick={() => reload()}>
-                <IconRefresh size="1rem" />
-              </ActionIcon>
-            </Tooltip>
-            <Tooltip label={t("Home.Accounts.DownloadGames")}>
-              <ActionIcon
-                variant="subtle"
-                color="gray"
-                loading={loading}
-                disabled={loading}
-                onClick={async () => {
-                  setLoading(true);
+            <IconAction
+              label={t("Home.Accounts.UpdateStats")}
+              variant="subtle"
+              color="gray"
+              onClick={() => reload()}
+            >
+              <IconRefresh size="1rem" />
+            </IconAction>
+            <IconAction
+              label={t("Home.Accounts.DownloadGames")}
+              variant="subtle"
+              color="gray"
+              pending={loading}
+              disabled={loading || (type === "lichess" && !accountHandle)}
+              onClick={async () => {
+                setLoading(true);
+                try {
                   const lastGameDate = database ? await getLastGameDate({ database }) : null;
                   if (type === "lichess") {
-                    await downloadLichess(
+                    if (!accountHandle) throw new Error("Authenticated Lichess account required");
+                    const destination = await ensureDownloadDestination();
+                    const artifact = await downloadLichess(
+                      accountHandle,
+                      destination,
                       title,
                       lastGameDate,
                       total - downloadedGames,
-                      setProgress,
-                      token,
                     );
+                    const databaseHandle = await convert(artifact, lastGameDate);
+                    await tauri.deleteEmptyGames(databaseHandle);
                   } else {
-                    await downloadChessCom(title, lastGameDate);
+                    const destination = await ensureDownloadDestination();
+                    const artifact = await downloadChessCom(destination, title, lastGameDate);
+                    const databaseHandle = await convert(artifact, lastGameDate);
+                    await tauri.deleteEmptyGames(databaseHandle);
                   }
-                  const p = await resolve(databaseDir, `${title}_${type}.pgn`);
-                  try {
-                    await convert(p, lastGameDate);
-                    const dbPath = p.replace(".pgn", ".db3");
-                    await commands.deleteEmptyGames(dbPath);
-                  } catch (e) {
-                    console.error(e);
-                  } finally {
-                    setConversionState((prev) => ({
-                      ...prev,
-                      inProgress: false,
-                      totalGames: 0,
-                      elapsedSeconds: 0,
-                      targetDatabasePath: null,
-                      targetDatabaseTitle: null,
-                      sourceFileName: null,
-                    }));
-                  }
+                } finally {
                   setLoading(false);
-                }}
-              >
-                <IconDownload size="1rem" />
-              </ActionIcon>
-            </Tooltip>
-            <Tooltip label={t("Home.Accounts.RemoveAccount")}>
-              <ActionIcon variant="subtle" color="red" onClick={() => logout()}>
-                <IconTrash size="1rem" />
-              </ActionIcon>
-            </Tooltip>
+                  setConversionState((prev) => ({
+                    ...prev,
+                    inProgress: false,
+                    totalGames: 0,
+                    elapsedSeconds: 0,
+                    targetDatabasePath: null,
+                    targetDatabaseTitle: null,
+                    sourceFileName: null,
+                  }));
+                }
+              }}
+            >
+              <IconDownload size="1rem" />
+            </IconAction>
+            <IconAction
+              label={t("Home.Accounts.RemoveAccount")}
+              variant="subtle"
+              color="red"
+              onClick={() => void logout()}
+            >
+              <IconTrash size="1rem" />
+            </IconAction>
           </Group>
         </Group>
       </Card.Section>
@@ -258,7 +282,15 @@ export function AccountCard({
             </Text>
           </Group>
           <Progress
-            value={loading ? 100 : (downloadedGames / effectiveTotal) * 100}
+            // An account with no games at all makes `effectiveTotal` zero; the
+            // unguarded division rendered `aria-valuenow="NaN"` and a NaN width.
+            value={loading ? 100 : downloadProgressPercent(downloadedGames, effectiveTotal)}
+            // Mantine puts `role="progressbar"` on the inner section and forwards
+            // `aria-label` to it, so the bar is named rather than anonymous.
+            aria-label={t("Home.Accounts.GamesProgress", {
+              downloaded: downloadedGames,
+              total: effectiveTotal,
+            })}
             size="sm"
             striped={loading}
             animated={loading}

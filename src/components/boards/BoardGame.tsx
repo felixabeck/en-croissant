@@ -1,5 +1,5 @@
+import { tauri, tauriSubscriptions } from "@/platform/tauri";
 import {
-  ActionIcon,
   Box,
   Button,
   Checkbox,
@@ -21,8 +21,8 @@ import {
   IconX,
   IconZoomCheck,
 } from "@tabler/icons-react";
-import { open } from "@tauri-apps/plugin-dialog";
 import type { Piece } from "chessops";
+import type { Key } from "@lichess-org/chessground/types";
 import { makeUci, parseUci } from "chessops";
 import { INITIAL_FEN } from "chessops/fen";
 import { useAtom, useAtomValue } from "jotai";
@@ -31,33 +31,27 @@ import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
 import type { Outcome } from "@/bindings";
-import {
-  commands,
-  type EngineLog,
-  events,
-  type GameConfig,
-  type GameResult,
-  type PlayerConfig,
-} from "@/bindings";
+import { type EngineLog, type GameConfig, type GameResult, type PlayerConfig } from "@/bindings";
 import type { ChessgroundRef } from "@/chessground/Chessground";
 import {
   activeTabAtom,
   flipBoardAfterMoveAtom,
   currentGameIdAtom,
+  currentGameSessionAtom,
   currentGameStateAtom,
   currentPlayersAtom,
   gameInputColorAtom,
   gameOpeningBookEnabledAtom,
   gameOpeningBookMaxPlyAtom,
-  gameOpeningBookPathAtom,
+  gameOpeningBookHandleAtom,
   gamePlayer1SettingsAtom,
   gamePlayer2SettingsAtom,
   gameSameTimeControlAtom,
   tabsAtom,
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
+import { useTauriListener } from "@/platform/useTauriListener";
 import type { GameHeaders } from "@/utils/treeReducer";
-import { unwrap } from "@/utils/unwrap";
 import EngineLogsView from "../common/EngineLogsView";
 import FileInput from "../common/FileInput";
 import GameInfo from "../common/GameInfo";
@@ -65,8 +59,15 @@ import GameNotation from "../common/GameNotation";
 import MoveControls from "../common/MoveControls";
 import { TreeStateContext } from "../common/TreeStateContext";
 import Board from "./Board";
+import IconAction from "../common/IconAction";
 import BoardControls from "./BoardControls";
 import EditingCard from "./EditingCard";
+import {
+  isCurrentQueuedGameUpdate,
+  isLiveGameSession,
+  nextAcceptedGameRevision,
+  SingleFlightGuard,
+} from "./gameSession";
 import { OpponentForm, type OpponentSettings } from "./OpponentForm";
 
 function gameResultToOutcome(result: GameResult): Outcome {
@@ -138,11 +139,81 @@ function BoardGame() {
   const [whiteTime, setWhiteTime] = useState<number | null>(null);
   const [blackTime, setBlackTime] = useState<number | null>(null);
   const [gameId, setGameId] = useAtom(currentGameIdAtom);
+  const [backendSession, setBackendSession] = useAtom(currentGameSessionAtom);
+  const liveGameIdRef = useRef<string | null>(gameId);
+  liveGameIdRef.current = gameId;
+  const sessionGenerationRef = useRef(0);
+  const backendSessionRef = useRef<bigint | null>(backendSession);
+  backendSessionRef.current = backendSession;
+  const latestRevisionRef = useRef(BigInt(-1));
+  const pendingMovesRef = useRef<{ uci: string; clock: number | null }[] | null>(null);
+  const pendingTimesRef = useRef<{
+    white: number | null;
+    black: number | null;
+  } | null>(null);
+  const queuedUpdateGenerationRef = useRef<number | null>(null);
+  const queuedUpdateSessionRef = useRef<bigint | null>(null);
+  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const premoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startInFlightRef = useRef<Promise<void> | null>(null);
+  const moveInFlightRef = useRef(false);
+  const takeBackGuardRef = useRef(new SingleFlightGuard());
+  const [pendingCommand, setPendingCommand] = useState<
+    "start" | "move" | "takeback" | "abort" | "resign" | null
+  >(null);
+  const [commandError, setCommandError] = useState<string | null>(null);
+  const clearQueuedGameUpdates = useCallback(() => {
+    if (throttleTimerRef.current) clearTimeout(throttleTimerRef.current);
+    if (premoveTimerRef.current) clearTimeout(premoveTimerRef.current);
+    throttleTimerRef.current = null;
+    premoveTimerRef.current = null;
+    pendingMovesRef.current = null;
+    pendingTimesRef.current = null;
+    queuedUpdateGenerationRef.current = null;
+    queuedUpdateSessionRef.current = null;
+  }, []);
+  const invalidateSession = useCallback(() => {
+    clearQueuedGameUpdates();
+    sessionGenerationRef.current += 1;
+    backendSessionRef.current = null;
+    setBackendSession(null);
+  }, [clearQueuedGameUpdates, setBackendSession]);
+  const abortLiveSession = useCallback(() => {
+    const liveGameId = liveGameIdRef.current;
+    const expectedSession = backendSessionRef.current;
+    invalidateSession();
+    if (liveGameId && expectedSession !== null) void tauri.abortGame(liveGameId, expectedSession);
+  }, [invalidateSession]);
+  const acceptAuthoritativeRevision = useCallback(
+    (payload: unknown, allowSessionAdoption = false): boolean => {
+      const nextRevision = nextAcceptedGameRevision(
+        latestRevisionRef.current,
+        backendSessionRef.current,
+        payload,
+        allowSessionAdoption,
+      );
+      if (nextRevision === null) return false;
+      if (
+        backendSessionRef.current === null &&
+        payload &&
+        typeof payload === "object" &&
+        "session" in payload
+      ) {
+        if (typeof payload.session === "bigint") {
+          backendSessionRef.current = payload.session;
+          setBackendSession(payload.session);
+        }
+      }
+      latestRevisionRef.current = nextRevision;
+      return true;
+    },
+    [setBackendSession],
+  );
 
   const [logsOpened, toggleLogsOpened] = useToggle();
   const [logsColor, setLogsColor] = useState<"white" | "black">("white");
   const [engineLogs, setEngineLogs] = useState<EngineLog[]>([]);
-  const [openingBookPath, setOpeningBookPath] = useAtom(gameOpeningBookPathAtom);
+  const [openingBookHandle, setOpeningBookHandle] = useAtom(gameOpeningBookHandleAtom);
   const [openingBookEnabled, setOpeningBookEnabled] = useAtom(gameOpeningBookEnabledAtom);
   const [openingBookMaxPly, setOpeningBookMaxPly] = useAtom(gameOpeningBookMaxPlyAtom);
 
@@ -162,18 +233,24 @@ function BoardGame() {
   }, [headers, root.fen, orientation, setHeaders]);
 
   const fetchEngineLogs = useCallback(async () => {
-    if (!gameId || !hasEngine) return;
+    const expectedSession = backendSession;
+    if (!gameId || expectedSession === null || !hasEngine) return;
+    const generation = sessionGenerationRef.current;
     let color = logsColor;
     if (players.white.type === "human" && players.black.type === "engine") {
       color = "black";
     } else if (players.black.type === "human" && players.white.type === "engine") {
       color = "white";
     }
-    const result = await commands.getGameEngineLogs(gameId, color);
-    if (result.status === "ok") {
-      setEngineLogs(result.data);
+    const logs = await tauri.getGameEngineLogs(gameId, expectedSession, color);
+    if (
+      generation === sessionGenerationRef.current &&
+      liveGameIdRef.current === gameId &&
+      backendSessionRef.current === expectedSession
+    ) {
+      setEngineLogs(logs);
     }
-  }, [gameId, logsColor, hasEngine, players.white.type, players.black.type]);
+  }, [gameId, logsColor, hasEngine, players.white.type, players.black.type, backendSession]);
 
   useEffect(() => {
     if (logsOpened) {
@@ -254,16 +331,17 @@ function BoardGame() {
         name: settings.name ?? "Player",
       };
     }
+    if (!settings.engine || settings.engine.type !== "local") {
+      throw new Error("A local engine must be selected for an engine player");
+    }
     return {
       type: "engine",
       name: settings.engine?.name ?? "Engine",
-      path: settings.engine?.path ?? "",
+      handle: settings.engine.handle,
       options: (settings.engineSettings ?? settings.engine?.settings ?? [])
         .filter((s) => s.name !== "MultiPV")
-        .map((s) => ({
-          name: s.name,
-          value: s.value?.toString() ?? "",
-        })),
+        .filter((s) => s.name !== "MultiPV")
+        .map((s) => (s.type === "resource" ? s : { ...s, value: s.value.toString() })),
       go: settings.timeControl ? null : settings.go,
     };
   }
@@ -281,153 +359,236 @@ function BoardGame() {
   }
 
   async function startGame() {
-    const playerSettings = getPlayers();
-    setPlayers(playerSettings);
+    if (startInFlightRef.current) return startInFlightRef.current;
+    // A replacement must atomically detach every buffered render update from the
+    // old native session before the new game id becomes observable.
+    invalidateSession();
+    const generation = sessionGenerationRef.current;
+    latestRevisionRef.current = BigInt(-1);
+    const run = async () => {
+      setPendingCommand("start");
+      setCommandError(null);
+      const playerSettings = getPlayers();
+      setPlayers(playerSettings);
 
-    const boardOrientation =
-      playerSettings.black.type === "human" && playerSettings.white.type === "engine"
-        ? "black"
-        : "white";
+      const boardOrientation =
+        playerSettings.black.type === "human" && playerSettings.white.type === "engine"
+          ? "black"
+          : "white";
 
-    const newGameId = `${activeTab}-game`;
-    setGameId(newGameId);
+      // The backend event payload carries only an id. A monotonically unique id per
+      // start makes delayed events from a prior session unambiguously discardable.
+      const newGameId = `${activeTab}-game-${generation}`;
+      setGameId(newGameId);
 
-    const initialMoves = getTreeMoves();
+      const initialMoves = getTreeMoves();
 
-    const config: GameConfig = {
-      white: toPlayerConfig(playerSettings.white),
-      black: toPlayerConfig(playerSettings.black),
-      whiteTimeControl: playerSettings.white.timeControl
-        ? {
-            initialTime: playerSettings.white.timeControl.seconds,
-            increment: playerSettings.white.timeControl.increment ?? 0,
-          }
-        : null,
-      blackTimeControl: playerSettings.black.timeControl
-        ? {
-            initialTime: playerSettings.black.timeControl.seconds,
-            increment: playerSettings.black.timeControl.increment ?? 0,
-          }
-        : null,
-      initialFen: root.fen === INITIAL_FEN ? null : root.fen,
-      initialMoves,
-      openingBook:
-        openingBookEnabled && openingBookPath
-          ? { path: openingBookPath, maxPly: Math.max(1, openingBookMaxPly) }
+      const config: GameConfig = {
+        white: toPlayerConfig(playerSettings.white),
+        black: toPlayerConfig(playerSettings.black),
+        whiteTimeControl: playerSettings.white.timeControl
+          ? {
+              initialTime: playerSettings.white.timeControl.seconds,
+              increment: playerSettings.white.timeControl.increment ?? 0,
+            }
           : null,
-    } as GameConfig;
+        blackTimeControl: playerSettings.black.timeControl
+          ? {
+              initialTime: playerSettings.black.timeControl.seconds,
+              increment: playerSettings.black.timeControl.increment ?? 0,
+            }
+          : null,
+        initialFen: root.fen === INITIAL_FEN ? null : root.fen,
+        initialMoves,
+        openingBook:
+          openingBookEnabled && openingBookHandle
+            ? { book: openingBookHandle, maxPly: Math.max(1, openingBookMaxPly) }
+            : null,
+      } as GameConfig;
 
+      try {
+        const state = await tauri.startGame(newGameId, config);
+        if (
+          sessionGenerationRef.current !== generation ||
+          !acceptAuthoritativeRevision(state, true)
+        ) {
+          await tauri.abortGame(newGameId, state.session);
+          return;
+        }
+
+        setWhiteTime(state.whiteTime !== null ? Number(state.whiteTime) : null);
+        setBlackTime(state.blackTime !== null ? Number(state.blackTime) : null);
+
+        setGameState("playing");
+
+        setFen(state.initialFen);
+        for (const move of mapBackendMoves(state.moves)) {
+          const parsed = parseUci(move.uci);
+          if (parsed) {
+            appendMove({
+              payload: parsed,
+              clock: move.clock ?? undefined,
+            });
+          }
+        }
+
+        const now = new Date();
+        const dateStr = now.toISOString().slice(0, 10).replace(/-/g, ".");
+        const timeStr = now.toISOString().slice(11, 19);
+
+        const whiteIsEngine = playerSettings.white.type === "engine";
+        const blackIsEngine = playerSettings.black.type === "engine";
+        let eventStr = "Casual Game";
+        if (whiteIsEngine && blackIsEngine) {
+          eventStr = "Engine Match";
+        } else if (whiteIsEngine || blackIsEngine) {
+          eventStr = "Player vs Engine";
+        } else {
+          eventStr = "Player Match";
+        }
+
+        const formatTimeControl = (settings: OpponentSettings): string => {
+          if (!settings.timeControl) return "-";
+          const seconds = settings.timeControl.seconds / 1000;
+          const increment = (settings.timeControl.increment ?? 0) / 1000;
+          return increment ? `${seconds}+${increment}` : `${seconds}`;
+        };
+
+        const whiteTimeControl = formatTimeControl(playerSettings.white);
+        const blackTimeControl = formatTimeControl(playerSettings.black);
+        const sameTimeControl = whiteTimeControl === blackTimeControl;
+
+        const newHeaders: Partial<GameHeaders> = {
+          white: state.whitePlayer,
+          black: state.blackPlayer,
+          event: eventStr,
+          site: "En Croissant",
+          date: dateStr,
+          time: timeStr,
+          time_control: undefined,
+          orientation: boardOrientation,
+        };
+
+        if (sameTimeControl) {
+          if (whiteTimeControl !== "-") {
+            newHeaders.time_control = whiteTimeControl;
+          }
+        } else {
+          newHeaders.white_time_control = whiteTimeControl;
+          newHeaders.black_time_control = blackTimeControl;
+        }
+
+        setHeaders({
+          ...headers,
+          ...newHeaders,
+          fen: state.initialFen,
+        });
+
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.value === activeTab
+              ? { ...tab, name: `${state.whitePlayer} vs. ${state.blackPlayer}` }
+              : tab,
+          ),
+        );
+      } catch (err) {
+        console.error("Failed to start game:", err);
+        if (sessionGenerationRef.current === generation) {
+          setCommandError(err instanceof Error ? err.message : "Unable to start the game.");
+        }
+      } finally {
+        if (sessionGenerationRef.current === generation) setPendingCommand(null);
+      }
+    };
+    const promise = run();
+    startInFlightRef.current = promise;
     try {
-      const result = await commands.startGame(newGameId, config);
-      const state = unwrap(result);
-
-      setWhiteTime(state.whiteTime !== null ? Number(state.whiteTime) : null);
-      setBlackTime(state.blackTime !== null ? Number(state.blackTime) : null);
-
-      setGameState("playing");
-
-      setFen(state.initialFen);
-      for (const move of mapBackendMoves(state.moves)) {
-        const parsed = parseUci(move.uci);
-        if (parsed) {
-          appendMove({
-            payload: parsed,
-            clock: move.clock ?? undefined,
-          });
-        }
-      }
-
-      const now = new Date();
-      const dateStr = now.toISOString().slice(0, 10).replace(/-/g, ".");
-      const timeStr = now.toISOString().slice(11, 19);
-
-      const whiteIsEngine = playerSettings.white.type === "engine";
-      const blackIsEngine = playerSettings.black.type === "engine";
-      let eventStr = "Casual Game";
-      if (whiteIsEngine && blackIsEngine) {
-        eventStr = "Engine Match";
-      } else if (whiteIsEngine || blackIsEngine) {
-        eventStr = "Player vs Engine";
-      } else {
-        eventStr = "Player Match";
-      }
-
-      const formatTimeControl = (settings: OpponentSettings): string => {
-        if (!settings.timeControl) return "-";
-        const seconds = settings.timeControl.seconds / 1000;
-        const increment = (settings.timeControl.increment ?? 0) / 1000;
-        return increment ? `${seconds}+${increment}` : `${seconds}`;
-      };
-
-      const whiteTimeControl = formatTimeControl(playerSettings.white);
-      const blackTimeControl = formatTimeControl(playerSettings.black);
-      const sameTimeControl = whiteTimeControl === blackTimeControl;
-
-      const newHeaders: Partial<GameHeaders> = {
-        white: state.whitePlayer,
-        black: state.blackPlayer,
-        event: eventStr,
-        site: "En Croissant",
-        date: dateStr,
-        time: timeStr,
-        time_control: undefined,
-        orientation: boardOrientation,
-      };
-
-      if (sameTimeControl) {
-        if (whiteTimeControl !== "-") {
-          newHeaders.time_control = whiteTimeControl;
-        }
-      } else {
-        newHeaders.white_time_control = whiteTimeControl;
-        newHeaders.black_time_control = blackTimeControl;
-      }
-
-      setHeaders({
-        ...headers,
-        ...newHeaders,
-        fen: state.initialFen,
-      });
-
-      setTabs((prev) =>
-        prev.map((tab) =>
-          tab.value === activeTab
-            ? { ...tab, name: `${state.whitePlayer} vs. ${state.blackPlayer}` }
-            : tab,
-        ),
-      );
-    } catch (err) {
-      console.error("Failed to start game:", err);
+      await promise;
+    } finally {
+      if (startInFlightRef.current === promise) startInFlightRef.current = null;
     }
   }
 
   const handleHumanMove = useCallback(
-    async (uci: string) => {
-      if (!gameId || gameState !== "playing") return;
+    async (uci: string): Promise<boolean> => {
+      if (!gameId || gameState !== "playing" || moveInFlightRef.current) return false;
+      const generation = sessionGenerationRef.current;
+      const expectedSession = backendSessionRef.current;
+      if (expectedSession === null) return false;
+      moveInFlightRef.current = true;
+      setPendingCommand("move");
+      setCommandError(null);
       try {
-        await commands.makeGameMove(gameId, uci);
+        const state = await tauri.makeGameMove(gameId, expectedSession, uci);
+        if (
+          generation !== sessionGenerationRef.current ||
+          liveGameIdRef.current !== gameId ||
+          state.gameId !== gameId ||
+          !acceptAuthoritativeRevision(state)
+        ) {
+          return false;
+        }
+        syncTreeWithMovesRef.current(mapBackendMoves(state.moves));
+        setWhiteTime(state.whiteTime !== null ? Number(state.whiteTime) : null);
+        setBlackTime(state.blackTime !== null ? Number(state.blackTime) : null);
         if (!isPlayerVsEngine && autoFlipBoard) {
           toggleOrientation();
         }
+        return true;
       } catch (err) {
         console.error("Failed to make move:", err);
+        setCommandError(err instanceof Error ? err.message : "Move rejected. Please try again.");
+        // The command response is authoritative; recover from a rejected/stale
+        // submission instead of leaving a speculative UI line behind.
+        void tauri.getGameState(gameId, expectedSession).then((state) => {
+          if (
+            generation === sessionGenerationRef.current &&
+            liveGameIdRef.current === gameId &&
+            state.gameId === gameId &&
+            acceptAuthoritativeRevision(state)
+          ) {
+            syncTreeWithMovesRef.current(mapBackendMoves(state.moves));
+          }
+        });
+        return false;
+      } finally {
+        moveInFlightRef.current = false;
+        setPendingCommand(null);
       }
     },
-    [gameId, gameState, toggleOrientation, isPlayerVsEngine, autoFlipBoard],
+    [
+      gameId,
+      gameState,
+      toggleOrientation,
+      isPlayerVsEngine,
+      autoFlipBoard,
+      acceptAuthoritativeRevision,
+    ],
   );
 
-  const pendingMovesRef = useRef<{ uci: string; clock: number | null }[] | null>(null);
-  const pendingTimesRef = useRef<{
-    white: number | null;
-    black: number | null;
-  } | null>(null);
-  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queueKeyboardPremove = useCallback((from: Key, to: Key) => {
+    return cgRef.current?.queuePremove(from, to) ?? false;
+  }, []);
+
   const THROTTLE_MS = 150;
 
   const syncTreeWithMovesRef = useRef(syncTreeWithMoves);
   syncTreeWithMovesRef.current = syncTreeWithMoves;
 
   const applyPendingUpdates = useCallback(() => {
+    const queuedGeneration = queuedUpdateGenerationRef.current;
+    const queuedSession = queuedUpdateSessionRef.current;
+    const isCurrent = isCurrentQueuedGameUpdate(
+      queuedGeneration,
+      sessionGenerationRef.current,
+      queuedSession,
+      backendSessionRef.current,
+    );
+    throttleTimerRef.current = null;
+    if (!isCurrent) {
+      clearQueuedGameUpdates();
+      return;
+    }
     if (pendingMovesRef.current) {
       syncTreeWithMovesRef.current(pendingMovesRef.current);
       pendingMovesRef.current = null;
@@ -437,12 +598,23 @@ function BoardGame() {
       setBlackTime(pendingTimesRef.current.black);
       pendingTimesRef.current = null;
     }
-    throttleTimerRef.current = null;
+    queuedUpdateGenerationRef.current = null;
+    queuedUpdateSessionRef.current = null;
 
-    setTimeout(() => {
-      cgRef.current?.playPremove();
+    premoveTimerRef.current = setTimeout(() => {
+      if (
+        isCurrentQueuedGameUpdate(
+          queuedGeneration,
+          sessionGenerationRef.current,
+          queuedSession,
+          backendSessionRef.current,
+        )
+      ) {
+        cgRef.current?.playPremove();
+      }
+      premoveTimerRef.current = null;
     }, 0);
-  }, []);
+  }, [clearQueuedGameUpdates]);
 
   const scheduleUpdate = useCallback(() => {
     if (!throttleTimerRef.current) {
@@ -451,65 +623,113 @@ function BoardGame() {
   }, [applyPendingUpdates]);
 
   const onTakeBack = useCallback(async () => {
-    if (!gameId || gameState !== "playing") return;
-    await commands.takeBackGameMove(gameId);
-  }, [gameId, gameState]);
-
-  useEffect(() => {
-    if (gameState !== "playing" || !gameId) return;
-
-    const currentGameId = gameId;
-
-    const unlistenMove = events.gameMoveEvent.listen(({ payload }) => {
-      if (payload.gameId !== currentGameId) return;
-
-      pendingMovesRef.current = mapBackendMoves(payload.moves);
-      pendingTimesRef.current = {
-        white: payload.whiteTime !== null ? Number(payload.whiteTime) : null,
-        black: payload.blackTime !== null ? Number(payload.blackTime) : null,
-      };
-      scheduleUpdate();
-    });
-
-    const unlistenClock = events.clockUpdateEvent.listen(({ payload }) => {
-      if (payload.gameId !== currentGameId) return;
-      setWhiteTime(payload.whiteTime !== null ? Number(payload.whiteTime) : null);
-      setBlackTime(payload.blackTime !== null ? Number(payload.blackTime) : null);
-    });
-
-    const unlistenGameOver = events.gameOverEvent.listen(({ payload }) => {
-      if (payload.gameId !== currentGameId) return;
-
-      if (throttleTimerRef.current) {
-        clearTimeout(throttleTimerRef.current);
-        throttleTimerRef.current = null;
+    if (!gameId || gameState !== "playing" || !takeBackGuardRef.current.acquire()) return;
+    const generation = sessionGenerationRef.current;
+    const expectedSession = backendSessionRef.current;
+    if (expectedSession === null) {
+      takeBackGuardRef.current.release();
+      return;
+    }
+    setPendingCommand("takeback");
+    setCommandError(null);
+    try {
+      const state = await tauri.takeBackGameMove(gameId, expectedSession);
+      if (
+        generation === sessionGenerationRef.current &&
+        liveGameIdRef.current === gameId &&
+        state.gameId === gameId &&
+        acceptAuthoritativeRevision(state)
+      ) {
+        syncTreeWithMovesRef.current(mapBackendMoves(state.moves));
+        setWhiteTime(state.whiteTime !== null ? Number(state.whiteTime) : null);
+        setBlackTime(state.blackTime !== null ? Number(state.blackTime) : null);
       }
-      pendingMovesRef.current = null;
-      pendingTimesRef.current = null;
+    } catch (err) {
+      setCommandError(err instanceof Error ? err.message : "Unable to take back the move.");
+    } finally {
+      takeBackGuardRef.current.release();
+      setPendingCommand(null);
+    }
+  }, [gameId, gameState, acceptAuthoritativeRevision]);
 
-      syncTreeWithMovesRef.current(mapBackendMoves(payload.moves));
+  const subscribeGameMove = useCallback(
+    (listener: Parameters<typeof tauriSubscriptions.gameMove>[0]) =>
+      tauriSubscriptions.gameMove(listener),
+    [],
+  );
+  useTauriListener(subscribeGameMove, ({ payload }) => {
+    if (
+      gameState !== "playing" ||
+      payload.gameId !== gameId ||
+      !acceptAuthoritativeRevision(payload)
+    )
+      return;
 
-      setGameState("gameOver");
-      setResult(gameResultToOutcome(payload.result));
-    });
-
-    return () => {
-      if (throttleTimerRef.current) {
-        clearTimeout(throttleTimerRef.current);
-        throttleTimerRef.current = null;
-      }
-      unlistenMove.then((f) => f());
-      unlistenClock.then((f) => f());
-      unlistenGameOver.then((f) => f());
+    pendingMovesRef.current = mapBackendMoves(payload.moves);
+    pendingTimesRef.current = {
+      white: payload.whiteTime !== null ? Number(payload.whiteTime) : null,
+      black: payload.blackTime !== null ? Number(payload.blackTime) : null,
     };
-  }, [gameId, gameState, scheduleUpdate, setGameState, setResult]);
+    queuedUpdateGenerationRef.current = sessionGenerationRef.current;
+    queuedUpdateSessionRef.current = payload.session;
+    scheduleUpdate();
+  });
+
+  const subscribeClockUpdate = useCallback(
+    (listener: Parameters<typeof tauriSubscriptions.clockUpdate>[0]) =>
+      tauriSubscriptions.clockUpdate(listener),
+    [],
+  );
+  useTauriListener(subscribeClockUpdate, ({ payload }) => {
+    if (
+      gameState !== "playing" ||
+      payload.gameId !== gameId ||
+      !acceptAuthoritativeRevision(payload)
+    )
+      return;
+    setWhiteTime(payload.whiteTime !== null ? Number(payload.whiteTime) : null);
+    setBlackTime(payload.blackTime !== null ? Number(payload.blackTime) : null);
+  });
+
+  const subscribeGameOver = useCallback(
+    (listener: Parameters<typeof tauriSubscriptions.gameOver>[0]) =>
+      tauriSubscriptions.gameOver(listener),
+    [],
+  );
+  useTauriListener(subscribeGameOver, ({ payload }) => {
+    if (
+      gameState !== "playing" ||
+      payload.gameId !== gameId ||
+      !acceptAuthoritativeRevision(payload)
+    )
+      return;
+
+    clearQueuedGameUpdates();
+
+    syncTreeWithMovesRef.current(mapBackendMoves(payload.moves));
+
+    setGameState("gameOver");
+    setResult(gameResultToOutcome(payload.result));
+  });
 
   useEffect(() => {
-    if (gameState === "playing" && gameId) {
-      commands.getGameState(gameId).then((result) => {
-        if (result.status === "ok") {
-          const state = result.data;
+    return () => {
+      clearQueuedGameUpdates();
+    };
+  }, [clearQueuedGameUpdates]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (gameState === "playing" && gameId) {
+      const polledGameId = gameId;
+      const expectedSession = backendSessionRef.current;
+      if (expectedSession === null) return;
+      tauri.getGameState(gameId, expectedSession).then((state) => {
+        if (
+          isLiveGameSession(liveGameIdRef.current, polledGameId, cancelled) &&
+          state.gameId === polledGameId &&
+          acceptAuthoritativeRevision(state)
+        ) {
           syncTreeWithMovesRef.current(mapBackendMoves(state.moves));
 
           setWhiteTime(state.whiteTime !== null ? Number(state.whiteTime) : null);
@@ -524,7 +744,10 @@ function BoardGame() {
         }
       });
     }
-  }, [gameId, gameState, setGameState, setResult]);
+    return () => {
+      cancelled = true;
+    };
+  }, [gameId, gameState, setGameState, setResult, acceptAuthoritativeRevision, backendSession]);
 
   const movable = useMemo(() => {
     if (players.white.type === "human" && players.black.type === "human") {
@@ -553,18 +776,54 @@ function BoardGame() {
 
   async function handleAbort() {
     if (!gameId) return;
-    await commands.abortGame(gameId);
-    setGameState("gameOver");
-    setResult("*");
+    const generation = sessionGenerationRef.current;
+    const expectedSession = backendSessionRef.current;
+    if (expectedSession === null) return;
+    setPendingCommand("abort");
+    setCommandError(null);
+    try {
+      await tauri.abortGame(gameId, expectedSession);
+      if (generation !== sessionGenerationRef.current || liveGameIdRef.current !== gameId) return;
+      setGameState("gameOver");
+      setResult("*");
+    } catch (err) {
+      setCommandError(err instanceof Error ? err.message : "Unable to abort the game.");
+    } finally {
+      setPendingCommand(null);
+    }
   }
 
   async function handleResign() {
     if (!gameId) return;
+    const generation = sessionGenerationRef.current;
+    const expectedSession = backendSessionRef.current;
+    if (expectedSession === null) return;
     const losingColor = getResignationLosingColor();
-    await commands.resignGame(gameId, losingColor);
+    setPendingCommand("resign");
+    setCommandError(null);
+    try {
+      const state = await tauri.resignGame(gameId, expectedSession, losingColor);
+      if (
+        generation === sessionGenerationRef.current &&
+        liveGameIdRef.current === gameId &&
+        state.gameId === gameId &&
+        state.status !== "playing" &&
+        acceptAuthoritativeRevision(state)
+      ) {
+        setGameState("gameOver");
+        if (typeof state.status === "object" && "finished" in state.status) {
+          setResult(gameResultToOutcome(state.status.finished.result));
+        }
+      }
+    } catch (err) {
+      setCommandError(err instanceof Error ? err.message : "Unable to resign the game.");
+    } finally {
+      setPendingCommand(null);
+    }
   }
 
   async function handleNewGame() {
+    abortLiveSession();
     setGameId(null);
     setGameState("settingUp");
     setWhiteTime(null);
@@ -572,20 +831,14 @@ function BoardGame() {
     resetTree();
   }
 
-  async function handleSelectOpeningBook() {
-    const selected = await open({
-      multiple: false,
-      filters: [
-        {
-          name: "Opening Book",
-          extensions: ["pgn", "epd", "bin", "zip"],
-        },
-      ],
-    });
+  useEffect(() => {
+    return () => {
+      abortLiveSession();
+    };
+  }, [abortLiveSession]);
 
-    if (typeof selected === "string") {
-      setOpeningBookPath(selected);
-    }
+  async function handleSelectOpeningBook() {
+    setOpeningBookHandle(await tauri.issueOpeningBook());
   }
 
   return (
@@ -603,6 +856,7 @@ function BoardGame() {
           selectedPiece={selectedPiece}
           cgRef={cgRef}
           enablePremoves={isPlayerVsEngine && gameState === "playing"}
+          onKeyboardPremove={queueKeyboardPremove}
         />
       </Portal>
       <Portal target="#topRight" style={{ height: "100%", overflow: "hidden" }}>
@@ -618,16 +872,20 @@ function BoardGame() {
                       value={logsColor}
                       onChange={(value) => setLogsColor(value as "white" | "black")}
                       data={[
-                        { value: "white", label: "White" },
-                        { value: "black", label: "Black" },
+                        { value: "white", label: t("Fen.White") },
+                        { value: "black", label: t("Fen.Black") },
                       ]}
                     />
                   ) : (
                     <div />
                   )}
-                  <ActionIcon flex={0} onClick={() => toggleLogsOpened()}>
+                  <IconAction
+                    label={t("EngineLogs.Close", { defaultValue: "Close engine logs" })}
+                    flex={0}
+                    onClick={() => toggleLogsOpened()}
+                  >
                     <IconX size="1.2rem" />
-                  </ActionIcon>
+                  </IconAction>
                 </>
               }
             />
@@ -640,19 +898,22 @@ function BoardGame() {
                       <Group>
                         <Text flex={1} ta="center" fz="lg" fw="bold">
                           {match(inputColor)
-                            .with("white", () => "White")
-                            .with("random", () => "Random")
-                            .with("black", () => "Black")
+                            .with("white", () => t("Fen.White"))
+                            .with("random", () => t("Board.Opponent.Random"))
+                            .with("black", () => t("Fen.Black"))
                             .exhaustive()}
                         </Text>
-                        <ActionIcon onClick={cycleColor}>
+                        <IconAction
+                          label={t("Board.Action.SwapColors", { defaultValue: "Swap colors" })}
+                          onClick={cycleColor}
+                        >
                           <IconArrowsExchange />
-                        </ActionIcon>
+                        </IconAction>
                         <Text flex={1} ta="center" fz="lg" fw="bold">
                           {match(inputColor)
-                            .with("white", () => "Black")
-                            .with("random", () => "Random")
-                            .with("black", () => "White")
+                            .with("white", () => t("Fen.Black"))
+                            .with("random", () => t("Board.Opponent.Random"))
+                            .with("black", () => t("Fen.White"))
                             .exhaustive()}
                         </Text>
                       </Group>
@@ -704,15 +965,17 @@ function BoardGame() {
                           {openingBookEnabled && (
                             <>
                               <FileInput
-                                label="Opening book (.pgn/.epd/.bin/.zip)"
+                                label={t("Board.Opponent.OpeningBookFile")}
                                 description={t("Import.PGN.ClickToSelect")}
-                                filename={openingBookPath}
+                                filename={
+                                  openingBookHandle ? t("Board.Opponent.OpeningBookSelected") : null
+                                }
                                 onClick={handleSelectOpeningBook}
                               />
-                              {openingBookPath?.includes(".bin") && (
+                              {openingBookHandle && (
                                 <NumberInput
-                                  label="Polyglot max plies"
-                                  description="Maximum number of plies from the starting position that the opening book will be used for."
+                                  label={t("Board.Opponent.OpeningBookMaxPlies")}
+                                  description={t("Board.Opponent.OpeningBookMaxPlies.Desc")}
                                   min={1}
                                   value={openingBookMaxPly}
                                   onChange={(value) => {
@@ -730,7 +993,18 @@ function BoardGame() {
                   </ScrollArea>
 
                   <Divider pb="sm" />
-                  <Button onClick={startGame} fullWidth variant="light" disabled={error !== null}>
+                  {commandError && (
+                    <Text c="red" role="alert">
+                      {commandError}
+                    </Text>
+                  )}
+                  <Button
+                    onClick={startGame}
+                    fullWidth
+                    variant="light"
+                    disabled={error !== null || pendingCommand === "start"}
+                    loading={pendingCommand === "start"}
+                  >
                     {t("Board.Opponent.StartGame")}
                   </Button>
                 </Stack>
@@ -747,13 +1021,15 @@ function BoardGame() {
                         color="red"
                         onClick={isEngineVsEngine ? handleAbort : handleResign}
                         leftSection={<IconX />}
+                        loading={pendingCommand === "abort" || pendingCommand === "resign"}
+                        disabled={pendingCommand !== null}
                       >
-                        {isEngineVsEngine ? "Abort" : "Resign"}
+                        {isEngineVsEngine ? t("Board.Opponent.Abort") : t("Board.Opponent.Resign")}
                       </Button>
                     )}
                     {gameState === "gameOver" && (
                       <Button variant="default" onClick={handleNewGame} leftSection={<IconPlus />}>
-                        New Game
+                        {t("Home.NewGame")}
                       </Button>
                     )}
                     <Button
@@ -761,7 +1037,7 @@ function BoardGame() {
                       onClick={() => changeToAnalysisMode()}
                       leftSection={<IconZoomCheck />}
                     >
-                      Analyze
+                      {t("Board.Analysis.Analyze")}
                     </Button>
 
                     {hasEngine && (
@@ -770,7 +1046,7 @@ function BoardGame() {
                         onClick={() => toggleLogsOpened()}
                         leftSection={<IconFileText size="1rem" />}
                       >
-                        Engine Logs
+                        {t("Board.Analysis.Logs")}
                       </Button>
                     )}
                   </Group>
@@ -799,6 +1075,7 @@ function BoardGame() {
                   dirty={false}
                   canTakeBack={onePlayerIsEngine}
                   onTakeBack={onTakeBack}
+                  takeBackPending={pendingCommand === "takeback"}
                   disableVariations
                   allowEditing={gameState === "settingUp"}
                 />

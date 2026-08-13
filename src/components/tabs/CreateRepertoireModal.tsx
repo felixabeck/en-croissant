@@ -1,13 +1,14 @@
-import { Button, Modal, SegmentedControl, Stack, Text, TextInput } from "@mantine/core";
-import { useLoaderData, useNavigate } from "@tanstack/react-router";
+import { Button, SegmentedControl, Stack, Text, TextInput } from "@mantine/core";
+import { useNavigate } from "@tanstack/react-router";
 import { INITIAL_FEN } from "chessops/fen";
 import { useAtom, useSetAtom, useStore } from "jotai";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { activeTabAtom, addRecentFileAtom, tabFamily, tabsAtom } from "@/state/atoms";
 import { headersToPGN } from "@/utils/chess";
-import { createFile } from "@/utils/files";
+import { createFile, ensureFileWorkspace } from "@/utils/files";
 import { createTab } from "@/utils/tabs";
+import AppModal from "../common/AppModal";
 
 export default function CreateRepertoireModal({
   opened,
@@ -20,7 +21,6 @@ export default function CreateRepertoireModal({
   const [name, setName] = useState("");
   const [color, setColor] = useState<"white" | "black">("white");
   const [error, setError] = useState("");
-  const { documentDir } = useLoaderData({ from: "/" });
 
   const [, setTabs] = useAtom(tabsAtom);
   const setActiveTab = useSetAtom(activeTabAtom);
@@ -45,11 +45,14 @@ export default function CreateRepertoireModal({
       orientation: color,
     });
 
+    const workspace = await ensureFileWorkspace();
+    if (!workspace) return;
     const result = await createFile({
       filename: trimmedName,
       filetype: "repertoire",
       pgn,
-      dir: documentDir,
+      workspace,
+      parent: workspace,
     });
 
     if (result.isErr) {
@@ -76,7 +79,7 @@ export default function CreateRepertoireModal({
     store.set(tabFamily(id), "practice");
     store.set(addRecentFileAtom, {
       name: trimmedName,
-      path: fileInfo.path,
+      handle: fileInfo.handle,
       type: "repertoire",
     });
     navigate({ to: "/" });
@@ -88,7 +91,7 @@ export default function CreateRepertoireModal({
   }
 
   return (
-    <Modal
+    <AppModal
       opened={opened}
       onClose={() => setOpened(false)}
       title={t("Home.Card.NewRepertoire.Title")}
@@ -130,6 +133,6 @@ export default function CreateRepertoireModal({
           <Button type="submit">{t("Common.Create")}</Button>
         </Stack>
       </form>
-    </Modal>
+    </AppModal>
   );
 }

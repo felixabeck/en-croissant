@@ -1,20 +1,11 @@
-import {
-  ActionIcon,
-  Avatar,
-  Badge,
-  Card,
-  Center,
-  Divider,
-  Group,
-  Modal,
-  Stack,
-  Text,
-} from "@mantine/core";
+import { Avatar, Badge, Card, Center, Divider, Group, Stack, Text } from "@mantine/core";
 import { IconCloud } from "@tabler/icons-react";
 import * as Flags from "mantine-flagpack";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr/immutable";
 import { getFidePlayer } from "@/utils/lichess/api";
+import { IconAction } from "@/components/common/IconAction";
+import AppModal from "../common/AppModal";
 
 import COUNTRIES from "./countries.json";
 
@@ -46,7 +37,7 @@ function FideInfo({
   const Flag = player?.federation ? flags.find((f) => f.key === country?.a2)?.component : undefined;
 
   return (
-    <Modal
+    <AppModal
       styles={{
         title: {
           flex: 1,
@@ -61,9 +52,9 @@ function FideInfo({
               target="_blank"
               rel="noreferrer"
             >
-              <ActionIcon>
+              <IconAction label={t("Databases.FIDE.OpenProfile")}>
                 <IconCloud />
-              </ActionIcon>
+              </IconAction>
             </a>
           )}
         </Group>
@@ -132,7 +123,7 @@ function FideInfo({
           )}
         </Text>
       )}
-    </Modal>
+    </AppModal>
   );
 }
 

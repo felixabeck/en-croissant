@@ -1,6 +1,5 @@
 import type { DrawBrushes, DrawShape } from "@lichess-org/chessground/draw";
-import { ActionIcon, Box, Center, Group, Text, useMantineTheme } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
+import { Box, Center, Group, Text, useMantineTheme, VisuallyHidden } from "@mantine/core";
 import { IconChevronRight } from "@tabler/icons-react";
 import {
   makeSquare,
@@ -14,8 +13,8 @@ import {
 import { chessgroundDests, chessgroundMove } from "chessops/compat";
 import { makeFen, parseFen } from "chessops/fen";
 import { makeSan } from "chessops/san";
-import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { memo, useCallback, useContext, useMemo, useState } from "react";
+import { useAtom, useAtomValue } from "jotai";
+import { memo, type MouseEvent, useCallback, useContext, useMemo, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
@@ -27,17 +26,12 @@ import {
   bestMovesFamily,
   currentEvalOpenAtom,
   currentShowCommentsAtom,
-  currentTabAtom,
-  deckAtomFamily,
   enableBoardScrollAtom,
   eraseDrawablesOnClickAtom,
   forcedEnPassantAtom,
   materialDisplayAtom,
   moveHighlightAtom,
   moveInputAtom,
-  practiceCardStartTimeAtom,
-  practiceSessionStatsAtom,
-  practiceStateAtom,
   showArrowsAtom,
   showConsecutiveArrowsAtom,
   showCoordinatesAtom,
@@ -49,14 +43,19 @@ import { keyMapAtom } from "@/state/keybinds";
 import classes from "@/styles/Chessboard.module.css";
 import { ANNOTATION_INFO, isBasicAnnotation } from "@/utils/annotation";
 import { getVariationLine } from "@/utils/chess";
-import { chessopsError, forceEnPassant, positionFromFen } from "@/utils/chessops";
-import { getTabFile, getTabGameNumber } from "@/utils/tabs";
+import {
+  chessopsError,
+  forceEnPassant,
+  normalizeEditedFen,
+  positionFromFen,
+} from "@/utils/chessops";
 import ShowMaterial from "../common/ShowMaterial";
 import { TreeStateContext } from "../common/TreeStateContext";
 import FideInfo from "../databases/FideInfo";
-import { updateCardPerformance } from "../files/opening";
 import { arrowColors } from "../panels/analysis/BestMoves";
 import AnnotationHint from "./AnnotationHint";
+import IconAction from "../common/IconAction";
+import { accessibleBoardGrid } from "./boardAccessibility";
 import { BoardBar } from "./BoardBar";
 import Clock from "./Clock";
 import EvalBar from "./EvalBar";
@@ -67,6 +66,17 @@ const LARGE_BRUSH = 11;
 const MEDIUM_BRUSH = 7.5;
 const SMALL_BRUSH = 4;
 const BAR_HEIGHT = "1.9rem";
+const VISUALLY_HIDDEN_STYLE = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+} as const;
 
 interface ChessboardProps {
   editingMode: boolean;
@@ -76,11 +86,15 @@ interface ChessboardProps {
   boardRef: React.MutableRefObject<HTMLDivElement | null>;
   whiteTime?: number;
   blackTime?: number;
-  practicing?: boolean;
+  practiceMove?: {
+    canMove: boolean;
+    submitMove: (san: string) => void;
+  };
   selectedPiece?: Piece | null;
-  onMove?: (uci: string) => void;
+  onMove?: (uci: string) => Promise<boolean>;
   cgRef?: React.Ref<ChessgroundRef>;
   enablePremoves?: boolean;
+  onKeyboardPremove?: (from: SquareName, to: SquareName) => boolean;
 }
 
 function Board({
@@ -91,11 +105,12 @@ function Board({
   boardRef,
   whiteTime,
   blackTime,
-  practicing,
+  practiceMove,
   selectedPiece,
   onMove,
   cgRef,
   enablePremoves = false,
+  onKeyboardPremove,
 }: ChessboardProps) {
   const { t } = useTranslation();
 
@@ -141,12 +156,15 @@ function Board({
   const showCoordinates = useAtomValue(showCoordinatesAtom);
   const materialDisplay = useAtomValue(materialDisplayAtom);
 
-  let dests: Map<SquareName, SquareName[]> = pos ? chessgroundDests(pos) : new Map();
-  if (forcedEP && pos) {
-    dests = forceEnPassant(dests, pos);
-  }
+  const dests = useMemo(() => {
+    const legalDests = pos ? chessgroundDests(pos) : new Map<SquareName, SquareName[]>();
+    return forcedEP && pos ? forceEnPassant(legalDests, pos) : legalDests;
+  }, [forcedEP, pos]);
 
   const [pendingMove, setPendingMove] = useState<NormalMove | null>(null);
+  const [keyboardSquare, setKeyboardSquare] = useState<SquareName>("e2");
+  const [keyboardSource, setKeyboardSource] = useState<SquareName | null>(null);
+  const [keyboardAnnouncement, setKeyboardAnnouncement] = useState("");
 
   const turn = pos?.turn || "white";
   const orientation = headers.orientation || "white";
@@ -159,80 +177,28 @@ function Board({
 
   const keyMap = useAtomValue(keyMapAtom);
   useHotkeys(keyMap.SWAP_ORIENTATION.keys, () => toggleOrientation());
-  const currentTab = useAtomValue(currentTabAtom);
-  const tabFile = getTabFile(currentTab);
   const [evalOpen, setEvalOpen] = useAtom(currentEvalOpenAtom);
-
-  const [deck, setDeck] = useAtom(
-    deckAtomFamily({
-      file: tabFile?.path || "",
-      game: getTabGameNumber(currentTab),
-    }),
-  );
-
-  const setPracticeState = useSetAtom(practiceStateAtom);
-  const [sessionStats, setSessionStats] = useAtom(practiceSessionStatsAtom);
-  const cardStartTime = useAtomValue(practiceCardStartTimeAtom);
 
   async function makeMove(move: NormalMove) {
     if (!pos) return;
     const san = makeSan(pos, move);
-    if (practicing) {
-      const c = deck.positions.find((c) => c.fen === currentNode.fen);
-      if (!c) {
+    if (practiceMove) {
+      if (!practiceMove.canMove) return;
+      practiceMove.submitMove(san);
+      setPendingMove(null);
+    } else {
+      // A game move becomes part of the tree only after the native authority
+      // accepts it. This prevents rejected moves from corrupting the visible line.
+      if (onMove) {
+        await onMove(makeUci(move));
+        setPendingMove(null);
         return;
       }
-
-      const i = deck.positions.indexOf(c);
-      const timeTaken = Date.now() - cardStartTime;
-
-      if (san !== c.answer) {
-        if (sessionStats.mode !== "full") {
-          updateCardPerformance(setDeck, i, c.card, 1);
-        }
-        setPracticeState({
-          phase: "incorrect",
-          currentFen: c.fen,
-          answer: c.answer,
-          playedMove: san,
-          positionIndex: i,
-          timeTaken,
-        });
-        setSessionStats((prev) => ({
-          ...prev,
-          incorrect: prev.incorrect + 1,
-          streak: 0,
-        }));
-        notifications.show({
-          title: t("Common.Incorrect"),
-          message: t("Board.Practice.CorrectMoveWas", { move: c.answer }),
-          color: "red",
-        });
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        goToNext();
-      } else {
-        storeMakeMove({
-          payload: move,
-        });
-        setPendingMove(null);
-        setPracticeState({
-          phase: "correct",
-          currentFen: c.fen,
-          answer: c.answer,
-          positionIndex: i,
-          timeTaken,
-        });
-      }
-    } else {
       storeMakeMove({
         payload: move,
         clock: pos.turn === "white" ? whiteTime : blackTime,
       });
       setPendingMove(null);
-
-      if (onMove) {
-        onMove(makeUci(move));
-      }
     }
   }
 
@@ -322,7 +288,7 @@ function Board({
     !!headers.white_time_control ||
     !!headers.black_time_control;
 
-  const practiceLock = !!practicing && !deck.positions.find((c) => c.fen === currentNode.fen);
+  const practiceLock = practiceMove !== undefined && !practiceMove.canMove;
 
   const movableColor: "white" | "black" | "both" | undefined = useMemo(() => {
     return practiceLock
@@ -353,7 +319,9 @@ function Board({
       if (!fen || !editingMode) {
         return;
       }
-      const newFen = `${fen} ${currentNode.fen.split(" ").slice(1).join(" ")}`;
+      const boardFen = `${fen} ${currentNode.fen.split(" ").slice(1).join(" ")}`;
+      const newFen = normalizeEditedFen(boardFen);
+      if (!newFen) return;
 
       if (newFen !== currentNode.fen) {
         setFen(newFen);
@@ -376,6 +344,100 @@ function Board({
 
   const topPlayer = orientation === "white" ? headers.black : headers.white;
   const bottomPlayer = orientation === "white" ? headers.white : headers.black;
+  const accessibleGrid = accessibleBoardGrid(orientation);
+
+  function accessibleSquareLabel(square: SquareName) {
+    const piece = pos?.board.get(parseSquare(square)!);
+    const pieceLabel = piece
+      ? t("Board.Aria.Piece", {
+          defaultValue: "{{color}} {{piece}}",
+          color: t(`Board.Aria.Color.${piece.color}`, { defaultValue: piece.color }),
+          piece: t(`Board.Aria.PieceType.${piece.role}`, { defaultValue: piece.role }),
+        })
+      : t("Board.Aria.EmptySquare", { defaultValue: "empty" });
+    return t("Board.Aria.Square", {
+      defaultValue: "{{square}}, {{piece}}{{selected}}",
+      square,
+      piece: pieceLabel,
+      selected:
+        keyboardSource === square
+          ? t("Board.Aria.MoveSourceSelected", { defaultValue: ", move source selected" })
+          : "",
+    });
+  }
+
+  function keyboardMove(event: React.KeyboardEvent<HTMLDivElement>) {
+    const [fileName, rankName] = keyboardSquare;
+    const file = fileName.charCodeAt(0) - "a".charCodeAt(0);
+    const rank = Number(rankName) - 1;
+    const horizontal = orientation === "white" ? 1 : -1;
+    const vertical = orientation === "white" ? 1 : -1;
+    let nextFile = file;
+    let nextRank = rank;
+    if (event.key === "ArrowLeft") nextFile -= horizontal;
+    if (event.key === "ArrowRight") nextFile += horizontal;
+    if (event.key === "ArrowUp") nextRank += vertical;
+    if (event.key === "ArrowDown") nextRank -= vertical;
+    if (nextFile !== file || nextRank !== rank) {
+      event.preventDefault();
+      if (nextFile >= 0 && nextFile < 8 && nextRank >= 0 && nextRank < 8) {
+        const next =
+          `${String.fromCharCode("a".charCodeAt(0) + nextFile)}${nextRank + 1}` as SquareName;
+        setKeyboardSquare(next);
+        setKeyboardAnnouncement(
+          t("Board.Aria.FocusedSquare", { defaultValue: "Focused {{square}}", square: next }),
+        );
+      }
+      return;
+    }
+    if (event.key === "Escape") {
+      setKeyboardSource(null);
+      setKeyboardAnnouncement(
+        t("Board.Aria.MoveSelectionCancelled", { defaultValue: "Move selection cancelled" }),
+      );
+      return;
+    }
+    if (event.key !== " " && event.key !== "Enter") return;
+    event.preventDefault();
+    if (!keyboardSource) {
+      setKeyboardSource(keyboardSquare);
+      setKeyboardAnnouncement(
+        t("Board.Aria.MoveSource", { defaultValue: "Selected {{square}}", square: keyboardSquare }),
+      );
+      return;
+    }
+    const legal = dests.get(keyboardSource)?.includes(keyboardSquare) ?? false;
+    if (!legal && enablePremoves && onKeyboardPremove) {
+      const queued = onKeyboardPremove(keyboardSource, keyboardSquare);
+      setKeyboardAnnouncement(
+        queued
+          ? t("Board.Aria.MoveQueued", {
+              defaultValue: "Premove {{from}} to {{to}} queued",
+              from: keyboardSource,
+              to: keyboardSquare,
+            })
+          : t("Board.Aria.IllegalMove", { defaultValue: "Move is not legal" }),
+      );
+      setKeyboardSource(null);
+      return;
+    }
+    if (!legal || !pos) {
+      setKeyboardAnnouncement(t("Board.Aria.IllegalMove", { defaultValue: "Move is not legal" }));
+      setKeyboardSource(null);
+      return;
+    }
+    const from = parseSquare(keyboardSource)!;
+    const to = parseSquare(keyboardSquare)!;
+    if (
+      pos.board.get(from)?.role === "pawn" &&
+      (keyboardSquare[1] === "8" || keyboardSquare[1] === "1")
+    ) {
+      setPendingMove({ from, to });
+    } else {
+      void makeMove({ from, to });
+    }
+    setKeyboardSource(null);
+  }
 
   return (
     <>
@@ -449,16 +511,17 @@ function Board({
             >
               {!evalOpen && (
                 <Center h="100%" w="100%">
-                  <ActionIcon
+                  <IconAction
+                    label={t("Board.Action.ShowEvaluation", { defaultValue: "Show evaluation" })}
                     size="1rem"
                     onClick={() => setEvalOpen(true)}
-                    onContextMenu={(e) => {
+                    onContextMenu={(e: MouseEvent<HTMLButtonElement>) => {
                       setEvalOpen(true);
                       e.preventDefault();
                     }}
                   >
                     <IconChevronRight />
-                  </ActionIcon>
+                  </IconAction>
                 </Center>
               )}
               {evalOpen && <EvalBar score={currentNode.score || null} orientation={orientation} />}
@@ -474,8 +537,16 @@ function Board({
               }
               className={classes.chessboard}
               ref={boardRef}
+              role="grid"
+              tabIndex={0}
+              aria-label={t("Board.AccessibleName", {
+                defaultValue: "Chessboard, {{orientation}} orientation",
+                orientation,
+              })}
+              aria-activedescendant={`board-square-${keyboardSquare}`}
+              onKeyDown={keyboardMove}
               onClick={() => {
-                eraseDrawablesOnClick && clearShapes();
+                if (eraseDrawablesOnClick) clearShapes();
               }}
               onWheel={(e) => {
                 if (enableBoardScroll) {
@@ -502,6 +573,25 @@ function Board({
                 turn={turn}
                 orientation={orientation}
               />
+              <div style={VISUALLY_HIDDEN_STYLE}>
+                {accessibleGrid.map((row) => (
+                  <div
+                    key={row[0]}
+                    role="row"
+                    aria-label={t("Board.Aria.Rank", { rank: row[0][1] })}
+                  >
+                    {row.map((square) => (
+                      <div
+                        id={`board-square-${square}`}
+                        key={square}
+                        role="gridcell"
+                        aria-label={accessibleSquareLabel(square)}
+                        aria-selected={keyboardSquare === square}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
 
               <Chessground
                 ref={cgRef}
@@ -563,7 +653,8 @@ function Board({
                       if (square) {
                         const setup = parseFen(currentNode.fen).unwrap();
                         setup.board.set(square, selectedPiece);
-                        setFen(makeFen(setup));
+                        const normalized = normalizeEditedFen(makeFen(setup));
+                        if (normalized) setFen(normalized);
                       }
                     }
                   },
@@ -597,6 +688,7 @@ function Board({
                 }}
               />
             </Box>
+            <VisuallyHidden aria-live="polite">{keyboardAnnouncement}</VisuallyHidden>
           </Group>
           <BoardBar
             name={bottomPlayer}

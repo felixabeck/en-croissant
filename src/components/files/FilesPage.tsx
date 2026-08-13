@@ -1,392 +1,330 @@
-import {
-  ActionIcon,
-  Center,
-  Chip,
-  Divider,
-  Group,
-  Input,
-  Paper,
-  ScrollArea,
-  Stack,
-  Text,
-  ThemeIcon,
-  Title,
-  Tooltip,
-} from "@mantine/core";
-import { useHotkeys, useToggle } from "@mantine/hooks";
-import {
-  IconFileDescription,
-  IconFilePlus,
-  IconFolderPlus,
-  IconSearch,
-  IconFolder,
-} from "@tabler/icons-react";
-import { useLoaderData } from "@tanstack/react-router";
-import { readDir, remove } from "@tauri-apps/plugin-fs";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { tauri } from "@/platform/tauri";
+import { Button, Center, Group, Paper, Select, Stack, Text, TextInput, Title } from "@mantine/core";
+import { useAtom } from "jotai";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr";
-import { capitalize } from "@/utils/format";
-import ConfirmModal from "../common/ConfirmModal";
-import OpenFolderButton from "../common/OpenFolderButton";
+import { fileWorkspaceAtom, fileWorkspaceDisplayNameAtom } from "@/state/atoms";
+import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import DirectoryTree from "./DirectoryTree";
-import { DragContext } from "./DirectoryTree";
-import FileCard from "./FileCard";
-import {
-  type Directory,
-  type FileMetadata,
-  type FileType,
-  processEntriesRecursively,
-} from "./file";
-import { CreateDirectoryModal, CreateModal, EditModal } from "./Modals";
+import ConfirmModal from "../common/ConfirmModal";
+import AppModal from "../common/AppModal";
+import type { Entry } from "./file";
+import { workspaceEntryToEntry } from "./file";
 
-const FILE_TYPES: FileType[] = ["game", "repertoire", "tournament", "puzzle", "other"];
-type Entry = FileMetadata | Directory;
+const fileAction = { file: "file", folder: "folder", rename: "rename" } as const;
+type FileAction = (typeof fileAction)[keyof typeof fileAction];
 
-function findEntryByPath(entries: Entry[], path: string): Entry | null {
-  for (const entry of entries) {
-    if (entry.path === path) {
-      return entry;
-    }
-
-    if (entry.type === "directory") {
-      const child = findEntryByPath(entry.children, path);
-      if (child) {
-        return child;
-      }
+export default function FilesPage() {
+  const { t } = useTranslation();
+  const [workspace, setWorkspace] = useAtom(fileWorkspaceAtom);
+  const [, setWorkspaceDisplayName] = useAtom(fileWorkspaceDisplayNameAtom);
+  const [selected, setSelected] = useState<Entry | null>(null);
+  const [action, setAction] = useState<FileAction | null>(null);
+  const [name, setName] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [trashed, setTrashed] = useState<Entry | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Entry | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<Entry | null>(null);
+  const [purgeTarget, setPurgeTarget] = useState<Entry | null>(null);
+  const [moveTarget, setMoveTarget] = useState<string | null>(null);
+  const [moving, setMoving] = useState(false);
+  const operationFailed = t("Files.OperationFailed", {
+    defaultValue: "The file operation could not be completed. Please try again.",
+  });
+  const moveInFlight = useRef(false);
+  const actionInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (action) actionInputRef.current?.focus();
+  }, [action]);
+  const { data, error, mutate } = useSWR(
+    workspace ? ["file-workspace", workspace] : null,
+    async () => (await tauri.listFileWorkspace(workspace!)).map(workspaceEntryToEntry),
+  );
+  useEffect(() => {
+    setSelected(null);
+  }, [workspace]);
+  async function chooseWorkspace() {
+    const result = await tauri.issueFileWorkspace();
+    setWorkspace(result.handle);
+    setWorkspaceDisplayName(result.displayName);
+  }
+  const parent = selected?.type === "directory" ? selected.handle : workspace;
+  const directories = (
+    entries: Entry[],
+  ): { handle: NonNullable<typeof workspace>; label: string }[] =>
+    entries.flatMap((entry) =>
+      entry.type === "directory"
+        ? [{ handle: entry.handle, label: entry.name }, ...directories(entry.children)]
+        : [],
+    );
+  const destinationDirectories = data ? directories(data) : [];
+  const moveTargetHandle = [
+    ...(workspace
+      ? [
+          {
+            handle: workspace,
+            label: t("Files.CollectionRoot", { defaultValue: "Collection root" }),
+          },
+        ]
+      : []),
+    ...destinationDirectories,
+  ].find((entry) => fileWorkspaceKey(entry.handle) === moveTarget)?.handle;
+  async function moveEntry(entry: Entry, destination: Entry["handle"]) {
+    if (moveInFlight.current) return;
+    moveInFlight.current = true;
+    setMoving(true);
+    setActionError("");
+    setSelected(entry);
+    try {
+      await tauri.moveWorkspaceEntry(workspace!, entry.handle, destination);
+      setMoveTarget(null);
+      await mutate();
+    } catch {
+      setActionError(operationFailed);
+    } finally {
+      moveInFlight.current = false;
+      setMoving(false);
     }
   }
-
-  return null;
-}
-
-const useFileDirectory = (dir: string) => {
-  const { data, error, isLoading, mutate } = useSWR<Entry[]>(["file-directory", dir], async () => {
-    const entries = await readDir(dir);
-    const allEntries = processEntriesRecursively(dir, entries);
-
-    return allEntries;
-  });
-  return {
-    files: data,
-    isLoading,
-    error,
-    mutate,
-  };
-};
-
-function FilesPage() {
-  const { t } = useTranslation();
-
-  const { documentDir } = useLoaderData({ from: "/files" });
-  const { files, isLoading, error, mutate } = useFileDirectory(documentDir);
-
-  const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Entry | null>(null);
-  const [games, setGames] = useState<Map<number, string>>(new Map());
-  const [filter, setFilter] = useState<FileType | null>(null);
-
-  const [deleteModal, toggleDeleteModal] = useToggle();
-  const [createModal, toggleCreateModal] = useToggle();
-  const [createDirModal, toggleCreateDirModal] = useToggle();
-  const [editModal, toggleEditModal] = useToggle();
-
-  const searchInputRef = useRef<HTMLInputElement>(null);
-
-  useHotkeys([
-    ["mod+f", () => searchInputRef.current?.focus()],
-    [
-      "Delete",
-      () => {
-        if (selected && !deleteModal) {
-          toggleDeleteModal();
-        }
-      },
-    ],
-  ]);
-
-  useEffect(() => {
-    setGames(new Map());
-  }, [selected]);
-
-  useEffect(() => {
-    if (!files || !selected) {
-      return;
+  async function submitAction() {
+    if (!workspace || !parent || !name.trim()) return;
+    setActionError("");
+    try {
+      if (action === fileAction.file)
+        await tauri.createWorkspaceFile(workspace, parent, name, { type: "game", tags: [] }, "*");
+      if (action === fileAction.folder)
+        await tauri.createWorkspaceDirectory(workspace, parent, name);
+      if (action === fileAction.rename && selected?.type === "file")
+        await tauri.renameWorkspaceFile(workspace, selected.handle, name, {
+          type: selected.metadata.type,
+          tags: selected.metadata.tags,
+        });
+      setAction(null);
+      setName("");
+      await mutate();
+    } catch {
+      setActionError(operationFailed);
     }
-
-    const canonicalSelection = findEntryByPath(files, selected.path);
-
-    if (!canonicalSelection) {
-      setSelected(null);
-      return;
-    }
-
-    if (canonicalSelection !== selected) {
-      setSelected(canonicalSelection);
-    }
-  }, [files, selected]);
-
-  const [draggingPath, setDraggingPath] = useState<string | null>(null);
-  const [hoverPath, setHoverPath] = useState<string | null>(null);
-  const folderRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-
-  const registerFolder = useCallback((path: string, ref: HTMLDivElement | null) => {
-    if (ref) {
-      folderRefs.current.set(path, ref);
-    } else {
-      folderRefs.current.delete(path);
-    }
-  }, []);
-
-  const checkHover = useCallback(
-    (clientX: number, clientY: number) => {
-      let hovered: string | null = null;
-      let minArea = Infinity;
-
-      // Check all folder row bounding rects
-      // Since child folders are visually inside their parent's bounding box sometimes depending
-      // on DOM flow, we want the most specific (smallest) matched box
-      for (const [path, ref] of folderRefs.current.entries()) {
-        const rect = ref.getBoundingClientRect();
-        if (
-          clientX >= rect.left &&
-          clientX <= rect.right &&
-          clientY >= rect.top &&
-          clientY <= rect.bottom
-        ) {
-          const area = rect.width * rect.height;
-          if (area < minArea) {
-            minArea = area;
-            hovered = path;
-          }
-        }
-      }
-
-      // If no specific folder hovered, check if over the general documentDir space
-      if (!hovered && dropzoneRef.current) {
-        const rect = dropzoneRef.current.getBoundingClientRect();
-        if (
-          clientX >= rect.left &&
-          clientX <= rect.right &&
-          clientY >= rect.top &&
-          clientY <= rect.bottom
-        ) {
-          hovered = documentDir;
-        }
-      }
-
-      setHoverPath(hovered);
-    },
-    [documentDir],
-  );
-
-  const dropzoneRef = useRef<HTMLDivElement>(null);
-
-  const requestDelete = useCallback(
-    (entry: Entry) => {
-      setSelected(entry);
-      if (!deleteModal) {
-        toggleDeleteModal();
-      }
-    },
-    [deleteModal, toggleDeleteModal],
-  );
-
-  const refreshDirectory = useCallback(() => mutate(), [mutate]);
-
-  const handleConfirmDelete = useCallback(async () => {
-    if (!selected) {
-      return;
-    }
-
-    if (selected.type === "directory") {
-      await remove(selected.path, { recursive: true });
-    } else {
-      await remove(selected.path);
-      await remove(selected.path.replace(".pgn", ".info")).catch(() => {});
-    }
-
-    await mutate();
-    toggleDeleteModal();
-    setSelected(null);
-  }, [selected, mutate, toggleDeleteModal]);
-
-  const dragContextValue = useMemo(
-    () => ({
-      draggingPath,
-      setDraggingPath,
-      hoverPath,
-      setHoverPath,
-      registerFolder,
-      checkHover,
-      documentDir,
-    }),
-    [draggingPath, hoverPath, registerFolder, checkHover, documentDir],
-  );
-
+  }
   return (
-    <Stack h="100%">
-      {files && (
-        <CreateModal
-          opened={createModal}
-          setOpened={toggleCreateModal}
-          files={files}
-          setFiles={mutate}
-          setSelected={setSelected}
-          selected={selected}
-        />
-      )}
-      <CreateDirectoryModal
-        opened={createDirModal}
-        setOpened={toggleCreateDirModal}
-        mutate={mutate}
-        selected={selected}
-      />
-      {selected && files && selected.type === "file" && (
-        <EditModal
-          key={selected.name}
-          opened={editModal}
-          setOpened={toggleEditModal}
-          mutate={mutate}
-          setSelected={setSelected}
-          metadata={selected as FileMetadata}
-        />
-      )}
-      <Group align="baseline" pl="lg" py="sm">
+    <Stack h="100%" p="md">
+      <Group justify="space-between">
         <Title>{t("Files.Title")}</Title>
-        <OpenFolderButton folder={documentDir} />
+        <Group>
+          <Button onClick={chooseWorkspace}>
+            {workspace
+              ? t("Files.ChangeCollection", { defaultValue: "Change collection" })
+              : t("Files.ChooseCollection", { defaultValue: "Choose collection" })}
+          </Button>
+          {workspace && (
+            <Button onClick={() => setAction(fileAction.file)}>
+              {t("Files.CreateFile", { defaultValue: "Create file" })}
+            </Button>
+          )}
+          {workspace && (
+            <Button onClick={() => setAction(fileAction.folder)}>
+              {t("Files.CreateFolder", { defaultValue: "Create folder" })}
+            </Button>
+          )}
+        </Group>
       </Group>
-
-      <Group grow flex={1} style={{ overflow: "hidden" }} px="md" pb="md">
-        <Paper withBorder style={{ borderWidth: 2 }} h="100%">
-          <Stack ref={dropzoneRef} gap={0} h="100%" style={{ overflow: "hidden" }}>
-            <Group p="xs" gap="xs">
-              <Input
-                size="sm"
-                style={{ flexGrow: 1 }}
-                leftSection={<IconSearch size="1rem" />}
-                placeholder={t("Common.Search")}
-                value={search}
-                onChange={(e) => setSearch(e.currentTarget.value)}
-                ref={searchInputRef}
-                onKeyDown={(e) => {
-                  if (e.key === "f" && (e.metaKey || e.ctrlKey)) {
-                    e.preventDefault();
-                  }
-                  if (e.key === "Escape") {
-                    setSearch("");
-                    searchInputRef.current?.blur();
-                  }
+      {!workspace && (
+        <Center h="100%">
+          <Text c="dimmed">
+            {t("Files.EmptyWorkspace", {
+              defaultValue: "Choose a PGN collection to manage it with native file permissions.",
+            })}
+          </Text>
+        </Center>
+      )}
+      {workspace && (
+        <Paper withBorder p="sm" h="100%">
+          {selected?.type === "file" && (
+            <Group>
+              <Button
+                size="xs"
+                onClick={() => {
+                  setName(selected.name);
+                  setAction(fileAction.rename);
                 }}
-              />
-              <Tooltip label={t("Files.CreateFile.Title")}>
-                <ActionIcon variant="default" size="lg" onClick={() => toggleCreateModal()}>
-                  <IconFilePlus size="1rem" />
-                </ActionIcon>
-              </Tooltip>
-              <Tooltip label={t("Files.CreateDirectory.Title")}>
-                <ActionIcon variant="default" size="lg" onClick={() => toggleCreateDirModal()}>
-                  <IconFolderPlus size="1rem" />
-                </ActionIcon>
-              </Tooltip>
+              >
+                {t("Files.Rename", { defaultValue: "Rename" })}
+              </Button>
+              <Button size="xs" onClick={() => setMoveTarget(fileWorkspaceKey(workspace))}>
+                {t("Files.Move", { defaultValue: "Move" })}
+              </Button>
+              <Button size="xs" color="red" onClick={() => setDeleteTarget(selected)}>
+                {t("Files.Trash", { defaultValue: "Trash" })}
+              </Button>
             </Group>
-            <Divider />
-            <Group px="xs" py={6} gap={4} wrap="wrap">
-              {FILE_TYPES.map((type) => (
-                <Chip
-                  variant="outline"
-                  key={type}
-                  size="sm"
-                  checked={filter === type}
-                  onChange={(checked) => setFilter(checked ? type : null)}
-                >
-                  {t(`Files.FileType.${capitalize(type)}`)}
-                </Chip>
-              ))}
+          )}
+          {trashed && (
+            <Group>
+              <Text size="sm">
+                {t("Files.MovedToTrash", {
+                  defaultValue: "Moved {{name}} to trash.",
+                  name: trashed.name,
+                })}
+              </Text>
+              <Button size="xs" onClick={() => setRestoreTarget(trashed)}>
+                {t("Common.Undo", { defaultValue: "Undo" })}
+              </Button>
+              <Button size="xs" color="red" onClick={() => setPurgeTarget(trashed)}>
+                {t("Files.DeletePermanently", { defaultValue: "Delete permanently" })}
+              </Button>
             </Group>
-            <Divider />
-            <ScrollArea flex={1}>
-              {error ? (
-                <Center h="100%">
-                  <Text c="red">{t("Files.LoadingFailed")}</Text>
-                </Center>
-              ) : isLoading ? (
-                <Center h="100%">
-                  <Text c="dimmed">{t("Common.Loading")}</Text>
-                </Center>
-              ) : (
-                <DragContext.Provider value={dragContextValue}>
-                  <DirectoryTree
-                    files={files}
-                    refreshDirectory={refreshDirectory}
-                    selectedFile={selected}
-                    setSelectedFile={setSelected}
-                    onRequestDelete={requestDelete}
-                    search={search}
-                    filter={filter || ""}
-                  />
-                </DragContext.Provider>
-              )}
-            </ScrollArea>
-          </Stack>
-        </Paper>
-
-        {selected ? (
-          <>
-            <ConfirmModal
-              title={t("Files.Delete.Title")}
-              description={t("Files.Delete.Message", {
-                fileName: selected.name,
+          )}
+          {error ? (
+            <Text c="red" role="alert">
+              {t("Files.LoadFailed", {
+                defaultValue: "Files could not be loaded. Please try again.",
               })}
-              opened={deleteModal}
-              onClose={toggleDeleteModal}
-              onConfirm={handleConfirmDelete}
-            />
-            {selected.type === "file" ? (
-              <Paper withBorder style={{ borderWidth: 2 }} pt="md" h="100%">
-                <FileCard
-                  selected={selected}
-                  games={games}
-                  setGames={setGames}
-                  toggleEditModal={toggleEditModal}
-                />
-              </Paper>
-            ) : (
-              <Paper withBorder style={{ borderWidth: 2 }} p="md" h="100%">
-                <Center h="100%">
-                  <Stack align="center" gap="xs">
-                    <ThemeIcon size={80} radius="100%" variant="light" color="gray">
-                      <IconFolder size={40} />
-                    </ThemeIcon>
-                    <Text fw={600} size="lg">
-                      {selected.name}
-                    </Text>
-                    <Text c="dimmed" size="sm">
-                      {(selected as Directory).children.length === 1
-                        ? "1 item"
-                        : `${(selected as Directory).children.length} items`}
-                    </Text>
-                  </Stack>
-                </Center>
-              </Paper>
-            )}
-          </>
-        ) : (
-          <Paper withBorder style={{ borderWidth: 2 }} p="md" h="100%">
-            <Center h="100%">
-              <Stack align="center" gap="sm">
-                <ThemeIcon size={80} radius="100%" variant="light" color="gray">
-                  <IconFileDescription size={40} />
-                </ThemeIcon>
-                <Text c="dimmed" fw={500} size="lg">
-                  {t("Files.NoSelection")}
+            </Text>
+          ) : !data ? (
+            <Text>{t("Common.Loading")}</Text>
+          ) : (
+            <>
+              {actionError && !moveTarget && (
+                <Text c="red" role="alert">
+                  {actionError}
                 </Text>
-              </Stack>
-            </Center>
-          </Paper>
-        )}
-      </Group>
+              )}
+              <DirectoryTree
+                files={data}
+                refreshDirectory={async () => mutate()}
+                selectedFile={selected}
+                setSelectedFile={setSelected}
+                onRequestDelete={async (entry) => setDeleteTarget(entry)}
+                onRequestMove={(entry) => {
+                  setActionError("");
+                  setSelected(entry);
+                  setMoveTarget(fileWorkspaceKey(workspace));
+                }}
+                onMove={(entry, destination) => moveEntry(entry, destination.handle)}
+                search=""
+                filter=""
+              />
+            </>
+          )}
+        </Paper>
+      )}
+      <AppModal
+        opened={action !== null}
+        onClose={() => setAction(null)}
+        title={
+          action === fileAction.rename
+            ? t("Files.RenameFile", { defaultValue: "Rename file" })
+            : action === fileAction.folder
+              ? t("Files.CreateFolder", { defaultValue: "Create folder" })
+              : t("Files.CreateFile", { defaultValue: "Create file" })
+        }
+      >
+        <Stack>
+          <TextInput
+            ref={actionInputRef}
+            autoFocus
+            data-autofocus
+            label={t("Common.Name", { defaultValue: "Name" })}
+            value={name}
+            onChange={(event) => setName(event.currentTarget.value)}
+            error={actionError}
+          />
+          <Button onClick={submitAction}>{t("Common.Confirm", { defaultValue: "Confirm" })}</Button>
+        </Stack>
+      </AppModal>
+      <AppModal
+        opened={moveTarget !== null}
+        onClose={() => setMoveTarget(null)}
+        title={t("Files.MoveFile", { defaultValue: "Move file" })}
+      >
+        <Stack>
+          <Select
+            label={t("Files.DestinationFolder", { defaultValue: "Destination folder" })}
+            value={moveTarget}
+            onChange={setMoveTarget}
+            data={[
+              ...(workspace
+                ? [
+                    {
+                      value: fileWorkspaceKey(workspace),
+                      label: t("Files.CollectionRoot", { defaultValue: "Collection root" }),
+                    },
+                  ]
+                : []),
+              ...destinationDirectories.map((entry) => ({
+                value: fileWorkspaceKey(entry.handle),
+                label: entry.label,
+              })),
+            ]}
+          />
+          <Button
+            disabled={!moveTarget || !selected || moving}
+            onClick={async () => {
+              if (!workspace || !selected || !moveTargetHandle) return;
+              await moveEntry(selected, moveTargetHandle);
+            }}
+          >
+            {t("Files.Move", { defaultValue: "Move" })}
+          </Button>
+          {actionError && (
+            <Text c="red" role="alert">
+              {actionError}
+            </Text>
+          )}
+        </Stack>
+      </AppModal>
+      {deleteTarget && (
+        <ConfirmModal
+          title={t("Files.MoveToTrash", { defaultValue: "Move to trash" })}
+          description={t("Files.MoveToTrashConfirm", {
+            defaultValue: "Move {{name}} to trash?",
+            name: deleteTarget.name,
+          })}
+          opened
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={async () => {
+            await tauri.trashWorkspaceEntry(workspace!, deleteTarget.handle);
+            setTrashed(deleteTarget);
+            setSelected(null);
+            setDeleteTarget(null);
+            await mutate();
+          }}
+        />
+      )}
+      {restoreTarget && (
+        <ConfirmModal
+          title={t("Files.RestoreFile", { defaultValue: "Restore file" })}
+          description={t("Files.RestoreConfirm", {
+            defaultValue: "Restore {{name}}?",
+            name: restoreTarget.name,
+          })}
+          confirmLabel={t("Files.Restore", { defaultValue: "Restore" })}
+          opened
+          onClose={() => setRestoreTarget(null)}
+          onConfirm={async () => {
+            await tauri.restoreWorkspaceEntry(workspace!, restoreTarget.handle);
+            setTrashed(null);
+            await mutate();
+          }}
+        />
+      )}
+      {purgeTarget && (
+        <ConfirmModal
+          title={t("Files.DeletePermanently", { defaultValue: "Delete permanently" })}
+          description={t("Files.DeletePermanentlyConfirm", {
+            defaultValue: "Permanently delete {{name}}?",
+            name: purgeTarget.name,
+          })}
+          opened
+          onClose={() => setPurgeTarget(null)}
+          onConfirm={async () => {
+            await tauri.permanentlyDeleteWorkspaceEntry(workspace!, purgeTarget.handle);
+            setTrashed(null);
+            await mutate();
+          }}
+        />
+      )}
     </Stack>
   );
 }
-export default FilesPage;

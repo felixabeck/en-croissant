@@ -1,14 +1,14 @@
-import { ActionIcon, Badge, Box, Divider, Group, Stack, Text, Tooltip } from "@mantine/core";
+import { tauri } from "@/platform/tauri";
+import { Badge, Box, Divider, Group, Stack, Text } from "@mantine/core";
 import { IconEdit, IconZoomCheck } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom, useSetAtom } from "jotai";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { commands } from "@/bindings";
 import { activeTabAtom, tabsAtom } from "@/state/atoms";
+import { IconAction } from "@/components/common/IconAction";
 import { openFile } from "@/utils/files";
 import { capitalize } from "@/utils/format";
-import { unwrap } from "@/utils/unwrap";
 import GamePreview from "../databases/GamePreview";
 import GameSelector from "../panels/info/GameSelector";
 import type { FileMetadata } from "./file";
@@ -39,7 +39,7 @@ function FileCard({
 
   useEffect(() => {
     async function loadGames() {
-      const data = unwrap(await commands.readGames(selected.path, page, page));
+      const data = await tauri.readGames(selected.handle, page, page);
 
       setSelectedGame(data[0]);
     }
@@ -66,16 +66,12 @@ function FileCard({
 
       <Group align="center" grow px="xs">
         <Group>
-          <Tooltip label={t("Common.Open")}>
-            <ActionIcon size="sm" onClick={openGame}>
-              <IconZoomCheck />
-            </ActionIcon>
-          </Tooltip>
-          <Tooltip label={t("Files.EditMetadata")}>
-            <ActionIcon size="sm" onClick={() => toggleEditModal()}>
-              <IconEdit />
-            </ActionIcon>
-          </Tooltip>
+          <IconAction label={t("Common.Open")} size="sm" onClick={openGame}>
+            <IconZoomCheck />
+          </IconAction>
+          <IconAction label={t("Files.EditMetadata")} size="sm" onClick={() => toggleEditModal()}>
+            <IconEdit />
+          </IconAction>
         </Group>
         <Text ta="center" c="dimmed">
           {selected?.numGames} {t("Common.Games")}
@@ -91,7 +87,7 @@ function FileCard({
               setGames={setGames}
               games={games}
               activePage={page}
-              path={selected.path}
+              path={selected.handle}
               setPage={setPage}
               total={selected.numGames}
             />

@@ -1,9 +1,11 @@
-import { ActionIcon, Group, Stack, Text } from "@mantine/core";
+import { Group, Stack, Text } from "@mantine/core";
 import { IconCheck, IconDots, IconX } from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
 import { match } from "ts-pattern";
+import { useTranslation } from "react-i18next";
 import { hidePuzzleRatingAtom } from "@/state/atoms";
 import type { Completion } from "@/utils/puzzles";
+import IconAction from "./IconAction";
 
 type Challenge = {
   completion: Completion;
@@ -20,6 +22,7 @@ function ChallengeHistory({
   current: number;
 }) {
   const hideRating = useAtomValue(hidePuzzleRatingAtom);
+  const { t } = useTranslation();
 
   return (
     <Group>
@@ -28,7 +31,11 @@ function ChallengeHistory({
         return match(p.completion)
           .with("correct", () => (
             <Stack key={i} gap={0}>
-              <ActionIcon
+              <IconAction
+                label={t("ChallengeHistory.Correct", {
+                  defaultValue: "Challenge {{number}}: correct",
+                  number: i + 1,
+                })}
                 onClick={() => {
                   select(i);
                 }}
@@ -37,7 +44,7 @@ function ChallengeHistory({
                 style={{ border: isCurrent ? "2px solid green" : "none" }}
               >
                 <IconCheck color="green" />
-              </ActionIcon>
+              </IconAction>
               <Text ta="center" fz="xs" c="green">
                 {p.label}
               </Text>
@@ -45,7 +52,11 @@ function ChallengeHistory({
           ))
           .with("incorrect", () => (
             <Stack key={i} gap={0}>
-              <ActionIcon
+              <IconAction
+                label={t("ChallengeHistory.Incorrect", {
+                  defaultValue: "Challenge {{number}}: incorrect",
+                  number: i + 1,
+                })}
                 onClick={() => select(i)}
                 variant="light"
                 key={i}
@@ -53,7 +64,7 @@ function ChallengeHistory({
                 style={{ border: isCurrent ? "2px solid red" : "none" }}
               >
                 <IconX color="red" />
-              </ActionIcon>
+              </IconAction>
               <Text ta="center" fz="xs" c="red">
                 {p.label}
               </Text>
@@ -61,7 +72,11 @@ function ChallengeHistory({
           ))
           .with("incomplete", () => (
             <Stack key={i} gap={0}>
-              <ActionIcon
+              <IconAction
+                label={t("ChallengeHistory.Incomplete", {
+                  defaultValue: "Challenge {{number}}: incomplete",
+                  number: i + 1,
+                })}
                 onClick={() => select(i)}
                 variant="light"
                 key={i}
@@ -69,7 +84,7 @@ function ChallengeHistory({
                 style={{ border: isCurrent ? "2px solid yellow" : "none" }}
               >
                 <IconDots color="yellow" />
-              </ActionIcon>
+              </IconAction>
               <Text ta="center" fz="xs" c="yellow">
                 {hideRating ? "?" : p.label}
               </Text>

@@ -1,14 +1,13 @@
+import { tauri } from "@/platform/tauri";
+import type { EngineOption, EngineResourceHandle } from "@/bindings";
 import {
-  ActionIcon,
   Button,
   Center,
   Checkbox,
   Divider,
-  FileInput,
   Group,
   Input,
   JsonInput,
-  Modal,
   NumberInput,
   Paper,
   ScrollArea,
@@ -20,9 +19,10 @@ import {
   TextInput,
   ThemeIcon,
   Title,
-  Tooltip,
+  UnstyledButton,
 } from "@mantine/core";
 import { useToggle } from "@mantine/hooks";
+import AppModal from "../common/AppModal";
 import {
   IconCloud,
   IconCopy,
@@ -33,23 +33,22 @@ import {
   IconSearch,
 } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
-import { platform } from "@tauri-apps/plugin-os";
-import { open } from "@tauri-apps/plugin-dialog";
 import { useAtom } from "jotai";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import { match, P } from "ts-pattern";
-import { commands } from "@/bindings";
 import { Route } from "@/routes/engines";
+import { IconAction } from "@/components/common/IconAction";
 import { enginesAtom } from "@/state/atoms";
 import {
   type Engine,
   engineSchema,
   type LocalEngine,
+  engineOptionValue,
   requiredEngineSettings,
 } from "@/utils/engines";
-import { unwrap } from "@/utils/unwrap";
+import { capabilityKey } from "@/utils/pathCapabilities";
 import ConfirmModal from "../common/ConfirmModal";
 import GenericCard from "../common/GenericCard";
 import GoModeInput from "../common/GoModeInput";
@@ -85,7 +84,7 @@ export default function EnginesPage() {
         item.name,
         item.id,
         item.type,
-        item.type === "local" ? item.path : "",
+        item.type === "local" ? item.filename : "",
         item.type === "local" ? (item.version ?? "") : "",
         item.type === "local" && item.elo ? item.elo.toString() : "",
       ];
@@ -101,7 +100,7 @@ export default function EnginesPage() {
       <AddEngine opened={opened} setOpened={setOpened} />
       <Group align="baseline" py="sm" pl="lg">
         <Title>{t("Engines.Title")}</Title>
-        <OpenFolderButton base="Engines" folder="engines" />
+        <OpenFolderButton />
       </Group>
       <Group grow flex={1} style={{ overflow: "hidden" }} align="start" px="md" pb="md">
         <Paper withBorder style={{ borderWidth: 2 }} h="100%">
@@ -115,11 +114,14 @@ export default function EnginesPage() {
                 value={search}
                 onChange={(e) => setSearch(e.currentTarget.value)}
               />
-              <Tooltip label={t("Common.AddNew")}>
-                <ActionIcon variant="default" size="lg" onClick={() => setOpened(true)}>
-                  <IconPlus size="1rem" />
-                </ActionIcon>
-              </Tooltip>
+              <IconAction
+                label={t("Common.AddNew")}
+                variant="default"
+                size="lg"
+                onClick={() => setOpened(true)}
+              >
+                <IconPlus size="1rem" />
+              </IconAction>
             </Group>
             <Divider />
             <ScrollArea flex={1}>
@@ -133,7 +135,7 @@ export default function EnginesPage() {
                             value: item.elo ? item.elo.toString() : "??",
                           },
                         ]
-                      : [{ label: "Type", value: "Cloud" }];
+                      : [{ label: t("Engines.Card.Type"), value: "Cloud" }];
                   if (item.type === "local" && item.version) {
                     stats.push({
                       label: t("Common.Version"),
@@ -213,8 +215,11 @@ export default function EnginesPage() {
                   <LinesSlider
                     value={
                       Number(
-                        selectedEngine.settings?.find((setting) => setting.name === "MultiPV")
-                          ?.value,
+                        engineOptionValue(
+                          selectedEngine.settings?.find(
+                            (setting) => setting.name === "MultiPV",
+                          ) ?? { type: "string", name: "MultiPV", value: "1" },
+                        ),
                       ) || 1
                     }
                     setValue={(v) => {
@@ -223,12 +228,13 @@ export default function EnginesPage() {
                         const setting = copy[selected].settings?.find(
                           (setting) => setting.name === "MultiPV",
                         );
-                        if (setting) {
-                          setting.value = v;
+                        if (setting?.type === "string") {
+                          setting.value = String(v);
                         } else {
                           copy[selected].settings?.push({
+                            type: "string",
                             name: "MultiPV",
-                            value: v,
+                            value: String(v),
                           });
                         }
                         return copy;
@@ -272,17 +278,23 @@ function EngineSettings({
 
   const [engines, setEngines] = useAtom(enginesAtom);
   const engine = engines![selected] as LocalEngine;
-  const { data: options } = useSWRImmutable(["engine-config", engine.path], async ([, path]) => {
-    return unwrap(await commands.getEngineConfig(path));
-  });
+  const { data: options } = useSWRImmutable(
+    ["engine-config", capabilityKey(engine.handle)],
+    async () => {
+      return await tauri.getEngineConfig(engine.handle);
+    },
+  );
 
-  function setEngine(newEngine: LocalEngine) {
-    setEngines(async (prev) => {
-      const copy = [...(await prev)];
-      copy[selected] = newEngine;
-      return copy;
-    });
-  }
+  const setEngine = useCallback(
+    (newEngine: LocalEngine) => {
+      setEngines(async (prev) => {
+        const copy = [...(await prev)];
+        copy[selected] = newEngine;
+        return copy;
+      });
+    },
+    [selected, setEngines],
+  );
 
   useEffect(() => {
     if (options) {
@@ -295,8 +307,9 @@ function EngineSettings({
           const option = options.options.find((option) => option.value.name === field);
           if (option && option.type !== "button") {
             settings.push({
+              type: "string",
               name: field,
-              value: option.value.default as string | number | boolean | null,
+              value: String(option.value.default ?? ""),
             });
           }
         }
@@ -305,7 +318,7 @@ function EngineSettings({
         setEngine({ ...engine, settings });
       }
     }
-  }, [options]);
+  }, [engine, options, setEngine]);
 
   const completeOptions =
     options?.options
@@ -316,19 +329,16 @@ function EngineSettings({
           ...option,
           value: {
             ...option.value,
-            value: setting?.value !== undefined ? setting.value : option.value.default,
+            value: setting ? (engineOptionValue(setting) ?? "") : option.value.default,
           },
         };
       }) || [];
 
   function changeImage() {
-    open({
-      title: "Select image",
-    }).then((res) => {
-      if (typeof res === "string") {
-        setEngine({ ...engine, image: res });
-      }
-    });
+    void tauri
+      .issueEngineImage()
+      .then((imageHandle) => setEngine({ ...engine, imageHandle }))
+      .catch(() => {});
   }
 
   function setSetting(
@@ -336,12 +346,13 @@ function EngineSettings({
     value: string | number | boolean | null,
     def: string | number | boolean | null,
   ) {
-    const newSettings = engine.settings || [];
-    const setting = newSettings.find((setting) => setting.name === name);
-    if (setting) {
-      setting.value = value;
+    const newSettings = [...(engine.settings || [])];
+    const settingIndex = newSettings.findIndex((setting) => setting.name === name);
+    const setting = newSettings[settingIndex];
+    if (setting?.type === "string") {
+      newSettings[settingIndex] = { ...setting, value: String(value ?? "") };
     } else {
-      newSettings.push({ name, value });
+      newSettings.push({ type: "string", name, value: String(value ?? "") });
     }
     if (value !== def || requiredEngineSettings.includes(name)) {
       setEngine({
@@ -356,9 +367,20 @@ function EngineSettings({
     }
   }
 
+  function setResourceSetting(name: string, resource: EngineResourceHandle, append: boolean) {
+    const settings = [...(engine.settings || [])];
+    const index = settings.findIndex((setting) => setting.name === name);
+    const existing = settings[index];
+    const resources =
+      append && existing?.type === "resource" ? [...existing.resources, resource] : [resource];
+    const next: EngineOption = { type: "resource", name, resources };
+    if (index === -1) settings.push(next);
+    else settings[index] = next;
+    setEngine({ ...engine, settings });
+  }
+
   const [deleteModal, toggleDeleteModal] = useToggle();
   const [jsonModal, toggleJSONModal] = useToggle();
-  const syzygyPathSeparator = platform() === "windows" ? ";" : ":";
 
   return (
     <ScrollArea h="100%" offsetScrollbars>
@@ -397,18 +419,23 @@ function EngineSettings({
             </Group>
           </Stack>
           <Center>
-            {engine.image ? (
-              <Paper withBorder style={{ cursor: "pointer" }} onClick={changeImage}>
+            {engine.imageHandle ? (
+              <UnstyledButton
+                type="button"
+                onClick={changeImage}
+                aria-label={t("Engines.Settings.SelectImage")}
+              >
                 <LocalImage
-                  src={engine.image}
+                  image={engine.imageHandle}
                   alt={engine.name}
                   mah="10rem"
                   maw="100%"
                   fit="contain"
                 />
-              </Paper>
+              </UnstyledButton>
             ) : (
-              <ActionIcon
+              <IconAction
+                label={t("Engines.Settings.SelectImage")}
                 size="10rem"
                 variant="subtle"
                 styles={{
@@ -419,7 +446,7 @@ function EngineSettings({
                 onClick={changeImage}
               >
                 <IconPhotoPlus size="2.5rem" />
-              </ActionIcon>
+              </IconAction>
             )}
           </Center>
         </Group>
@@ -465,22 +492,18 @@ function EngineSettings({
                         <TextInput
                           flex={1}
                           label={v.name}
-                          placeholder={`/path/to/tb${syzygyPathSeparator}/path/to/tb2`}
+                          placeholder={t("Engines.Settings.SyzygyPathPlaceholder", {
+                            separator: ":",
+                          })}
                           value={v.value || ""}
-                          onChange={(e) => setSetting(v.name, e.currentTarget.value, v.default)}
+                          readOnly
                         />
                         <Button
                           variant="default"
                           leftSection={<IconFolder size="1rem" />}
                           onClick={async () => {
-                            const selected = await open({
-                              multiple: true,
-                              directory: true,
-                            });
-                            if (!selected) return;
-
-                            const directories = Array.isArray(selected) ? selected : [selected];
-                            setSetting(v.name, directories.join(syzygyPathSeparator), v.default);
+                            const resource = await tauri.issueEngineResource(true);
+                            setResourceSetting(v.name, resource, true);
                           }}
                         >
                           {t("Common.Open")}
@@ -489,26 +512,18 @@ function EngineSettings({
                     );
                   }
                   if (v.name.toLowerCase().includes("file")) {
-                    const file = v.value ? new File([v.value], v.value) : null;
                     return (
-                      <FileInput
+                      <Button
                         key={v.name}
-                        clearable
-                        label={v.name}
-                        value={file}
+                        variant="default"
+                        leftSection={<IconFolder size="1rem" />}
                         onClick={async () => {
-                          const selected = await open({
-                            multiple: false,
-                          });
-                          if (!selected) return;
-                          setSetting(v.name, selected as string, v.default);
+                          const resource = await tauri.issueEngineResource(false);
+                          setResourceSetting(v.name, resource, false);
                         }}
-                        onChange={(e) => {
-                          if (e === null) {
-                            setSetting(v.name, null, v.default);
-                          }
-                        }}
-                      />
+                      >
+                        {v.name}
+                      </Button>
                     );
                   }
                   return (
@@ -554,8 +569,9 @@ function EngineSettings({
                   .filter((option) => requiredEngineSettings.includes(option.value.name))
                   .filter((option) => option.type !== "button")
                   .map((option) => ({
+                    type: "string" as const,
                     name: option.value.name,
-                    value: option.value.default as string | number | boolean | null,
+                    value: String(option.value.default ?? ""),
                   })),
               })
             }
@@ -634,7 +650,12 @@ function JSONModal({
   const [value, setValue] = useState(JSON.stringify(engine, null, 2));
   const [error, setError] = useState<string | null>(null);
   return (
-    <Modal opened={opened} onClose={toggleOpened} title={t("Engines.Settings.EditJSON")} size="xl">
+    <AppModal
+      opened={opened}
+      onClose={toggleOpened}
+      title={t("Engines.Settings.EditJSON")}
+      size="xl"
+    >
       <JsonInput
         autosize
         value={value}
@@ -659,18 +680,17 @@ function JSONModal({
       >
         {t("Common.Save")}
       </Button>
-    </Modal>
+    </AppModal>
   );
 }
 
 function EngineName({ engine }: { engine: Engine }) {
   const { data: fileExists, isLoading } = useSWRImmutable(
-    ["file-exists", engine.type === "local" ? engine.path : null],
-    async ([, path]) => {
-      if (path === null) return false;
+    ["file-exists", engine.type === "local" ? capabilityKey(engine.handle) : null],
+    async () => {
       if (engine.type !== "local") return true;
-      const res = await commands.fileExists(path);
-      return res.status === "ok";
+      const res = await tauri.fileExists(engine.handle.id);
+      return res;
     },
   );
 
@@ -678,8 +698,14 @@ function EngineName({ engine }: { engine: Engine }) {
 
   return (
     <Group wrap="nowrap">
-      {engine.image ? (
-        <LocalImage src={engine.image} alt={engine.name} h="2.5rem" fit="contain" flex={0} />
+      {engine.imageHandle ? (
+        <LocalImage
+          image={engine.imageHandle}
+          alt={engine.name}
+          h="2.5rem"
+          fit="contain"
+          flex={0}
+        />
       ) : engine.type !== "local" ? (
         <IconCloud size="2.5rem" />
       ) : (
@@ -690,7 +716,7 @@ function EngineName({ engine }: { engine: Engine }) {
           {engine.name} {hasError ? "(file missing)" : ""}
         </Text>
         <Text size="xs" c="dimmed" style={{ wordWrap: "break-word" }} lineClamp={1}>
-          {engine.type === "local" ? engine.path.split(/\/|\\/).slice(-1)[0] : engine.url}
+          {engine.type === "local" ? engine.filename : engine.url}
         </Text>
       </Stack>
     </Group>

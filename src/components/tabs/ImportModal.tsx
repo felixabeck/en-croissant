@@ -1,47 +1,42 @@
+import { tauri } from "@/platform/tauri";
 import {
   Button,
   Checkbox,
   Divider,
   FileInput,
   Group,
-  Modal,
   SimpleGrid,
   Stack,
   Text,
   Textarea,
   TextInput,
 } from "@mantine/core";
-import { useLoaderData } from "@tanstack/react-router";
-import { resolve, tempDir } from "@tauri-apps/api/path";
-import { open } from "@tauri-apps/plugin-dialog";
-import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { makeFen, parseFen } from "chessops/fen";
 import { useAtom, useStore } from "jotai";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
-import { commands } from "@/bindings";
 import { addRecentFileAtom, currentTabAtom } from "@/state/atoms";
-import { serializeStorageValue } from "@/state/store/debouncedStorage";
+import { tabStorage } from "@/state/store/tabStorage";
 import { parsePGN } from "@/utils/chess";
 import { getChesscomGame } from "@/utils/chess.com/api";
 import { chessopsError } from "@/utils/chessops";
-import { createFile, openFile } from "@/utils/files";
+import { createFile, ensureFileWorkspace, openFile, pickPgnFile } from "@/utils/files";
 import { getLichessGame } from "@/utils/lichess/api";
-import { isInTempDir, type Tab } from "@/utils/tabs";
+import { type Tab } from "@/utils/tabs";
 import { defaultTree, getGameName } from "@/utils/treeReducer";
-import { unwrap } from "@/utils/unwrap";
+import AppModal from "../common/AppModal";
 import GenericCard from "../common/GenericCard";
 import type { FileMetadata, FileType } from "../files/file";
 
 type ImportType = "PGN" | "Link" | "FEN";
 
 const FILE_TYPES = [
-  { label: "Files.FileType.Game", value: "game" },
-  { label: "Files.FileType.Repertoire", value: "repertoire" },
-  { label: "Files.FileType.Tournament", value: "tournament" },
-  { label: "Files.FileType.Puzzle", value: "puzzle" },
-  { label: "Files.FileType.Other", value: "other" },
+  { translationKey: "Files.FileType.Game", value: "game" },
+  { translationKey: "Files.FileType.Repertoire", value: "repertoire" },
+  { translationKey: "Files.FileType.Tournament", value: "tournament" },
+  { translationKey: "Files.FileType.Puzzle", value: "puzzle" },
+  { translationKey: "Files.FileType.Other", value: "other" },
 ] as const;
 
 export default function ImportModal({
@@ -58,7 +53,7 @@ export default function ImportModal({
   const { t } = useTranslation();
   const [pgn, setPgn] = useState("");
   const [fen, setFen] = useState("");
-  const [file, setFile] = useState<string | null>(null);
+  const [file, setFile] = useState<FileMetadata | null>(null);
   const [link, setLink] = useState("");
   const [importType, setImportType] = useState<ImportType>("PGN");
   const [filetype, setFiletype] = useState<FileType>("game");
@@ -70,7 +65,6 @@ export default function ImportModal({
   const [filename, setFilename] = useState("");
   const [error, setError] = useState("");
   const [submitError, setSubmitError] = useState("");
-  const { documentDir } = useLoaderData({ from: "/" });
   const store = useStore();
 
   async function handleSubmit() {
@@ -81,15 +75,20 @@ export default function ImportModal({
         if (file || pgn) {
           if (file) {
             let fileInfo: FileMetadata | undefined;
-            const count = unwrap(await commands.countPgnGames(file));
-            const fileContent = await readTextFile(file);
-            const input = unwrap(await commands.readGames(file, 0, 0))[0];
+            const count = file.numGames;
+            const fileContent = (
+              await tauri.readGames(file.handle, 0, Math.max(0, count - 1))
+            ).join("\n\n");
+            const input = (await tauri.readGames(file.handle, 0, 0))[0];
             if (save) {
+              const workspace = await ensureFileWorkspace();
+              if (!workspace) return;
               const newFile = await createFile({
                 filename,
                 filetype,
                 pgn: fileContent,
-                dir: documentDir,
+                workspace,
+                parent: workspace,
               });
               if (newFile.isErr) {
                 setError(newFile.error.message);
@@ -100,7 +99,7 @@ export default function ImportModal({
             } else {
               fileInfo = {
                 type: "file",
-                path: file,
+                handle: file.handle,
                 numGames: count,
                 name: filename,
                 lastModified: Date.now(),
@@ -111,12 +110,9 @@ export default function ImportModal({
               };
             }
             const tree = await parsePGN(input);
-            const originKind = (await isInTempDir(fileInfo.path)) ? "temp_file" : "file";
+            const originKind = "file";
             setCurrentTab((prev) => {
-              sessionStorage.setItem(
-                prev.value,
-                serializeStorageValue({ version: 0, state: tree }),
-              );
+              tabStorage.seed(prev.value, tree);
               return {
                 ...prev,
                 name: getGameName(tree.headers),
@@ -129,17 +125,25 @@ export default function ImportModal({
               };
             });
 
-            if (fileInfo?.path) {
+            if (fileInfo) {
               store.set(addRecentFileAtom, {
                 name: fileInfo.name,
-                path: fileInfo.path,
+                handle: fileInfo.handle,
                 type: fileInfo.metadata.type,
               });
             }
           } else {
-            const tempFile = await resolve(await tempDir(), `import_${Date.now()}.pgn`);
-            await writeTextFile(tempFile, pgn);
-            await openFile(tempFile, setTabs, setActiveTab);
+            const workspace = await ensureFileWorkspace();
+            if (!workspace) return;
+            const created = await createFile({
+              filename: `import-${Date.now()}`,
+              filetype: "game",
+              pgn,
+              workspace,
+              parent: workspace,
+            });
+            if (created.isErr) throw created.error;
+            await openFile(created.value, setTabs, setActiveTab);
           }
         }
       } else if (importType === "Link") {
@@ -169,7 +173,7 @@ export default function ImportModal({
 
         const tree = await parsePGN(pgn);
         setCurrentTab((prev) => {
-          sessionStorage.setItem(prev.value, serializeStorageValue({ version: 0, state: tree }));
+          tabStorage.seed(prev.value, tree);
           return {
             ...prev,
             name: getGameName(tree.headers),
@@ -191,7 +195,7 @@ export default function ImportModal({
         setCurrentTab((prev) => {
           const tree = defaultTree(parsedFen);
           tree.headers.fen = parsedFen;
-          sessionStorage.setItem(prev.value, serializeStorageValue({ version: 0, state: tree }));
+          tabStorage.seed(prev.value, tree);
           return {
             ...prev,
             name: t("Home.Card.AnalysisBoard.Title"),
@@ -217,25 +221,11 @@ export default function ImportModal({
             label={t("Common.PGNFile")}
             description={t("Import.PGN.ClickToSelect")}
             onClick={async () => {
-              const selected = (await open({
-                multiple: false,
-
-                filters: [
-                  {
-                    name: t("Common.PGNFile"),
-                    extensions: ["pgn"],
-                  },
-                ],
-              })) as string;
+              const selected = await pickPgnFile();
               setFile(selected);
-              setFilename(
-                selected
-                  .split(/(\\|\/)/g)
-                  .pop()
-                  ?.replace(".pgn", "") || "",
-              );
+              setFilename(selected?.name || "");
             }}
-            value={new File([new Blob()], file || "")}
+            value={file ? new File([new Blob()], file.name) : null}
             onChange={(e) => {
               if (e === null) {
                 setFile(null);
@@ -283,7 +273,7 @@ export default function ImportModal({
                   id={v.value}
                   isSelected={filetype === v.value}
                   setSelected={setFiletype}
-                  Header={<Text ta="center">{t(v.label)}</Text>}
+                  Header={<Text ta="center">{t(v.translationKey)}</Text>}
                 />
               ))}
             </SimpleGrid>
@@ -323,7 +313,7 @@ export default function ImportModal({
     .exhaustive();
 
   return (
-    <Modal
+    <AppModal
       opened={openModal}
       onClose={() => setOpenModal(false)}
       title={t("Home.Card.ImportGame.Title")}
@@ -369,6 +359,6 @@ export default function ImportModal({
           {submitError}
         </Text>
       )}
-    </Modal>
+    </AppModal>
   );
 }

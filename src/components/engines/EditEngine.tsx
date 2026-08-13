@@ -18,7 +18,7 @@ export default function EditEngine({ initialEngine }: { initialEngine: LocalEngi
         if ((engines ?? []).find((e) => e.name === value && e !== initialEngine))
           return "Name already used";
       },
-      path: (value) => {
+      filename: (value) => {
         if (!value) return "Path is required";
       },
     },

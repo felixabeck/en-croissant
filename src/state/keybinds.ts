@@ -1,6 +1,7 @@
-import { platform } from "@tauri-apps/plugin-os";
+import { platform } from "@/platform/native";
 import { atomWithStorage } from "jotai/utils";
 import type { SyncStorage, SyncStringStorage } from "jotai/vanilla/utils/atomWithStorage";
+import { z } from "zod";
 
 const meta = platform() === "macos" ? "cmd" : "ctrl";
 
@@ -57,29 +58,52 @@ const keys: KeyMap = {
     NEXT_GAME: { name: "Next game", keys: "pagedown" },
 };
 
-export const keyMapAtom = atomWithStorage("keybinds", keys, defaultStorage(keys, localStorage));
+export const keyMapAtom = atomWithStorage(
+    "keybinds",
+    keys,
+    createKeybindStorage(keys, localStorage),
+);
 
-function defaultStorage(defaults: KeyMap, storage: SyncStringStorage): SyncStorage<KeyMap> {
+export function createKeybindStorage(
+    defaults: KeyMap,
+    storage: SyncStringStorage,
+): SyncStorage<KeyMap> {
+    const keybindSchema = z.object({ name: z.string(), keys: z.string().min(1) });
+    const keyMapSchema = z.record(keybindSchema);
+    const repair = (value: unknown): KeyMap => {
+        const parsed = keyMapSchema.safeParse(value);
+        const persisted = parsed.success ? parsed.data : {};
+        return Object.fromEntries(
+            Object.entries(defaults).map(([id, fallback]) => [
+                id,
+                persisted[id] ? { ...fallback, ...persisted[id] } : { ...fallback },
+            ]),
+        );
+    };
+
     return {
         getItem(key, initialValue) {
             const storedValue = storage.getItem(key);
             if (storedValue === null) {
                 return initialValue;
             }
-            const parsed = JSON.parse(storedValue);
-            for (const key in defaults) {
-                if (!(key in parsed)) {
-                    parsed[key] = defaults[key];
-                }
+            try {
+                const repaired = repair(JSON.parse(storedValue));
+                if (JSON.stringify(repaired) !== storedValue) this.setItem(key, repaired);
+                return repaired;
+            } catch {
+                this.setItem(key, initialValue);
+                return initialValue;
             }
-            return parsed;
         },
         setItem(key, value) {
-            for (const subkey in value) {
-                value[subkey].keys = value[subkey].keys.replace("meta", meta);
-            }
-
-            storage.setItem(key, JSON.stringify(value));
+            const normalized = Object.fromEntries(
+                Object.entries(repair(value)).map(([id, binding]) => [
+                    id,
+                    { ...binding, keys: binding.keys.replace("meta", meta) },
+                ]),
+            );
+            storage.setItem(key, JSON.stringify(normalized));
         },
         removeItem(key) {
             storage.removeItem(key);

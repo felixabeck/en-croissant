@@ -1,3 +1,4 @@
+import { tauri } from "@/platform/tauri";
 import {
   Alert,
   Box,
@@ -6,7 +7,6 @@ import {
   Group,
   Image,
   Loader,
-  Modal,
   Paper,
   ScrollArea,
   SimpleGrid,
@@ -15,22 +15,20 @@ import {
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { IconAlertCircle, IconDatabase, IconTrophy } from "@tabler/icons-react";
-import { join, resolve } from "@tauri-apps/api/path";
 import { useAtom } from "jotai";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { commands } from "@/bindings";
 import { enginesAtom } from "@/state/atoms";
-import { getEnginesDir } from "@/utils/directories";
+import AppModal from "../common/AppModal";
 import {
   type LocalEngine,
+  type DefaultEngine,
   type RemoteEngine,
   requiredEngineSettings,
   useDefaultEngines,
 } from "@/utils/engines";
 import { usePlatform } from "@/utils/files";
 import { formatBytes } from "@/utils/format";
-import { unwrap } from "@/utils/unwrap";
 import ProgressButton from "../common/ProgressButton";
 import EngineForm from "./EngineForm";
 
@@ -56,8 +54,9 @@ function AddEngine({
       id: crypto.randomUUID(),
       version: "",
       name: "",
-      path: "",
-      image: "",
+      handle: undefined as unknown as LocalEngine["handle"],
+      filename: "",
+      imageHandle: undefined,
       elo: undefined,
     },
 
@@ -66,14 +65,14 @@ function AddEngine({
         if (!value) return t("Common.RequireName");
         if (engines.find((e) => e.name === value)) return t("Common.NameAlreadyUsed");
       },
-      path: (value) => {
+      filename: (value) => {
         if (!value) return t("Common.RequirePath");
       },
     },
   });
 
   return (
-    <Modal
+    <AppModal
       opened={opened}
       onClose={() => setOpened(false)}
       title={t("Engines.Add.Title")}
@@ -147,7 +146,7 @@ function AddEngine({
           />
         </Tabs.Panel>
       </Tabs>
-    </Modal>
+    </AppModal>
   );
 }
 
@@ -160,7 +159,7 @@ function CloudCard({ engine }: { engine: RemoteEngine }) {
       <Group wrap="nowrap" gap={0} grow>
         <Box p="sm" flex={1}>
           <Text tt="uppercase" c="dimmed" fw={700} size="xs">
-            ENGINE
+            {t("Common.Engine")}
           </Text>
           <Text fw="bold" size="sm">
             {engine.name}
@@ -182,6 +181,7 @@ function CloudCard({ engine }: { engine: RemoteEngine }) {
                   loaded: true,
                   settings: [
                     {
+                      type: "string",
                       name: "MultiPV",
                       value: "1",
                     },
@@ -203,7 +203,7 @@ function EngineCard({
   engineId,
   initInstalled,
 }: {
-  engine: LocalEngine;
+  engine: DefaultEngine;
   engineId: number;
   initInstalled: boolean;
 }) {
@@ -214,33 +214,34 @@ function EngineCard({
   const downloadEngine = useCallback(
     async (id: number, url: string) => {
       setInProgress(true);
-      const enginesDir = await getEnginesDir();
-      let path = await resolve(enginesDir, `${url.slice(url.lastIndexOf("/") + 1)}`);
-      if (url.endsWith(".zip") || url.endsWith(".tar")) {
-        path = enginesDir;
-      }
-      await commands.downloadFile(`engine_${id}`, url, path, null, null, null);
-      let enginesDirPath = enginesDir;
-      if (enginesDirPath.endsWith("/") || enginesDirPath.endsWith("\\")) {
-        enginesDirPath = enginesDirPath.slice(0, -1);
-      }
-      const enginePath = await join(enginesDirPath, ...engine.path.split("/"));
-      await commands.setFileAsExecutable(enginePath);
-      const config = unwrap(await commands.getEngineConfig(enginePath));
+      const root = await tauri.getEngineWorkspace();
+      const destination = await tauri.engineArchiveDestination(root);
+      const archiveName = url.slice(url.lastIndexOf("/") + 1);
+      await tauri.downloadEngineArchive(
+        `engine_${id}`,
+        url,
+        destination,
+        archiveName,
+        crypto.randomUUID(),
+        { sha256: engine.sha256, signature: engine.signature },
+      );
+      const handle = await tauri.registerInstalledEngine(root, engine.path);
+      const config = await tauri.getEngineConfig(handle);
       setEngines(async (prev) => [
         ...(await prev),
         {
           ...engine,
           id: crypto.randomUUID(),
           type: "local",
-          path: enginePath,
+          handle,
+          filename: engine.path.split("/").at(-1) || engine.name,
           loaded: true,
           settings: config.options
             .filter((o) => requiredEngineSettings.includes(o.value.name))
             .map((o) => ({
+              type: "string" as const,
               name: o.value.name,
-              // @ts-expect-error
-              value: o.value.default,
+              value: String("default" in o.value ? (o.value.default ?? "") : ""),
             })),
         },
       ]);
@@ -251,14 +252,14 @@ function EngineCard({
   return (
     <Paper withBorder radius="md" p={0} key={engine.name}>
       <Group wrap="nowrap" gap={0} grow>
-        {engine.image && (
+        {engine.imageUrl && (
           <Box w="1.75rem" px="xs">
-            <Image src={engine.image} alt={engine.name} fit="contain" />
+            <Image src={engine.imageUrl} alt={engine.name} fit="contain" />
           </Box>
         )}
         <Box p="sm" flex={1}>
           <Text tt="uppercase" c="dimmed" fw={700} size="xs">
-            ENGINE
+            {t("Common.Engine")}
           </Text>
           <Text fw="bold" size="sm" mb="xs">
             {engine.name} {engine.version}

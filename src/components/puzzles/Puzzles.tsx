@@ -1,6 +1,6 @@
+import { tauri } from "@/platform/tauri";
 import {
   Accordion,
-  ActionIcon,
   Alert,
   Badge,
   Button,
@@ -15,8 +15,8 @@ import {
   Stack,
   Switch,
   Text,
-  Tooltip,
 } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { useSessionStorage } from "@mantine/hooks";
 import {
   IconAlertTriangle,
@@ -33,7 +33,8 @@ import { useAtom, useSetAtom } from "jotai";
 import { useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
-import { commands, type PuzzleDatabaseInfo } from "@/bindings";
+import { type PathRef, type PuzzleDatabaseInfo } from "@/bindings";
+import { IconAction } from "@/components/common/IconAction";
 import {
   activeTabAtom,
   currentPuzzleAtom,
@@ -43,16 +44,18 @@ import {
   progressivePuzzlesAtom,
   puzzleRatingRangeAtom,
   puzzleThemeAtom,
+  puzzleWorkspaceGenerationAtom,
   selectedPuzzleDbAtom,
   tabsAtom,
   trackPuzzleTimeAtom,
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
 import { formatThemeLabel, formatTime } from "@/utils/format";
+import { capabilityKey } from "@/utils/pathCapabilities";
+import { normalizeError } from "@/platform/errors";
 import { type Completion, getPuzzleDatabases, type Puzzle } from "@/utils/puzzles";
 import { createTab } from "@/utils/tabs";
 import { defaultTree } from "@/utils/treeReducer";
-import { unwrap } from "@/utils/unwrap";
 import ChallengeHistory from "../common/ChallengeHistory";
 import ConfirmModal from "../common/ConfirmModal";
 import GameNotation from "../common/GameNotation";
@@ -60,6 +63,11 @@ import MoveControls from "../common/MoveControls";
 import { TreeStateContext } from "../common/TreeStateContext";
 import AddPuzzle from "./AddPuzzle";
 import PuzzleBoard from "./PuzzleBoard";
+
+const puzzleDatabaseExtension = ".db3";
+const puzzleRatingMarks = [600, 1700, 2800] as const;
+const unavailableValue = "-";
+const addOptionLabel = (label: string) => `+ ${label}`;
 
 function Puzzles({ id }: { id: string }) {
   const { t } = useTranslation();
@@ -78,14 +86,52 @@ function Puzzles({ id }: { id: string }) {
 
   const [puzzleDbs, setPuzzleDbs] = useState<PuzzleDatabaseInfo[]>([]);
   const [selectedDb, setSelectedDb] = useAtom(selectedPuzzleDbAtom);
+  const [workspaceGeneration, setWorkspaceGeneration] = useAtom(puzzleWorkspaceGenerationAtom);
 
   const [settingsOpened, setSettingsOpened] = useState(false);
+  const requestGeneration = useRef(0);
+  const puzzleRequest = useRef<AbortController | null>(null);
+  const resetWorkspaceRef = useRef<() => void>(() => {});
+  const workspaceRef = useRef<string | null>(null);
+  const selectedDbRef = useRef(selectedDb);
+  selectedDbRef.current = selectedDb;
+
+  useEffect(() => () => puzzleRequest.current?.abort(), []);
 
   useEffect(() => {
-    getPuzzleDatabases().then((databases) => {
-      setPuzzleDbs(databases);
-    });
-  }, []);
+    let active = true;
+    void Promise.all([tauri.getPuzzleWorkspace(), getPuzzleDatabases()])
+      .then(([workspace, databases]) => {
+        if (!active) return;
+        const workspaceKey = capabilityKey(workspace.root);
+        const workspaceChanged =
+          workspaceRef.current !== null && workspaceRef.current !== workspaceKey;
+        workspaceRef.current = workspaceKey;
+        setPuzzleDbs(databases);
+        if (workspaceChanged) {
+          requestGeneration.current++;
+          puzzleRequest.current?.abort();
+          setSelectedDb(null);
+          resetWorkspaceRef.current();
+          return;
+        }
+        if (
+          selectedDb &&
+          !databases.some((database) => capabilityKey(database.path) === capabilityKey(selectedDb))
+        ) {
+          requestGeneration.current++;
+          puzzleRequest.current?.abort();
+          setSelectedDb(null);
+          resetWorkspaceRef.current();
+        }
+      })
+      .catch(() => {
+        if (active) setPuzzleDbs([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedDb, setSelectedDb, workspaceGeneration]);
 
   const [ratingRange, setRatingRange] = useAtom(puzzleRatingRangeAtom);
 
@@ -96,6 +142,8 @@ function Puzzles({ id }: { id: string }) {
     selectedTheme && availableThemes.includes(selectedTheme) ? selectedTheme : null;
 
   useEffect(() => {
+    const generation = ++requestGeneration.current;
+    let cancelled = false;
     setThemesTableMissing(false);
 
     if (!selectedDb) {
@@ -103,18 +151,20 @@ function Puzzles({ id }: { id: string }) {
       return;
     }
 
-    commands.getPuzzleThemes(selectedDb).then((res) => {
-      if (res.status === "ok") {
-        setAvailableThemes(res.data);
-        return;
-      }
-
-      setAvailableThemes([]);
-
-      if (typeof res.error === "string" && res.error.includes("no such table")) {
-        setThemesTableMissing(true);
-      }
-    });
+    void tauri
+      .getPuzzleThemes(selectedDb)
+      .then((themes) => {
+        if (cancelled || generation !== requestGeneration.current) return;
+        setAvailableThemes(themes);
+      })
+      .catch((error: Error) => {
+        if (cancelled || generation !== requestGeneration.current) return;
+        setAvailableThemes([]);
+        setThemesTableMissing(error.message.includes("no such table"));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedDb]);
 
   const [jumpToNextPuzzleImmediately, setJumpToNextPuzzleImmediately] =
@@ -145,7 +195,7 @@ function Puzzles({ id }: { id: string }) {
 
   const solutionAbortRef = useRef<AbortController | null>(null);
 
-  async function generatePuzzle(db: string, force: boolean = false) {
+  async function generatePuzzle(db: PathRef, force: boolean = false) {
     let nextIndex = puzzles.findIndex((p, i) => i > currentPuzzle && p.completion === "incomplete");
     if (nextIndex === -1) {
       nextIndex = puzzles.findIndex((p, i) => i < currentPuzzle && p.completion === "incomplete");
@@ -173,8 +223,25 @@ function Puzzles({ id }: { id: string }) {
         setRatingRange([rating + 50, rating + 100]);
       }
     }
-    const res = await commands.getPuzzle(db, range[0], range[1], effectiveSelectedTheme);
-    const puzzle = unwrap(res);
+    const generation = ++requestGeneration.current;
+    puzzleRequest.current?.abort();
+    const request = new AbortController();
+    puzzleRequest.current = request;
+    let result;
+    try {
+      result = await tauri.getPuzzle(db, range[0], range[1], effectiveSelectedTheme);
+    } catch {
+      return;
+    }
+    if (
+      request.signal.aborted ||
+      generation !== requestGeneration.current ||
+      !selectedDbRef.current ||
+      capabilityKey(selectedDbRef.current) !== capabilityKey(db)
+    ) {
+      return;
+    }
+    const puzzle = result;
     const newPuzzle: Puzzle = {
       ...puzzle,
       moves: puzzle.moves.split(" "),
@@ -201,12 +268,14 @@ function Puzzles({ id }: { id: string }) {
     setTimerStart(null);
 
     if (selectedDb && puzzle?.id) {
-      const res = await commands.getThemesForPuzzle(selectedDb, puzzle.id);
-      if (res.status === "ok") {
+      try {
+        const themes = await tauri.getThemesForPuzzle(selectedDb, puzzle.id);
         setPuzzles((puzzles) => {
-          puzzles[currentPuzzle].themes = res.data;
+          puzzles[currentPuzzle].themes = themes;
           return [...puzzles];
         });
+      } catch {
+        // A stale/deleted database must not change an already completed puzzle.
       }
     }
   }
@@ -221,6 +290,17 @@ function Puzzles({ id }: { id: string }) {
 
   const [timerStart, setTimerStart] = useAtom(currentPuzzleTimerAtom);
   const [, setTick] = useState(0);
+  resetWorkspaceRef.current = () => {
+    solutionAbortRef.current?.abort();
+    setPuzzles([]);
+    setCurrentPuzzle(0);
+    setAvailableThemes([]);
+    setThemesTableMissing(false);
+    setSelectedTheme(null);
+    setTimerStart(null);
+    setIsPlayingSolution(false);
+    reset();
+  };
   const isPuzzleIncomplete = puzzles[currentPuzzle]?.completion === "incomplete";
   const elapsedTime =
     timerStart && isPuzzleIncomplete && trackTime
@@ -316,23 +396,36 @@ function Puzzles({ id }: { id: string }) {
             opened={addOpened}
             setOpened={setAddOpened}
             setPuzzleDbs={setPuzzleDbs}
+            onWorkspaceChanged={() => setWorkspaceGeneration((generation) => generation + 1)}
           />
           <ConfirmModal
-            title="Delete Puzzle Database"
-            description="Are you sure you want to delete this puzzle database?"
+            title={t("Puzzle.DeleteDatabase")}
+            description={t("Puzzle.DeleteDatabaseConfirm")}
             opened={deleteModalOpened}
             onClose={() => setDeleteModalOpened(false)}
             onConfirm={async () => {
               if (selectedDb) {
-                await commands.deletePuzzleDatabase(selectedDb);
-                setPuzzleDbs((dbs) => dbs.filter((db) => db.path !== selectedDb));
-                setSelectedDb(null);
-                setPuzzles([]);
-                reset();
-                setTimerStart(null);
-                setIsPlayingSolution(false);
+                try {
+                  await tauri.deletePuzzleDatabase(selectedDb);
+                  requestGeneration.current++;
+                  puzzleRequest.current?.abort();
+                  setPuzzleDbs((dbs) =>
+                    dbs.filter((db) => capabilityKey(db.path) !== capabilityKey(selectedDb)),
+                  );
+                  setSelectedDb(null);
+                  setPuzzles([]);
+                  reset();
+                  setTimerStart(null);
+                  setIsPlayingSolution(false);
+                  setDeleteModalOpened(false);
+                } catch (error) {
+                  notifications.show({
+                    color: "red",
+                    title: t("Common.Error"),
+                    message: normalizeError(error).message,
+                  });
+                }
               }
-              setDeleteModalOpened(false);
             }}
           />
           <Group justify="space-between" pb="sm">
@@ -340,36 +433,41 @@ function Puzzles({ id }: { id: string }) {
               style={{ flex: 1 }}
               data={puzzleDbs
                 .map((p) => ({
-                  label: p.title.split(".db3")[0],
-                  value: p.path,
+                  label: p.title.split(puzzleDatabaseExtension)[0],
+                  value: capabilityKey(p.path),
                 }))
-                .concat({ label: `+ ${t("Common.AddNew")}`, value: "add" })}
-              value={selectedDb}
+                .concat({ label: addOptionLabel(t("Common.AddNew")), value: "add" })}
+              value={selectedDb ? capabilityKey(selectedDb) : null}
               clearable={false}
               placeholder={t("Puzzle.SelectDatabase")}
               onChange={(v) => {
                 if (v === "add") {
                   setAddOpened(true);
                 } else {
-                  setSelectedDb(v);
+                  requestGeneration.current++;
+                  puzzleRequest.current?.abort();
+                  setSelectedDb(
+                    puzzleDbs.find((database) => capabilityKey(database.path) === v)?.path ?? null,
+                  );
                 }
               }}
             />
             <Group gap="xs">
-              <Tooltip label="Delete database">
-                <ActionIcon
-                  color="red"
-                  disabled={!selectedDb}
-                  onClick={() => setDeleteModalOpened(true)}
-                >
-                  <IconTrash size={20} />
-                </ActionIcon>
-              </Tooltip>
-              <Tooltip label={t("SideBar.Settings")}>
-                <ActionIcon onClick={() => setSettingsOpened((o) => !o)}>
-                  <IconSettings size={20} />
-                </ActionIcon>
-              </Tooltip>
+              <IconAction
+                label={t("Puzzle.DeleteDatabase")}
+                color="red"
+                disabled={!selectedDb}
+                onClick={() => setDeleteModalOpened(true)}
+              >
+                <IconTrash size={20} />
+              </IconAction>
+              <IconAction
+                label={t("SideBar.Settings")}
+                pressed={settingsOpened}
+                onClick={() => setSettingsOpened((o) => !o)}
+              >
+                <IconSettings size={20} />
+              </IconAction>
             </Group>
           </Group>
           <Accordion
@@ -383,10 +481,10 @@ function Puzzles({ id }: { id: string }) {
                   {themesTableMissing && (
                     <Alert
                       icon={<IconAlertTriangle />}
-                      title="Puzzle database outdated"
+                      title={t("Puzzle.DatabaseOutdated")}
                       color="yellow"
                     >
-                      This database does not support themes. Update to the latest puzzle DB.
+                      {t("Puzzle.DatabaseOutdatedDesc")}
                     </Alert>
                   )}
                   <div>
@@ -400,16 +498,12 @@ function Puzzles({ id }: { id: string }) {
                       value={ratingRange}
                       onChange={setRatingRange}
                       disabled={progressive}
-                      marks={[
-                        { value: 600, label: "600" },
-                        { value: 1700, label: "1700" },
-                        { value: 2800, label: "2800" },
-                      ]}
+                      marks={puzzleRatingMarks.map((value) => ({ value, label: String(value) }))}
                     />
                   </div>
                   <Select
-                    label="Theme"
-                    placeholder="All themes"
+                    label={t("Puzzle.Theme")}
+                    placeholder={t("Puzzle.AllThemes")}
                     data={availableThemes.map((theme) => ({
                       label: formatThemeLabel(theme),
                       value: theme,
@@ -466,7 +560,7 @@ function Puzzles({ id }: { id: string }) {
               <Text fw={700} size="lg">
                 {isPuzzleIncomplete && hideRating && puzzles[currentPuzzle]?.rating
                   ? "?"
-                  : puzzles[currentPuzzle]?.rating || "-"}
+                  : puzzles[currentPuzzle]?.rating || unavailableValue}
               </Text>
             </Paper>
 
@@ -490,7 +584,7 @@ function Puzzles({ id }: { id: string }) {
                 size="lg"
                 c={accuracy === null ? "dimmed" : accuracy >= 50 ? "teal" : "orange"}
               >
-                {accuracy !== null ? `${accuracy}%` : "-"}
+                {accuracy !== null ? `${accuracy}%` : unavailableValue}
               </Text>
             </Paper>
 
@@ -512,7 +606,7 @@ function Puzzles({ id }: { id: string }) {
                   {t("Puzzle.AvgTime")}
                 </Text>
                 <Text fw={700} size="lg">
-                  {avgTimeSeconds.toFixed(1)}s
+                  {t("Common.SecondsShort", { value: avgTimeSeconds.toFixed(1) })}
                 </Text>
               </Paper>
             )}
@@ -536,52 +630,49 @@ function Puzzles({ id }: { id: string }) {
                   : t("Fen.WhiteToMove")}
             </Text>
             <Group gap="xs">
-              <Tooltip label={t("Puzzle.NewPuzzle")}>
-                <ActionIcon
-                  disabled={!selectedDb}
-                  onClick={() => generatePuzzle(selectedDb!, true)}
-                >
-                  <IconPlus />
-                </ActionIcon>
-              </Tooltip>
-              <Tooltip label={t("Puzzle.AnalyzePosition")}>
-                <ActionIcon
-                  disabled={!selectedDb}
-                  onClick={() =>
-                    createTab({
-                      tab: {
-                        name: "Puzzle Analysis",
-                        type: "analysis",
-                      },
-                      setTabs,
-                      setActiveTab,
-                      pgn: puzzles[currentPuzzle]?.moves.join(" "),
-                      headers: {
-                        ...defaultTree().headers,
-                        fen: puzzles[currentPuzzle]?.fen,
-                        orientation:
-                          parseFen(puzzles[currentPuzzle].fen).unwrap().turn === "white"
-                            ? "black"
-                            : "white",
-                      },
-                    })
-                  }
-                >
-                  <IconZoomCheck />
-                </ActionIcon>
-              </Tooltip>
-              <Tooltip label={t("Puzzle.ClearSession")}>
-                <ActionIcon
-                  onClick={() => {
-                    setPuzzles([]);
-                    reset();
-                    setTimerStart(null);
-                    setIsPlayingSolution(false);
-                  }}
-                >
-                  <IconX />
-                </ActionIcon>
-              </Tooltip>
+              <IconAction
+                label={t("Puzzle.NewPuzzle")}
+                disabled={!selectedDb}
+                onClick={() => generatePuzzle(selectedDb!, true)}
+              >
+                <IconPlus />
+              </IconAction>
+              <IconAction
+                label={t("Puzzle.AnalyzePosition")}
+                disabled={!selectedDb}
+                onClick={() =>
+                  createTab({
+                    tab: {
+                      name: t("Puzzle.AnalysisTitle"),
+                      type: "analysis",
+                    },
+                    setTabs,
+                    setActiveTab,
+                    pgn: puzzles[currentPuzzle]?.moves.join(" "),
+                    headers: {
+                      ...defaultTree().headers,
+                      fen: puzzles[currentPuzzle]?.fen,
+                      orientation:
+                        parseFen(puzzles[currentPuzzle].fen).unwrap().turn === "white"
+                          ? "black"
+                          : "white",
+                    },
+                  })
+                }
+              >
+                <IconZoomCheck />
+              </IconAction>
+              <IconAction
+                label={t("Puzzle.ClearSession")}
+                onClick={() => {
+                  setPuzzles([]);
+                  reset();
+                  setTimerStart(null);
+                  setIsPlayingSolution(false);
+                }}
+              >
+                <IconX />
+              </IconAction>
             </Group>
           </Group>
           <Group grow>
@@ -674,7 +765,7 @@ function Puzzles({ id }: { id: string }) {
               <ChallengeHistory
                 challenges={puzzles.map((p) => ({
                   ...p,
-                  label: p.rating?.toString() ?? "-",
+                  label: p.rating?.toString() ?? unavailableValue,
                 }))}
                 current={currentPuzzle}
                 select={(i) => {

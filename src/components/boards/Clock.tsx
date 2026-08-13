@@ -23,7 +23,7 @@ function Clock({
   const position = useStore(store, (s) => s.position);
   const headers = useStore(store, (s) => s.headers);
   const currentNode = useStore(store, (s) => s.currentNode());
-  const [pos, error] = positionFromFen(currentNode.fen);
+  const [pos] = positionFromFen(currentNode.fen);
 
   const { white, black } = getClockInfo({
     headers,
@@ -50,13 +50,13 @@ function Clock({
       styles={{
         root: {
           opacity: turn !== color ? 0.5 : 1,
-          visibility: clock ? "visible" : "hidden",
+          visibility: clock === undefined ? "hidden" : "visible",
           transition: "opacity 0.15s",
         },
       }}
     >
       <Text fz="lg" fw="bold" px="xs">
-        {clock ? formatClock(clock) : "0:00"}
+        {clock === undefined ? "0:00" : formatClock(clock)}
       </Text>
       <Progress
         size="xs"
@@ -73,7 +73,7 @@ function Clock({
   );
 }
 
-function formatClock(seconds: number) {
+export function formatClock(seconds: number) {
   let s = Math.max(0, seconds);
   const hours = Math.floor(s / 3600);
   const minutes = Math.floor((s % 3600) / 60);

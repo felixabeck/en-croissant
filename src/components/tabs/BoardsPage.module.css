@@ -10,6 +10,23 @@
   flex-shrink: 0;
 }
 
+.tabsHeaderRow {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.tabsHeaderRow .tabsHeader {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tabList {
+  display: flex;
+  flex-wrap: nowrap;
+  min-width: max-content;
+}
+
 [data-mantine-color-scheme="light"] .tabsHeader {
   background-color: var(--mantine-color-gray-1);
 }

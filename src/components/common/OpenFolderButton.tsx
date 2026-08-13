@@ -1,37 +1,19 @@
-import { ActionIcon, Tooltip } from "@mantine/core";
+import { tauri } from "@/platform/tauri";
 import { IconFolder } from "@tabler/icons-react";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { useTranslation } from "react-i18next";
-import { getDatabasesDir, getEnginesDir, getPuzzlesDir } from "@/utils/directories";
+import { IconAction } from "./IconAction";
 
-function OpenFolderButton({
-  base,
-  folder,
-}: {
-  base?: "Database" | "Document" | "Engines" | "Puzzles";
-  folder: string;
-}) {
+/** Opens the native-owned engine workspace; renderer code never receives a path. */
+function OpenFolderButton() {
   const { t } = useTranslation();
 
-  async function openAppDirData() {
-    let dir = folder;
-    if (base === "Database") {
-      dir = await getDatabasesDir();
-    }
-    if (base === "Engines") {
-      dir = await getEnginesDir();
-    }
-    if (base === "Puzzles") {
-      dir = await getPuzzlesDir();
-    }
-    await openPath(dir);
+  async function openEngineWorkspace() {
+    await tauri.openEngineWorkspace(await tauri.getEngineWorkspace());
   }
   return (
-    <Tooltip label={t("Common.OpenFolder")}>
-      <ActionIcon onClick={() => openAppDirData()}>
-        <IconFolder size="1.5rem" />
-      </ActionIcon>
-    </Tooltip>
+    <IconAction label={t("Common.OpenFolder")} onClick={() => openEngineWorkspace()}>
+      <IconFolder size="1.5rem" />
+    </IconAction>
   );
 }
 

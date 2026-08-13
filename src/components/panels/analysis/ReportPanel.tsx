@@ -1,12 +1,12 @@
+import { tauri } from "@/platform/tauri";
 import { Grid, Group, Paper, ScrollArea, Stack, Text } from "@mantine/core";
 import { IconZoomCheck } from "@tabler/icons-react";
 import cx from "clsx";
 import equal from "fast-deep-equal";
 import { useAtom, useAtomValue } from "jotai";
-import React, { memo, useCallback, useContext, useMemo } from "react";
+import React, { memo, useCallback, useContext, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
-import { commands } from "@/bindings";
 import EvalChart from "@/components/common/EvalChart";
 import ProgressButton from "@/components/common/ProgressButton";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
@@ -27,12 +27,21 @@ function ReportPanel() {
 
   const inProgress = useStore(store, (s) => s.report.inProgress);
   const setInProgress = useStore(store, (s) => s.setReportInProgress);
+  const operationId = useRef<string | null>(null);
+  const rootFingerprint = `${root.fen}\u0000${getMainLine(root).join("\u0000")}`;
+  const rootFingerprintRef = useRef(rootFingerprint);
+  rootFingerprintRef.current = rootFingerprint;
 
   const stats = useMemo(() => getGameStats(root), [root]);
 
   const handleCancel = useCallback(() => {
-    commands.cancelAnalysis(`report_${activeTab}`);
-  }, [activeTab]);
+    const id = operationId.current;
+    // Invalidate first: native cancellation is asynchronous and may still
+    // resolve successfully after the user switches tabs.
+    operationId.current = null;
+    setInProgress(false);
+    if (id) void tauri.cancelAnalysis(id);
+  }, [setInProgress]);
 
   const openReportingMode = useCallback(() => {
     setReportingMode(true);
@@ -51,6 +60,12 @@ function ReportPanel() {
         reportingMode={reportingMode}
         closeReportingMode={closeReportingMode}
         setInProgress={setInProgress}
+        registerOperation={(id) => {
+          operationId.current = id;
+        }}
+        isCurrentOperation={(id, fingerprint) =>
+          operationId.current === id && rootFingerprintRef.current === fingerprint
+        }
       />
       <Stack mb="lg" gap="0.4rem" mr="xs">
         <ProgressButton

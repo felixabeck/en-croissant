@@ -1,3 +1,4 @@
+import { tauri } from "@/platform/tauri";
 import {
   Badge,
   Box,
@@ -40,14 +41,17 @@ import { useNavigate } from "@tanstack/react-router";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 import { useTranslation } from "react-i18next";
-import { commands } from "@/bindings";
+import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import { getStats } from "@/components/files/opening";
 import Chessboard from "../icons/Chessboard";
 import { FileIcon } from "@/components/files/FileIcon";
 
 dayjs.extend(relativeTime);
 
+const recentFileDateFormat = "YYYY-MM-DD HH:mm";
+
 function RecentFileDuePositions({ file }: { file: string }) {
+  const { t } = useTranslation();
   const [deck] = useAtom(
     deckAtomFamily({
       file,
@@ -61,7 +65,7 @@ function RecentFileDuePositions({ file }: { file: string }) {
 
   return (
     <Badge size="sm" variant="light" color="orange" leftSection={<IconTarget size="0.75rem" />}>
-      {stats.due + stats.unseen} due
+      {stats.due + stats.unseen} {t("Board.Practice.Due")}
     </Badge>
   );
 }
@@ -87,10 +91,12 @@ function RecentFileRow({ file, onOpen }: { file: RecentFile; onOpen: (file: Rece
           <Text size="sm" truncate fw={500}>
             {displayName}
           </Text>
-          {file.type === "repertoire" && <RecentFileDuePositions file={file.path} />}
+          {file.type === "repertoire" && (
+            <RecentFileDuePositions file={fileWorkspaceKey(file.handle)} />
+          )}
         </Group>
         <Group gap="xs" wrap="nowrap" style={{ flexShrink: 0 }}>
-          <Tooltip label={dayjs(file.lastOpened).format("YYYY-MM-DD HH:mm")}>
+          <Tooltip label={dayjs(file.lastOpened).format(recentFileDateFormat)}>
             <Group gap={4} wrap="nowrap">
               <IconClock size={14} style={{ color: "var(--mantine-color-dimmed)" }} />
               <Text size="xs" c="dimmed">
@@ -117,29 +123,34 @@ export default function NewTabHome({ id }: { id: string }) {
   const navigate = useNavigate();
 
   useEffect(() => {
+    let cancelled = false;
     const checkFiles = async () => {
-      const newRecentFiles = await Promise.all(
+      const checkedRecentFiles = await Promise.all(
         recentFiles.map(async (file) => {
-          const exists = await commands.fileExists(file.path);
-          if (exists.status === "error" || !exists.data) {
+          try {
+            await tauri.countPgnGames(file.handle);
+            return file;
+          } catch {
             return null;
           }
-          return file;
         }),
       );
-      const filtered = newRecentFiles.filter((f) => f !== null) as RecentFile[];
-      if (filtered.length !== recentFiles.length) {
+      const filtered = checkedRecentFiles.filter((file): file is RecentFile => file !== null);
+      if (!cancelled && filtered.length !== recentFiles.length) {
         setRecentFiles(filtered);
       }
     };
-    checkFiles();
-  }, []);
+    void checkFiles();
+    return () => {
+      cancelled = true;
+    };
+  }, [recentFiles, setRecentFiles]);
 
   const openRecentFile = useCallback(
     async (file: RecentFile) => {
       const [pgnResult, countResult] = await Promise.all([
-        commands.readGames(file.path, 0, 0),
-        commands.countPgnGames(file.path),
+        tauri.readGames(file.handle, 0, 0),
+        tauri.countPgnGames(file.handle),
       ]);
       const pgn = unwrap(pgnResult);
       const numGames = unwrap(countResult);
@@ -157,7 +168,7 @@ export default function NewTabHome({ id }: { id: string }) {
           file: {
             type: "file",
             name: file.name,
-            path: file.path,
+            handle: file.handle,
             numGames,
             metadata: { type: file.type, tags: [] },
             lastModified: Math.floor(Date.now() / 1000),
@@ -169,7 +180,7 @@ export default function NewTabHome({ id }: { id: string }) {
       }
       store.set(addRecentFileAtom, {
         name: file.name,
-        path: file.path,
+        handle: file.handle,
         type: file.type,
       });
       navigate({ to: "/" });
@@ -287,7 +298,11 @@ export default function NewTabHome({ id }: { id: string }) {
             <ScrollArea.Autosize mah={300}>
               <Stack gap={2}>
                 {recentFiles.map((file) => (
-                  <RecentFileRow key={file.path} file={file} onOpen={openRecentFile} />
+                  <RecentFileRow
+                    key={fileWorkspaceKey(file.handle)}
+                    file={file}
+                    onOpen={openRecentFile}
+                  />
                 ))}
               </Stack>
             </ScrollArea.Autosize>

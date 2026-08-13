@@ -1,5 +1,4 @@
 import {
-  ActionIcon,
   Badge,
   Box,
   Divider,
@@ -13,14 +12,22 @@ import {
 } from "@mantine/core";
 import { IconFileExport, IconFilter, IconRefresh, IconTerminal2 } from "@tabler/icons-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { tauri } from "@/platform/tauri";
 import { useAtomValue } from "jotai";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { EngineLog } from "@/bindings";
 import { fontSizeAtom } from "@/state/atoms";
+import { IconAction } from "./IconAction";
 
 export type LogsFilter = "all" | "gui" | "engine";
+
+export function truncatedLogCount(logs: EngineLog[]) {
+  return logs.reduce(
+    (count, log) => (log.type === "truncated" ? count + Number(log.value.droppedEntries) : count),
+    0,
+  );
+}
 
 interface EngineLogsViewProps {
   logs: EngineLog[];
@@ -33,6 +40,7 @@ export default function EngineLogsView({
   onRefresh,
   additionalControls,
 }: EngineLogsViewProps) {
+  const { t } = useTranslation();
   const [filter, setFilter] = useState<LogsFilter>("all");
   const [search, setSearch] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -41,6 +49,7 @@ export default function EngineLogsView({
   const filteredLogs = useMemo(
     () =>
       logs.filter((log) => {
+        if (log.type === "truncated") return filter === "all";
         if (filter === "gui" && log.type !== "gui") return false;
         if (filter === "engine" && log.type !== "engine") return false;
         if (search && !log.value.toLowerCase().includes(search.toLowerCase())) return false;
@@ -58,11 +67,16 @@ export default function EngineLogsView({
   }, [logs.length, search]);
 
   async function exportLogs() {
-    const file = await save({ defaultPath: "logs.csv" });
-    const content = logs.map((line) => `${line.type}, ${line.value.trimEnd()}`).join("\n");
-    if (file) {
-      await writeTextFile(file, content);
-    }
+    const content = logs
+      .map((line) =>
+        line.type === "truncated"
+          ? `metadata, ${t("Engines.Logs.Truncated", "{{count}} older log entries omitted", {
+              count: Number(line.value.droppedEntries),
+            })}`
+          : `${line.type}, ${line.value.trimEnd()}`,
+      )
+      .join("\n");
+    await tauri.saveEngineLogs(content);
   }
 
   const rowVirtualizer = useVirtualizer({
@@ -74,33 +88,43 @@ export default function EngineLogsView({
   return (
     <Stack flex={1} h="100%" gap={0}>
       <Group w="100%" gap="xs" wrap="nowrap" pr="sm">
-        <ActionIcon.Group style={{ flexShrink: 0 }}>
+        <Group gap={0} style={{ flexShrink: 0 }}>
           {onRefresh && (
-            <Tooltip label="Refresh logs">
-              <ActionIcon size="lg" variant="default" onClick={onRefresh}>
-                <IconRefresh size="1.1rem" />
-              </ActionIcon>
-            </Tooltip>
+            <IconAction
+              label={t("Engines.Logs.Refresh", { defaultValue: "Refresh logs" })}
+              size="lg"
+              variant="default"
+              onClick={onRefresh}
+            >
+              <IconRefresh size="1.1rem" />
+            </IconAction>
           )}
-          <Tooltip label="Export logs">
-            <ActionIcon size="lg" variant="default" onClick={exportLogs}>
-              <IconFileExport size="1.1rem" />
-            </ActionIcon>
-          </Tooltip>
-        </ActionIcon.Group>
+          <IconAction
+            label={t("Engines.Logs.Export", { defaultValue: "Export logs" })}
+            size="lg"
+            variant="default"
+            onClick={() => void exportLogs()}
+          >
+            <IconFileExport size="1.1rem" />
+          </IconAction>
+        </Group>
 
         <SegmentedControl
           value={filter}
           onChange={(value) => setFilter(value as LogsFilter)}
           data={[
-            { value: "all", label: "All" },
-            { value: "gui", label: "GUI" },
-            { value: "engine", label: "Engine" },
+            { value: "all", label: t("Engines.Logs.Filter.All", { defaultValue: "All" }) },
+            { value: "gui", label: t("Engines.Logs.Filter.Gui", { defaultValue: "GUI" }) },
+            {
+              value: "engine",
+              label: t("Engines.Logs.Filter.Engine", { defaultValue: "Engine" }),
+            },
           ]}
         />
 
         <TextInput
-          placeholder="Filter logs..."
+          aria-label={t("Engines.Logs.Filter.Label", { defaultValue: "Filter logs" })}
+          placeholder={t("Engines.Logs.Filter.Placeholder", { defaultValue: "Filter logs..." })}
           leftSection={<IconFilter size="0.9rem" />}
           value={search}
           onChange={(e) => setSearch(e.currentTarget.value)}
@@ -115,7 +139,9 @@ export default function EngineLogsView({
         <Stack align="center" justify="center" flex={1} gap="xs">
           <IconTerminal2 size="2.5rem" opacity={0.3} />
           <Text ta="center" c="dimmed" fz="sm">
-            {logs.length === 0 ? "No logs available yet" : "No logs match the current filter"}
+            {logs.length === 0
+              ? t("Engines.Logs.Empty", { defaultValue: "No logs available yet" })
+              : t("Engines.Logs.NoMatch", { defaultValue: "No logs match the current filter" })}
           </Text>
         </Stack>
       ) : (
@@ -150,6 +176,31 @@ export default function EngineLogsView({
 }
 
 function LogLine({ log, style }: { log: EngineLog; style: React.CSSProperties }) {
+  const { t } = useTranslation();
+  if (log.type === "truncated") {
+    const message = t("Engines.Logs.Truncated", "{{count}} older log entries omitted", {
+      count: Number(log.value.droppedEntries),
+    });
+    return (
+      <Box
+        role="status"
+        aria-label={t(
+          "Engines.Logs.TruncatedA11y",
+          "Log history truncated: {{count}} entries omitted",
+          { count: Number(log.value.droppedEntries) },
+        )}
+        px="xs"
+        style={{
+          ...style,
+          borderBottom: "1px solid var(--mantine-color-dark-5)",
+        }}
+      >
+        <Text fz="xs" c="dimmed" fs="italic">
+          {message}
+        </Text>
+      </Box>
+    );
+  }
   const isGui = log.type === "gui";
   return (
     <Group
@@ -163,7 +214,9 @@ function LogLine({ log, style }: { log: EngineLog; style: React.CSSProperties })
       }}
     >
       <Badge variant="light" color={isGui ? "blue" : "teal"} w="3.5rem" style={{ flexShrink: 0 }}>
-        {isGui ? "GUI" : "ENG"}
+        {isGui
+          ? t("Engines.Logs.Source.Gui", { defaultValue: "GUI" })
+          : t("Engines.Logs.Source.Engine", { defaultValue: "ENG" })}
       </Badge>
       <Tooltip
         label={log.value.trim()}

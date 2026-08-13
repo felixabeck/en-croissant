@@ -1,12 +1,10 @@
 import {
-  ActionIcon,
   Alert,
   Badge,
   Button,
   Card,
   Divider,
   Group,
-  Modal,
   Paper,
   Progress,
   SimpleGrid,
@@ -17,6 +15,7 @@ import {
   Tooltip,
 } from "@mantine/core";
 import { useToggle } from "@mantine/hooks";
+import AppModal from "../../common/AppModal";
 import {
   IconArrowBack,
   IconArrowRight,
@@ -37,6 +36,7 @@ import { formatNumber } from "@/utils/format";
 import { useStore } from "zustand";
 import ConfirmModal from "@/components/common/ConfirmModal";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
+import { IconAction } from "@/components/common/IconAction";
 import {
   buildFromTree,
   formatReviewInterval,
@@ -56,13 +56,23 @@ import {
   type PracticeData,
   type PracticeSessionStats,
   practiceCardStartTimeAtom,
+  practiceCompletedSummaryAtom,
+  practiceMoveControllerAtom,
   practiceSessionStatsAtom,
   practiceStateAtom,
   practiceAutoDifficultyAtom,
 } from "@/state/atoms";
 import { getTabFile, getTabGameNumber } from "@/utils/tabs";
+import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import { findFen, getNodeAtPath } from "@/utils/treeReducer";
 import RepertoireInfo from "./RepertoireInfo";
+import {
+  canSubmitPracticeMove,
+  emptyPracticeStats,
+  idlePracticeSession,
+  practiceSessionReducer,
+  type PracticeSession,
+} from "./session";
 
 function PracticePanel() {
   const { t } = useTranslation();
@@ -71,6 +81,8 @@ function PracticePanel() {
   const root = useStore(store, (s) => s.root);
   const headers = useStore(store, (s) => s.headers);
   const goToMove = useStore(store, (s) => s.goToMove);
+  const goToNext = useStore(store, (s) => s.goToNext);
+  const makeMove = useStore(store, (s) => s.makeMove);
   const setPracticePath = useStore(store, (s) => s.setPracticePath);
   const currentFen = useStore(store, (s) => s.currentNode().fen);
 
@@ -80,7 +92,7 @@ function PracticePanel() {
 
   const [deck, setDeck] = useAtom(
     deckAtomFamily({
-      file: tabFile?.path || "",
+      file: tabFile ? fileWorkspaceKey(tabFile.handle) : "",
       game: getTabGameNumber(currentTab),
     }),
   );
@@ -91,11 +103,11 @@ function PracticePanel() {
   } | null>(null);
   const deckPositionsRef = useRef(deck.positions);
   deckPositionsRef.current = deck.positions;
-  const lastSyncedTreeRef = useRef<string | null>(null);
+  const lastSyncedRootRef = useRef<typeof root | null>(null);
+  const syncMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const treeFingerprint = JSON.stringify(root);
-    if (lastSyncedTreeRef.current === treeFingerprint) return;
+    if (lastSyncedRootRef.current === root) return;
 
     const orientation = headers.orientation || "white";
     const start = headers.start || [];
@@ -116,10 +128,11 @@ function PracticePanel() {
       if (added > 0 || removed > 0) {
         setDeck((prev) => ({ ...prev, positions }));
         setSyncMessage({ added, removed });
-        setTimeout(() => setSyncMessage(null), 5000);
+        if (syncMessageTimerRef.current) clearTimeout(syncMessageTimerRef.current);
+        syncMessageTimerRef.current = setTimeout(() => setSyncMessage(null), 5000);
       }
     }
-    lastSyncedTreeRef.current = treeFingerprint;
+    lastSyncedRootRef.current = root;
   }, [root, headers, setDeck]);
 
   const stats = getStats(deck.positions);
@@ -128,9 +141,78 @@ function PracticePanel() {
   const setShowComments = useSetAtom(currentShowCommentsAtom);
   const setEvalOpen = useSetAtom(currentEvalOpenAtom);
   const [practiceState, setPracticeState] = useAtom(practiceStateAtom);
+  const [, setPracticeMoveController] = useAtom(practiceMoveControllerAtom);
   const [sessionStats, setSessionStats] = useAtom(practiceSessionStatsAtom);
+  const [completedSummary, setCompletedSummary] = useAtom(practiceCompletedSummaryAtom);
   const setCardStartTime = useSetAtom(practiceCardStartTimeAtom);
+  const cardStartTime = useAtomValue(practiceCardStartTimeAtom);
   const practiceAutoDifficulty = useAtomValue(practiceAutoDifficultyAtom);
+  const sessionRef = useRef<PracticeSession>(idlePracticeSession());
+  const endPracticeSessionRef = useRef<() => void>(() => undefined);
+  const navigationTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
+  const deckRef = useRef(deck);
+  deckRef.current = deck;
+  const rootRef = useRef(root);
+  rootRef.current = root;
+
+  const clearPracticeTimers = useCallback(() => {
+    for (const timer of navigationTimersRef.current) clearTimeout(timer);
+    navigationTimersRef.current.clear();
+    if (syncMessageTimerRef.current) clearTimeout(syncMessageTimerRef.current);
+    syncMessageTimerRef.current = null;
+  }, []);
+
+  const setSession = useCallback(
+    (next: PracticeSession) => {
+      sessionRef.current = next;
+      const { token: _token, ...visible } = next;
+      setPracticeState(visible);
+    },
+    [setPracticeState],
+  );
+
+  const endPracticeSession = useCallback(() => {
+    clearPracticeTimers();
+    const ended = practiceSessionReducer(sessionRef.current, {
+      type: "end",
+      token: sessionRef.current.token,
+    });
+    setSession(ended);
+    setPracticePath(null);
+    setInvisible(false);
+    setShowComments(true);
+    setEvalOpen(true);
+    setCardStartTime(0);
+    setSessionStats(emptyPracticeStats());
+    setCompletedSummary(null);
+  }, [
+    clearPracticeTimers,
+    setCardStartTime,
+    setEvalOpen,
+    setInvisible,
+    setPracticePath,
+    setSession,
+    setSessionStats,
+    setCompletedSummary,
+    setShowComments,
+  ]);
+  endPracticeSessionRef.current = endPracticeSession;
+
+  const completePracticeSession = useCallback(
+    (summary: PracticeSessionStats = sessionStats) => {
+      endPracticeSession();
+      setCompletedSummary(summary);
+    },
+    [endPracticeSession, sessionStats, setCompletedSummary],
+  );
+
+  const scheduleForSession = useCallback((token: number, callback: () => void, delay: number) => {
+    const timer = setTimeout(() => {
+      navigationTimersRef.current.delete(timer);
+      if (sessionRef.current.token === token) callback();
+    }, delay);
+    navigationTimersRef.current.add(timer);
+  }, []);
 
   const newPractice = useCallback(
     (stats?: Partial<PracticeSessionStats>) => {
@@ -152,26 +234,37 @@ function PracticePanel() {
       }
 
       if (!c) {
-        setPracticeState({ phase: "idle" });
-        setPracticePath(null);
-        setInvisible(false);
-        setShowComments(true);
-        setEvalOpen(true);
+        completePracticeSession({ ...sessionStats, ...stats });
         return;
       }
       const path = findFen(c.fen, root);
+      if (!path) {
+        setDeck((previous) => ({
+          ...previous,
+          positions: previous.positions.filter((position) => position.fen !== c!.fen),
+        }));
+        completePracticeSession({ ...sessionStats, ...stats });
+        return;
+      }
       goToMove(path);
       setPracticePath(path);
       setInvisible(true);
       setShowComments(false);
       setEvalOpen(false);
       setCardStartTime(Date.now());
-      setPracticeState({ phase: "waiting", currentFen: c.fen });
+      const positionIndex = deck.positions.indexOf(c);
+      setSession(
+        practiceSessionReducer(sessionRef.current, {
+          type: "start",
+          token: sessionRef.current.token + 1,
+          fen: c.fen,
+          positionIndex,
+        }),
+      );
     },
     [
       deck.positions,
-      sessionStats.mode,
-      sessionStats.remainingPositions,
+      sessionStats,
       root,
       goToMove,
       setPracticePath,
@@ -179,54 +272,135 @@ function PracticePanel() {
       setShowComments,
       setEvalOpen,
       setCardStartTime,
-      setPracticeState,
+      setDeck,
+      completePracticeSession,
+      setSession,
     ],
   );
 
   useEffect(() => {
     if (practiceState.phase === "correct") {
+      const token = sessionRef.current.token;
       if (sessionStats.mode === "full") {
-        const timer = setTimeout(() => {
-          const remainingPositions = sessionStats.remainingPositions.slice(1);
-          setSessionStats((prev) => ({
-            ...prev,
-            remainingPositions,
-            correct: prev.correct + 1,
-            streak: prev.streak + 1,
-            bestStreak: Math.max(prev.bestStreak, prev.streak + 1),
-          }));
-          newPractice({ remainingPositions, mode: "full" });
-        }, 300);
-        return () => clearTimeout(timer);
+        scheduleForSession(
+          token,
+          () => {
+            const remainingPositions = sessionStats.remainingPositions.slice(1);
+            const nextStats = {
+              ...sessionStats,
+              remainingPositions,
+              correct: sessionStats.correct + 1,
+              streak: sessionStats.streak + 1,
+              bestStreak: Math.max(sessionStats.bestStreak, sessionStats.streak + 1),
+            };
+            setSessionStats(nextStats);
+            newPractice(nextStats);
+          },
+          300,
+        );
       } else if (practiceAutoDifficulty !== "none" && practiceState.positionIndex !== undefined) {
         const positionIndex = practiceState.positionIndex;
-        const timer = setTimeout(() => {
-          const card = deck.positions[positionIndex].card;
-          const grade = Number(practiceAutoDifficulty) as 1 | 2 | 3 | 4;
+        scheduleForSession(
+          token,
+          () => {
+            const card = deckRef.current.positions[positionIndex]?.card;
+            if (!card) {
+              completePracticeSession();
+              return;
+            }
+            const grade = Number(practiceAutoDifficulty) as 1 | 2 | 3 | 4;
 
-          updateCardPerformance(setDeck, positionIndex, card, grade);
-          setSessionStats((prev) => ({
-            ...prev,
-            correct: prev.correct + 1,
-            streak: prev.streak + 1,
-            bestStreak: Math.max(prev.bestStreak, prev.streak + 1),
-          }));
-          newPractice();
-        }, 300);
-        return () => clearTimeout(timer);
+            updateCardPerformance(setDeck, positionIndex, card, grade);
+            const nextStats = {
+              ...sessionStats,
+              correct: sessionStats.correct + 1,
+              streak: sessionStats.streak + 1,
+              bestStreak: Math.max(sessionStats.bestStreak, sessionStats.streak + 1),
+            };
+            setSessionStats(nextStats);
+            newPractice(nextStats);
+          },
+          300,
+        );
       }
     }
   }, [
     practiceState.phase,
     practiceState.positionIndex,
-    sessionStats.mode,
-    sessionStats.remainingPositions,
+    sessionStats,
     newPractice,
     setSessionStats,
     practiceAutoDifficulty,
     deck.positions,
     setDeck,
+    scheduleForSession,
+    completePracticeSession,
   ]);
+
+  const submitMove = useCallback(
+    (san: string) => {
+      const session = sessionRef.current;
+      if (!canSubmitPracticeMove(session, currentFen)) return;
+      const positionIndex = session.positionIndex;
+      const card =
+        positionIndex === undefined ? undefined : deckRef.current.positions[positionIndex];
+      if (positionIndex === undefined || !card || card.fen !== session.currentFen) {
+        completePracticeSession();
+        return;
+      }
+      const timeTaken = Date.now() - cardStartTime;
+      if (san === card.answer) {
+        makeMove({ payload: san });
+        setSession(
+          practiceSessionReducer(session, {
+            type: "correct",
+            token: session.token,
+            answer: card.answer,
+            timeTaken,
+          }),
+        );
+        return;
+      }
+      if (sessionStats.mode !== "full") updateCardPerformance(setDeck, positionIndex, card.card, 1);
+      setSession(
+        practiceSessionReducer(session, {
+          type: "incorrect",
+          token: session.token,
+          answer: card.answer,
+          playedMove: san,
+          timeTaken,
+        }),
+      );
+      setSessionStats((previous) => ({
+        ...previous,
+        incorrect: previous.incorrect + 1,
+        streak: 0,
+      }));
+      scheduleForSession(session.token, goToNext, 500);
+    },
+    [
+      cardStartTime,
+      currentFen,
+      completePracticeSession,
+      goToNext,
+      makeMove,
+      scheduleForSession,
+      sessionStats.mode,
+      setDeck,
+      setSession,
+      setSessionStats,
+    ],
+  );
+
+  useEffect(() => {
+    setPracticeMoveController({
+      canMove: canSubmitPracticeMove(sessionRef.current, currentFen),
+      submitMove,
+    });
+    return () => setPracticeMoveController(null);
+  }, [currentFen, practiceState.phase, setPracticeMoveController, submitMove]);
+
+  useEffect(() => () => endPracticeSessionRef.current(), []);
 
   function handleQualityRating(grade: 1 | 2 | 3 | 4) {
     if (practiceState.phase !== "correct" || practiceState.positionIndex === undefined) return;
@@ -245,6 +419,7 @@ function PracticePanel() {
   }
 
   function startPractice() {
+    setCompletedSummary(null);
     const stats: Partial<PracticeSessionStats> = {
       mode: "anki",
       remainingPositions: [],
@@ -258,6 +433,7 @@ function PracticePanel() {
   }
 
   function startFullPractice() {
+    setCompletedSummary(null);
     const indices = deck.positions.map((_, i) => i);
     const stats: Partial<PracticeSessionStats> = {
       mode: "full",
@@ -300,6 +476,16 @@ function PracticePanel() {
   const [positionsOpen, setPositionsOpen] = useToggle();
   const [logsOpen, setLogsOpen] = useToggle();
   const [tab, setTab] = useAtom(currentPracticeTabAtom);
+  const displayedSessionStats = completedSummary ?? sessionStats;
+
+  useEffect(() => {
+    if (tab !== "train" && practiceState.phase !== "idle") endPracticeSession();
+  }, [endPracticeSession, practiceState.phase, tab]);
+
+  useEffect(() => {
+    const fen = sessionRef.current.currentFen;
+    if (fen && !findFen(fen, root)) completePracticeSession();
+  }, [completePracticeSession, deck.positions, root]);
 
   return (
     <>
@@ -361,16 +547,31 @@ function PracticePanel() {
                     </Text>
                   </Group>
                   <Progress.Root size="sm">
-                    <Tooltip label={`${t("Board.Practice.Practiced")}: ${stats.practiced}`}>
+                    <Tooltip
+                      label={t("Board.Practice.Statistic", {
+                        label: t("Board.Practice.Practiced"),
+                        count: stats.practiced,
+                      })}
+                    >
                       <Progress.Section
                         value={(stats.practiced / stats.total) * 100}
                         color="blue"
                       />
                     </Tooltip>
-                    <Tooltip label={`${t("Board.Practice.Due")}: ${stats.due}`}>
+                    <Tooltip
+                      label={t("Board.Practice.Statistic", {
+                        label: t("Board.Practice.Due"),
+                        count: stats.due,
+                      })}
+                    >
                       <Progress.Section value={(stats.due / stats.total) * 100} color="yellow" />
                     </Tooltip>
-                    <Tooltip label={`${t("Board.Practice.Unseen")}: ${stats.unseen}`}>
+                    <Tooltip
+                      label={t("Board.Practice.Statistic", {
+                        label: t("Board.Practice.Unseen"),
+                        count: stats.unseen,
+                      })}
+                    >
                       <Progress.Section value={(stats.unseen / stats.total) * 100} color="gray" />
                     </Tooltip>
                   </Progress.Root>
@@ -404,8 +605,8 @@ function PracticePanel() {
                 </SimpleGrid>
 
                 {(practiceState.phase !== "idle" ||
-                  sessionStats.correct > 0 ||
-                  sessionStats.incorrect > 0) && (
+                  displayedSessionStats.correct > 0 ||
+                  displayedSessionStats.incorrect > 0) && (
                   <SimpleGrid cols={3} spacing="xs">
                     <Paper p="xs" withBorder radius="sm">
                       <Group gap={4} wrap="nowrap">
@@ -417,7 +618,7 @@ function PracticePanel() {
                         </Text>
                       </Group>
                       <Text fz="lg" fw={700} c="green">
-                        {sessionStats.correct}
+                        {displayedSessionStats.correct}
                       </Text>
                     </Paper>
                     <Paper p="xs" withBorder radius="sm">
@@ -430,12 +631,12 @@ function PracticePanel() {
                         </Text>
                       </Group>
                       <Text fz="lg" fw={700} c="red">
-                        {sessionStats.incorrect}
+                        {displayedSessionStats.incorrect}
                       </Text>
                     </Paper>
                     <Paper p="xs" withBorder radius="sm">
                       <Group gap={4} wrap="nowrap">
-                        {sessionStats.correct + sessionStats.incorrect > 0 ? (
+                        {displayedSessionStats.correct + displayedSessionStats.incorrect > 0 ? (
                           <ThemeIcon size="xs" color="teal" variant="transparent">
                             <IconTarget size={12} />
                           </ThemeIcon>
@@ -445,7 +646,7 @@ function PracticePanel() {
                           </ThemeIcon>
                         )}
                         <Text fz={10} tt="uppercase" c="dimmed" fw={600}>
-                          {sessionStats.correct + sessionStats.incorrect > 0
+                          {displayedSessionStats.correct + displayedSessionStats.incorrect > 0
                             ? t("Board.Practice.Accuracy")
                             : t("Board.Practice.Streak")}
                         </Text>
@@ -453,15 +654,19 @@ function PracticePanel() {
                       <Text
                         fz="lg"
                         fw={700}
-                        c={sessionStats.correct + sessionStats.incorrect > 0 ? "teal" : "orange"}
+                        c={
+                          displayedSessionStats.correct + displayedSessionStats.incorrect > 0
+                            ? "teal"
+                            : "orange"
+                        }
                       >
-                        {sessionStats.correct + sessionStats.incorrect > 0
+                        {displayedSessionStats.correct + displayedSessionStats.incorrect > 0
                           ? `${Math.round(
-                              (sessionStats.correct /
-                                (sessionStats.correct + sessionStats.incorrect)) *
+                              (displayedSessionStats.correct /
+                                (displayedSessionStats.correct + displayedSessionStats.incorrect)) *
                                 100,
                             )}%`
-                          : sessionStats.streak}
+                          : displayedSessionStats.streak}
                       </Text>
                     </Paper>
                   </SimpleGrid>
@@ -532,7 +737,12 @@ function PracticePanel() {
                           size="xs"
                           leftSection={<IconArrowBack size={14} />}
                           onClick={() => {
-                            goToMove(findFen(practiceState.currentFen!, root));
+                            const path = findFen(practiceState.currentFen!, root);
+                            if (!path) {
+                              completePracticeSession();
+                              return;
+                            }
+                            goToMove(path);
                             setInvisible(true);
                           }}
                         >
@@ -549,19 +759,7 @@ function PracticePanel() {
                           size="compact-xs"
                           color="red"
                           onClick={() => {
-                            setPracticeState({ phase: "idle" });
-                            setPracticePath(null);
-                            setInvisible(false);
-                            setShowComments(true);
-                            setEvalOpen(true);
-                            setSessionStats({
-                              mode: "anki",
-                              remainingPositions: [],
-                              correct: 0,
-                              incorrect: 0,
-                              streak: 0,
-                              bestStreak: 0,
-                            });
+                            endPracticeSession();
                           }}
                         >
                           {t("Common.Stop")}
@@ -639,19 +837,7 @@ function PracticePanel() {
         onConfirm={() => {
           const cards = buildFromTree(root, headers.orientation || "white", headers.start || []);
           setDeck({ positions: cards, logs: [] });
-          setPracticeState({ phase: "idle" });
-          setPracticePath(null);
-          setInvisible(false);
-          setShowComments(true);
-          setEvalOpen(true);
-          setSessionStats({
-            mode: "anki",
-            remainingPositions: [],
-            correct: 0,
-            incorrect: 0,
-            streak: 0,
-            bestStreak: 0,
-          });
+          endPracticeSession();
           toggleResetModal();
         }}
         confirmLabel={t("Common.Reset")}
@@ -688,7 +874,7 @@ function QualityRatingPanel({
           </Text>
           {timeTaken !== undefined && (
             <Text fz="xs" c="dimmed">
-              ({(timeTaken / 1000).toFixed(1)}s)
+              ({t("Common.SecondsShort", { value: (timeTaken / 1000).toFixed(1) })})
             </Text>
           )}
         </Group>
@@ -792,7 +978,7 @@ function PositionsModal({
   const root = useStore(store, (s) => s.root);
   const goToMove = useStore(store, (s) => s.goToMove);
   return (
-    <Modal
+    <AppModal
       opened={open}
       onClose={() => setOpen(false)}
       size="xl"
@@ -802,6 +988,7 @@ function PositionsModal({
       <SimpleGrid cols={2}>
         {deck.positions.map((c) => {
           const position = findFen(c.fen, root);
+          if (!position) return null;
           const node = getNodeAtPath(root, position);
           return (
             <Card key={c.fen}>
@@ -832,7 +1019,8 @@ function PositionsModal({
                   </Text>
                   <Text>{formatDate(c.card.due)}</Text>
                 </Stack>
-                <ActionIcon
+                <IconAction
+                  label={t("Board.Practice.GoBackToPosition")}
                   variant="subtle"
                   onClick={() => {
                     goToMove(position);
@@ -840,13 +1028,13 @@ function PositionsModal({
                   }}
                 >
                   <IconArrowRight />
-                </ActionIcon>
+                </IconAction>
               </Group>
             </Card>
           );
         })}
       </SimpleGrid>
-    </Modal>
+    </AppModal>
   );
 }
 
@@ -864,7 +1052,7 @@ function LogsModal({
   const root = useStore(store, (s) => s.root);
   const goToMove = useStore(store, (s) => s.goToMove);
   return (
-    <Modal
+    <AppModal
       opened={open}
       onClose={() => setOpen(false)}
       size="xl"
@@ -874,6 +1062,7 @@ function LogsModal({
         {logs.length === 0 && <Text>{t("Board.Practice.NoLogsYet")}</Text>}
         {logs.map((log) => {
           const position = findFen(log.fen, root);
+          if (!position) return null;
           const node = getNodeAtPath(root, position);
 
           return (
@@ -916,7 +1105,8 @@ function LogsModal({
                   </Text>
                   <Text>{formatDate(log.due)}</Text>
                 </Stack>
-                <ActionIcon
+                <IconAction
+                  label={t("Board.Practice.GoBackToPosition")}
                   variant="subtle"
                   onClick={() => {
                     goToMove(position);
@@ -924,13 +1114,13 @@ function LogsModal({
                   }}
                 >
                   <IconArrowRight />
-                </ActionIcon>
+                </IconAction>
               </Group>
             </Card>
           );
         })}
       </SimpleGrid>
-    </Modal>
+    </AppModal>
   );
 }
 

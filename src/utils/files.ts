@@ -1,16 +1,19 @@
+import { tauri } from "@/platform/tauri";
 import { Result } from "@badrap/result";
-import { resolve } from "@tauri-apps/api/path";
-import { exists, writeTextFile } from "@tauri-apps/plugin-fs";
-import { platform } from "@tauri-apps/plugin-os";
+import { platform } from "@/platform/native";
 import { defaultGame, makePgn } from "chessops/pgn";
 import { getDefaultStore } from "jotai";
 import useSWR from "swr";
-import { commands } from "@/bindings";
-import type { FileMetadata } from "@/components/files/file";
-import { addRecentFileAtom, tabFamily } from "@/state/atoms";
-import { unwrap } from "@/utils/unwrap";
+import type { FileMetadata, FileType } from "@/components/files/file";
+import type { FileWorkspaceHandle } from "@/bindings";
+import {
+    addRecentFileAtom,
+    fileWorkspaceAtom,
+    fileWorkspaceDisplayNameAtom,
+    tabFamily,
+} from "@/state/atoms";
 import { parsePGN } from "./chess";
-import { createTab, isInTempDir, type Tab } from "./tabs";
+import { createTab, type Tab } from "./tabs";
 import { getGameName } from "./treeReducer";
 
 export function usePlatform() {
@@ -20,8 +23,40 @@ export function usePlatform() {
     return { os: r.data, ...r };
 }
 
+export async function pickPgnFile(): Promise<FileMetadata | null> {
+    let descriptor;
+    try {
+        descriptor = await tauri.issuePgnWorkspace();
+    } catch {
+        return null;
+    }
+    const count = await tauri.countPgnGames(descriptor.handle);
+    return {
+        type: "file",
+        handle: descriptor.handle,
+        name: descriptor.displayName.replace(/\.pgn$/i, ""),
+        numGames: count,
+        metadata: { type: "game", tags: [] },
+        lastModified: Date.now(),
+    };
+}
+
+export async function ensureFileWorkspace(): Promise<FileWorkspaceHandle | null> {
+    const store = getDefaultStore();
+    const existing = store.get(fileWorkspaceAtom);
+    if (existing) return existing;
+    try {
+        const result = await tauri.issueFileWorkspace();
+        store.set(fileWorkspaceAtom, result.handle);
+        store.set(fileWorkspaceDisplayNameAtom, result.displayName);
+        return result.handle;
+    } catch {
+        return null;
+    }
+}
+
 export async function openFile(
-    file: string | FileMetadata,
+    file: FileMetadata,
     setTabs: React.Dispatch<React.SetStateAction<Tab[]>>,
     setActiveTab: React.Dispatch<React.SetStateAction<string | null>>,
     options?: {
@@ -32,47 +67,11 @@ export async function openFile(
     const store = getDefaultStore();
     const gameNumber = options?.gameNumber ?? 0;
     let fileInfo: FileMetadata;
-    let isTempOrigin = false;
     let pgn = options?.pgn;
-    let tabName = "Untitled";
-    let recentName = "Untitled";
-
-    if (typeof file === "string") {
-        const count = unwrap(await commands.countPgnGames(file));
-        isTempOrigin = await isInTempDir(file);
-        if (pgn === undefined) {
-            pgn = unwrap(await commands.readGames(file, gameNumber, gameNumber))[0];
-        }
-
-        fileInfo = {
-            type: "file" as const,
-            metadata: {
-                tags: [],
-                type: "game" as const,
-            },
-            name: file,
-            path: file,
-            numGames: count,
-            lastModified: new Date().getUTCSeconds(),
-        };
-
-        if (pgn) {
-            const tree = await parsePGN(pgn);
-            tabName = getGameName(tree.headers);
-            recentName = tabName;
-        } else {
-            tabName = file;
-            recentName = file;
-        }
-    } else {
-        fileInfo = file;
-        isTempOrigin = await isInTempDir(file.path);
-        if (pgn === undefined) {
-            pgn = unwrap(await commands.readGames(file.path, gameNumber, gameNumber))[0];
-        }
-        tabName = file.name || "Untitled";
-        recentName = tabName;
-    }
+    fileInfo = file;
+    if (pgn === undefined) pgn = (await tauri.readGames(file.handle, gameNumber, gameNumber))[0];
+    let tabName = file.name || "Untitled";
+    if (pgn) tabName = getGameName((await parsePGN(pgn)).headers);
 
     const id = await createTab({
         tab: {
@@ -83,7 +82,7 @@ export async function openFile(
         setActiveTab,
         pgn: pgn || "",
         gameOrigin: {
-            kind: isTempOrigin ? "temp_file" : "file",
+            kind: "file",
             file: fileInfo,
             gameNumber,
         },
@@ -94,8 +93,8 @@ export async function openFile(
     }
 
     store.set(addRecentFileAtom, {
-        name: recentName,
-        path: fileInfo.path,
+        name: tabName,
+        handle: fileInfo.handle,
         type: fileInfo.metadata.type,
     });
 
@@ -106,30 +105,35 @@ export async function createFile({
     filename,
     filetype,
     pgn,
-    dir,
+    workspace,
+    parent,
 }: {
     filename: string;
-    filetype: "game" | "repertoire" | "tournament" | "puzzle" | "other";
+    filetype: FileType;
     pgn?: string;
-    dir: string;
+    workspace: FileWorkspaceHandle;
+    parent: FileWorkspaceHandle;
 }): Promise<Result<FileMetadata>> {
-    const file = await resolve(dir, `${filename}.pgn`);
-    if (await exists(file)) {
-        return Result.err(Error("File already exists"));
+    let entry;
+    try {
+        entry = await tauri.createWorkspaceFile(
+            workspace,
+            parent,
+            filename,
+            { type: filetype, tags: [] },
+            pgn || makePgn(defaultGame()),
+        );
+    } catch (error) {
+        return Result.err(error instanceof Error ? error : Error(String(error)));
     }
-    const metadata = {
-        type: filetype,
-        tags: [],
-    };
-    await writeTextFile(file, pgn || makePgn(defaultGame()));
-    await writeTextFile(file.replace(".pgn", ".info"), JSON.stringify(metadata));
-    const numGames = unwrap(await commands.countPgnGames(file));
+    if (!entry.metadata || entry.gameCount === null)
+        return Result.err(Error("Native workspace returned incomplete file metadata"));
     return Result.ok({
         type: "file",
-        name: filename,
-        path: file,
-        numGames,
-        metadata,
-        lastModified: new Date().getUTCSeconds(),
+        handle: entry.handle,
+        name: entry.name,
+        numGames: entry.gameCount,
+        metadata: { type: entry.metadata.type, tags: entry.metadata.tags },
+        lastModified: Number(entry.lastModified),
     });
 }

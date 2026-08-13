@@ -1,9 +1,10 @@
 import { Chessground as NativeChessground } from "@lichess-org/chessground";
 import type { Api } from "@lichess-org/chessground/api";
 import type { Config } from "@lichess-org/chessground/config";
+import type { Key } from "@lichess-org/chessground/types";
 import { Box } from "@mantine/core";
 import { useAtomValue } from "jotai";
-import { type Ref, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { type Ref, useEffect, useImperativeHandle, useRef } from "react";
 import { boardImageAtom, moveMethodAtom } from "@/state/atoms";
 
 const BOARD_COORDINATE_COLORS: Record<string, { white: string; black: string }> = {
@@ -51,6 +52,7 @@ function getBoardCoordinateColors(boardImage: string): {
 export interface ChessgroundRef {
   playPremove: () => boolean;
   cancelPremove: () => void;
+  queuePremove: (from: Key, to: Key) => boolean;
 }
 
 interface ChessgroundProps extends Config {
@@ -59,62 +61,57 @@ interface ChessgroundProps extends Config {
 }
 
 export function Chessground({ ref, ...props }: ChessgroundProps) {
-  const [api, setApi] = useState<Api | null>(null);
-
   const boardRef = useRef<HTMLDivElement>(null);
+  const apiRef = useRef<Api | null>(null);
+  const propsRef = useRef(props);
+  propsRef.current = props;
 
   const moveMethod = useAtomValue(moveMethodAtom);
 
   useImperativeHandle(
     ref,
     () => ({
-      playPremove: () => api?.playPremove() ?? false,
-      cancelPremove: () => api?.cancelPremove(),
+      playPremove: () => apiRef.current?.playPremove() ?? false,
+      cancelPremove: () => apiRef.current?.cancelPremove(),
+      queuePremove: (from, to) => {
+        const api = apiRef.current;
+        if (!api) return false;
+        api.selectSquare(from);
+        api.selectSquare(to);
+        return api.state.premovable.current !== undefined;
+      },
     }),
-    [api],
+    [],
   );
 
   useEffect(() => {
-    if (boardRef?.current == null) return;
-    if (api) {
-      api.set({
-        ...props,
-        events: {
-          ...props.events,
-          change: () => {
-            if (props.setBoardFen && api) {
-              props.setBoardFen(api.getFen());
-            }
-          },
+    if (boardRef.current == null) return;
+    const chessgroundApi = NativeChessground(boardRef.current, {
+      ...propsRef.current,
+      addDimensionsCssVarsTo: boardRef.current,
+      events: {
+        ...propsRef.current.events,
+        change: () => {
+          if (propsRef.current.setBoardFen) {
+            propsRef.current.setBoardFen(chessgroundApi.getFen());
+          }
         },
-      });
-    } else {
-      const chessgroundApi = NativeChessground(boardRef.current, {
-        ...props,
-        addDimensionsCssVarsTo: boardRef.current,
-        events: {
-          ...props.events,
-          change: () => {
-            if (props.setBoardFen && chessgroundApi) {
-              props.setBoardFen(chessgroundApi.getFen());
-            }
-          },
-        },
-        draggable: {
-          ...props.draggable,
-          enabled: moveMethod !== "select",
-        },
-        selectable: {
-          ...props.selectable,
-          enabled: moveMethod !== "drag",
-        },
-      });
-      setApi(chessgroundApi);
-    }
-  }, [api, props, boardRef]);
+      },
+    });
+    apiRef.current = chessgroundApi;
+
+    return () => {
+      chessgroundApi.destroy();
+      apiRef.current = null;
+    };
+    // Chessground owns the element for this whole mount. Configuration is applied below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
-    api?.set({
+    const api = apiRef.current;
+    if (!api) return;
+    api.set({
       ...props,
       events: {
         ...props.events,
@@ -133,7 +130,7 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
         enabled: moveMethod !== "drag",
       },
     });
-  }, [api, props, moveMethod]);
+  }, [props, moveMethod]);
 
   const boardImage = useAtomValue(boardImageAtom);
   const boardCoordColors = getBoardCoordinateColors(boardImage);

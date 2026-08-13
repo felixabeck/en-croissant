@@ -1,12 +1,13 @@
+import { tauriSubscriptions } from "@/platform/tauri";
 import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import equal from "fast-deep-equal";
 import { useAtom, useAtomValue } from "jotai";
-import { startTransition, useContext, useEffect, useMemo } from "react";
+import { startTransition, useCallback, useContext, useMemo, useRef } from "react";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import { type EngineOptions, events, type GoMode } from "@/bindings";
+import { type BestMovesPayload, type EngineOptions, type GoMode } from "@/bindings";
 import {
   activeTabAtom,
   currentThreatAtom,
@@ -27,6 +28,7 @@ import {
 } from "@/utils/engines";
 import { getBestMoves as lichessGetBestMoves } from "@/utils/lichess/api";
 import { useThrottledEffect } from "@/utils/misc";
+import { useTauriListener } from "@/platform/useTauriListener";
 import { TreeStateContext } from "../common/TreeStateContext";
 
 function EvalListener() {
@@ -40,7 +42,7 @@ function EvalListener() {
     useShallow((s) => getVariationLine(s.root, s.position)),
   );
 
-  const [pos, error] = positionFromFen(fen);
+  const [pos] = positionFromFen(fen);
   if (pos) {
     for (const uci of moves) {
       const move = parseUci(uci);
@@ -131,9 +133,18 @@ function EngineListener({
       tab: activeTab!,
     }),
   );
-  useEffect(() => {
-    if (!settings.enabled) return;
-    const unlisten = events.bestMovesPayload.listen(({ payload }) => {
+  const settingsFingerprint = JSON.stringify({
+    enabled: settings.enabled,
+    go: settings.go,
+    options: settings.settings,
+    engine: engine.id,
+  });
+  const generation = useRef(0);
+  const requestFingerprint = `${activeTab}\u0000${searchingFen}\u0000${searchingMoves.join("\u0000")}\u0000${settingsFingerprint}`;
+  const currentFingerprint = useRef(requestFingerprint);
+  currentFingerprint.current = requestFingerprint;
+  const onBestMoves = useCallback(
+    ({ payload }: { payload: BestMovesPayload }) => {
       const ev = payload.bestLines;
       if (
         payload.engine === engine.id &&
@@ -141,7 +152,13 @@ function EngineListener({
         payload.fen === searchingFen &&
         equal(payload.moves, searchingMoves) &&
         settings.enabled &&
-        !isGameOver
+        !isGameOver &&
+        currentFingerprint.current === requestFingerprint &&
+        ev.length > 0 &&
+        ev.every(
+          (line) =>
+            line && line.score && Array.isArray(line.uciMoves) && Array.isArray(line.sanMoves),
+        )
       ) {
         startTransition(() => {
           setEngineVariation((prev) => {
@@ -162,21 +179,31 @@ function EngineListener({
           }
         });
       }
-    });
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, [
-    activeTab,
-    setScore,
-    settings.enabled,
-    isGameOver,
-    searchingFen,
-    JSON.stringify(searchingMoves),
-    engine.id,
-    setEngineVariation,
-    firstEngineWithLines,
-  ]);
+    },
+    [
+      activeTab,
+      setScore,
+      settings.enabled,
+      isGameOver,
+      searchingFen,
+      searchingMoves,
+      engine.id,
+      setEngineVariation,
+      setProgress,
+      firstEngineWithLines,
+      requestFingerprint,
+      threat,
+      fen,
+      moves,
+      finalFen,
+    ],
+  );
+  const subscribeBestMoves = useCallback(
+    (listener: (event: { payload: BestMovesPayload }) => void) =>
+      tauriSubscriptions.bestMoves(listener),
+    [],
+  );
+  useTauriListener(subscribeBestMoves, onBestMoves);
 
   const getBestMoves = useMemo(
     () =>
@@ -189,37 +216,54 @@ function EngineListener({
         .with("chessdb", () => chessdbGetBestMoves)
         .with("lichess", () => lichessGetBestMoves)
         .exhaustive(),
-    [engine.type, engine],
+    [engine],
   );
 
   useThrottledEffect(
     () => {
+      const currentGeneration = ++generation.current;
+      const stillCurrent = () =>
+        generation.current === currentGeneration &&
+        currentFingerprint.current === requestFingerprint;
       if (settings.enabled) {
+        // A local engine has one native search slot per tab.  Cancelling it on
+        // every identity change gives FEN/settings/go-mode changes a real
+        // cancellation boundary instead of merely hiding stale UI results.
+        if (engine.type === "local") void stopEngine(engine, activeTab!);
         if (isGameOver) {
           if (engine.type === "local") {
             stopEngine(engine, activeTab!);
           }
         } else {
           const options =
-            settings.settings?.map((s) => ({
-              name: s.name,
-              value: s.value?.toString() || "",
-            })) ?? [];
-          getBestMoves(activeTab!, settings.go, {
+            settings.settings?.map((s) =>
+              s.type === "resource" ? s : { ...s, value: s.value.toString() },
+            ) ?? [];
+          void getBestMoves(activeTab!, settings.go, {
             moves: searchingMoves,
             fen: searchingFen,
             extraOptions: options,
-          }).then((moves) => {
-            if (moves) {
-              const [progress, bestMoves] = moves;
-              setEngineVariation((prev) => {
-                const newMap = new Map(prev);
-                newMap.set(`${searchingFen}:${searchingMoves.join(",")}`, bestMoves);
-                return newMap;
-              });
-              setProgress(progress);
-            }
-          });
+          })
+            .then((moves) => {
+              if (
+                stillCurrent() &&
+                moves &&
+                moves[1].length > 0 &&
+                moves[1].every((line) => line && line.score && Array.isArray(line.uciMoves))
+              ) {
+                const [progress, bestMoves] = moves;
+                setEngineVariation((prev) => {
+                  const newMap = new Map(prev);
+                  newMap.set(`${searchingFen}:${searchingMoves.join(",")}`, bestMoves);
+                  return newMap;
+                });
+                setProgress(progress);
+              }
+            })
+            .catch(() => {
+              // Engine errors are surfaced by their operation/UI path; stale
+              // failures must never clear or overwrite newer analysis.
+            });
         }
       } else {
         if (engine.type === "local") {
@@ -230,15 +274,16 @@ function EngineListener({
     50,
     [
       settings.enabled,
-      JSON.stringify(settings.settings),
+      settingsFingerprint,
       settings.go,
       searchingFen,
-      JSON.stringify(searchingMoves),
+      searchingMoves,
       isGameOver,
       activeTab,
       getBestMoves,
       setEngineVariation,
       engine,
+      requestFingerprint,
     ],
   );
   return null;

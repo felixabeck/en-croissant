@@ -1,16 +1,4 @@
-import {
-  ActionIcon,
-  Box,
-  Divider,
-  Group,
-  Overlay,
-  Paper,
-  ScrollArea,
-  Stack,
-  Table,
-  Text,
-  Tooltip,
-} from "@mantine/core";
+import { Box, Divider, Group, Overlay, Paper, ScrollArea, Stack, Table, Text } from "@mantine/core";
 import { useColorScheme } from "@mantine/hooks";
 import {
   IconArrowRight,
@@ -32,6 +20,7 @@ import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import Comment from "@/components/common/Comment";
+import IconAction from "@/components/common/IconAction";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import {
   currentInvisibleAtom,
@@ -47,6 +36,7 @@ import styles from "./GameNotation.module.css";
 import OpeningName from "./OpeningName";
 
 function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React.ReactNode }) {
+  const { t } = useTranslation();
   const store = useContext(TreeStateContext)!;
   const currentFen = useStore(store, (s) => s.currentNode().fen);
   const copyPgn = useStore(store, (s) => s.copyPgn);
@@ -76,9 +66,8 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
 
   const [invisibleValue, setInvisible] = useAtom(currentInvisibleAtom);
   const invisible = topBar && invisibleValue;
-  const showVariations = useAtomValue(currentShowVariationsAtom);
   const showComments = useAtomValue(currentShowCommentsAtom);
-  const [tableView, setTableView] = useAtom(tableViewAtom);
+  const [tableView] = useAtom(tableViewAtom);
   const colorScheme = useColorScheme();
 
   const keyMap = useAtomValue(keyMapAtom);
@@ -129,10 +118,10 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
                     <br />
                     <Text span fs="italic">
                       {headers.result === "1/2-1/2"
-                        ? "Draw"
+                        ? t("Board.Analysis.Tablebase.Draw")
                         : headers.result === "1-0"
-                          ? "White wins"
-                          : "Black wins"}
+                          ? t("Board.Analysis.Tablebase.WhiteWins")
+                          : t("Board.Analysis.Tablebase.BlackWins")}
                     </Text>
                   </Text>
                 )}
@@ -156,28 +145,34 @@ function NotationHeader() {
       <Group justify="space-between" px="sm">
         <OpeningName />
         <Group gap="sm">
-          <Tooltip label={invisible ? t("Notation.ShowMoves") : t("Notation.HideMoves")}>
-            <ActionIcon onClick={() => setInvisible((v) => !v)}>
-              {invisible ? <IconEyeOff size="1rem" /> : <IconEye size="1rem" />}
-            </ActionIcon>
-          </Tooltip>
-          <Tooltip label={tableView ? t("Notation.NormalView") : t("Notation.TableView")}>
-            <ActionIcon onClick={() => setTableView((v) => !v)}>
-              {tableView ? <IconList size="1rem" /> : <IconLayoutList size="1rem" />}
-            </ActionIcon>
-          </Tooltip>
-          <Tooltip label={showComments ? t("Notation.HideComments") : t("Notation.ShowComments")}>
-            <ActionIcon onClick={() => setShowComments((v) => !v)}>
-              {showComments ? <IconArticle size="1rem" /> : <IconArticleOff size="1rem" />}
-            </ActionIcon>
-          </Tooltip>
-          <Tooltip
-            label={showVariations ? t("Notation.HideVariations") : t("Notation.ShowVariations")}
+          <IconAction
+            label={invisible ? t("Notation.ShowMoves") : t("Notation.HideMoves")}
+            onClick={() => setInvisible((v) => !v)}
+            pressed={!invisible}
           >
-            <ActionIcon onClick={() => setShowVariations((v) => !v)}>
-              {showVariations ? <IconArrowsSplit size="1rem" /> : <IconArrowRight size="1rem" />}
-            </ActionIcon>
-          </Tooltip>
+            {invisible ? <IconEyeOff size="1rem" /> : <IconEye size="1rem" />}
+          </IconAction>
+          <IconAction
+            label={tableView ? t("Notation.NormalView") : t("Notation.TableView")}
+            onClick={() => setTableView((v) => !v)}
+            pressed={tableView}
+          >
+            {tableView ? <IconList size="1rem" /> : <IconLayoutList size="1rem" />}
+          </IconAction>
+          <IconAction
+            label={showComments ? t("Notation.HideComments") : t("Notation.ShowComments")}
+            onClick={() => setShowComments((v) => !v)}
+            pressed={showComments}
+          >
+            {showComments ? <IconArticle size="1rem" /> : <IconArticleOff size="1rem" />}
+          </IconAction>
+          <IconAction
+            label={showVariations ? t("Notation.HideVariations") : t("Notation.ShowVariations")}
+            onClick={() => setShowVariations((v) => !v)}
+            pressed={showVariations}
+          >
+            {showVariations ? <IconArrowsSplit size="1rem" /> : <IconArrowRight size="1rem" />}
+          </IconAction>
         </Group>
       </Group>
       <Divider />
@@ -575,13 +570,19 @@ function RowSegment({
 }
 
 function VariationCell({ moveNodes }: { moveNodes: React.ReactNode[] }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(true);
   if (moveNodes.length === 0) return null;
   return (
     <Box className={styles.variationBorder}>
-      <ActionIcon size="xs" onClick={() => setExpanded((v) => !v)}>
+      <IconAction
+        label={t("Notation.ToggleVariation")}
+        size="xs"
+        onClick={() => setExpanded((v) => !v)}
+        pressed={expanded}
+      >
         {expanded ? <IconMinus size="0.5rem" /> : <IconPlus size="0.5rem" />}
-      </ActionIcon>
+      </IconAction>
       {expanded &&
         moveNodes.map((node, i) => (
           <Box key={i} className={styles.lineBeforeVariation}>

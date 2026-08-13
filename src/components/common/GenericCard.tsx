@@ -1,4 +1,4 @@
-import { Box, Divider, Stack, Text } from "@mantine/core";
+import { Stack, Text, UnstyledButton } from "@mantine/core";
 import cx from "clsx";
 import type { ReactNode } from "react";
 import classes from "./GenericCard.module.css";
@@ -26,11 +26,9 @@ export default function GenericCard<T>({
   onDoubleClick,
 }: Props<T>) {
   return (
-    <Box
-      tabIndex={0}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") setSelected(id);
-      }}
+    <UnstyledButton
+      type="button"
+      aria-pressed={isSelected}
       className={cx(classes.card, {
         [classes.selected]: isSelected,
         [classes.error]: !!error,
@@ -54,6 +52,6 @@ export default function GenericCard<T>({
           </div>
         )}
       </Stack>
-    </Box>
+    </UnstyledButton>
   );
 }

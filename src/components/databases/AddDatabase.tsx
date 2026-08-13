@@ -1,3 +1,4 @@
+import { tauri } from "@/platform/tauri";
 import {
   Alert,
   Box,
@@ -6,7 +7,6 @@ import {
   Divider,
   Group,
   Loader,
-  Modal,
   Paper,
   ScrollArea,
   SimpleGrid,
@@ -17,24 +17,22 @@ import {
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { IconAlertCircle } from "@tabler/icons-react";
-import { basename, resolve } from "@tauri-apps/api/path";
-import { open } from "@tauri-apps/plugin-dialog";
-import { useAtom, useSetAtom } from "jotai";
+import { useSetAtom } from "jotai";
 import { type Dispatch, type SetStateAction, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { KeyedMutator } from "swr";
-import { commands, type DatabaseInfo } from "@/bindings";
-import { databaseConversionStateAtom, storedDatabasesDirAtom } from "@/state/atoms";
-import { getDatabases, type SuccessDatabaseInfo, useDefaultDatabases } from "@/utils/db";
+import { type DatabaseInfo, type FileWorkspaceHandle } from "@/bindings";
+import { databaseConversionStateAtom } from "@/state/atoms";
+import { getDatabases, type DownloadableDatabaseInfo, useDefaultDatabases } from "@/utils/db";
 import { capitalize, formatBytes, formatNumber } from "@/utils/format";
-import { unwrap } from "@/utils/unwrap";
+import AppModal from "../common/AppModal";
 import FileInput from "../common/FileInput";
 import ProgressButton from "../common/ProgressButton";
 
 interface AddDatabaseFormValues {
   title: string;
   description: string;
-  files: string[];
+  files: FileWorkspaceHandle[];
   filename: string;
 }
 
@@ -54,16 +52,16 @@ function AddDatabase({
   setDatabases: KeyedMutator<DatabaseInfo[]>;
 }) {
   const { t } = useTranslation();
-  const [databaseDir] = useAtom(storedDatabasesDirAtom);
   const setConversionState = useSetAtom(databaseConversionStateAtom);
 
   const { defaultDatabases, error, isLoading } = useDefaultDatabases(opened);
 
-  async function convertDB(paths: string[], title: string, description?: string) {
+  async function convertDB(paths: FileWorkspaceHandle[], title: string, description?: string) {
     if (paths.length === 0) return;
     setLoading(true);
-    const dbPath = await resolve(databaseDir, `${title}.db3`);
-    const sourceFileName = await basename(paths[0]);
+    const root = await tauri.getDatabaseWorkspace();
+    const dbPath = await tauri.createWorkspaceDatabase(root, `${crypto.randomUUID()}.db3`);
+    const sourceFileName = "PGN";
     setConversionState((prev) => ({
       ...prev,
       inProgress: true,
@@ -72,7 +70,7 @@ function AddDatabase({
       sourceFileName,
     }));
     try {
-      unwrap(await commands.convertPgn(paths, dbPath, null, title, description ?? null));
+      await tauri.convertPgn(paths, dbPath, null, title, description ?? null);
       await setDatabases(await getDatabases());
     } finally {
       setLoading(false);
@@ -97,11 +95,10 @@ function AddDatabase({
     },
 
     validate: {
-      title: (value) => {
-        if (!value) return t("Common.RequireName");
-        if (databases.find((e) => e.type === "success" && e.title === value))
-          return t("Common.NameAlreadyUsed");
-      },
+      // Titles are display metadata, not a stable identity.  Handles keep two
+      // identically titled databases distinct and native creation reports only
+      // an actual filename collision.
+      title: (value) => (!value ? t("Common.RequireName") : undefined),
       files: (value) => {
         if (value.length === 0) return t("Common.RequirePath");
       },
@@ -109,7 +106,7 @@ function AddDatabase({
   });
 
   return (
-    <Modal
+    <AppModal
       opened={opened}
       onClose={() => setOpened(false)}
       title={t("Databases.Add.Title")}
@@ -140,8 +137,8 @@ function AddDatabase({
                 />
               ))}
               {error && (
-                <Alert icon={<IconAlertCircle size="1rem" />} title="Error" color="red">
-                  {"Failed to fetch the database's info from the server."}
+                <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="red">
+                  {t("Databases.Add.ErrorFetch")}
                 </Alert>
               )}
             </SimpleGrid>
@@ -163,27 +160,11 @@ function AddDatabase({
               label={t("Common.PGNFile")}
               description={t("Databases.Add.ClickToSelectPGN")}
               onClick={async () => {
-                const selected = await open({
-                  multiple: true,
-                  filters: [
-                    {
-                      name: "PGN file",
-                      extensions: ["pgn", "pgn.zst"],
-                    },
-                  ],
-                });
-                if (!selected) return;
-
-                const selectedFiles = Array.isArray(selected) ? selected : [selected];
-                form.setFieldValue("files", selectedFiles);
-
-                const filenames = await Promise.all(selectedFiles.map((file) => basename(file)));
-                const firstFilename = filenames[0];
+                const selected = await tauri.issuePgnWorkspace();
+                form.setFieldValue("files", [selected.handle]);
+                const firstFilename = selected.displayName;
                 if (firstFilename) {
-                  const displayName =
-                    filenames.length > 1
-                      ? `${firstFilename} (+${filenames.length - 1})`
-                      : firstFilename;
+                  const displayName = firstFilename;
                   form.setFieldValue("filename", displayName);
                   if (!form.values.title) {
                     form.setFieldValue(
@@ -205,7 +186,7 @@ function AddDatabase({
           </form>
         </Tabs.Panel>
       </Tabs>
-    </Modal>
+    </AppModal>
   );
 }
 
@@ -216,19 +197,26 @@ function DatabaseCard({
   initInstalled,
 }: {
   setDatabases: KeyedMutator<DatabaseInfo[]>;
-  database: SuccessDatabaseInfo;
+  database: DownloadableDatabaseInfo;
   databaseId: number;
   initInstalled: boolean;
 }) {
   const { t } = useTranslation();
-  const [databaseDir] = useAtom(storedDatabasesDirAtom);
-
   const [inProgress, setInProgress] = useState<boolean>(false);
 
   async function downloadDatabase(id: number, url: string, name: string) {
     setInProgress(true);
-    const path = await resolve(databaseDir, `${name}.db3`);
-    await commands.downloadFile(`db_${id}`, url, path, null, null, null);
+    const root = await tauri.getDatabaseWorkspace();
+    const destination = await tauri.databaseDownloadDestination(root);
+    await tauri.downloadFile(
+      `db_${id}`,
+      url,
+      destination,
+      `${name}.db3`,
+      null,
+      crypto.randomUUID(),
+      { sha256: database.sha256, signature: database.signature },
+    );
     await setDatabases(await getDatabases());
   }
 
@@ -237,7 +225,7 @@ function DatabaseCard({
       <Group wrap="nowrap" gap={0} grow>
         <Box p="md" flex={1}>
           <Text tt="uppercase" c="dimmed" fw={700} size="xs">
-            DATABASE
+            {t("Board.Tabs.Database")}
           </Text>
           <Text fw="bold" mb="xs">
             {database.title}

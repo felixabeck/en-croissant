@@ -4,110 +4,122 @@ import {
   Checkbox,
   Group,
   InputWrapper,
-  Modal,
   Stack,
   TextInput,
 } from "@mantine/core";
 import { IconPlus } from "@tabler/icons-react";
-import { listen } from "@tauri-apps/api/event";
 import { useAtom, useAtomValue } from "jotai";
-import { useEffect, useRef, useState } from "react";
+import { notifications } from "@mantine/notifications";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { DatabaseInfo } from "@/bindings";
-import { commands } from "@/bindings";
 import { sessionsAtom } from "@/state/atoms";
 import { getChessComAccount } from "@/utils/chess.com/api";
-import { getDatabases } from "@/utils/db";
+import { getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
 import { getLichessAccount } from "@/utils/lichess/api";
-import type { ChessComSession, LichessSession } from "@/utils/session";
+import { authenticateLichess } from "@/utils/lichess/authentication";
+import { type ChessComSession, type LichessSession, upsertLichessSession } from "@/utils/session";
 import AccountCards from "../common/AccountCards";
 import GenericCard from "../common/GenericCard";
+import AppModal from "../common/AppModal";
 import LichessLogo from "./LichessLogo";
 
 function Accounts() {
   const { t } = useTranslation();
   const [sessions, setSessions] = useAtom(sessionsAtom);
-  const isListening = useRef(false);
-  const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
+  const [databases, setDatabases] = useState<ManagedDatabaseInfo[]>([]);
   useEffect(() => {
-    getDatabases().then((dbs) => setDatabases(dbs));
+    let active = true;
+    void getDatabases()
+      .then((dbs) => {
+        if (active) setDatabases(dbs);
+      })
+      .catch(() => {
+        // Account management remains usable without an import destination. The database page
+        // owns the visible retry/error state for the shared workspace.
+        if (active) setDatabases([]);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
   const [open, setOpen] = useState(false);
 
-  function addChessComSession(alias: string, session: ChessComSession) {
-    setSessions((sessions) => {
-      const newSessions = sessions.filter((s) => s.chessCom?.username !== session.username);
-      return [
-        ...newSessions,
-        {
-          chessCom: session,
-          player: alias,
-          updatedAt: Date.now(),
-        },
-      ];
-    });
-  }
-
-  function addLichessSession(alias: string, session: LichessSession) {
-    setSessions((sessions) => {
-      const newSessions = sessions.filter((s) => s.lichess?.username !== session.username);
-      return [
-        ...newSessions,
-        {
-          lichess: session,
-          player: alias,
-          updatedAt: Date.now(),
-        },
-      ];
-    });
-  }
-
-  async function addChessCom(player: string, username: string) {
-    const p = player !== "" ? player : username;
-    const stats = await getChessComAccount(username);
-    if (!stats) {
-      return;
-    }
-    addChessComSession(p, { username, stats });
-  }
-
-  async function addLichessNoLogin(player: string, username: string) {
-    const p = player !== "" ? player : username;
-    const account = await getLichessAccount({ username });
-    if (!account) return;
-    addLichessSession(p, { username, account });
-  }
-
-  async function onLichessAuthentication(token: string) {
-    const player = sessionStorage.getItem("lichess_player_alias") || "";
-    sessionStorage.removeItem("lichess_player_alias");
-    const account = await getLichessAccount({ token });
-    if (!account) return;
-    const username = account.username;
-    const p = player !== "" ? player : username;
-    addLichessSession(p, { accessToken: token, username: username, account });
-  }
-
-  async function addLichess(player: string, username: string, withLogin: boolean) {
-    if (withLogin) {
-      sessionStorage.setItem("lichess_player_alias", player);
-      return await commands.authenticate(username);
-    }
-    return await addLichessNoLogin(player, username);
-  }
-
-  useEffect(() => {
-    async function listen_for_code() {
-      if (isListening.current) return;
-      isListening.current = true;
-      await listen<string>("access_token", async (event) => {
-        const token = event.payload;
-        await onLichessAuthentication(token);
+  const addChessComSession = useCallback(
+    (alias: string, session: ChessComSession) => {
+      setSessions((sessions) => {
+        const newSessions = sessions.filter((s) => s.chessCom?.username !== session.username);
+        return [
+          ...newSessions,
+          {
+            chessCom: session,
+            player: alias,
+            updatedAt: Date.now(),
+          },
+        ];
       });
-    }
+    },
+    [setSessions],
+  );
 
-    listen_for_code();
-  }, [setSessions]);
+  const addLichessSession = useCallback(
+    (alias: string, session: LichessSession) => {
+      setSessions((sessions) => upsertLichessSession(sessions, alias, session));
+    },
+    [setSessions],
+  );
+
+  const showAuthenticationFailed = useCallback(() => {
+    notifications.show({
+      message: t("Home.Accounts.AuthenticationFailed"),
+      color: "red",
+    });
+  }, [t]);
+
+  const addChessCom = useCallback(
+    async (player: string, username: string): Promise<boolean> => {
+      const p = player !== "" ? player : username;
+      try {
+        const stats = await getChessComAccount(username);
+        if (!stats) return false;
+        addChessComSession(p, { username, stats });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [addChessComSession],
+  );
+
+  const addLichessNoLogin = useCallback(
+    async (player: string, username: string): Promise<boolean> => {
+      const p = player !== "" ? player : username;
+      try {
+        const account = await getLichessAccount({ username });
+        if (!account) return false;
+        addLichessSession(p, { username, account });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [addLichessSession],
+  );
+
+  const addLichess = useCallback(
+    async (player: string, username: string, withLogin: boolean): Promise<boolean> => {
+      if (withLogin) {
+        try {
+          return await authenticateLichess(player, username);
+        } catch {
+          // Native errors are intentionally not exposed in the interface.
+        }
+        showAuthenticationFailed();
+        return false;
+      }
+      return addLichessNoLogin(player, username);
+    },
+    [addLichessNoLogin, showAuthenticationFailed],
+  );
 
   return (
     <>
@@ -148,8 +160,8 @@ function AccountModal({
 }: {
   open: boolean;
   setOpen: (open: boolean) => void;
-  addLichess: (player: string, username: string, withLogin: boolean) => void;
-  addChessCom: (player: string, username: string) => void;
+  addLichess: (player: string, username: string, withLogin: boolean) => Promise<boolean>;
+  addChessCom: (player: string, username: string) => Promise<boolean>;
 }) {
   const { t } = useTranslation();
   const sessions = useAtomValue(sessionsAtom);
@@ -157,22 +169,45 @@ function AccountModal({
   const [player, setPlayer] = useState<string>("");
   const [website, setWebsite] = useState<"lichess" | "chesscom">("lichess");
   const [withLogin, setWithLogin] = useState(false);
+  const [isPending, setIsPending] = useState(false);
+  const submitLock = useRef(false);
 
   const players = new Set(
     sessions.map((s) => s.player || s.lichess?.username || s.chessCom?.username || ""),
   );
 
-  function addAccount() {
-    if (website === "lichess") {
-      addLichess(player, username, withLogin);
-    } else {
-      addChessCom(player, username);
-    }
+  function closeAndClear() {
     setOpen(false);
+    setUsername("");
+    setPlayer("");
+    setWebsite("lichess");
+    setWithLogin(false);
+  }
+
+  async function addAccount() {
+    if (submitLock.current) return;
+    submitLock.current = true;
+    setIsPending(true);
+    try {
+      const success =
+        website === "lichess"
+          ? await addLichess(player, username, withLogin)
+          : await addChessCom(player, username);
+      if (success) closeAndClear();
+    } catch {
+      // Account providers own their lookup failure notifications.
+    } finally {
+      submitLock.current = false;
+      setIsPending(false);
+    }
   }
 
   return (
-    <Modal opened={open} onClose={() => setOpen(false)} title={t("Home.Accounts.Add")}>
+    <AppModal
+      opened={open}
+      onClose={() => !isPending && setOpen(false)}
+      title={t("Home.Accounts.Add")}
+    >
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -230,11 +265,16 @@ function AccountModal({
               onChange={(e) => setWithLogin(e.currentTarget.checked)}
             />
           )}
-          <Button mt="1rem" type="submit">
+          <Button mt="1rem" type="submit" loading={isPending} disabled={isPending}>
             {t("Common.Add")}
           </Button>
+          {isPending && (
+            <span role="status" aria-live="polite">
+              {t("Common.Loading")}
+            </span>
+          )}
         </Stack>
       </form>
-    </Modal>
+    </AppModal>
   );
 }

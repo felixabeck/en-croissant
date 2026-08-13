@@ -1,8 +1,8 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { resolveResource } from "@tauri-apps/api/path";
-import { platform } from "@tauri-apps/plugin-os";
+import { convertFileSrc } from "@/platform/native";
+import { resolveResource } from "@/platform/native";
+import { platform } from "@/platform/native";
 import { getDefaultStore } from "jotai";
-import { commands } from "@/bindings/generated";
+import { tauri } from "@/platform/tauri";
 import { soundCollectionAtom, soundVolumeAtom } from "@/state/atoms";
 
 const POOL_SIZE = 5;
@@ -26,12 +26,8 @@ async function getSoundServerPort(): Promise<number> {
     if (soundServerPort !== null) {
         return soundServerPort;
     }
-    const result = await commands.getSoundServerPort();
-    if (result.status === "ok") {
-        soundServerPort = result.data;
-        return soundServerPort;
-    }
-    throw new Error("Failed to get sound server port");
+    soundServerPort = await tauri.getSoundServerPort();
+    return soundServerPort;
 }
 
 export function playSound(capture: boolean, check: boolean) {

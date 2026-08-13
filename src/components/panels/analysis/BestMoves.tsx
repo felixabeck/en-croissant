@@ -1,6 +1,5 @@
 import {
   Accordion,
-  ActionIcon,
   Box,
   Code,
   Collapse,
@@ -31,6 +30,7 @@ import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMem
 import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
 import type { BestMoves } from "@/bindings";
+import { IconAction } from "@/components/common/IconAction";
 import {
   activeTabAtom,
   currentDetachedEngineAtom,
@@ -161,17 +161,23 @@ function BestMovesComponent({
     <>
       <Box style={{ display: "flex" }}>
         <Stack gap={0} py="1rem">
-          <ActionIcon
+          <IconAction
+            label={
+              settings.enabled
+                ? t("Board.Analysis.DisableEngine")
+                : t("Board.Analysis.EnableEngine")
+            }
+            pressed={settings.enabled}
             size="md"
             variant={settings.enabled ? "filled" : "transparent"}
             color={id < 4 ? arrowColors[id].strong : theme.primaryColor}
             onClick={() => {
               setSettings((prev) => ({ ...prev, enabled: !prev.enabled }));
             }}
-            ml={12}
+            style={{ marginLeft: 12 }}
           >
             {settings.enabled ? <IconPlayerPause size="1rem" /> : <IconPlayerPlay size="1rem" />}
-          </ActionIcon>
+          </IconAction>
         </Stack>
         <Accordion.Control>
           <EngineTop
@@ -183,50 +189,50 @@ function BestMovesComponent({
             error={error}
           />
         </Accordion.Control>
-        <ActionIcon.Group>
-          <Tooltip label="Check the opponent's threat">
-            <ActionIcon
-              size="lg"
-              onClick={() => setThreat(!threat)}
-              disabled={!settings.enabled}
-              variant="transparent"
-              mt="auto"
-              mb="auto"
-            >
-              <IconTargetArrow color={threat ? "red" : undefined} size="1rem" />
-            </ActionIcon>
-          </Tooltip>
-          <Tooltip label={isDetached ? "Unpin from notation" : "Pin above notation"}>
-            <ActionIcon
-              size="lg"
-              onClick={() =>
-                startTransition(() => {
-                  setDetachedEngineId(isDetached ? null : engine.id);
-                })
-              }
-              variant={isDetached ? "light" : "transparent"}
-              mt="auto"
-              mb="auto"
-            >
-              {isDetached ? <IconPinnedOff size="1rem" /> : <IconPinned size="1rem" />}
-            </ActionIcon>
-          </Tooltip>
-          <ActionIcon size="lg" onClick={() => toggleSettingsOn()} mt="auto" mb="auto">
-            <IconSettings size="1rem" />
-          </ActionIcon>
-          <ActionIcon
+        <Group gap={0}>
+          <IconAction
+            label={t("Board.Analysis.CheckThreat")}
+            pressed={threat}
             size="lg"
-            mr={8}
-            mt="auto"
-            mb="auto"
-            style={{
-              cursor: "grab",
-            }}
+            onClick={() => setThreat(!threat)}
+            disabled={!settings.enabled}
+            variant="transparent"
+            style={{ marginTop: "auto", marginBottom: "auto" }}
+          >
+            <IconTargetArrow color={threat ? "red" : undefined} size="1rem" />
+          </IconAction>
+          <IconAction
+            label={isDetached ? t("Board.Analysis.Unpin") : t("Board.Analysis.Pin")}
+            pressed={isDetached}
+            size="lg"
+            onClick={() =>
+              startTransition(() => {
+                setDetachedEngineId(isDetached ? null : engine.id);
+              })
+            }
+            variant={isDetached ? "light" : "transparent"}
+            style={{ marginTop: "auto", marginBottom: "auto" }}
+          >
+            {isDetached ? <IconPinnedOff size="1rem" /> : <IconPinned size="1rem" />}
+          </IconAction>
+          <IconAction
+            label={t("Engines.Settings.AdvancedSettings")}
+            pressed={settingsOn}
+            size="lg"
+            onClick={() => toggleSettingsOn()}
+            style={{ marginTop: "auto", marginBottom: "auto" }}
+          >
+            <IconSettings size="1rem" />
+          </IconAction>
+          <IconAction
+            label={t("Board.Analysis.ReorderEngine")}
+            size="lg"
+            style={{ marginRight: 8, marginTop: "auto", marginBottom: "auto", cursor: "grab" }}
             {...dragHandleProps}
           >
             <IconGripVertical size="1rem" />
-          </ActionIcon>
-        </ActionIcon.Group>
+          </IconAction>
+        </Group>
       </Box>
       <Collapse in={settingsOn} px={30} pb={15}>
         <EngineSettingsForm
@@ -252,7 +258,7 @@ function BestMovesComponent({
               <Table.Tr>
                 <Table.Td>
                   <Text ta="center" my="lg">
-                    Invalid position: {chessopsError(error)}
+                    {t("Board.Analysis.InvalidPosition", { error: chessopsError(error) })}
                   </Text>
                 </Table.Td>
               </Table.Tr>
@@ -261,7 +267,7 @@ function BestMovesComponent({
               <Table.Tr>
                 <Table.Td>
                   <Text ta="center" my="lg">
-                    Game is over
+                    {t("Board.Analysis.GameOver")}
                   </Text>
                 </Table.Td>
               </Table.Tr>
@@ -270,7 +276,7 @@ function BestMovesComponent({
               <Table.Tr>
                 <Table.Td>
                   <Text ta="center" my="lg">
-                    No analysis available
+                    {t("Board.Analysis.NoAnalysisAvailable")}
                   </Text>
                 </Table.Td>
               </Table.Tr>
@@ -279,15 +285,23 @@ function BestMovesComponent({
               !error &&
               !engineVariations &&
               (settings.enabled ? (
-                [...Array(settings.settings.find((s) => s.name === "MultiPV")?.value ?? 1)].map(
-                  (_, i) => (
-                    <Table.Tr key={i}>
-                      <Table.Td>
-                        <Skeleton height={35} radius="xl" p={5} />
-                      </Table.Td>
-                    </Table.Tr>
+                [
+                  ...Array(
+                    Number(
+                      (
+                        settings.settings.find(
+                          (s) => s.name === "MultiPV" && s.type === "string",
+                        ) as { value: string } | undefined
+                      )?.value ?? 1,
+                    ),
                   ),
-                )
+                ].map((_, i) => (
+                  <Table.Tr key={i}>
+                    <Table.Td>
+                      <Skeleton height={35} radius="xl" p={5} />
+                    </Table.Td>
+                  </Table.Tr>
+                ))
               ) : (
                 <Table.Tr>
                   <Table.Td>
@@ -367,7 +381,7 @@ function EngineTop({
           <>
             <Stack align="center" gap={0}>
               <Text size="0.7rem" tt="uppercase" fw={700} className={classes.subtitle}>
-                Eval
+                {t("Board.Analysis.Evaluation")}
               </Text>
               <Text fw="bold" fz="md">
                 {formatScore(engineVariations[0].score.value, 1) ?? 0}
@@ -375,7 +389,7 @@ function EngineTop({
             </Stack>
             <Stack align="center" gap={0}>
               <Text size="0.7rem" tt="uppercase" fw={700} className={classes.subtitle}>
-                Depth
+                {t("GoMode.Depth")}
               </Text>
               <Text fw="bold" fz="md">
                 {depth}
@@ -383,7 +397,7 @@ function EngineTop({
             </Stack>
             <Stack align="center" gap={0}>
               <Text size="0.7rem" tt="uppercase" fw={700} className={classes.subtitle}>
-                Nodes
+                {t("GoMode.Nodes")}
               </Text>
               <Text fw="bold" fz="md">
                 {nodes}

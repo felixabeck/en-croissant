@@ -163,7 +163,7 @@ function RepertoireInfo() {
         }
       },
     );
-  }, [referenceDb, minGames, orientation, dirty, root, startStateMoves]);
+  }, [referenceDb, minGames, orientation, dirty, root, startPath, startStateMoves, store]);
 
   const nodeToPath = useMemo(() => {
     const map = new Map<TreeNode, number[]>();
@@ -825,7 +825,15 @@ function MoveRow({
           <Text fz="sm" c="dimmed" w={70} ta="center">
             {move.games > 0 ? move.games.toLocaleString() : "—"}
           </Text>
-          <Tooltip label={`${wPct}% / ${dPct}% / ${bPct}%`} position="top" withArrow>
+          <Tooltip
+            label={t("Board.Practice.ResultDistribution", {
+              white: wPct,
+              draw: dPct,
+              black: bPct,
+            })}
+            position="top"
+            withArrow
+          >
             <Progress.Root size="xl" w={100}>
               <Progress.Section value={wPct} color="white">
                 {wPct > 20 && <Progress.Label c="black">{wPct}</Progress.Label>}
@@ -843,7 +851,7 @@ function MoveRow({
               {dimmed || move.games < minGames ? (
                 <Tooltip label={t("Board.Practice.Build.RareTooltip")} withArrow>
                   <Text fz="xs" c="dimmed" ta="center">
-                    N/A
+                    {t("Common.NotAvailable")}
                   </Text>
                 </Tooltip>
               ) : (

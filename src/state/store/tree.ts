@@ -1,12 +1,12 @@
 import type { DrawShape } from "@lichess-org/chessground/draw";
 import { isNormal, type Move, parseUci } from "chessops";
-import { INITIAL_FEN, makeFen } from "chessops/fen";
+import { makeFen } from "chessops/fen";
 import { makeSan, parseSan } from "chessops/san";
 import { type Draft, produce } from "immer";
-import { createStore, type StateCreator } from "zustand";
+import { createStore, type StateCreator, type StoreApi } from "zustand";
 import { persist } from "zustand/middleware";
 import type { BestMoves, Outcome, Score } from "@/bindings";
-import { createDebouncedSessionStorage } from "./debouncedStorage";
+import { tabStorage } from "./tabStorage";
 import { ANNOTATION_INFO, type Annotation } from "@/utils/annotation";
 import { getPGN } from "@/utils/chess";
 import { parseSanOrUci, positionFromFen } from "@/utils/chessops";
@@ -92,7 +92,7 @@ export interface TreeStoreState extends TreeState {
     save: () => void;
 }
 
-export type TreeStore = ReturnType<typeof createTreeStore>;
+export type TreeStore = StoreApi<TreeStoreState> & { dispose: () => void };
 
 // Defined as an outer function to avoid bloating git diff.
 const withTranspositionMaps =
@@ -556,12 +556,12 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
     });
 
     if (id) {
-        return createStore<TreeStoreState>()(
+        const store = createStore<TreeStoreState>()(
             persist(withTranspositionMaps(stateCreator), {
                 name: id,
-                storage: createDebouncedSessionStorage<TreeStoreState>(),
+                storage: tabStorage.storageFor<TreeStoreState>(),
                 partialize: (state) => {
-                    const { boardStateMap, ...rest } = state;
+                    const { boardStateMap: _boardStateMap, ...rest } = state;
                     return rest as TreeStoreState;
                 },
                 onRehydrateStorage: () => (state, error) => {
@@ -574,9 +574,17 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                 },
             }),
         );
+        return Object.assign(store, {
+            // Zustand vanilla stores have no destroy lifecycle; subscriptions belong to consumers.
+            dispose: () => undefined,
+        });
     }
 
-    return createStore<TreeStoreState>()(withTranspositionMaps(stateCreator));
+    const store = createStore<TreeStoreState>()(withTranspositionMaps(stateCreator));
+    return Object.assign(store, {
+        // Zustand vanilla stores have no destroy lifecycle; subscriptions belong to consumers.
+        dispose: () => undefined,
+    });
 };
 
 function makeMove({
@@ -666,7 +674,7 @@ function isThreeFoldRepetition(state: TreeState, fen: string): boolean {
     const targetState = getBoardState(fen);
     let matchCount = 0;
 
-    if (getBoardState(INITIAL_FEN) === targetState) {
+    if (getBoardState(state.root.fen) === targetState) {
         matchCount++;
     }
 
@@ -675,11 +683,11 @@ function isThreeFoldRepetition(state: TreeState, fen: string): boolean {
         node = node.children[i];
         if (getBoardState(node.fen) === targetState) {
             matchCount++;
-            if (matchCount >= 2) return true;
         }
     }
 
-    return false;
+    // `fen` is the candidate about to be appended, so it is the final occurrence.
+    return matchCount + 1 >= 3;
 }
 
 function is50MoveRule(fen: string) {
@@ -724,18 +732,11 @@ function setShapes(state: TreeState, shapes: DrawShape[]) {
     const node = getNodeAtPath(state.root, state.position);
     if (!node) return state;
 
-    const [shape] = shapes;
-    if (shape) {
-        const index = node.shapes.findIndex((s) => s.orig === shape.orig && s.dest === shape.dest);
-
-        if (index !== -1) {
-            node.shapes.splice(index, 1);
-        } else {
-            node.shapes.push(shape);
-        }
-    } else {
-        node.shapes = [];
-    }
+    // Chessground reports the complete user drawing state, not a delta. Keeping it as
+    // such preserves multiple arrows and square markers through any rerender/save cycle.
+    node.shapes = shapes.map((shape) =>
+        shape.modifiers ? { ...shape, modifiers: { ...shape.modifiers } } : { ...shape },
+    );
 
     return state;
 }

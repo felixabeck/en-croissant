@@ -1,4 +1,4 @@
-import { ActionIcon, Stack, Tooltip } from "@mantine/core";
+import { Stack } from "@mantine/core";
 import {
   IconArrowBack,
   IconCamera,
@@ -10,15 +10,14 @@ import {
   IconTarget,
   IconZoomCheck,
 } from "@tabler/icons-react";
-import { useLoaderData } from "@tanstack/react-router";
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeFile } from "@tauri-apps/plugin-fs";
+import { tauri } from "@/platform/tauri";
 import domtoimage from "dom-to-image";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { memo, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
+import IconAction from "@/components/common/IconAction";
 import {
   autoSaveAtom,
   currentGameStateAtom,
@@ -34,6 +33,7 @@ interface BoardControlsProps {
   saveFile?: () => void;
   canTakeBack?: boolean;
   onTakeBack?: () => void;
+  takeBackPending?: boolean;
   disableVariations?: boolean;
   allowEditing?: boolean;
 }
@@ -45,12 +45,11 @@ function BoardControls({
   saveFile,
   canTakeBack,
   onTakeBack,
+  takeBackPending,
   disableVariations,
   allowEditing,
 }: BoardControlsProps) {
   const { t } = useTranslation();
-  const { documentDir } = useLoaderData({ from: "/" });
-
   const store = useContext(TreeStateContext)!;
   const headers = useStore(store, (s) => s.headers);
   const root = useStore(store, (s) => s.root);
@@ -90,87 +89,71 @@ function BoardControls({
     domtoimage.toBlob(snapshotTarget).then(async (blob) => {
       if (blob == null) return;
 
-      const filePath = await save({
-        title: "Save board snapshot",
-        defaultPath: documentDir,
-        filters: [
-          {
-            name: "PNG Image",
-            extensions: ["png"],
-          },
-        ],
-      });
       const arrayBuffer = await blob.arrayBuffer();
-      if (filePath == null) return;
-      await writeFile(filePath, new Uint8Array(arrayBuffer));
+      await tauri.saveBoardSnapshot(Array.from(new Uint8Array(arrayBuffer)));
     });
   };
 
   return (
     <Stack gap={4} align="center">
-      <Tooltip position="right" label={t("Board.Action.TakeSnapshot")}>
-        <ActionIcon onClick={() => takeSnapshot()}>
-          <IconCamera size="1.2rem" />
-        </ActionIcon>
-      </Tooltip>
+      <IconAction label={t("Board.Action.TakeSnapshot")} onClick={() => takeSnapshot()}>
+        <IconCamera size="1.2rem" />
+      </IconAction>
       {canTakeBack && onTakeBack && (
-        <Tooltip label="Take Back" position="right">
-          <ActionIcon onClick={() => onTakeBack()}>
-            <IconArrowBack />
-          </ActionIcon>
-        </Tooltip>
+        <IconAction
+          label={t("Board.Action.TakeBack", { defaultValue: "Take back" })}
+          onClick={() => onTakeBack()}
+          pending={takeBackPending}
+        >
+          <IconArrowBack />
+        </IconAction>
       )}
-      <Tooltip
-        position="right"
+      <IconAction
         label={t(
           currentTab?.type === "analysis"
             ? "Board.Action.PlayFromHere"
             : "Board.Action.AnalyzeGame",
         )}
+        onClick={changeTabType}
       >
-        <ActionIcon onClick={changeTabType}>
-          {currentTab?.type === "analysis" ? (
-            <IconTarget size="1.2rem" />
-          ) : (
-            <IconZoomCheck size="1.2rem" />
-          )}
-        </ActionIcon>
-      </Tooltip>
+        {currentTab?.type === "analysis" ? (
+          <IconTarget size="1.2rem" />
+        ) : (
+          <IconZoomCheck size="1.2rem" />
+        )}
+      </IconAction>
       {!eraseDrawablesOnClick && (
-        <Tooltip position="right" label={t("Board.Action.ClearDrawings")}>
-          <ActionIcon onClick={() => clearShapes()}>
-            <IconEraser size="1.2rem" />
-          </ActionIcon>
-        </Tooltip>
+        <IconAction label={t("Board.Action.ClearDrawings")} onClick={() => clearShapes()}>
+          <IconEraser size="1.2rem" />
+        </IconAction>
       )}
       {(!disableVariations || allowEditing) && (
-        <Tooltip position="right" label={t("Board.Action.EditPosition")}>
-          <ActionIcon onClick={() => toggleEditingMode()}>
-            {editingMode ? <IconEditOff size="1.2rem" /> : <IconEdit size="1.2rem" />}
-          </ActionIcon>
-        </Tooltip>
+        <IconAction
+          label={t("Board.Action.EditPosition")}
+          onClick={() => toggleEditingMode()}
+          pressed={editingMode}
+        >
+          {editingMode ? <IconEditOff size="1.2rem" /> : <IconEdit size="1.2rem" />}
+        </IconAction>
       )}
 
       {saveFile && (
-        <Tooltip position="right" label={t("Board.Action.SavePGN", { key: keyMap.SAVE_FILE.keys })}>
-          <ActionIcon
-            onClick={() => saveFile()}
-            variant={dirty && !autoSave ? "default" : "transparent"}
-          >
-            <IconDeviceFloppy size="1.2rem" />
-          </ActionIcon>
-        </Tooltip>
+        <IconAction
+          label={t("Board.Action.SavePGN", { key: keyMap.SAVE_FILE.keys })}
+          onClick={() => saveFile()}
+          variant={dirty && !autoSave ? "default" : "transparent"}
+        >
+          <IconDeviceFloppy size="1.2rem" />
+        </IconAction>
       )}
-      <Tooltip
-        position="right"
+      <IconAction
         label={t("Board.Action.FlipBoard", {
           key: keyMap.SWAP_ORIENTATION.keys,
         })}
+        onClick={() => toggleOrientation()}
       >
-        <ActionIcon onClick={() => toggleOrientation()}>
-          <IconSwitchVertical size="1.2rem" />
-        </ActionIcon>
-      </Tooltip>
+        <IconSwitchVertical size="1.2rem" />
+      </IconAction>
     </Stack>
   );
 }

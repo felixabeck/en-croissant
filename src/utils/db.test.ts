@@ -1,0 +1,108 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { DatabaseHandle } from "@/bindings";
+import {
+    databaseHandleFromKey,
+    databaseHandleKey,
+    getDefaultDatabases,
+    getDefaultPuzzleDatabases,
+    sameDatabaseHandle,
+    type ManagedDatabaseInfo,
+} from "./db";
+
+afterEach(() => vi.unstubAllGlobals());
+
+const handle = (id: string): DatabaseHandle => ({ id: { id }, kind: "database" });
+
+const database = (id: string, filename = `${id}.db3`): ManagedDatabaseInfo => ({
+    type: "success",
+    file: handle(id),
+    filename,
+    title: filename,
+    description: "",
+    player_count: 0,
+    event_count: 0,
+    game_count: 0,
+    storage_size: BigInt(0),
+    indexed: false,
+});
+
+describe("database capability UI mapping", () => {
+    it("projects a handle to a stable widget key without treating it as a path", () => {
+        expect(databaseHandleKey(handle("database-opaque-id"))).toBe("database-opaque-id");
+    });
+
+    it("restores a select key only from the current native database descriptors", () => {
+        const databases = [database("first"), database("second")];
+        expect(databaseHandleFromKey(databases, "second")).toEqual(handle("second"));
+        expect(databaseHandleFromKey(databases, "revoked")).toBeNull();
+    });
+
+    it("compares separately deserialized handles by opaque identity", () => {
+        expect(sameDatabaseHandle(handle("same"), handle("same"))).toBe(true);
+        expect(sameDatabaseHandle(handle("first"), handle("second"))).toBe(false);
+        expect(sameDatabaseHandle(handle("first"), null)).toBe(false);
+    });
+});
+
+const puzzleManifestEntry = {
+    title: "Lichess puzzles",
+    description: "A curated puzzle database",
+    puzzleCount: 1_000,
+    storageSize: 2_048,
+    downloadLink: "https://www.encroissant.org/puzzles/lichess.db3",
+    sha256: "a".repeat(64),
+    signature: "untrusted comment: test signature",
+};
+
+function mockPuzzleManifest(body: unknown) {
+    vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 })),
+    );
+}
+
+describe("default puzzle database manifest", () => {
+    it("accepts a complete downloadable puzzle database", async () => {
+        mockPuzzleManifest([puzzleManifestEntry]);
+
+        await expect(getDefaultPuzzleDatabases()).resolves.toEqual([puzzleManifestEntry]);
+    });
+
+    it("rejects malformed artifact integrity metadata", async () => {
+        mockPuzzleManifest([{ ...puzzleManifestEntry, sha256: "not-a-sha256" }]);
+
+        await expect(getDefaultPuzzleDatabases()).rejects.toMatchObject({ kind: "schema" });
+    });
+
+    it("rejects a manifest entry without a signature", async () => {
+        const { signature: _signature, ...entryWithoutSignature } = puzzleManifestEntry;
+        mockPuzzleManifest([entryWithoutSignature]);
+
+        await expect(getDefaultPuzzleDatabases()).rejects.toMatchObject({ kind: "schema" });
+    });
+});
+
+describe("default game database manifest", () => {
+    const entry = {
+        title: "Example database",
+        game_count: 42,
+        player_count: 12,
+        storage_size: 4_096,
+        downloadLink: "https://db.encroissant.org/example.db3",
+        sha256: "b".repeat(64),
+        signature: "untrusted comment: test signature",
+    };
+
+    it("accepts the remote fields used by the installer and defaults the description", async () => {
+        mockPuzzleManifest([entry]);
+
+        await expect(getDefaultDatabases()).resolves.toEqual([{ ...entry, description: "" }]);
+    });
+
+    it("rejects an unsigned database entry", async () => {
+        const { signature: _signature, ...unsigned } = entry;
+        mockPuzzleManifest([unsigned]);
+
+        await expect(getDefaultDatabases()).rejects.toMatchObject({ kind: "schema" });
+    });
+});

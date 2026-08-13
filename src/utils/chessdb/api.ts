@@ -1,7 +1,8 @@
-import { fetch } from "@tauri-apps/plugin-http";
 import { parseUci } from "chessops";
 import { makeFen } from "chessops/fen";
+import { z } from "zod";
 import type { BestMoves, EngineOptions, GoMode, ScoreValue } from "@/bindings";
+import { remoteHttp } from "@/platform/http";
 import { positionFromFen } from "../chessops";
 
 const endpoint = "https://www.chessdb.cn/cdb.php";
@@ -28,6 +29,26 @@ type ChessDBData = {
     winrate?: string;
 };
 
+const chessDbMoveSchema = z.object({
+    uci: z.string(),
+    san: z.string(),
+    score: z.number(),
+    rank: z.number(),
+    note: z.string(),
+    winrate: z.string().optional(),
+});
+const allResponseSchema: z.ZodType<AllResponse> = z.object({
+    status: z.string(),
+    moves: z.array(chessDbMoveSchema),
+});
+const bestResponseSchema: z.ZodType<BestResponse> = z.object({
+    status: z.string(),
+    depth: z.number(),
+    score: z.number(),
+    pv: z.array(z.string()),
+    pvSAN: z.array(z.string()),
+});
+
 export async function getBestMoves(
     _tab: string,
     _goMode: GoMode,
@@ -51,15 +72,19 @@ export async function getBestMoves(
             .slice(
                 0,
                 Number.parseInt(
-                    options.extraOptions.find((o) => o.name === "MultiPV")?.value ?? "1",
+                    (
+                        options.extraOptions.find(
+                            (o) => o.name === "MultiPV" && o.type === "string",
+                        ) as { value: string } | undefined
+                    )?.value ?? "1",
                 ),
             )
             .map((m, i) => ({
                 score: { value: chessDBevalToScore(m.score), wdl: null },
-                nodes: 0,
+                nodes: 0n,
                 depth: m.depth ?? 0,
                 multipv: i + 1,
-                nps: 0,
+                nps: 0n,
                 sanMoves: m.san,
                 uciMoves: m.uci,
             })),
@@ -111,7 +136,7 @@ async function queryPosition(fen: string) {
     url.searchParams.append("action", "queryall");
     url.searchParams.append("json", "1");
     url.searchParams.append("board", fen);
-    const res = (await (await fetch(url.toString())).json()) as AllResponse;
+    const res = await remoteHttp.get(url.toString(), { schema: allResponseSchema });
 
     if (res.status !== "ok") {
         return [];
@@ -141,7 +166,7 @@ async function queryBest(fen: string) {
     url.searchParams.append("json", "1");
     url.searchParams.append("stable", "1");
     url.searchParams.append("board", fen);
-    const res = (await (await fetch(url.toString())).json()) as BestResponse;
+    const res = await remoteHttp.get(url.toString(), { schema: bestResponseSchema });
 
     if (res.status !== "ok") {
         return null;

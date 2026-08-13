@@ -1,7 +1,9 @@
-import { Anchor, Modal, Text } from "@mantine/core";
-import { getTauriVersion, getVersion } from "@tauri-apps/api/app";
-import { arch, version as OSVersion, type } from "@tauri-apps/plugin-os";
+import { Anchor, Text } from "@mantine/core";
+import AppModal from "./common/AppModal";
+import { getTauriVersion, getVersion } from "@/platform/native";
+import { arch, osType, OSVersion } from "@/platform/native";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 function AboutModal({
   opened,
@@ -10,6 +12,7 @@ function AboutModal({
   opened: boolean;
   setOpened: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
+  const { t } = useTranslation();
   const [info, setInfo] = useState<{
     version: string;
     tauri: string;
@@ -20,7 +23,7 @@ function AboutModal({
 
   useEffect(() => {
     async function load() {
-      const os = await type();
+      const os = await osType();
       const version = await getVersion();
       const tauri = await getTauriVersion();
       const architecture = await arch();
@@ -30,11 +33,15 @@ function AboutModal({
     load();
   }, []);
   return (
-    <Modal centered opened={opened} onClose={() => setOpened(false)} title="En Croissant">
-      <Text>Version: {info?.version}</Text>
-      <Text>Tauri version: {info?.tauri}</Text>
+    <AppModal centered opened={opened} onClose={() => setOpened(false)} title="En Croissant">
       <Text>
-        OS: {info?.os} {info?.architecture} {info?.osVersion}
+        {t("Common.Version")}: {info?.version}
+      </Text>
+      <Text>
+        {t("About.TauriVersion")}: {info?.tauri}
+      </Text>
+      <Text>
+        {t("About.OperatingSystem")}: {info?.os} {info?.architecture} {info?.osVersion}
       </Text>
 
       <br />
@@ -42,7 +49,7 @@ function AboutModal({
       <Anchor href="https://www.encroissant.org" target="_blank" rel="noreferrer">
         www.encroissant.org
       </Anchor>
-    </Modal>
+    </AppModal>
   );
 }
 

@@ -1,11 +1,9 @@
 import type { MantineColor } from "@mantine/core";
-import { resolve } from "@tauri-apps/api/path";
-import { exists, mkdir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import equal from "fast-deep-equal";
 import { atom, type PrimitiveAtom } from "jotai";
-import { atomFamily, atomWithStorage, createJSONStorage, unwrap } from "jotai/utils";
+import { atomFamily, atomWithStorage, unwrap } from "jotai/utils";
 import type { AtomFamily } from "jotai/vanilla/utils/atomFamily";
 import type {
     AsyncStorage,
@@ -14,7 +12,14 @@ import type {
 } from "jotai/vanilla/utils/atomWithStorage";
 import type { ReviewLog } from "ts-fsrs";
 import { z } from "zod";
-import type { BestMoves, GoMode } from "@/bindings";
+import type {
+    BestMoves,
+    DatabaseHandle,
+    FileWorkspaceHandle,
+    GoMode,
+    OpeningBookHandle,
+    PathRef,
+} from "@/bindings";
 import { DEFAULT_TIME_CONTROL, type OpponentSettings } from "@/components/boards/OpponentForm";
 import { type Position, positionSchema } from "@/components/files/opening";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
@@ -28,10 +33,17 @@ import {
     masterOptionsSchema,
 } from "@/utils/lichess/explorer";
 import { getWinChance, normalizeScore } from "@/utils/score";
-import { genID, type Tab, tabSchema } from "@/utils/tabs";
-import { getEnginesDir } from "../utils/directories";
-import type { Session } from "../utils/session";
-import { createAsyncZodStorage, createZodStorage } from "./utils";
+import { type Tab } from "./workspaceTypes";
+import {
+    fileWorkspaceHandleSchema,
+    databaseHandleSchema,
+    fileWorkspaceKey,
+    pathRefSchema,
+} from "../utils/pathCapabilities";
+import { sessionsSchema, type Session } from "../utils/session";
+import { createAsyncZodStorage, createPreferenceStorage, createZodStorage } from "./utils";
+import { createWorkspaceStorage, defaultWorkspace, type Workspace } from "./workspace";
+import { tabStorage } from "./store/tabStorage";
 
 const zodArray = <Input, Output>(itemSchema: z.ZodType<Output, z.ZodTypeDef, Input>) => {
     const catchValue = {} as never;
@@ -46,26 +58,51 @@ const zodArray = <Input, Output>(itemSchema: z.ZodType<Output, z.ZodTypeDef, Inp
 
 // Tabs
 
-const firstTab: Tab = {
-    name: "Tab.NewTab",
-    value: genID(),
-    type: "new",
-    gameOrigin: {
-        kind: "none",
+const workspaceAtom = atomWithStorage<Workspace>(
+    "workspace",
+    defaultWorkspace(),
+    createWorkspaceStorage(sessionStorage),
+    { getOnInit: true },
+);
+
+export const tabsAtom = atom(
+    (get) => get(workspaceAtom).tabs,
+    (get, set, update: Tab[] | ((tabs: Tab[]) => Tab[])) => {
+        const workspace = get(workspaceAtom);
+        const tabs = typeof update === "function" ? update(workspace.tabs) : update;
+        const activeTab = tabs.some((tab) => tab.value === workspace.activeTab)
+            ? workspace.activeTab
+            : (tabs[0]?.value ?? null);
+        set(workspaceAtom, { ...workspace, tabs, activeTab });
     },
-};
-
-export const tabsAtom = atomWithStorage<Tab[]>(
-    "tabs",
-    [firstTab],
-    createZodStorage(z.array(tabSchema), sessionStorage),
 );
 
-export const activeTabAtom = atomWithStorage<string | null>(
-    "activeTab",
-    firstTab.value,
-    createJSONStorage(() => sessionStorage),
+export const activeTabAtom = atom(
+    (get) => get(workspaceAtom).activeTab,
+    (get, set, update: string | null | ((activeTab: string | null) => string | null)) => {
+        const workspace = get(workspaceAtom);
+        const activeTab = typeof update === "function" ? update(workspace.activeTab) : update;
+        set(workspaceAtom, {
+            ...workspace,
+            activeTab: workspace.tabs.some((tab) => tab.value === activeTab) ? activeTab : null,
+        });
+    },
 );
+
+/** Removes tab metadata and all tab-local persistence as one synchronous lifecycle operation. */
+export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
+    const workspace = get(workspaceAtom);
+    const index = workspace.tabs.findIndex((tab) => tab.value === tabId);
+    if (index === -1) return;
+    const tabs = workspace.tabs.filter((tab) => tab.value !== tabId);
+    const activeTab =
+        workspace.activeTab !== tabId
+            ? workspace.activeTab
+            : (tabs[index]?.value ?? tabs[index - 1]?.value ?? null);
+    tabStorage.remove(tabId);
+    disposeTabAtoms(tabId);
+    set(workspaceAtom, { ...workspace, tabs, activeTab });
+});
 
 export const expandedDirectoriesAtom = atomWithStorage<string[]>(
     "expanded-directories",
@@ -95,60 +132,28 @@ export const currentTabAtom = atom(
 );
 
 // Directories
-export const storedDocumentDirAtom = atomWithStorage<string>("document-dir", "", undefined, {
-    getOnInit: true,
-});
-export const storedDatabasesDirAtom = atomWithStorage<string>("databases-dir", "", undefined, {
-    getOnInit: true,
-});
-export const storedEnginesDirAtom = atomWithStorage<string>("engines-dir", "", undefined, {
-    getOnInit: true,
-});
-export const storedPuzzlesDirAtom = atomWithStorage<string>("puzzles-dir", "", undefined, {
-    getOnInit: true,
-});
-
-async function ensureParentDir(path: string): Promise<void> {
-    const separator = path.includes("\\") ? "\\" : "/";
-    const lastSeparator = path.lastIndexOf(separator);
-    if (lastSeparator === -1) return;
-
-    const parentDir = path.slice(0, lastSeparator);
-    if (!parentDir) return;
-
-    if (!(await exists(parentDir))) {
-        await mkdir(parentDir, { recursive: true });
-    }
-}
-
-async function getEnginesStoragePath(key: string): Promise<string> {
-    const enginesDir = await getEnginesDir();
-    const filename = key.replace(/^engines[\\/]/, "");
-    return resolve(enginesDir, filename);
-}
-
-const enginesFileStorage: AsyncStringStorage = {
-    async getItem(key) {
-        try {
-            return await readTextFile(await getEnginesStoragePath(key));
-        } catch {
-            return null;
-        }
-    },
-    async setItem(key, newValue) {
-        const path = await getEnginesStoragePath(key);
-        await ensureParentDir(path);
-        await writeTextFile(path, newValue);
-    },
-    async removeItem(key) {
-        const path = await getEnginesStoragePath(key);
-        try {
-            await writeTextFile(path, "[]");
-        } catch {
-            // no-op
-        }
-    },
-};
+// Legacy builds stored a renderer-visible document directory. It is deliberately
+// scrubbed instead of migrated: only the native-issued opaque workspace survives.
+if (typeof localStorage !== "undefined") localStorage.removeItem("document-dir");
+// A native-issued, DownloadFile-only path capability.  Unlike the legacy directory settings it
+// is opaque and never serializes a physical filesystem location into renderer storage.
+export const downloadDestinationAtom = atomWithStorage<PathRef | null>(
+    "download-destination-capability",
+    null,
+    createZodStorage(pathRefSchema.nullable(), localStorage),
+    { getOnInit: true },
+);
+export const fileWorkspaceAtom = atomWithStorage<FileWorkspaceHandle | null>(
+    "file-workspace",
+    null,
+    createZodStorage(fileWorkspaceHandleSchema.nullable(), localStorage),
+);
+/** Display metadata only; authority remains exclusively in fileWorkspaceAtom. */
+export const fileWorkspaceDisplayNameAtom = atomWithStorage<string>(
+    "file-workspace-display-name",
+    "",
+    createZodStorage(z.string().max(256), localStorage),
+);
 
 const enginesSchema = zodArray(engineSchema).transform((engines) => {
     const ids = new Set<string>();
@@ -162,131 +167,270 @@ const enginesSchema = zodArray(engineSchema).transform((engines) => {
     });
 });
 
+// Engine metadata contains only opaque native handles and display data. Keeping the async
+// adapter preserves the existing atom update contract without granting a renderer directory.
+const enginesStorage: AsyncStringStorage = {
+    async getItem(key) {
+        return localStorage.getItem(key);
+    },
+    async setItem(key, value) {
+        localStorage.setItem(key, value);
+    },
+    async removeItem(key) {
+        localStorage.removeItem(key);
+    },
+};
+
 export const enginesAtom = unwrap(
     atomWithStorage<Engine[]>(
-        "engines/engines.json",
+        "engines",
         [],
-        createAsyncZodStorage(enginesSchema, enginesFileStorage) as AsyncStorage<Engine[]>,
+        createAsyncZodStorage(enginesSchema, enginesStorage) as AsyncStorage<Engine[]>,
     ),
 );
 
 // Settings
 
-export const tableViewAtom = atomWithStorage<boolean>("table-view", false);
+export const tableViewAtom = atomWithStorage<boolean>(
+    "table-view",
+    false,
+    createPreferenceStorage(false),
+);
 
 export const fontSizeAtom = atomWithStorage(
     "font-size",
     Number.parseInt(document.documentElement.style.fontSize) || 100,
+    createPreferenceStorage(Number.parseInt(document.documentElement.style.fontSize) || 100),
 );
 
-export const moveNotationTypeAtom = atomWithStorage<"letters" | "symbols">("letters", "symbols");
-export const moveMethodAtom = atomWithStorage<"drag" | "select" | "both">("move-method", "both");
-export const spellCheckAtom = atomWithStorage<boolean>("spell-check", false);
-export const moveInputAtom = atomWithStorage<boolean>("move-input", false);
-export const showDestsAtom = atomWithStorage<boolean>("show-dests", true);
-export const moveHighlightAtom = atomWithStorage<boolean>("move-highlight", true);
-export const snapArrowsAtom = atomWithStorage<boolean>("snap-dests", true);
-export const showArrowsAtom = atomWithStorage<boolean>("show-arrows", true);
-export const showConsecutiveArrowsAtom = atomWithStorage<boolean>("show-consecutive-arrows", false);
-export const showVariationArrowsAtom = atomWithStorage<boolean>("show-variation-arrows", false);
+export const moveNotationTypeAtom = atomWithStorage<"letters" | "symbols">(
+    "letters",
+    "symbols",
+    createZodStorage(z.enum(["letters", "symbols"]), localStorage),
+);
+export const moveMethodAtom = atomWithStorage<"drag" | "select" | "both">(
+    "move-method",
+    "both",
+    createZodStorage(z.enum(["drag", "select", "both"]), localStorage),
+);
+export const spellCheckAtom = atomWithStorage<boolean>(
+    "spell-check",
+    false,
+    createPreferenceStorage(false),
+);
+export const moveInputAtom = atomWithStorage<boolean>(
+    "move-input",
+    false,
+    createPreferenceStorage(false),
+);
+export const showDestsAtom = atomWithStorage<boolean>(
+    "show-dests",
+    true,
+    createPreferenceStorage(true),
+);
+export const moveHighlightAtom = atomWithStorage<boolean>(
+    "move-highlight",
+    true,
+    createPreferenceStorage(true),
+);
+export const snapArrowsAtom = atomWithStorage<boolean>(
+    "snap-dests",
+    true,
+    createPreferenceStorage(true),
+);
+export const showArrowsAtom = atomWithStorage<boolean>(
+    "show-arrows",
+    true,
+    createPreferenceStorage(true),
+);
+export const showConsecutiveArrowsAtom = atomWithStorage<boolean>(
+    "show-consecutive-arrows",
+    false,
+    createPreferenceStorage(false),
+);
+export const showVariationArrowsAtom = atomWithStorage<boolean>(
+    "show-variation-arrows",
+    false,
+    createPreferenceStorage(false),
+);
 export const eraseDrawablesOnClickAtom = atomWithStorage<boolean>(
     "erase-drawables-on-click",
     false,
+    createPreferenceStorage(false),
 );
-export const autoPromoteAtom = atomWithStorage<boolean>("auto-promote", true);
-export const autoSaveAtom = atomWithStorage<boolean>("auto-save", true);
-export const previewBoardOnHoverAtom = atomWithStorage<boolean>("preview-board-on-hover", true);
-export const flipBoardAfterMoveAtom = atomWithStorage<boolean>("flip-board-after-move", true);
-export const enableBoardScrollAtom = atomWithStorage<boolean>("board-scroll", true);
-export const materialDisplayAtom = atomWithStorage<"diff" | "all">("material-display", "diff");
-export const forcedEnPassantAtom = atomWithStorage<boolean>("forced-ep", false);
+export const autoPromoteAtom = atomWithStorage<boolean>(
+    "auto-promote",
+    true,
+    createPreferenceStorage(true),
+);
+export const autoSaveAtom = atomWithStorage<boolean>(
+    "auto-save",
+    true,
+    createPreferenceStorage(true),
+);
+export const previewBoardOnHoverAtom = atomWithStorage<boolean>(
+    "preview-board-on-hover",
+    true,
+    createPreferenceStorage(true),
+);
+export const flipBoardAfterMoveAtom = atomWithStorage<boolean>(
+    "flip-board-after-move",
+    true,
+    createPreferenceStorage(true),
+);
+export const enableBoardScrollAtom = atomWithStorage<boolean>(
+    "board-scroll",
+    true,
+    createPreferenceStorage(true),
+);
+export const materialDisplayAtom = atomWithStorage<"diff" | "all">(
+    "material-display",
+    "diff",
+    createZodStorage(z.enum(["diff", "all"]), localStorage),
+);
+export const forcedEnPassantAtom = atomWithStorage<boolean>(
+    "forced-ep",
+    false,
+    createPreferenceStorage(false),
+);
 export const showCoordinatesAtom = atomWithStorage<"no" | "edge" | "all">(
     "show-coordinates-v2",
     "no",
-    undefined,
+    createZodStorage(z.enum(["no", "edge", "all"]), localStorage),
     { getOnInit: true },
 );
 export const soundCollectionAtom = atomWithStorage<string>(
     "sound-collection",
     "standard",
-    undefined,
+    createPreferenceStorage("standard"),
     {
         getOnInit: true,
     },
 );
 
-export const soundVolumeAtom = atomWithStorage<number>("sound-volume", 0.8, undefined, {
-    getOnInit: true,
-});
+export const soundVolumeAtom = atomWithStorage<number>(
+    "sound-volume",
+    0.8,
+    createPreferenceStorage(0.8),
+    {
+        getOnInit: true,
+    },
+);
 
-export const pieceSetAtom = atomWithStorage<string>("piece-set", "staunty");
-export const boardImageAtom = atomWithStorage<string>("board-image", "gray.svg");
-export const primaryColorAtom = atomWithStorage<MantineColor>("mantine-primary-color", "blue");
-export const sessionsAtom = atomWithStorage<Session[]>("sessions", []);
-export const nativeBarAtom = atomWithStorage<boolean>("native-bar", false);
-export const telemetryEnabledAtom = atomWithStorage<boolean>("telemetry-enabled", true, undefined, {
-    getOnInit: true,
-});
+export const pieceSetAtom = atomWithStorage<string>(
+    "piece-set",
+    "staunty",
+    createPreferenceStorage("staunty"),
+);
+export const boardImageAtom = atomWithStorage<string>(
+    "board-image",
+    "gray.svg",
+    createPreferenceStorage("gray.svg"),
+);
+export const primaryColorAtom = atomWithStorage<MantineColor>(
+    "mantine-primary-color",
+    "blue",
+    createPreferenceStorage<MantineColor>("blue"),
+);
+export const sessionsAtom = atomWithStorage<Session[]>(
+    "sessions",
+    [],
+    createZodStorage(sessionsSchema, localStorage),
+);
+export const nativeBarAtom = atomWithStorage<boolean>(
+    "native-bar",
+    false,
+    createPreferenceStorage(false),
+);
+export const telemetryEnabledAtom = atomWithStorage<boolean>(
+    "telemetry-enabled",
+    false,
+    createPreferenceStorage(false),
+    {
+        getOnInit: true,
+    },
+);
 
 // Recent Files
 
 export type RecentFile = {
     name: string;
-    path: string;
+    handle: FileWorkspaceHandle;
     type: "game" | "repertoire" | "tournament" | "puzzle" | "other";
     lastOpened: number;
 };
 
 const MAX_RECENT_FILES = 10;
 
-export const recentFilesAtom = atomWithStorage<RecentFile[]>("recent-files", []);
+const recentFileSchema = z.object({
+    name: z.string(),
+    handle: fileWorkspaceHandleSchema,
+    type: z.enum(["game", "repertoire", "tournament", "puzzle", "other"]),
+    lastOpened: z.number(),
+});
+
+export const recentFilesAtom = atomWithStorage<RecentFile[]>(
+    "recent-files",
+    [],
+    createZodStorage(z.array(recentFileSchema), localStorage),
+);
 
 export const addRecentFileAtom = atom(null, (get, set, file: Omit<RecentFile, "lastOpened">) => {
     const current = get(recentFilesAtom);
-    const filtered = current.filter((f) => f.path !== file.path);
+    const filtered = current.filter(
+        (f) => fileWorkspaceKey(f.handle) !== fileWorkspaceKey(file.handle),
+    );
     const updated = [{ ...file, lastOpened: Date.now() }, ...filtered].slice(0, MAX_RECENT_FILES);
     set(recentFilesAtom, updated);
 });
 
 // Database
 
-export const referenceDbAtom = atomWithStorage<string | null>("reference-database", null);
+export const referenceDbAtom = atomWithStorage<DatabaseHandle | null>(
+    "reference-database",
+    null,
+    createZodStorage(databaseHandleSchema.nullable(), localStorage),
+);
 
-export const selectedPuzzleDbAtom = atomWithStorage<string | null>("puzzle-db", null);
+export const selectedPuzzleDbAtom = atomWithStorage<PathRef | null>(
+    "puzzle-db",
+    null,
+    createZodStorage(pathRefSchema.nullable(), localStorage),
+);
+/** In-memory invalidation signal shared by Settings, the local picker, and Puzzle tabs. */
+export const puzzleWorkspaceGenerationAtom = atom(0);
 
 export type DatabaseConversionState = {
     inProgress: boolean;
     totalGames: number;
     elapsedSeconds: number;
-    targetDatabasePath: string | null;
+    targetDatabasePath: DatabaseHandle | null;
     targetDatabaseTitle: string | null;
     sourceFileName: string | null;
 };
 
-export const databaseConversionStateAtom = atomWithStorage<DatabaseConversionState>(
-    "database-conversion-state",
-    {
-        inProgress: false,
-        totalGames: 0,
-        elapsedSeconds: 0,
-        targetDatabasePath: null,
-        targetDatabaseTitle: null,
-        sourceFileName: null,
-    },
-    createJSONStorage(() => sessionStorage),
-);
+/** Backend jobs are reconciled by their native IDs at startup; never restore a stale snapshot. */
+export const databaseConversionStateAtom = atom<DatabaseConversionState>({
+    inProgress: false,
+    totalGames: 0,
+    elapsedSeconds: 0,
+    targetDatabasePath: null,
+    targetDatabaseTitle: null,
+    sourceFileName: null,
+});
 
-export const selectedDatabaseAtom = atomWithStorage<SuccessDatabaseInfo | null>(
-    "database-view",
-    null,
-    createJSONStorage(() => sessionStorage),
-);
+/** Database metadata is authoritative in native storage, not in renderer persistence. */
+export const selectedDatabaseAtom = atom<SuccessDatabaseInfo | null>(null);
 
 // Game Settings
 
 export type GameInputColor = "white" | "random" | "black";
 
-export const gameInputColorAtom = atomWithStorage<GameInputColor>("game-input-color", "white");
+export const gameInputColorAtom = atomWithStorage<GameInputColor>(
+    "game-input-color",
+    "white",
+    createZodStorage(z.enum(["white", "random", "black"]), localStorage),
+);
 
 const defaultPlayerSettings: OpponentSettings = {
     type: "human",
@@ -298,28 +442,43 @@ const defaultPlayerSettings: OpponentSettings = {
 export const gamePlayer1SettingsAtom = atomWithStorage<OpponentSettings>(
     "game-player1-settings",
     defaultPlayerSettings,
+    createPreferenceStorage<OpponentSettings>(defaultPlayerSettings),
 );
 
 export const gamePlayer2SettingsAtom = atomWithStorage<OpponentSettings>(
     "game-player2-settings",
     defaultPlayerSettings,
+    createPreferenceStorage<OpponentSettings>(defaultPlayerSettings),
 );
 
-export const gameSameTimeControlAtom = atomWithStorage<boolean>("game-same-time-control", true);
+export const gameSameTimeControlAtom = atomWithStorage<boolean>(
+    "game-same-time-control",
+    true,
+    createPreferenceStorage(true),
+);
 
-export const gameOpeningBookPathAtom = atomWithStorage<string | null>(
-    "game-opening-book-path",
+export const gameOpeningBookHandleAtom = atomWithStorage<OpeningBookHandle | null>(
+    "game-opening-book-handle",
     null,
+    createZodStorage(
+        z.object({ id: pathRefSchema, kind: z.literal("openingBook") }).nullable(),
+        localStorage,
+    ),
 );
 
 export const gameOpeningBookEnabledAtom = atomWithStorage<boolean>(
     "game-opening-book-enabled",
     false,
+    createPreferenceStorage(false),
 );
 
-export const gameOpeningBookMaxPlyAtom = atomWithStorage<number>("game-opening-book-max-ply", 40);
+export const gameOpeningBookMaxPlyAtom = atomWithStorage<number>(
+    "game-opening-book-max-ply",
+    40,
+    createPreferenceStorage(40),
+);
 
-function tabValue<T extends object | string | boolean | number | null | undefined>(
+function tabValue<T extends object | string | boolean | number | bigint | null | undefined>(
     family: AtomFamily<string, PrimitiveAtom<T>>,
 ) {
     return atom(
@@ -341,18 +500,43 @@ function tabValue<T extends object | string | boolean | number | null | undefine
 }
 
 // Puzzles
-export const hidePuzzleRatingAtom = atomWithStorage<boolean>("hide-puzzle-rating", false);
-export const progressivePuzzlesAtom = atomWithStorage<boolean>("progressive-puzzles", false);
-export const jumpToNextPuzzleAtom = atomWithStorage<boolean>("puzzle-jump-immediately", true);
-export const trackPuzzleTimeAtom = atomWithStorage<boolean>("track-puzzle-time", true);
+export const hidePuzzleRatingAtom = atomWithStorage<boolean>(
+    "hide-puzzle-rating",
+    false,
+    createPreferenceStorage(false),
+);
+export const progressivePuzzlesAtom = atomWithStorage<boolean>(
+    "progressive-puzzles",
+    false,
+    createPreferenceStorage(false),
+);
+export const jumpToNextPuzzleAtom = atomWithStorage<boolean>(
+    "puzzle-jump-immediately",
+    true,
+    createPreferenceStorage(true),
+);
+export const trackPuzzleTimeAtom = atomWithStorage<boolean>(
+    "track-puzzle-time",
+    true,
+    createPreferenceStorage(true),
+);
 export const puzzleRatingRangeAtom = atomWithStorage<[number, number]>(
     "puzzle-ratings",
     [1000, 1500],
+    createPreferenceStorage([1000, 1500]),
 );
 
-export const puzzleThemeAtom = atomWithStorage<string | null>("puzzle-theme", null);
+export const puzzleThemeAtom = atomWithStorage<string | null>(
+    "puzzle-theme",
+    null,
+    createZodStorage(z.string().nullable(), localStorage),
+);
 
-export const coverageMinGamesAtom = atomWithStorage<number>("coverage-min-games", 50);
+export const coverageMinGamesAtom = atomWithStorage<number>(
+    "coverage-min-games",
+    50,
+    createPreferenceStorage(50),
+);
 
 export const puzzleTimerFamily = atomFamily((_tab: string) => atom<number | null>(null));
 export const currentPuzzleTimerAtom = tabValue(puzzleTimerFamily);
@@ -440,7 +624,11 @@ export const currentPracticeTabAtom = tabValue(practiceTabFamily);
 const expandedEnginesFamily = atomFamily((_tab: string) => atom<string[] | undefined>(undefined));
 export const currentExpandedEnginesAtom = tabValue(expandedEnginesFamily);
 
-export const currentDetachedEngineAtom = atomWithStorage<string | null>("detached-engine", null);
+export const currentDetachedEngineAtom = atomWithStorage<string | null>(
+    "detached-engine",
+    null,
+    createZodStorage(z.string().nullable(), localStorage),
+);
 
 const pgnOptionsFamily = atomFamily((_tab: string) =>
     atom({
@@ -469,8 +657,10 @@ const playersFamily = atomFamily((_tab: string) =>
 );
 export const currentPlayersAtom = tabValue(playersFamily);
 
-const gameIdFamily = atomFamily((_tab: string) => atom<string | null>(null));
+export const gameIdFamily = atomFamily((_tab: string) => atom<string | null>(null));
 export const currentGameIdAtom = tabValue(gameIdFamily);
+export const gameSessionFamily = atomFamily((_tab: string) => atom<bigint | null>(null));
+export const currentGameSessionAtom = tabValue(gameSessionFamily);
 
 // Practice
 
@@ -524,6 +714,17 @@ export const practiceStateFamily = atomFamily((_tab: string) =>
 );
 export const practiceStateAtom = tabValue(practiceStateFamily);
 
+/** Runtime-only bridge between the practice controller and the board. */
+export type PracticeMoveController = {
+    canMove: boolean;
+    submitMove: (san: string) => void;
+};
+
+const practiceMoveControllerFamily = atomFamily((_tab: string) =>
+    atom<PracticeMoveController | null>(null),
+);
+export const practiceMoveControllerAtom = tabValue(practiceMoveControllerFamily);
+
 export type PracticeSessionStats = {
     mode: "anki" | "full";
     remainingPositions: number[];
@@ -545,9 +746,16 @@ const practiceSessionStatsFamily = atomFamily((_tab: string) =>
 );
 export const practiceSessionStatsAtom = tabValue(practiceSessionStatsFamily);
 
+/** Completed runs remain visible without keeping an inactive session alive. */
+const practiceCompletedSummaryFamily = atomFamily((_tab: string) =>
+    atom<PracticeSessionStats | null>(null),
+);
+export const practiceCompletedSummaryAtom = tabValue(practiceCompletedSummaryFamily);
+
 export const practiceAutoDifficultyAtom = atomWithStorage<"none" | "1" | "2" | "3" | "4">(
     "practice-auto-difficulty",
     "none",
+    createZodStorage(z.enum(["none", "1", "2", "3", "4"]), localStorage),
 );
 
 const practiceCardStartTimeFamily = atomFamily((_tab: string) => atom<number>(0));
@@ -705,3 +913,46 @@ export const enableAllAtom = atom(null, (get, set, value: boolean) => {
         set(atom, { ...get(atom), enabled: value });
     }
 });
+
+/** Remove every runtime atom whose identity is a closed tab, including per-engine entries. */
+export function disposeTabAtoms(tabId: string) {
+    for (const family of [
+        puzzleTimerFamily,
+        threatFamily,
+        evalOpenFamily,
+        evalBarDisplayFamily,
+        invisibleFamily,
+        showCommentsFamily,
+        showVariationsFamily,
+        tabFamily,
+        reportModalOpenFamily,
+        localOptionsFamily,
+        dbTypeFamily,
+        dbTabFamily,
+        analysisTabFamily,
+        practiceTabFamily,
+        expandedEnginesFamily,
+        pgnOptionsFamily,
+        currentPuzzleFamily,
+        gameStateFamily,
+        playersFamily,
+        gameIdFamily,
+        gameSessionFamily,
+        practiceStateFamily,
+        practiceMoveControllerFamily,
+        practiceSessionStatsFamily,
+        practiceCompletedSummaryFamily,
+        practiceCardStartTimeFamily,
+    ]) {
+        family.remove(tabId);
+    }
+
+    for (const family of [engineMovesFamily, engineProgressFamily]) {
+        for (const param of Array.from(family.getParams())) {
+            if (param.tab === tabId) family.remove(param);
+        }
+    }
+    for (const param of Array.from(tabEngineSettingsFamily.getParams())) {
+        if (param.tab === tabId) tabEngineSettingsFamily.remove(param);
+    }
+}

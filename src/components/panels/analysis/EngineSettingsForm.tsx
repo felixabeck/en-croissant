@@ -1,12 +1,4 @@
-import {
-  ActionIcon,
-  Checkbox,
-  Group,
-  type MantineColor,
-  Stack,
-  Text,
-  Tooltip,
-} from "@mantine/core";
+import { Checkbox, Group, type MantineColor, Stack, Text } from "@mantine/core";
 import { IconPlayerStopFilled, IconSettings } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue } from "jotai";
@@ -14,6 +6,7 @@ import { memo, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { GoMode } from "@/bindings";
 import GoModeInput from "@/components/common/GoModeInput";
+import { IconAction } from "@/components/common/IconAction";
 import { activeTabAtom, enginesAtom } from "@/state/atoms";
 import { type Engine, type EngineSettings, killEngine } from "@/utils/engines";
 import CoresSlider from "./CoresSlider";
@@ -75,13 +68,15 @@ function EngineSettingsForm({
             {t("Engines.Settings.NumOfLines")}
           </Text>
           <LinesSlider
-            value={Number(multipv.value || 1)}
+            value={Number(multipv.type === "string" ? multipv.value || 1 : 1)}
             setValue={(v) =>
               setSettings((prev) => {
                 return {
                   ...prev,
                   settings: prev.settings.map((o) =>
-                    o.name === "MultiPV" ? { ...o, value: v || 1 } : o,
+                    o.name === "MultiPV" && o.type === "string"
+                      ? { ...o, value: String(v || 1) }
+                      : o,
                   ),
                 };
               })
@@ -98,12 +93,14 @@ function EngineSettingsForm({
               {t("Engines.Settings.NumOfCores")}
             </Text>
             <CoresSlider
-              value={Number(threads.value || 1)}
+              value={Number(threads.type === "string" ? threads.value || 1 : 1)}
               setValue={(v) =>
                 setSettings((prev) => ({
                   ...prev,
                   settings: prev.settings.map((o) =>
-                    o.name === "Threads" ? { ...o, value: v || 1 } : o,
+                    o.name === "Threads" && o.type === "string"
+                      ? { ...o, value: String(v || 1) }
+                      : o,
                   ),
                 }))
               }
@@ -117,12 +114,14 @@ function EngineSettingsForm({
                 {t("Engines.Settings.SizeOfHash")}
               </Text>
               <HashSlider
-                value={Number(hash.value || 1)}
+                value={Number(hash.type === "string" ? hash.value || 1 : 1)}
                 setValue={(v) =>
                   setSettings((prev) => ({
                     ...prev,
                     settings: prev.settings.map((o) =>
-                      o.name === "Hash" ? { ...o, value: v || 1 } : o,
+                      o.name === "Hash" && o.type === "string"
+                        ? { ...o, value: String(v || 1) }
+                        : o,
                     ),
                   }))
                 }
@@ -135,25 +134,24 @@ function EngineSettingsForm({
       {!minimal && (
         <Group>
           <SyncSettings settings={settings} engine={engine.name} setSettings={setSettings} />
-          <ActionIcon.Group>
+          <Group gap={0}>
             {engine.type === "local" && (
-              <Tooltip label="Kill engine">
-                <ActionIcon
-                  variant="default"
-                  onClick={() => {
-                    killEngine(engine, activeTab!);
-                    setSettings((prev) => ({
-                      ...prev,
-                      enabled: false,
-                    }));
-                  }}
-                >
-                  <IconPlayerStopFilled size="1rem" />
-                </ActionIcon>
-              </Tooltip>
+              <IconAction
+                label={t("Board.Analysis.KillEngine")}
+                variant="default"
+                onClick={() => {
+                  killEngine(engine, activeTab!);
+                  setSettings((prev) => ({
+                    ...prev,
+                    enabled: false,
+                  }));
+                }}
+              >
+                <IconPlayerStopFilled size="1rem" />
+              </IconAction>
             )}
             <AdvancedSettings engineName={engine.name} />
-          </ActionIcon.Group>
+          </Group>
         </Group>
       )}
     </Stack>
@@ -207,21 +205,20 @@ function AdvancedSettings({ engineName }: { engineName: string }) {
   const engines = useAtomValue(enginesAtom);
 
   return (
-    <Tooltip label={t("Engines.Settings.AdvancedSettings")}>
-      <ActionIcon
-        variant="default"
-        onClick={() =>
-          navigate({
-            to: "/engines",
-            search: {
-              selected: (engines ?? []).findIndex((o) => o.name === engineName),
-            },
-          })
-        }
-      >
-        <IconSettings size="1rem" />
-      </ActionIcon>
-    </Tooltip>
+    <IconAction
+      label={t("Engines.Settings.AdvancedSettings")}
+      variant="default"
+      onClick={() =>
+        navigate({
+          to: "/engines",
+          search: {
+            selected: (engines ?? []).findIndex((o) => o.name === engineName),
+          },
+        })
+      }
+    >
+      <IconSettings size="1rem" />
+    </IconAction>
   );
 }
 

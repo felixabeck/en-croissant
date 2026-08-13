@@ -1,12 +1,14 @@
-import { Button, Checkbox, Group, Modal, NumberInput, Select, Stack } from "@mantine/core";
+import { Button, Checkbox, Group, NumberInput, Select, Stack } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { useAtom, useAtomValue } from "jotai";
 import { atomWithStorage } from "jotai/utils";
-import { memo, useContext, useEffect, useMemo } from "react";
+import { memo, useContext, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
-import { commands, type GoMode } from "@/bindings";
+import type { GoMode } from "@/bindings";
+import { tauri } from "@/platform/tauri";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
+import AppModal from "../../common/AppModal";
 import { enginesAtom, referenceDbAtom } from "@/state/atoms";
 import type { LocalEngine } from "@/utils/engines";
 
@@ -25,6 +27,8 @@ function ReportModal({
   reportingMode,
   closeReportingMode,
   setInProgress,
+  registerOperation,
+  isCurrentOperation,
 }: {
   tab: string;
   initialFen: string;
@@ -32,6 +36,8 @@ function ReportModal({
   reportingMode: boolean;
   closeReportingMode: () => void;
   setInProgress: (value: boolean) => void;
+  registerOperation: (id: string) => void;
+  isCurrentOperation: (id: string, fingerprint: string) => boolean;
 }) {
   const { t } = useTranslation();
 
@@ -45,6 +51,13 @@ function ReportModal({
   const addAnalysis = useStore(store, (s) => s.addAnalysis);
 
   const [reportSettings, setReportSettings] = useAtom(reportSettingsAtom);
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
 
   const form = useForm({
     initialValues: reportSettings,
@@ -67,22 +80,28 @@ function ReportModal({
           : reportSettings.engine;
 
     form.setValues({ ...reportSettings, engine });
-  }, [localEngines, reportSettings]);
+  }, [form, localEngines, reportSettings]);
 
   function analyze() {
     setReportSettings(form.values);
+    const rootFingerprint = `${initialFen}\u0000${moves.join("\u0000")}`;
+    const operationId = `report_${tab}_${crypto.randomUUID()}`;
+    registerOperation(operationId);
     setInProgress(true);
     closeReportingMode();
     const engine = localEngines.find((e) => e.id === form.values.engine);
-    const engineSettings = (engine?.settings ?? []).map((s) => ({
-      ...s,
-      value: s.value?.toString() ?? "",
-    }));
+    if (!engine) {
+      setInProgress(false);
+      return;
+    }
+    const engineSettings = (engine?.settings ?? []).map((s) =>
+      s.type === "resource" ? s : { ...s, value: s.value.toString() },
+    );
 
-    commands
+    tauri
       .analyzeGame(
-        `report_${tab}`,
-        engine?.path ?? "",
+        operationId,
+        engine.handle,
         form.values.goMode,
         {
           annotateNovelties: form.values.novelty,
@@ -94,17 +113,22 @@ function ReportModal({
         engineSettings,
       )
       .then((analysis) => {
-        if (analysis.status === "ok") {
-          addAnalysis(analysis.data, {
+        // The immutable root fingerprint prevents a late completion from
+        // applying to an edited/switched game even when a tab id is reused.
+        if (mounted.current && isCurrentOperation(operationId, rootFingerprint)) {
+          addAnalysis(analysis, {
             showVariations: form.values.variations,
           });
         }
       })
-      .finally(() => setInProgress(false));
+      .finally(() => {
+        if (mounted.current && isCurrentOperation(operationId, rootFingerprint))
+          setInProgress(false);
+      });
   }
 
   return (
-    <Modal
+    <AppModal
       opened={reportingMode}
       onClose={closeReportingMode}
       title={t("Board.Analysis.GenerateReport")}
@@ -115,7 +139,7 @@ function ReportModal({
             allowDeselect={false}
             withAsterisk
             label={t("Common.Engine")}
-            placeholder="Pick one"
+            placeholder={t("Common.PickValue")}
             data={
               localEngines.map((engine) => {
                 return {
@@ -180,7 +204,7 @@ function ReportModal({
           </Group>
         </Stack>
       </form>
-    </Modal>
+    </AppModal>
   );
 }
 

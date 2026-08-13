@@ -1,3 +1,4 @@
+import { tauri } from "@/platform/tauri";
 import {
   Alert,
   Group,
@@ -16,7 +17,7 @@ import { useTranslation } from "react-i18next";
 import useSWR from "swr/immutable";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
-import { commands } from "@/bindings";
+import { type DatabaseHandle } from "@/bindings";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import {
   currentDbTabAtom,
@@ -28,7 +29,13 @@ import {
   referenceDbAtom,
   sessionsAtom,
 } from "@/state/atoms";
-import { getDatabases, type Opening, searchPosition } from "@/utils/db";
+import {
+  databaseHandleFromKey,
+  databaseHandleKey,
+  getDatabases,
+  type Opening,
+  searchPosition,
+} from "@/utils/db";
 import { formatNumber } from "@/utils/format";
 import { convertToNormalized, getLichessGames, getMasterGames } from "@/utils/lichess/api";
 import type { LichessGamesOptions, MasterGamesOptions } from "@/utils/lichess/explorer";
@@ -46,17 +53,17 @@ type DBType =
       type: "lch_all";
       options: LichessGamesOptions;
       fen: string;
-      token: string;
+      handle: string;
     }
   | {
       type: "lch_master";
       options: MasterGamesOptions;
       fen: string;
-      token: string;
+      handle: string;
     };
 
 export type LocalOptions = {
-  path: string | null;
+  path: DatabaseHandle | null;
   fen: string;
   type: "exact" | "partial";
   player: number | null;
@@ -72,8 +79,8 @@ function sortOpenings(openings: Opening[]) {
 
 async function fetchOpening(db: DBType, tab: string) {
   return match(db)
-    .with({ type: "lch_all" }, async ({ fen, options, token }) => {
-      const data = await getLichessGames(fen, options, token);
+    .with({ type: "lch_all" }, async ({ fen, options, handle }) => {
+      const data = await getLichessGames(fen, options, handle);
       return {
         openings: data.moves.map((move) => ({
           move: move.san,
@@ -84,8 +91,8 @@ async function fetchOpening(db: DBType, tab: string) {
         games: await convertToNormalized(data.topGames || data.recentGames || []),
       };
     })
-    .with({ type: "lch_master" }, async ({ fen, options, token }) => {
-      const data = await getMasterGames(fen, options, token);
+    .with({ type: "lch_master" }, async ({ fen, options, handle }) => {
+      const data = await getMasterGames(fen, options, handle);
       return {
         openings: data.moves.map((move) => ({
           move: move.san,
@@ -119,15 +126,15 @@ function DatabasePanel() {
   const [masterOptions, setMasterOptions] = useAtom(masterOptionsAtom);
   const [localOptions, setLocalOptions] = useAtom(currentLocalOptionsAtom);
   const [db, setDb] = useAtom(currentDbTypeAtom);
-  const explorerToken = sessions.find((session) => session.lichess?.accessToken)?.lichess
-    ?.accessToken;
-  const missingExplorerToken = db !== "local" && !explorerToken;
+  const explorerHandle = sessions.find((session) => session.lichess?.handle)?.lichess?.handle;
+  const missingExplorerAuthentication = db !== "local" && !explorerHandle;
 
   const { data: databases } = useSWR(db === "local" ? "databases" : null, () => getDatabases());
 
   const dbSelectData = (databases ?? [])
     .filter((d) => d.type === "success")
-    .map((d) => ({ value: d.file, label: d.title || d.filename }));
+    .map((d) => ({ value: databaseHandleKey(d.file), label: d.title || d.filename }));
+  const selectedReferenceDatabase = referenceDatabase ? databaseHandleKey(referenceDatabase) : null;
 
   useEffect(() => {
     if (db === "local") {
@@ -150,13 +157,13 @@ function DatabasePanel() {
       type: v,
       options: lichessOptions,
       fen: debouncedFen,
-      token: explorerToken ?? "",
+      handle: explorerHandle ?? "",
     }))
     .with("lch_master", (v) => ({
       type: v,
       options: masterOptions,
       fen: debouncedFen,
-      token: explorerToken ?? "",
+      handle: explorerHandle ?? "",
     }))
     .exhaustive();
 
@@ -168,7 +175,7 @@ function DatabasePanel() {
     isLoading,
     error,
   } = useSWR(
-    tabType !== "options" && !missingExplorerToken ? dbType : null,
+    tabType !== "options" && !missingExplorerAuthentication ? dbType : null,
     async (dbType: DBType) => {
       return fetchOpening(dbType, tab?.value || "");
     },
@@ -196,10 +203,10 @@ function DatabasePanel() {
           {db === "local" && (
             <Select
               data={dbSelectData}
-              value={referenceDatabase}
+              value={selectedReferenceDatabase}
               onChange={async (value) => {
-                await commands.clearGames();
-                setReferenceDatabase(value);
+                await tauri.clearGames();
+                setReferenceDatabase(databaseHandleFromKey(databases ?? [], value));
               }}
               placeholder={t("Board.Database.SelectReference")}
               size="sm"
@@ -250,7 +257,7 @@ function DatabasePanel() {
           error={error}
           type={db}
           header={header}
-          missingExplorerToken={missingExplorerToken}
+          missingExplorerAuthentication={missingExplorerAuthentication}
         >
           <OpeningsTable openings={openingData?.openings || []} loading={isLoading} />
         </PanelWithError>
@@ -259,7 +266,7 @@ function DatabasePanel() {
           error={error}
           type={db}
           header={header}
-          missingExplorerToken={missingExplorerToken}
+          missingExplorerAuthentication={missingExplorerAuthentication}
         >
           <GamesTable
             games={openingData?.games || []}
@@ -272,7 +279,7 @@ function DatabasePanel() {
           error={error}
           type={db}
           header={header}
-          missingExplorerToken={missingExplorerToken}
+          missingExplorerAuthentication={missingExplorerAuthentication}
         >
           <ScrollArea flex={1} offsetScrollbars pt="sm">
             {match(db)
@@ -293,7 +300,7 @@ function PanelWithError(props: {
   type: string;
   header: React.ReactNode;
   children: React.ReactNode;
-  missingExplorerToken: boolean;
+  missingExplorerAuthentication: boolean;
 }) {
   const referenceDatabase = useAtomValue(referenceDbAtom);
   const { t } = useTranslation();
@@ -301,10 +308,11 @@ function PanelWithError(props: {
   if (props.type === "local" && !referenceDatabase) {
     children = <NoDatabaseWarning />;
   }
-  if (props.missingExplorerToken && props.type !== "local") {
+  if (props.missingExplorerAuthentication && props.type !== "local") {
     children = (
       <Alert color="yellow">
-        {t("Board.Database.ExplorerAuthRequired1")} <Link to="/accounts">Users</Link>{" "}
+        {t("Board.Database.ExplorerAuthRequired1")}{" "}
+        <Link to="/accounts">{t("Home.Accounts.Users")}</Link>{" "}
         {t("Board.Database.ExplorerAuthRequired2")}
       </Alert>
     );

@@ -4,7 +4,7 @@ import { Markdown } from "@tiptap/markdown";
 import { useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useAtomValue } from "jotai";
-import { useContext } from "react";
+import { useContext, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
@@ -42,6 +42,22 @@ function AnnotationEditor() {
     },
     [position.join(",")],
   );
+
+  const nodeIdentity = `${position.join(",")}:${currentNode.fen}`;
+  const lastExternal = useRef<{ identity: string; comment: string } | undefined>(undefined);
+  useEffect(() => {
+    if (!editor) return;
+    const comment = currentNode.comment || "";
+    const previous = lastExternal.current;
+    lastExternal.current = { identity: nodeIdentity, comment };
+    // Do not feed the editor's own update back into ProseMirror: that resets
+    // its selection on every keystroke.  A node switch or external mutation is
+    // the only time renderer content must be replaced.
+    if (previous?.identity === nodeIdentity && editor.getMarkdown() === comment) return;
+    if (editor.getMarkdown() !== comment) {
+      editor.commands.setContent(comment, { emitUpdate: false, contentType: "markdown" });
+    }
+  }, [currentNode.comment, editor, nodeIdentity]);
 
   return (
     <RichTextEditor

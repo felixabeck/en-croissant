@@ -1,4 +1,4 @@
-import { ActionIcon, Box, Menu, Portal, Text, Tooltip } from "@mantine/core";
+import { Box, Menu, Portal, Text } from "@mantine/core";
 import { useClickOutside } from "@mantine/hooks";
 import {
   IconArrowsJoin,
@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import Comment from "@/components/common/Comment";
+import IconAction from "@/components/common/IconAction";
 import { currentTabAtom } from "@/state/atoms";
 import type { Annotation } from "@/utils/annotation";
 import { hasMorePriority, stripClock } from "@/utils/chess";
@@ -190,11 +191,13 @@ function CompleteMoveCell({
           </Menu>
         )}
         {transpositions.length > 0 && (
-          <Tooltip label="Transposition">
-            <ActionIcon size="xs" onClick={() => goToMove(transpositions[0])}>
-              <IconArrowsJoin size="0.875rem" />
-            </ActionIcon>
-          </Tooltip>
+          <IconAction
+            label={t("Notation.Transposition", { defaultValue: "Transposition" })}
+            size="xs"
+            onClick={() => goToMove(transpositions[0])}
+          >
+            <IconArrowsJoin size="0.875rem" />
+          </IconAction>
         )}
       </Box>
       {showComments && !tableLayout && comment && <Comment comment={comment} />}

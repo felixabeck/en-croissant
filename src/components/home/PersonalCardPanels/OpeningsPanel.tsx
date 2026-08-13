@@ -1,17 +1,18 @@
+import { tauri } from "@/platform/tauri";
 import { Box, Divider, Group, ScrollArea, Stack, Text } from "@mantine/core";
 import { useNavigate } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Color } from "chessops";
 import { useAtom, useAtomValue } from "jotai";
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { PlayerGameInfo } from "@/bindings";
-import { commands, type GameOutcome } from "@/bindings";
+import { type GameOutcome } from "@/bindings";
 import { activeTabAtom, fontSizeAtom, tabsAtom } from "@/state/atoms";
 import { parsePGN } from "@/utils/chess";
 import { createTab } from "@/utils/tabs";
 import { getTimeControl } from "@/utils/timeControl";
 import { countMainPly, defaultTree } from "@/utils/treeReducer";
-import { unwrap } from "@/utils/unwrap";
 import classes from "./OpeningsPanel.module.css";
 import ResultsChart from "./ResultsChart";
 import TimeControlSelector from "./TimeControlSelector";
@@ -67,6 +68,7 @@ function OpeningsPanel({
   info: PlayerGameInfo;
   isDatabase?: boolean;
 }) {
+  const { t } = useTranslation();
   const [website, setWebsite] = useState<string | null>("All websites");
   const [account, setAccount] = useState<string | null>("All accounts");
   const [timeControl, setTimeControl] = useState<string | null>(null);
@@ -125,10 +127,10 @@ function OpeningsPanel({
 
       <Group grow pt="xl">
         <Text ta="center" fw="bold">
-          White
+          {t("Fen.White")}
         </Text>
         <Text ta="center" fw="bold">
-          Black
+          {t("Fen.Black")}
         </Text>
       </Group>
       <Divider mt="md" />
@@ -198,7 +200,7 @@ function OpeningDetail({
           lineClamp={2}
           className={classes.link}
           onClick={async () => {
-            const pgn = unwrap(await commands.getOpeningFromName(opening.name));
+            const pgn = await tauri.getOpeningFromName(opening.name);
             const headers = defaultTree().headers;
             const tree = await parsePGN(pgn);
             headers.orientation = color;

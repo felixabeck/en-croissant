@@ -1,13 +1,10 @@
+import { tauri } from "@/platform/tauri";
 import { Button, Input, NumberInput, Text, TextInput } from "@mantine/core";
 import type { UseFormReturnType } from "@mantine/form";
-import { open } from "@tauri-apps/plugin-dialog";
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { match } from "ts-pattern";
-import { commands, type UciOptionConfig } from "@/bindings";
+import { type UciOptionConfig } from "@/bindings";
 import { type LocalEngine, requiredEngineSettings } from "@/utils/engines";
-import { usePlatform } from "@/utils/files";
-import { unwrap } from "@/utils/unwrap";
 import FileInput from "../common/FileInput";
 
 export default function EngineForm({
@@ -16,24 +13,20 @@ export default function EngineForm({
   submitLabel,
 }: {
   onSubmit: (values: LocalEngine) => void;
-  form: UseFormReturnType<LocalEngine, (values: LocalEngine) => LocalEngine>;
+  form: UseFormReturnType<LocalEngine>;
   submitLabel: string;
 }) {
   const { t } = useTranslation();
 
-  const { os } = usePlatform();
   const config = useRef<{ name: string; options: UciOptionConfig[] } | null>(null);
   const settings = config.current?.options
     .filter((o) => requiredEngineSettings.includes(o.value.name))
     .filter((o) => o.type !== "button")
     .map((o) => ({
+      type: "string" as const,
       name: o.value.name,
-      value: o.value.default as string | number | boolean,
+      value: String(o.value.default ?? ""),
     }));
-
-  const filters = match(os)
-    .with("windows", () => [{ name: "Executable Files", extensions: ["exe"] }])
-    .otherwise(() => []);
 
   return (
     <form
@@ -44,16 +37,13 @@ export default function EngineForm({
       <FileInput
         label={t("Engines.Add.BinaryFile")}
         description={t("Engines.Add.BinaryFile.Desc")}
-        filename={form.values.path}
+        filename={form.values.filename}
         withAsterisk
         onClick={async () => {
-          const selected = await open({
-            multiple: false,
-            filters,
-          });
-          if (!selected) return;
-          config.current = unwrap(await commands.getEngineConfig(selected as string));
-          form.setFieldValue("path", selected as string);
+          const handle = await tauri.issueEngineBinary();
+          config.current = await tauri.getEngineConfig(handle);
+          form.setFieldValue("handle", handle);
+          form.setFieldValue("filename", config.current.name || "Engine");
           form.setFieldValue("name", config.current.name);
         }}
       />
@@ -66,7 +56,7 @@ export default function EngineForm({
       />
 
       <NumberInput
-        label="Elo"
+        label={t("Engines.Add.Elo")}
         placeholder={t("Engines.Add.Elo.Desc")}
         {...form.getInputProps("elo")}
       />
@@ -74,26 +64,18 @@ export default function EngineForm({
       <Input.Wrapper
         label={t("Engines.Add.ImageFile")}
         description={t("Engines.Add.ImageFile.Desc")}
-        {...form.getInputProps("image")}
       >
         <Input
           component="button"
           type="button"
-          // accept="application/octet-stream"
           onClick={async () => {
-            const selected = await open({
-              multiple: false,
-              filters: [
-                {
-                  name: "Image",
-                  extensions: ["png", "jpeg"],
-                },
-              ],
-            });
-            form.setFieldValue("image", selected as string);
+            const imageHandle = await tauri.issueEngineImage();
+            form.setFieldValue("imageHandle", imageHandle);
           }}
         >
-          <Text lineClamp={1}>{form.values.image}</Text>
+          <Text lineClamp={1} c={form.values.imageHandle ? undefined : "dimmed"}>
+            {form.values.imageHandle ? t("Engines.Add.ImageFile") : t("Common.Select")}
+          </Text>
         </Input>
       </Input.Wrapper>
 

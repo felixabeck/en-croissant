@@ -1,10 +1,11 @@
+import { tauri } from "@/platform/tauri";
 import type { DrawShape } from "@lichess-org/chessground/draw";
 import { type Color, type Move, makeSquare, makeUci, parseUci, type Role } from "chessops";
 import { type Chess, normalizeMove } from "chessops/chess";
 import { INITIAL_FEN, makeFen, parseFen } from "chessops/fen";
 import { isPawns, parseComment } from "chessops/pgn";
 import { makeSan, parseSan } from "chessops/san";
-import { commands, type Outcome, type Score, type Token } from "@/bindings";
+import { type Outcome, type Score, type Token } from "@/bindings";
 import { ANNOTATION_INFO, isBasicAnnotation, NAG_INFO } from "./annotation";
 import { parseSanOrUci, positionFromFen } from "./chessops";
 import { harmonicMean, isPrefix, mean } from "./misc";
@@ -16,7 +17,6 @@ import {
     type TreeNode,
     type TreeState,
 } from "./treeReducer";
-import { unwrap } from "./unwrap";
 
 export interface BestMoves {
     depth: number;
@@ -345,12 +345,7 @@ export async function getOpening(root: TreeNode, position: number[]): Promise<st
         fens.push(currentNode.fen);
     }
 
-    const res = await commands.getOpeningFromFens(fens);
-    if (res.status !== "error") {
-        return res.data;
-    }
-
-    return "";
+    return await tauri.getOpeningFromFens(fens);
 }
 
 function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves = 0): TreeState {
@@ -399,7 +394,7 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves = 0
                 root.shapes.push(...shapes);
             }
 
-            if (comment.clock) {
+            if (comment.clock !== undefined) {
                 root.clock = comment.clock;
             }
 
@@ -461,7 +456,7 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves = 0
 }
 
 export async function parsePGN(pgn: string, initialFen?: string): Promise<TreeState> {
-    const tokens = unwrap(await commands.lexPgn(pgn));
+    const tokens = await tauri.lexPgn(pgn);
 
     const headers = getPgnHeaders(tokens);
     const fen = initialFen?.trim() || headers.fen.trim();
@@ -474,8 +469,24 @@ export async function parsePGN(pgn: string, initialFen?: string): Promise<TreeSt
         pos?.turn === "black" ? 1 : 0,
     );
     tree.headers = headers;
-    tree.position = headers.start ?? [];
+    tree.position = parseStartHeader(headers.start, tree.root);
     return tree;
+}
+
+/**
+ * `Start` is user-controlled PGN metadata.  Keep it bounded and prove that it
+ * names an existing branch before it becomes renderer state.
+ */
+export function parseStartHeader(start: unknown, root: TreeNode): number[] {
+    if (!Array.isArray(start) || start.length > 512) return [];
+    let node = root;
+    const path: number[] = [];
+    for (const value of start) {
+        if (!Number.isSafeInteger(value) || value < 0 || value >= node.children.length) return [];
+        path.push(value);
+        node = node.children[value];
+    }
+    return path;
 }
 
 function getPgnHeaders(tokens: Token[]): GameHeaders {
@@ -528,13 +539,30 @@ function getPgnHeaders(tokens: Token[]): GameHeaders {
         date: Date ?? "",
         site: Site ?? "",
         event: Event ?? "",
-        start: JSON.parse(Start ?? "[]"),
+        start: parseRawStartHeader(Start),
         orientation: isValidOrientation(Orientation) ? Orientation : "white",
         time_control: TimeControl,
         variant: Variant,
         other: other,
     };
     return headers;
+}
+
+function parseRawStartHeader(value: string | undefined): number[] | undefined {
+    if (!value) return [];
+    try {
+        const parsed: unknown = JSON.parse(value);
+        if (
+            !Array.isArray(parsed) ||
+            parsed.length > 512 ||
+            !parsed.every((item) => Number.isSafeInteger(item) && item >= 0)
+        ) {
+            return [];
+        }
+        return parsed;
+    } catch {
+        return [];
+    }
 }
 
 type ColorMap<T> = {

@@ -1,9 +1,10 @@
-import { ActionIcon, Code, Divider, Group, Text, Tooltip } from "@mantine/core";
+import { tauri } from "@/platform/tauri";
+import { Code, Divider, Group, Text, Tooltip } from "@mantine/core";
 import { IconReload } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { useTranslation } from "react-i18next";
-import { commands } from "@/bindings";
 import { currentTabAtom } from "@/state/atoms";
+import { IconAction } from "@/components/common/IconAction";
 import { formatNumber } from "@/utils/format";
 import { getTabFile } from "@/utils/tabs";
 import { unwrap } from "@/utils/unwrap";
@@ -28,38 +29,37 @@ function FileInfo({
           })}
         </Text>
         <Group>
-          <Tooltip label={tabFile.path}>
-            <Code>{tabFile.path.split(/[\\/]/).pop()}</Code>
+          <Tooltip label={tabFile.name}>
+            <Code>{tabFile.name}</Code>
           </Tooltip>
 
-          <Tooltip label={t("Files.Reload")}>
-            <ActionIcon
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                commands.countPgnGames(tabFile.path).then((v) => {
-                  setCurrentTab((prev) => {
-                    if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
-                      return prev;
-                    }
-                    return {
-                      ...prev,
-                      gameOrigin: {
-                        ...prev.gameOrigin,
-                        file: {
-                          ...prev.gameOrigin.file,
-                          numGames: unwrap(v),
-                        },
+          <IconAction
+            label={t("Files.Reload")}
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              tauri.countPgnGames(tabFile.handle).then((v) => {
+                setCurrentTab((prev) => {
+                  if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
+                    return prev;
+                  }
+                  return {
+                    ...prev,
+                    gameOrigin: {
+                      ...prev.gameOrigin,
+                      file: {
+                        ...prev.gameOrigin.file,
+                        numGames: unwrap(v),
                       },
-                    };
-                  });
-                  setGames(new Map());
-                })
-              }
-            >
-              <IconReload size="1rem" />
-            </ActionIcon>
-          </Tooltip>
+                    },
+                  };
+                });
+                setGames(new Map());
+              })
+            }
+          >
+            <IconReload size="1rem" />
+          </IconAction>
         </Group>
       </Group>
       <Divider />

@@ -1,4 +1,3 @@
-"use no memo";
 import { AppShellSection, Stack, Tooltip } from "@mantine/core";
 import {
   type Icon,
@@ -27,6 +26,9 @@ function NavbarLink({ url, icon: Icon, label }: NavbarLinkProps) {
     <Tooltip label={label} position="right">
       <Link
         to={url}
+        preload="intent"
+        aria-label={label}
+        aria-current={match({ to: url, fuzzy: true }) !== false ? "page" : undefined}
         className={cx(classes.link, {
           [classes.active]: match({ to: url, fuzzy: true }) !== false,
         })}
@@ -38,22 +40,22 @@ function NavbarLink({ url, icon: Icon, label }: NavbarLinkProps) {
 }
 
 const linksdata = [
-  { icon: IconChess, label: "Board", url: "/" },
-  { icon: IconUser, label: "User", url: "/accounts" },
-  { icon: IconFiles, label: "Files", url: "/files" },
+  { icon: IconChess, labelKey: "SideBar.Board", url: "/" },
+  { icon: IconUser, labelKey: "SideBar.User", url: "/accounts" },
+  { icon: IconFiles, labelKey: "SideBar.Files", url: "/files" },
   {
     icon: IconDatabase,
-    label: "Databases",
+    labelKey: "SideBar.Databases",
     url: "/databases",
   },
-  { icon: IconCpu, label: "Engines", url: "/engines" },
+  { icon: IconCpu, labelKey: "SideBar.Engines", url: "/engines" },
 ];
 
 export function SideBar() {
   const { t } = useTranslation();
 
   const links = linksdata.map((link) => (
-    <NavbarLink {...link} label={t(`SideBar.${link.label}`)} key={link.label} />
+    <NavbarLink {...link} label={t(link.labelKey)} key={link.labelKey} />
   ));
 
   return (

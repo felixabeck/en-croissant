@@ -8,6 +8,7 @@ import { useAtom, useAtomValue } from "jotai";
 import { useContext, useState } from "react";
 import { useStore } from "zustand";
 import { Chessground } from "@/chessground/Chessground";
+import type { PathRef } from "@/bindings";
 import { jumpToNextPuzzleAtom, moveHighlightAtom, showCoordinatesAtom } from "@/state/atoms";
 import classes from "@/styles/Chessboard.module.css";
 import { positionFromFen } from "@/utils/chessops";
@@ -26,8 +27,8 @@ function PuzzleBoard({
   puzzles: Puzzle[];
   currentPuzzle: number;
   changeCompletion: (completion: Completion) => Promise<void>;
-  generatePuzzle: (db: string) => Promise<void>;
-  db: string | null;
+  generatePuzzle: (db: PathRef) => Promise<void>;
+  db: PathRef | null;
 }) {
   const store = useContext(TreeStateContext)!;
   const root = useStore(store, (s) => s.root);

@@ -1,3 +1,4 @@
+import { tauri, tauriSubscriptions } from "@/platform/tauri";
 import {
   Center,
   Loader,
@@ -11,16 +12,15 @@ import {
 } from "@mantine/core";
 import { IconDatabaseOff } from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import type { DatabaseInfo as PlainDatabaseInfo, PlayerGameInfo } from "@/bindings";
-import { commands, events } from "@/bindings";
 import { sessionsAtom } from "@/state/atoms";
+import { useTauriListener } from "@/platform/useTauriListener";
 import { activeDatabaseViewStore } from "@/state/store/database";
 import { getDatabases, query_players } from "@/utils/db";
 import type { Session } from "@/utils/session";
-import { unwrap } from "@/utils/unwrap";
 import { DatabaseViewStateContext } from "../databases/DatabaseViewStateContext";
 import PersonalPlayerCard from "./PersonalCard";
 
@@ -95,7 +95,7 @@ function Databases() {
       const results = await Promise.allSettled(
         databases
           .filter((db) => playerDbs.includes((db.type === "success" && db.title) || ""))
-          .map(async (db, i) => {
+          .map(async (db) => {
             const players = await query_players(db.file, {
               name: db.username,
               options: {
@@ -109,7 +109,7 @@ function Databases() {
               throw new Error("Player not found in database");
             }
             const player = players.data[0];
-            const info = unwrap(await commands.getPlayersGameInfo(db.file, player.id));
+            const info = await tauri.getPlayersGameInfo(db.file, player.id);
             return { db, info };
           }),
       );
@@ -120,15 +120,12 @@ function Databases() {
   );
 
   const [progress, setProgress] = useState(0);
-  useEffect(() => {
-    const unlisten = events.databaseProgress.listen((e) => {
-      setProgress(e.payload.progress);
-    });
-
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, []);
+  const subscribeDatabaseProgress = useCallback(
+    (listener: Parameters<typeof tauriSubscriptions.databaseProgress>[0]) =>
+      tauriSubscriptions.databaseProgress(listener),
+    [],
+  );
+  useTauriListener(subscribeDatabaseProgress, (e) => setProgress(e.payload.progress));
 
   return (
     <>

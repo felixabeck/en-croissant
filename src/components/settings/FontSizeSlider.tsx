@@ -1,9 +1,11 @@
 import { Slider } from "@mantine/core";
 import { useAtom } from "jotai";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { fontSizeAtom } from "@/state/atoms";
 
 export default function FontSizeSlider() {
+  const { t } = useTranslation();
   const [fontSize, setFontSize] = useAtom(fontSizeAtom);
   const [tempFontSize, setTempFontSize] = useState(fontSize);
 
@@ -13,6 +15,7 @@ export default function FontSizeSlider() {
 
   return (
     <Slider
+      thumbLabel={t("Settings.Appearance.FontSize")}
       min={50}
       max={200}
       step={10}

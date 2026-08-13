@@ -2,8 +2,10 @@ import { CheckIcon, ColorSwatch, Group, Input, useMantineTheme } from "@mantine/
 import { useColorScheme } from "@mantine/hooks";
 import { useAtom } from "jotai";
 import { primaryColorAtom } from "@/state/atoms";
+import { useTranslation } from "react-i18next";
 
 export default function ColorControl() {
+  const { t } = useTranslation();
   const [primaryColor, setPrimaryColor] = useAtom(primaryColorAtom);
   const theme = useMantineTheme();
   const colorScheme = useColorScheme();
@@ -13,6 +15,11 @@ export default function ColorControl() {
       color={colorScheme === "dark" ? theme.colors[color][7] : theme.colors[color][5]}
       component="button"
       key={color}
+      role="radio"
+      aria-label={t("Settings.Appearance.AccentColor.Value", {
+        color: t(`Settings.Appearance.AccentColor.${color}`),
+      })}
+      aria-checked={primaryColor === color}
       onClick={() => setPrimaryColor(color)}
       radius="sm"
       style={{
@@ -29,8 +36,10 @@ export default function ColorControl() {
   ));
 
   return (
-    <Input.Wrapper labelElement="div">
-      <Group gap={2}>{colors}</Group>
+    <Input.Wrapper label={t("Settings.Appearance.AccentColor")}>
+      <Group gap={2} role="radiogroup" aria-label={t("Settings.Appearance.AccentColor")}>
+        {colors}
+      </Group>
     </Input.Wrapper>
   );
 }

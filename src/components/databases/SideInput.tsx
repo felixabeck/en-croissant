@@ -1,31 +1,41 @@
 import { Box, Menu, UnstyledButton } from "@mantine/core";
-import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Sides } from "@/utils/db";
 import classes from "./SideInput.module.css";
 
-const data = [
-  { label: "White", color: "white" },
-  { label: "Black", color: "black" },
-  { label: "Any", color: "gray" },
-];
-
 export function SideInput({
-  label,
+  role,
   sides,
   setSides,
 }: {
-  label: string;
+  role: "player" | "opponent";
   sides: Sides;
   setSides: (val: Sides) => void;
 }) {
-  const [selected, setSelected] = useState(
-    (sides === "WhiteBlack" && label === "Player") ||
-      (sides === "BlackWhite" && label === "Opponent")
+  const { t } = useTranslation();
+  const data = [
+    { label: t("Fen.White"), color: "white" },
+    { label: t("Fen.Black"), color: "black" },
+    { label: t("Board.Database.Local.Result.Any"), color: "gray" },
+  ];
+  const selected =
+    (sides === "WhiteBlack" && role === "player") || (sides === "BlackWhite" && role === "opponent")
       ? data[0]
       : sides === "Any"
         ? data[2]
-        : data[1],
-  );
+        : data[1];
+  const setSelected = (item: (typeof data)[number]) => {
+    if (
+      (item.color === "white" && role === "player") ||
+      (item.color === "black" && role === "opponent")
+    ) {
+      setSides("WhiteBlack");
+    } else if (item.color === "gray") {
+      setSides("Any");
+    } else {
+      setSides("BlackWhite");
+    }
+  };
   const items = data.map((item) => (
     <Menu.Item
       leftSection={
@@ -45,30 +55,6 @@ export function SideInput({
       {item.label}
     </Menu.Item>
   ));
-
-  useEffect(() => {
-    if (
-      (selected.label === "White" && label === "Player") ||
-      (selected.label === "Black" && label === "Opponent")
-    ) {
-      setSides("WhiteBlack");
-    } else if (selected.label === "Any") {
-      setSides("Any");
-    } else {
-      setSides("BlackWhite");
-    }
-  }, [selected]);
-
-  useEffect(() => {
-    const newSelected =
-      (sides === "WhiteBlack" && label === "Player") ||
-      (sides === "BlackWhite" && label === "Opponent")
-        ? data[0]
-        : sides === "Any"
-          ? data[2]
-          : data[1];
-    setSelected(newSelected);
-  }, [sides]);
 
   return (
     <Menu>
