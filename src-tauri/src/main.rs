@@ -1266,6 +1266,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ];
 
+    // Hoisted so the credential store can be constructed with the bundle identifier below; the
+    // `--config` merge that `pnpm dev` applies is already resolved in here.
+    let context = tauri::generate_context!();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -1281,11 +1285,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_os::init())
         .setup(move |app| {
             log::info!("Setting up application");
+            // A debug build that carries the release identifier writes the installed release's
+            // databases, engines and keyring entries.  `pnpm dev` merges tauri.dev.conf.json to
+            // prevent that; `pnpm tauri dev` and a bare `cargo run` do not, and nothing else in the
+            // process would say so.
+            if cfg!(debug_assertions) && !app.config().identifier.ends_with(".dev") {
+                log::warn!(
+                    "development build running under the release identifier {} — it reads and \
+                     writes the installed release's data. Start it with `pnpm dev`.",
+                    app.config().identifier
+                );
+            }
             let credentials_dir = app.path().app_data_dir()?.join("credentials");
             app.state::<AppState>()
                 .credentials
-                .initialize(&credentials_dir, &app.config().identifier)
-                .map_err(|_| "native credential storage could not be initialized")?;
+                .initialize(&credentials_dir)
+                .map_err(|error| {
+                    log::error!("native credential storage could not be initialized: {error}");
+                    "native credential storage could not be initialized"
+                })?;
             let authority_registry = app.path().app_config_dir()?.join("path-authority.json");
             let authority =
                 crate::infra::path_authority::PathAuthority::open(authority_registry, vec![])
@@ -1336,8 +1354,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             Ok(())
         })
-        .manage(AppState::default())
-        .build(tauri::generate_context!())?
+        .manage(AppState {
+            // The OS credential manager is shared by every build on the machine, so the store is
+            // constructed with the running bundle identifier.  Injecting it here rather than
+            // binding it later keeps "a store without a namespace" out of the running application.
+            credentials: Arc::new(crate::credentials::CredentialManager::new(Arc::new(
+                crate::credentials::OsCredentialStore::new(&context.config().identifier),
+            ))),
+            ..Default::default()
+        })
+        .build(context)?
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 // Actor shutdown is owned by EngineSupervisor.  Game sessions

@@ -41,12 +41,22 @@ The following steps will get you setup to contribute changes to this repo:
 
 - Starts the app in development mode to see changes in real time
 - Merges `src-tauri/tauri.dev.conf.json`, which overrides the bundle identifier to
-  `org.encroissant.app.dev`. Every path Tauri derives from the identifier — the database directory,
-  engines, engine images, credentials, logs, web storage — therefore points at
-  `org.encroissant.app.dev` instead of the installed release's data. Development cannot corrupt a
-  real database, and a dev build may run alongside an installed release without two processes
-  writing the same SQLite files. Seed the dev directory by copying what you need out of the release
-  directory.
+  `org.encroissant.app.dev`. Everything Tauri derives from the identifier moves with it: the app
+  data directory (`db/`, `engines/`, `engine-images/`, `credentials/`, `puzzles/`), the config
+  directory (`path-authority.json`), the log directory, the OS keyring service name, and — on Linux
+  and Windows — the webview's storage. On Linux that means
+  `~/.local/share/org.encroissant.app.dev` and `~/.config/org.encroissant.app.dev` instead of the
+  installed release's `~/.local/share/org.encroissant.app`. A dev build may therefore run alongside
+  an installed release without two processes writing the same SQLite files.
+- **Only `pnpm dev` is isolated.** `pnpm tauri dev`, `cargo tauri dev` and a bare `cargo run` do not
+  merge the config, so they run under the release identifier and write the installed release's data.
+  A debug build that starts under a non-`.dev` identifier logs a warning saying so.
+- Two things the identifier does not cover: a database folder chosen explicitly in the app's
+  settings is honoured as given, and the updater still points at the production endpoint.
+- Seed the dev directory by copying out of the release directory, for example
+  `cp -r ~/.local/share/org.encroissant.app/{engines,images} ~/.local/share/org.encroissant.app.dev/`.
+  Keyring secrets do not follow a file copy: a copied `lichess-accounts.json` lists accounts whose
+  tokens live under the release's keyring service, and the first dev launch prunes them.
 
 `pnpm test`
 
