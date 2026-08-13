@@ -21,7 +21,7 @@ jobs:
           version: 10
 
       - name: Sync node version and setup cache
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: "lts/*"
           cache: "pnpm"
@@ -29,8 +29,118 @@ jobs:
       - name: Install app dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
       - name: Run linter
         run: pnpm lint:ci
 
-      - name: Run tests
-        run: pnpm test
+      - name: Verify generated bindings
+        run: pnpm bindings:check
+
+      - name: Test coverage report parser
+        run: pnpm coverage:report:test
+
+      - name: Test bundle budget parser
+        run: pnpm bundle:report:test
+
+      - name: Run frontend tests and coverage
+        run: pnpm test:coverage
+
+      - name: Enforce frontend coverage ratchet
+        run: pnpm coverage:frontend:check
+
+      - name: Build frontend
+        run: pnpm build-vite
+
+      - name: Enforce frontend bundle budgets
+        run: pnpm bundle:check
+
+      - name: Install browser used by the UI contract tests
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run browser accessibility and visual contracts
+        run: pnpm test:e2e
+
+      - name: Upload browser audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-browser-audit
+          path: artifacts/frontend-audit/
+          if-no-files-found: error
+
+      - name: Upload frontend coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: coverage/
+          if-no-files-found: error
+
+      - name: Run targeted frontend mutation tests
+        run: pnpm mutation:frontend
+
+      - name: Upload frontend mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-mutation
+          path: artifacts/mutation/frontend/
+          if-no-files-found: error
+
+      - name: Install pinned Rust coverage tool
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+
+      - name: Install pinned Rust mutation tool
+        run: cargo install cargo-mutants --version 27.1.0 --locked
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Check and lint all Rust targets
+        run: |
+          cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+
+      - name: Install pinned Rust coverage toolchain
+        run: rustup toolchain install nightly-2025-06-01 --profile minimal --component llvm-tools-preview
+
+      - name: Run Rust tests with coverage
+        run: pnpm test:coverage:backend
+
+      - name: Enforce backend coverage ratchet
+        run: pnpm coverage:backend:check
+
+      - name: Upload backend coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend-coverage/
+          if-no-files-found: error
+
+      - name: Run targeted backend mutation tests
+        run: pnpm mutation:backend
+
+      - name: Upload backend mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-mutation
+          path: mutants.out/
+          if-no-files-found: error

@@ -8,12 +8,27 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+.stryker-tmp/
+mutants.out/
+mutants.out.old/
+artifacts/
+playwright-report/
+test-results/
 coverage
+backend-coverage
 dist
 dist-ssr
 *.local
 .next
 tsconfig.tsbuildinfo
+
+# Build-Temp im Repo-Wurzelverzeichnis. Beide sind zurzeit leer und deshalb fuer
+# git unsichtbar (git kennt keine leeren Verzeichnisse) — sobald sie Inhalt
+# bekommen, waeren sie untracked. /target/ zusaetzlich als Fangnetz: ein cargo
+# aus der Repo-Wurzel statt aus src-tauri/ legt dort ein zweites Zielverzeichnis
+# an, das src-tauri/.gitignore nicht abdeckt.
+/target/
+/.tanstack/
 
 # Editor directories and files
 .vscode/*

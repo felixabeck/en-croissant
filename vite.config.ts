@@ -36,9 +36,15 @@ export default defineConfig({
         },
     },
     build: {
+        manifest: true,
         minify: isDebug ? false : "esbuild",
         sourcemap: isDebug ? "inline" : false,
-        target: process.env.TAURI_ENV_PLATFORM == "windows" ? "chrome105" : "safari13",
+        // Generated IPC bindings use bigint for Rust u64 values. ES2020 is the
+        // minimum honest output contract for every supported WebView.
+        target: "es2020",
+        // The checked-in gzip graph budgets are the release gate; Vite's raw
+        // per-file heuristic neither accounts for caching nor compressed transfer.
+        chunkSizeWarningLimit: 1_300,
     },
     resolve: {
         alias: {
@@ -47,6 +53,26 @@ export default defineConfig({
     },
     test: {
         environment: "jsdom",
+        include: ["src/**/*.{test,spec}.{ts,tsx}", "scripts/**/*.test.mjs"],
+        exclude: ["**/node_modules/**", ".stryker-tmp/**", "e2e/**"],
+        minWorkers: 1,
+        maxWorkers: 4,
+        coverage: {
+            provider: "v8",
+            reporter: ["text", "json-summary", "lcov"],
+            all: true,
+            include: ["src/**/*.ts", "src/**/*.tsx"],
+            exclude: [
+                "src/**/*.test.ts",
+                "src/**/*.test.tsx",
+                "src/**/*.spec.ts",
+                "src/**/*.spec.tsx",
+                "src/**/tests/**",
+                "src/bindings/generated.ts",
+                "src/routeTree.gen.ts",
+                "src/vite-env.d.ts",
+            ],
+        },
     },
     define: {
         "import.meta.env.VITE_PLATFORM": JSON.stringify(os.platform()),
