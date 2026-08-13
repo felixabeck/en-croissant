@@ -1080,7 +1080,9 @@ mod tests {
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
             crate::credentials::MemoryCredentialStore::default(),
         )));
-        credentials.initialize(temp.path()).unwrap();
+        credentials
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         let account = migrate_legacy_token_internal(
             "user".into(),
             "legacy-token".into(),
@@ -1104,7 +1106,9 @@ mod tests {
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
             crate::credentials::MemoryCredentialStore::default(),
         )));
-        credentials.initialize(temp.path()).unwrap();
+        credentials
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         assert!(migrate_legacy_token_internal(
             "different".into(),
             "legacy-token".into(),
@@ -1122,7 +1126,9 @@ mod tests {
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
             crate::credentials::MemoryCredentialStore::default(),
         )));
-        credentials.initialize(temp.path()).unwrap();
+        credentials
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         let account = credentials
             .store_lichess_token("user".into(), "token".into())
             .unwrap();

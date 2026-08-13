@@ -1284,7 +1284,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let credentials_dir = app.path().app_data_dir()?.join("credentials");
             app.state::<AppState>()
                 .credentials
-                .initialize(&credentials_dir)
+                .initialize(&credentials_dir, &app.config().identifier)
                 .map_err(|_| "native credential storage could not be initialized")?;
             let authority_registry = app.path().app_config_dir()?.join("path-authority.json");
             let authority =

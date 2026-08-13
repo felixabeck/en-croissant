@@ -16,10 +16,9 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
-const KEYRING_SERVICE: &str = "org.encroissant.app.lichess";
 const REGISTRY_FILE: &str = "lichess-accounts.json";
 const REGISTRY_VERSION: u8 = 2;
 
@@ -72,23 +71,48 @@ struct RegistryFile {
 }
 
 pub trait CredentialStore: Send + Sync + 'static {
+    /// Binds the store to the running application's bundle identifier before any secret is
+    /// touched.  Stores that do not address a shared namespace ignore it.
+    fn bind_namespace(&self, _identifier: &str) {}
+
     fn set(&self, key: &str, secret: &str) -> Result<(), Error>;
     fn get(&self, key: &str) -> Result<Option<String>, Error>;
     fn delete(&self, key: &str) -> Result<(), Error>;
 }
 
+/// The operating-system credential manager is shared by every build on the machine, so the service
+/// name is derived from the bundle identifier rather than hard-coded.  A development build runs
+/// under `org.encroissant.app.dev` and therefore cannot read, overwrite or delete the tokens of an
+/// installed release.
 #[derive(Default)]
-pub struct OsCredentialStore;
+pub struct OsCredentialStore {
+    service: OnceLock<String>,
+}
+
+impl OsCredentialStore {
+    fn service(&self) -> Result<&str, Error> {
+        self.service.get().map(String::as_str).ok_or_else(|| {
+            Error::CredentialFailure(
+                "credential storage was used before it was bound to an application identifier"
+                    .into(),
+            )
+        })
+    }
+}
 
 impl CredentialStore for OsCredentialStore {
+    fn bind_namespace(&self, identifier: &str) {
+        let _ = self.service.set(format!("{identifier}.lichess"));
+    }
+
     fn set(&self, key: &str, secret: &str) -> Result<(), Error> {
-        Entry::new(KEYRING_SERVICE, key)
+        Entry::new(self.service()?, key)
             .and_then(|entry| entry.set_password(secret))
             .map_err(|source| Error::CredentialFailure(source.to_string()))
     }
 
     fn get(&self, key: &str) -> Result<Option<String>, Error> {
-        match Entry::new(KEYRING_SERVICE, key).and_then(|entry| entry.get_password()) {
+        match Entry::new(self.service()?, key).and_then(|entry| entry.get_password()) {
             Ok(secret) => Ok(Some(secret)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(source) => Err(Error::CredentialFailure(source.to_string())),
@@ -96,7 +120,7 @@ impl CredentialStore for OsCredentialStore {
     }
 
     fn delete(&self, key: &str) -> Result<(), Error> {
-        match Entry::new(KEYRING_SERVICE, key).and_then(|entry| entry.delete_credential()) {
+        match Entry::new(self.service()?, key).and_then(|entry| entry.delete_credential()) {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(source) => Err(Error::CredentialFailure(source.to_string())),
         }
@@ -175,7 +199,7 @@ pub struct CredentialManager {
 
 impl Default for CredentialManager {
     fn default() -> Self {
-        Self::new(Arc::new(OsCredentialStore))
+        Self::new(Arc::new(OsCredentialStore::default()))
     }
 }
 
@@ -196,7 +220,8 @@ impl CredentialManager {
         }
     }
 
-    pub fn initialize(&self, app_data: &Path) -> Result<(), Error> {
+    pub fn initialize(&self, app_data: &Path, identifier: &str) -> Result<(), Error> {
+        self.store.bind_namespace(identifier);
         fs::create_dir_all(app_data)
             .map_err(|source| Error::CredentialFailure(source.to_string()))?;
         #[cfg(unix)]
@@ -455,6 +480,41 @@ impl CredentialManager {
 mod tests {
     use super::*;
 
+    /// Renaming the namespace would orphan every token an installed release already stored, so the
+    /// release identifier must keep producing the historical service name.
+    #[test]
+    fn keyring_namespace_is_derived_from_the_bundle_identifier() {
+        let release = OsCredentialStore::default();
+        release.bind_namespace("org.encroissant.app");
+        assert_eq!(release.service().unwrap(), "org.encroissant.app.lichess");
+
+        let development = OsCredentialStore::default();
+        development.bind_namespace("org.encroissant.app.dev");
+        assert_eq!(
+            development.service().unwrap(),
+            "org.encroissant.app.dev.lichess"
+        );
+    }
+
+    /// Falling back to a default namespace would silently reach into the release's secrets, so an
+    /// unbound store must refuse instead.
+    #[test]
+    fn unbound_os_store_refuses_every_operation() {
+        let store = OsCredentialStore::default();
+        assert!(matches!(
+            store.get("lichess-account:x"),
+            Err(Error::CredentialFailure(_))
+        ));
+        assert!(matches!(
+            store.set("lichess-account:x", "secret"),
+            Err(Error::CredentialFailure(_))
+        ));
+        assert!(matches!(
+            store.delete("lichess-account:x"),
+            Err(Error::CredentialFailure(_))
+        ));
+    }
+
     #[derive(Default)]
     struct FailStore {
         inner: MemoryCredentialStore,
@@ -526,14 +586,18 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
         let manager = CredentialManager::new(store.clone());
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         let account = manager
             .store_lichess_token("Felix".into(), "not-in-registry".into())
             .unwrap();
         let content = fs::read_to_string(temp.path().join(REGISTRY_FILE)).unwrap();
         assert!(!content.contains("not-in-registry"));
         let after_restart = CredentialManager::new(store);
-        after_restart.initialize(temp.path()).unwrap();
+        after_restart
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         assert_eq!(after_restart.list(), vec![account]);
     }
 
@@ -545,13 +609,17 @@ mod tests {
             ..Default::default()
         });
         let manager = CredentialManager::new(store.clone());
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         assert!(manager
             .store_lichess_token("a".into(), "secret".into())
             .is_err());
         assert!(manager.list().is_empty());
         let after_restart = CredentialManager::new(store);
-        after_restart.initialize(temp.path()).unwrap();
+        after_restart
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         assert!(after_restart.list().is_empty());
     }
 
@@ -560,7 +628,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(WriteThenErrorStore::default());
         let manager = CredentialManager::new(store.clone());
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         assert!(matches!(
             manager.store_lichess_token("a".into(), "secret".into()),
             Err(Error::CredentialRecoveryRequired)
@@ -570,7 +640,9 @@ mod tests {
             .unwrap()
             .contains("secret"));
         let after_restart = CredentialManager::new(store);
-        after_restart.initialize(temp.path()).unwrap();
+        after_restart
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         assert_eq!(after_restart.list().len(), 1);
     }
 
@@ -579,7 +651,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
         let manager = CredentialManager::new(store.clone());
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         let account = manager
             .store_lichess_token("a".into(), "secret".into())
             .unwrap();
@@ -592,7 +666,9 @@ mod tests {
             manager.persist_locked(&registry).unwrap();
         }
         let after_restart = CredentialManager::new(store.clone());
-        after_restart.initialize(temp.path()).unwrap();
+        after_restart
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         assert!(after_restart.list().is_empty());
         assert_eq!(store.get(&account.handle.key()).unwrap(), None);
     }
@@ -608,13 +684,17 @@ mod tests {
                 fail_on: 3,
             }),
         );
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         assert!(manager
             .store_lichess_token("a".into(), "secret".into())
             .is_err());
         assert!(manager.list().is_empty());
         let after_restart = CredentialManager::new(store);
-        after_restart.initialize(temp.path()).unwrap();
+        after_restart
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         assert_eq!(after_restart.list().len(), 1);
     }
 
@@ -623,7 +703,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
         let manager = CredentialManager::with_persistence(store, Arc::new(UncertainPersistence));
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         let account = manager
             .store_lichess_token("a".into(), "secret".into())
             .unwrap();
@@ -635,7 +717,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
         let manager = CredentialManager::new(store.clone());
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(temp.path(), "org.encroissant.app.test")
+            .unwrap();
         let first = manager
             .store_lichess_token("Felix".into(), "first-token".into())
             .unwrap();
@@ -660,7 +744,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().join("credentials");
         let manager = CredentialManager::new(Arc::new(MemoryCredentialStore::default()));
-        manager.initialize(&directory).unwrap();
+        manager
+            .initialize(&directory, "org.encroissant.app.test")
+            .unwrap();
         assert_eq!(
             fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
             0o700
