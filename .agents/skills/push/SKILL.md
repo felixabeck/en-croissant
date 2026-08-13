@@ -13,7 +13,7 @@ Complete the push autonomously. Read `~/.claude/references/push-review-policy.md
 - This repository's expected fetch and push URL is exactly `https://github.com/felixabeck/en-croissant.git`; reject a separate `remote.origin.pushurl`. The current local branch must track the same-named `origin/<branch>`; `master` therefore must track `origin/master`. Stop for Felix if any identity is missing or different. Never invent or change a remote/upstream.
 - Build an explicit owned-path manifest from files created or edited in the invoking conversation plus file scopes assigned to its finished workers. Compare it with the initial status. Ambiguous or foreign paths are excluded and left untouched; if an already-committed foreign change would be exported, stop for Felix. Commit only manifest paths in cohesive atomic commits and never use `git add -A`.
 - Gates execute against the complete worktree. Therefore stop before any compile, generator, formatter, or browser gate when a foreign dirty path is code, generated output, dependency/configuration, test, asset, locale, workflow, or another input to an affected gate. Only clearly inert foreign Markdown/planning files may remain. Never generate or commit an owned output from foreign dirty inputs.
-- Every workflow-created commit uses `GIT_COMMITTER_NAME="Codex" git commit ...`; leave the author untouched and add no co-author trailer.
+- Every workflow-created commit sets `GIT_COMMITTER_NAME` to the acting agent per `~/.claude/references/push-review-policy.md` §1 (`Codex`, `Claude Code`, or `Grok`). Leave the author untouched and add no co-author trailer.
 - Determine pushed files from `BASE=$(git merge-base HEAD @{u})` and both the committed and owned dirty diffs. Review `git diff "$BASE"..HEAD`, `git diff -- <owned tracked paths>`, `git diff --cached -- <owned tracked paths>`, plus each owned untracked file as a new-file diff. An explicit push includes already-ahead commits, so review their effective diff too.
 
 Markdown/planning-only changes need no build gate, but still require the shared review and clean-diff checks.
@@ -43,7 +43,7 @@ pnpm test
 pnpm build-vite
 ```
 
-For visible UI changes, run `pnpm test:e2e` and the repo-local `$verify-ui` real-browser workflow after the static gates, then retain screenshots of every affected flow. Missing screenshots are not evidence that layout is correct.
+For visible UI changes, run the repo-local `$verify-ui` workflow after the static gates (it owns `pnpm test:e2e` and the live Tauri-window check). Retain screenshots of every affected flow. Missing screenshots are not evidence that layout is correct.
 
 ### Cross-layer contracts
 
@@ -85,7 +85,7 @@ src-tauri/Cargo.lock
 
 Triage every ≥80-confidence finding as `Fix` or `Skip(reason)`, repair every genuine long-term gain, inspect each repair diff, and rerun every gate invalidated by the repair. Security and filesystem refusal paths must be exercised, not merely read.
 
-En-Croissant runtime compatibility addition: the lens executor, its model rungs and the fallback switch are governed by `~/.claude/references/review-lens-contract.md` — Codex by default (`gpt-5.6-sol`/`medium` on sensitive paths, `gpt-5.6-luna`/`xhigh` otherwise), Claude `Agent` fan-out with pinned `model:` only on the named fallback triggers. A Codex-orchestrated run uses its own read-only subagents on the same rung instead of a nested `codex exec`. If a runtime exposes none of those model names, use independent typed reviewer agents with the smallest self-contained context and disclose that the review used the same model family as the author. Do not silently run the lenses inline while fan-out exists. AntiGravity reviews follow Felix's configured quota order: Gemini first, then Claude Opus at its second-highest reasoning level; never Sonnet or GPT there.
+En-Croissant runtime compatibility addition: the lens executor, its model rungs and the fallback switch are governed by `~/.claude/references/review-lens-contract.md`. Do not restate them here. If a runtime exposes none of the contract's model names, use independent typed reviewer agents with the smallest self-contained context and disclose that the review used the same model family as the author. Do not silently run the lenses inline while fan-out exists. AntiGravity reviews follow Felix's configured quota order: Gemini first, then Claude Opus at its second-highest reasoning level; never Sonnet or GPT there.
 
 ## 4. Commit, push, and verify
 
