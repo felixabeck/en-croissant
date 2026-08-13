@@ -43,7 +43,7 @@ pnpm test
 pnpm build-vite
 ```
 
-For visible UI changes, run `pnpm test:e2e` and the repo-local `$verify-ui` real-browser workflow after the static gates, then retain screenshots of every affected flow. Until both commands/workflows exist and work, a visible UI push is red-blocked; their absence is not evidence that layout is correct.
+For visible UI changes, run `pnpm test:e2e` and the repo-local `$verify-ui` real-browser workflow after the static gates, then retain screenshots of every affected flow. Missing screenshots are not evidence that layout is correct.
 
 ### Cross-layer contracts
 
