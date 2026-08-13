@@ -87,28 +87,35 @@ carry this codebase's failure history:
 Which lenses run for a push is decided by `~/.claude/references/push-review-policy.md`; this table
 says what each one knows, so a plan can be sanity-checked against the right lens before code exists.
 
-## Working-tree state (as of 2026-08-11)
+## Repository state (as of 2026-08-13)
 
-A large audit implementation is **present in the working tree but not yet committed**:
-`src/platform/`, `src-tauri/src/infra/`, `src-tauri/src/file_workspace.rs`,
-`src-tauri/src/credentials.rs`, `scripts/`, `e2e/`, `docs/`, `playwright.config.ts`,
-`stryker.config.mjs`, and all four coverage/budget JSON files are untracked, alongside ~200 modified
-tracked files. Consequences:
+The audit implementation is **committed and pushed**; the working tree is clean and every gate
+listed above is green on the pushed tree. A fresh clone therefore has the checkers, the E2E suite,
+and all four coverage/budget JSON files. Work in this repository is **paused** — it is a side
+project and Felix is working elsewhere.
 
-- Gate commands the push skill names (`pnpm bindings:check`, `pnpm test:e2e`, the `i18n:*` and
-  boundary checks inside `pnpm lint:ci`) resolve only because of uncommitted files. They do not
-  exist in a fresh clone of any commit.
-- Per the push skill, gates run against the **whole** worktree. With foreign dirty code, generated
-  output, and configuration present, a push must stop rather than run a gate whose result would be
-  attributed to owned changes.
+Before resuming, read the "Final exact-tree verification (2026-08-13)" section of
+`BACKEND_AUDIT_PLAN.md` and `FRONTEND_AUDIT_PLAN.md`. They record what was verified, what was fixed,
+and — importantly — what is **not** evidence. Three things are open and should not be assumed done:
 
-Treat every path above as foreign work: do not commit, revert, or reformat it as a side effect.
+- **Mutation testing has no valid evidence for either side.** The backend run was interrupted
+  mid-flight and its numbers are discarded; the frontend numbers describe an older tree.
+- **The 320px / 200% font-scale layout is broken.** The committed E2E screenshots record clipped
+  headings rather than contradict them, and `assertNoHorizontalOverflow` passes only because the
+  content is clipped instead of widening the document.
+- **`src/App.tsx` is untested** (0 of 75 lines), so its startup sequence has no regression cover.
+
+Also note that the audit was produced by a Gemini-driven agent run and **has not been reviewed line
+by line**. What is proven is that every gate passes, not that every change is right. Defects found
+while getting the gates green are listed in the two plan documents; treat the rest of the diff as
+unreviewed.
 
 ## Conventions
 
 - Rust talks to the renderer only through Specta-registered commands and events; a new event must be
-  added to `collect_events!` in `src-tauri/src/main.rs`, not emitted by a bare string — full rule and
-  the one known violation in `.claude/rules/ipc-events.md`.
+  added to `collect_events!` in `src-tauri/src/main.rs`, not emitted by a bare string. No event is
+  outside the registry today; the two incidents that got there — `search_progress` and
+  `convert_progress` — are written up in `.claude/rules/ipc-events.md`.
 - The renderer reaches native capability only through `src/platform/`.
 - Filesystem and HTTP reach are declared in `src-tauri/capabilities/main.json` and
   `src-tauri/tauri.conf.json`; widening a scope is a security decision, not a build fix.
