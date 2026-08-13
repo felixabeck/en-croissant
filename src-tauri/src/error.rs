@@ -90,8 +90,37 @@ pub enum Error {
     #[error("Engine disconnected")]
     EngineDisconnected,
 
+    #[error("Engine timeout: {0}")]
+    EngineTimeout(String),
+
     #[error("Analysis cancelled")]
     AnalysisCancelled,
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
+    #[error("Resource limit: {0}")]
+    ResourceLimit(String),
+
+    #[error("OAuth failure: {0}")]
+    OAuthFailure(String),
+
+    #[error("Credential operation failed")]
+    CredentialFailure(String),
+
+    #[error("Credential operation requires recovery")]
+    CredentialRecoveryRequired,
+
+    #[error("Cancellation")]
+    Cancellation,
+
+    #[error("Committed but durability uncertain: {0}")]
+    CommittedDurabilityUncertain(String),
+
+    #[error("Operation failed: {primary}; temporary cleanup also failed: {cleanup}")]
+    OperationAndCleanup { primary: String, cleanup: String },
 }
 
 impl From<std::io::Error> for Error {
@@ -199,5 +228,19 @@ impl Type for Error {
         _generics: specta::Generics,
     ) -> specta::datatype::DataType {
         specta::datatype::DataType::Primitive(specta::datatype::PrimitiveType::String)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_committed_durability_uncertain_mapping() {
+        let err = Error::CommittedDurabilityUncertain("disk failure".into());
+        assert_eq!(
+            err.to_string(),
+            "Committed but durability uncertain: disk failure"
+        );
     }
 }

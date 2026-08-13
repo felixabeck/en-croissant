@@ -11,7 +11,18 @@ pub const NAG_MARKER: u8 = 252;
 
 pub fn encode_move(m: &Move, chess: &Chess) -> Result<u8, Error> {
     let moves = chess.legal_moves();
-    Ok(moves.iter().position(|x| x == m).unwrap() as u8)
+    let index = moves
+        .iter()
+        .position(|candidate| candidate == m)
+        .ok_or_else(|| invalid_data("Move is not legal in the given position"))?;
+    let encoded =
+        u8::try_from(index).map_err(|_| invalid_data("Legal move index overflowed u8"))?;
+    if encoded >= NAG_MARKER {
+        return Err(invalid_data(
+            "Legal move index collides with an encoding marker",
+        ));
+    }
+    Ok(encoded)
 }
 
 pub fn decode_move(byte: u8, chess: &Chess) -> Option<Move> {
@@ -49,6 +60,14 @@ impl<'a> MainlineMoveBytesIter<'a> {
             variation_depth: 0,
         }
     }
+
+    fn skip_annotation(&mut self) -> Option<()> {
+        let length_end = self.cursor.checked_add(2)?;
+        let length_bytes = self.bytes.get(self.cursor..length_end)?;
+        let length = u16::from_le_bytes([length_bytes[0], length_bytes[1]]) as usize;
+        self.cursor = length_end.saturating_add(length).min(self.bytes.len());
+        Some(())
+    }
 }
 
 impl Iterator for MainlineMoveBytesIter<'_> {
@@ -66,26 +85,7 @@ impl Iterator for MainlineMoveBytesIter<'_> {
                 VARIATION_END_MARKER => {
                     self.variation_depth = self.variation_depth.saturating_sub(1);
                 }
-                COMMENT_MARKER => {
-                    if self.cursor + 2 > self.bytes.len() {
-                        return None;
-                    }
-                    let len =
-                        u16::from_le_bytes([self.bytes[self.cursor], self.bytes[self.cursor + 1]])
-                            as usize;
-                    self.cursor += 2;
-                    self.cursor = self.cursor.saturating_add(len).min(self.bytes.len());
-                }
-                NAG_MARKER => {
-                    if self.cursor + 2 > self.bytes.len() {
-                        return None;
-                    }
-                    let len =
-                        u16::from_le_bytes([self.bytes[self.cursor], self.bytes[self.cursor + 1]])
-                            as usize;
-                    self.cursor += 2;
-                    self.cursor = self.cursor.saturating_add(len).min(self.bytes.len());
-                }
+                COMMENT_MARKER | NAG_MARKER => self.skip_annotation()?,
                 _ if self.variation_depth == 0 => return Some(byte),
                 _ => {}
             }
@@ -97,6 +97,50 @@ impl Iterator for MainlineMoveBytesIter<'_> {
 
 pub fn iter_mainline_move_bytes(bytes: &[u8]) -> MainlineMoveBytesIter<'_> {
     MainlineMoveBytesIter::new(bytes)
+}
+
+/// Validates every structural marker before returning the mainline iterator.
+/// Callers that process database-owned move streams must use this boundary so
+/// truncated comments/NAGs and unbalanced variations cannot be treated as a
+/// valid shorter game.
+pub fn try_iter_mainline_move_bytes(bytes: &[u8]) -> Result<MainlineMoveBytesIter<'_>, Error> {
+    let mut cursor = 0usize;
+    let mut variation_depth = 0usize;
+    while cursor < bytes.len() {
+        let marker = bytes[cursor];
+        cursor += 1;
+        match marker {
+            VARIATION_START_MARKER => {
+                variation_depth = variation_depth
+                    .checked_add(1)
+                    .ok_or_else(|| invalid_data("variation nesting overflow"))?;
+            }
+            VARIATION_END_MARKER => {
+                variation_depth = variation_depth
+                    .checked_sub(1)
+                    .ok_or_else(|| invalid_data("variation ended without a matching start"))?;
+            }
+            COMMENT_MARKER | NAG_MARKER => {
+                let length_end = cursor
+                    .checked_add(2)
+                    .ok_or_else(|| invalid_data("annotation length overflow"))?;
+                let length_bytes = bytes
+                    .get(cursor..length_end)
+                    .ok_or_else(|| invalid_data("truncated comment or NAG length"))?;
+                let length = u16::from_le_bytes([length_bytes[0], length_bytes[1]]) as usize;
+                cursor = cursor
+                    .checked_add(2)
+                    .and_then(|start| start.checked_add(length))
+                    .filter(|end| *end <= bytes.len())
+                    .ok_or_else(|| invalid_data("truncated comment or NAG payload"))?;
+            }
+            _ => {}
+        }
+    }
+    if variation_depth != 0 {
+        return Err(invalid_data("unclosed variation"));
+    }
+    Ok(MainlineMoveBytesIter::new(bytes))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,7 +171,7 @@ pub fn decode_game(moves_bytes: &[u8], initial_fen: Fen) -> Result<DecodedGame, 
     let castling_mode = CastlingMode::detect(&setup);
     let root_position = Chess::from_setup(setup, castling_mode)
         .or_else(PositionError::ignore_too_much_material)
-        .unwrap();
+        .map_err(|error| invalid_data(&format!("Invalid initial FEN setup: {error}")))?;
 
     let mut stack = vec![DecodeFrame {
         nodes: Vec::new(),
@@ -381,6 +425,44 @@ mod tests {
     }
 
     #[test]
+    fn test_encode_illegal_move_returns_contextual_error() {
+        let chess = Chess::default();
+        let illegal_move = Move::Normal {
+            role: Role::Pawn,
+            from: Square::E2,
+            to: Square::E5,
+            capture: None,
+            promotion: None,
+        };
+
+        let error = encode_move(&illegal_move, &chess).unwrap_err();
+        assert_eq!(error.to_string(), "Move is not legal in the given position");
+    }
+
+    #[test]
+    fn test_encode_checked_conversion_roundtrips_legal_move() {
+        let chess = Chess::default();
+        let legal_move = Move::Normal {
+            role: Role::Knight,
+            from: Square::G1,
+            to: Square::F3,
+            capture: None,
+            promotion: None,
+        };
+
+        let encoded = encode_move(&legal_move, &chess).unwrap();
+        assert_eq!(decode_move(encoded, &chess), Some(legal_move));
+    }
+
+    #[test]
+    fn test_decode_game_rejects_invalid_initial_setup() {
+        let missing_black_king: Fen = "8/8/8/8/8/8/8/K7 w - - 0 1".parse().unwrap();
+
+        let error = decode_game(&[], missing_black_king).unwrap_err();
+        assert!(error.to_string().starts_with("Invalid initial FEN setup:"));
+    }
+
+    #[test]
     fn test_mainline_iterator_ignores_variations_and_comments() {
         let bytes = vec![
             1,
@@ -416,6 +498,27 @@ mod tests {
     }
 
     #[test]
+    fn mainline_iterator_handles_exact_and_truncated_annotation_boundaries() {
+        let exact_empty = [1, COMMENT_MARKER, 0, 0, 2, NAG_MARKER, 0, 0, 3];
+        assert_eq!(
+            iter_mainline_move_bytes(&exact_empty).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+
+        for truncated in [
+            vec![1, COMMENT_MARKER],
+            vec![1, COMMENT_MARKER, 0],
+            vec![1, NAG_MARKER],
+            vec![1, NAG_MARKER, 0],
+        ] {
+            assert_eq!(
+                iter_mainline_move_bytes(&truncated).collect::<Vec<_>>(),
+                vec![1]
+            );
+        }
+    }
+
+    #[test]
     fn test_decode_game_with_nags() {
         let mut bytes = Vec::new();
         let mut chess = Chess::default();
@@ -439,6 +542,80 @@ mod tests {
 
         let movetext = decode_game_to_movetext(&bytes, Fen::default()).unwrap();
         assert_eq!(movetext, "1. e4! (1. e4?) 1... e5!");
+    }
+
+    #[test]
+    fn render_nodes_preserves_every_symbolic_and_custom_nag_spacing() {
+        let mut state = RenderState {
+            move_number: 1,
+            white_to_move: true,
+        };
+        let nodes = vec![
+            DecodedGameNode::Move("e4".into()),
+            DecodedGameNode::Nag("$1".into()),
+            DecodedGameNode::Move("e5".into()),
+            DecodedGameNode::Nag("$2".into()),
+            DecodedGameNode::Move("Nf3".into()),
+            DecodedGameNode::Nag("$3".into()),
+            DecodedGameNode::Move("Nc6".into()),
+            DecodedGameNode::Nag("$4".into()),
+            DecodedGameNode::Move("Bb5".into()),
+            DecodedGameNode::Nag("$5".into()),
+            DecodedGameNode::Move("a6".into()),
+            DecodedGameNode::Nag("$6".into()),
+            DecodedGameNode::Nag("$99".into()),
+            DecodedGameNode::Comment("note".into()),
+            DecodedGameNode::Nag("!!".into()),
+        ];
+
+        assert_eq!(
+            render_nodes(&nodes, &mut state),
+            "1. e4! e5? 2. Nf3!! Nc6?? 3. Bb5!? a6?! $99 {note} !!"
+        );
+    }
+
+    #[test]
+    fn decode_game_checks_exact_annotation_length_and_payload_boundaries() {
+        for marker in [COMMENT_MARKER, NAG_MARKER] {
+            assert!(decode_game(&[marker], Fen::default()).is_err());
+            assert!(decode_game(&[marker, 0], Fen::default()).is_err());
+            assert!(decode_game(&[marker, 1, 0], Fen::default()).is_err());
+
+            let empty = decode_game(&[marker, 0, 0], Fen::default()).unwrap();
+            let expected = if marker == COMMENT_MARKER {
+                DecodedGameNode::Comment(String::new())
+            } else {
+                DecodedGameNode::Nag(String::new())
+            };
+            assert_eq!(empty.nodes, vec![expected]);
+        }
+
+        let chess = Chess::default();
+        let legal_move = Move::Normal {
+            role: Role::Pawn,
+            from: Square::E2,
+            to: Square::E4,
+            capture: None,
+            promotion: None,
+        };
+        let encoded_move = encode_move(&legal_move, &chess).unwrap();
+        let bytes = [COMMENT_MARKER, 1, 0, b'x', encoded_move];
+        assert_eq!(
+            decode_game(&bytes, Fen::default()).unwrap().nodes,
+            vec![
+                DecodedGameNode::Comment("x".into()),
+                DecodedGameNode::Move("e4".into())
+            ]
+        );
+
+        let bytes = [NAG_MARKER, 1, 0, b'!', encoded_move];
+        assert_eq!(
+            decode_game(&bytes, Fen::default()).unwrap().nodes,
+            vec![
+                DecodedGameNode::Nag("!".into()),
+                DecodedGameNode::Move("e4".into())
+            ]
+        );
     }
 
     #[test]
@@ -591,5 +768,13 @@ mod tests {
                 DecodedGameNode::Move(expected_mainline_second),
             ]
         );
+    }
+
+    #[test]
+    fn fallible_mainline_iterator_rejects_truncated_and_unbalanced_streams() {
+        assert!(try_iter_mainline_move_bytes(&[COMMENT_MARKER, 4, 0, b'x']).is_err());
+        assert!(try_iter_mainline_move_bytes(&[NAG_MARKER, 1]).is_err());
+        assert!(try_iter_mainline_move_bytes(&[VARIATION_END_MARKER]).is_err());
+        assert!(try_iter_mainline_move_bytes(&[VARIATION_START_MARKER, 0]).is_err());
     }
 }

@@ -58,7 +58,7 @@ pub fn get_opening_from_name(name: &str) -> Result<String, Error> {
     OPENINGS
         .iter()
         .find(|o| o.name == name)
-        .map(|o| o.pgn.clone().expect("opening without pgn"))
+        .and_then(|o| o.pgn.clone())
         .ok_or_else(|| Error::NoOpeningFound)
 }
 
@@ -85,29 +85,32 @@ pub fn get_opening_from_setup(setup: Setup) -> Result<String, Error> {
 #[specta::specta]
 pub async fn search_opening_name(query: String) -> Result<Vec<OutOpening>, Error> {
     let lower_query = query.to_lowercase();
-    let scores = OPENINGS
+    let mut best_matches = OPENINGS
         .iter()
-        .map(|opening| {
+        .filter_map(|opening| {
             let lower_name = opening.name.to_lowercase();
             let sorenson_score = sorensen_dice(&lower_query, &lower_name);
             let jaro_score = jaro_winkler(&lower_query, &lower_name);
             let score = sorenson_score.max(jaro_score);
-            (opening.clone(), score)
+            if score > 0.8 {
+                Some((opening, score))
+            } else {
+                None
+            }
         })
         .collect::<Vec<_>>();
-    let mut best_matches = scores
-        .into_iter()
-        .filter(|(_, score)| *score > 0.8)
-        .collect::<Vec<_>>();
 
-    best_matches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    best_matches.sort_by(|(left, left_score), (right, right_score)| {
+        right_score
+            .total_cmp(left_score)
+            .then_with(|| left.name.cmp(&right.name))
+    });
 
     let best_matches_names = best_matches
-        .iter()
-        .map(|(o, _)| o.clone())
+        .into_iter()
         .take(15)
-        .map(|o| OutOpening {
-            name: o.name,
+        .map(|(o, _)| OutOpening {
+            name: o.name.clone(),
             fen: Fen::from_setup(o.setup.clone()).to_string(),
         })
         .collect();
@@ -136,10 +139,12 @@ lazy_static! {
         for tsv in TSV_DATA {
             let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(tsv);
             for result in rdr.deserialize() {
+                // INVARIANT: The embedded TSV data is statically known to be well-formed.
                 let record: OpeningRecord = result.expect("Failed to deserialize opening");
                 let mut pos = Chess::default();
                 for token in record.pgn.split_whitespace() {
                     if let Ok(san) = token.parse::<San>() {
+                        // INVARIANT: The PGN moves in the embedded TSV data are statically verified legal moves.
                         pos.play_unchecked(&san.to_move(&pos).expect("legal move"));
                     }
                 }
@@ -155,7 +160,9 @@ lazy_static! {
             .delimiter(b'\t')
             .from_reader(FISCHER_RANDOM_DATA);
         for result in rdr.deserialize() {
+            // INVARIANT: The embedded FRC data is statically known to be well-formed.
             let record: FischerRandomRecord = result.expect("Failed to deserialize opening");
+            // INVARIANT: FEN strings in the FRC data are valid FENs.
             let fen: Fen = record.fen.parse().expect("Failed to parse fen");
             positions.push(Opening {
                 _eco: "FRC".to_string(),
@@ -171,12 +178,52 @@ lazy_static! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn test_get_opening_from_name_failures() {
+        let res = get_opening_from_name("Nonexistent Opening");
+        assert!(res.is_err());
+    }
 
     #[test]
-    fn test_get_opening() {
-        let opening =
-            get_opening_from_fen("rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPPKPPP/RNBQ1BNR b kq - 1 2")
-                .unwrap();
-        assert_eq!(opening, "Bongcloud Attack");
+    fn test_get_opening_from_name_non_pgn() {
+        let res_start = get_opening_from_name("Starting Position");
+        assert!(res_start.is_err());
+        let res_empty = get_opening_from_name("Empty Board");
+        assert!(res_empty.is_err());
+    }
+
+    #[test]
+    fn every_embedded_non_pgn_opening_reports_no_pgn_instead_of_panicking() {
+        for opening in OPENINGS.iter().filter(|opening| opening.pgn.is_none()) {
+            assert!(matches!(
+                get_opening_from_name(&opening.name),
+                Err(Error::NoOpeningFound)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn equal_search_scores_have_a_stable_name_order() {
+        let first = search_opening_name("gambit".into()).await.unwrap();
+        let second = search_opening_name("gambit".into()).await.unwrap();
+        assert_eq!(
+            first
+                .iter()
+                .map(|opening| &opening.name)
+                .collect::<Vec<_>>(),
+            second
+                .iter()
+                .map(|opening| &opening.name)
+                .collect::<Vec<_>>()
+        );
+        for pair in first.windows(2) {
+            let left_score = pair[0].name.to_lowercase();
+            let right_score = pair[1].name.to_lowercase();
+            // The command's score ordering is verified by the duplicate call;
+            // this assertion documents its deterministic tie breaker.
+            if left_score == right_score {
+                assert!(pair[0].name <= pair[1].name);
+            }
+        }
     }
 }

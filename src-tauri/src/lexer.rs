@@ -8,7 +8,7 @@ struct Lexer {
     tokens: Vec<Token>,
 }
 
-#[derive(Serialize, Clone, Type)]
+#[derive(Serialize, Clone, Type, Debug, PartialEq)]
 #[serde(tag = "type", content = "value")]
 pub enum Token {
     ParenOpen,
@@ -63,14 +63,76 @@ impl Visitor for Lexer {
     }
 }
 
+pub fn lex_pgn_sync(pgn: &str) -> Result<Vec<Token>, String> {
+    let mut reader = BufferedReader::new(pgn.as_bytes());
+    let mut lexer = Lexer { tokens: Vec::new() };
+    match reader
+        .read_game(&mut lexer)
+        .map_err(|e| format!("PGN parse error: {e:?}"))?
+    {
+        Some(tokens) => tokens,
+        None => Ok(Vec::new()),
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn lex_pgn(pgn: String) -> Result<Vec<Token>, Error> {
-    let mut reader = BufferedReader::new(pgn.as_bytes());
+    if pgn.len() > 10 * 1024 * 1024 {
+        return Err(Error::InvalidInput("PGN string too large".into()));
+    }
 
-    let mut lexer = Lexer { tokens: Vec::new() };
+    crate::infra::blocking::BLOCKING_GATEWAY
+        .spawn(move || lex_pgn_sync(&pgn).map_err(Error::InvalidInput))
+        .await
+}
 
-    reader.read_game(&mut lexer)?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    Ok(lexer.tokens)
+    #[test]
+    fn test_lex_pgn_sync_representative() {
+        let pgn = "[Event \"Test\"]\n\n1. e4 {Best by test} (1. d4) 1... e5 $1 1-0";
+        let tokens = lex_pgn_sync(pgn).unwrap();
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Header {
+                    tag: "Event".to_string(),
+                    value: "Test".to_string()
+                },
+                Token::San("e4".to_string()),
+                Token::Comment("Best by test".to_string()),
+                Token::ParenOpen,
+                Token::San("d4".to_string()),
+                Token::ParenClose,
+                Token::San("e5".to_string()),
+                Token::Nag("$1".to_string()),
+                Token::Outcome("1-0".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_lex_pgn_sync_empty() {
+        let tokens = lex_pgn_sync("").unwrap();
+        assert_eq!(tokens, vec![]);
+    }
+
+    #[test]
+    fn test_lex_pgn_sync_malformed() {
+        // pgn-reader tolerates malformed movetext and parses it deterministically
+        let tokens = lex_pgn_sync("1. e4e5").unwrap();
+        assert_eq!(tokens, vec![Token::San("e4e5".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn test_lex_pgn_limit() {
+        let pgn = " ".repeat(10 * 1024 * 1024 + 1);
+        let result = lex_pgn(pgn).await;
+        assert!(
+            matches!(result, Err(Error::InvalidInput(ref msg)) if msg == "PGN string too large")
+        );
+    }
 }

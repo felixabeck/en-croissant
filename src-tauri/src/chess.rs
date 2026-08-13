@@ -1,6 +1,6 @@
 use std::{
+    collections::HashMap,
     fmt::Display,
-    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -19,7 +19,6 @@ use shakmaty::{
 };
 use specta::Type;
 use tauri_specta::Event;
-use tokio::sync::Mutex;
 use vampirc_uci::{
     parse_one,
     uci::{Score, ScoreValue},
@@ -29,57 +28,77 @@ use vampirc_uci::{
 use crate::{
     db::{is_position_in_db, GameQuery, PositionQueryJs},
     engine::{
-        parse_fen_and_apply_moves, BaseEngine, EngineLog, EngineOption, EngineReader, GoMode,
+        parse_fen_and_apply_moves, resolve_engine_options, EngineActor, EngineDeadlines, EngineKey,
+        EngineLog, EngineOption, EngineRequestId, GoMode, ResolvedEngineOption,
     },
     error::Error,
-    progress::update_progress,
+    infra::path_authority::{DatabaseHandle, EngineExecutable, EngineHandle, PathOperation},
+    progress::{begin_progress, update_progress_with_state, ProgressState},
     AppState,
 };
 
 pub struct EngineProcess {
-    base: BaseEngine,
+    base: Arc<EngineActor>,
     last_depth: u32,
     best_moves: Vec<BestMoves>,
     last_best_moves: Vec<BestMoves>,
     last_progress: f32,
     options: EngineOptions,
+    resource_leases: Vec<crate::infra::path_authority::EngineResourceLease>,
     go_mode: GoMode,
     running: bool,
+    request_id: Option<EngineRequestId>,
     real_multipv: u16,
     start: Instant,
 }
 
-impl EngineProcess {
-    async fn new(path: PathBuf) -> Result<(Self, EngineReader), Error> {
-        let mut base = BaseEngine::spawn(path).await?;
-        base.init_uci().await?;
-        let reader = base.take_reader().ok_or(Error::EngineDisconnected)?;
+fn resolve_engine_executable(
+    state: &AppState,
+    engine: &EngineHandle,
+    operation: PathOperation,
+) -> Result<EngineExecutable, Error> {
+    let mut authority = state
+        .pgn_path_authority
+        .lock()
+        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+    authority
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+        .engine_executable(engine, operation)
+}
 
-        Ok((
-            Self {
-                base,
-                last_depth: 0,
-                best_moves: Vec::new(),
-                last_best_moves: Vec::new(),
-                last_progress: 0.0,
-                options: EngineOptions::default(),
-                real_multipv: 0,
-                go_mode: GoMode::Infinite,
-                running: false,
-                start: Instant::now(),
-            },
-            reader,
-        ))
+impl EngineProcess {
+    async fn new(executable: EngineExecutable) -> Result<Self, Error> {
+        let base =
+            Arc::new(EngineActor::spawn_initialized(executable, EngineDeadlines::default()).await?);
+        Ok(Self {
+            base,
+            last_depth: 0,
+            best_moves: Vec::new(),
+            last_best_moves: Vec::new(),
+            last_progress: 0.0,
+            options: EngineOptions::default(),
+            resource_leases: Vec::new(),
+            real_multipv: 0,
+            go_mode: GoMode::Infinite,
+            running: false,
+            request_id: None,
+            start: Instant::now(),
+        })
     }
 
     async fn set_option<T>(&mut self, name: &str, value: T) -> Result<(), Error>
     where
         T: Display,
     {
-        self.base.set_option(name, value).await
+        self.base.set_option(name, &value.to_string()).await
     }
 
-    async fn set_options(&mut self, options: EngineOptions) -> Result<(), Error> {
+    async fn set_options(
+        &mut self,
+        options: EngineOptions,
+        resolved: Vec<ResolvedEngineOption>,
+    ) -> Result<(), Error> {
         let fen_changed = options.fen != self.options.fen;
         let fen: Fen = options.fen.parse()?;
         let setup = fen.as_setup();
@@ -97,21 +116,38 @@ impl EngineProcess {
         let multipv = options
             .extra_options
             .iter()
-            .find(|x| x.name == "MultiPV")
-            .map(|x| x.value.parse().unwrap_or(1))
+            .find(|x| x.name() == "MultiPV")
+            .map(|x| match x {
+                EngineOption::String { value, .. } => value
+                    .parse::<u16>()
+                    .map_err(|_| Error::InvalidInput("MultiPV must be a positive integer".into())),
+                EngineOption::Resource { .. } => Err(Error::InvalidInput(
+                    "MultiPV must be a positive integer".into(),
+                )),
+            })
+            .transpose()?
             .unwrap_or(1);
+        if multipv == 0 {
+            return Err(Error::InvalidInput("MultiPV must be at least one".into()));
+        }
 
         self.real_multipv = multipv.min(pos.legal_moves().len() as u16);
 
-        for option in &options.extra_options {
-            if !self.options.extra_options.contains(option) && option.name != "UCI_Chess960" {
-                self.set_option(&option.name, &option.value).await?;
+        let mut next_resource_leases = Vec::new();
+        for (option, mut resolved) in options.extra_options.iter().zip(resolved) {
+            if !self.options.extra_options.contains(option) && option.name() != "UCI_Chess960" {
+                self.set_option(&resolved.name, &resolved.value).await?;
             }
+            next_resource_leases.append(&mut resolved.resources);
         }
 
         if fen_changed || options.moves != self.options.moves {
             self.set_position(&options.fen, &options.moves).await?;
         }
+        // UCI applies setoption lazily in many engines. A ready barrier makes
+        // the following position/go belong to this exact configuration.
+        self.base.ensure_ready().await?;
+        self.resource_leases = next_resource_leases;
         self.last_depth = 0;
         self.options = options.clone();
         self.best_moves.clear();
@@ -128,33 +164,39 @@ impl EngineProcess {
 
     async fn go(&mut self, mode: &GoMode) -> Result<(), Error> {
         self.go_mode = mode.clone();
-        self.base.go(mode).await?;
+        self.request_id = Some(self.base.start_search(mode).await?);
         self.running = true;
         self.start = Instant::now();
         Ok(())
     }
 
-    async fn stop(&mut self) -> Result<(), Error> {
-        self.base.stop().await?;
+    pub(crate) async fn kill(&mut self) -> Result<(), Error> {
+        self.base.terminate().await?;
         self.running = false;
+        self.request_id = None;
         Ok(())
     }
 
-    async fn kill(&mut self) -> Result<(), Error> {
-        self.base.quit().await?;
-        self.running = false;
-        Ok(())
+    async fn next_line(&mut self) -> Result<Option<String>, Error> {
+        let request_id = self.request_id.ok_or(Error::EngineNotInitialized)?;
+        self.base.next_search_line(request_id).await
     }
 
-    pub fn kill_sync(&mut self) {
-        self.base.kill_sync();
+    async fn next_line_cancellable(
+        &mut self,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<String>, Error> {
+        let request_id = self.request_id.ok_or(Error::EngineNotInitialized)?;
+        self.base
+            .next_search_line_cancellable(request_id, cancelled)
+            .await
     }
 }
 
 #[derive(Clone, Serialize, Debug, Derivative, Type)]
 #[derivative(Default)]
 pub struct BestMoves {
-    nodes: u32,
+    nodes: u64,
     depth: u32,
     score: Score,
     #[serde(rename = "uciMoves")]
@@ -163,7 +205,7 @@ pub struct BestMoves {
     san_moves: Vec<String>,
     #[derivative(Default(value = "1"))]
     multipv: u16,
-    nps: u32,
+    nps: u64,
 }
 
 #[derive(Serialize, Debug, Clone, Type, Event)]
@@ -212,10 +254,10 @@ fn parse_uci_attrs(
                 }
             }
             UciInfoAttribute::Nps(nps) => {
-                best_moves.nps = nps as u32;
+                best_moves.nps = nps;
             }
             UciInfoAttribute::Nodes(nodes) => {
-                best_moves.nodes = nodes as u32;
+                best_moves.nodes = nodes;
             }
             UciInfoAttribute::Depth(depth) => {
                 best_moves.depth = depth;
@@ -253,22 +295,7 @@ pub struct EngineOptions {
 #[tauri::command]
 #[specta::specta]
 pub async fn kill_engines(tab: String, state: tauri::State<'_, AppState>) -> Result<(), Error> {
-    let keys: Vec<_> = state
-        .engine_processes
-        .iter()
-        .map(|x| x.key().clone())
-        .collect();
-    for key in keys.clone() {
-        if key.0.starts_with(&tab) {
-            {
-                let process = state.engine_processes.get_mut(&key).unwrap();
-                let mut process = process.lock().await;
-                process.kill().await?;
-            }
-            state.engine_processes.remove(&key);
-        }
-    }
-    Ok(())
+    state.engine_supervisor.terminate_tab(&tab).await
 }
 
 #[tauri::command]
@@ -278,10 +305,12 @@ pub async fn kill_engine(
     tab: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let key = (tab, engine);
-    if let Some(process) = state.engine_processes.get(&key) {
-        let mut process = process.lock().await;
-        process.kill().await?;
+    let key = EngineKey::new(tab, engine)?;
+    if let Some(process) = state.engine_supervisor.get_exact(&key) {
+        state
+            .engine_supervisor
+            .terminate_exact(&key, process.generation)
+            .await?;
     }
     Ok(())
 }
@@ -292,10 +321,9 @@ pub async fn stop_engine(
     tab: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let key = (tab, engine);
-    if let Some(process) = state.engine_processes.get(&key) {
-        let mut process = process.lock().await;
-        process.stop().await?;
+    let key = EngineKey::new(tab, engine)?;
+    if let Some(process) = state.engine_supervisor.get_exact(&key) {
+        process.actor.stop_current().await?;
     }
     Ok(())
 }
@@ -307,10 +335,9 @@ pub async fn get_engine_logs(
     tab: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<EngineLog>, Error> {
-    let key = (tab, engine);
-    if let Some(process) = state.engine_processes.get(&key) {
-        let process = process.lock().await;
-        Ok(process.base.get_logs())
+    let key = EngineKey::new(tab, engine)?;
+    if let Some(process) = state.engine_supervisor.get_exact(&key) {
+        Ok(process.actor.logs().await)
     } else {
         Ok(Vec::new())
     }
@@ -320,129 +347,158 @@ pub async fn get_engine_logs(
 #[specta::specta]
 pub async fn get_best_moves(
     id: String,
-    engine: String,
+    engine: EngineHandle,
     tab: String,
     go_mode: GoMode,
     options: EngineOptions,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<(f32, Vec<BestMoves>)>, Error> {
-    let path = PathBuf::from(&engine);
+    let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineExecute)?;
+    let mut resolved = {
+        let mut authority = state
+            .pgn_path_authority
+            .lock()
+            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+        resolve_engine_options(
+            authority
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?,
+            &options.extra_options,
+        )?
+    };
+    let child_leases = resolved
+        .iter_mut()
+        .flat_map(|option| std::mem::take(&mut option.resources))
+        .collect();
 
-    let key = (tab.clone(), id.clone());
+    let key = EngineKey::new(tab.clone(), id.clone())?;
 
-    if state.engine_processes.contains_key(&key) {
-        {
-            let process = state.engine_processes.get_mut(&key).unwrap();
-            let mut process = process.lock().await;
-            if options == process.options && go_mode == process.go_mode && process.running {
-                return Ok(Some((
-                    process.last_progress,
-                    process.last_best_moves.clone(),
-                )));
-            }
-            process.stop().await?;
+    let mut process = EngineProcess::new(executable.with_resource_leases(child_leases)).await?;
+    let supervised = match state
+        .engine_supervisor
+        .replace_handle(key.clone(), process.base.clone())
+        .await
+    {
+        Ok(supervised) => supervised,
+        Err(error) => {
+            let cleanup = process.kill().await;
+            return match cleanup {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(Error::OperationAndCleanup {
+                    primary: error.to_string(),
+                    cleanup: cleanup.to_string(),
+                }),
+            };
         }
-        // give time for engine to stop and process previous lines
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        {
-            let process = state.engine_processes.get_mut(&key).unwrap();
-            let mut process = process.lock().await;
-            process.set_options(options.clone()).await?;
-            process.go(&go_mode).await?;
-        }
-        return Ok(None);
-    }
-
-    let (mut process, mut reader) = EngineProcess::new(path).await?;
-    process.set_options(options.clone()).await?;
-    process.go(&go_mode).await?;
-
-    let process = Arc::new(Mutex::new(process));
-
-    state.engine_processes.insert(key.clone(), process.clone());
+    };
 
     let lim = RateLimiter::direct(Quota::per_second(nonzero!(5u32)));
 
-    while let Some(line) = reader.next_line().await? {
-        let mut proc = process.lock().await;
-        match parse_one(&line) {
-            UciMessage::Info(attrs) => {
-                match parse_uci_attrs(attrs, &proc.options.fen.parse()?, &proc.options.moves) {
-                    Ok(best_moves) => {
-                        if best_moves.score.lower_bound == Some(true)
-                            || best_moves.score.upper_bound == Some(true)
-                        {
-                            continue;
-                        }
-                        let multipv = best_moves.multipv;
-                        let cur_depth = best_moves.depth;
-                        let cur_nodes = best_moves.nodes;
-                        if multipv as usize == proc.best_moves.len() + 1 {
-                            proc.best_moves.push(best_moves);
-                            if multipv == proc.real_multipv {
-                                if proc.best_moves.iter().all(|x| x.depth == cur_depth)
-                                    && cur_depth >= proc.last_depth
-                                    && lim.check().is_ok()
-                                {
-                                    let progress = match proc.go_mode {
-                                        GoMode::Depth(depth) => {
-                                            (cur_depth as f64 / depth as f64) * 100.0
+    let run_result: Result<(), Error> = async {
+        process.set_options(options.clone(), resolved).await?;
+        process.go(&go_mode).await?;
+        loop {
+            let line = { process.next_line().await? };
+            let Some(line) = line else {
+                break;
+            };
+            let proc = &mut process;
+            match parse_one(&line) {
+                UciMessage::Info(attrs) => {
+                    match parse_uci_attrs(attrs, &proc.options.fen.parse()?, &proc.options.moves) {
+                        Ok(best_moves) => {
+                            if best_moves.score.lower_bound == Some(true)
+                                || best_moves.score.upper_bound == Some(true)
+                            {
+                                continue;
+                            }
+                            let multipv = best_moves.multipv;
+                            let cur_depth = best_moves.depth;
+                            let cur_nodes = best_moves.nodes;
+                            if multipv as usize == proc.best_moves.len() + 1 {
+                                proc.best_moves.push(best_moves);
+                                if multipv == proc.real_multipv {
+                                    if proc.best_moves.iter().all(|x| x.depth == cur_depth)
+                                        && cur_depth >= proc.last_depth
+                                        && lim.check().is_ok()
+                                    {
+                                        let progress = (match proc.go_mode {
+                                            GoMode::Depth(depth) => {
+                                                (cur_depth as f64 / depth as f64) * 100.0
+                                            }
+                                            GoMode::Time(time) => {
+                                                (proc.start.elapsed().as_millis() as f64
+                                                    / time as f64)
+                                                    * 100.0
+                                            }
+                                            GoMode::Nodes(nodes) => {
+                                                (cur_nodes as f64 / nodes as f64) * 100.0
+                                            }
+                                            GoMode::PlayersTime(_) => 99.99,
+                                            GoMode::Infinite => 99.99,
+                                        })
+                                        .clamp(0.0, 100.0);
+                                        BestMovesPayload {
+                                            best_lines: proc.best_moves.clone(),
+                                            engine: id.clone(),
+                                            tab: tab.clone(),
+                                            fen: proc.options.fen.clone(),
+                                            moves: proc.options.moves.clone(),
+                                            progress,
                                         }
-                                        GoMode::Time(time) => {
-                                            (proc.start.elapsed().as_millis() as f64 / time as f64)
-                                                * 100.0
-                                        }
-                                        GoMode::Nodes(nodes) => {
-                                            (cur_nodes as f64 / nodes as f64) * 100.0
-                                        }
-                                        GoMode::PlayersTime(_) => 99.99,
-                                        GoMode::Infinite => 99.99,
-                                    };
-                                    BestMovesPayload {
-                                        best_lines: proc.best_moves.clone(),
-                                        engine: id.clone(),
-                                        tab: tab.clone(),
-                                        fen: proc.options.fen.clone(),
-                                        moves: proc.options.moves.clone(),
-                                        progress,
+                                        .emit(&app)?;
+                                        proc.last_depth = cur_depth;
+                                        proc.last_best_moves = proc.best_moves.clone();
+                                        proc.last_progress = progress as f32;
                                     }
-                                    .emit(&app)?;
-                                    proc.last_depth = cur_depth;
-                                    proc.last_best_moves = proc.best_moves.clone();
-                                    proc.last_progress = progress as f32;
+                                    proc.best_moves.clear();
                                 }
-                                proc.best_moves.clear();
                             }
                         }
+                        Err(e) => match e {
+                            Error::NoMovesFound => {}
+                            _ => {
+                                warn!("Failed to parse info line: {}, error: {:?}", line, e);
+                            }
+                        },
                     }
-                    Err(e) => match e {
-                        Error::NoMovesFound => {}
-                        _ => {
-                            warn!("Failed to parse info line: {}, error: {:?}", line, e);
-                        }
-                    },
                 }
-            }
-            UciMessage::BestMove { .. } => {
-                BestMovesPayload {
-                    best_lines: proc.last_best_moves.clone(),
-                    engine: id.clone(),
-                    tab: tab.clone(),
-                    fen: proc.options.fen.clone(),
-                    moves: proc.options.moves.clone(),
-                    progress: 100.0,
+                UciMessage::BestMove { .. } => {
+                    BestMovesPayload {
+                        best_lines: proc.last_best_moves.clone(),
+                        engine: id.clone(),
+                        tab: tab.clone(),
+                        fen: proc.options.fen.clone(),
+                        moves: proc.options.moves.clone(),
+                        progress: 100.0,
+                    }
+                    .emit(&app)?;
+                    proc.last_progress = 100.0;
                 }
-                .emit(&app)?;
-                proc.last_progress = 100.0;
+                _ => {}
             }
-            _ => {}
         }
-        proc.base.log_engine(&line);
+        Ok(())
     }
-    info!("Engine process finished: tab: {}, engine: {}", tab, engine);
-    state.engine_processes.remove(&key);
-    Ok(None)
+    .await;
+    info!(
+        "Engine process finished: tab: {}, engine: {}",
+        tab, engine.id.id
+    );
+    let cleanup = state
+        .engine_supervisor
+        .terminate_exact(&key, supervised.generation)
+        .await;
+    match (run_result, cleanup) {
+        (Ok(()), Ok(())) => Ok(None),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(()), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Err(cleanup)) => Err(Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: cleanup.to_string(),
+        }),
+    }
 }
 
 #[derive(Serialize, Debug, Default, Type)]
@@ -458,15 +514,18 @@ pub struct AnalysisOptions {
     pub fen: String,
     pub moves: Vec<String>,
     pub annotate_novelties: bool,
-    pub reference_db: Option<PathBuf>,
+    pub reference_db: Option<DatabaseHandle>,
     pub reversed: bool,
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn cancel_analysis(id: String, state: tauri::State<'_, AppState>) -> Result<(), Error> {
-    if let Some(flag) = state.analysis_cancel_flags.get(&id) {
-        flag.store(true, Ordering::SeqCst);
+    let key = EngineKey::new("analysis".into(), id)?;
+    if let Some(process) = state.engine_supervisor.get_exact(&key) {
+        state
+            .engine_supervisor
+            .cancel_exact(&key, process.generation);
     }
     Ok(())
 }
@@ -475,22 +534,16 @@ pub async fn cancel_analysis(id: String, state: tauri::State<'_, AppState>) -> R
 #[specta::specta]
 pub async fn analyze_game(
     id: String,
-    engine: String,
+    engine: EngineHandle,
     go_mode: GoMode,
     options: AnalysisOptions,
     uci_options: Vec<EngineOption>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<MoveAnalysis>, Error> {
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    state
-        .analysis_cancel_flags
-        .insert(id.clone(), cancel_flag.clone());
-
-    let path = PathBuf::from(&engine);
+    let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineExecute)?;
+    let analysis_key = EngineKey::new("analysis".into(), id.clone())?;
     let mut analysis: Vec<MoveAnalysis> = Vec::new();
-
-    let (mut proc, mut reader) = EngineProcess::new(path).await?;
 
     let fen = Fen::from_ascii(options.fen.as_bytes())?;
     let setup = fen.as_setup().clone();
@@ -525,48 +578,189 @@ pub async fn analyze_game(
         fens.reverse();
     }
 
+    let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
+    let mut initial_resolved = {
+        let mut authority = state
+            .pgn_path_authority
+            .lock()
+            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+        resolve_engine_options(
+            authority
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?,
+            &uci_options,
+        )?
+    };
+    let inherited_values: HashMap<String, String> = initial_resolved
+        .iter()
+        .map(|option| (option.name.clone(), option.value.clone()))
+        .collect();
+    let child_leases = initial_resolved
+        .iter_mut()
+        .flat_map(|option| std::mem::take(&mut option.resources))
+        .collect();
+
+    // Validate all position input and acquire the progress lease before a
+    // child exists. Every path after this registration goes through the
+    // cleanup-aware failure macro below.
+    let mut proc = match EngineProcess::new(executable.with_resource_leases(child_leases)).await {
+        Ok(process) => process,
+        Err(error) => {
+            let _ = update_progress_with_state(
+                &state.progress_state,
+                &app,
+                &progress_lease,
+                0.0,
+                ProgressState::Failed,
+            );
+            return Err(error);
+        }
+    };
+    let supervised = match state
+        .engine_supervisor
+        .replace_handle(analysis_key.clone(), proc.base.clone())
+        .await
+    {
+        Ok(supervised) => supervised,
+        Err(primary) => {
+            let _ = update_progress_with_state(
+                &state.progress_state,
+                &app,
+                &progress_lease,
+                0.0,
+                ProgressState::Failed,
+            );
+            match proc.kill().await {
+                Ok(()) => return Err(primary),
+                Err(cleanup) => {
+                    return Err(Error::OperationAndCleanup {
+                        primary: primary.to_string(),
+                        cleanup: cleanup.to_string(),
+                    })
+                }
+            }
+        }
+    };
+
+    macro_rules! fail_analysis_progress {
+        ($error:expr) => {{
+            let error = $error;
+            let cleanup = state
+                .engine_supervisor
+                .terminate_exact(&analysis_key, supervised.generation)
+                .await;
+            let _ = update_progress_with_state(
+                &state.progress_state,
+                &app,
+                &progress_lease,
+                0.0,
+                ProgressState::Failed,
+            );
+            return match cleanup {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(Error::OperationAndCleanup {
+                    primary: error.to_string(),
+                    cleanup: cleanup.to_string(),
+                }),
+            };
+        }};
+    }
+
     let mut novelty_found = false;
 
     for (i, (_, moves, _)) in fens.iter().enumerate() {
-        if cancel_flag.load(Ordering::SeqCst) {
-            proc.kill().await?;
-            state.analysis_cancel_flags.remove(&id);
-            return Err(Error::AnalysisCancelled);
+        if supervised.cancelled.load(Ordering::SeqCst) {
+            let cleanup = state
+                .engine_supervisor
+                .terminate_exact(&analysis_key, supervised.generation)
+                .await;
+            let terminal = update_progress_with_state(
+                &state.progress_state,
+                &app,
+                &progress_lease,
+                0.0,
+                ProgressState::Cancelled,
+            );
+            return match (cleanup, terminal) {
+                (Ok(()), Ok(())) => Err(Error::AnalysisCancelled),
+                (Err(cleanup), Ok(())) => Err(Error::OperationAndCleanup {
+                    primary: Error::AnalysisCancelled.to_string(),
+                    cleanup: cleanup.to_string(),
+                }),
+                (Ok(()), Err(terminal)) => Err(terminal),
+                (Err(cleanup), Err(terminal)) => Err(Error::OperationAndCleanup {
+                    primary: terminal.to_string(),
+                    cleanup: cleanup.to_string(),
+                }),
+            };
         }
 
-        update_progress(
+        if let Err(error) = update_progress_with_state(
             &state.progress_state,
             &app,
-            id.clone(),
+            &progress_lease,
             (i as f32 / fens.len() as f32) * 100.0,
-            false,
-        )?;
+            ProgressState::Running,
+        ) {
+            fail_analysis_progress!(error);
+        }
 
         let mut extra_options = uci_options.clone();
-        if !extra_options.iter().any(|x| x.name == "MultiPV") {
-            extra_options.push(EngineOption {
+        if !extra_options.iter().any(|x| x.name() == "MultiPV") {
+            extra_options.push(EngineOption::String {
                 name: "MultiPV".to_string(),
                 value: "2".to_string(),
             });
         } else {
             extra_options.iter_mut().for_each(|x| {
-                if x.name == "MultiPV" {
-                    x.value = "2".to_string();
+                if x.name() == "MultiPV" {
+                    if let EngineOption::String { value, .. } = x {
+                        *value = "2".to_string();
+                    }
                 }
             });
         }
 
-        proc.set_options(EngineOptions {
+        let configured_options = EngineOptions {
             fen: options.fen.clone(),
             moves: moves.clone(),
             extra_options,
-        })
-        .await?;
+        };
+        let mut resolved = {
+            let mut authority = state
+                .pgn_path_authority
+                .lock()
+                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+            resolve_engine_options(
+                authority
+                    .as_mut()
+                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?,
+                &configured_options.extra_options,
+            )?
+        };
+        for option in &mut resolved {
+            if let Some(value) = inherited_values.get(&option.name) {
+                option.value = value.clone();
+                option.resources.clear();
+            }
+        }
+        if let Err(error) = proc.set_options(configured_options, resolved).await {
+            fail_analysis_progress!(error);
+        }
 
-        proc.go(&go_mode).await?;
+        if let Err(error) = proc.go(&go_mode).await {
+            fail_analysis_progress!(error);
+        }
 
         let mut current_analysis = MoveAnalysis::default();
-        while let Ok(Some(line)) = reader.next_line().await {
+        loop {
+            let line = match proc.next_line_cancellable(&supervised.cancelled).await {
+                Ok(line) => line,
+                Err(error) => fail_analysis_progress!(error),
+            };
+            let Some(line) = line else {
+                fail_analysis_progress!(Error::EngineDisconnected);
+            };
             match parse_one(&line) {
                 UciMessage::Info(attrs) => {
                     if let Ok(best_moves) =
@@ -614,35 +808,61 @@ pub async fn analyze_game(
         analysis.is_sacrifice = fens[i].2;
         if options.annotate_novelties && !novelty_found {
             if let Some(reference) = options.reference_db.clone() {
-                analysis.novelty = !is_position_in_db(
+                analysis.novelty = match is_position_in_db(
                     reference,
                     GameQuery::new().position(query.clone()).clone(),
                     state.clone(),
                 )
-                .await?;
+                .await
+                {
+                    Ok(found) => !found,
+                    Err(error) => fail_analysis_progress!(error),
+                };
                 if analysis.novelty {
                     novelty_found = true;
                 }
             } else {
-                return Err(Error::MissingReferenceDatabase);
+                fail_analysis_progress!(Error::MissingReferenceDatabase);
             }
         }
     }
-    update_progress(&state.progress_state, &app, id.clone(), 100.0, true)?;
-    state.analysis_cancel_flags.remove(&id);
+    if let Err(error) = state
+        .engine_supervisor
+        .terminate_exact(&analysis_key, supervised.generation)
+        .await
+    {
+        fail_analysis_progress!(error);
+    }
+    update_progress_with_state(
+        &state.progress_state,
+        &app,
+        &progress_lease,
+        100.0,
+        ProgressState::Succeeded,
+    )?;
     Ok(analysis)
 }
 
+const MATE_SCORE: i32 = 10000;
+const PAWN_VALUE: i32 = 100;
+const KNIGHT_VALUE: i32 = 300;
+const BISHOP_VALUE: i32 = 300;
+const ROOK_VALUE: i32 = 500;
+const QUEEN_VALUE: i32 = 900;
+
 fn count_material(position: &Chess) -> i32 {
     if position.is_checkmate() {
-        return -10000;
+        return -MATE_SCORE;
+    }
+    if position.is_stalemate() {
+        return 0;
     }
     let material: ByColor<i32> = position.board().material().map(|p| {
-        p.pawn as i32 * piece_value(Role::Pawn)
-            + p.knight as i32 * piece_value(Role::Knight)
-            + p.bishop as i32 * piece_value(Role::Bishop)
-            + p.rook as i32 * piece_value(Role::Rook)
-            + p.queen as i32 * piece_value(Role::Queen)
+        p.pawn as i32 * PAWN_VALUE
+            + p.knight as i32 * KNIGHT_VALUE
+            + p.bishop as i32 * BISHOP_VALUE
+            + p.rook as i32 * ROOK_VALUE
+            + p.queen as i32 * QUEEN_VALUE
     });
     if position.turn() == Color::White {
         material.white - material.black
@@ -653,16 +873,19 @@ fn count_material(position: &Chess) -> i32 {
 
 fn piece_value(role: Role) -> i32 {
     match role {
-        Role::Pawn => 90,
-        Role::Knight => 300,
-        Role::Bishop => 300,
-        Role::Rook => 500,
-        Role::Queen => 1000,
+        Role::Pawn => PAWN_VALUE,
+        Role::Knight => KNIGHT_VALUE,
+        Role::Bishop => BISHOP_VALUE,
+        Role::Rook => ROOK_VALUE,
+        Role::Queen => QUEEN_VALUE,
         _ => 0,
     }
 }
 
 fn qsearch(position: &Chess, mut alpha: i32, beta: i32) -> i32 {
+    if position.is_checkmate() || position.is_stalemate() {
+        return count_material(position);
+    }
     let stand_pat = count_material(position);
 
     if stand_pat >= beta {
@@ -672,15 +895,18 @@ fn qsearch(position: &Chess, mut alpha: i32, beta: i32) -> i32 {
         alpha = stand_pat;
     }
     let legal_moves = position.legal_moves();
-    let mut captures: Vec<_> = legal_moves.iter().filter(|m| m.is_capture()).collect();
+    let mut captures: Vec<_> = legal_moves
+        .iter()
+        .filter_map(|mv| mv.capture().map(|captured| (mv, captured)))
+        .collect();
 
     captures.sort_by(|a, b| {
-        let a_value = piece_value(a.capture().unwrap());
-        let b_value = piece_value(b.capture().unwrap());
+        let a_value = piece_value(a.1);
+        let b_value = piece_value(b.1);
         b_value.cmp(&a_value)
     });
 
-    for capture in captures {
+    for (capture, _) in captures {
         let mut new_position = position.clone();
         new_position.play_unchecked(capture);
         let score = -qsearch(&new_position, -beta, -alpha);
@@ -696,6 +922,12 @@ fn qsearch(position: &Chess, mut alpha: i32, beta: i32) -> i32 {
 }
 
 fn naive_eval(pos: &Chess) -> i32 {
+    // The heuristic is from the side to move.  A terminal position has no
+    // legal move to maximise over: checkmate is a bounded mate score and any
+    // draw (including stalemate) is exactly zero, never the i32::MIN sentinel.
+    if pos.is_checkmate() || pos.is_stalemate() {
+        return count_material(pos);
+    }
     pos.legal_moves()
         .iter()
         .map(|mv| {
@@ -704,7 +936,7 @@ fn naive_eval(pos: &Chess) -> i32 {
             -qsearch(&new_position, i32::MIN, i32::MAX)
         })
         .max()
-        .unwrap_or(i32::MIN)
+        .unwrap_or_else(|| count_material(pos))
 }
 
 #[cfg(test)]
@@ -750,25 +982,35 @@ mod tests {
     #[test]
     fn eval_rook_stack() {
         let position = pos("rnrq4/8/8/1R6/1R6/1R5K/1Q6/7k w - - 0 1");
-        assert_eq!(naive_eval(&position), 500);
+        assert_eq!(naive_eval(&position), MATE_SCORE);
     }
 
     #[test]
     fn eval_rook_stack2() {
         let position = pos("rnrq4/8/8/1R6/1Q6/1R5K/1R6/7k w - - 0 1");
-        assert_eq!(naive_eval(&position), 200);
+        assert_eq!(naive_eval(&position), MATE_SCORE);
     }
 
     #[test]
     fn eval_opera_game1() {
         let position = pos("4kb1r/p2rqppp/5n2/1B2p1B1/4P3/1Q6/PPP2PPP/2K4R w k - 0 14");
+        // White evaluates ahead
         assert_eq!(naive_eval(&position), -100);
     }
 
     #[test]
     fn eval_opera_game2() {
         let position = pos("4kb1r/p2rqppp/5n2/1B2p1B1/4P3/1Q6/PPP2PPP/2KR4 b k - 1 14");
+        // Black's position is worse
         assert_eq!(naive_eval(&position), 0);
+    }
+
+    #[test]
+    fn eval_terminal_positions_have_documented_scores() {
+        let mate = pos("7k/6Q1/7K/8/8/8/8/8 b - - 0 1");
+        let stalemate = pos("7k/5Q2/7K/8/8/8/8/8 b - - 0 1");
+        assert_eq!(naive_eval(&mate), -MATE_SCORE);
+        assert_eq!(naive_eval(&stalemate), 0);
     }
 }
 
@@ -778,32 +1020,61 @@ pub struct EngineConfig {
     pub options: Vec<UciOptionConfig>,
 }
 
+const MAX_ENGINE_OPTIONS: usize = 512;
+
 #[tauri::command]
 #[specta::specta]
-pub async fn get_engine_config(path: PathBuf) -> Result<EngineConfig, Error> {
-    let mut base = BaseEngine::spawn(path).await?;
+pub async fn get_engine_config(
+    engine: EngineHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<EngineConfig, Error> {
+    let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineConfigure)?;
+    let base = EngineActor::spawn(executable, EngineDeadlines::default()).await?;
 
-    base.send("uci").await?;
+    let configuration = async {
+        base.start_uci_configuration().await?;
 
-    let mut config = EngineConfig::default();
-
-    let reader = base.reader_mut().ok_or(Error::EngineDisconnected)?;
-    while let Some(line) = reader.next_line().await? {
-        if let UciMessage::Id {
-            name: Some(name),
-            author: _,
-        } = parse_one(&line)
-        {
-            config.name = name;
-        }
-        if let UciMessage::Option(opt) = parse_one(&line) {
-            config.options.push(opt);
-        }
-        if let UciMessage::UciOk = parse_one(&line) {
-            break;
-        }
+        // The per-line timeout in `next_configuration_line` only protects a
+        // silent process. A chatty process which never sends `uciok` must be
+        // bounded too, otherwise it can keep this command alive indefinitely.
+        tokio::time::timeout(EngineDeadlines::default().uciok, async {
+            let mut config = EngineConfig::default();
+            while let Some(line) = base.next_configuration_line().await? {
+                if let UciMessage::Id {
+                    name: Some(name),
+                    author: _,
+                } = parse_one(&line)
+                {
+                    config.name = name;
+                }
+                if let UciMessage::Option(opt) = parse_one(&line) {
+                    if config.options.len() == MAX_ENGINE_OPTIONS {
+                        return Err(Error::ResourceLimit(format!(
+                            "engine advertised more than {MAX_ENGINE_OPTIONS} options"
+                        )));
+                    }
+                    config.options.push(opt);
+                }
+                if let UciMessage::UciOk = parse_one(&line) {
+                    return Ok(config);
+                }
+            }
+            Err(Error::EngineDisconnected)
+        })
+        .await
+        .map_err(|_| Error::EngineTimeout("collecting engine configuration".into()))?
     }
-    println!("{:?}", config);
-    base.quit().await?;
-    Ok(config)
+    .await;
+    // `terminate` reaps even an engine that ignores `quit`; a configuration
+    // probe must not leave a child behind on either success or parse failure.
+    let cleanup = base.terminate().await;
+    match (configuration, cleanup) {
+        (Ok(config), Ok(())) => Ok(config),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Err(cleanup)) => Err(Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: cleanup.to_string(),
+        }),
+    }
 }

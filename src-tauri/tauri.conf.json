@@ -74,11 +74,13 @@
     "security": {
       "assetProtocol": {
         "scope": [
-          "**"
+          "$APPDATA/**",
+          "$RESOURCE/**"
         ],
         "enable": true
       },
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://www.encroissant.org https://lichess.org https://www.chess.com https://api.chess.com; connect-src 'self' ipc: ws://localhost:* http://localhost:* https://lichess.org https://api.chess.com https://www.chess.com https://explorer.lichess.org https://tablebase.lichess.org https://www.chessdb.cn https://www.encroissant.org; media-src 'self' asset:;"
+
     }
   }
 }

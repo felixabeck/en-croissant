@@ -33,10 +33,8 @@ pub struct NewPlayer<'a> {
     pub elo: Option<i32>,
 }
 
-#[allow(dead_code)]
-struct White(pub Player);
-#[allow(dead_code)]
-struct Black(pub Player);
+pub struct White(pub Player);
+pub struct Black(pub Player);
 
 #[derive(Default, Queryable, Serialize, Deserialize, Identifiable, Associations)]
 #[diesel(belongs_to(White, foreign_key = white_id))]
