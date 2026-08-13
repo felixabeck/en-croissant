@@ -50,15 +50,41 @@ are fine" is never evidence.
   the camelCase invoke key from `file` to `filePath`. Any caller not regenerated breaks only at
   runtime.
 
-## The one known exception, and it is a defect
+## The last bare-string holdout, and what it cost
 
-`search_progress` is emitted by bare string in `src-tauri/src/db/search.rs` (lines 428 and 452) with
-its own `progress: f64` payload, and listened to by a hand-written
-`listen<ProgressPayload>("search_progress", …)`. It is **not** in `collect_events!`, which today
-lists only `BestMovesPayload`, `DatabaseProgress`, `ProgressEvent`, `GameMoveEvent`,
-`ClockUpdateEvent`, `GameOverEvent`. Nothing keeps the two sides in agreement. Do not copy this
-shape for a new event, and prefer routing this one through `ProgressEvent` if the surrounding code
-is being touched anyway.
+Until 2026-08-11 `search_progress` was emitted by bare string in `src-tauri/src/db/search.rs` with
+its own `ProgressPayload { progress: f64, id, finished, terminal }`, registered nowhere. The renderer
+side had meanwhile moved on: `DatabaseLoader.tsx` drives its bar from `useProgress(tab)`, which
+subscribes to the typed `ProgressEvent`. Nothing bridged the two, so **the database-search progress
+bar never showed real progress** — the backend computed a percentage every 50,000 games and emitted
+it into the void while the user watched an indeterminate animation. Exactly the failure mode this
+rule exists to prevent, and neither `bindings:check` nor `tauri:boundary:check` can see it: one side
+type-checks, the other side type-checks, and no contract connects them.
+
+`SearchProgress` now takes a lease from the progress store and reports through
+`update_progress_with_state`, so a search gets the same generation leases, terminal-state stickiness
+and bounded retention as every other job.
+
+## And then it happened again, from the other end — `convert_progress`, 2026-08-13
+
+Fixing `search_progress` did not stop the same class from recurring, because the second instance was
+created by removing the *consumer* rather than the producer. `src/App.tsx` listened to
+`convert_progress` with a raw `listen<[number, number, string | null]>` and fed
+`databaseConversionStateAtom`. When `tauri:boundary:check` began rejecting raw `listen()` outside
+`src/platform/`, that listener was deleted — and the two `app.emit("convert_progress", …)` calls in
+`src-tauri/src/db/mod.rs` were left in place, one of them `.unwrap()`-ing on a renderer-driven import
+path. `DatabasesPage.tsx` kept rendering `conversionState.totalGames` and a `games/s` rate that could
+no longer ever be anything but zero, so **the live import counter silently died** while an import of
+hundreds of thousands of games ran. A boundary checker that only looks at one side will happily
+green-light deleting the last listener for an event nobody stopped emitting.
+
+The event is now the registered `ConvertProgress { imported_games, elapsed_ms, source_file_name }`,
+emitted best-effort (never `unwrap`), and consumed by `useConversionProgress` through the facade.
+`collect_events!` lists exactly `BestMovesPayload`, `ConvertProgress`, `DatabaseProgress`,
+`ProgressEvent`, `GameMoveEvent`, `ClockUpdateEvent`, `GameOverEvent` — there is no longer any event
+outside it. Keep it that way, and when a listener has to go, **check whether anything still emits to
+it before deleting it**; an event with a producer and no consumer is invisible to every gate in this
+repository.
 
 ## What the gates already prove — do not restate it as a rule
 
