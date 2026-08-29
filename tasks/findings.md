@@ -118,6 +118,41 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   frontend. It does not, and lowering the floor is a different act from correcting a stale
   instrument — so it goes back to Felix rather than proceeding on an assumption he was not shown.
 
+* **Diagnosed 2026-08-30 by diffing CI's LCOV against atlas's, and the "two environment-dependent
+  branches" reading was wrong.** Comparing the two artefacts record by record over
+  `app-infrastructure`:
+
+  | metric | atlas | CI | records that differ |
+  | --- | --- | --- | --- |
+  | lines | 4208/6292 | 4207/6292 | **1** |
+  | branches | 745/2018 | 744/2018 | **337** |
+
+  **337 branch records flip, in both directions, and net out to one.** Line coverage over the same
+  code differs by a single record. So the branch *identity* in the LCOV — the `BRDA:line,block,branch`
+  triple — is not stable across builds: LLVM renumbers blocks and branches, and the exact-count
+  ratchet then compares two numberings rather than two coverage results. Most of the ±1 the gate
+  fires on is that renumbering, not a change in what is tested.
+* **The one real difference is `src-tauri/src/infra/fs.rs:414`**, atlas HIT / CI miss — the
+  recursive `remove_tree_at(&child, OsStr::from_bytes(bytes))?` inside the `RawDir` walk. It is
+  reached only when the directory being removed *contains a subdirectory*, and no test creates that
+  shape deterministically, so whether it is covered depends on what the temp tree happens to hold.
+  The concentration of churn at `fs.rs:195-324` fits: those lines are the atomic-write path guarded
+  by `metadata.dev()`/`ino()` identity checks and fault injection, which is exactly the code whose
+  codegen and execution vary with the filesystem underneath.
+* **So the fix is not a lower floor.** Two separate pieces of work, neither of which is "re-record
+  at the minimum":
+  1. **Cover `fs.rs:414` deterministically** — a test that removes a directory containing a nested
+     subdirectory. That is a genuine gap in its own right: recursive deletion is the dangerous half
+     of `remove_tree_at`, and today nothing exercises it on purpose. It also makes the two
+     environments agree at 4208/6292 lines.
+  2. **Stop ratcheting this area on raw branch-record counts**, which are not comparable across
+     machines. Line counts are (one record apart across two very different hosts). This is the same
+     mechanism as `f-20260829-15` from the other side: the exact-count rule assumes a stable
+     identity that LCOV branch records do not have.
+* **Evidence:** CI run 33277621360, artifact `backend-coverage`; local LCOV from the same tree. The
+  artifact only exists because `3a2142c1` moved the upload to `always()` — before that, a red
+  ratchet withheld exactly the measurement needed to explain it.
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
@@ -630,3 +665,31 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   regressions this ratchet was built to catch (`docs/coverage.md:9-11`).
 * **Found by:** the 2026-08-29 setup run, when killing the `f-20260829-08` mutants required
   deleting the dead branch.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### `remove_tree_at` recursion into a nested subdirectory is not deterministically tested
+
+* **ID:** f-20260830-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/infra/fs.rs:413-414`, the recursive arm of the `RawDir` walk:
+  `if bytes != b"." && bytes != b".." { remove_tree_at(&child, OsStr::from_bytes(bytes))?; }`.
+* **Defect:** the recursion is only reached when the directory being removed *contains a
+  subdirectory*, and no test constructs that shape on purpose. Whether the line executes depends on
+  what the temporary tree happens to hold, which is why it is the **single** line record that
+  differs between `tuxedo-atlas` (HIT) and GitHub's runner (miss) out of 6292 in the area — see
+  `f-20260829-01` for the full diff.
+* **Why it deserves a test on its own merits, independent of coverage bookkeeping:** recursive
+  deletion is the dangerous half of this function. It descends through directory entries and calls
+  `unlinkat(..., REMOVEDIR)`, under a `dev`/`ino` identity guard meant to stop a concurrently
+  swapped parent from redirecting the walk. Nothing currently proves the descent happens, that it
+  terminates, or that the guard still holds one level down.
+* **Suggested shape:** create `a/b/c` with a file at the deepest level, remove `a`, assert the tree
+  is gone and that the identity guard rejects a parent swapped between the walk and the unlink —
+  the neighbouring tests already use the `AtomicFileFaultPoint` injector for exactly that kind of
+  interleaving.
+* **Side effect worth having:** with the line deterministically covered, atlas and CI agree at
+  4208/6292 lines for `app-infrastructure`, removing the only real cross-machine difference there.
+* **Found by:** diffing CI's `backend-coverage` artifact (run 33277621360) against the local LCOV,
+  2026-08-30.
