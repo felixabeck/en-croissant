@@ -42,3 +42,24 @@ tsconfig.tsbuildinfo
 *.sw?
 
 src-tauri/gen/
+
+# Findings ledger runtime state. `tasks/findings.md` and `tasks/decisions.md` are
+# tracked; everything the spool, the locks and the answer channel create is not.
+tasks/findings-inbox/
+tasks/findings-inbox.claim/
+tasks/findings-inbox.md
+tasks/findings-inbox.md.claim-*
+tasks/findings-inbox.publish.lock
+tasks/findings-inbox.receipts/
+tasks/findings-answers/
+tasks/findings-answers.claim/
+tasks/findings-answers.publish.lock
+tasks/findings.md.lock
+tasks/findings.md.lock/
+tasks/decisions.md.lock
+tasks/decisions.md.lock/
+tasks/.decisions-announced.json
+tasks/.decisions-announced.json.lock
+tasks/*.tmp-*
+tasks/*.candidate-*
+tasks/.*.part
