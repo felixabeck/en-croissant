@@ -575,3 +575,30 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   propagated to every project that carries it.
 * **Found by:** `review-error-handling` (confidence 95) during the `$push` review of the
   2026-08-29 setup work.
+
+---
+
+## 2026-08-29 — filed through the inbox spool
+
+### The coverage ratchet penalises deleting covered code
+
+* **ID:** f-20260829-15 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `scripts/coverage-report.mjs`, `assertBaseline`; the rule is stated in
+  `docs/coverage.md:5` — "rejects a lower covered count, a larger total, or a lower percentage".
+* **Defect:** the covered-count clause fires on any deletion of covered code, because removing a
+  covered line or branch necessarily lowers the count. Observed 2026-08-29: deleting one provably
+  dead branch (`queuedGeneration !== null`, which mutation testing had flagged as an equivalent
+  mutant) moved `boards-game-analysis` branches from 181/5677 to 180/5676 and reddened the gate,
+  even though the ratio was effectively unchanged and no behaviour lost cover.
+* **Why it matters more than the one incident:** this makes the ratchet push against exactly the
+  cleanup that mutation testing asks for. The cheapest way to keep a gate green is then to leave
+  dead code in place, which is the opposite of what both gates exist to encourage — and the
+  workaround is a baseline refresh, i.e. the operation the same document warns about. Every such
+  deletion now needs a decision entry (`d-20260829-03` is the first).
+* **Fix directions, not decided:** compare ratios with a tolerance instead of raw counts; or scale
+  the expected covered count by the change in total, so a proportional deletion is neutral; or
+  exempt a decrease whose covered/total deltas are equal. Each has a different failure mode and the
+  choice deserves its own interview — a tolerance that is too loose silently readmits the small
+  regressions this ratchet was built to catch (`docs/coverage.md:9-11`).
+* **Found by:** the 2026-08-29 setup run, when killing the `f-20260829-08` mutants required
+  deleting the dead branch.

@@ -74,3 +74,23 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   code — is what moved. Do not cite this entry as precedent for a re-baseline that lacks such
   evidence.
 * **Decided by:** Felix, in the chat, 2026-08-29 · **Superseded-by:** -
+
+### d-20260829-03 — Deleting a covered dead branch trips the ratchet. Refresh, or keep the dead code?
+
+* **Governs:** f-20260829-08, f-20260829-15
+* **Chosen:** refresh the baseline for the one metric that moved. Removing the dead
+  `queuedGeneration !== null` clause deleted one branch that happened to be covered, so
+  `boards-game-analysis` branches went 181/5677 to 180/5676 — numerator and denominator each down
+  by exactly one, because the branch no longer exists.
+* **Rejected:** restoring the dead clause to keep the number. That would let the gate dictate worse
+  code — and the clause is provably unreachable-as-false, which is why mutation testing flagged it.
+* **Because:** `docs/coverage.md` forbids refreshing a baseline *to accept a regression*, and treats
+  refreshing as ordinary practice otherwise ("new security or IPC surfaces require focused tests
+  before the baseline is refreshed"). No behaviour lost coverage here: a branch that could never be
+  false stopped existing. The audit is one line wide and in the commit message, so the claim is
+  checkable rather than asserted.
+* **Note the general problem this exposes:** the ratchet rejects a lower covered count outright, so
+  it penalises *deleting* covered code — exactly the cleanup mutation testing asks for. Filed as
+  f-20260829-15; this decision is the local workaround, not the fix.
+* **Decided by:** Claude Code, autonomously while Felix was away, under his standing instruction to
+  proceed — flagged in the report for him to reverse if he disagrees · **Superseded-by:** -
