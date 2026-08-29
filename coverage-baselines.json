@@ -5,10 +5,7 @@
       {
         "id": "frontend",
         "root": "src",
-        "include": [
-          "src/**/*.ts",
-          "src/**/*.tsx"
-        ],
+        "include": ["src/**/*.ts", "src/**/*.tsx"],
         "exclude": [
           "src/**/*.spec.ts",
           "src/**/*.spec.tsx",
@@ -25,12 +22,7 @@
       {
         "id": "application-bootstrap",
         "source": "frontend",
-        "paths": [
-          "src/App.tsx",
-          "src/i18n.ts",
-          "src/index.tsx",
-          "src/platform/analytics.ts"
-        ]
+        "paths": ["src/App.tsx", "src/i18n.ts", "src/index.tsx", "src/platform/analytics.ts"]
       },
       {
         "id": "boards-game-analysis",
@@ -106,10 +98,7 @@
       {
         "id": "settings",
         "source": "frontend",
-        "paths": [
-          "src/components/settings/**",
-          "src/styles/**"
-        ]
+        "paths": ["src/components/settings/**", "src/styles/**"]
       },
       {
         "id": "shared-shell-ui",
@@ -136,10 +125,7 @@
       {
         "id": "state-persistence",
         "source": "frontend",
-        "paths": [
-          "src/hooks/**",
-          "src/state/**"
-        ]
+        "paths": ["src/hooks/**", "src/state/**"]
       },
       {
         "id": "tabs-routing",

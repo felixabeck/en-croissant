@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 
@@ -290,6 +291,19 @@ export function assertAreaFloors(report, config) {
 
 export async function writeBaseline({ areas, scope, path }) {
   await writeFile(path, `${JSON.stringify({ version: 1, scope, areas }, null, 2)}\n`);
+  // `JSON.stringify` cannot reproduce oxfmt's style (it collapses short arrays onto one line),
+  // so a freshly written baseline fails `oxfmt --check` and therefore `pnpm lint:ci`. Formatting
+  // it here keeps the trap out of the workflow: re-recording a baseline is rare and deliberate,
+  // and discovering afterwards that the linter is red for a reason unrelated to your change is
+  // exactly the kind of detour nobody remembers the fix for. Measured 2026-08-29, when it
+  // reddened CI one commit after an authorized re-record.
+  const formatter = resolve("node_modules/.bin/oxfmt");
+  const formatted = spawnSync(formatter, [path], { encoding: "utf8" });
+  if (formatted.status !== 0) {
+    process.stderr.write(
+      `warning: wrote ${path} but could not run oxfmt on it; run \`pnpm format\` before committing\n`,
+    );
+  }
 }
 
 function parseArguments(argumentsList) {
