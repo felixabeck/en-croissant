@@ -21,8 +21,8 @@ user-selected file, a database, an engine, or the network.**
 These three sentences are the distilled result of the backend and frontend audits of 2026-08-09
 (107 and 98 execution items). They are stated once here because the two plans that produced them,
 `BACKEND_AUDIT_PLAN.md` and `FRONTEND_AUDIT_PLAN.md`, are wave-structured process documents:
-their section 1 is the only normative part, the remaining 600+ lines are completed history, and
-neither file is committed. Working from them means reading a plan to find a rule.
+their section 1 is the only normative part and the remaining 600+ lines are completed history.
+Both files are committed, but working from them means reading a plan to find a rule.
 
 Each clause has a repository incident behind it, catalogued in the review lenses:
 

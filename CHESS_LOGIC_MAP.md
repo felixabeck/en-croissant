@@ -1,75 +1,129 @@
 # Chess Logic Map: En Croissant 🥐
 
-Dieses Dokument analysiert die Architektur des En Croissant-Projekts mit Fokus auf die Anbindung von Schachengines, die Datenbankhaltung von Partien, die asynchrone Prozessierung, das Frontend-Streaming und zeigt potenzielle Flaschenhälse der aktuellen Implementierung auf.
+Architecture and navigation map for agents: where state lives, how the renderer reaches the Rust
+side, how engine output is streamed, how games are stored, and which bottlenecks are still real.
 
-## 1. Engine-Anbindung und UCI-Protokoll
+This file is the *only* architecture map in the repository. It replaced `OPUS_HANDOVER.md` on
+2026-08-29; that file described the pre-audit tree (an `AppState` full of bare `DashMap`s, engine
+logs that grew without a bound) and had drifted far enough to mislead. Verify against the source
+before trusting any line here, and correct the line rather than writing a third map.
 
-Die Engine-Kommunikation ist in `src-tauri/src/engine/process.rs` implementiert.
+## 1. Backend state
 
-**Wichtige Structs:**
+`AppState` — `src-tauri/src/main.rs:381`, registered at `main.rs:1366` via `.manage(AppState { … })`.
+It holds no bare collections; each concern is behind a type that owns its own cleanup:
 
-- `BaseEngine`: Kapselt den Systemprozess der Engine sowie die Streams für Standardein- und -ausgabe (`stdin`, `stdout`).
+| Field | Type | Owns |
+| --- | --- | --- |
+| `database_repository` | `Arc<db::DatabaseRepository>` | Diesel/r2d2 SQLite pools |
+| `search_cache` | `SearchCache` | position-search results |
+| `pgn_repository` | `pgn::PgnRepository` | the cached byte-offset index over PGN files |
+| `pgn_path_authority` | `Mutex<Option<infra::path_authority::PathAuthority>>` | which PGN paths the renderer may reach |
+| `engine_supervisor` | `EngineSupervisor` | UCI child processes and their lifetimes |
+| `auth` | `Arc<AuthLifecycle>` | OAuth flow state |
+| `credentials` | `Arc<CredentialManager>` | tokens, in the OS keyring — never in the renderer |
+| `game_manager` | `Arc<GameManager>` | active games |
+| `progress_state` | `progress::ProgressStore` | background-task progress |
+| `puzzle_cache` | `Arc<Mutex<PuzzleCache>>` | puzzle sets |
+| `http_transport` | `Arc<dyn infra::net::DownloadTransport>` | outbound HTTP, swappable in tests |
+| `download_registry` | `Arc<fs::DownloadRegistry>` | in-flight downloads |
+| `path_grants` | `infra::path::PathGrants` | per-path filesystem grants |
 
-**Ablauf der Anbindung:**
+`sound::SoundServerPort` and `sound::SoundShutdownTx` are managed separately (`main.rs:1328-1353`),
+because the local sound server (Linux) may fail to bind and the app must still start.
 
-1. **Prozessstart**: Über `tokio::process::Command` wird die Engine als asynchroner Subprozess gestartet. Die Kanäle für `stdin`, `stdout` und `stderr` werden über `Stdio::piped()` umgeleitet.
-2. **Initialisierung**: Die Methode `init_uci()` sendet die Strings `"uci"` und `"isready"` in den `stdin` der Engine und blockiert asynchron (`wait_for`), bis die Engine mit `"uciok"` und `"readyok"` antwortet.
-3. **Konfiguration**: Engine-Optionen werden über die Methode `set_option` gesendet (z.B. für UCI_Chess960 oder Threads).
-4. **Spielablauf**: Positionen werden über `set_position` als FEN und nachfolgende Züge (`moves`) an die Engine übergeben. Der Befehl zum Suchen wird durch `go` initiiert, wobei Parameter über das Struct `GoMode` (z.B. Zeit, Tiefe, Infinite) übergeben werden.
+Modules: `chess` (engine analysis commands), `engine/{process,types,uci}` (UCI supervision),
+`db/{mod,search,repository,ops,encoding,search_index,models,schema,migrations}`, `game` (active game
+lifecycle), `pgn` + `lexer` (parsing and the offset index), `opening`, `puzzle`, `fs`, `oauth`,
+`credentials`, `lichess`, `chesscom`, `progress`, `sound`, `file_workspace`, and `infra/*`
+(`path_authority`, `path`, `net`, `fs`, `blocking`, `runtime`, `validation`).
 
-## 2. Asynchrone Prozesse für Engine-Ausgaben
+## 2. The renderer boundary
 
-Da Engines ihre Berechnungen asynchron im Hintergrund durchführen und ständig Output generieren (z.B. Suchtiefe, Evaluationswerte), wird asynchrones I/O via `tokio` genutzt.
+Commands are `#[tauri::command] #[specta::specta]` functions, collected in
+`tauri_specta::collect_commands!` at `src-tauri/src/main.rs:1119`; events in `collect_events!` at
+`main.rs:1234`. A debug build regenerates `src/bindings/generated.ts` — the export is behind
+`#[cfg(debug_assertions)]`, so a release build silently exports nothing.
 
-- **Lesen von `stderr`**: Direkt nach dem Start der Engine wird ein separater `tokio::spawn` Task gestartet, der kontinuierlich `stderr` zeilenweise ausliest (`AsyncBufReadExt::next_line`) und Fehler via `log::error!` protokolliert, ohne den Hauptthread zu blockieren.
-- **Lesen von `stdout`**: Der Standard-Output wird über `Lines<BufReader<ChildStdout>>` gelesen. Methoden wie `wait_for` oder `wait_for_bestmove` iterieren asynchron über eingehende Zeilen (`reader.next_line().await`).
-- **Parsing**: Jede gelesene Zeile wird durch das Crate `vampirc_uci::parse_one` in die `UciMessage` Enum geparst, um auf `BestMove` Nachrichten zu reagieren.
-- **Loghaltung**: Alle ausgehenden und eingehenden Kommunikationen werden sofort als `EngineLog::Gui(String)` oder `EngineLog::Engine(String)` in einem Vektor (`self.logs: Vec<EngineLog>`) gespeichert.
+- The renderer imports `commands` and `events` from `src/bindings/generated.ts`, and reaches Tauri
+  only through `src/platform/` (`tauri.ts`, `native.ts`, `errors.ts`, `operation.ts`).
+  `pnpm tauri:boundary:check` enforces both.
+- A new event goes into `collect_events!`. Emitting by bare string is how the `search_progress` and
+  `convert_progress` incidents happened — see `.claude/rules/ipc-events.md`.
+- `pnpm bindings:check` re-runs the exporter and fails if the checked-in file differs by a byte.
+  Never hand-edit it.
 
-## 3. Datenhaltung in der Datenbank
+Where the bindings are consumed:
 
-Das Projekt verwendet SQLite in Verbindung mit dem `diesel` ORM für die strukturierte Ablage der Schachpartien (`src-tauri/src/db/models.rs` und `schema.rs`).
+| Area | Files | Commands / events |
+| --- | --- | --- |
+| Active game | `src/components/boards/BoardGame.tsx` | `startGame`, `makeGameMove`, `takeBackGameMove`, `abortGame`, `resignGame`, `getGameState`, `getGameEngineLogs`; `gameMoveEvent`, `clockUpdateEvent`, `gameOverEvent` |
+| Databases / PGN | `src/components/databases/{DatabasesPage,AddDatabase}.tsx` | `clearGames`, `convertPgn`, `exportToPgn`, `deleteDatabase`, `mergePlayers`, `createIndexes`, `deleteIndexes` |
+| Analysis | `src/components/boards/EvalListener.tsx`, `src/components/panels/analysis/ReportPanel.tsx`, `src/components/engines/EnginesPage.tsx` | `getEngineConfig`, `cancelAnalysis`; `bestMovesPayload` |
+| Progress | `src/hooks/useProgress.ts`, `src/components/home/AccountCard.tsx` | `progressEvent` |
 
-**Wichtige Structs:**
+## 3. Engine connection and the UCI protocol
 
-- `Game` (Queryable) / `NewGame` (Insertable): Repräsentieren eine Schachpartie.
-- Assoziierte Structs: `Player`, `Site`, `Event`.
+Implemented in `src-tauri/src/engine/process.rs`.
 
-**Schema und Speicherung:**
+1. **Spawn** — `tokio::process::Command` with `Stdio::piped()` for `stdin`/`stdout`/`stderr`, under
+   a spawn deadline (`deadlines.spawn`).
+2. **Handshake** — `init_uci()` writes `uci` and `isready` and waits for `uciok` / `readyok`, each
+   behind its own timeout (`deadlines.uciok`, `deadlines.readyok`).
+3. **Configuration** — `set_option` (e.g. `UCI_Chess960`, `Threads`), validated in `engine/types.rs`
+   (`MAX_ENGINE_LIMIT`, `MAX_ENGINE_OPTION_RESOURCES`).
+4. **Search** — `set_position` takes a FEN plus follow-up moves; `go` is parameterised by `GoMode`
+   (time, depth, infinite).
 
-- **Metadaten**: Spieler-IDs (`white_id`, `black_id`), Event (`event_id`), Datum, Zeitkontrolle, Resultat (`Outcome`-Enum als Text wie "1-0", "0-1") und ECO-Code.
-- **Spielzustand**:
-  - `fen`: Speichert optional die Start-FEN, falls es keine Standard-Ausgangsstellung ist.
-  - `moves`: Die Züge werden als `Vec<u8>` (Binary Blob) gespeichert. Dies spart Speicherplatz gegenüber Klartext-PGN und wird beim Abfragen dekodiert.
-  - Weitere Felder wie `ply_count` (Anzahl der Halbzüge) und `pawn_home`.
+Output handling is asynchronous throughout: a dedicated `tokio::spawn` drains `stderr` line by line
+into `log::error!`, `stdout` is read through `Lines<BufReader<ChildStdout>>`, and each line is parsed
+by `vampirc_uci::parse_one` into `UciMessage`. Reads are bounded by `deadlines.search` and
+`deadlines.stop`, so a hung engine does not park a task forever.
 
-## 4. Streaming an das Frontend
+Logs are bounded, not unbounded: `BoundedLogs` (`process.rs:36-39`) caps at `MAX_LOG_LINES = 2_000`
+and `MAX_LOG_BYTES = 512 KiB`, truncates a single oversized line at `MAX_ENGINE_LINE_BYTES = 64 KiB`,
+caps stderr at `MAX_ENGINE_STDERR_BYTES = 512 KiB`, and reports the exact dropped-entry count.
 
-Die Brücke zum Frontend (React/TypeScript) wird durch Tauri Commands und Events realisiert, welche mit dem `specta` und `tauri-specta` Crate getypt sind, um Typsicherheit zu gewährleisten (`src-tauri/src/game.rs` und `main.rs`).
+## 4. Game storage
 
-**Status- und Event-Structs:**
+SQLite via Diesel, `src-tauri/src/db/{models,schema}.rs`.
 
-- `GameState`: Der volle Status einer Partie (ID, FEN, Züge, Uhren, Spieler).
-- `GameMoveEvent`: Informiert das Frontend über einen getätigten Zug (enthält die Zughistorie, aktuelle FEN, Uhren).
-- `ClockUpdateEvent`: Teilt dem Frontend geänderte Zeiten auf der Schachuhr mit.
-- `GameOverEvent`: Wird ausgelöst, wenn die Partie durch Matt, Remis oder Zeitüberschreitung beendet wurde (`GameResult`).
+- `Game` (Queryable) / `NewGame` (Insertable), with `Player`, `Site`, `Event` alongside.
+- Metadata: `white_id`, `black_id`, `event_id`, date, time control, `Outcome` as text (`1-0`, `0-1`),
+  ECO code.
+- `fen` holds the start position only when it is not the standard one — position identity depends on
+  which FEN fields you compare (`.claude/rules/chess-tree-semantics.md`).
+- `moves` is a binary blob (`Vec<u8>`), decoded on read. Encode and decode must agree on
+  `CastlingMode`; `db/encoding.rs` owns that symmetry.
+- `ply_count`, `pawn_home` support the search predicates in `db/search.rs` and the memory-mapped
+  index in `db/search_index.rs`.
 
-**Ablauf**:
-Bei Aktionen wie `make_move` oder im Game-Loop (`game.rs`) ruft das Backend `event.emit(app)` auf. Tauri serialisiert das Struct nach JSON und schiebt es über den IPC-Kanal (Inter-Process Communication) an den WebView. Das Frontend subscribt auf diese Events und aktualisiert die UI reaktiv.
+## 5. Streaming to the renderer
 
-## 5. Potenzielle Flaschenhälse (Bottlenecks)
+`src-tauri/src/game.rs` emits typed events through `event.emit(app)`; Tauri serialises to JSON over
+IPC and the renderer subscribes through the platform facade.
 
-1. **Unbegrenztes Engine-Log-Wachstum**:
-   Die `BaseEngine` pusht _jede_ Zeile Output (und Input) in `self.logs: Vec<EngineLog>`. Bei tiefen Engine-Analysen (z.B. Multi-Threaded Stockfish mit `go infinite`) werden tausende Zeilen pro Sekunde generiert. Dies führt über Zeit zu massiver Speicherfragmentierung und hohem RAM-Verbrauch, da der Vektor niemals geleert oder limitiert wird.
+- `GameState` — full game status (id, FEN, moves, clocks, players).
+- `GameMoveEvent` (`game.rs:187`) — `game_id`, `session`, `revision`, `moves`, `fen`, `white_time`,
+  `black_time`.
+- `ClockUpdateEvent` (`game.rs:199`) — `game_id`, `session`, `revision`, both clocks.
+- `GameOverEvent` — mate, draw, or flag, carrying `GameResult`.
 
-2. **Zustandserkennung per FEN-String Hashing**:
-   Im `GameController` wird die Erkennung der dreifachen Stellungswiederholung implementiert, indem ein Teil des FEN-Strings (ohne Zugzähler) als Key für eine `HashMap<String, u32>` genutzt wird. Bei jedem Zug eine FEN zu generieren und Strings zu hashen ist im Vergleich zu einem Zobrist-Hash sehr ineffizient.
+`session` and `revision` are the correlation discriminators. A listener must match on them rather
+than assuming the newest payload belongs to the newest request — that assumption is the bug class
+`.claude/rules/async-resource-invariants.md` exists to prevent.
 
-3. **Blockierende Asynchrone Reads in der Engine**:
-   Methoden wie `wait_for_bestmove` blockieren den aktuellen Task, bis die Engine antwortet. Es gibt hier keinen systemseitigen Timeout (z.B. über `tokio::time::timeout`). Hängt sich die Engine auf, wartet dieser Task für immer (`NextLine` blockiert).
+## 6. Bottlenecks that are still real
 
-4. **Moves in der DB als `Vec<u8>` ohne nativen Index**:
-   Züge werden als Binärdaten abgelegt. Möchte man die Datenbank nach Partien durchsuchen, die eine bestimmte Zugabfolge enthalten (z.B. Eröffnungssuche), kann SQLite dies nicht über Standard-Indizes abbilden. Das Backend muss Partien auslesen, dekodieren und matchen, oder es wird ein separater Suchindex (hier `MmapSearchIndex`) benötigt, was zusätzlichen Synchronisierungsaufwand und RAM bedeutet.
+Two entries that stood here before the 2026-08-09 audit — unbounded engine logs and timeout-free
+reads — are fixed (§3) and were removed. What remains, each verified on 2026-08-29:
 
-5. **Hoher IPC-Traffic (Frontend-Streaming)**:
-   Das Senden ganzer Zughistorien (`moves: Vec<GameMove>`) im `GameMoveEvent` bei _jedem_ Zug skaliert schlecht für sehr lange Partien, da die JSON-Payload stetig wächst. Uhren-Updates via Tauri-Events können zudem den IPC-Kanal verstopfen, wenn sie nicht gedrosselt (debounced/throttled) werden.
+1. **Threefold repetition keyed by FEN string** — `game.rs:248` holds
+   `position_history: HashMap<String, u32>`. Building a FEN and hashing a string on every move is
+   far more expensive than a Zobrist hash, and it makes position identity depend on exactly which
+   FEN fields the key includes.
+2. **Moves stored as an opaque blob** — SQLite cannot index into `Vec<u8>`, so searching for a move
+   sequence means decoding games or maintaining the separate `MmapSearchIndex`, which costs RAM and
+   has to be kept in sync with the table it shadows.
+3. **`GameMoveEvent` carries the whole move list on every move** — the JSON payload grows with game
+   length, and unthrottled `ClockUpdateEvent`s share the same IPC channel.

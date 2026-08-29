@@ -16,6 +16,7 @@ error history this project learns from; foreign upstream changes are never rewri
 | `e2e/` | Playwright specs with committed snapshots |
 | `scripts/` | Repo-local gate checkers (`check-bindings.mjs`, `check-tauri-command-boundary.mjs`, `check-ui-boundaries.mjs`, coverage and bundle reporters) |
 | `docs/` | `coverage.md`, `bundle-budgets.md`, `localization.md`, `signed-download-manifests.md` |
+| `tasks/` | `findings.md` (deferred-findings ledger), `decisions.md`; driven by `scripts/findings.py` |
 
 `BACKEND_AUDIT_PLAN.md` and `FRONTEND_AUDIT_PLAN.md` are the wave-structured audit plans that
 produced most of the current tooling; `CHESS_LOGIC_MAP.md` describes the engine/database/streaming
@@ -87,28 +88,86 @@ carry this codebase's failure history:
 Which lenses run for a push is decided by `~/.claude/references/push-review-policy.md`; this table
 says what each one knows, so a plan can be sanity-checked against the right lens before code exists.
 
-## Repository state (as of 2026-08-13)
+## Findings ledger
 
-The audit implementation is **committed and pushed**; the working tree is clean and every gate
-listed above is green on the pushed tree. A fresh clone therefore has the checkers, the E2E suite,
-and all four coverage/budget JSON files. Work in this repository is **paused** — it is a side
-project and Felix is working elsewhere.
+Deferred findings go on disk the moment they are found, per universal rule 4b — never only into a
+session's context, and never only into a handoff message.
 
-Before resuming, read the "Final exact-tree verification (2026-08-13)" section of
-`BACKEND_AUDIT_PLAN.md` and `FRONTEND_AUDIT_PLAN.md`. They record what was verified, what was fixed,
-and — importantly — what is **not** evidence. Three things are open and should not be assumed done:
+- The ledger is `tasks/findings.md`, an **append-only log**; the work queue is derived from it by
+  `python3 scripts/findings.py`, grouped by `Root` first and `Area` second. Position in the file
+  carries no meaning.
+- **File every new finding with one command**, whether or not a drain is running. Write the complete
+  `###` entry to a file with `**ID:** f-PENDING`, then run
+  `python3 scripts/findings.py file <path-to-entry-file>`. It validates, publishes atomically
+  through the inbox spool `tasks/findings-inbox/`, and reports the allocated id — or, if a drain
+  holds the lock, that the drain will merge it. **Never pick an id yourself and never edit
+  `tasks/findings.md` by hand while a drain is running.**
+- `python3 scripts/findings.py next` picks the next cluster, `related` finds siblings before you
+  file, `decisions` lists what is parked on Felix, `drain-status` answers whether a drain is
+  running (exit 0 = yes). `check` validates every header and the area vocabulary.
+- `tasks/decisions.md` records the technical calls made while working findings, so a later session
+  reads them instead of re-deriving the question.
+- The area vocabulary is a **closed set**, listed in the ledger header; `check` rejects any other
+  value. Adding an area is a deliberate edit to that list.
+- The universal contract — field meanings, ranking, the decision discipline, the lock protocol — is
+  `~/.claude/references/findings-ledger-contract.md`. `scripts/findings.py` is deliberately
+  identical across Felix's projects; nothing project-specific may be added to it.
 
-- **Mutation testing has no valid evidence for either side.** The backend run was interrupted
-  mid-flight and its numbers are discarded; the frontend numbers describe an older tree.
-- **The 320px / 200% font-scale layout is broken.** The committed E2E screenshots record clipped
-  headings rather than contradict them, and `assertNoHorizontalOverflow` passes only because the
-  content is clipped instead of widening the document.
-- **`src/App.tsx` is untested** (0 of 75 lines), so its startup sequence has no regression cover.
+This repository has no Python test suite, so nothing gates `findings.py check` automatically. Run it
+directly whenever a diff touches `tasks/`.
 
-Also note that the audit was produced by a Gemini-driven agent run and **has not been reviewed line
-by line**. What is proven is that every gate passes, not that every change is right. Defects found
-while getting the gates green are listed in the two plan documents; treat the rest of the diff as
-unreviewed.
+## Verifying UI changes
+
+`.claude/skills/verify-ui/SKILL.md` is the canonical contract (`.agents/skills/verify-ui/SKILL.md`
+is its Codex bridge). **Read it before verifying any visible change.** The short version, because
+getting this wrong is the recurring mistake: Chrome MCP cannot attach to the Tauri webview, and
+`pnpm start-vite` plus a browser is not evidence — `TopBar.tsx` calls `getCurrentWebviewWindow()`
+at module scope and the page crashes without a Tauri backend. Automated proof is
+`pnpm test:e2e:container`; the live product is the window `pnpm dev` opens, and that check is
+Felix's, not an agent's.
+
+## Repository state (as of 2026-08-29)
+
+The audit implementation is **committed and pushed**; `master` tracks `origin/master` in sync and is
+33 commits ahead of `upstream/master`. Work here is a side project, picked up in bursts.
+
+The working checkout is on **`tuxedo-atlas`** (cloned 2026-08-29 from `felixabeck/en-croissant` over
+SSH; commits are ssh-signed). Measured green on this machine: `pnpm test`, `cargo test` (306),
+`pnpm lint:ci`, `pnpm bindings:check`, both boundary checks, `pnpm bundle:check`, `pnpm build`
+(Tauri release, `--no-bundle`), and — since the toolchain was completed on 2026-08-29 —
+`pnpm test:coverage:backend`.
+
+What is **not** settled, all of it filed in `tasks/findings.md` rather than only described here:
+
+- **Both coverage ratchets are red on atlas, and neither is a regression** — `f-20260829-01`
+  (backend: `app-infrastructure` 745/2018 against a baseline of 746/2018, deterministic across two
+  runs, on a tree whose branch total matches the baseline exactly) and `f-20260829-06` (frontend:
+  `tauri-ipc-platform` 156/218 against 155/215, with six of ten areas measuring differently here
+  than the baselines record, none of those files changed). They share the root
+  `machine-dependent-measurement`: the baselines describe some other machine's instrumentation.
+  **Never rewrite a baseline to clear this** (`docs/coverage.md`); `coverage:baseline:*` is denied
+  in `.claude/settings.json` for the same reason.
+- **Mutation testing** — the tooling (`cargo-mutants` 27.1.0, `cargo-llvm-cov` 0.8.7,
+  `nightly-2025-06-01`) was installed on atlas on 2026-08-29 at the versions
+  `.github/workflows/test.yml` pins, and `pnpm mutation:frontend` then produced the first valid
+  evidence on this tree: **red**, 97.93 on the `game-practice` package with three surviving mutants
+  in `src/components/boards/gameSession.ts` (`f-20260829-08`), which stops the runner before its
+  other two packages. Backend mutation evidence is still outstanding — `f-20260829-05`.
+- **The 320px / 200% font-scale layout is broken** — `f-20260829-02`. The committed screenshots
+  record the clipping rather than contradict it.
+- **`src/App.tsx` is untested** (0 of 75 lines) — `f-20260829-03`.
+- **The backend coverage exporter measures `#[cfg(test)]` modules** alongside production code —
+  `f-20260829-04`.
+
+E2E runs go through `pnpm test:e2e:container`, inside the pinned Playwright image — the reasoning
+is `d-20260829-01` in `tasks/decisions.md`. The committed snapshots already match what that image
+renders (8/8 green there on 2026-08-29, none rewritten); it is the *native* run on atlas that fails,
+on glyph antialiasing alone. Never re-record snapshots on a host.
+
+Also note that the 2026-08-09 audit was produced by a Gemini-driven agent run and **has not been
+reviewed line by line**. What is proven is that every gate passes, not that every change is right.
+Defects found while getting the gates green are listed in `BACKEND_AUDIT_PLAN.md` and
+`FRONTEND_AUDIT_PLAN.md`; treat the rest of that diff as unreviewed.
 
 ## Conventions
 
