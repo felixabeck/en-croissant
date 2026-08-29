@@ -298,3 +298,24 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Interim mitigation, 2026-08-29:** the hazard is documented at the top of the runner and in the
   Gates section of `CLAUDE.md`. That is a note, not a guard.
 * **Found by:** the atlas setup audit, 2026-08-29, running the suite for the first time.
+
+* **Observed for real, 2026-08-29 ~22:5x.** The machine was shut down while the run was inside the
+  eighth package, and the injected mutant stayed in tracked source exactly as predicted:
+
+  ```
+  src-tauri/src/pgn.rs:194
+  -        } else if character == '\\' {
+  +        } else if character != /* ~ changed by cargo-mutants ~ */ '\\' {
+  ```
+
+  Restored with `git checkout -- src-tauri/src/pgn.rs`. Note what makes this the dangerous shape
+  rather than a merely annoying one: the mutation is a **single inverted comparison inside a PGN
+  tag-header scanner**, it compiles, and the file it sits in is one of the repository's
+  highest-review paths. A session that resumed here and ran `git add src-tauri` without reading the
+  diff would have committed it, and the next reviewer would have been looking at a plausible-looking
+  one-character change to escape handling.
+* **Second effect the shutdown exposed:** the run's stdout log lived in the session scratchpad,
+  which the next session replaced, so the human-readable progress was gone. The durable evidence
+  survived only because cargo-mutants writes `mutants.out/backend/<package>/mutants.out/` to the
+  repo. Whatever guard is built should treat `mutants.out/` as the record and the console log as
+  disposable.
