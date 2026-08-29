@@ -104,22 +104,8 @@ jobs:
           path: coverage/
           if-no-files-found: error
 
-      - name: Run targeted frontend mutation tests
-        run: pnpm mutation:frontend
-
-      - name: Upload frontend mutation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-mutation
-          path: artifacts/mutation/frontend/
-          if-no-files-found: error
-
       - name: Install pinned Rust coverage tool
         run: cargo install cargo-llvm-cov --version 0.8.7 --locked
-
-      - name: Install pinned Rust mutation tool
-        run: cargo install cargo-mutants --version 27.1.0 --locked
 
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
@@ -143,15 +129,4 @@ jobs:
         with:
           name: backend-coverage
           path: backend-coverage/
-          if-no-files-found: error
-
-      - name: Run targeted backend mutation tests
-        run: pnpm mutation:backend
-
-      - name: Upload backend mutation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-mutation
-          path: mutants.out/
           if-no-files-found: error

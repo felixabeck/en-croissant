@@ -68,6 +68,7 @@ Changes to Specta commands/events/types, `src-tauri/src/main.rs`, or `src/bindin
 ### CI, dependencies, and release mechanics
 
 - Changes to `.github/workflows/**`, `package.json`, `pnpm-lock.yaml`, `src-tauri/Cargo.toml`, or `src-tauri/Cargo.lock` run every gate whose toolchain they can affect.
+- Neither mutation suite is a push gate. They live in `.github/workflows/mutation.yml` (dispatchable, weekly), because a surviving mutant means a missing test rather than a defect in the diff under review. Never start `pnpm mutation:backend` as part of a push: it runs `cargo-mutants --in-place`, so it edits tracked source while it runs and every other gate would then measure mutated code.
 - Exercise changed shell/workflow mechanics against their refusal/error case where locally possible.
 - `$push` never tags, publishes a GitHub release, signs bundles, or deploys. Those require their own explicit workflow.
 

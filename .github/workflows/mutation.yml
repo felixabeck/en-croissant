@@ -1,0 +1,120 @@
+# Mutation testing is a periodic deep check, not a per-commit gate, so it lives here
+# rather than in `test.yml`.
+#
+# Two reasons it was split out. It is slow: measured on tuxedo-atlas on 2026-08-29,
+# `database-encoding` alone is 96 mutants in 10 minutes, and all eight packages together
+# run on the order of an hour locally. A GitHub-hosted runner is slower, which puts a
+# single sequential step uncomfortably close to the 6-hour per-job limit - so every push
+# would have ridden on that timing. And it answers a different question from the gates:
+# a surviving mutant means a test is missing, not that the change under review is wrong.
+#
+# The matrix runs the eight packages as independent jobs through the runner's own
+# `BACKEND_MUTATION_PACKAGE` selector, which exists for exactly this. Each job stays far
+# inside the limit, they run in parallel, and a failure names the package instead of
+# failing one long step. `fail-fast: false` because the point is the complete picture:
+# stopping the other seven on the first survivor throws away the evidence this run exists
+# to produce.
+name: Mutation
+on:
+  workflow_dispatch:
+  schedule:
+    # Sundays, 03:17 UTC. Off-peak, and weekly matches how fast the suites change.
+    - cron: "17 3 * * 0"
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Sync node version and setup cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: "pnpm"
+
+      - name: Install app dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run targeted frontend mutation tests
+        run: pnpm mutation:frontend
+
+      - name: Upload frontend mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-mutation
+          path: artifacts/mutation/frontend/
+          if-no-files-found: error
+
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # The eight ids in scripts/run-backend-mutation.mjs. Kept in sync by hand;
+        # an unknown id makes the runner throw rather than silently test nothing.
+        package:
+          - database-encoding
+          - database-search
+          - engine-protocol
+          - download-policy
+          - game-rules
+          - path-authority
+          - lexer
+          - pgn-parser
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Sync node version and setup cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: "pnpm"
+
+      - name: Install app dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: mutation-${{ matrix.package }}
+
+      - name: Install pinned Rust mutation tool
+        run: cargo install cargo-mutants --version 27.1.0 --locked
+
+      - name: Run mutation tests for ${{ matrix.package }}
+        env:
+          BACKEND_MUTATION_PACKAGE: ${{ matrix.package }}
+        run: pnpm mutation:backend
+
+      - name: Upload mutation report for ${{ matrix.package }}
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-mutation-${{ matrix.package }}
+          path: mutants.out/backend/${{ matrix.package }}/
+          if-no-files-found: error

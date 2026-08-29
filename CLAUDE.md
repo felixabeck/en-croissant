@@ -64,6 +64,13 @@ planning any change:
   largest-lazy, and total gzip bytes. Never lower a floor or rewrite a baseline to accept a
   regression — see `docs/coverage.md`.
 
+**Mutation testing is not a per-commit gate.** It lives in `.github/workflows/mutation.yml`,
+dispatchable and scheduled weekly, with the eight backend packages as a matrix over the runner's
+`BACKEND_MUTATION_PACKAGE` selector. It answers a different question from the gates — a surviving
+mutant means a test is missing, not that the change under review is wrong — and a single sequential
+backend run is slow enough to crowd GitHub's 6-hour per-job limit. `test.yml` therefore runs neither
+suite.
+
 `pnpm mutation:backend` runs `cargo-mutants` with `--in-place`: it mutates the **real** working
 tree rather than a copy, to avoid duplicating the multi-gigabyte target directory. Nothing else may
 touch the tree while it runs — no other gate, no `git add`, no parallel session — and an interrupted
