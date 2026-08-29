@@ -22,6 +22,8 @@ Markdown/planning-only changes need no build gate, but still require the shared 
 
 Run commands serially for readable failures. A failure is repaired and the affected gates rerun before review.
 
+**Gate on the exit code, never on a line of output.** `pnpm lint:ci && echo green || echo red` reports the failure and still leaves the shell at exit 0, so a `&&`-chained commit behind it proceeds over a red gate. Check `$?` (or `${PIPESTATUS[0]}` behind a pipe, with `set -o pipefail`) and stop. *Measured 2026-08-29: a formatting failure was printed as `lint:ci RED` and the same command committed and pushed anyway, which took a second commit to repair.*
+
 ### Rust/Tauri backend
 
 Affected by `src-tauri/**` or root Rust/Tauri configuration:
