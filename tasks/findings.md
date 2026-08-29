@@ -90,6 +90,34 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   than a machine anyone now uses. That is an inference, not a measurement; it is confirmed only when
   a CI run gets far enough to print the backend line.
 
+* **Measured in CI at last, 2026-08-29 (run 33276821748) — and the backend is NOT the frontend's
+  story.** Three environments, three numbers, on an identical total:
+
+  | environment | `app-infrastructure` branches |
+  | --- | --- |
+  | CI, `ubuntu-latest` | **744**/2018 |
+  | `tuxedo-atlas` | **745**/2018 |
+  | baseline (the laptop) | **746**/2018 |
+
+  `f-20260829-06` resolved as "the baseline was stale and the two live environments agree". This one
+  cannot: CI and atlas disagree with each other as well. The total is identical everywhere, so the
+  tree is the same and **two branches are genuinely environment-dependent** — consistent with the
+  candidates named above, `infra/fs.rs` and `infra/path_authority.rs`, which exercise real
+  filesystem behaviour rather than a stubbed one.
+* **Consequence for any re-record:** the ratchet rejects a *lower* covered count, so a baseline set
+  to the minimum across environments (CI's 744) passes everywhere — atlas's 745 is simply "better
+  than the floor". A baseline set to atlas's 745 would leave CI red forever. So the environment that
+  covers least has to define the number, which is defensible for a floor but silently stops
+  enforcing the two branches that only some machines reach.
+* **The better fix, which is why this stays `build`:** identify the two branches and make them
+  environment-independent, instead of lowering the floor until the disagreement is invisible. That
+  needs CI's LCOV to diff against the local one — the upload was skipped because it sat after the
+  ratchet, fixed in `3a2142c1`, so the next run produces the artifact this needs.
+* **Not done:** no backend baseline was rewritten. `d-20260829-02` authorised re-recording it from
+  CI's LCOV, but that decision was taken when the backend was expected to have the same shape as the
+  frontend. It does not, and lowering the floor is a different act from correcting a stale
+  instrument — so it goes back to Felix rather than proceeding on an assumption he was not shown.
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
