@@ -63,6 +63,15 @@ const mutationPackages = [
   },
 ];
 
+// `--list-packages` prints the ids as JSON so the CI matrix is generated from this
+// manifest instead of a second hand-maintained copy in the workflow. A copy could omit a
+// package and every remaining job would still pass, which is the failure a matrix cannot
+// detect on its own.
+if (process.argv.includes("--list-packages")) {
+  console.log(JSON.stringify(mutationPackages.map(({ id }) => id)));
+  process.exit(0);
+}
+
 const selectedPackage = process.env.BACKEND_MUTATION_PACKAGE;
 const selectedPackages = selectedPackage
   ? mutationPackages.filter(({ id }) => id === selectedPackage)

@@ -95,7 +95,8 @@ jobs:
         with:
           name: frontend-browser-audit
           path: artifacts/frontend-audit/
-          if-no-files-found: error
+          # `warn`, not `error`: see the mutation report upload below.
+          if-no-files-found: warn
 
       - name: Upload frontend coverage
         uses: actions/upload-artifact@v4
@@ -103,6 +104,22 @@ jobs:
           name: frontend-coverage
           path: coverage/
           if-no-files-found: error
+
+      - name: Run targeted frontend mutation tests
+        # Stays in per-push CI (it has since 57b7ec27): ~21 seconds, and it is currently red
+        # with three survivors in gameSession.ts (f-20260829-08). Only the backend suite moved
+        # to `mutation.yml`, and only because of its runtime.
+        run: pnpm mutation:frontend
+
+      - name: Upload frontend mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-mutation
+          path: artifacts/mutation/frontend/
+          # `warn`, not `error`: this runs on failure too, and a missing report then adds a
+          # second red step that buries the actual cause.
+          if-no-files-found: warn
 
       - name: Install pinned Rust coverage tool
         run: cargo install cargo-llvm-cov --version 0.8.7 --locked

@@ -1,74 +1,54 @@
-# Mutation testing is a periodic deep check, not a per-commit gate, so it lives here
-# rather than in `test.yml`.
+# Backend mutation testing — a periodic deep check, not a per-commit gate.
 #
-# Two reasons it was split out. It is slow: measured on tuxedo-atlas on 2026-08-29,
-# `database-encoding` alone is 96 mutants in 10 minutes, and all eight packages together
-# run on the order of an hour locally. A GitHub-hosted runner is slower, which puts a
-# single sequential step uncomfortably close to the 6-hour per-job limit - so every push
-# would have ridden on that timing. And it answers a different question from the gates:
-# a surviving mutant means a test is missing, not that the change under review is wrong.
+# Only the BACKEND suite lives here. `mutation:frontend` takes ~21 seconds and stays in
+# `test.yml`, where it has run since 57b7ec27: moving a fast gate that is currently catching
+# a real defect out of per-push CI would make CI pass by dropping a red gate, not by fixing it.
 #
-# The matrix runs the eight packages as independent jobs through the runner's own
-# `BACKEND_MUTATION_PACKAGE` selector, which exists for exactly this. Each job stays far
-# inside the limit, they run in parallel, and a failure names the package instead of
-# failing one long step. `fail-fast: false` because the point is the complete picture:
-# stopping the other seven on the first survivor throws away the evidence this run exists
-# to produce.
+# The backend suite is different in kind. Measured on tuxedo-atlas 2026-08-29, the eight
+# packages take ~55 minutes together (`database-encoding` alone is 96 mutants in 10 minutes),
+# and a GitHub-hosted runner is slower — a single sequential step would sit uncomfortably close
+# to the 6-hour per-job limit, so every push would ride on that timing. It also answers a
+# different question from the gates: a surviving mutant means a test is missing, not that the
+# change under review is wrong.
+#
+# The matrix is generated from `scripts/run-backend-mutation.mjs --list-packages`, not written
+# out again here. A hand-copied list can silently OMIT a package — every remaining job still
+# passes, so nothing detects it. The runner already rejects an unknown id, which covers the
+# other direction.
 name: Mutation
 on:
   workflow_dispatch:
   schedule:
-    # Sundays, 03:17 UTC. Off-peak, and weekly matches how fast the suites change.
+    # Sundays, 03:17 UTC. Off-peak, and weekly matches how fast these suites change.
     - cron: "17 3 * * 0"
 
 jobs:
-  frontend:
+  packages:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
+    outputs:
+      ids: ${{ steps.list.outputs.ids }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Sync node version and setup cache
+      - name: Sync node version
         uses: actions/setup-node@v4
         with:
           node-version: "lts/*"
-          cache: "pnpm"
 
-      - name: Install app dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Run targeted frontend mutation tests
-        run: pnpm mutation:frontend
-
-      - name: Upload frontend mutation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-mutation
-          path: artifacts/mutation/frontend/
-          if-no-files-found: error
+      - name: List backend mutation packages
+        id: list
+        run: echo "ids=$(node scripts/run-backend-mutation.mjs --list-packages)" >> "$GITHUB_OUTPUT"
 
   backend:
+    needs: packages
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        # The eight ids in scripts/run-backend-mutation.mjs. Kept in sync by hand;
-        # an unknown id makes the runner throw rather than silently test nothing.
-        package:
-          - database-encoding
-          - database-search
-          - engine-protocol
-          - download-policy
-          - game-rules
-          - path-authority
-          - lexer
-          - pgn-parser
+        package: ${{ fromJSON(needs.packages.outputs.ids) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -106,6 +86,12 @@ jobs:
       - name: Install pinned Rust mutation tool
         run: cargo install cargo-mutants --version 27.1.0 --locked
 
+      - name: Build frontend
+        # cargo-mutants compiles the Tauri binary, and `generate_context!()` panics at compile
+        # time when `frontendDist` (`../dist`) does not exist. Same dependency that made every
+        # `test.yml` run die before the bindings step was reordered.
+        run: pnpm build-vite
+
       - name: Run mutation tests for ${{ matrix.package }}
         env:
           BACKEND_MUTATION_PACKAGE: ${{ matrix.package }}
@@ -117,4 +103,6 @@ jobs:
         with:
           name: backend-mutation-${{ matrix.package }}
           path: mutants.out/backend/${{ matrix.package }}/
-          if-no-files-found: error
+          # `warn`, not `error`: this step runs on failure too, and when the run died before
+          # producing a report an upload error only adds a second red step on top of the real one.
+          if-no-files-found: warn
