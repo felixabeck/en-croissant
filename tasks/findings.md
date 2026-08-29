@@ -137,7 +137,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### 5. Mutation evidence has never been produced on this tree
 
-* **ID:** f-20260829-05 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260829-05 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `scripts/run-frontend-mutation.mjs`, `scripts/run-backend-mutation.mjs`.
 * **Defect:** the backend run of 2026-08-09 was aborted mid-flight (unsynchronised `Cargo.lock`
   under `--locked`) and its numbers are explicitly discarded; the frontend numbers describe an older
@@ -180,6 +180,35 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Timeouts observed so far are legitimate kills, not a too-low threshold:** the baseline test run
   is 0 s and cargo-mutants auto-set 30 s, and the four early timeouts are all in
   `MainlineMoveBytesIter::next`, where mutating the cursor advance produces an infinite loop.
+
+* **Backend half complete and green, 2026-08-29.** All eight packages, **324 mutants: 305 caught,
+  9 timeouts, 10 unviable, 0 survivors.**
+
+  | package | generated | caught | timeout | unviable | missed |
+  | --- | --- | --- | --- | --- | --- |
+  | `database-encoding` | 96 | 85 | 7 | 4 | 0 |
+  | `game-rules` | 84 | 81 | 0 | 3 | 0 |
+  | `pgn-parser` | 59 | 56 | 2 | 1 | 0 |
+  | `database-search` | 36 | 36 | 0 | 0 | 0 |
+  | `path-authority` | 20 | 20 | 0 | 0 | 0 |
+  | `download-policy` | 18 | 18 | 0 | 0 | 0 |
+  | `lexer` | 10 | 8 | 0 | 2 | 0 |
+  | `engine-protocol` | 1 | 1 | 0 | 0 | 0 |
+
+  The nine timeouts are legitimate kills, not a threshold set too low: the baseline test run is 0 s
+  against an auto-set 30 s limit, and they are all mutations of a cursor advance (`+=` to `*=` or
+  `-=`) inside an iterator, which produces an infinite loop.
+
+  Run in two parts. Seven packages completed in one ~50-minute run; a machine shutdown then
+  interrupted the eighth, which was reran on its own through `BACKEND_MUTATION_PACKAGE=pgn-parser`
+  in 5 minutes rather than repeating the hour. That selector earning its keep on the first real
+  interruption is also the argument for the CI matrix in `.github/workflows/mutation.yml`.
+
+  The interruption left an injected mutant in tracked source; see `f-20260829-09`, which now carries
+  the actual diff.
+* **Status handled:** the evidence this finding asked for now exists on both sides. The backend is
+  green; the frontend produced three survivors, which are their own finding, `f-20260829-08`, and
+  the two frontend packages behind it remain unmeasured until those are killed.
 
 ---
 

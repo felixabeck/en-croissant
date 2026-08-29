@@ -160,12 +160,12 @@ What is **not** settled, all of it filed in `tasks/findings.md` rather than only
   `machine-dependent-measurement`: the baselines describe some other machine's instrumentation.
   **Never rewrite a baseline to clear this** (`docs/coverage.md`); `coverage:baseline:*` is denied
   in `.claude/settings.json` for the same reason.
-- **Mutation testing** — the tooling (`cargo-mutants` 27.1.0, `cargo-llvm-cov` 0.8.7,
-  `nightly-2025-06-01`) was installed on atlas on 2026-08-29 at the versions
-  `.github/workflows/test.yml` pins, and `pnpm mutation:frontend` then produced the first valid
-  evidence on this tree: **red**, 97.93 on the `game-practice` package with three surviving mutants
-  in `src/components/boards/gameSession.ts` (`f-20260829-08`), which stops the runner before its
-  other two packages. Backend mutation evidence is still outstanding — `f-20260829-05`.
+- **Mutation testing now has valid evidence on this tree for the first time** (`f-20260829-05`,
+  handled), after the pinned tooling was installed on atlas on 2026-08-29. The **backend is green**:
+  all eight packages, 324 mutants, 305 caught, 9 timeouts, 10 unviable, **0 survivors**. The
+  **frontend is red**: 97.93 on `game-practice` with three survivors in
+  `src/components/boards/gameSession.ts` (`f-20260829-08`), which stops the runner before its other
+  two packages, so those stay unmeasured until the survivors are killed.
 - **The 320px / 200% font-scale layout is broken** — `f-20260829-02`. The committed screenshots
   record the clipping rather than contradict it.
 - **`src/App.tsx` is untested** (0 of 75 lines) — `f-20260829-03`.
