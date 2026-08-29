@@ -153,6 +153,34 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   `artifacts/mutation/frontend/game-practice/`. The survivors are filed separately as
   `f-20260829-08`; rerun this once they are killed to measure the remaining two packages.
 
+* **Backend half in flight overnight, 2026-08-29 22:06.** `pnpm mutation:backend` is running
+  detached on `tuxedo-atlas`, log
+  `/tmp/claude-1000/-home-felixb-Projekte-en-croissant/2a3f2513-98bb-4b33-b142-653d3280ddd0/scratchpad/mutation-backend.log`.
+  Measured rate: 5 of package 1's 96 mutants in ~6 minutes, so the full 8 packages are plausibly
+  6–12 h. Verified before leaving it: the machine does not auto-suspend
+  (`powerdevilrc AutoSuspendAction=0`, logind `IdleAction=ignore`), so only the display sleeps.
+  Deliberately **not** killed in favour of a CI matrix: the local run is the only source of
+  per-package timing and outcome data, and that data is what shapes the matrix correctly instead
+  of guessing job sizes and timeouts.
+* **Reading it the next morning, in this order:**
+  1. `git status -- src-tauri` — empty means cargo-mutants restored the tree. A
+     `/* ~ changed by cargo-mutants ~ */` marker means the run was interrupted; restore with
+     `git checkout -- src-tauri` before anything else (`f-20260829-09`).
+  2. `grep -E "MUT_BE_STATUS" <log>` for the verdict, and `mutants.out/backend/<package>/mutants.out/missed.txt`
+     per package for survivors. Exit 3 is a timeout, which the runner tolerates only when
+     `missed.txt` is empty.
+  3. Per-package wall time from the log — that is the input for splitting `mutation:backend` out of
+     `test.yml` into its own dispatchable workflow with a matrix over the 8 packages
+     (`BACKEND_MUTATION_PACKAGE` already exists for exactly this).
+* **Why the split is needed at all:** `test.yml` runs `mutation:backend` as its last step inside
+  GitHub's 6 h per-job limit, on a slower 2-core runner. At the measured local rate that step alone
+  would very likely exceed the limit, so every CI run would end red at it regardless of the code.
+  Mutation is a periodic deep check, not a per-commit gate. `mutation:frontend` (21 s) stays in
+  `test.yml`.
+* **Timeouts observed so far are legitimate kills, not a too-low threshold:** the baseline test run
+  is 0 s and cargo-mutants auto-set 30 s, and the four early timeouts are all in
+  `MainlineMoveBytesIter::next`, where mutating the cursor advance produces an infinite loop.
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
