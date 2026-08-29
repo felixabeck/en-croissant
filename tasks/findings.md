@@ -80,6 +80,16 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Found by:** the atlas setup audit, 2026-08-29, running the gate for the first time on this
   machine.
 
+* **Still unanswered as of 2026-08-29, and now blocked behind `f-20260829-06`.** CI run 33275934621
+  failed at the *frontend* ratchet, which sits earlier in `test.yml`, so every Rust step —
+  including `test:coverage:backend` and `coverage:backend:check` — was skipped. No CI measurement of
+  the backend number exists yet.
+* **What the frontend result implies, without proving it here:** CI and atlas produced identical
+  frontend numbers, and the baseline matched neither. The most probable reading for the backend is
+  the same shape — `backend-coverage-baselines.json` describes the laptop's instrumentation rather
+  than a machine anyone now uses. That is an inference, not a measurement; it is confirmed only when
+  a CI run gets far enough to print the backend line.
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
@@ -216,7 +226,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### Frontend coverage measures differently on atlas than the baseline records
 
-* **ID:** f-20260829-06 · **Status:** open · **Area:** gate-scripts · **Root:** machine-dependent-measurement · **Entry:** build · **Blocked:** none
+* **ID:** f-20260829-06 · **Status:** open · **Area:** gate-scripts · **Root:** machine-dependent-measurement · **Entry:** build · **Blocked:** felix-decision
 * **Where:** `coverage-baselines.json`, `scripts/coverage-report.mjs`, area `tauri-ipc-platform`.
 * **Defect:** `pnpm coverage:frontend:check` fails on atlas with
   `tauri-ipc-platform lines regressed: 156/218, baseline 155/215`. One line *more* is covered
@@ -240,6 +250,54 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   If CI is red too, the baselines describe a machine nobody uses and must be re-established.
 * **Found by:** the atlas setup audit, 2026-08-29, running the gate for the first time on this
   machine.
+
+* **Adjudicated 2026-08-29 by CI run 33275934621 — and it inverts the hypothesis above.** The
+  push-triggered run on `ubuntu-latest` measured
+
+  ```
+  tauri-ipc-platform lines regressed: 156/218, baseline 155/215
+  ```
+
+  **byte-identical to what atlas measures.** So the answer is not "atlas is the outlier": GitHub's
+  runner and atlas agree, and the *baseline* matches neither. `coverage-baselines.json` records the
+  instrumentation of a third machine — the laptop the audit ran on — which is no longer part of the
+  loop.
+* **This is not a coverage regression, and that matters for how it is fixed.** Covered lines went
+  *up* (156 vs 155). The total went up too (218 vs 215), so the ratio slipped from 72.09 % to
+  71.56 % and the ratchet fired on the ratio. Nothing got less tested; the instrumentation counts
+  three more lines than the recording machine did.
+* **Consequence for the whole gate, not just this area:** the frontend ratchet is the fourth step in
+  `test.yml`, so its failure skipped everything after it — `build-vite`, `bindings:check`,
+  `bundle:check`, the container e2e, `mutation:frontend`, and the entire Rust half including
+  `coverage:backend:check`. **CI cannot answer `f-20260829-01` until this one is settled**, and no
+  push can currently get a green run.
+
+* **Decision:** the coverage baselines record a machine that is no longer in the loop, and no push
+  can produce a green CI run until that is resolved. Which way?
+  * **Option A — re-establish both baselines from the canonical environment (CI).** Since CI and
+    atlas measure identically for the frontend, re-recording on atlas produces numbers CI agrees
+    with. Cost: the historical comparison point is discarded, and if any of the six differing areas
+    conceals a genuine regression, re-recording buries it. Mitigation: record the per-area deltas in
+    the commit message rather than writing the file blind, so a later reader can audit each one.
+  * **Option B — leave the baselines and accept a permanently red gate.** Cost: `test.yml` fails at
+    step four forever, so `bindings:check`, `bundle:check`, the container e2e, `mutation:frontend`
+    and the whole Rust half never run in CI again. That is strictly worse than having no ratchet:
+    one stale number disables eleven working gates.
+  * **Option C — weaken the ratchet to compare covered counts only, not the ratio.** The covered
+    count did rise (156 vs 155), so this would pass. Cost: it removes the property the ratchet
+    exists for — a change that adds untested lines faster than tested ones would no longer be
+    caught anywhere.
+  * **Ruled out — reproduce the old numbers.** The recording machine was the laptop, which is
+    unreachable from atlas and out of the loop. There is nothing to reproduce them on.
+  * **Could not determine:** whether the backend baseline has the same cause. CI never reached that
+    step, so the backend remains an inference from the frontend result, not a measurement.
+  * **Recommend:** Option A, executed in two steps so the backend is measured rather than assumed —
+    re-record the frontend baseline, push, let CI run through to the backend ratchet, then re-record
+    the backend baseline from what CI prints there. The counter-argument against A is real and is
+    the reason for the per-area delta audit: this is a *re-recording on a changed instrument*, not
+    the forbidden move of silencing a regression. The tree is unchanged, and covered lines went up,
+    not down.
+  * **Session:** session_01J6xiFxQ3rvXRka5UGQWANZ (2026-08-29 setup audit and push)
 
 ---
 
