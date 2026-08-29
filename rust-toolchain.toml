@@ -1,0 +1,11 @@
+# Pins the channel and the components every gate needs, so a fresh machine cannot
+# end up without rustfmt, clippy or llvm-tools and only discover it when a gate fails.
+# The version inside the channel deliberately floats, matching CI's
+# `dtolnay/rust-toolchain@stable`. The backend coverage gate additionally needs the
+# pinned `nightly-2025-06-01` toolchain, which `scripts/rust-branch-coverage.mjs`
+# selects explicitly with `cargo +nightly-2025-06-01`; install it with
+#   rustup toolchain install nightly-2025-06-01 --profile minimal --component llvm-tools-preview
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy", "llvm-tools"]
+profile = "minimal"

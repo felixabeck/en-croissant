@@ -37,7 +37,9 @@
     "i18n:types": "i18next-cli types",
     "i18n:sync": "i18next-cli sync",
     "test:e2e": "playwright test",
-    "test:e2e:update": "playwright test --update-snapshots"
+    "test:e2e:update": "playwright test --update-snapshots",
+    "test:e2e:container": "node scripts/run-e2e-container.mjs",
+    "test:e2e:container:update": "node scripts/run-e2e-container.mjs --update-snapshots"
   },
   "dependencies": {
     "@badrap/result": "^0.2.13",
@@ -127,5 +129,10 @@
     "oxlint-tsgolint": "^0.16.0",
     "typescript-plugin-css-modules": "^5.2.0",
     "vitest": "^4.1.0"
-  }
+  },
+  "engines": {
+    "node": ">=20.19.0",
+    "pnpm": ">=10.0.0"
+  },
+  "packageManager": "pnpm@10.34.5"
 }

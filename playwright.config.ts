@@ -65,8 +65,10 @@ export default defineConfig({
         },
     ],
     webServer: {
+        // Invoked through node_modules/.bin rather than `pnpm exec`, so the suite runs
+        // unchanged inside the pinned Playwright image, which has no pnpm.
         command:
-            "pnpm exec vite build && pnpm exec vite preview --host 127.0.0.1 --port 4173 --strictPort",
+            "node_modules/.bin/vite build && node_modules/.bin/vite preview --host 127.0.0.1 --port 4173 --strictPort",
         url: "http://127.0.0.1:4173",
         reuseExistingServer: false,
         timeout: 120_000,
