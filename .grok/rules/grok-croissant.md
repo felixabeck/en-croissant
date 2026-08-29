@@ -17,7 +17,9 @@ browser is invalid layout evidence: Vite-only crashes in `TopBar.tsx`
 (`getCurrentWebviewWindow()` at module scope) and stays blank.
 
 - Gates: the commands in `.agents/skills/push/SKILL.md`.
-- Visible UI: `pnpm test:e2e` (Playwright, mocked native, preview `:4173`).
+- Visible UI: `pnpm test:e2e:container` (Playwright inside the pinned image, mocked native,
+  preview `:4173`). Never the native `pnpm test:e2e` — the committed screenshots match what the
+  container renders, so a host run fails on font antialiasing alone.
 - Live product: `pnpm dev`. Felix looks at the Tauri window. The agent
   does not claim Chrome saw the product.
 

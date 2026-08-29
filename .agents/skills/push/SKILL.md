@@ -10,7 +10,7 @@ Complete the push autonomously. Read `~/.claude/references/push-review-policy.md
 ## 1. Establish the exact push scope
 
 - Inspect `git status --porcelain=v1`, `git branch --show-current`, `git rev-parse --abbrev-ref @{u}`, `git remote get-url origin`, and `git remote get-url --push origin`.
-- This repository's expected fetch and push URL is exactly `https://github.com/felixabeck/en-croissant.git`; reject a separate `remote.origin.pushurl`. The current local branch must track the same-named `origin/<branch>`; `master` therefore must track `origin/master`. Stop for Felix if any identity is missing or different. Never invent or change a remote/upstream.
+- This repository's expected remote is `felixabeck/en-croissant` in either of its two legitimate forms — `git@github.com:felixabeck/en-croissant.git` (the `tuxedo-atlas` clone) or `https://github.com/felixabeck/en-croissant.git`. Any other owner, repository or host is a stop. Reject a separate `remote.origin.pushurl`. The current local branch must track the same-named `origin/<branch>`; `master` therefore must track `origin/master`. Stop for Felix if any identity is missing or different. Never invent or change a remote/upstream.
 - Build an explicit owned-path manifest from files created or edited in the invoking conversation plus file scopes assigned to its finished workers. Compare it with the initial status. Ambiguous or foreign paths are excluded and left untouched; if an already-committed foreign change would be exported, stop for Felix. Commit only manifest paths in cohesive atomic commits and never use `git add -A`.
 - Gates execute against the complete worktree. Therefore stop before any compile, generator, formatter, or browser gate when a foreign dirty path is code, generated output, dependency/configuration, test, asset, locale, workflow, or another input to an affected gate. Only clearly inert foreign Markdown/planning files may remain. Never generate or commit an owned output from foreign dirty inputs.
 - Every workflow-created commit sets `GIT_COMMITTER_NAME` to the acting agent per `~/.claude/references/push-review-policy.md` §1 (`Codex`, `Claude Code`, or `Grok`). Leave the author untouched and add no co-author trailer.
@@ -31,7 +31,11 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo check --manifest-path src-tauri/Cargo.toml --all-targets
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+pnpm test:coverage:backend
+pnpm coverage:backend:check
 ```
+
+`test:coverage:backend` needs the pinned `nightly-2025-06-01` toolchain with `llvm-tools-preview` and `cargo-llvm-cov` 0.8.7 (the versions `.github/workflows/test.yml` installs); `coverage:backend:check` reads the LCOV it writes, so the two run in that order. `spawnSync cargo ENOENT` from any of these means `~/.cargo/bin` is missing from that shell's `PATH`, not that the checkout is broken — prefix the call with `PATH="$HOME/.cargo/bin:$PATH"`.
 
 ### TypeScript/React frontend
 
@@ -39,11 +43,23 @@ Affected by `src/**`, `public/**`, `index.html`, `package.json`, `pnpm-lock.yaml
 
 ```bash
 pnpm lint:ci
-pnpm test
+pnpm tauri:boundary:check
+pnpm ui:boundary:check
+pnpm coverage:report:test
+pnpm bundle:report:test
+pnpm test:coverage
+pnpm coverage:frontend:check
 pnpm build-vite
+pnpm bundle:check
 ```
 
-For visible UI changes, run the repo-local `$verify-ui` workflow after the static gates (it owns `pnpm test:e2e` and the live Tauri-window check). Retain screenshots of every affected flow. Missing screenshots are not evidence that layout is correct.
+The order is not cosmetic: `coverage:frontend:check` reads `coverage/lcov.info` written by `test:coverage`, and `bundle:check` reads `dist/.vite/manifest.json` written by `build-vite`. `pnpm test` alone is not sufficient — it produces no LCOV, so the coverage ratchet then measures a stale or absent file.
+
+`ui:boundary:check` is a diff gate for two of its three rules (it reads `git diff -- src` and untracked files), so run it against the tree you intend to commit, not after committing.
+
+The coverage floors in `coverage-areas.json` / `backend-coverage-areas.json` and the baselines in the two `*-baselines.json` files are ratchets, and `bundle-budgets.json` caps gzip bytes. A red ratchet is a finding about the diff. Never run `coverage:baseline:*` or edit a budget to make a gate pass.
+
+For visible UI changes, run the repo-local `$verify-ui` workflow after the static gates (it owns `pnpm test:e2e:container` and the live Tauri-window check). Retain screenshots of every affected flow. Missing screenshots are not evidence that layout is correct.
 
 ### Cross-layer contracts
 
@@ -74,7 +90,11 @@ src-tauri/src/engine/**
 src-tauri/src/main.rs
 src/bindings/generated.ts
 src/state/**
-src/components/accounts/**
+src/utils/lichess/**
+src/utils/session.ts
+src/components/home/Account*.tsx
+src/components/common/AccountCards.tsx
+src/routes/accounts*.tsx
 src/components/engines/**
 .github/workflows/**
 package.json
