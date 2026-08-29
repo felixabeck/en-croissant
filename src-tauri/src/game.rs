@@ -2121,7 +2121,10 @@ fn load_polyglot_book_cancellable(
         ));
     }
     let mut entries = Vec::with_capacity(bytes.len() / 16);
-    for (index, record) in bytes.chunks_exact(16).enumerate() {
+    // The remainder is provably empty: the multiple-of-16 check above returns early otherwise.
+    let (records, _remainder) = bytes.as_chunks::<16>();
+    debug_assert!(_remainder.is_empty());
+    for (index, record) in records.iter().enumerate() {
         if index % 1024 == 0 {
             ensure_opening_book_not_cancelled(cancellation)?;
         }
