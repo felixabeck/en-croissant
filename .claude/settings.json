@@ -18,7 +18,10 @@
       "Read(./**/.env.*.local)",
       "Bash(pnpm coverage:baseline:frontend*)",
       "Bash(pnpm coverage:baseline:backend*)",
-      "Bash(pnpm test:e2e:update*)",
+      "Bash(pnpm run coverage:baseline:frontend*)",
+      "Bash(pnpm run coverage:baseline:backend*)",
+      "Bash(*coverage-report.mjs*--write-baseline*)",
+      "Bash(*playwright*--update-snapshots*)",
       "Bash(git push --force*)",
       "Bash(git push -f*)"
     ]

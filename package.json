@@ -37,9 +37,8 @@
     "i18n:types": "i18next-cli types",
     "i18n:sync": "i18next-cli sync",
     "test:e2e": "playwright test",
-    "test:e2e:update": "playwright test --update-snapshots",
     "test:e2e:container": "node scripts/run-e2e-container.mjs",
-    "test:e2e:container:update": "node scripts/run-e2e-container.mjs --update-snapshots"
+    "test:e2e:update": "node scripts/run-e2e-container.mjs --update-snapshots"
   },
   "dependencies": {
     "@badrap/result": "^0.2.13",

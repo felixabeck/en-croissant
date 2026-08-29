@@ -38,9 +38,23 @@ if (docker.status !== 0) {
   process.exit(1);
 }
 
-// Root-owned dist/, artifacts/ and snapshot files in the host tree are worse than a
-// failed run, so the container always runs as the invoking user. That user has no entry
-// in the image's /etc/passwd, hence an explicit writable HOME.
+// Scope, stated honestly: this pins the RENDERING environment, which is what the snapshots
+// depend on. It does not make the run portable across host platforms — `node_modules` is
+// mounted from the host, so its native packages (esbuild, @swc/core, @parcel/watcher) must be
+// the ones Linux x64 needs. On a macOS or Windows host, install dependencies inside the
+// container instead of mounting a host tree built for another platform.
+//
+// Root-owned dist/, artifacts/ and snapshot files in the host tree are worse than a failed
+// run, so the container always runs as the invoking user. That user has no entry in the
+// image's /etc/passwd, hence an explicit writable HOME.
+if (typeof process.getuid !== "function" || typeof process.getgid !== "function") {
+  process.stderr.write(
+    "The containerized e2e run needs a POSIX host: it maps the container process to the\n" +
+      "invoking uid/gid so nothing lands root-owned in the working tree, and process.getuid\n" +
+      "is unavailable here (Windows). Run it under WSL, or in CI.\n",
+  );
+  process.exit(1);
+}
 const uid = process.getuid();
 const gid = process.getgid();
 
