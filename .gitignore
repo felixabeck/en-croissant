@@ -22,11 +22,11 @@ dist-ssr
 .next
 tsconfig.tsbuildinfo
 
-# Build-Temp im Repo-Wurzelverzeichnis. Beide sind zurzeit leer und deshalb fuer
-# git unsichtbar (git kennt keine leeren Verzeichnisse) — sobald sie Inhalt
-# bekommen, waeren sie untracked. /target/ zusaetzlich als Fangnetz: ein cargo
-# aus der Repo-Wurzel statt aus src-tauri/ legt dort ein zweites Zielverzeichnis
-# an, das src-tauri/.gitignore nicht abdeckt.
+# Build temporaries in the repository root. Both are empty at the moment and therefore
+# invisible to git (git does not track empty directories) — they become untracked as soon
+# as they hold anything. /target/ is additionally a safety net: a cargo invoked from the
+# repository root instead of from src-tauri/ creates a second target directory there, which
+# src-tauri/.gitignore does not cover.
 /target/
 /.tanstack/
 

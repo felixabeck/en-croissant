@@ -141,8 +141,9 @@ Felix's, not an agent's.
 
 ## Repository state (as of 2026-08-29)
 
-The audit implementation is **committed and pushed**; `master` tracks `origin/master` in sync and is
-33 commits ahead of `upstream/master`. Work here is a side project, picked up in bursts.
+The audit implementation is committed; `master` tracks `origin/master` and is well ahead of
+`upstream/master`. Work here is a side project, picked up in bursts. **Do not restate an exact
+commit count or "in sync" here** — it is wrong the moment anything is committed, and it was.
 
 The working checkout is on **`tuxedo-atlas`** (cloned 2026-08-29 from `felixabeck/en-croissant` over
 SSH; commits are ssh-signed). Measured green on this machine: `pnpm test`, `cargo test` (306),
@@ -158,8 +159,11 @@ What is **not** settled, all of it filed in `tasks/findings.md` rather than only
   `tauri-ipc-platform` 156/218 against 155/215, with six of ten areas measuring differently here
   than the baselines record, none of those files changed). They share the root
   `machine-dependent-measurement`: the baselines describe some other machine's instrumentation.
-  **Never rewrite a baseline to clear this** (`docs/coverage.md`); `coverage:baseline:*` is denied
-  in `.claude/settings.json` for the same reason.
+  **Never rewrite a baseline to clear this** (`docs/coverage.md`). `.claude/settings.json` denies
+  the known spellings of `coverage:baseline:*` and of a direct `--write-baseline` call, but treat
+  that as a speed bump rather than enforcement: a deny list matches command strings, and a
+  determined invocation can always phrase itself differently. The rule is what binds; the deny list
+  only makes the wrong thing harder to type by accident.
 - **Mutation testing now has valid evidence on this tree for the first time** (`f-20260829-05`,
   handled), after the pinned tooling was installed on atlas on 2026-08-29. The **backend is green**:
   all eight packages, 324 mutants, 305 caught, 9 timeouts, 10 unviable, **0 survivors**. The
@@ -168,7 +172,7 @@ What is **not** settled, all of it filed in `tasks/findings.md` rather than only
   two packages, so those stay unmeasured until the survivors are killed.
 - **The 320px / 200% font-scale layout is broken** — `f-20260829-02`. The committed screenshots
   record the clipping rather than contradict it.
-- **`src/App.tsx` is untested** (0 of 75 lines) — `f-20260829-03`.
+- **`src/App.tsx` is untested** (0 of 67 lines) — `f-20260829-03`.
 - **The backend coverage exporter measures `#[cfg(test)]` modules** alongside production code —
   `f-20260829-04`.
 
@@ -178,7 +182,9 @@ renders (8/8 green there on 2026-08-29, none rewritten); it is the *native* run 
 on glyph antialiasing alone. Never re-record snapshots on a host.
 
 Also note that the 2026-08-09 audit was produced by a Gemini-driven agent run and **has not been
-reviewed line by line**. What is proven is that every gate passes, not that every change is right.
+reviewed line by line**. What was proven at the time is that the gates then run were green — not
+that every change is right, and not that every gate is green today: the two coverage ratchets above
+are red on this machine.
 Defects found while getting the gates green are listed in `BACKEND_AUDIT_PLAN.md` and
 `FRONTEND_AUDIT_PLAN.md`; treat the rest of that diff as unreviewed.
 

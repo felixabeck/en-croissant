@@ -42,8 +42,9 @@ lifecycle), `pgn` + `lexer` (parsing and the offset index), `opening`, `puzzle`,
 
 Commands are `#[tauri::command] #[specta::specta]` functions, collected in
 `tauri_specta::collect_commands!` at `src-tauri/src/main.rs:1119`; events in `collect_events!` at
-`main.rs:1234`. A debug build regenerates `src/bindings/generated.ts` — the export is behind
-`#[cfg(debug_assertions)]`, so a release build silently exports nothing.
+`main.rs:1234`. Running the debug binary with `--export-bindings-only` (what
+`pnpm bindings:generate` does) rewrites `src/bindings/generated.ts`; compiling alone does not.
+The export is behind `#[cfg(debug_assertions)]`, so a release build exports nothing at all.
 
 - The renderer imports `commands` and `events` from `src/bindings/generated.ts`, and reaches Tauri
   only through `src/platform/` (`tauri.ts`, `native.ts`, `errors.ts`, `operation.ts`).
@@ -76,13 +77,17 @@ Implemented in `src-tauri/src/engine/process.rs`.
    (time, depth, infinite).
 
 Output handling is asynchronous throughout: a dedicated `tokio::spawn` drains `stderr` line by line
-into `log::error!`, `stdout` is read through `Lines<BufReader<ChildStdout>>`, and each line is parsed
-by `vampirc_uci::parse_one` into `UciMessage`. Reads are bounded by `deadlines.search` and
+into `log::error!`, `stdout` is read through a `BufReader<ChildStdout>` by
+`read_bounded_engine_line` (`process.rs:149`), and each line is parsed by
+`vampirc_uci::parse_one` into `UciMessage`. Reads are bounded by `deadlines.search` and
 `deadlines.stop`, so a hung engine does not park a task forever.
 
-Logs are bounded, not unbounded: `BoundedLogs` (`process.rs:36-39`) caps at `MAX_LOG_LINES = 2_000`
-and `MAX_LOG_BYTES = 512 KiB`, truncates a single oversized line at `MAX_ENGINE_LINE_BYTES = 64 KiB`,
-caps stderr at `MAX_ENGINE_STDERR_BYTES = 512 KiB`, and reports the exact dropped-entry count.
+Two different bounds, easily conflated. **Input is rejected, not trimmed:** a line longer than
+`MAX_ENGINE_LINE_BYTES` (64 KiB) makes `read_bounded_engine_line` return
+`Err(Error::ResourceLimit)`, and stderr is capped the same way at `MAX_ENGINE_STDERR_BYTES`
+(512 KiB). **Retained logs are trimmed:** `BoundedLogs` (`process.rs:36-39`) keeps at most
+`MAX_LOG_LINES` (2 000) entries and `MAX_LOG_BYTES` (512 KiB), truncating an oversized entry and
+reporting the exact dropped-entry count.
 
 ## 4. Game storage
 
