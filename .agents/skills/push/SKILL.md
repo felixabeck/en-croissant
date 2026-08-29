@@ -55,7 +55,7 @@ pnpm bundle:check
 
 The order is not cosmetic: `coverage:frontend:check` reads `coverage/lcov.info` written by `test:coverage`, and `bundle:check` reads `dist/.vite/manifest.json` written by `build-vite`. `pnpm test` alone is not sufficient — it produces no LCOV, so the coverage ratchet then measures a stale or absent file.
 
-`ui:boundary:check` is a diff gate for two of its three rules (it reads `git diff -- src` and untracked files), so run it against the tree you intend to commit, not after committing.
+`ui:boundary:check` scans the whole tree, reading files from disk, so it sees committed and uncommitted content alike. It was diff-scoped for two of its rules until 2026-08-29, which made those two vacuous on any clean checkout — including every CI run.
 
 The coverage floors in `coverage-areas.json` / `backend-coverage-areas.json` and the baselines in the two `*-baselines.json` files are ratchets, and `bundle-budgets.json` caps gzip bytes. A red ratchet is a finding about the diff. Never run `coverage:baseline:*` or edit a budget to make a gate pass.
 
@@ -65,10 +65,23 @@ For visible UI changes, run the repo-local `$verify-ui` workflow after the stati
 
 Changes to Specta commands/events/types, `src-tauri/src/main.rs`, or `src/bindings/generated.ts` require both backend and frontend gates plus `pnpm bindings:check`. That command runs the debug Specta exporter in export-only mode and then proves the checked-in binding is exact. Never hand-edit a generated binding to make the gate pass.
 
+### Findings ledger
+
+Affected by `tasks/**` or `scripts/findings.py`:
+
+```bash
+python3 scripts/findings.py check
+```
+
+This repository has no Python test suite, so nothing else validates the ledger. A malformed
+header or an area outside the closed vocabulary silently drops a finding out of the derived queue,
+which is exactly the loss the ledger exists to prevent. `tasks/findings.md` names this gate as
+`$push`'s job, so it runs here.
+
 ### CI, dependencies, and release mechanics
 
 - Changes to `.github/workflows/**`, `package.json`, `pnpm-lock.yaml`, `src-tauri/Cargo.toml`, or `src-tauri/Cargo.lock` run every gate whose toolchain they can affect.
-- Neither mutation suite is a push gate. They live in `.github/workflows/mutation.yml` (dispatchable, weekly), because a surviving mutant means a missing test rather than a defect in the diff under review. Never start `pnpm mutation:backend` as part of a push: it runs `cargo-mutants --in-place`, so it edits tracked source while it runs and every other gate would then measure mutated code.
+- Neither mutation suite is a *local* push gate, but they are not equivalent. `mutation:frontend` (~21 s) runs in `test.yml` on every push, so CI covers it; `mutation:backend` runs only in `.github/workflows/mutation.yml` (dispatchable, weekly, one job per package) because the eight packages take about an hour. **Never start `pnpm mutation:backend` as part of a push:** it runs `cargo-mutants --in-place`, so it edits tracked source while it runs, every other gate would then measure mutated code, and an interruption leaves an injected mutant behind (`f-20260829-09`).
 - Exercise changed shell/workflow mechanics against their refusal/error case where locally possible.
 - `$push` never tags, publishes a GitHub release, signs bundles, or deploys. Those require their own explicit workflow.
 

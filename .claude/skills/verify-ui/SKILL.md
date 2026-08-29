@@ -29,10 +29,11 @@ attach to the Tauri webview. There is no documented remote-devtools path.
    derives the image tag from the installed `@playwright/test` version, runs
    as the invoking user so nothing lands root-owned, and needs docker.
 
-   Snapshots are re-recorded with `pnpm test:e2e:container:update` and
-   **never** with `pnpm test:e2e:update`, which would write host-rendered
-   images back over the canonical ones. The project settings deny the native
-   variant for that reason.
+   Snapshots are re-recorded with `pnpm test:e2e:update`, which runs inside
+   the same image — there is deliberately no script that re-records them on
+   the host, and a direct `playwright ... --update-snapshots` is denied in the
+   project settings, because host-rendered images would overwrite the
+   canonical ones.
 2. **Live product window:** `pnpm dev` opens the Tauri webview. The agent
    cannot attach Chrome MCP (Claude-in-chrome or user-wide
    chrome-devtools) to that window. Say so and ask Felix to look, or stop

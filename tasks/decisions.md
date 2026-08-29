@@ -43,6 +43,8 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   canonical environment removes the machine from the measurement instead of widening the gate.
 * **Measured after deciding, 2026-08-29:** the committed snapshots needed **no** rewrite. All eight
   specs pass unchanged inside the image (`8 passed (18.2s)`), so the images already match what it
-  renders and `tuxedo-atlas` running natively is the outlier. Nothing was re-recorded, and
-  `pnpm test:e2e:update` stays denied in `.claude/settings.json`.
+  renders and `tuxedo-atlas` running natively is the outlier. Nothing was re-recorded.
+  `pnpm test:e2e:update` was repointed at the container runner on the same day, so there is no
+  script that re-records on the host at all; a direct `playwright … --update-snapshots` stays
+  denied in `.claude/settings.json`.
 * **Decided by:** Felix, in the chat, 2026-08-29 · **Superseded-by:** -

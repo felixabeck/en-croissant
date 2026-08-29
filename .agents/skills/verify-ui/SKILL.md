@@ -9,7 +9,6 @@ Read `.claude/skills/verify-ui/SKILL.md` first and follow that contract.
 This file only names the Codex runtime: do not use in-app Browser or
 chrome-devtools on `pnpm start-vite` as layout evidence.
 
-Two things from that contract that are easy to miss: the automated proof is
-`pnpm test:e2e:container` (the committed screenshots match what the pinned
-Playwright image renders, so a native run fails on font rasterization alone),
-and snapshots are re-recorded only with `pnpm test:e2e:container:update`.
+One pointer, because it is the command you will otherwise guess wrong:
+the automated proof is `pnpm test:e2e:container`, never the native
+`pnpm test:e2e`. The reasoning lives in the canonical file.
