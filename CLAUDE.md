@@ -64,6 +64,12 @@ planning any change:
   largest-lazy, and total gzip bytes. Never lower a floor or rewrite a baseline to accept a
   regression — see `docs/coverage.md`.
 
+`pnpm mutation:backend` runs `cargo-mutants` with `--in-place`: it mutates the **real** working
+tree rather than a copy, to avoid duplicating the multi-gigabyte target directory. Nothing else may
+touch the tree while it runs — no other gate, no `git add`, no parallel session — and an interrupted
+run leaves `/* ~ changed by cargo-mutants ~ */` markers in tracked source, so check
+`git status -- src-tauri` after any abort.
+
 Mechanical classes already covered by a checker, so review effort belongs elsewhere:
 untranslated JSX and missing locale keys (`pnpm i18n:jsx`, `pnpm i18n:check`), direct
 `@tauri-apps/*` imports and raw `listen()` outside the platform facade

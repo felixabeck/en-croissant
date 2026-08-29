@@ -242,3 +242,31 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   wants `review-tests` over the diff (on Codex, per rule 6b).
 * **Found by:** `pnpm mutation:frontend`, 2026-08-29. Report:
   `artifacts/mutation/frontend/game-practice/index.html`.
+
+---
+
+## 2026-08-29 — filed through the inbox spool
+
+### `mutation:backend` mutates the real working tree and nothing guards it
+
+* **ID:** f-20260829-09 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `scripts/run-backend-mutation.mjs`, the `--in-place` argument to `cargo mutants`.
+* **Defect:** the runner mutates tracked source in place rather than in a copy — a deliberate
+  choice, since copying the tree would duplicate a multi-gigabyte `src-tauri/target`, but it is
+  unguarded in both directions:
+  * **Nothing stops a concurrent write.** While the run is in flight, tracked files carry injected
+    `/* ~ changed by cargo-mutants ~ */` markers. Observed 2026-08-29: `git status` reported
+    `M src-tauri/src/db/encoding.rs` mid-run, and a commit taken at that moment with a path that
+    happened to include it would have captured a mutation. The push skill's ban on `git add -A` is
+    the only thing standing between that and a committed mutant.
+  * **An abort leaves the markers behind.** cargo-mutants restores on a clean exit; a SIGKILL, a
+    reaped process group (universal rule 7a) or a machine crash does not. The next session then
+    sees corrupted source with no explanation, and the plausible reading is a broken checkout.
+* **Suggested direction, not decided:** refuse to start when `git status --porcelain -- src-tauri`
+  is non-empty, and write a marker file for the duration whose presence a later run reports as
+  "a previous mutation run did not restore the tree; check `git status -- src-tauri`". A lock would
+  also stop two runners racing. Whether the guard belongs in the runner or in the push skill is the
+  open question.
+* **Interim mitigation, 2026-08-29:** the hazard is documented at the top of the runner and in the
+  Gates section of `CLAUDE.md`. That is a note, not a guard.
+* **Found by:** the atlas setup audit, 2026-08-29, running the suite for the first time.

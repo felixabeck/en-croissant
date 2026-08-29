@@ -1,3 +1,13 @@
+// Runs cargo-mutants over eight narrowly scoped packages.
+//
+// `--in-place` below means this mutates the REAL working tree rather than a copy,
+// to avoid duplicating the multi-gigabyte target directory. Two consequences that
+// are not obvious from the flag:
+//   * Nothing else may touch the tree while this runs - no other gate, no `git add`,
+//     no parallel session. A commit taken mid-run can capture an injected mutation.
+//   * An interrupted run leaves `/* ~ changed by cargo-mutants ~ */` markers in
+//     tracked source. After any abort, check `git status -- src-tauri` and restore
+//     before doing anything else.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 
