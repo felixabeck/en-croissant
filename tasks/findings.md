@@ -300,6 +300,14 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Found by:** `pnpm mutation:frontend`, 2026-08-29. Report:
   `artifacts/mutation/frontend/game-practice/index.html`.
 
+* **The runner stops here, so two packages are never measured.** `scripts/run-frontend-mutation.mjs`
+  runs `game-practice`, `workspace-storage` and `tree-path` sequentially and exits on the first
+  failing package. Because `game-practice` is red with these three survivors, `workspace-storage`
+  and `tree-path` have never been measured on this tree at all, and a regression in either is
+  invisible until these are killed. Killing them therefore buys more than the score: it is what
+  reveals whether the other two packages are green. Raised by `review-tests` (confidence 99) during
+  the 2026-08-29 `$push` review.
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
@@ -348,3 +356,124 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   survived only because cargo-mutants writes `mutants.out/backend/<package>/mutants.out/` to the
   repo. Whatever guard is built should treat `mutants.out/` as the record and the console log as
   disposable.
+
+---
+
+## 2026-08-29 — filed through the inbox spool
+
+### Polyglot book lookups hash a FEN built with `EnPassantMode::Legal`, so legal-only ep positions miss
+
+* **ID:** f-20260829-10 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/game.rs:2397-2398` — the FEN is built with
+  `Fen::from_position(controller.position.clone(), EnPassantMode::Legal)` and handed straight to
+  `polyglot_hash_from_fen` in `CancellablePolyglotBook::get_all_moves_from_fen` (`game.rs:2058`).
+* **Defect:** the Polyglot key includes the en-passant file when a pawn of the side to move can
+  capture there — the standard generators apply the *pseudo-legal* test. `EnPassantMode::Legal`
+  only serialises the ep square when the capture is fully legal, so in a position where the
+  capture is pseudo-legal but leaves the king in check, our FEN omits the square, the key omits
+  the file, and the lookup misses an entry the book actually contains.
+* **Concrete case from the lens, worth reproducing before fixing:** from
+  `4r2k/3p4/8/4P3/8/8/8/4K3 b - - 0 1` play `d7d5`, giving
+  `4r2k/8/8/3pP3/8/8/8/4K3 w - d6 0 2`. `e5xd6` is illegal (it exposes the white king to the e8
+  rook), so shakmaty drops `d6` under `Legal` — while a standard Polyglot book hashed the d-file.
+* **Why this is `build` and not `inline`:** the one-word change to `PseudoLegal` is only correct if
+  `polyglot_book_rs::polyglot_hash_from_fen` does not itself re-derive the ep condition, and if the
+  same FEN is not relied on elsewhere for a different purpose (the same expression appears at
+  `game.rs:358`, `370`, `513`, `549`, `1283`, `1689` for state reporting, where `Legal` is right).
+  It needs a test against a known book entry, not a blind swap. `.claude/rules/chess-tree-semantics.md`
+  is the governing rule: which FEN fields define identity is exactly its subject.
+* **Found by:** `review-chess-semantics` (confidence 97) during the `$push` review of the
+  2026-08-29 setup work; call site verified by hand.
+
+---
+
+## 2026-08-29 — filed through the inbox spool
+
+### `opening_book_ext` never returns `"zip"`, so the whole zip opening-book branch is dead
+
+* **ID:** f-20260829-11 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/game.rs:1854-1865` (`opening_book_ext`), the `Some("zip")` arm at
+  `game.rs:1973`, and the test at `game.rs:2911-2919`.
+* **Defect:** `opening_book_ext` maps only `.epd`, `.pgn` and `.bin`, returning `None` otherwise.
+  The `Some("zip")` arm — with `read_zip_inner_cancellable` and a full inner dispatch onto epd/pgn/bin
+  — is therefore unreachable, and every `.zip` opening book is rejected even though the code to
+  handle one exists and the user-facing error implies zip is supported.
+* **The open question, which is why this is not a one-line fix:** the test at `game.rs:2916`
+  asserts `("book.zip", None)` explicitly, so somebody either disabled zip deliberately and left
+  the branch, or wrote the test to match the bug. Both readings are consistent with the code. The
+  fix is either to add `.zip` to `opening_book_ext` and correct that assertion, or to delete the
+  dead arm and `read_zip_inner_cancellable` — opposite directions, and the wrong one is a silent
+  regression for anyone whose books are zipped.
+* **Found by:** the adjacent-defects lens (confidence 100) during the `$push` review of the
+  2026-08-29 setup work; verified by reading both sites.
+
+---
+
+## 2026-08-29 — filed through the inbox spool
+
+### Backend coverage hardcodes the x86_64 Linux target triple
+
+* **ID:** f-20260829-12 · **Status:** open · **Area:** gate-scripts · **Root:** machine-dependent-measurement · **Entry:** inline · **Blocked:** none
+* **Where:** `scripts/rust-branch-coverage.mjs:59` —
+  `resolve(sysroot, "lib/rustlib/x86_64-unknown-linux-gnu/bin")`.
+* **Defect:** the path to `llvm-profdata` and `llvm-cov` is built from a literal triple, so
+  `pnpm test:coverage:backend` cannot work on ARM Linux, macOS or Windows. It fails looking like a
+  missing toolchain rather than an unsupported platform.
+* **Fix direction:** derive the host triple instead of writing it down — `rustc -vV` prints a
+  `host:` line, and the script already shells out to `rustup run <toolchain> rustc` for the sysroot,
+  so the same call can yield both.
+* **Why it sits with the coverage root:** it belongs to the same story as `f-20260829-01` and
+  `f-20260829-06` — the backend coverage measurement is tied to one machine shape in more than one
+  way, and whoever settles where the canonical measurement lives should settle this in the same
+  pass rather than fixing the triple and re-opening the file later.
+* **Found by:** the adjacent-defects lens (confidence 100) during the `$push` review of the
+  2026-08-29 setup work.
+
+---
+
+## 2026-08-29 — filed through the inbox spool
+
+### The Rust channel floats, so a promoted clippy lint can redden an unchanged tree
+
+* **ID:** f-20260829-13 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `rust-toolchain.toml` (`channel = "stable"`) and `.github/workflows/test.yml`
+  (`dtolnay/rust-toolchain@stable`).
+* **Defect, as raised:** `cargo clippy -D warnings` went red on 2026-08-29 on a tree nobody had
+  touched, because clippy 1.98 promoted `chunks_exact_to_as_chunks`. The expression was fixed
+  (`f1b2445b`), but the *mechanism* — an unpinned channel deciding which lints exist — is
+  unchanged, so the same class recurs on every Rust release.
+* **The genuine trade, which is why this is `build`:** pinning an exact version
+  (`channel = "1.98.0"`) makes the gate reproducible and makes lint changes arrive as a deliberate
+  bump; it also means nothing exercises a newer compiler until somebody bumps it, so the breakage
+  is deferred rather than removed and can arrive as a pile. The counter-shape is to keep the float
+  and treat a promoted lint as ordinary maintenance. Both are defensible; the repository should
+  choose once and say so where the toolchain is declared.
+* **Note:** whichever is chosen, the two declarations must agree. Today `rust-toolchain.toml`
+  pins components while CI installs its own via the action, so deleting the file would leave CI
+  green — nothing proves the file is still doing anything.
+* **Found by:** `review-root-cause` (confidence 97) during the `$push` review of the 2026-08-29
+  setup work.
+
+---
+
+## 2026-08-29 — filed through the inbox spool
+
+### `findings.py` can report the cleanup error and swallow the write error that caused it
+
+* **ID:** f-20260829-14 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `scripts/findings.py`, the ledger-write path around line 1391 (`finally` block).
+* **Defect:** if writing, syncing or replacing the ledger fails and the temporary-file cleanup in
+  the `finally` block then also fails, the cleanup `OSError` propagates and replaces the original
+  exception. `main` prints only the cleanup failure, so the operator sees "could not remove
+  /tmp/...tmp-x" instead of the actual reason the ledger could not be written — for a tool whose
+  entire purpose is not losing findings, the informative half of the failure is the half that is
+  dropped.
+* **Fix direction:** suppress (or chain) the cleanup exception so the primary error survives —
+  `contextlib.suppress(OSError)` around the unlink, which the file already imports `suppress` for.
+* **Important constraint — do not fix only here.** `scripts/findings.py` is deliberately identical
+  across Felix's projects (see this repository's `CLAUDE.md`, "Findings ledger", and
+  `~/.claude/references/findings-ledger-contract.md`). A repo-local patch would fork the shared
+  tool, which is worse than the bug. The change belongs in the canonical copy and must then be
+  propagated to every project that carries it.
+* **Found by:** `review-error-handling` (confidence 95) during the `$push` review of the
+  2026-08-29 setup work.
