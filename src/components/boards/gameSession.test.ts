@@ -114,6 +114,21 @@ test("terminal move and terminal outcome converge in either arrival order", () =
     ).toBeNull();
 });
 
+test("a payload whose session is not a bigint is rejected even when adoption is allowed", () => {
+    // Session adoption is the one path that accepts a payload while the expected session is
+    // still null, so it is also the only path on which a malformed `session` could otherwise
+    // reach the accept branch. A JSON number survives the IPC boundary looking plausible and
+    // compares loosely against bigints, so the type check is what rejects it.
+    expect(
+        nextAcceptedGameRevision(BigInt(0), null, { revision: BigInt(1), session: 5 }, true),
+    ).toBeNull();
+    // The same payload with a real bigint session is adopted, so the assertion above cannot
+    // pass merely because some other clause rejected it.
+    expect(
+        nextAcceptedGameRevision(BigInt(0), null, { revision: BigInt(1), session: BigInt(5) }, true),
+    ).toBe(BigInt(1));
+});
+
 test("poll results cannot cross a session handoff or cancellation", () => {
     expect(isLiveGameSession("board-game-2", "board-game-2", false)).toBe(true);
     expect(isLiveGameSession("board-game-3", "board-game-2", false)).toBe(false);
@@ -128,6 +143,17 @@ test("a pending move from the replaced session cannot apply after New Game", () 
     expect(isCurrentQueuedGameUpdate(4, 5, BigInt(9), BigInt(9))).toBe(false);
     expect(isCurrentQueuedGameUpdate(4, 4, BigInt(9), BigInt(10))).toBe(false);
     expect(isCurrentQueuedGameUpdate(null, 4, null, BigInt(9))).toBe(false);
+});
+
+test("a queued update carrying no session is rejected during a session handoff", () => {
+    // Both sides null is the case the explicit `queuedSession !== null` check exists for:
+    // New Game clears the authoritative session, so a queued update that never carried one
+    // would otherwise satisfy `queuedSession === currentSession` as `null === null` and be
+    // applied to the replacement game. The generation matching here is what isolates the
+    // session check — without it the case would pass for the wrong reason.
+    expect(isCurrentQueuedGameUpdate(3, 3, null, null)).toBe(false);
+    // And the same queue is still accepted once a real session is present on both sides.
+    expect(isCurrentQueuedGameUpdate(3, 3, BigInt(2), BigInt(2))).toBe(true);
 });
 
 test("events cannot adopt a cleared session during a replacement start", () => {

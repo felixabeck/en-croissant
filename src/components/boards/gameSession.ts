@@ -36,7 +36,16 @@ export function isLiveGameSession(
     return !cancelled && activeGameId === candidateGameId;
 }
 
-/** A throttled renderer update belongs to exactly one native game session. */
+/**
+ * A throttled renderer update belongs to exactly one native game session.
+ *
+ * The asymmetry between the two null checks is deliberate, so do not "restore" it:
+ * `currentGeneration` is a plain counter that is never null (`useRef(0)` in `BoardGame`),
+ * so `queuedGeneration === currentGeneration` already excludes a null queue on its own.
+ * `currentSession` really can be null — it is cleared during a session handoff — so without
+ * the explicit check a queued update carrying no session would compare `null === null` and
+ * be accepted as current, which is exactly the stale update this gate exists to reject.
+ */
 export function isCurrentQueuedGameUpdate(
     queuedGeneration: number | null,
     currentGeneration: number,
@@ -44,7 +53,6 @@ export function isCurrentQueuedGameUpdate(
     currentSession: bigint | null,
 ): boolean {
     return (
-        queuedGeneration !== null &&
         queuedGeneration === currentGeneration &&
         queuedSession !== null &&
         queuedSession === currentSession
