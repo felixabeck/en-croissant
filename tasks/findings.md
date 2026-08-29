@@ -226,7 +226,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### Frontend coverage measures differently on atlas than the baseline records
 
-* **ID:** f-20260829-06 · **Status:** open · **Area:** gate-scripts · **Root:** machine-dependent-measurement · **Entry:** build · **Blocked:** felix-decision
+* **ID:** f-20260829-06 · **Status:** handled · **Area:** gate-scripts · **Root:** machine-dependent-measurement · **Entry:** build · **Blocked:** none
 * **Where:** `coverage-baselines.json`, `scripts/coverage-report.mjs`, area `tauri-ipc-platform`.
 * **Defect:** `pnpm coverage:frontend:check` fails on atlas with
   `tauri-ipc-platform lines regressed: 156/218, baseline 155/215`. One line *more* is covered
@@ -299,6 +299,20 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
     not down.
   * **Session:** session_01J6xiFxQ3rvXRka5UGQWANZ (2026-08-29 setup audit and push)
 
+* **Handled 2026-08-29** under `d-20260829-02`. The frontend baseline was re-recorded from the
+  current instrument on atlas, with a per-area audit in the commit message (`9c50a9ef`): no area
+  lost covered lines, every delta zero or positive, and `settings` gaining 58 covered lines on an
+  unchanged tree is the clearest single sign that the old file recorded a different instrument.
+* **Confirmed by CI, which is the point of the exercise:** run 33276346587 reported
+  `Enforce frontend coverage ratchet: success` on GitHub's runner against the baseline recorded on
+  atlas. Two independent environments now agree with the committed numbers.
+* **One trap surfaced on the way and is fixed** (`7eaf9948`): `--write-baseline` emitted
+  `JSON.stringify` output, which oxfmt rejects, so *every* legitimate re-record left `lint:ci` red
+  for an unrelated reason — it reddened CI one commit later. `writeBaseline` now formats what it
+  writes.
+* The deny on `coverage:baseline:*` was lifted for exactly one command and restored with **zero net
+  diff** to `.claude/settings.json`. A red ratchet still means "investigate", never "re-record".
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
@@ -326,13 +340,22 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   pushed, because `workflow_dispatch` runs the workflow as committed on the ref.
 * **Found by:** the first workflow run ever dispatched on this fork, run 33272351210, 2026-08-29.
 
+* **Proven on a clean runner, 2026-08-29:** CI run 33276346587 reported
+  `Build frontend: success` followed by `Verify generated bindings: success`. The reorder holds
+  where it actually mattered — the environment that could never have passed before.
+* The same run also carried the two previously orphaned boundary checks
+  (`Enforce the Tauri command boundary`, `Enforce the UI component boundary`) green, and the
+  containerized e2e (`Run browser accessibility and visual contracts: success`) — the first proof
+  that the committed snapshots verify on a GitHub runner as well as on atlas, which is what
+  `d-20260829-01` claimed.
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
 
 ### Three mutants survive in `gameSession.ts` — the game-session correlation guards are untested
 
-* **ID:** f-20260829-08 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260829-08 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/boards/gameSession.ts`, lines 21, 47 and 49.
 * **Defect:** the first-ever valid `pnpm mutation:frontend` run on this tree (2026-08-29) leaves
   three mutants alive at 97.93, under the `break: 100` threshold in `stryker.config.mjs`:
@@ -365,6 +388,23 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   invisible until these are killed. Killing them therefore buys more than the score: it is what
   reveals whether the other two packages are green. Raised by `review-tests` (confidence 99) during
   the 2026-08-29 `$push` review.
+
+* **Handled 2026-08-29** (commits `d414020c`, `8760bb35`). Two of the three were real gaps and are
+  now covered by tests; the third was dead code and was removed rather than given a test that could
+  not fail — `queuedGeneration !== null` can never change the result because `currentGeneration` is
+  `useRef(0)` and never null. The asymmetry with the session check is now documented in the
+  function, because it reads like an oversight and is not: `currentSession` is genuinely nullable.
+* **`pnpm mutation:frontend` now exits 0 across all three packages**, and the two that sat behind
+  the failing one were measured for the first time ever:
+
+  | package | killed | timeout | survived |
+  | --- | --- | --- | --- |
+  | `game-practice` | 141 | 0 | 0 |
+  | `workspace-storage` | 311 | 0 | 0 |
+  | `tree-path` | 129 | 5 | 0 |
+
+  So the concern recorded above — that a regression in either later package was invisible — is
+  answered: both are clean.
 
 ---
 
