@@ -48,3 +48,29 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   script that re-records on the host at all; a direct `playwright … --update-snapshots` stays
   denied in `.claude/settings.json`.
 * **Decided by:** Felix, in the chat, 2026-08-29 · **Superseded-by:** -
+
+### d-20260829-02 — The coverage baselines record a machine nobody uses. Re-record, or keep them?
+
+* **Governs:** f-20260829-06, f-20260829-01, f-20260829-04
+* **Chosen:** re-establish both baselines from the canonical environment, in two steps so the
+  backend is measured and not assumed — re-record the frontend baseline on atlas (which measures
+  identically to CI), push, let CI run through to the backend ratchet, then re-record the backend
+  baseline from CI's own LCOV artifact. Every per-area delta is listed in the commit message so a
+  later reader can audit each one instead of trusting a rewritten file.
+* **Rejected:** keeping the baselines and accepting a permanently red `test.yml` (one stale number
+  would keep eleven working gates switched off — `build-vite`, `bindings:check`, `bundle:check`,
+  the container e2e, `mutation:frontend` and the whole Rust half never run again); and weakening the
+  ratchet to compare covered counts only, which would pass today but would stop catching a change
+  that adds untested lines faster than tested ones — the property the ratchet exists for.
+* **Because:** CI run 33275934621 measured `tauri-ipc-platform` at 156/218, byte-identical to
+  atlas, while the baseline records 155/215. Two independent current environments agree and the
+  baseline matches neither, so it describes the laptop the 2026-08-09 audit ran on. Covered lines
+  went **up** (156 vs 155) on an unchanged tree; only the counted total rose, so the ratio slipped.
+  This is re-recording on a changed instrument, not silencing a regression — which is the case
+  `docs/coverage.md` actually forbids.
+* **Standing constraint this does NOT relax:** `coverage:baseline:*` stays denied in
+  `.claude/settings.json`, and a red ratchet still means "investigate", never "re-record". Lifting
+  it requires a recorded decision like this one, naming the evidence that the baseline — not the
+  code — is what moved. Do not cite this entry as precedent for a re-baseline that lacks such
+  evidence.
+* **Decided by:** Felix, in the chat, 2026-08-29 · **Superseded-by:** -

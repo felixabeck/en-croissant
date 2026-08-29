@@ -5,7 +5,10 @@
       {
         "id": "frontend",
         "root": "src",
-        "include": ["src/**/*.ts", "src/**/*.tsx"],
+        "include": [
+          "src/**/*.ts",
+          "src/**/*.tsx"
+        ],
         "exclude": [
           "src/**/*.spec.ts",
           "src/**/*.spec.tsx",
@@ -22,7 +25,12 @@
       {
         "id": "application-bootstrap",
         "source": "frontend",
-        "paths": ["src/App.tsx", "src/i18n.ts", "src/index.tsx", "src/platform/analytics.ts"]
+        "paths": [
+          "src/App.tsx",
+          "src/i18n.ts",
+          "src/index.tsx",
+          "src/platform/analytics.ts"
+        ]
       },
       {
         "id": "boards-game-analysis",
@@ -98,7 +106,10 @@
       {
         "id": "settings",
         "source": "frontend",
-        "paths": ["src/components/settings/**", "src/styles/**"]
+        "paths": [
+          "src/components/settings/**",
+          "src/styles/**"
+        ]
       },
       {
         "id": "shared-shell-ui",
@@ -125,7 +136,10 @@
       {
         "id": "state-persistence",
         "source": "frontend",
-        "paths": ["src/hooks/**", "src/state/**"]
+        "paths": [
+          "src/hooks/**",
+          "src/state/**"
+        ]
       },
       {
         "id": "tabs-routing",
@@ -161,15 +175,15 @@
     "application-bootstrap": {
       "lines": {
         "covered": 39,
-        "total": 137
+        "total": 130
       },
       "functions": {
         "covered": 10,
-        "total": 39
+        "total": 37
       },
       "branches": {
         "covered": 12,
-        "total": 67
+        "total": 62
       }
     },
     "boards-game-analysis": {
@@ -188,30 +202,30 @@
     },
     "databases-files": {
       "lines": {
-        "covered": 204,
-        "total": 1679
+        "covered": 211,
+        "total": 1680
       },
       "functions": {
-        "covered": 63,
+        "covered": 64,
         "total": 342
       },
       "branches": {
-        "covered": 220,
-        "total": 2644
+        "covered": 235,
+        "total": 2649
       }
     },
     "accounts-remote": {
       "lines": {
-        "covered": 179,
-        "total": 1016
+        "covered": 185,
+        "total": 1022
       },
       "functions": {
-        "covered": 34,
-        "total": 221
+        "covered": 36,
+        "total": 224
       },
       "branches": {
-        "covered": 147,
-        "total": 1181
+        "covered": 148,
+        "total": 1187
       }
     },
     "puzzles-engines": {
@@ -230,16 +244,16 @@
     },
     "settings": {
       "lines": {
-        "covered": 15,
-        "total": 653
+        "covered": 73,
+        "total": 659
       },
       "functions": {
-        "covered": 3,
-        "total": 88
+        "covered": 14,
+        "total": 92
       },
       "branches": {
-        "covered": 12,
-        "total": 1051
+        "covered": 77,
+        "total": 1048
       }
     },
     "shared-shell-ui": {
@@ -258,16 +272,16 @@
     },
     "state-persistence": {
       "lines": {
-        "covered": 673,
-        "total": 941
+        "covered": 689,
+        "total": 956
       },
       "functions": {
-        "covered": 169,
-        "total": 276
+        "covered": 174,
+        "total": 281
       },
       "branches": {
-        "covered": 293,
-        "total": 524
+        "covered": 303,
+        "total": 533
       }
     },
     "tabs-routing": {
@@ -286,16 +300,16 @@
     },
     "tauri-ipc-platform": {
       "lines": {
-        "covered": 155,
-        "total": 215
+        "covered": 156,
+        "total": 218
       },
       "functions": {
-        "covered": 39,
-        "total": 59
+        "covered": 40,
+        "total": 60
       },
       "branches": {
         "covered": 93,
-        "total": 143
+        "total": 145
       }
     }
   }
