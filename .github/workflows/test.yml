@@ -99,11 +99,12 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload frontend coverage
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: frontend-coverage
           path: coverage/
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Run targeted frontend mutation tests
         # Stays in per-push CI (it has since 57b7ec27): ~21 seconds, and it is currently red
@@ -142,8 +143,12 @@ jobs:
         run: pnpm coverage:backend:check
 
       - name: Upload backend coverage
+        # `always()`: the measurement is the evidence needed to diagnose a RED ratchet, so
+        # uploading it only on success withholds it exactly when it is wanted. The frontend
+        # coverage upload has the same problem and the same fix below.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: backend-coverage
           path: backend-coverage/
-          if-no-files-found: error
+          if-no-files-found: warn
