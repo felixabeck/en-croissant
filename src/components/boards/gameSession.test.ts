@@ -125,7 +125,12 @@ test("a payload whose session is not a bigint is rejected even when adoption is 
     // The same payload with a real bigint session is adopted, so the assertion above cannot
     // pass merely because some other clause rejected it.
     expect(
-        nextAcceptedGameRevision(BigInt(0), null, { revision: BigInt(1), session: BigInt(5) }, true),
+        nextAcceptedGameRevision(
+            BigInt(0),
+            null,
+            { revision: BigInt(1), session: BigInt(5) },
+            true,
+        ),
     ).toBe(BigInt(1));
 });
 
