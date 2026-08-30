@@ -46,8 +46,8 @@ the glob to the file rather than working around it.
 
 ## Gates
 
-**`.agents/skills/push/SKILL.md` is the single source for which gate runs for which changed path.**
-Read it rather than reconstructing the mapping here; `.claude/skills/push/SKILL.md` is only a bridge
+**`.claude/skills/push/SKILL.md` is the single source for which gate runs for which changed path.**
+Read it rather than reconstructing the mapping here; `.agents/skills/push/SKILL.md` is only a bridge
 to it, and both defer to `~/.claude/references/push-review-policy.md` for authorization, review,
 triage, and red-gate behavior.
 

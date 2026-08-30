@@ -42,7 +42,7 @@ the file yourself before working in that area.** A rule binds whether or not it 
 
 ## Gates
 
-`.agents/skills/push/SKILL.md` is the single source for which gate runs for which changed path.
+`.claude/skills/push/SKILL.md` is the single source for which gate runs for which changed path.
 Read it rather than guessing; the commands themselves live in `package.json` scripts.
 
 ## Verifying a visible change
