@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 const untrackedResult = spawnSync(
@@ -34,8 +34,15 @@ function inspectAddedLine(file, line) {
   }
 }
 
+// `git ls-files` still lists a tracked file that the working tree has deleted, and the
+// scan below reads the working tree, so an uncommitted deletion made this checker throw
+// ENOENT and fail the gate on a change that removed a source file. Filtering by what is
+// actually on disk keeps the whole-tree scan intact: a deleted file has no content to
+// inspect, and once the deletion is committed `git ls-files` stops listing it anyway.
 const sourceFiles = new Set(
-  [...trackedResult.stdout.split("\n"), ...untrackedResult.stdout.split("\n")].filter(Boolean),
+  [...trackedResult.stdout.split("\n"), ...untrackedResult.stdout.split("\n")]
+    .filter(Boolean)
+    .filter((file) => existsSync(file)),
 );
 
 // Whole tree, not the diff. These two rules used to inspect only lines added in
