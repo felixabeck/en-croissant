@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import test from "node:test";
 import {
   assertAreaFloors,
@@ -163,19 +164,125 @@ test("accepts a shrinking total when untested code is deleted", () => {
   );
 });
 
-test("still rejects deleting covered code even when the total shrinks with it", () => {
+test("allows covered code deleted with its measured record and returns the exact allowance", () => {
   const metrics = (covered, total) => ({
     lines: { covered: 2, total: 2 },
     functions: { covered: 1, total: 1 },
     branches: { covered, total },
   });
+  assert.deepEqual(
+    assertBaseline(
+      { utilities: metrics(180, 5676) },
+      { version: 1, areas: { utilities: metrics(181, 5677) } },
+    ),
+    [{ area: "utilities", metric: "branches", totalShrink: 1 }],
+  );
   assert.throws(
     () =>
       assertBaseline(
-        { utilities: metrics(5, 10) },
-        { version: 1, areas: { utilities: metrics(12, 1051) } },
+        { utilities: metrics(179, 5676) },
+        { version: 1, areas: { utilities: metrics(181, 5677) } },
       ),
     /utilities branches regressed/,
+  );
+});
+
+test("reports no allowance for a shrink that never needed one", () => {
+  const metrics = (covered, total) => ({
+    lines: { covered: 2, total: 2 },
+    functions: { covered: 1, total: 1 },
+    branches: { covered, total },
+  });
+  // Deleting untested code shrinks the total and raises the ratio, so the
+  // unadjusted rule already passes. Announcing an allowance here would claim
+  // records were forgiven that were never at risk.
+  assert.deepEqual(
+    assertBaseline(
+      { utilities: metrics(77, 1048) },
+      { version: 1, areas: { utilities: metrics(12, 1051) } },
+    ),
+    [],
+  );
+});
+
+test("keeps the current ratchets when the total does not shrink", () => {
+  const metrics = (covered, total) => ({
+    lines: { covered, total },
+    functions: { covered: 1, total: 1 },
+    branches: { covered: 1, total: 2 },
+  });
+  const baseline = { version: 1, areas: { utilities: metrics(15, 653) } };
+  assert.throws(
+    () => assertBaseline({ utilities: metrics(15, 659) }, baseline),
+    /utilities lines regressed/,
+  );
+  assert.deepEqual(assertBaseline({ utilities: metrics(16, 653) }, baseline), []);
+  assert.throws(
+    () => assertBaseline({ utilities: metrics(14, 653) }, baseline),
+    /utilities lines regressed/,
+  );
+});
+
+test("announces baseline allowances through the CLI", async () => {
+  const { root } = await fixture();
+  const sourcePath = relative(process.cwd(), join(root, "src")).split(sep).join("/");
+  const config = {
+    version: 1,
+    sources: [
+      {
+        id: "frontend",
+        root: join(root, "src"),
+        include: [`${sourcePath}/**/*.ts`],
+        exclude: [],
+      },
+    ],
+    areas: [
+      {
+        id: "utilities",
+        source: "frontend",
+        minimumCoverage: { lines: 0, functions: 0, branches: 0 },
+        paths: [`${sourcePath}/utils/**`],
+      },
+    ],
+  };
+  const baseline = {
+    version: 1,
+    scope: scopeSignature(config),
+    areas: {
+      utilities: {
+        lines: { covered: 2, total: 2 },
+        functions: { covered: 2, total: 2 },
+        branches: { covered: 2, total: 2 },
+      },
+    },
+  };
+  const configPath = join(root, "config.json");
+  const baselinePath = join(root, "baseline.json");
+  const lcovPath = join(root, "lcov.info");
+  await writeFile(configPath, JSON.stringify(config));
+  await writeFile(baselinePath, JSON.stringify(baseline));
+  await writeFile(
+    lcovPath,
+    `TN:\nSF:${join(root, "src", "utils", "example.ts")}\nFN:1,example\nFNDA:1,example\nDA:1,1\nBRDA:1,0,0,1\nend_of_record\n`,
+  );
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(process.cwd(), "scripts", "coverage-report.mjs"),
+      "--config",
+      configPath,
+      "--baseline",
+      baselinePath,
+      "--lcov",
+      lcovPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /Coverage baseline allowance: utilities lines, 1 record\(s\) forgiven due to total shrink/,
   );
 });
 

@@ -224,6 +224,7 @@ export function scopeSignature(config) {
 }
 
 export function assertBaseline(report, baseline, config) {
+  const allowances = [];
   if (baseline.version !== 1 || !baseline.areas)
     throw new Error("Unsupported coverage baseline format");
   if (config) {
@@ -247,14 +248,34 @@ export function assertBaseline(report, baseline, config) {
         throw new Error(`Missing ${metric} baseline for area: ${area}`);
       }
       // Two independent ratchets, and deliberately no third one on `total`:
-      //   - covered may never drop, so tested code cannot be deleted to win;
-      //   - the ratio may never drop, so untested code cannot be added to win
-      //     (a growing total with unchanged covered fails here).
-      // A *shrinking* total is what deleting dead or untested code looks like.
-      // That improves both ratchets and must pass.
-      const regressed =
+      //   - covered may drop only by the measured shrink of `total`;
+      //   - the ratio may never drop after the same adjustment, so untested
+      //     code cannot be added to win (a growing total with unchanged
+      //     covered fails here).
+      //
+      // Both comparisons run against a baseline shrunk by however many records
+      // the measurement lost, because deleting a covered record lowers `covered`
+      // and `total` together and would otherwise fail both clauses -- the ratio
+      // included, since (c-1)/(t-1) < c/t for every ratio below 1. The name says
+      // `shrink` rather than `deleted` on purpose: a smaller denominator is the
+      // only thing observable here, and deletion is merely its likely cause, so
+      // the allowance is bounded by the shrink and announced for every use
+      // instead of being silently applied.
+      const totalShrink = Math.max(0, prior.total - actual.total);
+      const shrinkAdjusted = {
+        covered: Math.max(0, prior.covered - totalShrink),
+        total: prior.total - totalShrink,
+      };
+      const regressedUnadjusted =
         actual.covered < prior.covered ||
         actual.covered * prior.total < prior.covered * actual.total;
+      const regressed =
+        actual.covered < shrinkAdjusted.covered ||
+        actual.covered * shrinkAdjusted.total < shrinkAdjusted.covered * actual.total;
+      // Only an adjustment that actually changed the verdict is an allowance.
+      // Reporting every shrink would announce "forgiven" for a deletion of
+      // untested code, which needs no allowance and was never at risk.
+      if (regressedUnadjusted && !regressed) allowances.push({ area, metric, totalShrink });
       if (regressed) {
         throw new Error(
           `${area} ${metric} regressed: ${actual.covered}/${actual.total}, baseline ${prior.covered}/${prior.total}`,
@@ -265,6 +286,7 @@ export function assertBaseline(report, baseline, config) {
   for (const area of Object.keys(baseline.areas)) {
     if (!report[area]) throw new Error(`Baseline references unknown area: ${area}`);
   }
+  return allowances;
 }
 
 export function assertAreaFloors(report, config) {
@@ -343,8 +365,13 @@ async function main() {
     console.log(`Wrote coverage baseline: ${options.baseline}`);
   } else {
     const baseline = JSON.parse(await readFile(resolve(root, options.baseline), "utf8"));
-    assertBaseline(areas, baseline, config);
+    const allowances = assertBaseline(areas, baseline, config);
     assertAreaFloors(areas, config);
+    for (const { area, metric, totalShrink } of allowances) {
+      console.log(
+        `Coverage baseline allowance: ${area} ${metric}, ${totalShrink} record(s) forgiven due to total shrink`,
+      );
+    }
     console.log("Coverage ratchet and area floors passed");
   }
 }
