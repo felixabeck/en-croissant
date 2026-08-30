@@ -110,6 +110,7 @@ lives beside it rather than inside it for that reason.
 ```bash
 pnpm workflows:check
 pnpm workflows:permissions:test
+pnpm tools:parity:check
 ```
 
   Changes to those paths, `package.json`, `pnpm-lock.yaml`, `src-tauri/Cargo.toml`, or `src-tauri/Cargo.lock` also run every gate whose toolchain they can affect.

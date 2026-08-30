@@ -67,6 +67,8 @@ jobs:
           pnpm skills:bridges:test
           pnpm gates:routing:check
           pnpm gates:routing:test
+          pnpm tools:parity:check
+          pnpm tools:parity:test
 
       - name: Test coverage report parser
         run: pnpm coverage:report:test
