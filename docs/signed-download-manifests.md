@@ -3,7 +3,7 @@
 The `/engines`, `/databases`, and `/puzzle_databases` production manifests are security boundaries. Every downloadable entry must contain:
 
 - `sha256`: exactly 64 hexadecimal characters for the downloaded bytes.
-- `signature`: a Minisign signature created by the release key whose public key is configured for the updater and compiled into `src-tauri/src/fs.rs`.
+- `signature`: a Minisign signature created by the release key whose artifact-verification public key is compiled into `src-tauri/src/fs.rs`.
 
 The signed payload is the UTF-8 byte sequence below, with no trailing newline:
 

@@ -56,7 +56,7 @@ The following steps will get you setup to contribute changes to this repo:
 - One thing the identifier does not cover: a database folder chosen explicitly in the app's
   settings is honoured as given.
 - Seed the dev directory by copying out of the release directory, for example
-  `cp -r ~/.local/share/com.chessriddle.encroissant/{engines,images} ~/.local/share/com.chessriddle.encroissant.dev/`.
+  `cp -r ~/.local/share/com.chessriddle.encroissant/{engines,engine-images} ~/.local/share/com.chessriddle.encroissant.dev/`.
   Keyring secrets do not follow a file copy: a copied `lichess-accounts.json` lists accounts whose
   tokens live under the release's keyring service, and the first dev launch prunes them.
 
