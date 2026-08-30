@@ -105,7 +105,14 @@ lives beside it rather than inside it for that reason.
 
 ### CI, dependencies, and release mechanics
 
-- Changes to `.github/workflows/**`, `package.json`, `pnpm-lock.yaml`, `src-tauri/Cargo.toml`, or `src-tauri/Cargo.lock` run every gate whose toolchain they can affect.
+- Changes to `.github/workflows/**` run:
+
+```bash
+pnpm workflows:check
+pnpm workflows:permissions:test
+```
+
+  Changes to those paths, `package.json`, `pnpm-lock.yaml`, `src-tauri/Cargo.toml`, or `src-tauri/Cargo.lock` also run every gate whose toolchain they can affect.
 - `pnpm verify:app` is not a push gate either, and for a different reason: it drives the real Tauri window through `tauri-driver` under an off-screen compositor, so it needs a release build and a compositor that CI does not have. Run it by hand when a diff changes lifecycle, IPC or process teardown — it is the only check in this repository that observes the actual product. `d-20260830-18` and `.claude/skills/verify-ui/SKILL.md` carry the contract and the limits.
 - Neither mutation suite is a *local* push gate, but they are not equivalent. `mutation:frontend` (~21 s) runs in `test.yml` on every push, so CI covers it; `mutation:backend` runs only in `.github/workflows/mutation.yml` (dispatchable, weekly, one job per package) because the eight packages take about an hour. **Never start `pnpm mutation:backend` as part of a push:** it runs `cargo-mutants --in-place`, so it edits tracked source while it runs, every other gate would then measure mutated code, and an interruption leaves an injected mutant behind (`f-20260829-09`).
 - Exercise changed shell/workflow mechanics against their refusal/error case where locally possible.

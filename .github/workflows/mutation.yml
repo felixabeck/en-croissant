@@ -22,6 +22,9 @@ on:
     # Sundays, 03:17 UTC. Off-peak, and weekly matches how fast these suites change.
     - cron: "17 3 * * 0"
 
+permissions:
+  contents: read
+
 jobs:
   packages:
     runs-on: ubuntu-latest

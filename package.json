@@ -15,6 +15,8 @@
     "skills:bridges:test": "node --test scripts/check-skill-bridges-tests.mjs",
     "gates:routing:check": "node scripts/check-gate-routing.mjs",
     "gates:routing:test": "node --test scripts/check-gate-routing-tests.mjs",
+    "workflows:check": "node scripts/check-workflow-permissions.mjs && node scripts/check-workflow-permissions.mjs --actionlint",
+    "workflows:permissions:test": "node --test scripts/check-workflow-permissions-tests.mjs",
     "tauri:boundary:check": "node scripts/check-tauri-command-boundary.mjs",
     "ui:boundary:check": "node scripts/check-ui-boundaries.mjs",
     "ui:boundary:report:test": "node --test scripts/check-ui-boundaries-tests.mjs",
