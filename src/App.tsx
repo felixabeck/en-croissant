@@ -72,7 +72,7 @@ const preloadReferenceDb = async (
   }
 };
 
-function useAppStartup() {
+export function useAppStartup() {
   const initialized = useRef(false);
   useEffect(() => {
     if (initialized.current) return;
@@ -80,16 +80,17 @@ function useAppStartup() {
 
     const controller = new AbortController();
     const { signal } = controller;
+    let detachFn: (() => void) | undefined;
     const startupSequence = async () => {
-      let detach: (() => void) | undefined;
       try {
         await initUserAgent();
-        if (signal.aborted) return undefined;
+        if (signal.aborted) return;
 
-        detach = await attachConsole();
+        detachFn = await attachConsole();
         if (signal.aborted) {
-          detach();
-          return undefined;
+          detachFn();
+          detachFn = undefined;
+          return;
         }
         info("React app started successfully");
 
@@ -100,7 +101,7 @@ function useAppStartup() {
           analytics.enable();
           analytics.capture("app_started", { version: await getVersion() });
         }
-        if (signal.aborted) return detach;
+        if (signal.aborted) return;
         try {
           const matches = await getMatches();
           if (matches.args.file.occurrences > 0) {
@@ -113,22 +114,20 @@ function useAppStartup() {
         }
 
         await preloadReferenceDb(store, signal);
-        return detach;
       } finally {
         if (!signal.aborted) await tauri.closeSplashscreen();
       }
     };
 
-    let detachFn: (() => void) | undefined;
-    void startupSequence()
-      .then((fn) => {
-        detachFn = fn;
-      })
-      .catch((startupError) => warn(`Application startup failed: ${String(startupError)}`));
+    void startupSequence().catch((startupError) =>
+      warn(`Application startup failed: ${String(startupError)}`),
+    );
 
     return () => {
       controller.abort();
-      if (detachFn) detachFn();
+      const detach = detachFn;
+      detachFn = undefined;
+      detach?.();
     };
   }, []);
 }
