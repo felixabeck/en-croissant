@@ -155,6 +155,44 @@ describe("useOperation", () => {
     expect(state()).toEqual({ status: "success", generation: 2, value: "current" });
   });
 
+  test("keeps the newer run cancellable after a stale run settles", async () => {
+    const first = deferred<string>();
+    const second = deferred<string>();
+    let secondSignal!: AbortSignal;
+    let firstRun!: Promise<string>;
+    let secondRun!: Promise<string>;
+
+    await act(async () => root.render(<Probe />));
+    await act(async () => {
+      firstRun = getOperation().run(() => first.promise);
+    });
+    await act(async () => {
+      secondRun = getOperation().run((signal) => {
+        secondSignal = signal;
+        return second.promise;
+      });
+    });
+
+    await act(async () => {
+      first.resolve("stale");
+      await expect(firstRun).resolves.toBe("stale");
+    });
+    expect(state()).toEqual({ status: "pending", generation: 2 });
+
+    await act(async () => {
+      getOperation().cancel();
+    });
+
+    expect(secondSignal.aborted).toBe(true);
+    expect(state()).toEqual({ status: "cancelled", generation: 2 });
+
+    await act(async () => {
+      second.resolve("current");
+      await expect(secondRun).resolves.toBe("current");
+    });
+    expect(state()).toEqual({ status: "cancelled", generation: 2 });
+  });
+
   test("aborts the previous run when a new run starts", async () => {
     const abortError = new Error("operation aborted");
     const second = deferred<string>();

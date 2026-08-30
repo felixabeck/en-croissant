@@ -92,3 +92,24 @@ test("the shipped en-US notice carries every element section 5(a) requires", asy
   expect(notice).toContain("General Public License");
   expect(notice).toMatch(/no warranty/i);
 });
+
+test("every shipped catalogue preserves the modification notice", () => {
+  const catalogues = import.meta.glob<{ translation?: Record<string, unknown> }>(
+    "../translation/*.json",
+    { eager: true, import: "default" },
+  );
+
+  expect(Object.entries(catalogues)).toHaveLength(16);
+
+  for (const catalogue of Object.values(catalogues)) {
+    const notice = catalogue.translation?.["About.ModificationNotice"];
+
+    expect(notice).toBeTypeOf("string");
+    if (typeof notice !== "string") continue;
+
+    expect(notice).toContain("{{date}}");
+    expect(notice).toContain("En Croissant");
+    expect(notice).toContain("Felix Beck");
+    expect(notice).toMatch(/GNU General Public License.*3/i);
+  }
+});
