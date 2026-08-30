@@ -63,6 +63,9 @@ jobs:
       - name: Test bundle budget parser
         run: pnpm bundle:report:test
 
+      - name: Test backend mutation runner
+        run: pnpm mutation:runner:test
+
       - name: Run frontend tests and coverage
         run: pnpm test:coverage
 

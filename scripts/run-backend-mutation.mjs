@@ -1,15 +1,27 @@
 // Runs cargo-mutants over eight narrowly scoped packages.
 //
-// `--in-place` below means this mutates the REAL working tree rather than a copy,
-// to avoid duplicating the multi-gigabyte target directory. Two consequences that
-// are not obvious from the flag:
-//   * Nothing else may touch the tree while this runs - no other gate, no `git add`,
-//     no parallel session. A commit taken mid-run can capture an injected mutation.
-//   * An interrupted run leaves `/* ~ changed by cargo-mutants ~ */` markers in
-//     tracked source. After any abort, check `git status -- src-tauri` and restore
-//     before doing anything else.
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+// `--in-place` mutates the real working tree. The runner therefore refuses a dirty
+// backend, holds a durable fence while cargo-mutants owns the tree, and clears that
+// fence only after proving that no tracked backend file still carries its marker.
+// If a run is interrupted before it can finalise, rerun this command (or use
+// `--check-guard`) for an ordered, path-specific recovery procedure.
+import { spawn, spawnSync } from "node:child_process";
+import {
+  closeSync,
+  existsSync,
+  ftruncateSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { dirname } from "node:path";
+
+const fencePath = "mutants.out/backend/.mutation-in-progress";
+const mutationMarker = "~ changed by cargo-mutants ~";
+const terminationTimeoutMs = 2_000;
 
 const mutationPackages = [
   {
@@ -63,13 +75,90 @@ const mutationPackages = [
   },
 ];
 
-// `--list-packages` prints the ids as JSON so the CI matrix is generated from this
-// manifest instead of a second hand-maintained copy in the workflow. A copy could omit a
-// package and every remaining job would still pass, which is the failure a matrix cannot
-// detect on its own.
+// `--list-packages` must remain side-effect free: the workflow uses it before a
+// checkout has installed cargo-mutants or created the output directory.
 if (process.argv.includes("--list-packages")) {
   console.log(JSON.stringify(mutationPackages.map(({ id }) => id)));
   process.exit(0);
+}
+
+function runGit(args) {
+  const result = spawnSync("git", args, { encoding: "utf8" });
+  if (result.error) throw result.error;
+  return result;
+}
+
+function trackedMutationFiles() {
+  const result = runGit(["grep", "-l", "-F", mutationMarker, "--", "src-tauri"]);
+  if (result.status === 1) return [];
+  if (result.status !== 0) {
+    throw new Error(
+      `git grep failed while checking for cargo-mutants markers (exit ${result.status}): ${result.stderr.trim()}`,
+    );
+  }
+  return result.stdout.trim().split("\n").filter(Boolean);
+}
+
+function shellQuote(path) {
+  return `'${path.replaceAll("'", `'\\''`)}'`;
+}
+
+function recordedPid() {
+  try {
+    const match = readFileSync(fencePath, "utf8").match(/^pid=(\d+)$/m);
+    return match ? Number(match[1]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function pidIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function printRecovery() {
+  const pid = recordedPid();
+  let markedFiles = [];
+  let scanError;
+  try {
+    markedFiles = trackedMutationFiles();
+  } catch (error) {
+    scanError = error;
+  }
+
+  console.error(`Backend mutation fence exists: ${fencePath}`);
+  console.error("Recovery procedure:");
+  console.error("1. Confirm no `cargo mutants` process is running, and terminate it if one is.");
+  if (pid !== undefined) {
+    console.error(
+      `   Recorded cargo pid: ${pid}; currently alive: ${pidIsAlive(pid) ? "yes" : "no"}.`,
+    );
+  } else {
+    console.error("   No cargo child pid was recorded; inspect the process list by command name.");
+  }
+  console.error(
+    "2. Restore only tracked files that contain the literal `~ changed by cargo-mutants ~` marker.",
+  );
+  if (scanError) {
+    console.error(`   Marker scan failed: ${scanError.message}`);
+  } else if (markedFiles.length === 0) {
+    console.error("   No tracked src-tauri files currently contain the marker.");
+  } else {
+    for (const path of markedFiles) console.error(`   ${path}`);
+    console.error(`   git checkout -- ${markedFiles.map(shellQuote).join(" ")}`);
+  }
+  console.error(`3. Remove the fence: rm -- ${shellQuote(fencePath)}`);
+}
+
+if (process.argv.includes("--check-guard")) {
+  if (!existsSync(fencePath)) process.exit(0);
+  printRecovery();
+  process.exit(1);
 }
 
 const selectedPackage = process.env.BACKEND_MUTATION_PACKAGE;
@@ -79,38 +168,192 @@ const selectedPackages = selectedPackage
 if (selectedPackages.length === 0)
   throw new Error(`Unknown BACKEND_MUTATION_PACKAGE: ${selectedPackage}`);
 
-mkdirSync("mutants.out/backend", { recursive: true });
+function assertCleanBackend() {
+  let result;
+  try {
+    result = runGit(["status", "--porcelain", "--", "src-tauri"]);
+  } catch (error) {
+    throw new Error(`Refusing backend mutation: git status failed: ${error.message}`, {
+      cause: error,
+    });
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `Refusing backend mutation: git status failed with exit ${result.status}: ${result.stderr.trim()}`,
+    );
+  }
+  if (result.stdout !== "") {
+    const paths = result.stdout
+      .trimEnd()
+      .split("\n")
+      .map((line) => line.slice(3));
+    throw new Error(`Refusing backend mutation: src-tauri is dirty:\n${paths.join("\n")}`);
+  }
+}
 
-for (const mutationPackage of selectedPackages) {
-  console.log(`\nBackend mutation package: ${mutationPackage.id}`);
-  const result = spawnSync(
-    "cargo",
-    [
-      "mutants",
-      "--manifest-path",
-      "src-tauri/Cargo.toml",
-      "--in-place",
-      "--cargo-arg=--locked",
-      "--no-config",
-      "--file",
-      mutationPackage.file,
-      "--re",
-      mutationPackage.functions,
-      "--minimum-test-timeout",
-      "30",
-      "--output",
-      `mutants.out/backend/${mutationPackage.id}`,
-      "--",
-      mutationPackage.test,
-    ],
-    { encoding: "utf8", stdio: "inherit" },
-  );
-  if (result.status === 0) continue;
+function acquireFence() {
+  mkdirSync(dirname(fencePath), { recursive: true });
+  let fd;
+  try {
+    fd = openSync(fencePath, "wx");
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      printRecovery();
+      return undefined;
+    }
+    throw error;
+  }
+  writeSync(fd, `started=${new Date().toISOString()}\n`);
+  fsyncSync(fd);
+  const directoryFd = openSync(dirname(fencePath), "r");
+  try {
+    fsyncSync(directoryFd);
+  } finally {
+    closeSync(directoryFd);
+  }
+  return fd;
+}
 
-  const missedPath = `mutants.out/backend/${mutationPackage.id}/mutants.out/missed.txt`;
-  const missed = existsSync(missedPath) ? readFileSync(missedPath, "utf8").trim() : "";
-  // cargo-mutants reports timeouts with exit 3. A timeout is a killed mutant,
-  // but any actual survivor remains a hard failure.
-  if (result.status === 3 && missed === "") continue;
-  process.exit(result.status ?? 1);
+function waitForChild(childProcess) {
+  return new Promise((resolve) => {
+    let spawnError;
+    childProcess.once("error", (error) => {
+      spawnError = error;
+    });
+    childProcess.once("close", (code, signal) => resolve({ code, signal, error: spawnError }));
+  });
+}
+
+function cargoArguments(mutationPackage) {
+  return [
+    "mutants",
+    "--manifest-path",
+    "src-tauri/Cargo.toml",
+    "--in-place",
+    "--cargo-arg=--locked",
+    "--no-config",
+    "--file",
+    mutationPackage.file,
+    "--re",
+    mutationPackage.functions,
+    "--minimum-test-timeout",
+    "30",
+    "--output",
+    `mutants.out/backend/${mutationPackage.id}`,
+    "--",
+    mutationPackage.test,
+  ];
+}
+
+function clearFence() {
+  unlinkSync(fencePath);
+  const directoryFd = openSync(dirname(fencePath), "r");
+  try {
+    fsyncSync(directoryFd);
+  } finally {
+    closeSync(directoryFd);
+  }
+}
+
+let fenceFd;
+let fenceStarted;
+let child;
+let childDone;
+let requestedSignal;
+let escalationTimer;
+
+const signalHandler = (signal) => {
+  if (requestedSignal) return;
+  requestedSignal = signal;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  escalationTimer = setTimeout(() => {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }, terminationTimeoutMs);
+  escalationTimer.unref();
+};
+
+async function finalise() {
+  if (escalationTimer) clearTimeout(escalationTimer);
+  if (childDone) await childDone;
+  if (fenceFd !== undefined) {
+    closeSync(fenceFd);
+    fenceFd = undefined;
+  }
+
+  let markedFiles;
+  try {
+    markedFiles = trackedMutationFiles();
+  } catch (error) {
+    console.error(`Backend mutation finaliser could not verify the tree: ${error.message}`);
+    return false;
+  }
+  if (markedFiles.length > 0) {
+    console.error("Backend mutation left cargo-mutants markers in tracked files:");
+    for (const path of markedFiles) console.error(path);
+    console.error(`The fence remains at ${fencePath}.`);
+    return false;
+  }
+  clearFence();
+  return true;
+}
+
+async function main() {
+  if (existsSync(fencePath)) {
+    printRecovery();
+    return 1;
+  }
+  assertCleanBackend();
+  fenceFd = acquireFence();
+  if (fenceFd === undefined) return 1;
+  fenceStarted = readFileSync(fencePath, "utf8");
+
+  process.on("SIGINT", signalHandler);
+  process.on("SIGTERM", signalHandler);
+  let exitCode = 0;
+  try {
+    for (const mutationPackage of selectedPackages) {
+      if (requestedSignal) break;
+      console.log(`\nBackend mutation package: ${mutationPackage.id}`);
+      child = spawn("cargo", cargoArguments(mutationPackage), { stdio: "inherit" });
+      childDone = waitForChild(child);
+      if (child.pid !== undefined) {
+        ftruncateSync(fenceFd, 0);
+        writeSync(fenceFd, `${fenceStarted}pid=${child.pid}\n`, 0, "utf8");
+        fsyncSync(fenceFd);
+      }
+      const result = await childDone;
+      child = undefined;
+      childDone = undefined;
+      if (requestedSignal) break;
+      if (result.error) throw result.error;
+      if (result.code === 0) continue;
+
+      const missedPath = `mutants.out/backend/${mutationPackage.id}/mutants.out/missed.txt`;
+      const missed = existsSync(missedPath) ? readFileSync(missedPath, "utf8").trim() : "";
+      // cargo-mutants reports timeouts with exit 3. A timeout is a killed mutant,
+      // but any actual survivor remains a hard failure.
+      if (result.code === 3 && missed === "") continue;
+      exitCode = result.code ?? 1;
+      break;
+    }
+  } catch (error) {
+    console.error(error);
+    exitCode = 1;
+  } finally {
+    const restored = await finalise();
+    if (!restored) exitCode = 1;
+    process.off("SIGINT", signalHandler);
+    process.off("SIGTERM", signalHandler);
+  }
+
+  if (requestedSignal) return requestedSignal === "SIGINT" ? 130 : 143;
+  return exitCode;
+}
+
+try {
+  process.exitCode = await main();
+} catch (error) {
+  console.error(error);
+  process.exitCode = 1;
 }
