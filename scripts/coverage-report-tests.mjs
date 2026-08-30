@@ -36,6 +36,15 @@ async function fixture({ source = "export const example = 1;\n" } = {}) {
   return { root };
 }
 
+function metrics(metric, covered, total) {
+  return {
+    lines: { covered: 2, total: 2 },
+    functions: { covered: 1, total: 1 },
+    branches: { covered: 1, total: 2 },
+    [metric]: { covered, total },
+  };
+}
+
 test("parses LCOV line, function, and branch totals", () => {
   assert.deepEqual(parseLcov(lcov), [
     {
@@ -105,16 +114,11 @@ test("rejects coverage regressions", () => {
 });
 
 test("rejects untested code added on top of an unchanged covered count", () => {
-  const metrics = (covered, total) => ({
-    lines: { covered, total },
-    functions: { covered: 1, total: 1 },
-    branches: { covered: 1, total: 2 },
-  });
   assert.throws(
     () =>
       assertBaseline(
-        { utilities: metrics(15, 659) },
-        { version: 1, areas: { utilities: metrics(15, 653) } },
+        { utilities: metrics("lines", 15, 659) },
+        { version: 1, areas: { utilities: metrics("lines", 15, 653) } },
       ),
     /utilities lines regressed/,
   );
@@ -148,77 +152,61 @@ test("rejects narrowing the measured scope, which shrinks the total without dele
   );
 });
 
-test("accepts a shrinking total when untested code is deleted", () => {
-  const metrics = (covered, total) => ({
-    lines: { covered: 2, total: 2 },
-    functions: { covered: 1, total: 1 },
-    branches: { covered, total },
-  });
+test("accepts a shrinking total when coverage rises", () => {
   // Covered rises and the ratio rises; only the denominator shrank, which is
-  // what removing dead branches looks like and must not count as a regression.
+  // observable here and must not count as a regression.
   assert.doesNotThrow(() =>
     assertBaseline(
-      { utilities: metrics(77, 1048) },
-      { version: 1, areas: { utilities: metrics(12, 1051) } },
+      { utilities: metrics("branches", 77, 1048) },
+      { version: 1, areas: { utilities: metrics("branches", 12, 1051) } },
     ),
   );
 });
 
-test("allows covered code deleted with its measured record and returns the exact allowance", () => {
-  const metrics = (covered, total) => ({
-    lines: { covered: 2, total: 2 },
-    functions: { covered: 1, total: 1 },
-    branches: { covered, total },
-  });
+test("bounds the covered-count allowance by the total shrink and returns it", () => {
   assert.deepEqual(
     assertBaseline(
-      { utilities: metrics(180, 5676) },
-      { version: 1, areas: { utilities: metrics(181, 5677) } },
+      { utilities: metrics("branches", 180, 5676) },
+      { version: 1, areas: { utilities: metrics("branches", 181, 5677) } },
     ),
     [{ area: "utilities", metric: "branches", totalShrink: 1 }],
   );
   assert.throws(
     () =>
       assertBaseline(
-        { utilities: metrics(179, 5676) },
-        { version: 1, areas: { utilities: metrics(181, 5677) } },
+        { utilities: metrics("branches", 179, 5676) },
+        { version: 1, areas: { utilities: metrics("branches", 181, 5677) } },
       ),
     /utilities branches regressed/,
   );
 });
 
 test("reports no allowance for a shrink that never needed one", () => {
-  const metrics = (covered, total) => ({
-    lines: { covered: 2, total: 2 },
-    functions: { covered: 1, total: 1 },
-    branches: { covered, total },
-  });
-  // Deleting untested code shrinks the total and raises the ratio, so the
+  // A shrinking total with rising coverage raises the ratio, so the
   // unadjusted rule already passes. Announcing an allowance here would claim
   // records were forgiven that were never at risk.
   assert.deepEqual(
     assertBaseline(
-      { utilities: metrics(77, 1048) },
-      { version: 1, areas: { utilities: metrics(12, 1051) } },
+      { utilities: metrics("branches", 77, 1048) },
+      { version: 1, areas: { utilities: metrics("branches", 12, 1051) } },
     ),
     [],
   );
 });
 
 test("keeps the current ratchets when the total does not shrink", () => {
-  const metrics = (covered, total) => ({
-    lines: { covered, total },
-    functions: { covered: 1, total: 1 },
-    branches: { covered: 1, total: 2 },
-  });
-  const baseline = { version: 1, areas: { utilities: metrics(15, 653) } };
+  const baseline = { version: 1, areas: { utilities: metrics("lines", 15, 653) } };
   assert.throws(
-    () => assertBaseline({ utilities: metrics(15, 659) }, baseline),
+    () => assertBaseline({ utilities: metrics("lines", 15, 659) }, baseline),
     /utilities lines regressed/,
   );
-  assert.deepEqual(assertBaseline({ utilities: metrics(16, 653) }, baseline), []);
+  assert.deepEqual(assertBaseline({ utilities: metrics("lines", 16, 653) }, baseline), []);
   assert.throws(
-    () => assertBaseline({ utilities: metrics(14, 653) }, baseline),
+    () => assertBaseline({ utilities: metrics("lines", 14, 653) }, baseline),
+    /utilities lines regressed/,
+  );
+  assert.throws(
+    () => assertBaseline({ utilities: metrics("lines", 16, 700) }, baseline),
     /utilities lines regressed/,
   );
 });

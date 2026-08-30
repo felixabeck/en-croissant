@@ -22,6 +22,8 @@ import { dirname } from "node:path";
 const fencePath = "mutants.out/backend/.mutation-in-progress";
 const mutationMarker = "~ changed by cargo-mutants ~";
 const terminationTimeoutMs = 2_000;
+// Give each cargo-mutants test at least this many seconds before timing it out.
+const minimumTestTimeoutSeconds = 30;
 
 const mutationPackages = [
   {
@@ -191,27 +193,38 @@ function assertCleanBackend() {
   }
 }
 
-function acquireFence() {
-  mkdirSync(dirname(fencePath), { recursive: true });
-  let fd;
-  try {
-    fd = openSync(fencePath, "wx");
-  } catch (error) {
-    if (error?.code === "EEXIST") {
-      printRecovery();
-      return undefined;
-    }
-    throw error;
-  }
-  writeSync(fd, `started=${new Date().toISOString()}\n`);
-  fsyncSync(fd);
-  const directoryFd = openSync(dirname(fencePath), "r");
+function fsyncDirectory(path) {
+  const directoryFd = openSync(dirname(path), "r");
   try {
     fsyncSync(directoryFd);
   } finally {
     closeSync(directoryFd);
   }
-  return fd;
+}
+
+function discardUnspawnedFence(fd) {
+  if (fd !== undefined) closeSync(fd);
+  unlinkSync(fencePath);
+  fsyncDirectory(fencePath);
+}
+
+function acquireFence() {
+  mkdirSync(dirname(fencePath), { recursive: true });
+  try {
+    // Assign the module-level handle immediately: from the moment this succeeds the
+    // fence exists on disk, and every failure below has to be able to find it again.
+    fenceFd = openSync(fencePath, "wx");
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      printRecovery();
+      return false;
+    }
+    throw error;
+  }
+  writeSync(fenceFd, `started=${new Date().toISOString()}\n`);
+  fsyncSync(fenceFd);
+  fsyncDirectory(fencePath);
+  return true;
 }
 
 function waitForChild(childProcess) {
@@ -237,7 +250,7 @@ function cargoArguments(mutationPackage) {
     "--re",
     mutationPackage.functions,
     "--minimum-test-timeout",
-    "30",
+    String(minimumTestTimeoutSeconds),
     "--output",
     `mutants.out/backend/${mutationPackage.id}`,
     "--",
@@ -247,12 +260,7 @@ function cargoArguments(mutationPackage) {
 
 function clearFence() {
   unlinkSync(fencePath);
-  const directoryFd = openSync(dirname(fencePath), "r");
-  try {
-    fsyncSync(directoryFd);
-  } finally {
-    closeSync(directoryFd);
-  }
+  fsyncDirectory(fencePath);
 }
 
 let fenceFd;
@@ -304,9 +312,28 @@ async function main() {
     return 1;
   }
   assertCleanBackend();
-  fenceFd = acquireFence();
-  if (fenceFd === undefined) return 1;
-  fenceStarted = readFileSync(fencePath, "utf8");
+  try {
+    if (!acquireFence()) return 1;
+    fenceStarted = readFileSync(fencePath, "utf8");
+  } catch (error) {
+    // Nothing has been spawned yet, so a fence created and then abandoned protects
+    // nothing and would refuse every later run and every `$push` preflight. This is
+    // the only place a fence is removed without verifying the tree, and it is only
+    // reachable before the first spawn.
+    if (fenceFd !== undefined) {
+      const unspawnedFenceFd = fenceFd;
+      fenceFd = undefined;
+      try {
+        discardUnspawnedFence(unspawnedFenceFd);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "Fence setup failed and the unspawned fence could not be removed",
+        );
+      }
+    }
+    throw error;
+  }
 
   process.on("SIGINT", signalHandler);
   process.on("SIGTERM", signalHandler);
@@ -341,8 +368,8 @@ async function main() {
     console.error(error);
     exitCode = 1;
   } finally {
-    const restored = await finalise();
-    if (!restored) exitCode = 1;
+    const finalised = await finalise();
+    if (!finalised) exitCode = 1;
     process.off("SIGINT", signalHandler);
     process.off("SIGTERM", signalHandler);
   }

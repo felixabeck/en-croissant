@@ -31,6 +31,9 @@ async function fixture() {
     `#!/bin/sh
 echo $$ > "$SHIM_STATE/pid"
 : > "$SHIM_STATE/started"
+if [ -e mutants.out/backend/.mutation-in-progress ]; then
+  : > "$SHIM_STATE/fence-present-at-spawn"
+fi
 case "$SHIM_MODE" in
   block)
     trap ': > "$SHIM_STATE/terminated"; exit 0' TERM INT
@@ -137,6 +140,7 @@ test("a normal clean run holds the fence for the run and removes it afterwards",
   const { root, bin, state } = await fixture();
   const running = start(root, environment({ bin, state, mode: "block" }));
   await waitFor(join(state, "started"));
+  await readFile(join(state, "fence-present-at-spawn"));
   assert.match(await readFile(join(root, fence), "utf8"), /^started=.*\npid=\d+\n$/);
   await writeFile(join(state, "release"), "");
   const result = await running.done;
@@ -168,6 +172,18 @@ test("SIGTERM terminates and reaps cargo before the finaliser clears the fence",
   running.child.kill("SIGTERM");
   const result = await running.done;
   assert.equal(result.code, 143, result.stderr);
+  assert.equal(isAlive(cargoPid), false, `cargo pid ${cargoPid} still exists after runner exit`);
+  assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
+});
+
+test("SIGINT terminates and reaps cargo before the finaliser clears the fence", async () => {
+  const { root, bin, state } = await fixture();
+  const running = start(root, environment({ bin, state, mode: "ignore-term" }));
+  await waitFor(join(state, "started"));
+  const cargoPid = Number(await readFile(join(state, "pid"), "utf8"));
+  running.child.kill("SIGINT");
+  const result = await running.done;
+  assert.equal(result.code, 130, result.stderr);
   assert.equal(isAlive(cargoPid), false, `cargo pid ${cargoPid} still exists after runner exit`);
   assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
 });
@@ -204,6 +220,53 @@ test("cargo failing to spawn runs the finaliser and surfaces the underlying erro
   assert.equal(result.status, 1);
   assert.match(result.stderr, /spawn cargo ENOENT/);
   assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
+});
+
+test("a fence read failure before spawn removes the unowned fence", async (t) => {
+  // Root ignores the file permission this arranges, so the read would succeed.
+  if (process.getuid?.() === 0) {
+    t.skip("root bypasses the file permission this test relies on");
+    return;
+  }
+  const { root, bin, state } = await fixture();
+  const env = environment({ bin, state });
+  // The directory is created up front with ordinary permissions, so the exclusive
+  // create and both fsyncs succeed; only the fence FILE lands write-only, which is
+  // what makes reading it back fail. Masking the directory instead would fail before
+  // any fence existed and the test would pass against a runner that never cleans up.
+  await mkdir(join(root, dirname(fence)), { recursive: true });
+  const result = spawnSync("/bin/sh", ["-c", 'umask 477; exec "$NODE" "$RUNNER"'], {
+    cwd: root,
+    env: { ...env, NODE: process.execPath, RUNNER: runner },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 1);
+  await assert.rejects(() => readFile(join(state, "started")));
+  assert.equal(run(root, env, ["--check-guard"]).status, 0);
+});
+
+test("a fence setup failure after the exclusive create removes the unowned fence", async (t) => {
+  // Root ignores the directory permission this arranges, so the fence would be
+  // created successfully and the run would proceed instead of failing.
+  if (process.getuid?.() === 0) {
+    t.skip("root bypasses the directory permission this test relies on");
+    return;
+  }
+  const { root, bin, state } = await fixture();
+  const env = environment({ bin, state });
+  const fenceDirectory = join(root, dirname(fence));
+  await mkdir(fenceDirectory, { recursive: true });
+  // Write and execute but not read: creating the fence inside still succeeds, while
+  // the directory fsync that follows it cannot open the directory. That puts the
+  // failure *inside* fence setup, after the exclusive create has already happened —
+  // a different path from a failure reading the fence back, and the one that would
+  // otherwise strand a fence nobody can explain.
+  await chmod(fenceDirectory, 0o300);
+  const result = run(root, env);
+  await chmod(fenceDirectory, 0o755);
+  assert.notEqual(result.status, 0);
+  await assert.rejects(() => readFile(join(state, "started")));
+  assert.equal(run(root, env, ["--check-guard"]).status, 0);
 });
 
 test("entry refuses a dirty src-tauri and lists its path", async () => {
@@ -263,6 +326,22 @@ test("exit verification keeps the fence for a marker but ignores an unrelated ed
   );
   assert.equal(editResult.status, 0, editResult.stderr);
   assert.equal(run(edited.root, environment(edited), ["--check-guard"]).status, 0);
+});
+
+test("a failed final marker scan keeps the fence and fails the run", async () => {
+  const { root, bin, state } = await fixture();
+  const failingBin = join(root, "grep-failing-git-bin");
+  await mkdir(failingBin);
+  await writeFile(
+    join(failingBin, "git"),
+    '#!/bin/sh\nif [ "$1" = "grep" ]; then exit 2; fi\nexec /usr/bin/git "$@"\n',
+  );
+  await chmod(join(failingBin, "git"), 0o755);
+  await symlink(join(bin, "cargo"), join(failingBin, "cargo"));
+  const result = run(root, environment({ bin, state, path: `${failingBin}:/bin` }));
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /finaliser could not verify the tree/);
+  assert.notEqual(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
 });
 
 test("a failing git status is a refusal rather than a clean tree", async () => {
