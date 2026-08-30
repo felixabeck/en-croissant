@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 const untrackedResult = spawnSync(
@@ -18,7 +18,7 @@ const actionIconImport = /import\s*\{[^}]*\bActionIcon\b[^}]*\}\s*from\s*["']@ma
 const modalImport = /import\s*\{[^}]*\bModal\b[^}]*\}\s*from\s*["']@mantine\/core["']/;
 const unsafeFocusReset = /\b(all\s*:\s*unset|outline\s*:\s*(?:none|0(?:px)?))\b/;
 
-function inspectAddedLine(file, line) {
+function inspectLine(file, line) {
   if (
     actionIconImport.test(line) &&
     file !== "src/components/common/IconAction.tsx" &&
@@ -34,15 +34,23 @@ function inspectAddedLine(file, line) {
   }
 }
 
+function readWorkingTreeFile(file) {
+  try {
+    return readFileSync(file, "utf8");
+  } catch (error) {
+    // `git ls-files` can include a tracked file removed by an uncommitted deletion;
+    // that genuine absence is the one legitimate reason to skip the file.
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 // `git ls-files` still lists a tracked file that the working tree has deleted, and the
-// scan below reads the working tree, so an uncommitted deletion made this checker throw
-// ENOENT and fail the gate on a change that removed a source file. Filtering by what is
-// actually on disk keeps the whole-tree scan intact: a deleted file has no content to
-// inspect, and once the deletion is committed `git ls-files` stops listing it anyway.
+// scan below reads the working tree, so an uncommitted deletion has no content to inspect.
+// The read helper above tolerates that one legitimate absence while keeping every other
+// filesystem failure loud.
 const sourceFiles = new Set(
-  [...trackedResult.stdout.split("\n"), ...untrackedResult.stdout.split("\n")]
-    .filter(Boolean)
-    .filter((file) => existsSync(file)),
+  [...trackedResult.stdout.split("\n"), ...untrackedResult.stdout.split("\n")].filter(Boolean),
 );
 
 // Whole tree, not the diff. These two rules used to inspect only lines added in
@@ -54,14 +62,18 @@ const sourceFiles = new Set(
 for (const file of sourceFiles) {
   if (!/\.(tsx?|css)$/.test(file)) continue;
   if (/\.test\.[jt]sx?$/.test(file)) continue;
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    inspectAddedLine(file, line);
+  const contents = readWorkingTreeFile(file);
+  if (contents === null) continue;
+  for (const line of contents.split("\n")) {
+    inspectLine(file, line);
   }
 }
 
 for (const file of sourceFiles) {
   if (!file.endsWith(".css")) continue;
-  for (const line of readFileSync(file, "utf8").split("\n")) {
+  const contents = readWorkingTreeFile(file);
+  if (contents === null) continue;
+  for (const line of contents.split("\n")) {
     if (unsafeFocusReset.test(line)) {
       violations.push(
         `${file}: unsafe focus reset; use explicit reset properties and :focus-visible`,
