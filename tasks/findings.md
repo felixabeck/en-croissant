@@ -256,7 +256,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### 4. Backend coverage counts `#[cfg(test)]` modules against production ratios
 
-* **ID:** f-20260829-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260829-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** felix-decision
 * **Where:** `scripts/rust-branch-coverage.mjs`, `backend-coverage-areas.json`.
 * **Defect:** the exporter measures `#[cfg(test)] mod tests` alongside production code, so a test's
   own untaken branches count against the area ratio — 89 of 4254 branch records today. Adding tests
@@ -265,6 +265,99 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   run and a deliberate re-baseline against a known-good measurement environment. It is coupled to
   finding 1 — decide where the canonical measurement happens first.
 * **Carried from:** `BACKEND_AUDIT_PLAN.md`, "Final exact-tree verification (2026-08-13)".
+
+* **Parked 2026-08-30** by the `gate-scripts` build run. The investigation is complete and the
+  mechanism is chosen; only the last step is blocked, so this is a one-word decision rather than a
+  fresh investigation.
+
+* **The finding understated the defect by an order of magnitude, and its sign is inverted.** It
+  described "89 of 4254 branch records". Measured on the committed
+  `backend-coverage/lcov.info` (2026-08-30 11:16) against all 37 files under `src-tauri/src`: the
+  28 inline `#[cfg(test)] mod` blocks contribute **6295 DA, 584 FN and 130 BRDA records**, and a
+  further **43** `#[cfg(test)]`-guarded `fn`/`impl`/`struct`/`use`/`const`/statement items sit
+  outside those blocks. Test code does not mainly depress the numbers — it **inflates** them.
+  Backend production line coverage is not ~66 %. It is ~50 %.
+
+  | Area | now (lines · functions · branches) | with `#[cfg(test)] mod` excluded |
+  |---|---|---|
+  | app-infrastructure | 4533/6601 · 752/1542 · 780/2064 | 2625/4687 · 621/1406 · 737/2016 |
+  | filesystem-native-boundaries | 1643/3145 · 204/509 · 382/1058 | 862/2350 · 134/430 · 376/1050 |
+  | oauth-credentials | 1427/2070 · 241/389 · 130/244 | 658/1281 · 124/259 · 105/204 |
+  | database-search | 3284/4965 · 279/502 · 249/378 | 1759/3434 · 178/400 · 233/354 |
+  | engine-game-chess | 2273/4453 · 327/571 · 292/526 | 1353/3528 · 212/455 · 290/522 |
+  | auxiliary-domain-services | 595/1002 · 56/127 · 29/36 | 254/661 · 35/106 · 25/30 |
+
+  These are module-only figures; excluding the 43 non-`mod` items moves every number slightly
+  further down.
+
+* **Why it is blocked.** Landing the exclusion requires two things in the same commit, or every
+  backend gate is red: re-recording `backend-coverage-baselines.json`, and re-deriving
+  `minimumCoverage`, because **14 of the 18 area floors break**. The four survivors are the branch
+  floors of app-infrastructure (36.56 vs 36), database-search (65.82 vs 65), engine-game-chess
+  (55.56 vs 55) and auxiliary-domain-services (83.33 vs 79, which would *rise*); every line and
+  function floor fails. The baseline-writing commands are in `.claude/settings.json`'s `deny` list,
+  and the harness genuinely refuses them — a bare `echo` of the pattern was refused during this
+  run, not only the real command. The only non-denied route is a differently-phrased invocation of
+  the same code, which is the evasion the repo `CLAUDE.md` names and forbids.
+
+  `d-20260829-02` names this finding in its own `Governs:` line and prescribes the re-record
+  procedure, so the *authority* exists; what is missing is the ability to execute it. Three
+  plan-review lenses examined this specifically and returned the same verdict: a genuine external
+  constraint, not effort, risk, size or recency.
+
+* **Mechanism, already settled by measurement — do not re-derive it.** Three candidates are ruled
+  out by evidence:
+  * `llvm-cov export` name filters: `--name-regex=a^` (matches nothing) produced a byte-identical
+    export, SHA-256 `d533c7ee…` both ways, `FN=88 FNDA=88 DA=748 BRDA=22` unchanged. The LCOV
+    exporter ignores name filters; `--skip-functions` drops FN/FNDA only.
+  * LCOV `::tests::` name filtering: the exporter emits v0-mangled names, so the count of
+    `::tests::` in the LCOV is **0**, and `db/repository.rs:570` is a DA record inside a test module
+    enclosed by no function at all.
+  * `#[coverage(off)]`: the pinned `nightly-2025-06-01` (rustc 1.89.0-nightly) rejects it with
+    `error[E0658]`. It is stable on this machine's rustc 1.98, so it would need a coverage-toolchain
+    bump that re-scales every number anyway — and it is unenforced, since a future `mod tests`
+    without the attribute silently re-inflates.
+
+  The surviving mechanism is **source-range exclusion inside `scripts/rust-branch-coverage.mjs`**,
+  driven by a new field in `backend-coverage-areas.json`, excluding **every** `#[cfg(test)]`-guarded
+  item rather than only `mod`. Two implementation constraints that are not optional:
+  * Naive brace counting fails at exactly one site — `src-tauri/src/pgn.rs:676`, where byte strings
+    at 731/738/741 carry unbalanced literal braces and the scan runs to EOF. A masking pass over
+    comments, strings, raw strings and char literals is required.
+  * **`scopeSignature` must be extended in the same change.** `scripts/coverage-report.mjs` copies a
+    fixed key list (`id`, `root`, `include`, `exclude`, `source`, `paths`), so a new config field is
+    invisible to the scope guard otherwise. Since `f-20260829-15` landed, that signature is the
+    *only* guard against narrowing the measured set — a narrowing now looks exactly like a deletion
+    to the numeric ratchets.
+
+* **Decision:** Should the backend coverage exporter stop measuring `#[cfg(test)]` code, accepting
+  that the honest numbers are ~15 points lower and that 14 of 18 permanent floors must be re-derived
+  onto the new scale?
+  * **(a) Yes — exclude test code and re-derive.** `scripts/rust-branch-coverage.mjs` gets the
+    masking scanner, `backend-coverage-areas.json` gets the exclusion field and 18 recomputed
+    floors, `scopeSignature` gets the field, and `backend-coverage-baselines.json` is re-recorded
+    once. Costs: one commit that lowers 17 floors and raises 1, with every delta audited in the
+    message; and you must run the baseline command yourself, or lift the deny entry for one run.
+    Gains: the gate starts measuring production code, and adding a test can no longer lower an
+    area's ratio.
+  * **(b) No — keep measuring test code.** Costs nothing today. The gate keeps reporting ~66 % line
+    coverage for a backend that is at ~50 %, the floors keep certifying a number that includes the
+    tests certifying it, and a test whose own branches are untaken still lowers its area.
+  * **Ruled out:** annotating with `#[coverage(off)]` — `E0658` on the pinned toolchain, measured;
+    filtering by function name — 0 matches and an unenclosed DA record, measured; leaving the floors
+    untouched and writing new production tests until the corrected instrument clears them — the gap
+    is 10 to 21 points across 14 floors, which is a coverage programme, not a fix for this finding.
+  * **Recommend:** (a), because a gate that measures its own tests is measuring the wrong thing, and
+    the current floors give false assurance about production code. Against it: re-deriving 18 floors
+    in one commit is exactly the shape `docs/coverage.md` warns about, and once done, nobody can
+    tell from the file alone that the lowering was an instrument change rather than a retreat — the
+    audit lives only in the commit message. If that trade is unacceptable, (b) is a defensible hold
+    provided the ~50 % figure is written into `docs/coverage.md` so the inflation is at least known.
+  * **Could not determine:** the exact post-exclusion numbers for the decided design. The table
+    above excludes `mod` blocks only; the 43 non-`mod` items were located but not measured, because
+    that needs the scanner this run did not build.
+  * **Session:** 3b1b6830-9591-40d2-a64b-50a8c928b0f1 — transcript
+    `~/.claude/projects/*/3b1b6830-9591-40d2-a64b-50a8c928b0f1.jsonl`
 
 ---
 
@@ -537,7 +630,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### `mutation:backend` mutates the real working tree and nothing guards it
 
-* **ID:** f-20260829-09 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260829-09 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `scripts/run-backend-mutation.mjs`, the `--in-place` argument to `cargo mutants`.
 * **Defect:** the runner mutates tracked source in place rather than in a copy — a deliberate
   choice, since copying the tree would duplicate a multi-gigabyte `src-tauri/target`, but it is
@@ -579,6 +672,48 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   survived only because cargo-mutants writes `mutants.out/backend/<package>/mutants.out/` to the
   repo. Whatever guard is built should treat `mutants.out/` as the record and the console log as
   disposable.
+
+* **Handled 2026-08-30**, commit `1d93db6a`, by the `gate-scripts` build run.
+* **The open question — runner or push skill — is answered: both, and neither alone is enough.**
+  The push skill already forbade *starting* a mutation run on a dirty tree; the hazard is an
+  *abort*, which no skill is present to observe, and `.github/workflows/mutation.yml` invokes the
+  runner directly, so a skill-only guard protects neither CI nor a manual run. Conversely a
+  runner-only fence is invisible to the concurrent session that is about to commit. So the runner
+  owns the fence and `--check-guard` answers for it; `$push` runs `pnpm mutation:guard:check` before
+  any other gate.
+* **Four guards, because the defect has four shapes.** Entry refuses a dirty `src-tauri`, and a
+  failing `git` is a refusal too — empty stdout from a broken `git` must never read as a clean tree.
+  An fsynced `wx` fence at `mutants.out/backend/.mutation-in-progress` covers the whole run and
+  doubles as the lock against a second runner. `spawnSync` became `spawn` so the cargo child has an
+  owner: SIGINT/SIGTERM kill it and **await its terminal event**, escalating to SIGKILL, because
+  cargo-mutants reverts cooperatively and a finaliser racing `kill()` can see a briefly clean file,
+  clear the fence and exit while the mutator writes again. Every exit path runs one finaliser,
+  including cargo exiting non-zero and cargo failing to spawn — the old `process.exit(status ?? 1)`
+  returned with no cleanup at all and discarded `result.error`, losing the cargo ENOENT PATH
+  diagnosis.
+* **The exit invariant is precise, not "the tree is clean":** the fence clears only after proving no
+  tracked file under `src-tauri` still contains a `~ changed by cargo-mutants ~` marker, so an
+  unrelated concurrent edit is not reported as an unrestored mutation.
+* **Recovery is ordered and path-specific.** Step one is always "confirm no `cargo mutants` process
+  is running, and terminate it if one is" — correct even when no pid was recorded, which matters
+  because `spawn` creates the child before its pid can be written and that window cannot be closed
+  here. Safety therefore does not depend on the pid: the fence's existence is the fence. Step two
+  restores **only** the marked files; a blanket `git checkout -- src-tauri` would destroy a
+  concurrent editor's legitimate work along with the mutant. Step three removes the fence. It is
+  never auto-cleared.
+* **Rejected:** an `--allow-dirty` or env-var override, whose only use is the case the guard exists
+  to prevent (`d-20260830-10`); a separate `check-mutation-guard.mjs`, which would give the fence
+  invariant two implementations; and a CI step for the guard check, which would be vacuous because
+  CI runs in a fresh checkout where a gitignored fence cannot exist — the same defect this repo hit
+  when two `ui:boundary:check` rules were diff-scoped.
+* **Verification.** 14 tests drive the real CLI as a subprocess against temporary git repositories
+  with a cargo shim, because helper-level tests cannot prove the CLI calls the helpers. One asserts
+  the push skill still names `mutation:guard:check`, so deleting that wiring turns a test red. Both
+  claims were checked by hand rather than taken from the implementing leaf: removing the exit
+  verification fails "exit verification keeps the fence for a marker but ignores an unrelated edit",
+  and deleting the push-skill block fails "the push skill keeps the executable mutation guard
+  preflight wired".
+* `pnpm mutation:backend` was **not** run — it mutates the tree and no gate may run beside it.
 
 ---
 
@@ -683,7 +818,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### `findings.py` can report the cleanup error and swallow the write error that caused it
 
-* **ID:** f-20260829-14 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260829-14 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `scripts/findings.py`, the ledger-write path around line 1391 (`finally` block).
 * **Defect:** if writing, syncing or replacing the ledger fails and the temporary-file cleanup in
   the `finally` block then also fails, the cleanup `OSError` propagates and replaces the original
@@ -701,13 +836,36 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Found by:** `review-error-handling` (confidence 95) during the `$push` review of the
   2026-08-29 setup work.
 
+* **Handled 2026-08-30**, commit `514cfb40`, by the `gate-scripts` build run.
+* **Fix.** The `finally` block no longer re-raises a failing `tmp.unlink` when the write did not
+  commit. It warns on stderr — as the committed branch already did — and lets the primary error
+  propagate, so both diagnostics survive. A bare `contextlib.suppress` was rejected: it would trade
+  one lost message for another, since an orphaned temporary file is worth knowing about too.
+* **The shared-tool constraint was verified, not assumed.** Diffing this copy against
+  `chess-tactics-app`'s committed `scripts/findings.py` yields **exactly one hunk**, and it is this
+  one.
+* **Anchor.** `scripts/findings-atomic-write-tests.py`, wired as `pnpm findings:test` in CI and in
+  the push skill's ledger gate. `findings.py check` never exercises this path, so without it
+  reverting the fix would have passed every committed command. Checked by hand: restoring the old
+  `raise` fails `test_write_failure_survives_a_failing_cleanup` with "OSError('permission denied')
+  is not OSError('no space left on device')". The test lives beside the shared tool, never inside
+  it.
+* **The port to the sibling copies is filed, not performed** — `d-20260830-11`. Both
+  `chess-tactics-app` and `correction-app` carry the identical defective block, read directly. They
+  were measured three times during this run and moved every time: `chess-tactics-app` went 11 to 12
+  commits ahead of `origin/develop`, `correction-app` went 5 dirty files to 0 to 3 and 2 to 3
+  commits ahead. Both are live checkouts with another session working in them; committing into a
+  tree moving under me, whose unpushed stack this run has not reviewed and may not push, is worse
+  than a declared pendency. The shared-tool contract permits "a fix this copy carries first while
+  the port is pending" and requires only that the pendency be declared.
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
 
 ### The coverage ratchet penalises deleting covered code
 
-* **ID:** f-20260829-15 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260829-15 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `scripts/coverage-report.mjs`, `assertBaseline`; the rule is stated in
   `docs/coverage.md:5` — "rejects a lower covered count, a larger total, or a lower percentage".
 * **Defect:** the covered-count clause fires on any deletion of covered code, because removing a
@@ -727,6 +885,40 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   regressions this ratchet was built to catch (`docs/coverage.md:9-11`).
 * **Found by:** the 2026-08-29 setup run, when killing the `f-20260829-08` mutants required
   deleting the dead branch.
+
+* **Handled 2026-08-30**, commit `d388767b`, by the `gate-scripts` build run.
+* **The finding named one of the two guilty clauses.** The ratio clause penalises deletion just as
+  hard: for any ratio below 1, deleting a covered record moves `c/t` to `(c-1)/(t-1)`, which is
+  strictly smaller. The observed incident fails both — `180·5677 = 1021860 < 1027356 = 181·5676` —
+  so repairing only `actual.covered < prior.covered` would not have made that gate green.
+* **What landed.** Both comparisons now run against a baseline shrunk by however many records the
+  measurement lost: `totalShrink = max(0, prior.total - actual.total)`, and the baseline is adjusted
+  down by that amount in both numerator and denominator. When the total does not shrink the rule is
+  arithmetically identical to the previous one, so adding untested code and losing cover on code
+  that still exists fail exactly as before. The observed case passes with zero slack; 179/5676 still
+  fails. No tolerance constant, and the integer cross-multiplication form is unchanged.
+* **The names say `shrink`, not `deleted`, deliberately.** Four aggregate numbers cannot tell
+  "one covered record was deleted" apart from "one uncovered record was deleted and another lost
+  its tests", and `CLAUDE.md` records that ~170 BRDA identities flip per build with no source
+  change. So the allowance is bounded by the observed shrink, and every use that actually changes a
+  verdict is printed by `main` — a shrink that would have passed anyway reports nothing, because
+  claiming records were "forgiven" when none were at risk is a false statement in a gate log.
+* **Rejected:** a ratio tolerance — an arbitrary constant that readmits exactly the small
+  regressions `docs/coverage.md` says the ratchet exists to catch; scaling the expected covered
+  count by the change in total — proportional, so it forgives cover lost on records that were not
+  deleted; the finding's own "exempt a decrease whose covered/total deltas are equal" — it handles
+  only the exactly-balanced case and wrongly fails a mixed deletion of 1 covered plus 2 uncovered
+  records, the ordinary shape of deleting a dead block; and record-level baselines, ruled out by
+  this repository's measured BRDA identity instability, which would make them permanently red.
+  Recorded as `d-20260830-08`.
+* **Consequence that outlives this fix:** `scopeSignature` is now the only guard against narrowing
+  the measured set, since a narrowing looks exactly like a deletion to the numeric ratchets. Written
+  into `docs/coverage.md` and `CLAUDE.md`, and it constrains how `f-20260829-04` must be built.
+* **`d-20260829-03`, which refreshed a baseline as the local workaround for this defect, needs no
+  further action** — the refreshed numbers remain correct; only the rule that forced the refresh
+  changed.
+* Verified: `coverage:report:test` 16/16 (including the rewritten test that previously pinned the
+  old behaviour), `coverage:frontend:check`, `coverage:backend:check`, oxfmt, oxlint.
 
 ---
 

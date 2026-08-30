@@ -234,3 +234,154 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   `d-20260829-02` both forbid. The stale doc was actively pushing toward the one action the rule
   prohibits.
 * **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-08 — The coverage ratchet rejects deleting covered code. Which repair?
+
+* **Governs:** f-20260829-15, f-20260829-04
+* **Chosen:** compare against a baseline shrunk by however many records the measurement lost.
+  `totalShrink = max(0, prior.total - actual.total)`; both the covered clause and the ratio clause
+  run against `(prior.covered - totalShrink, prior.total - totalShrink)`. When the total does not
+  shrink the allowance is zero and the rule is arithmetically identical to the previous one. The
+  allowance is bounded by the shrink and every use that changes a verdict is printed.
+* **Rejected:** a ratio tolerance — an arbitrary constant that readmits exactly the small
+  regressions `docs/coverage.md` says the ratchet exists to catch, unboundedly at small area sizes;
+  scaling the expected covered count by the change in total — proportional, so it forgives cover
+  lost on records that were **not** deleted whenever the total also moved; the finding's own
+  "exempt a decrease whose covered/total deltas are equal" — it handles only the exactly-balanced
+  case and wrongly fails a mixed deletion of 1 covered plus 2 uncovered records, which is the
+  ordinary shape of deleting a dead block; and record-level baselines, which would resolve the
+  ambiguity outright and are ruled out because this repository has measured that ~170 `BRDA`
+  block/branch identities flip per build with no source change, so such a baseline would be
+  permanently red.
+* **Because:** the chosen rule is the finding's own third suggestion generalised to its correct
+  bound, with no constant anywhere. Note that the finding named only the covered clause; the ratio
+  clause is equally guilty, since `(c-1)/(t-1) < c/t` for every ratio below 1, and the observed
+  incident fails both — `180*5677 = 1021860 < 1027356 = 181*5676`.
+* **The residual is named rather than hidden.** Four aggregate numbers cannot distinguish "one
+  covered record was deleted" from "one uncovered record was deleted and another lost its tests",
+  and instrument drift can shrink the total with no deletion at all. That ambiguity is irreducible
+  at this layer. It is answered by bounding the allowance to the observed shrink and by announcing
+  every use in the gate output, not by pretending it does not exist.
+* **Consequence that constrains later work:** `scopeSignature` is now the only guard against
+  narrowing the measured set, because a narrowing looks exactly like a deletion to the numeric
+  ratchets. Any future change to *what gets measured* must be expressed through the config so it
+  reaches that signature — including f-20260829-04's exclusion, whose implementation must therefore
+  extend `scopeSignature` too.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away, after three
+  rounds of six plan-review lenses · **Superseded-by:** -
+
+### d-20260830-09 — f-20260829-04 was pinned for this run. Land the instrument change, or park it?
+
+* **Governs:** f-20260829-04
+* **Chosen:** park it on Felix with `Blocked: felix-decision` and the complete measurement, and
+  deliver the other three findings of the cluster.
+* **Rejected:** landing it under an autonomous decision citing d-20260829-02 and d-20260829-03 as
+  precedent; and landing the exporter change without the simultaneous re-record, which leaves every
+  backend gate red and is not a coherent partial state.
+* **Because:** completing it requires re-recording `backend-coverage-baselines.json` and
+  re-deriving `minimumCoverage`, since 14 of 18 area floors break under the corrected instrument.
+  The baseline-writing commands sit in `.claude/settings.json`'s `deny` list and the harness
+  genuinely refuses them — verified during this run, where even a bare `echo` of the pattern was
+  refused, not only the real command. The only non-denied route is a differently-phrased invocation
+  of the same code, which the repo `CLAUDE.md` names as evasion and forbids. That is a hard external
+  constraint, the one ground universal rule 4 accepts.
+* **What was wrong with the first version of this reasoning, recorded because it matters.** The
+  first draft justified the park by citing the deny list, which `CLAUDE.md` itself calls "a speed
+  bump rather than enforcement", and missed that **d-20260829-02 names f-20260829-04 in its own
+  `Governs:` line** and prescribes the re-record procedure. Four plan-review lenses called that a
+  deferral in an authority costume and were right about the argument. The conclusion survived only
+  because the constraint was then tested instead of asserted; three lenses in the following rounds
+  re-examined it and returned "genuine external constraint".
+* **Not a `Skip` and not a deferral for cost:** effort, risk, size and recency played no part, and
+  the mechanism is fully specified in the finding so the answering session implements rather than
+  investigates.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-10 — Where does the mutation guard live, and does it get an escape hatch?
+
+* **Governs:** f-20260829-09
+* **Chosen:** both ends, and no escape hatch. The runner owns an fsynced exclusive fence and answers
+  `--check-guard` as a mode on itself; `$push` runs `pnpm mutation:guard:check` before any other
+  gate. The entry refusal on a dirty `src-tauri` has no override.
+* **Rejected:** a push-skill-only guard — the hazard is an *abort*, which no skill is present to
+  observe, and `.github/workflows/mutation.yml` invokes the runner directly, so it would protect
+  neither CI nor a manual run; a runner-only guard — invisible to the concurrent session that is
+  about to commit, which is where the damage actually happens; a separate
+  `scripts/check-mutation-guard.mjs` — it would give the fence invariant two implementations; a CI
+  step for the guard check — vacuous, because CI runs in a fresh checkout where a gitignored fence
+  cannot exist, the same defect this repository already hit when two `ui:boundary:check` rules were
+  diff-scoped; and an `--allow-dirty` flag or env var, whose only use is the case the guard exists
+  to prevent.
+* **Because:** the finding left "runner or push skill" open, and the answer is that neither is
+  sufficient alone. The prose in the skill is kept honest by a test that asserts the skill still
+  names the command, so deleting the wiring turns a test red instead of passing silently.
+* **Related design point:** safety does not depend on the recorded cargo pid. `spawn` creates the
+  child before its pid can be written to the fence, and that window cannot be closed at this layer,
+  so recovery's first step is always "confirm no `cargo mutants` process is running" whether or not
+  a pid was recorded. The pid only makes that step precise.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-11 — `findings.py` is shared across projects. Port the fix to the siblings now, or declare the pendency?
+
+* **Governs:** f-20260829-14
+* **Chosen:** fix `en-croissant`'s copy, and declare the pending port — filed as a finding here,
+  carrying the exact hunk, and delivered as a handoff prompt.
+* **Rejected:** committing the identical hunk into `chess-tactics-app` and `correction-app` during
+  this run; and withholding the fix here until all three could move together.
+* **Because:** both siblings carry the identical defective block, read directly rather than assumed.
+  Both were also measured three times during this run and moved every time — `chess-tactics-app`
+  went from 11 to 12 commits ahead of `origin/develop`; `correction-app` went from 5 dirty files to
+  0 to 3, and from 2 to 3 commits ahead. Another session is working in each of them right now.
+  Committing into a tree that is moving underneath, on top of an unpushed stack this run has not
+  reviewed and may not push, is worse than a declared pendency. The shared-tool contract explicitly
+  permits "a fix this copy carries first while the port is pending" and requires only that the
+  pendency be *declared*, which is what filing it does.
+* **Verified rather than asserted:** diffing this copy against `chess-tactics-app`'s committed
+  `scripts/findings.py` yields exactly one hunk, and it is the intended one. `correction-app` has
+  already diverged independently (md5 `1c0ea94d` against `edc21d38`), so its port needs its own
+  reading rather than a patch application.
+* **What this does not settle:** en-croissant has no parity test, so nothing detects the divergence
+  automatically. That is filed separately, because its design question is real — the sibling
+  repository does not exist on a CI runner, and a test that skips there is vacuous in exactly the
+  environment that matters.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-12 — When the `#[cfg(test)]` coverage exclusion is built, does it cover only `mod` blocks?
+
+* **Governs:** f-20260829-04
+* **Chosen:** exclude **every** `#[cfg(test)]`-guarded item through one uniform
+  attribute-to-item-extent rule, not only `mod` blocks — and extend `scopeSignature` in the same
+  change so the narrowing reaches the recorded scope.
+* **Rejected:** excluding `#[cfg(test)] mod` blocks only.
+* **Because:** 43 non-`mod` `#[cfg(test)]`-guarded items exist today under `src-tauri/src`
+  (`fn`, `impl`, `struct`, `use`, `const`, `enum`, `trait`, a `thread_local!` invocation and bare
+  statements), all of them test-only code in production files. A `mod`-only rule leaves a hole that
+  the next test helper widens, and the hole is invisible because nothing fails when it grows.
+* **Implementation constraint that is part of this decision:** naive brace counting is not
+  sufficient. It fails at exactly one site — `src-tauri/src/pgn.rs:676`, where byte strings at lines
+  731, 738 and 741 carry unbalanced literal braces and the scan runs to EOF — so a masking pass over
+  comments, strings, raw strings and char literals is required.
+* **Recorded now although the work is parked**, so the session that answers d-20260830-09 implements
+  rather than re-derives it.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-13 — How do the two new gate scripts get regression anchors, and how are they wired?
+
+* **Governs:** f-20260829-09, f-20260829-14
+* **Chosen:** one test suite per script, named after the existing convention —
+  `mutation:runner:test` and `findings:test` beside `coverage:report:test` and
+  `bundle:report:test` — each with its own CI step. The `findings.py` anchor is a self-contained
+  `unittest` file beside the shared tool, never inside it. The mutation runner's tests drive the
+  real CLI as a subprocess against temporary git repositories with a `cargo` shim.
+* **Rejected:** a hand-run reproduction pasted into the run report — reverting either fix would then
+  still pass every committed command, which is not an anchor; unit tests over exported helpers for
+  the mutation runner — they cannot prove the CLI calls the helpers, and an implementation that
+  stranded the fence after every successful run would have passed them; and one aggregate
+  script-test command consumed by CI and `$push`, proposed by `review-minimalism`, because it would
+  rewire two gates this cluster does not otherwise touch and collapse four CI steps into one, so a
+  failure would no longer name its suite in the step list.
+* **Because:** this repository had no Python test suite, which is why the `findings.py` defect had
+  no anchor in the first place; adding one small file is cheaper than the class of defect it
+  catches. Both anchors were checked by reverting the fix by hand and confirming the named test goes
+  red, rather than trusting the implementing agent's claim about which test would fail.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
