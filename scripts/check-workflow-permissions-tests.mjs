@@ -13,9 +13,21 @@ import {
 
 const checkerPath = fileURLToPath(new URL("./check-workflow-permissions.mjs", import.meta.url));
 const CHECKOUT_SHA = "11d5960a326750d5838078e36cf38b85af677262";
+const SIX_SPACE_PROBE = `name: probe
+on: [push]
+permissions:
+  contents: read
+jobs:
+  sneaky:
+      runs-on: ubuntu-latest
+      permissions:
+        contents: write
+      steps:
+        - uses: evil/unpinned@main
+`;
 
 function workflow({ permissions = "permissions:\n  contents: read", action = undefined } = {}) {
-  const uses = action ? `\n      - uses: ${action}` : "";
+  const uses = action ? `\n    steps:\n      - uses: ${action}` : "";
   return `name: Test\non: push\n${permissions}\njobs:\n  test:\n    runs-on: ubuntu-latest${uses}\n`;
 }
 
@@ -75,6 +87,62 @@ test("rejects mutable and unallowlisted actions in a write-capable job", () => {
     checkWorkflowText(release(`example/unknown@${CHECKOUT_SHA}`), "release.yml").join("\n"),
     /allowlisted action/u,
   );
+});
+
+test("rejects the six-space job-indentation workflow for both the write grant and unpinned action", () => {
+  const findings = checkWorkflowText(SIX_SPACE_PROBE, "probe.yml").join("\n");
+  assert.match(findings, /job sneaky has non-allowlisted contents: write/u);
+  assert.match(findings, /evil\/unpinned@main/u);
+});
+
+test("two-space, four-space and six-space indentations produce the same verdict", () => {
+  function indentedWorkflow(width) {
+    const indent = " ".repeat(width);
+    return `name: probe
+on: [push]
+permissions:
+${indent}contents: read
+jobs:
+${indent}sneaky:
+${indent}${indent}runs-on: ubuntu-latest
+${indent}${indent}permissions:
+${indent}${indent}${indent}contents: write
+${indent}${indent}steps:
+${indent}${indent}${indent}- uses: evil/unpinned@main
+`;
+  }
+
+  const verdicts = [2, 4, 6].map((width) =>
+    checkWorkflowText(indentedWorkflow(width), "probe.yml"),
+  );
+  assert.deepEqual(verdicts[1], verdicts[0]);
+  assert.deepEqual(verdicts[2], verdicts[0]);
+});
+
+test("tab-indented or otherwise unparseable input fails loudly rather than passing", () => {
+  assert.throws(
+    () => checkWorkflowText(workflow().replace("  test:", "\ttest:"), "tabs.yml"),
+    /cannot parse workflow YAML confidently: tabs are not allowed/u,
+  );
+  assert.throws(
+    () => checkWorkflowText(`${workflow()}   stray-indentation: true\n`, "broken.yml"),
+    /cannot parse workflow YAML confidently: inconsistent indentation/u,
+  );
+});
+
+test("missing actionlint fails by default and passes only with the explicit flag", () => {
+  const options = { encoding: "utf8", env: { ...process.env, PATH: "" } };
+  const required = spawnSync(process.execPath, [checkerPath, "--actionlint"], options);
+  assert.equal(required.status, 1);
+  assert.match(required.stderr, /actionlint: FAIL.*unavailable/u);
+
+  const optedOut = spawnSync(
+    process.execPath,
+    [checkerPath, "--actionlint", "--allow-missing-actionlint"],
+    options,
+  );
+  assert.equal(optedOut.status, 0);
+  assert.match(optedOut.stderr, /actionlint: SKIP.*unavailable/u);
 });
 
 test("does not require SHA pins in read-only jobs", () => {

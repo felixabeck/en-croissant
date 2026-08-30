@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -145,6 +146,31 @@ function treeState(repoRoot) {
   }
 }
 
+function trackedFileMetadata(repoRoot) {
+  const result = spawnSync("git", ["-C", repoRoot, "ls-files", "-z"], {
+    encoding: "utf8",
+    env: gitEnvironment(),
+  });
+  if (result.error || result.status !== 0) return undefined;
+  try {
+    const paths = result.stdout.split("\0");
+    if (paths.at(-1) === "") paths.pop();
+    return JSON.stringify(
+      paths.map((path) => {
+        try {
+          const stats = lstatSync(join(repoRoot, path), { bigint: true });
+          return [path, stats.size.toString(), stats.mtimeNs.toString()];
+        } catch (error) {
+          if (error?.code === "ENOENT") return [path, null, null];
+          throw error;
+        }
+      }),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 function receiptPath(repoRoot, gate) {
   return join(repoRoot, RECEIPT_DIRECTORY, `${gate}.json`);
 }
@@ -229,6 +255,7 @@ function runGate({ gate, repoRoot, now, fingerprintToolchain, command, output })
 
   const before = treeState(repoRoot);
   const toolchain = fingerprintToolchain(gate, repoRoot);
+  const metadataBefore = trackedFileMetadata(repoRoot);
   output.log(`gate running: ${gate}`);
   output.log(`  command: ${command}`);
   const result = spawnSync(command, {
@@ -249,9 +276,19 @@ function runGate({ gate, repoRoot, now, fingerprintToolchain, command, output })
 
   output.log(`gate passed: ${gate}`);
   const after = treeState(repoRoot);
-  // ChessRiddle fingerprints both sides of the run; without this, a source edit
-  // made during a long gate and reverted before receipt writing can misattach green evidence.
-  if (!before || !after || before.tree !== after.tree) {
+  const metadataAfter = trackedFileMetadata(repoRoot);
+  // Tree hashes detect persistent content changes; tracked-file size/mtime_ns snapshots also
+  // detect a tracked file rewritten and restored when the filesystem records a new mtime.
+  // Residual window: a mutation and revert entirely between the two samples, within one mtime
+  // granularity tick, can remain undetected.
+  if (
+    !before ||
+    !after ||
+    !metadataBefore ||
+    !metadataAfter ||
+    before.tree !== after.tree ||
+    metadataBefore !== metadataAfter
+  ) {
     output.error(`gate receipt refused: ${gate} — tree changed during the gate`);
     return EXIT_PROOF_NOT_ESTABLISHED;
   }

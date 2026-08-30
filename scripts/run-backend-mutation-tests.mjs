@@ -386,8 +386,11 @@ test("--check-guard passes without a fence and fails with the recovery text when
 });
 
 test("the push skill keeps the executable mutation guard preflight wired", async () => {
+  // The canonical push contract is .claude/skills/push/SKILL.md; .agents holds a Codex
+  // bridge that deliberately restates no gate command. Reading the bridge here asserted
+  // the guard against a file that is not supposed to carry it.
   const pushSkill = await readFile(
-    join(projectRoot, ".agents", "skills", "push", "SKILL.md"),
+    join(projectRoot, ".claude", "skills", "push", "SKILL.md"),
     "utf8",
   );
   assert.match(pushSkill, /pnpm mutation:guard:check/);

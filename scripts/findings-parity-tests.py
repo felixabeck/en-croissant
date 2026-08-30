@@ -13,14 +13,19 @@ import hashlib
 import subprocess
 import sys
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import dataclass
 from difflib import unified_diff
+from io import StringIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER = REPO_ROOT / "scripts" / "findings.py"
 SIBLING_REPO = Path("/home/felixb/Projekte/chess-tactics-app")
 SIBLING_REF = "4c83bf50c55bab8dc4a9babf5797f6cb019766e6"
+ALLOW_MISSING_SIBLING = "--allow-missing-sibling"
 
 
 @dataclass(frozen=True)
@@ -247,6 +252,56 @@ def _parity_failures(
 
 
 class FindingsParity(unittest.TestCase):
+    @staticmethod
+    def _run_main(sibling_repo: Path, *args: str, sibling_ref: str = SIBLING_REF) -> tuple[int, str]:
+        output = StringIO()
+        with (
+            patch(f"{__name__}.SIBLING_REPO", sibling_repo),
+            patch(f"{__name__}.SIBLING_REF", sibling_ref),
+            redirect_stdout(output),
+        ):
+            return_code = main(list(args))
+        return return_code, output.getvalue()
+
+    def test_absent_sibling_without_flag_fails(self) -> None:
+        with TemporaryDirectory() as temp:
+            missing_sibling = Path(temp) / "missing-sibling"
+            return_code, output = self._run_main(missing_sibling)
+
+        self.assertEqual(return_code, 1)
+        self.assertIn(str(missing_sibling), output)
+        self.assertIn(ALLOW_MISSING_SIBLING, output)
+
+    def test_absent_sibling_with_flag_passes_without_comparison(self) -> None:
+        with TemporaryDirectory() as temp:
+            missing_sibling = Path(temp) / "missing-sibling"
+            return_code, output = self._run_main(
+                missing_sibling, ALLOW_MISSING_SIBLING
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertIn("NO comparison was made", output)
+
+    def test_sibling_present_but_pinned_ref_unreadable_fails_even_with_flag(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            sibling_repo = Path(temp)
+            subprocess.run(
+                ["git", "init", "--quiet", str(sibling_repo)],
+                check=True,
+            )
+            return_code, output = self._run_main(
+                sibling_repo,
+                ALLOW_MISSING_SIBLING,
+                sibling_ref="not-a-readable-pinned-ref",
+            )
+
+        self.assertEqual(return_code, 1)
+        self.assertIn("FAIL findings parity check", output)
+        self.assertIn("not-a-readable-pinned-ref", output)
+        self.assertNotIn("SKIP", output)
+
     def test_sibling_ref_touched_findings(self) -> None:
         _read_committed_sibling()
         touched = subprocess.run(
@@ -301,13 +356,36 @@ class FindingsParity(unittest.TestCase):
         self.assertEqual(_hunk_claims(hunks, (first, second)), [[first], [second]])
 
 
-def main() -> int:
-    if not SIBLING_REPO.exists():
+def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    unexpected = [argument for argument in arguments if argument != ALLOW_MISSING_SIBLING]
+    if unexpected:
         print(
-            "SKIP findings parity check: sibling checkout is unavailable: "
-            f"{SIBLING_REPO}"
+            "FAIL findings parity check: unexpected argument(s): "
+            + ", ".join(unexpected)
         )
-        return 0
+        return 2
+
+    allow_missing_sibling = ALLOW_MISSING_SIBLING in arguments
+    if not SIBLING_REPO.exists():
+        if allow_missing_sibling:
+            print(
+                "SKIP findings parity check: sibling checkout is unavailable: "
+                f"{SIBLING_REPO}; NO comparison was made. "
+                f"This missing-sibling failure was waived by {ALLOW_MISSING_SIBLING}."
+            )
+            return 0
+        print(
+            "FAIL findings parity check: sibling checkout is unavailable: "
+            f"{SIBLING_REPO}; NO comparison was made. Pass "
+            f"{ALLOW_MISSING_SIBLING} to waive this failure."
+        )
+        return 1
+    try:
+        _read_committed_sibling()
+    except AssertionError as error:
+        print(f"FAIL findings parity check: {error}")
+        return 1
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(FindingsParity)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -40,6 +40,7 @@ async function fixture() {
     "-m",
     "fixture",
   );
+  await utimes(join(root, "tracked.txt"), new Date(0), new Date(0));
   return { directory, root };
 }
 
@@ -180,13 +181,46 @@ test("6. miss after the gate failed (no receipt written, gate's exit code propag
   assert.equal(existsSync(join(root, ".gate-receipts", "frontend-build.json")), false);
 });
 
-test("7. REFUSAL to write a receipt when the tree mutates between the pre- and post-fingerprint", async () => {
+test("7. a gate that persistently modifies a tracked file leaves no receipt", async () => {
   const { root } = await fixture();
   const command = nodeCommand(
     `require("node:fs").writeFileSync(${JSON.stringify(join(root, "tracked.txt"))}, "mutated\\n")`,
   );
   assert.equal(await record(root, { command }), 3);
   assert.equal(existsSync(join(root, ".gate-receipts", "frontend-build.json")), false);
+});
+
+test("8. a gate that modifies a tracked file and restores it before exiting leaves no receipt", async () => {
+  const { root } = await fixture();
+  const command = nodeCommand(
+    `const fs = require("node:fs"); const path = ${JSON.stringify(join(root, "tracked.txt"))}; fs.writeFileSync(path, "mutated\\n"); fs.writeFileSync(path, "initial\\n")`,
+  );
+  assert.equal(await record(root, { command }), 3);
+  assert.equal(existsSync(join(root, ".gate-receipts", "frontend-build.json")), false);
+});
+
+test("9. a gate that modifies and restores an ignored file still gets its receipt", async () => {
+  const { root } = await fixture();
+  const ignoredPath = join(root, "ignored.txt");
+  await writeFile(join(root, ".gitignore"), ".gate-receipts/\nignored.txt\n");
+  runGit(root, "add", ".gitignore");
+  runGit(
+    root,
+    "-c",
+    "user.name=Gate Receipt Test",
+    "-c",
+    "user.email=gate-receipt@example.invalid",
+    "commit",
+    "--quiet",
+    "-m",
+    "ignore test file",
+  );
+  await writeFile(ignoredPath, "initial\n");
+  const command = nodeCommand(
+    `const fs = require("node:fs"); const path = ${JSON.stringify(ignoredPath)}; fs.writeFileSync(path, "mutated\\n"); fs.writeFileSync(path, "initial\\n")`,
+  );
+  assert.equal(await record(root, { command }), 0);
+  assert.equal(existsSync(join(root, ".gate-receipts", "frontend-build.json")), true);
 });
 
 test("changed commands, changed platforms, malformed receipts, and unavailable tools are misses", async () => {

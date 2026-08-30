@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import { globToRegExp, matches } from "./coverage-scope.mjs";
 
 const PUSH_SKILL = ".claude/skills/push/SKILL.md";
 const PACKAGE_JSON = "package.json";
@@ -8,30 +9,18 @@ const TEST_WORKFLOW = ".github/workflows/test.yml";
 const VITE_CONFIG = "vite.config.ts";
 
 const ALLOWED_CARGO_COMMANDS = new Set(["fmt", "check", "clippy", "test"]);
-const TEST_FILE_PATTERNS = ["scripts/*-tests.mjs", "scripts/*.test.mjs"];
-
-function globRegex(pattern) {
-  let source = "";
-  for (let index = 0; index < pattern.length; ) {
-    if (pattern.startsWith("**/", index)) {
-      source += "(?:[^/]+/)*";
-      index += 3;
-    } else if (pattern.startsWith("**", index)) {
-      source += ".*";
-      index += 2;
-    } else if (pattern[index] === "*") {
-      source += "[^/]*";
-      index += 1;
-    } else if (pattern[index] === "?") {
-      source += "[^/]";
-      index += 1;
-    } else {
-      source += pattern[index].replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-      index += 1;
-    }
-  }
-  return new RegExp(`^${source}$`, "u");
-}
+// This closed list mirrors the repository's deliberate test naming conventions:
+// node:test uses *-tests.mjs, Vitest uses *.test.mjs, Python uses *-tests.py or
+// *_test.py, and shell tests use *-tests.sh. Keeping it closed prevents arbitrary
+// script names from being silently treated as tests instead of routed tools.
+const TEST_FILE_PATTERNS = [
+  "scripts/*-tests.mjs",
+  "scripts/*.test.mjs",
+  "scripts/*-tests.py",
+  "scripts/*_test.py",
+  "scripts/*-tests.sh",
+];
+const SCRIPT_RUNNERS = new Set(["node", "python", "python3", "bash", "sh"]);
 
 function fencedBlocks(markdown) {
   const blocks = [];
@@ -121,7 +110,7 @@ function testIncludes(viteConfig) {
   return [...testBlock[1].matchAll(/["']([^"']+)["']/gu)].map((match) => match[1]);
 }
 
-function sensitivePatterns(pushSkill) {
+function reviewPathGlobPatterns(pushSkill) {
   const sectionStart = pushSkill.search(/^## 3\./mu);
   if (sectionStart < 0) throw new Error(`${PUSH_SKILL} has no "## 3." section`);
   const section = pushSkill.slice(sectionStart);
@@ -151,11 +140,13 @@ function validateGateCommands(pushSkill, scripts, repoRoot) {
   );
   const routed = new Set();
   const pending = [];
+  const directGateCommands = [];
 
   for (const block of bashBlocks) {
     for (const rawLine of block.contents.split(/\r?\n/u)) {
       const line = rawLine.trim();
       if (!line || line.startsWith("#")) continue;
+      directGateCommands.push(line);
       const pnpmScripts = pnpmReferences(line);
       if (pnpmScripts.length > 0) {
         pending.push(...pnpmScripts.map((name) => ({ name, source: PUSH_SKILL })));
@@ -186,12 +177,38 @@ function validateGateCommands(pushSkill, scripts, repoRoot) {
       pending.push({ name: nested, source: `package script ${name}` });
     }
   }
-  return { findings, routed };
+  return { directGateCommands, findings, routed };
 }
 
 async function scriptFiles(repoRoot) {
   const entries = await readdir(resolve(repoRoot, "scripts"), { withFileTypes: true });
-  return entries.filter((entry) => entry.isFile()).map((entry) => `scripts/${entry.name}`);
+  return Promise.all(
+    entries
+      .filter((entry) => entry.isFile())
+      .map(async (entry) => {
+        const path = `scripts/${entry.name}`;
+        const metadata = await stat(resolve(repoRoot, path));
+        return { executable: (metadata.mode & 0o111) !== 0, path };
+      }),
+  );
+}
+
+function shellWords(command) {
+  return [...command.matchAll(/"(?:\\.|[^"])*"|'[^']*'|[^\s]+/gu)].map((match) => {
+    const word = match[0];
+    return /^(["']).*\1$/su.test(word) ? word.slice(1, -1) : word;
+  });
+}
+
+function invokesScript(command, path) {
+  for (const segment of command.split(/&&|\|\||[;|\n]/u)) {
+    const words = shellWords(segment.trim());
+    if (words.length === 0) continue;
+    const executable = words[0].replace(/^\.\//u, "");
+    if (executable === path) return true;
+    if (SCRIPT_RUNNERS.has(executable) && words.slice(1).includes(path)) return true;
+  }
+  return false;
 }
 
 function trackedPaths(repoRoot) {
@@ -209,7 +226,11 @@ export async function checkGateRouting(repoRoot, { tracked = undefined } = {}) {
     scriptFiles(repoRoot),
   ]);
   const scripts = JSON.parse(packageText).scripts ?? {};
-  const { findings, routed } = validateGateCommands(pushSkill, scripts, repoRoot);
+  const { directGateCommands, findings, routed } = validateGateCommands(
+    pushSkill,
+    scripts,
+    repoRoot,
+  );
 
   const workflowCommands = workflowRunCommands(workflow);
   const pending = workflowCommands.flatMap((command) => pnpmReferences(command));
@@ -228,25 +249,24 @@ export async function checkGateRouting(repoRoot, { tracked = undefined } = {}) {
     }
   }
 
-  const includes = testIncludes(viteConfig).map(globRegex);
-  for (const path of files.filter((file) =>
-    TEST_FILE_PATTERNS.some((pattern) => globRegex(pattern).test(file)),
-  )) {
-    const fromPackage = Object.entries(scripts).some(
-      ([name, command]) => routed.has(name) && command.includes(path),
+  const includes = testIncludes(viteConfig);
+  const isRouted = (path) =>
+    directGateCommands.some((command) => invokesScript(command, path)) ||
+    Object.entries(scripts).some(
+      ([name, command]) => routed.has(name) && invokesScript(command, path),
     );
-    if (!fromPackage && !includes.some((include) => include.test(path))) {
+  for (const { path } of files.filter((file) => matches(file.path, TEST_FILE_PATTERNS))) {
+    if (!isRouted(path) && !matches(path, includes)) {
       findings.push(
         `test file ${path} is not reachable from a routed package script or Vitest include`,
       );
     }
   }
 
-  for (const path of files.filter((file) => /^scripts\/check-.*\.mjs$/u.test(file))) {
-    const fromPackage = Object.entries(scripts).some(
-      ([name, command]) => routed.has(name) && command.includes(path),
-    );
-    if (!fromPackage && !includes.some((include) => include.test(path))) {
+  for (const { path } of files.filter(
+    (file) => file.executable || /^scripts\/check-.*\.mjs$/u.test(file.path),
+  )) {
+    if (!isRouted(path) && !matches(path, includes)) {
       findings.push(
         `checker file ${path} is not reachable from a routed package script or Vitest include`,
       );
@@ -254,8 +274,8 @@ export async function checkGateRouting(repoRoot, { tracked = undefined } = {}) {
   }
 
   const repositoryPaths = tracked ?? trackedPaths(repoRoot);
-  for (const pattern of sensitivePatterns(pushSkill)) {
-    const matcher = globRegex(pattern);
+  for (const pattern of reviewPathGlobPatterns(pushSkill)) {
+    const matcher = globToRegExp(pattern);
     if (!repositoryPaths.some((path) => matcher.test(path))) {
       findings.push(`sensitive-path glob ${pattern} matches no tracked file`);
     }

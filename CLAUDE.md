@@ -233,16 +233,15 @@ on glyph antialiasing alone. Never re-record snapshots on a host.
 
 CI on the fork is green end to end as of run 33298305678 (2026-08-30) — linter, both boundary
 checks, both coverage ratchets, bindings, bundle budgets, container e2e, and `mutation:frontend`.
-The current test workflow additionally runs routing, skills, tool-parity, and findings-ledger
-validation. Workflow-permission validation is in the push contract, but the current test workflow
-does not invoke that checker.
+The current test workflow additionally runs routing, skills, tool-parity, workflow-permission,
+hook-lint and findings-ledger validation.
 That is the reference measurement: a gate is settled when the runner agrees with this machine, not
 when it passes here.
 
 Also note that the 2026-08-09 audit was produced by a Gemini-driven agent run and **has not been
 reviewed line by line**. What was proven at the time is that the gates then run were green — not
-that every change is right, and not that every gate is green today: the two coverage ratchets above
-are red on this machine.
+that every change is right, and not that every gate is green today. The two coverage ratchets it
+once reddened are green again, for the reasons recorded above.
 Defects found while getting the gates green are listed in `BACKEND_AUDIT_PLAN.md` and
 `FRONTEND_AUDIT_PLAN.md`; treat the rest of that diff as unreviewed.
 

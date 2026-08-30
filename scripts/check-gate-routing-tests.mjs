@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -54,10 +54,46 @@ test("rejects an unrouted node:test file", async () => {
   assert.match((await checkGateRouting(root, { tracked })).join("\n"), /orphan-tests/u);
 });
 
+test("recognises every repository test shape and executable checkers regardless of name", async () => {
+  const root = await fixture();
+  for (const path of [
+    "scripts/python-tests.py",
+    "scripts/python_test.py",
+    "scripts/shell-tests.sh",
+  ]) {
+    await write(root, path, "\n");
+  }
+  await write(root, "scripts/validate-example.mjs", "#!/usr/bin/env node\n");
+  await chmod(join(root, "scripts/validate-example.mjs"), 0o755);
+
+  const problems = (await checkGateRouting(root, { tracked })).join("\n");
+  assert.match(problems, /python-tests\.py/u);
+  assert.match(problems, /python_test\.py/u);
+  assert.match(problems, /shell-tests\.sh/u);
+  assert.match(problems, /checker file scripts\/validate-example\.mjs/u);
+});
+
 test("rejects a checker without a package script", async () => {
   const root = await fixture();
   await write(root, "scripts/check-orphan.mjs", "\n");
   assert.match((await checkGateRouting(root, { tracked })).join("\n"), /checker file/u);
+});
+
+test("requires a checker path to be an actual command invocation", async () => {
+  const root = await fixture();
+  const packagePath = join(root, "package.json");
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+  packageJson.scripts["all:check"] = "echo scripts/check-example.mjs && pnpm nested:check";
+  await writeFile(packagePath, JSON.stringify(packageJson));
+
+  assert.match(
+    (await checkGateRouting(root, { tracked })).join("\n"),
+    /checker file scripts\/check-example\.mjs/u,
+  );
+
+  packageJson.scripts["all:check"] = "scripts/check-example.mjs && pnpm nested:check";
+  await writeFile(packagePath, JSON.stringify(packageJson));
+  assert.deepEqual(await checkGateRouting(root, { tracked }), []);
 });
 
 test("rejects a missing package script named by a fenced gate command", async () => {
@@ -114,7 +150,7 @@ test("treats pnpm subcommands and flags as invocations, not script names", async
   assert.doesNotMatch(problems, /"-s"|\s-s\b/u);
 });
 
-test("validates every path-glob block in the review section, not just one", async () => {
+test("the review path-glob collector validates every path block, not just one", async () => {
   // The locator once demanded exactly one text block, which coupled "the sensitive-path
   // registry" to "the only fenced text in section 3". Adding a mandatory-lens path list
   // beside it - entirely legitimate - threw instead of checking it.
@@ -136,4 +172,13 @@ test("validates every path-glob block in the review section, not just one", asyn
   );
   await writeFile(skillPath, withDeadGlob);
   assert.match((await checkGateRouting(root, { tracked })).join("\n"), /never\/matches/u);
+});
+
+test("uses the shared coverage glob semantics for review path matching", async () => {
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(skillPath, skill.replace("scripts/**", "**/check-*.mjs"));
+
+  assert.deepEqual(await checkGateRouting(root, { tracked }), []);
 });
