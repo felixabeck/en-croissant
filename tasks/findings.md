@@ -1555,3 +1555,947 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Related:** the pending port filed alongside this entry, and `d-20260830-11`, which declared the
   current divergence. Korrigio's implementation is the reference to read first.
 * **Found by:** the `gate-scripts` build run, 2026-08-30, while closing f-20260829-14.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The renderer's error redaction emits a literal `$1` and destroys FENs, SANs and PGN results
+
+* **ID:** f-20260830-16 · **Status:** open · **Area:** bindings-ipc · **Root:** platform-error-redaction · **Entry:** build · **Blocked:** none
+* **Where:** `src/platform/errors.ts:16-20` (`SECRET_PATTERN`, `PATH_PATTERN`, `redact`).
+* **Defect:** two independent bugs in one function, both reproduced by evaluating the shipped
+  regexes directly against the shipped replacement strings.
+  1. `SECRET_PATTERN` is built entirely from non-capturing groups `(?:...)`, but `redact` replaces
+     with the string `"$1[redacted]"`. There is no group 1, so `$1` is emitted verbatim.
+     `"Authorization: Bearer sk-abc123 rejected"` becomes
+     `"Authorization: $1[redacted] rejected"`, and `"token=xyz expired"` becomes
+     `"$1[redacted] expired"`. The secret is removed, so this is cosmetic rather than a leak, but
+     it is user-visible in every credential-related error.
+  2. `PATH_PATTERN` matches any `/`-separated token, not just filesystem paths. In a chess
+     application this eats the domain data:
+     `"Invalid FEN: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"` becomes
+     `"Invalid FEN: rnbqkbnr[path] w KQkq - 0 1"`, and `"1/2-1/2 result malformed"` becomes
+     `"1[path] result malformed"`.
+* **Why it matters:** the second bug removes exactly the information a user needs to repair a
+  malformed import or a bad FEN, and it is unrecoverable downstream: `errors.ts:73` assigns
+  `diagnostic` the same already-redacted string as `message`, so no channel to the original cause
+  survives the facade. `normalizeError` also computes the category from the *redacted* text
+  (`errors.ts:40-41`), so evidence is destroyed before classification.
+* **Why the tests did not catch it:** `src/platform/errors.test.ts:5-9` and
+  `src/platform/tauri.test.ts:33-34` assert only `not.toContain(secret)`. A redaction that
+  over-matches, or that emits a literal `$1`, passes that assertion.
+* **Open design question (hence `build`):** what the redaction policy should actually be. Removing
+  `PATH_PATTERN` restores FENs but re-admits home-directory paths into user-facing text; a
+  path-shaped heuristic that excludes FEN/SAN needs to be specified deliberately, and the
+  `diagnostic` field needs to carry the unredacted cause if the category is to be computed from
+  anything trustworthy.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30 — the first read of
+  `src/platform/` by a model outside the run that produced it. Reproduced by evaluating the
+  regexes out of the file rather than by inspection.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The Tauri boundary checker has verified blind spots, and `native.ts` is exempt from every rule
+
+* **ID:** f-20260830-17 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `scripts/check-tauri-command-boundary.mjs:9-13` (the regexes), `:40` (the
+  `src/platform/native.ts` exemption), `src/platform/native.ts`.
+* **Defect:** the gate is green today and there are no `from`-form violations, but it recognises
+  only `from`-shaped imports and the literal substring `.listen(`. Constructs it does not flag:
+  `await import("@tauri-apps/api/core")`, `await import("@/bindings/generated")`,
+  `require("@tauri-apps/api/event")`, a bare `listen(...)` call imported from the facade, and the
+  window-object subscription forms `onResized` / `onCloseRequested` / `once` / `onDragDropEvent`.
+  `src/state/keybinds.test.ts:2` already carries a `@tauri-apps` specifier outside `src/platform`
+  without tripping the gate.
+* **Second half:** `:40` skips `native.ts` before all four checks, so adding
+  `export { listen } from "@tauri-apps/api/event"` or `export * from "@tauri-apps/plugin-fs"` to
+  that one file legalises raw listeners or raw filesystem access application-wide with the gate
+  still green. The single-line diff that dissolves the boundary is the one the checker refuses to
+  look at.
+* **Why it matters:** `src/platform/` is the only structural guarantee the renderer has, and the
+  checker is its sole enforcement. Unlike its two siblings
+  (`check-untranslated-jsx.test.mjs`, `i18n-completeness.test.mjs`) it has **no test**, so there is
+  no proof it ever goes red.
+* **Open design question (hence `build`):** whether to keep regex detection and widen it, or parse
+  the module graph; and what contract `native.ts` should be held to instead of a blanket exemption.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Blind spots confirmed by
+  running the checker's own regexes against each construct.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Two dead paths left behind by the facade migration: `operation.ts` has no consumer, `unwrap.tsx` is unreachable
+
+* **ID:** f-20260830-18 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/platform/operation.ts`, `src/utils/unwrap.tsx`, and its call sites
+  `src/utils/engines.ts:149,155,167`, `src/components/databases/PlayerCard.tsx`,
+  `src/components/databases/PlayerSearchInput.tsx`, `src/components/panels/info/FileInfo.tsx`,
+  `src/components/tabs/NewTabHome.tsx`.
+* **Defect 1:** `useOperation` has **zero consumers** anywhere in `src/` outside its own file, and
+  no test beside the other five `src/platform/*.test.ts`. 51 lines of untested abstraction shipped
+  with the facade and never wired up.
+* **Defect 2:** `unwrap()` is still called at the sites above, but the facade Proxy
+  (`src/platform/tauri.ts:55`) has already unwrapped the `Result` before the value reaches it.
+  `unwrap.tsx:11-12` therefore early-returns on every call, and lines 14-21 — the `error()` log,
+  the Mantine failure notification, the `throw` — cannot execute at any site. The file is also the
+  only place that would log the **raw, unredacted** backend error, so it contradicts the facade's
+  redaction contract while being unable to run.
+* **Why it matters:** the visible symptom is an error toast that never appears. The next person to
+  investigate that will fix `unwrap.tsx` and it will still never appear, because the reason is the
+  early return, not the notification code.
+* **Fix shape:** delete `operation.ts` unless a caller is intended, and remove the `unwrap()` calls
+  at the seven sites rather than repairing them.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Both confirmed by grep, not
+  by inference.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### `ConfirmModal` builds a dynamic i18n key whose catalogue entries do not exist
+
+* **ID:** f-20260830-19 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/components/common/ConfirmModal.tsx:16`, all 16 catalogues under
+  `src/translation/`.
+* **Defect:** the component builds `Common.ConfirmationError.${category}` from the facade's
+  seven-category `AppErrorCategory` taxonomy. `grep -rn ConfirmationError src/translation/` returns
+  **nothing** — not one of the seven keys exists in any locale. Every category therefore falls
+  through to the `defaultValue` at `ConfirmModal.tsx:12-15`, which branches only on
+  `applied-despite-error`. The seven categories collapse to two user-visible outcomes.
+* **Why the gate did not catch it:** the key is constructed at runtime by template literal, so
+  `pnpm i18n:check` — which matches literal key usages — cannot see it. This is a known blind spot
+  of key-completeness checking, not a bug in the checker.
+* **Fix shape:** add the seven keys to all 16 catalogues, or drop the dynamic lookup and keep the
+  explicit branch that is doing the work today. The second is smaller and matches actual behaviour.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Renderer-supplied pagination is unvalidated: overflow panic in debug, `LIMIT -1` reads the whole table in release
+
+* **ID:** f-20260830-20 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs:1083-1090`, and the same expression at `:1399` and `:1471`.
+  Type at `:984-986`; reachable from the registered commands `get_games`, `get_players`,
+  `get_tournaments` (`main.rs:93-94`), exported as `getGames`/`getPlayers` in
+  `src/bindings/generated.ts:760,784`.
+* **Defect:** `page` and `page_size` are `Option<i32>` deserialised straight from the renderer and
+  validated nowhere in the crate. Two consequences from the same two lines:
+  1. `offset(((page - 1) * query_options.page_size.unwrap_or(10)) as i64)` multiplies two
+     renderer-controlled `i32` values *before* widening to `i64`. `src-tauri/Cargo.toml` has no
+     `[profile]` section, so this **panics in debug** and **wraps to a negative offset in release**.
+     `page = 2_000_000_000, pageSize = 2` triggers it.
+  2. `sql_query.limit(limit as i64)` passes the value through unchecked. SQLite treats a negative
+     `LIMIT` as *no upper bound*, so `pageSize: -1` materialises the entire games table — on a
+     multi-million-game Lichess database that is an out-of-memory abort from one renderer call.
+* **Why it matters:** this is the most easily reachable defect found in the backend review. It needs
+  no crafted file and no adversary — a renderer bug that computes a page number wrongly is enough.
+* **Fix shape:** validate both fields at the deserialisation boundary (clamp `page_size` to a sane
+  maximum, reject non-positive values, widen to `i64` before multiplying). Applies to all three
+  call sites.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Confirmed by reading the
+  expression, the type, the command registration and the absent `[profile]` section — not inferred.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### `AtomicFileOutcome` is discarded at four call sites, and one of them deletes the only durable copy
+
+* **ID:** f-20260830-21 · **Status:** open · **Area:** native-fs · **Root:** durability-outcome-contract · **Entry:** build · **Blocked:** none
+* **Where:** producer `src-tauri/src/infra/fs.rs:383,395`; enum declared at `infra/fs.rs:12-13`.
+  Eleven consumers disagree. Hard error: `fs.rs:523`, `fs.rs:1225`, `pgn.rs:419`,
+  `db/mod.rs:2013`. Treated as success: `credentials.rs:200-205`, `file_workspace.rs:154`,
+  `path_authority.rs:3557`. **Silently discarded:** `main.rs:535`, `main.rs:956`,
+  `db/search_index.rs:240`, `db/search_index.rs:515`.
+* **Defect:** `atomic_replace` returns `CommittedDurabilityUncertain` to mean "the rename landed but
+  the parent directory fsync failed" — the caller must decide what that means. Nothing forces the
+  decision: `AtomicFileOutcome` is **not `#[must_use]`**, so `atomic_replace(...)?;` compiles and
+  throws the outcome away.
+* **The verified failure:** `db/search_index.rs:515` copies the legacy search index to the preferred
+  location with `atomic_replace(&preferred, ...)?`, discarding the outcome, then line 530 runs
+  `std::fs::remove_file(&legacy)`. If durability of the new copy was uncertain, this deletes the one
+  copy known to be on disk. A crash afterwards loses the search index entirely.
+* **Why it matters:** the type was introduced by the audit precisely to make partial durability
+  explicit, and four of eleven callers opted out silently. The design question is real — three other
+  callers deliberately treat it as success, and `credentials.rs:200-205` carries a comment arguing
+  that erroring would be wrong — so the contract needs deciding once, not eleven times.
+* **Fix shape:** mark the enum `#[must_use]` so the compiler forces a decision, then settle the
+  contract per call site. `db/search_index.rs:515-530` is a defect under any contract.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. The `search_index` sequence
+  and the absent `#[must_use]` were both read directly.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### A second, weaker path authority is still in the tree, dead, behind a file-level `allow(dead_code)` — and a comment asserts it is protecting callers
+
+* **ID:** f-20260830-22 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path.rs` (236 lines, `#![allow(dead_code)]` at line 1);
+  the false comment at `src-tauri/src/db/repository.rs:559`.
+* **Defect:** `infra/path.rs` contains `AuthorizedPath` and `PathGrants` — a prefix-allow-list
+  authorization model that `path_authority.rs` was built to replace. It is **completely dead**:
+  `grant()` and `revoke()` have zero callers anywhere in the crate, so `resolve()` can only ever
+  return `None` and the `grant:` branch is unreachable. `PathGrants` is nonetheless a live
+  `AppState` field. The only two items in the file with real callers are `safe_canonicalize` and
+  `to_utf8_str`, both used from `db/repository.rs`.
+* **Second half:** `db/repository.rs:559` reads
+  `// AuthorizedPath already does this for command inputs.` — the sole reference to `AuthorizedPath`
+  anywhere outside its own file is a comment claiming a security property it does not provide. A
+  reader concludes canonicalisation happens upstream. It does not.
+* **Why it matters:** the dead module's fallback accepts *any* absolute renderer-supplied path under
+  `document_dir`, `download_dir` or `~/EnCroissant`. It cannot be reached today, but it is a
+  ready-made bypass of the capability model sitting in the tree with its dead-code warnings switched
+  off — which is why it survived. Two competing authorities is also the single most misleading thing
+  in the backend for anyone reading it fresh.
+* **Fix shape:** move `safe_canonicalize` and `to_utf8_str` to where they are used, delete the rest
+  of the file and the `PathGrants` field from `AppState`, and correct the comment.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Confirmed by grepping every
+  caller, not by inference.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The Rust filesystem boundary is convention only — the renderer side is gate-enforced, the native side is not
+
+* **ID:** f-20260830-23 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** no `src-tauri/clippy.toml` exists; `scripts/check-tauri-command-boundary.mjs` and
+  `scripts/check-ui-boundaries.mjs` cover only the renderer.
+* **Defect:** `infra/fs.rs` exposes `atomic_replace(&Path, ...)` as a `pub` path-taking function,
+  called directly from `main.rs:535`, `main.rs:956`, `credentials.rs:196` and
+  `db/search_index.rs:515`. It sits *beside* `path_authority.rs` rather than under it, so any code
+  in the crate can write any path with no capability check. The invariant that every filesystem
+  reach goes through the authority is stated in the module header and enforced by nothing.
+* **Why it matters:** this is the leverage item of the whole backend review. The renderer-to-Rust
+  boundary has a gate; the Rust-to-filesystem boundary has review only, and review is what already
+  missed it. A `clippy.toml` with `disallowed-methods` for `std::fs::*` / `tokio::fs::*` outside
+  `infra/`, wired into `lint:ci`, converts convention into a gate and would have caught several of
+  the sibling findings at write time rather than three weeks later.
+* **Open design question (hence `build`):** which functions belong on the allow-list, whether
+  `infra/fs.rs` should stop taking raw `&Path` at all, and how to scope the lint so test modules and
+  the primitives themselves are exempt without punching a hole through the rule.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The renderer's native reach is wider than the capability model claims: unmediated asset scope over `$APPDATA`, and unscoped `core:path:resolve`
+
+* **ID:** f-20260830-24 · **Status:** open · **Area:** bindings-ipc · **Root:** capability-surface-wider-than-claimed · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/tauri.conf.json:75-82`, `src-tauri/capabilities/main.json:15-16`, against the
+  invariant stated at `src-tauri/src/infra/path_authority.rs:1-6`.
+* **Defect 1 — the asset protocol is enabled over `$APPDATA/**` and is not capability-mediated.**
+  `"assetProtocol": { "scope": ["$APPDATA/**", "$RESOURCE/**"], "enable": true }`. There is **no
+  ACL permission for the asset protocol anywhere** — not in `capabilities/main.json`, not in the
+  generated schemas under `src-tauri/gen/schemas/`, and there is no `register_uri_scheme` handler in
+  the crate. The scope is therefore enforced by Tauri's own `scope::fs::Scope` alone and
+  `PathAuthority` never sees it. `$APPDATA` is where `credentials/`, `db/`, `engines/`,
+  `engine-images/` and `puzzles/` live (`main.rs:684,787,953,1299`, `puzzle.rs:249`). The only thing
+  preventing byte-level reads today is that the CSP `connect-src` omits `asset:` while `img-src`
+  and `media-src` include it (`tauri.conf.json:82`) — an injected script can still probe existence
+  and decodability of those files through `<img>` / `<audio>`.
+  **`$APPDATA/**` is also unused scope:** `convertFileSrc` has exactly one production call site
+  (`src/utils/sound.ts:88`), fed by `resolveResource`, which resolves under `$RESOURCE`. Engine
+  images — the only other `$APPDATA` asset the UI shows — go through the `readEngineImage` command
+  instead (`src/components/common/LocalImage.tsx:15`). No `asset://` URL is constructed anywhere.
+* **Defect 2 — `core:path:allow-resolve` and `core:path:allow-resolve-directory` are granted and
+  unscoped.** Both permissions are documented in the generated ACL manifest as enabling their
+  command "without any pre-configured scope", so the renderer can call
+  `plugin:path|resolve_directory` with any `BaseDirectory` — AppData, AppConfig, Home — and receive
+  the raw native path. That is precisely the information the `PathRef` indirection exists to
+  withhold, and it makes the module header "Physical paths never cross the renderer boundary"
+  false as written. One production caller genuinely needs it (`$RESOURCE`, for sounds).
+* **Why it matters:** these are the two places where the capability model's guarantee is asserted in
+  a comment but not enforced by configuration. Neither is exploitable today, but both are one CSP
+  edit or one renderer XSS away from mattering, and the first grants reach over the credential
+  directory.
+* **Fix shape:** narrow the asset scope to `$RESOURCE/**`; decide whether `core:path:resolve*` can
+  be replaced by a command that returns a `PathRef`, and if it must stay, correct the module header
+  so it stops asserting something untrue.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30, verified against the config
+  files and the generated ACL schemas.
+
+* **Correction appended 2026-08-30, and it reverses the framing of Defect 1.** Upstream's
+  `tauri.conf.json` declares `"assetProtocol": { "scope": ["**"], "enable": true }` — the asset
+  protocol over the **entire filesystem**. The audit narrowed that to `$APPDATA/**` + `$RESOURCE/**`,
+  so this finding is not a gap the audit opened; it is a large upstream over-grant the audit mostly
+  closed and can close completely. `$RESOURCE/**` alone is still the right end state, because
+  `$APPDATA/**` has no production consumer. Upstream's `capabilities/main.json` has no `core:path`
+  entries in the form this fork uses, so Defect 2 is not directly comparable.
+  **Upstream-reportable:** yes, and it is the most serious of the inherited defects found so far.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The path-capability migration was never finished: five dead entry points and three unreferenced IPC commands, all invisible behind `allow(dead_code)`
+
+* **ID:** f-20260830-25 · **Status:** open · **Area:** bindings-ipc · **Root:** capability-surface-wider-than-claimed · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority.rs:8` (the file-level suppression), the five
+  functions below, and `src-tauri/src/main.rs:1072,1086,1101` with their bindings at
+  `src/bindings/generated.ts:303,311,319`.
+* **Defect 1 — dead production API.** With the test module starting at `path_authority.rs:3896`,
+  production callers across the whole crate are:
+
+  | Symbol | Line | Production callers | Test callers |
+  | --- | --- | --- | --- |
+  | `read_bytes` | 1408 | 0 | 4 |
+  | `read_bounded_bytes` | 1428 | **0** | **0** |
+  | `write_bytes` | 1452 | 0 | 1 |
+  | `register_downloaded_pgn` | 1579 | 0 | 1 |
+  | `register_download_artifact` | 2946 | **0** | **0** |
+
+  Two of them have no caller at all, not even a test, so they are unproven as well as unused. Note
+  `read_bounded_bytes` (:1428) is a *different symbol* from the genuinely used
+  `read_bounded_bytes_cancellable` (:337, one caller at `game.rs:1943`) — easy to conflate.
+* **Defect 2 — the capability-management IPC surface has no consumer.** `list_path_capabilities`,
+  `revoke_path_capability` and `promote_path_capability` are registered commands, exported to the
+  renderer, and referenced by nothing in `src/` or `e2e/`. Two of the three are mutating, and
+  `promote_path_capability` takes an arbitrary `operations: PathOperation[]`. They are reachable by
+  any injected renderer script while no legitimate UI path uses them. Reproducing the wider count:
+  **8 of 113 commands are unreferenced** — the three above plus `cancelDownload`,
+  `getFileMetadata`, `getOpeningFromFen`, `getPuzzleDbInfo`, `setFileAsExecutable`.
+* **Why it matters:** the comment at `path_authority.rs:8` reads "Foundation API; command consumers
+  are migrated separately" — it describes a migration that never completed, and the file-level
+  suppression is why nothing has flagged it in three weeks. The unbounded registry that
+  `revoke_path_capability` was presumably meant to prune is a separate open finding.
+* **Fix shape:** delete what has no intended consumer; wire up what does; then remove the
+  file-level `#![allow(dead_code)]` so the next gap is a compiler warning rather than a review
+  finding.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30, caller counts verified by
+  whole-crate grep separating production from test regions.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### `file_exists` demands a write capability to answer a read question, and reports every failure as "file absent"
+
+* **ID:** f-20260830-26 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs:1293-1311` (`file_exists`) and `:1320-1337`
+  (`get_file_metadata`); the write-class list at `src-tauri/src/infra/path_authority.rs:1432-1444`;
+  sole consumer `src/components/engines/EnginesPage.tsx:688-697,715-717`.
+* **Defect:** both commands resolve with `PathOperation::EngineInstall`, which
+  `is_write_operation` lists as a write class, in order to answer a read-only question. `file_exists`
+  then returns `resolve(...).is_ok()`, collapsing "capability revoked", "registry entry lost across
+  restart" and "filesystem identity changed" into the same answer as "the file is not there".
+* **Scope correction, verified:** this is cosmetic today, not a functional break. The only renderer
+  consumer renders a red `"(file missing)"` label beside the engine name; **no re-download or
+  reinstall is triggered**, and `get_file_metadata` has no renderer caller at all. It is also not
+  unsatisfiable by construction: every `EngineHandle` is minted at the single site
+  `path_authority.rs:2187-2191`, which always grants `EngineInstall`.
+* **Why it matters:** it becomes a real denial the moment revocation is wired up — `revoke_path_capability`
+  is currently unreferenced (see the sibling finding on the unfinished migration), and the first
+  thing a revocation feature would do is make a present engine claim to be missing.
+* **Fix shape:** introduce or use a read-class operation for existence and metadata, and distinguish
+  "denied" from "absent" in the return type rather than flattening both to `false`.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. The originally reported
+  consequence (an engine being re-downloaded) was checked against the call site and does not occur;
+  the over-demand and the error collapse do.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The engine manifest is transport-trusted and supplies a path component, while its signature fields protect a different value
+
+* **ID:** f-20260830-27 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/utils/engines.ts:104-113` (schema) and `:172-179` (fetch),
+  `src/components/engines/AddEngine.tsx:220-228`, guarded by
+  `src-tauri/src/infra/path_authority.rs:2338-2356` and `validate_components` at `:3436-3459`.
+* **Defect:** the default-engine manifest is fetched from `https://www.encroissant.org/engines` and
+  validated client-side by `defaultEngineManifestSchema`, in which `path` is constrained by nothing
+  but `z.string().min(1)` — no traversal, separator or absolute-path rejection. That string is passed
+  straight to `registerInstalledEngine`, where it decides the path component an executable is
+  registered from. The manifest as a whole is **never signed**: the per-entry `sha256` and
+  `signature` fields cover the downloaded archive and are passed only to `downloadEngineArchive`, so
+  they give no assurance about `path` at all.
+* **Verified as stopped today:** traversal does not succeed. `register_installed_engine` rejects any
+  component that is not `Component::Normal` (`path_authority.rs:2346`), and `validate_components`
+  independently rejects empty, `.`, `..`, multi-component names, and on unix any `/` or NUL byte.
+* **Why it matters:** the entire defence is those two backend checks, with nothing in front of them.
+  Anyone controlling or MITM-ing `www.encroissant.org` writes a value that reaches path resolution,
+  and the adjacent `sha256`/`signature` fields make the manifest look authenticated when the field
+  that matters is not. Weakening either backend check turns this into arbitrary-path engine
+  registration with no second line of defence — and this repository already documents signed
+  download manifests (`docs/signed-download-manifests.md`) for the archive, so the asymmetry is
+  visible in its own docs.
+* **Open design question (hence `build`):** sign the manifest itself, or constrain `path` in the
+  client schema to a single normal component, or both. The second is cheap and immediate; the first
+  is the actual fix.
+* **Note for upstream:** the manifest endpoint and its trust model are inherited from upstream
+  unchanged — this is not a defect the audit introduced.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The error taxonomy collapses distinct backend failures, and `diagnostic` is a byte-identical copy of the message it is meant to explain
+
+* **ID:** f-20260830-28 · **Status:** open · **Area:** frontend-ui · **Root:** platform-error-redaction · **Entry:** build · **Blocked:** none
+* **Where:** `src/platform/errors.ts:57-73`, against the real literals in `src-tauri/src/error.rs:93,101,104,113`;
+  rendered at `src/components/ErrorComponent.tsx:17-20`; bypassed at `src/routes/__root.tsx:100-104,115-120`.
+* **Defect 1 — substring matching mis-routes live variants.** Verified by running `normalizeError`
+  on the actual `#[error(...)]` strings:
+  - `Error::EngineTimeout` renders `"Engine timeout: …"` and matches the `network` branch
+    (`errors.ts:63`). It is live at `chess.rs:1065`, wrapping a real UCI handshake wait — so **a hung
+    local engine is reported to the user as a connectivity problem.**
+  - `Error::Conflict` (live at `fs.rs:52,595,597,655`) and `Error::ResourceLimit` (live at
+    `lichess.rs:94,98,120,124`) both fall through to `unexpected`.
+  - The `"cancel"|"abort"` test runs *before* `network` (`errors.ts:61`), so `"connection aborted"`
+    is categorised `cancelled` — a transport failure presented as a user cancellation.
+  - `Error::CredentialOperationRequiresRecovery` also lands in `unexpected`, but it is a **dead
+    variant**: no construction site exists outside `error.rs`.
+* **Defect 2 — `diagnostic` carries no diagnostic.** `errors.ts:73` returns
+  `{ category, message, diagnostic: message }` — the same binding. This is worse than dead surface:
+  `ErrorComponent.tsx:17-20` renders it in a `<Code>` block **with a copy button**, presenting it as
+  the technical detail behind the human message. A user copying "the details" for a bug report
+  copies the sentence already on screen. There is no channel from the unredacted cause to any
+  diagnostic surface anywhere in the layer.
+* **Defect 3 — two error-presentation conventions in one file.** `__root.tsx:119` and `:100-104`
+  show `error.message` directly, bypassing `normalizeError`. `TauriCommandError` messages are
+  already redacted by `tauri.ts:22`, but any non-facade rejection — a raw `@tauri-apps` error from
+  `ask`, `exit`, `platform` or the updater, all imported at `__root.tsx:4-9` — is displayed verbatim,
+  which is exactly the path the redaction patterns exist to cover.
+* **Open design question (hence `build`):** the categoriser should match on a discriminant the
+  backend sends, not on substrings of a prose message that was redacted first. That is a change to
+  the `Error` type and the IPC contract, not a tweak to a regex.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30, verified by executing
+  `normalizeError` against the real Rust literals under vitest.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The already-normalised error is thrown away and recomputed at seven sites, and a destructive-operation guard survives only by accident
+
+* **ID:** f-20260830-29 · **Status:** open · **Area:** frontend-ui · **Root:** platform-error-redaction · **Entry:** build · **Blocked:** none
+* **Where:** `src/platform/tauri.ts:17-25` (`TauriCommandError.details`), and the seven consumers
+  `SettingsPage.tsx:144`, `ConfirmModal.tsx:11`, `FilesPage.tsx:336`, `AddPuzzle.tsx:41,107`,
+  `Puzzles.tsx:425`, `ErrorComponent.tsx:9`.
+* **Defect:** `TauriCommandError` computes an `AppError` and stores it as `.details`. Grepping the
+  whole renderer for `.details` returns exactly one hit — the assignment itself. Every consumer
+  instead calls `normalizeError(error)` **again** on the already-normalised error, recomputing the
+  category from the lossy redacted message rather than reading the correct one that is already
+  attached.
+* **Why it matters — the guard that is at risk.** `FilesPage.tsx:336` reads
+  `normalizeError(cause).category === "applied-despite-error"`, and the comment three lines above
+  states what is at stake: *"`applied-despite-error` means files were destroyed even though this
+  failed."* Re-normalisation is stable there **only because** the two Rust literals that produce
+  that category (`"Partially removed: …"`, `"Committed but durability uncertain: …"`) happen to
+  contain no `/` and no secret pattern, so `redact` leaves the matched prefix untouched on the second
+  pass. Reword either variant so its text contains a path — which is the natural thing to do when
+  improving an error message — and the destructive-operation guard silently degrades to `unexpected`
+  and stops warning the user that files were destroyed.
+* **Fix shape:** read `error.details` when the error is a `TauriCommandError` instead of
+  re-normalising; keep `normalizeError` for the genuinely unknown-shaped case.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Idempotence of the two
+  load-bearing literals was measured, not assumed.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Every listener registration failure in the renderer is invisible, and one subscriber writes parent state after unmount
+
+* **ID:** f-20260830-30 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/platform/useTauriListener.ts:13-15,20,31-33,38-44`; all eight call sites
+  `BoardGame.tsx:660,683,699`, `EvalListener.tsx:206`, `Databases.tsx:128`, `AccountCard.tsx:155`,
+  `useConversionProgress.ts:27`, `useProgress.ts:58`.
+* **Defect 1 — `options.onError` is dead surface.** The hook falls back to
+  `console.error` when no `onError` is supplied (`:43`). **None of the eight call sites supplies
+  one** — verified by inspecting every call. In a packaged Tauri build there is no devtools console,
+  so a subscription that fails to register presents as an eval bar, a progress bar, or a clock that
+  simply never updates, with no error surfaced anywhere. All seven Specta event subscriptions in the
+  application are affected.
+* **Defect 2 — `AccountCard.tsx:155` passes an `async` callback into a `(event: T) => void` slot.**
+  The hook discards the returned promise (`:31-33`), so it is never awaited and never caught, and
+  the `disposed` guard at `:32` is evaluated **once, before entry**. At `AccountCard.tsx:160`,
+  `setDatabases(await getDatabases())` runs after an unbounded await and writes into the *parent's*
+  state — the exact stale write the guard exists to prevent — while a rejection there becomes an
+  unhandled promise rejection.
+* **Note:** the hook itself is otherwise sound and well tested; these are contract gaps at its edge,
+  not defects in its disposal logic.
+* **Fix shape:** either make `onError` required, or route the fallback to a user-visible surface;
+  and change the callback slot to accept and await a promise, re-checking `disposed` after it.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30, verified by inspecting all
+  eight call sites.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The renderer chooses the URL path for Lichess requests, and every call rebuilds the HTTP client
+
+* **ID:** f-20260830-31 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/lichess.rs:145-149` (validation + interpolation), `:202-210` (the
+  post-hoc check), against the correct helper `exact_url` at `:56-70`; client at `:47-55`.
+* **Defect 1 — renderer-controlled path.** `PublicLichessRequest::Account { username }` is validated
+  only for `1..=80` bytes, then interpolated: `format!("/api/user/{username}")`, applied by
+  `url.set_path(&path)` at `:202`. The check at `:204-207` validates scheme, userinfo, password and
+  fragment — **not the path, and not the host**. `username = "../account"` normalises to
+  `/api/account`. `exact_url` exists for exactly this and pins host, port and path; it is used at
+  `:239` and `:288` but not here.
+* **Scope, verified — this is not token exfiltration.** `set_path` never re-parses the authority, so
+  the host cannot be changed, and `public_json` (`:111-112`) attaches **no** credential — the bearer
+  path is the separate `authenticated_json` at `:86`, which is only ever called with `exact_url`
+  results. The real shape is: renderer-controlled fetch of any path on `lichess.org`, response
+  returned to the renderer as a string, bounded at 5 MB. SSRF-shaped against a fixed host.
+* **Defect 2 — `client()` (`:47`) runs a full `reqwest::Client::builder()` per request**, at `:86`
+  and `:112`, rebuilding TLS configuration, the connection pool and the custom `SafeResolver` every
+  call, so no keep-alive is ever reused. `AppState` holds a shared transport (`main.rs:404-405`) but
+  it is an `Arc<dyn DownloadTransport>` rather than an exposed client, and
+  `get_public_lichess_json` takes no `State` — so reuse needs an accessor, which is why this is
+  `build` rather than a one-line change.
+* **Fix shape:** route the account request through `exact_url` with the username as a validated
+  single path segment; expose the shared client.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. The no-host-change and
+  no-credential corrections were verified against the `url` crate's `set_path` and the two request
+  helpers, not assumed.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Two native reads are unbounded in practice: a metadata sidecar that follows symlinks, and an engine image read after a TOCTOU window
+
+* **ID:** f-20260830-32 · **Status:** open · **Area:** native-fs · **Root:** unbounded-native-reads · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/file_workspace.rs:110-118` (`metadata_from`) against its correct sibling
+  at `:223-227`; `src-tauri/src/infra/path_authority.rs:2283-2305` (`read_engine_image`) against the
+  two correct bounded readers at `:337-370` and `:1428-1443`.
+* **Defect 1 — the `.info` sidecar has neither a symlink check nor a size bound.** `sidecar.exists()`
+  and `fs::read(sidecar)` both follow symlinks, and nothing limits the byte count. The sidecar name
+  is derived by string manipulation (`info_path`, `:103-108`, via `with_file_name`) and is never
+  resolved through the path authority. The `.pgn` file beside it **is** correctly guarded —
+  `fs::symlink_metadata` at `:223` with an explicit `is_symlink()` refusal. Reachable from
+  `list_file_workspace` (`:333`) through `tree_entry` (`:277`) and the recursive walk at `:244`, so a
+  `game.info` symlink in a workspace directory makes a plain directory listing read an arbitrary
+  file of arbitrary size into memory — and any JSON-shaped target is then deserialised into
+  `WorkspaceMetadata` and handed to the renderer.
+* **Defect 2 — `read_engine_image` checks the declared size, then reads unbounded.** It calls
+  `file.metadata()?.len()`, rejects if over the limit, allocates with that capacity, and then runs
+  `file.read_to_end(&mut bytes)` with **no limit**, checking the length only afterwards. A file that
+  grows between the `metadata()` call and the read is fully allocated before rejection. The correct
+  pattern is in the same file twice: the chunked loop at `:352-370`, and `.take(max+1)` at `:1442`,
+  whose doc comment states it exists so "a sparse or concurrently growing file cannot force an
+  allocation".
+* **Correction to how this was first reported:** the three readers are not a progression from strong
+  to weak — `git log -L` shows all three landed in the same commit `97c29add`. One change shipped
+  three divergent copies of the same idea at once, which is the more useful fact: it is a
+  consistency failure inside one diff, not drift over time.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### `search_position` performs a create, fsync and unlink while holding only a `DatabaseRead` capability
+
+* **ID:** f-20260830-33 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/search.rs:482` (the capability), `:504` and `:167` and `:209` (the
+  paths reached), `src-tauri/src/db/search_index.rs:515` (write) and `:530` (unlink), `:240`
+  (regeneration write); the write-class list at `src-tauri/src/infra/path_authority.rs:1472-1481`.
+* **Defect:** the command resolves with `PathOperation::DatabaseRead`, which `is_write_operation`
+  deliberately excludes. From there `load_search_index` reaches `promote_legacy_index_sidecar`,
+  which **writes** `<db>.ecsi` via `atomic_replace` and then **unlinks** the legacy sidecar, and
+  `generate_search_index` writes the index outright. `DatabaseMutate` already exists in the enum
+  (`path_authority.rs:515`) and is not used here.
+* **Second half — the sidecar paths bypass the authority entirely.** They are derived by string
+  manipulation from the canonicalised database path: `get_index_path` uses `with_file_name`
+  (`search_index.rs:461-470`) and `legacy_index_path` uses `with_extension` (`:477-478`). Neither
+  goes through fd-relative resolution, so the capability model does not mediate the files it
+  creates and deletes — only the database file it was granted.
+* **Why it matters:** a read-only capability is the one thing a user or a future revocation feature
+  can rely on to mean "this cannot change anything on disk". Here it deletes a file.
+* **Fix shape:** require `DatabaseMutate` for the promotion and regeneration paths, and resolve the
+  sidecar through the authority rather than deriving it as a string.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Lichess tokens are written to an in-process mock store and can never be read back — the `keyring` crate has no backend compiled in
+
+* **ID:** f-20260830-34 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/Cargo.toml:79` (`keyring = "3.6.3"`, no features),
+  `src-tauri/src/credentials.rs:106-112` (`OsCredentialStore::get`), `:289-294` (`token`),
+  wired in as the production store at `src-tauri/src/main.rs:1371`.
+* **Defect:** the dependency is declared with **default features only**, and `keyring` 3.x enables no
+  platform backend by default. `Cargo.lock` proves it — the resolved dependency list for `keyring`
+  is exactly `log` and `zeroize`: no `secret-service`, no `linux-keyutils`, no native backend for any
+  platform. keyring's own `lib.rs` then falls back to `pub use mock as default` for Linux, macOS
+  **and** Windows when none of `linux-native` / `sync-secret-service` / `async-secret-service` /
+  `apple-native` / `windows-native` is set. No `set_default_credential_builder` call exists anywhere
+  in the crate to override it.
+* **Consequence:** the mock store keeps the password *inside the `Entry` object*. `OsCredentialStore`
+  constructs a fresh `Entry` on every `set` and every `get` (`credentials.rs:107`), so each write goes
+  into a throwaway object and every read misses. `Entry::get_password` returns `NoEntry`, which
+  `credentials.rs:109` maps to `Ok(None)`. **A stored Lichess token is therefore never retrievable —
+  on any platform, in debug or release.** Empirically reproduced in a standalone crate pinned to the
+  same version and features: `set` succeeds, a read from the same `Entry` returns the value, and a
+  read from a new `Entry` returns `NoEntry`.
+* **Why it matters:** this is a live, user-visible functional defect, not a latent hazard. Every
+  feature behind a Lichess account token — the authenticated fetches at `lichess.rs:86` and the
+  game download at `fs.rs:885` — silently behaves as if no account were linked. Nothing fails loudly,
+  because "no token" is a legitimate state.
+* **Not inherited:** `git show upstream/master:src-tauri/Cargo.toml` has **no keyring dependency at
+  all**. This was introduced by the 2026-08-13 audit and is the audit's own regression, not an
+  upstream bug. It is therefore not upstream-reportable.
+* **Open design question (hence `build`):** which backend per platform, and how to reach it without
+  blocking. Enabling `sync-secret-service` makes `token()` a real D-Bus round trip that can show an
+  unlock prompt — and it is currently called inline from `async fn` at `lichess.rs:82-84` and
+  `fs.rs:885-887`, so the same change that fixes storage creates a Tokio-worker stall unless the call
+  is offloaded in the same diff.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Found by *refuting* a
+  different claim (that the keyring call blocks on D-Bus) — the mechanism alleged there cannot occur,
+  and establishing why exposed this.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The path registry grows without bound, `revoke_path_capability` cannot prune it, and one operation-list edit orphans every persisted root
+
+* **ID:** f-20260830-35 · **Status:** open · **Area:** native-fs · **Root:** unbounded-path-registry · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority.rs:1489-1492` (the two maps), `:1828-1837`
+  (dialog bounding), `:1864-1866` (`revoke_dialog`), `:3361-3372` (the only persistent removal),
+  `:1991`/`:2033`/`:2073`/`:2111` (the identity comparisons), `:3786-3790` (the latent directory
+  bug); command surface at `src-tauri/src/main.rs:1086-1096`.
+* **Defect 1 — only `dialogs` is bounded.** `dialogs` has a capacity and an eviction pass;
+  `persistent` has neither. The single removal path is `remove_workspace_entry`, which takes a
+  `FileWorkspaceHandle` — so database roots, puzzle roots, engine roots, engine resources, opening
+  books, engine images and persistent files have **no removal path at all**. Every distinct file or
+  directory ever opened enlarges the registry permanently.
+* **Defect 2 — the renderer-facing revoke cannot prune any of it.** `revoke_path_capability`
+  delegates to `revoke_dialog`, which touches `dialogs` only and returns `false` for every persistent
+  id — while `descriptors()` (`:1736-1751`) lists persistent entries first. The command is exported
+  (`generated.ts:311`) and, per the sibling finding on the unfinished migration, has no consumer
+  anyway.
+* **Defect 3 — cost.** Every insertion clones the whole `BTreeMap` (13 production sites), then
+  re-serialises **all** entries and commits through `atomic_replace`, which does two `sync_all()`
+  calls. The syscall count per commit is constant, but the payload cloned, serialised and fsynced
+  grows linearly, and `refresh_persistent()` stats every entry on each `descriptors()`/`resolve`.
+  Per-operation cost is O(n); session cost O(n²).
+* **Defect 4 — identity is order-sensitive vector equality.** The four `get_or_create_*_root`
+  lookups compare `entry.stored.operations == operations`, an elementwise `Vec` comparison over a
+  literal built at each call site. Appending or **reordering** one `PathOperation` in a future
+  release makes every persisted root miss, and the fallthrough inserts a duplicate under a fresh
+  `PathRef` without removing the old one — which, given Defect 1, is permanent.
+* **Defect 5 (latent) — wrong-directory capability.** At `:3786-3790`, `directory` is set to `handle`,
+  which only advances for non-final components (`:3759`). If the final component is a directory,
+  `directory` is its **parent** while `target` is the child. Unreachable today: the only reader of
+  that field is `engine_resource` (`:2247`), whose sole `resolve` call passes empty components. The
+  first caller that resolves a subdirectory gets the wrong directory silently.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### One process-wide blocking mutex serialises 51 call sites, and three of them hold it across a whole-file SHA-256 or a full registry fsync
+
+* **ID:** f-20260830-36 · **Status:** open · **Area:** native-fs · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs:389-390` (the mutex), `:603-620` (fsync under lock),
+  `src-tauri/src/fs.rs:651-664` and `:807-820` (SHA-256 under lock),
+  `src-tauri/src/infra/path_authority.rs:3060` and `:692-707` (the hash), `:1929` (the commit).
+* **Defect:** `pgn_path_authority` is a `std::sync::Mutex<Option<PathAuthority>>` on `AppState` —
+  one instance process-wide. **51 production lock sites** across seven modules (`main.rs` 23,
+  `fs.rs` 13, `puzzle.rs` 5, `chess.rs` 4, `db/mod.rs` 4, `file_workspace.rs` 2, `pgn.rs` 1;
+  one further site is a test). Three of them do heavy work while holding it, from inside `async fn`
+  commands:
+  - `issue_download_destination` (`main.rs:582`) holds the guard across `promote_dialog`, which
+    serialises the entire registry and performs two `sync_all()` calls.
+  - `download_to_destination` (`fs.rs:651`) and `install_staged_pgn_artifact` (`fs.rs:807`) each hold
+    it across `reserve_download_artifact`, which streams a **SHA-256 over the whole downloaded
+    payload** in 64 KiB chunks and then commits the registry — hash plus two fsyncs, under one guard.
+* **Why it matters:** a blocking mutex held across file I/O inside an async command is the exact
+  pattern `.claude/rules/async-resource-invariants.md` forbids ("no lock is held across `.await`",
+  "blocking work stays off the Tokio workers"). Hashing a multi-gigabyte database download stalls
+  every unrelated path operation in the process for the duration, and blocks a Tokio worker while
+  doing it.
+* **Fix shape:** compute the hash and stage the file before taking the lock; hold the guard only for
+  the registry mutation. Whether the registry commit itself should move off the worker is the design
+  question — it is coupled to the unbounded-registry finding, since the commit cost is what grows.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. The lock-site count was
+  independently derived and is roughly twice what the first pass reported.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Every database command, the PGN import and the search-index scans run on Tokio workers with no offload, while the blocking gateway bounds a different population
+
+* **ID:** f-20260830-37 · **Status:** open · **Area:** db-search · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs` (no `spawn_blocking` or `BLOCKING_GATEWAY` anywhere in the
+  file), `db/search.rs:476,622,659,717`, `db/mod.rs:502,654,1037,1346,1364,1441,1561`,
+  `db/repository.rs:314-326,535-548`, `chess.rs:811`, `infra/blocking.rs:8,31`.
+* **Defect 1 — rayon scans inline in async.** `search_position_inner` (`search.rs:476`) and
+  `is_position_in_db` (`:659`) each run `mmap_index.par_iter().try_for_each(...)` over the whole
+  game index directly in an `async fn` body. `analyze_game` triggers `is_position_in_db` **per
+  analysed position** (`chess.rs:811`, inside a loop over every move), so one game analysis parks a
+  Tokio worker repeatedly for full-index scans.
+* **Defect 2 — all Diesel work is inline.** `get_games` (`db/mod.rs:1037`), `get_player`,
+  `get_players`, `get_tournaments`, `get_players_game_info` are `async fn` with `.load(db)` in the
+  body. `convert_pgn` (`:502`) runs the entire bz2/zstd decode, PGN parse and insert transaction
+  inline — minutes to hours on one worker for a large import. `generate_search_index_locked` (`:654`)
+  and the `db/repository.rs` helpers are sync functions, but their only callers reach them inline
+  from `async fn` with no `spawn_blocking`, so the effect is identical. `delete_database`
+  (`db/mod.rs:1717`) reaches a `Condvar::wait` (`repository.rs:542`) that can block a worker
+  indefinitely waiting for in-flight connections.
+* **Defect 3 — the gateway bounds the wrong work.** `BLOCKING_GATEWAY` (semaphore of 4) has 17 call
+  sites: `puzzle.rs` 7, `pgn.rs` 4, `fs.rs` 4, `game.rs` 1, `lexer.rs` 1. It appears **nowhere** in
+  `db/`, `file_workspace.rs`, `credentials.rs` or `opening.rs`. So it throttles the work that is
+  already correctly offloaded while the heaviest blocking work in the process runs unbounded — and
+  since the gateway also carries the only `catch_unwind` (`blocking.rs:31`), the unbounded paths are
+  the unprotected ones too. That matters concretely at `db/search_index.rs:415`, an `.expect` over a
+  live mmap that a concurrent on-disk modification can reach.
+* **Note:** `puzzle.rs:409` wraps the same `delete_exclusive` in `BLOCKING_GATEWAY.spawn` that
+  `db/mod.rs:1724` calls inline — the correct pattern is in-tree and simply was not applied here.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### A third of the IPC surface runs on the GTK main thread, including a directory walk that fsyncs once per file it discovers
+
+* **ID:** f-20260830-38 · **Status:** open · **Area:** bindings-ipc · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs:693` (`list_workspace_databases`), `:970` (`read_engine_image`),
+  `src-tauri/src/file_workspace.rs:490,539,561,595,635,665` (the six mutators);
+  registry at `main.rs:1120-1232`.
+* **Defect:** **37 of the 113 registered commands are `fn`, not `async fn`** — count independently
+  derived from the registry. `tauri::command` defaults to a blocking execution context and upgrades
+  to async only when the signature is `async`, so a sync command body executes on the dispatching
+  thread, which on this target (Linux, WebKitGTK) is the GTK main loop. No command uses
+  `#[command(async)]`.
+* **What runs there:**
+  - `list_workspace_databases` walks a directory (`path_authority.rs:2551-2563`) and calls
+    `register_database_child` per entry, which performs a full `resolve` traversal and, for an
+    unregistered child, a registry clone plus commit — **two fsyncs per newly discovered database
+    file, on the UI thread.**
+  - `read_engine_image` reads image bytes inline while holding the authority lock.
+  - All six file-workspace mutators perform synchronous `sync_all()` on the main thread — via
+    `atomic_replace_at` for `rename_workspace_file`, and via `rename_entry_at`, `create_dir_at` or
+    `remove_entry_at` for the others — and `permanently_delete_workspace_entry` adds a registry
+    commit on top.
+* **Why it matters:** the window freezes for the duration of the I/O. Opening a workspace with many
+  databases is the worst case, because the cost scales with the number of files discovered and each
+  one can cost two fsyncs.
+* **Fix shape:** make these commands `async fn` and move the filesystem work behind the blocking
+  gateway. The design question is which of them need to stay ordered relative to each other once
+  they no longer run on a single thread.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Extracted archive directories are group-writable, and a deep archive makes every reinstall report failure after succeeding
+
+* **ID:** f-20260830-39 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs:1116,1119,1181,1184` (`create_dir_all`), `:1261-1267`
+  (`private_output_file`), `:1045-1047` (`validate_archive_path`);
+  `src-tauri/src/infra/fs.rs:76` (`MAX_REMOVE_TREE_DEPTH = 64`), `:456-460`, `:687-704`.
+* **Defect 1 — permission asymmetry.** Extracted *files* are opened with `options.mode(0o600)`, but
+  the directories holding them are created with `std::fs::create_dir_all`, which applies
+  `0o777 & ~umask`. On this machine `umask` is `0002`, so those directories are **0775 —
+  group-writable**. No `set_permissions` or `DirBuilder::mode` appears anywhere in `fs.rs`.
+* **Defect 2 — writer and remover disagree on depth.** `validate_archive_path` bounds total path
+  *length* at 1024 bytes and rejects `Prefix`, `RootDir`, `ParentDir` and NUL — but never the
+  component *count*, so `"a/"` repeated 512 times passes. `remove_tree_at` refuses beyond
+  `MAX_REMOVE_TREE_DEPTH = 64`. An engine archive nested deeper than 64 levels installs fine; on the
+  next reinstall `install_dir` swaps the old tree into the staging name via `RENAME_EXCHANGE` and
+  the cleanup of that old tree hits the depth limit, so `download_file` returns
+  `CommittedDurabilityUncertain` — **permanently, on every subsequent reinstall, even though the
+  exchange already committed successfully.**
+* **Correction to the first report:** the old tree is *not* leaked. The staging directory is a
+  `tempfile::TempDir` (`fs.rs:1083`, `:1143`) and the error propagates by `?`, so `TempDir::drop`
+  runs `remove_dir_all`, which has no depth cap. The defect is a permanent false failure signal, not
+  an unremovable directory.
+* **Also noted, and it corrects the framing:** `infra/fs.rs:902` `create_dir_at` is a *leaf*
+  primitive (`parent: &File, name: &OsStr`, one `mkdirat`), not a recursive one, and it does not use
+  `NOFOLLOW` — so it is not a drop-in replacement for `create_dir_all` over a multi-component
+  archive path. The symlink-component concern is also theoretical here: the staging root is a fresh
+  temp directory and neither extractor can create a symlink inside it (`extract_tar` rejects them at
+  `fs.rs:1167-1171`; `extract_zip` writes every entry as a regular file).
+* **Fix shape:** set the directory mode explicitly at creation, and bound component count in
+  `validate_archive_path` to match `MAX_REMOVE_TREE_DEPTH`.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Fault-injection scaffolding ships in release builds, next to two suppressions that no longer suppress anything
+
+* **ID:** f-20260830-40 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/infra/fs.rs:25,38,1180,1188,1196` (ungated), against `:81-130`
+  (correctly gated); `:760` and `:1100` (stale suppressions);
+  `src-tauri/src/infra/path_authority.rs:3564,3578`; `src-tauri/src/fs.rs:1041-1043` (shadowing).
+* **Defect 1 — inconsistent gating inside one file.** `AtomicFileFaultPoint` (:25),
+  `AtomicWriterInjector` (:38), `AtomicDirFaultPoint` (:1180), `AtomicDirInjector` (:1188) and
+  `atomic_install_dir_with_injector` (:1196) are ungated `pub`, so their vtables and generic
+  instantiations are part of the shipped surface. Twenty lines away the *removal* injector is
+  correctly `#[cfg(test)]` throughout (`:81-130`). `path_authority.rs:3564` `save_with_injector`
+  compiles in release for the same reason. Caveat for whoever fixes it:
+  `atomic_install_dir_with_injector` is not pure scaffolding — `atomic_install_dir` (:1214)
+  delegates to it with a default injector, so it cannot simply be `cfg`-gated away.
+* **Defect 2 — two `#[allow(dead_code)]` that suppress nothing.** `:760` on `atomic_replace_at` and
+  `:1100` on `atomic_replace_at_identified`; both have real production callers in ungated
+  `#[tauri::command]` bodies (`file_workspace.rs:433,440,583`) and are exercised by tests. They would
+  now only hide a future regression to genuinely dead code.
+* **Defect 3 — a zero-value shadowing pass-through.** `fs.rs:1041-1043` defines a private
+  `atomic_install_dir` whose entire body calls `crate::infra::fs::atomic_install_dir`. Two names at
+  two layers with no added behaviour, so a reader at the call site (`fs.rs:1132`, `:1197`) cannot
+  tell which one runs and misses where the real `RENAME_EXCHANGE` and backup semantics live.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Panic-on-poison and unguarded `unwrap` on paths reachable from a database, an engine or the network
+
+* **ID:** f-20260830-41 · **Status:** open · **Area:** oauth-credentials · **Root:** panic-on-untrusted-input · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/credentials.rs:359-374` and its `.expect` sites `:256,271,280,305,362,388`;
+  `src-tauri/src/fs.rs:84-90`, `:50`, `:69`; `src-tauri/src/oauth.rs:450,463`;
+  `src-tauri/src/infra/net.rs:136-147`.
+* **Defect 1 — a wide lock span whose poisoning is fatal to the feature.** `credentials.rs:359-374`
+  holds the registry `std::sync::Mutex` across `persist_locked` (write + fsync), `token()` and
+  `store.delete()`. A panic anywhere in that span poisons the mutex, after which every later
+  credential operation panics at its `.expect("credential registry mutex poisoned")`. Same shape at
+  `oauth.rs:450,463`.
+* **Corrections to the first report, both material:** the eight cited `.expect` lines are **two
+  different mutexes** — `:260` and `:484` guard a *path* mutex, so poisoning the registry does not
+  affect them. And the outcome is **not** a process abort: no `panic = "abort"` is configured
+  anywhere, so this panics per call and unwinds.
+* **Defect 2 — `.expect` inside `Drop`.** `fs.rs:84-90` `DownloadLease::drop` unwraps the download
+  registry lock, which `:50` and `:69` can poison. A panic in `Drop` *during unwinding* does abort —
+  that is the one place where the abort claim holds.
+* **Defect 3 — `unwrap` in a `Default` impl on the startup path.** `infra/net.rs:144`
+  `safe_http_client(...).unwrap()` inside `impl Default for ProdTransport`, reached at `AppState`
+  construction (`main.rs:404-405`). `safe_http_client` is fallible and returns a `reqwest` build
+  error, so a TLS backend initialisation failure panics with no message and no adjacent comment —
+  which `.claude/rules/async-resource-invariants.md` requires for any provable-invariant unwrap.
+* **The correct pattern is already in this codebase** and should be applied: `chess.rs:63,362,586,733`
+  and `fs.rs:595` all map a poisoned lock to `Error::Conflict("path authority lock was poisoned")`
+  rather than expecting. (The exemplar cited in the first report, `chess.rs:441`, is unrelated code.)
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Five `unwrap()` on database-loaded values, protected only by an unlabelled condition fifty lines earlier
+
+* **ID:** f-20260830-42 · **Status:** open · **Area:** db-search · **Root:** panic-on-untrusted-input · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs:1676,1678,1681,1683,1685`, guarded by the compound condition at
+  `:1626-1635`.
+* **Defect:** five `unwrap()` calls on values loaded from SQLite — `player`, `date`, `white_elo`,
+  `black_elo` — plus `result`, which is derived by `GameOutcome::from_str` at `:1624` rather than
+  read as a column. Their only protection is a seven-clause `if ... { return None; }` roughly fifty
+  lines earlier, with **no comment anywhere between the two** tying them together. The code runs
+  inside a Rayon closure, so a panic there is a worker-thread panic on database-driven data.
+* **Why it matters:** this is precisely the class `.claude/rules/async-resource-invariants.md`
+  forbids — a panic on values that reach the process from a database. One edit to the guard
+  condition, by someone who has no reason to connect it to code fifty lines below, turns on five
+  panics.
+* **Fix shape:** destructure the options at the guard and carry the unwrapped values forward, so the
+  compiler enforces the relationship instead of a comment.
+* **Correction to the first report:** the guard is at `:1626-1635` (not 1624-1633) and the distance
+  is ~50 lines (not 25).
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### `assert_eq!` on engine-subprocess output in one of two structurally identical loops
+
+* **ID:** f-20260830-43 · **Status:** open · **Area:** engine-uci · **Root:** panic-on-untrusted-input · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/chess.rs:780`, against the sibling loop at `:419-421`.
+* **Defect:** `assert_eq!(proc.best_moves.len(), proc.real_multipv as usize)` fires on values derived
+  entirely from engine stdout — `chess.rs:402` reads the line, `:407` parses it, `:409`
+  `parse_uci_attrs` produces `multipv` and `best_moves`. A misbehaving or crashing UCI engine that
+  emits an unexpected multipv sequence panics the analysis path. The structurally identical loop at
+  `:419-421` accepts the same input with no assert, so the two disagree about whether this is an
+  invariant.
+* **Why it matters:** an engine is exactly the kind of external process the repository's own rule
+  names as untrusted input, and the inconsistency means one of the two loops is wrong — either the
+  invariant holds and `:419` is missing a check, or it does not and `:780` is a crash.
+* **Fix shape:** decide which loop is right; if the invariant is real, enforce it in both by
+  returning an error rather than asserting.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The fork checks upstream's update endpoint on every launch and trusts upstream's signing key, so a future upstream release would replace this build
+
+* **ID:** f-20260830-44 · **Status:** open · **Area:** app-startup · **Root:** fork-identity-not-separated · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/tauri.conf.json:58-63` (`updater.endpoints`, `updater.pubkey`), `:45-47`
+  (`productName`, `identifier`); `src/App.tsx:97` (the automatic check);
+  `src/utils/engines.ts:173` (the engine manifest origin).
+* **Defect:** every one of these values is **byte-identical to upstream** — verified by diffing
+  `tauri.conf.json` and `package.json` against `upstream/master`, where only the CSP line differs.
+  Concretely:
+  - `endpoints` is `https://www.encroissant.org/updates` and `pubkey` is upstream's minisign public
+    key. `App.tsx:97` runs `checkForUpdates` automatically at startup. So this build polls an update
+    channel it cannot publish to, and **any release upstream ships would verify against the trusted
+    key and be offered as an update to this fork** — silently replacing a heavily modified tree with
+    upstream's binary. There is no private key here to sign a fork release with, so the channel is
+    unusable in the intended direction and harmful in the other.
+  - `identifier` is `org.encroissant.app`: a reverse-DNS name for a domain this fork does not own,
+    and the same identifier upstream ships. It determines the app-data directory (databases, engines,
+    puzzles, credentials) **and** the keyring service namespace, which this fork's own
+    `fix(credentials): derive the keyring namespace from the bundle identifier` derives from it. Two
+    builds with this identifier installed side by side share all of it.
+  - `src/utils/engines.ts:173` fetches the default-engine manifest from `www.encroissant.org`, an
+    origin this fork does not control, over a manifest that is never signed (see the sibling finding
+    on the engine path component).
+* **Why it matters:** this is the difference between "a fork" and "a build that can be taken over by
+  the project it forked from". It is live today, not latent — the startup check already runs.
+* **Fix shape:** generate a fork-owned minisign keypair, point `endpoints` at this repository's own
+  releases, replace the pubkey, change `identifier` to a domain the fork owns, choose a distinct
+  `productName`, and host the engine manifest at a controlled origin (updating the CSP and the
+  capability scope with it). The dev split at `tauri.dev.conf.json` already shows the identifier is
+  parameterisable.
+* **Note:** GPL-3 §5(a) additionally requires a modified version to carry prominent notices that it
+  was changed and when — worth satisfying in the same change.
+* **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30, while answering whether the
+  fork is independent of upstream infrastructure.
+
+* **Exposure assessment appended 2026-08-30 — this is not on fire, and here is exactly why.** Two
+  independent conditions currently make the takeover path inert: upstream's newest release is
+  **v0.15.0 (2026-03-17)** with no commits since 2026-04-20, and this fork's `package.json` version
+  is **also 0.15.0**, so the updater's version comparison finds nothing newer even when the startup
+  check runs. It also cannot overwrite anything today, because `pnpm build` runs `--no-bundle` and
+  no installed bundle exists on this machine.
+  **What makes it live:** upstream tagging any version above 0.15.0 — and the probability of that
+  went *up* on 2026-08-26, when the maintainer publicly offered to add maintainers (issue #880) with
+  another contributor actively pursuing the role. The source tree is never at risk; git is not
+  reachable from the updater. The real loss scenario is the **app-data directory**: upstream's 0.15
+  binary would own `$APPDATA/org.encroissant.app`, which this fork's schema work (`db/migrations.rs`),
+  its persisted-state versioning and its credential layout now expect to control.
+  **Therefore: must land before any bundled build is produced or installed, and before real
+  repertoire data is stored — not before the next commit.**
+
+* **Scope narrowed by decision `d-20260830-15`, and identifier fixed by `d-20260830-16` (2026-08-30).**
+  This run does the **identity half only**: bundle identifier → `com.chessriddle.encroissant`
+  (`.dev` variant in `tauri.dev.conf.json`), sever `updater.endpoints` and `updater.pubkey` so no
+  upstream release can be offered, and add the GPL-3 §5(a) modification notice. `productName`, the
+  fork's own signing keypair, the CI release workflow, the self-hosted engine manifest and the
+  download page are **explicitly out of scope here** and stay open for a later run — they need a
+  product name that is not chosen yet. Read both decisions before planning; they are answers, not
+  questions to re-derive.

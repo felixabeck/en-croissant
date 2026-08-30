@@ -385,3 +385,54 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   catches. Both anchors were checked by reverting the fix by hand and confirming the named test goes
   red, rather than trusting the implementing agent's claim about which test would fail.
 * **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-14 — Which keyring backend does the Linux build use?
+
+* **Governs:** f-20260830-34
+* **Chosen:** the `sync-secret-service` feature on the `keyring` crate, so credentials go to the
+  desktop Secret Service (GNOME Keyring / KWallet) over D-Bus. The synchronous call must be moved
+  off the Tokio worker **in the same change** — it is currently reached inline from `async fn` at
+  `lichess.rs:82-84` and `fs.rs:885-887`, and enabling a real backend is what turns that from
+  harmless into a worker stall with a possible unlock prompt.
+* **Rejected:** `linux-native` (kernel keyutils) — keys do not survive a reboot, so a stored Lichess
+  token would have to be re-linked after every restart, which defeats the purpose of storing it;
+  `linux-native-sync-persistent` — correct behaviour, but pulls in both dependency trees and two
+  sets of failure modes for a single token.
+* **Because:** the value being stored is a long-lived account token whose entire point is to survive
+  restarts. Persistence is the requirement, so the backend that provides it is the one to use.
+* **Decided by:** Felix, 2026-08-30, asked explicitly so the finding can run unattended · **Superseded-by:** -
+
+### d-20260830-15 — How much of the fork-identity separation happens now?
+
+* **Governs:** f-20260830-44
+* **Chosen:** the identity half only — change the bundle identifier, sever the updater endpoint and
+  public key so no upstream release can be offered to this build, and add the GPL-3 §5(a)
+  modification notice. Leave `productName`, the fork's own signing keypair, the CI release
+  workflow, self-hosted engine-manifest and download page for a later run.
+* **Rejected:** doing everything at once — it requires a public product name that is not chosen yet
+  and a private signing key stored in CI, neither of which is needed before the app is shipped;
+  severing only the updater — that leaves the data-directory collision and a reverse-DNS identifier
+  for a domain the fork does not own.
+* **Because:** the two halves have different deadlines and only one is load-bearing. `identifier`
+  determines the app-data directory and the keyring service namespace, so it must be final **before**
+  real repertoire data exists; changing it afterwards means moving the data and re-registering roots,
+  because `StoredEntry` persists an absolute `path` and the registry deliberately invalidates an
+  entry whose recorded path no longer resolves. `productName` has no such consequence and can change
+  at any time. This is a sequencing call driven by a real dependency, not a scope reduction.
+* **Decided by:** Felix, 2026-08-30 · **Superseded-by:** -
+
+### d-20260830-16 — What bundle identifier does the fork use?
+
+* **Governs:** f-20260830-44
+* **Chosen:** `com.chessriddle.encroissant` (and `com.chessriddle.encroissant.dev` for
+  `tauri.dev.conf.json`, preserving the existing dev/prod split).
+* **Rejected:** keeping `org.encroissant.app` — a reverse-DNS name for a domain this fork does not
+  own, and identical to upstream, so both builds would share the app-data directory and keyring
+  namespace; `dev.felixbeck.encroissant` and a name-neutral variant — both viable, neither better.
+* **Because:** the requirement is a namespace Felix actually owns. The identifier is never
+  user-visible — it appears only in a filesystem path and the keyring service name — so it neither
+  brands the app nor commits it to a product name. It encodes the fork's lineage, which is a fact
+  that will not change, rather than a marketing name that might; that is what makes it stable enough
+  to pick before the name is chosen. **It is changeable later** at the cost of moving the data
+  directory and re-registering roots, which was understood when this was decided.
+* **Decided by:** Felix, 2026-08-30 · **Superseded-by:** -
