@@ -119,6 +119,12 @@ pub enum Error {
     #[error("Committed but durability uncertain: {0}")]
     CommittedDurabilityUncertain(String),
 
+    #[error("Partially removed: {removed_entries} entries were deleted before failing: {cause}")]
+    PartialRemoval {
+        removed_entries: usize,
+        cause: Box<Error>,
+    },
+
     #[error("Operation failed: {primary}; temporary cleanup also failed: {cleanup}")]
     OperationAndCleanup { primary: String, cleanup: String },
 }

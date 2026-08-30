@@ -59,10 +59,10 @@ planning any change:
   file to make a gate pass is always the wrong move; regenerate with `pnpm bindings:generate`.
 - **Coverage and bundle size are ratcheted, not just floored.** `coverage-areas.json` /
   `backend-coverage-areas.json` set permanent per-area minimums, and
-  `coverage-baselines.json` / `backend-coverage-baselines.json` reject a lower covered count or a
-  larger total even when the percentage still clears the floor. `bundle-budgets.json` caps entry,
-  largest-lazy, and total gzip bytes. Never lower a floor or rewrite a baseline to accept a
-  regression — see `docs/coverage.md`.
+  `coverage-baselines.json` / `backend-coverage-baselines.json` independently reject a lower
+  covered count or a lower coverage ratio; deliberately, there is no total-count ratchet.
+  `bundle-budgets.json` caps entry, largest-lazy, and total gzip bytes. Never lower a floor or
+  rewrite a baseline to accept a regression — see `docs/coverage.md`.
 
 **Mutation testing is not a per-commit gate.** It lives in `.github/workflows/mutation.yml`,
 dispatchable and scheduled weekly, with the eight backend packages as a matrix over the runner's

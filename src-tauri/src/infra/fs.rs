@@ -72,6 +72,49 @@ mod unix {
         pub ctime_nanos: i128,
     }
 
+    /// Directory levels `remove_tree_at` will descend before refusing.
+    pub(super) const MAX_REMOVE_TREE_DEPTH: usize = 64;
+    /// `RawDir` buffer per open level. The worst-case stack contribution is this value times
+    /// `MAX_REMOVE_TREE_DEPTH` (512 KiB), against a Tokio worker's 2 MiB stack.
+    const REMOVE_TREE_DIR_BUFFER_BYTES: usize = 8192;
+
+    #[cfg(test)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum RemovalFaultPoint {
+        BeforeTopOpen,
+        BeforeChildOpen,
+        AfterChildRemoved,
+        ParentSync,
+    }
+
+    #[cfg(test)]
+    pub(super) trait RemovalInjector {
+        fn inject(&self, _: RemovalFaultPoint) -> std::io::Result<Option<bool>> {
+            Ok(None)
+        }
+    }
+
+    #[cfg(test)]
+    std::thread_local! {
+        static TEST_REMOVAL_INJECTOR: std::cell::RefCell<Option<Box<dyn RemovalInjector>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_removal_injector(injector: Option<Box<dyn RemovalInjector>>) {
+        TEST_REMOVAL_INJECTOR.with(|current| *current.borrow_mut() = injector);
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_removal(point: RemovalFaultPoint) -> Result<Option<bool>, Error> {
+        TEST_REMOVAL_INJECTOR.with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .map_or(Ok(None), |injector| injector.inject(point).map_err(io))
+        })
+    }
+
     fn name(path: &Path) -> Result<&OsStr, Error> {
         path.file_name()
             .filter(|n| !n.as_bytes().is_empty())
@@ -388,13 +431,47 @@ mod unix {
         dir.sync_all().map_err(io)
     }
 
-    pub(super) fn remove_tree_at(parent: &File, name: &OsStr) -> Result<(), Error> {
+    pub(super) fn remove_tree_at(
+        parent: &File,
+        name: &OsStr,
+        expected: (u64, u64),
+        depth: usize,
+        parent_dev: u64,
+        removed_entries: &mut usize,
+    ) -> Result<(), Error> {
+        if depth > MAX_REMOVE_TREE_DEPTH {
+            return Err(Error::ResourceLimit(format!(
+                "directory cleanup exceeded {MAX_REMOVE_TREE_DEPTH} levels"
+            )));
+        }
         let stat = fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|e| io(e.into()))?;
+        // The identity check lives in each arm rather than here, because the directory arm must
+        // let the mount check answer first: a cross-device mount differs from `expected` in
+        // `st_dev`, and "refuses to cross a mount" is the true reason, not "changed concurrently".
         match FileType::from_raw_mode(stat.st_mode) {
             FileType::RegularFile => {
-                fs::unlinkat(parent, name, AtFlags::empty()).map_err(|e| io(e.into()))
+                if (stat.st_dev, stat.st_ino) != expected {
+                    return Err(Error::Conflict(
+                        "directory cleanup entry changed concurrently".into(),
+                    ));
+                }
+                // Linux has no descriptor-relative unlink: a final name substitution can only
+                // reach the kernel's type-confined `unlinkat` behavior, never an outside target.
+                fs::unlinkat(parent, name, AtFlags::empty()).map_err(|e| io(e.into()))?;
+                *removed_entries += 1;
+                #[cfg(test)]
+                inject_removal(RemovalFaultPoint::AfterChildRemoved)?;
+                Ok(())
             }
             FileType::Directory => {
+                #[cfg(test)]
+                let forced_mount = if depth == 0 {
+                    None
+                } else {
+                    inject_removal(RemovalFaultPoint::BeforeChildOpen)?
+                };
+                #[cfg(not(test))]
+                let forced_mount: Option<bool> = None;
                 let child = File::from(
                     fs::openat(
                         parent,
@@ -404,16 +481,69 @@ mod unix {
                     )
                     .map_err(|e| io(e.into()))?,
                 );
-                let mut buffer = [MaybeUninit::uninit(); 8192];
+                let opened = fs::fstat(&child).map_err(|e| io(e.into()))?;
+                if (opened.st_dev, opened.st_ino) != (stat.st_dev, stat.st_ino) {
+                    return Err(Error::Conflict(
+                        "directory cleanup entry changed concurrently".into(),
+                    ));
+                }
+                // `MOUNT_ROOT` requires Linux 5.8. When the bit is unavailable, or `statx`
+                // returns `NOSYS`, the device check is the fallback; a same-filesystem bind mount
+                // is therefore invisible below that kernel floor.
+                let is_mount = match forced_mount {
+                    Some(answer) => answer,
+                    None if opened.st_dev != parent_dev => true,
+                    None => match fs::statx(
+                        &child,
+                        "",
+                        AtFlags::EMPTY_PATH | AtFlags::NO_AUTOMOUNT,
+                        fs::StatxFlags::empty(),
+                    ) {
+                        Ok(statx) => {
+                            statx
+                                .stx_attributes_mask
+                                .contains(fs::StatxAttributes::MOUNT_ROOT)
+                                && statx
+                                    .stx_attributes
+                                    .contains(fs::StatxAttributes::MOUNT_ROOT)
+                        }
+                        Err(Errno::NOSYS) => false,
+                        Err(error) => return Err(io(error.into())),
+                    },
+                };
+                if is_mount {
+                    return Err(Error::InvalidInput(
+                        "directory cleanup refuses to cross a mount".into(),
+                    ));
+                }
+                if (stat.st_dev, stat.st_ino) != expected {
+                    return Err(Error::Conflict(
+                        "directory cleanup entry changed concurrently".into(),
+                    ));
+                }
+                let mut buffer = [MaybeUninit::uninit(); REMOVE_TREE_DIR_BUFFER_BYTES];
                 let mut entries = fs::RawDir::new(&child, &mut buffer);
                 while let Some(entry) = entries.next() {
                     let entry = entry.map_err(|e| io(e.into()))?;
                     let bytes = entry.file_name().to_bytes();
                     if bytes != b"." && bytes != b".." {
-                        remove_tree_at(&child, OsStr::from_bytes(bytes))?;
+                        remove_tree_at(
+                            &child,
+                            OsStr::from_bytes(bytes),
+                            (opened.st_dev, entry.ino()),
+                            depth + 1,
+                            opened.st_dev,
+                            removed_entries,
+                        )?;
                     }
                 }
-                fs::unlinkat(parent, name, AtFlags::REMOVEDIR).map_err(|e| io(e.into()))
+                // The descriptor pins the traversed directory, but Linux has no `funlinkat`;
+                // the terminal name lookup remains confined by `REMOVEDIR` semantics.
+                fs::unlinkat(parent, name, AtFlags::REMOVEDIR).map_err(|e| io(e.into()))?;
+                *removed_entries += 1;
+                #[cfg(test)]
+                inject_removal(RemovalFaultPoint::AfterChildRemoved)?;
+                Ok(())
             }
             _ => Err(Error::InvalidInput(
                 "directory cleanup rejects links and special files".into(),
@@ -538,12 +668,20 @@ mod unix {
         {
             return Err(Error::CommittedDurabilityUncertain(error.to_string()));
         }
-        if original.is_some() {
+        if let Some(original) = original.as_ref() {
             if let Err(error) = injector
                 .inject(AtomicDirFaultPoint::BackupCleanup)
                 .and_then(|_| {
-                    remove_tree_at(&parent_dir, source_name)
-                        .map_err(|e| std::io::Error::other(e.to_string()))
+                    let mut removed_entries = 0;
+                    remove_tree_at(
+                        &parent_dir,
+                        source_name,
+                        (original.st_dev, original.st_ino),
+                        0,
+                        parent_meta.dev(),
+                        &mut removed_entries,
+                    )
+                    .map_err(|e| std::io::Error::other(e.to_string()))
                 })
             {
                 return Err(Error::CommittedDurabilityUncertain(format!(
@@ -834,13 +972,39 @@ pub(crate) fn remove_entry_at(
 ) -> Result<(), Error> {
     use rustix::fs::{self as rfs, AtFlags};
     assert_entry_identity(parent, name, expected, is_dir)?;
+    #[cfg(test)]
+    unix::inject_removal(unix::RemovalFaultPoint::BeforeTopOpen)?;
     if is_dir {
-        unix::remove_tree_at(parent, name)?;
+        let parent_stat = rfs::fstat(parent).map_err(|error| Error::Io(Box::new(error.into())))?;
+        let mut removed_entries = 0;
+        if let Err(cause) = unix::remove_tree_at(
+            parent,
+            name,
+            expected,
+            0,
+            parent_stat.st_dev,
+            &mut removed_entries,
+        ) {
+            return if removed_entries == 0 {
+                Err(cause)
+            } else {
+                Err(Error::PartialRemoval {
+                    removed_entries,
+                    cause: Box::new(cause),
+                })
+            };
+        }
     } else {
         rfs::unlinkat(parent, name, AtFlags::empty())
             .map_err(|error| Error::Io(Box::new(error.into())))?;
     }
-    parent.sync_all()?;
+    #[cfg(test)]
+    if let Err(error) = unix::inject_removal(unix::RemovalFaultPoint::ParentSync) {
+        return Err(Error::CommittedDurabilityUncertain(error.to_string()));
+    }
+    parent
+        .sync_all()
+        .map_err(|error| Error::CommittedDurabilityUncertain(error.to_string()))?;
     Ok(())
 }
 
@@ -1206,6 +1370,230 @@ mod tests {
             b"outside",
             "the descent never followed the link"
         );
+    }
+
+    #[cfg(unix)]
+    struct RemovalSwap {
+        point: unix::RemovalFaultPoint,
+        target: PathBuf,
+        replacement: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl unix::RemovalInjector for RemovalSwap {
+        fn inject(&self, point: unix::RemovalFaultPoint) -> std::io::Result<Option<bool>> {
+            if point == self.point {
+                std::fs::remove_dir_all(&self.target)?;
+                std::fs::rename(&self.replacement, &self.target)?;
+            }
+            Ok(None)
+        }
+    }
+
+    #[cfg(unix)]
+    struct RemovalFault {
+        point: unix::RemovalFaultPoint,
+        mount_answer: Option<bool>,
+    }
+
+    #[cfg(unix)]
+    impl unix::RemovalInjector for RemovalFault {
+        fn inject(&self, point: unix::RemovalFaultPoint) -> std::io::Result<Option<bool>> {
+            if point != self.point {
+                return Ok(None);
+            }
+            match self.mount_answer {
+                Some(answer) => Ok(Some(answer)),
+                None => Err(std::io::Error::other("injected removal failure")),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn remove_entry_with_injector(
+        parent: &File,
+        name: &OsStr,
+        expected: (u64, u64),
+        injector: Box<dyn unix::RemovalInjector>,
+    ) -> Result<(), Error> {
+        unix::set_test_removal_injector(Some(injector));
+        let result = remove_entry_at(parent, name, expected, true);
+        unix::set_test_removal_injector(None);
+        result
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_rejects_top_level_substitution() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let victim = root.join("victim");
+        let replacement = root.join("replacement");
+        std::fs::create_dir_all(&victim).expect("victim");
+        std::fs::create_dir(&replacement).expect("replacement");
+        std::fs::write(replacement.join("keep"), b"replacement").expect("replacement content");
+        let expected = inode(&victim);
+        let parent = File::open(&root).expect("parent FD");
+
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Box::new(RemovalSwap {
+                point: unix::RemovalFaultPoint::BeforeTopOpen,
+                target: victim.clone(),
+                replacement,
+            }),
+        )
+        .expect_err("substitution must be rejected");
+
+        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(
+            std::fs::read(victim.join("keep")).expect("substituted tree survives"),
+            b"replacement"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_rejects_child_substitution() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let victim = root.join("victim");
+        let child = victim.join("child");
+        let replacement = root.join("replacement");
+        std::fs::create_dir_all(&child).expect("child");
+        std::fs::create_dir(&replacement).expect("replacement");
+        std::fs::write(replacement.join("keep"), b"replacement").expect("replacement content");
+        let expected = inode(&victim);
+        let parent = File::open(&root).expect("parent FD");
+
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Box::new(RemovalSwap {
+                point: unix::RemovalFaultPoint::BeforeChildOpen,
+                target: child.clone(),
+                replacement,
+            }),
+        )
+        .expect_err("substitution must be rejected");
+
+        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(
+            std::fs::read(child.join("keep")).expect("substituted tree survives"),
+            b"replacement"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_refuses_a_forced_mount_answer() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let victim = root.join("victim");
+        let child = victim.join("child");
+        std::fs::create_dir_all(&child).expect("child");
+        std::fs::write(child.join("keep"), b"content").expect("child content");
+        let expected = inode(&victim);
+        let parent = File::open(&root).expect("parent FD");
+
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Box::new(RemovalFault {
+                point: unix::RemovalFaultPoint::BeforeChildOpen,
+                mount_answer: Some(true),
+            }),
+        )
+        .expect_err("mount must be rejected");
+
+        assert!(matches!(error, Error::InvalidInput(_)));
+        assert_eq!(
+            std::fs::read(child.join("keep")).expect("mounted child survives"),
+            b"content"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_refuses_more_than_the_maximum_depth() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&victim).expect("victim");
+        let mut current = victim.clone();
+        for level in 0..=unix::MAX_REMOVE_TREE_DEPTH {
+            current = current.join(format!("level-{level}"));
+            std::fs::create_dir(&current).expect("nested directory");
+        }
+        let parent = File::open(&root).expect("parent FD");
+
+        let error = remove_entry_at(&parent, OsStr::new("victim"), inode(&victim), true)
+            .expect_err("depth must be bounded");
+
+        assert!(matches!(error, Error::ResourceLimit(_)));
+        assert!(current.is_dir(), "the deepest directory survives");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_reports_partial_progress() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&victim).expect("victim");
+        std::fs::write(victim.join("removed"), b"content").expect("child content");
+        let expected = inode(&victim);
+        let parent = File::open(&root).expect("parent FD");
+
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Box::new(RemovalFault {
+                point: unix::RemovalFaultPoint::AfterChildRemoved,
+                mount_answer: None,
+            }),
+        )
+        .expect_err("post-removal failure must be reported");
+
+        assert!(matches!(
+            error,
+            Error::PartialRemoval {
+                removed_entries,
+                ..
+            } if removed_entries >= 1
+        ));
+        assert!(error.to_string().starts_with("Partially removed:"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_maps_parent_sync_failure_after_complete_removal() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&victim).expect("victim");
+        std::fs::write(victim.join("removed"), b"content").expect("child content");
+        let expected = inode(&victim);
+        let parent = File::open(&root).expect("parent FD");
+
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Box::new(RemovalFault {
+                point: unix::RemovalFaultPoint::ParentSync,
+                mount_answer: None,
+            }),
+        )
+        .expect_err("parent sync failure must preserve commit status");
+
+        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
+        assert!(!victim.exists(), "the tree was completely removed");
     }
 
     struct Fault(

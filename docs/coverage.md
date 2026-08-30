@@ -2,7 +2,8 @@
 
 `pnpm coverage:frontend:check` applies two independent checks to every frontend area:
 
-- The baseline ratchet rejects a lower covered count, a larger total, or a lower percentage.
+- The baseline ratchet independently rejects a lower covered count or a lower coverage ratio;
+  deliberately, it does not reject a larger total when covered code grows with it.
 - `minimumCoverage` in `coverage-areas.json` rejects a report below the permanent line,
   function, or branch floor for that area.
 
