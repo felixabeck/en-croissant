@@ -105,6 +105,12 @@ lives beside it rather than inside it for that reason.
 
 ### CI, dependencies, and release mechanics
 
+Changes to `.claude/hooks/**` or `.claude/settings.json` run:
+
+```bash
+pnpm hooks:check
+```
+
 - Changes to `.github/workflows/**` run:
 
 ```bash

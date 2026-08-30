@@ -1,5 +1,11 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "skillOverrides": {
+    "claude-api": "user-invocable-only",
+    "update-config": "user-invocable-only",
+    "schedule": "user-invocable-only",
+    "loop": "user-invocable-only"
+  },
   "env": {
     "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"
   },
@@ -22,8 +28,27 @@
       "Bash(pnpm run coverage:baseline:backend*)",
       "Bash(*coverage-report.mjs*--write-baseline*)",
       "Bash(*playwright*--update-snapshots*)",
+      "Bash(pnpm test:e2e:update*)",
+      "Bash(pnpm run test:e2e:update*)",
+      "Bash(*run-e2e-container.mjs*--update-snapshots*)",
       "Bash(git push --force*)",
-      "Bash(git push -f*)"
+      "Bash(git push -f*)",
+      "Bash(git push*--force*)",
+      "Bash(git push*-f *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit|Bash|Grep|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-env-files.sh",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
