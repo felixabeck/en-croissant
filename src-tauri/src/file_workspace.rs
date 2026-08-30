@@ -667,29 +667,59 @@ pub fn permanently_delete_workspace_entry(
     entry: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let root = mutation_target(state.inner(), &workspace)?;
-    let source = mutation_target(state.inner(), &entry)?;
+    permanently_delete_entry(state.inner(), &workspace, &entry)
+}
+
+fn permanently_delete_entry(
+    state: &AppState,
+    workspace: &FileWorkspaceHandle,
+    entry: &FileWorkspaceHandle,
+) -> Result<(), Error> {
+    let root = mutation_target(state, workspace)?;
+    let source = mutation_target(state, entry)?;
     ensure_registered_descendant(&root, &source)?;
-    crate::infra::fs::remove_entry_at(
+    let durability_error = match crate::infra::fs::remove_entry_at(
         &source.parent,
         &source.leaf,
         source.identity,
         source.is_dir,
-    )?;
+    ) {
+        Ok(()) => None,
+        Err(Error::CommittedDurabilityUncertain(error)) => Some(error),
+        Err(error) => return Err(error),
+    };
     if !source.is_dir {
         crate::infra::fs::remove_optional_regular_at(&source.parent, &sidecar_leaf(&source.leaf)?)?;
     }
-    authority(state.inner())?
+    authority(state)?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .remove_workspace_entry(&entry)
+        .remove_workspace_entry(entry)?;
+    if let Some(error) = durability_error {
+        return Err(Error::CommittedDurabilityUncertain(error));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infra::path_authority::PathAuthority;
+    use crate::infra::{
+        fs::{set_test_removal_injector, RemovalFaultPoint, RemovalInjector},
+        path_authority::PathAuthority,
+    };
     use tempfile::TempDir;
+
+    struct RemovalFault(RemovalFaultPoint);
+
+    impl RemovalInjector for RemovalFault {
+        fn inject(&self, point: RemovalFaultPoint) -> std::io::Result<Option<bool>> {
+            if point == self.0 {
+                return Err(std::io::Error::other("injected removal failure"));
+            }
+            Ok(None)
+        }
+    }
 
     fn workspace_state() -> (TempDir, AppState, FileWorkspaceHandle) {
         let directory = tempfile::tempdir().expect("temporary workspace parent");
@@ -721,6 +751,73 @@ mod tests {
         let state = AppState::default();
         *state.pgn_path_authority.lock().expect("authority lock") = Some(path_authority);
         (directory, state, workspace)
+    }
+
+    fn registered_child_directory(
+        state: &AppState,
+        workspace: &FileWorkspaceHandle,
+        name: &str,
+    ) -> (PathBuf, FileWorkspaceHandle) {
+        let root = mutation_target(state, workspace).expect("workspace target");
+        let child = root.path().join(name);
+        fs::create_dir(&child).expect("child directory");
+        fs::write(child.join("removed"), b"content").expect("child content");
+        let identity = crate::infra::fs::entry_identity_at(
+            root.directory().expect("workspace directory"),
+            Path::new(name).as_os_str(),
+            true,
+        )
+        .expect("child identity");
+        let entry = register_created_entry(state, workspace, &child, name.into(), identity, true)
+            .expect("child handle");
+        (child, entry)
+    }
+
+    fn delete_entry_with_fault(
+        state: &AppState,
+        workspace: &FileWorkspaceHandle,
+        entry: &FileWorkspaceHandle,
+        point: RemovalFaultPoint,
+    ) -> Result<(), Error> {
+        set_test_removal_injector(Some(Box::new(RemovalFault(point))));
+        let result = permanently_delete_entry(state, workspace, entry);
+        set_test_removal_injector(None);
+        result
+    }
+
+    #[test]
+    fn committed_delete_removes_authority_record_when_parent_sync_fails() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry) = registered_child_directory(&state, &workspace, "victim");
+
+        let error =
+            delete_entry_with_fault(&state, &workspace, &entry, RemovalFaultPoint::ParentSync)
+                .expect_err("parent sync failure must preserve commit status");
+
+        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
+        assert!(!child.exists(), "the directory was completely removed");
+        assert!(matches!(
+            mutation_target(&state, &entry),
+            Err(Error::InvalidInput(message)) if message == "workspace entry is not persistent"
+        ));
+    }
+
+    #[test]
+    fn partial_delete_keeps_authority_record() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry) = registered_child_directory(&state, &workspace, "victim");
+
+        let error = delete_entry_with_fault(
+            &state,
+            &workspace,
+            &entry,
+            RemovalFaultPoint::AfterChildRemoved,
+        )
+        .expect_err("post-removal failure must be reported");
+
+        assert!(matches!(error, Error::PartialRemoval { .. }));
+        assert!(child.exists(), "the top directory remains");
+        mutation_target(&state, &entry).expect("authority record remains");
     }
 
     #[test]

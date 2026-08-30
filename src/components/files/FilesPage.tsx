@@ -1,4 +1,5 @@
 import { tauri } from "@/platform/tauri";
+import { normalizeError } from "@/platform/errors";
 import { Button, Center, Group, Paper, Select, Stack, Text, TextInput, Title } from "@mantine/core";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
@@ -319,7 +320,19 @@ export default function FilesPage() {
           opened
           onClose={() => setPurgeTarget(null)}
           onConfirm={async () => {
-            await tauri.permanentlyDeleteWorkspaceEntry(workspace!, purgeTarget.handle);
+            try {
+              await tauri.permanentlyDeleteWorkspaceEntry(workspace!, purgeTarget.handle);
+            } catch (cause) {
+              if (normalizeError(cause).category === "partially-applied") {
+                setTrashed(null);
+                try {
+                  await mutate();
+                } catch {
+                  // Keep the destructive operation's original error when relisting fails.
+                }
+              }
+              throw cause;
+            }
             setTrashed(null);
             await mutate();
           }}

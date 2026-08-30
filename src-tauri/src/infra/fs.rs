@@ -80,7 +80,7 @@ mod unix {
 
     #[cfg(test)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(super) enum RemovalFaultPoint {
+    pub(crate) enum RemovalFaultPoint {
         BeforeTopOpen,
         BeforeChildOpen,
         AfterChildRemoved,
@@ -88,7 +88,7 @@ mod unix {
     }
 
     #[cfg(test)]
-    pub(super) trait RemovalInjector {
+    pub(crate) trait RemovalInjector {
         fn inject(&self, _: RemovalFaultPoint) -> std::io::Result<Option<bool>> {
             Ok(None)
         }
@@ -101,7 +101,7 @@ mod unix {
     }
 
     #[cfg(test)]
-    pub(super) fn set_test_removal_injector(injector: Option<Box<dyn RemovalInjector>>) {
+    pub(crate) fn set_test_removal_injector(injector: Option<Box<dyn RemovalInjector>>) {
         TEST_REMOVAL_INJECTOR.with(|current| *current.borrow_mut() = injector);
     }
 
@@ -696,6 +696,9 @@ mod unix {
         Ok(())
     }
 }
+
+#[cfg(all(test, unix))]
+pub(crate) use unix::{set_test_removal_injector, RemovalFaultPoint, RemovalInjector};
 
 pub fn atomic_replace_with_precommit<F, I, P>(
     target: &Path,

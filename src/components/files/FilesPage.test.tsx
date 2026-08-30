@@ -189,31 +189,6 @@ afterEach(async () => {
 });
 
 describe("trash confirmations", () => {
-  test("native permanent-delete rejection keeps the item and modal visible", async () => {
-    await completeTrash();
-    mocks.mutate.mockClear();
-    mocks.permanentlyDeleteWorkspaceEntry.mockRejectedValueOnce(new Error("native purge denied"));
-    click("Delete permanently");
-    await act(async () => button("Common.Delete").click());
-    expect(mocks.permanentlyDeleteWorkspaceEntry).toHaveBeenCalledWith(workspace, entry.handle);
-    expect(mocks.mutate).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("Moved sample.pgn to trash.");
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain(
-      "The action could not be completed. Please try again.",
-    );
-  });
-
-  test("permanent-delete success closes and relists exactly once", async () => {
-    await completeTrash();
-    mocks.mutate.mockClear();
-    click("Delete permanently");
-    await act(async () => button("Common.Delete").click());
-    expect(mocks.permanentlyDeleteWorkspaceEntry).toHaveBeenCalledTimes(1);
-    expect(mocks.mutate).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[role="dialog"]')).toBeNull();
-    expect(container.textContent).not.toContain("Moved sample.pgn to trash.");
-  });
-
   test("duplicate permanent-delete submits invoke native once", async () => {
     await completeTrash();
     mocks.mutate.mockClear();
@@ -232,6 +207,38 @@ describe("trash confirmations", () => {
     expect(mocks.permanentlyDeleteWorkspaceEntry).toHaveBeenCalledTimes(1);
     await act(async () => resolve());
     expect(mocks.mutate).toHaveBeenCalledTimes(1);
+  });
+
+  test("partial permanent-delete rejection clears the banner, relists, and shows specific copy", async () => {
+    await completeTrash();
+    mocks.mutate.mockClear();
+    mocks.permanentlyDeleteWorkspaceEntry.mockRejectedValueOnce(
+      new Error("Partially removed: 1 entries were deleted before failing: child not found"),
+    );
+    click("Delete permanently");
+    await act(async () => button("Common.Delete").click());
+    expect(mocks.mutate).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain("Moved sample.pgn to trash.");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Part of the operation was completed, and what is shown may no longer match.",
+    );
+  });
+
+  test("partial permanent-delete keeps its error when relisting fails", async () => {
+    await completeTrash();
+    mocks.mutate.mockClear();
+    mocks.permanentlyDeleteWorkspaceEntry.mockRejectedValueOnce(
+      new Error("Committed but durability uncertain: parent not found"),
+    );
+    mocks.mutate.mockRejectedValueOnce(new Error("list unavailable"));
+    click("Delete permanently");
+    await act(async () => button("Common.Delete").click());
+    expect(mocks.mutate).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain("Moved sample.pgn to trash.");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Part of the operation was completed, and what is shown may no longer match.",
+    );
+    expect(container.textContent).not.toContain("list unavailable");
   });
 
   test.each([

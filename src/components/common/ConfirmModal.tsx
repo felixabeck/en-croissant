@@ -9,8 +9,12 @@ export function confirmationErrorMessage(
   t: (key: string, options?: { defaultValue: string }) => string,
 ) {
   const { category } = normalizeError(cause);
+  const defaultValue =
+    category === "partially-applied"
+      ? "Part of the operation was completed, and what is shown may no longer match."
+      : "The action could not be completed. Please try again.";
   return t(`Common.ConfirmationError.${category}`, {
-    defaultValue: "The action could not be completed. Please try again.",
+    defaultValue,
   });
 }
 
