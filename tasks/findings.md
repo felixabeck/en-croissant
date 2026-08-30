@@ -2978,3 +2978,120 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   before running that check** — this entry has already cost one false attribution by skipping it.
 * **Status left `open` deliberately**, because the check is cheap and the answer is genuinely
   unknown, not because the defect is established.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The WebKit web process aborts in Mesa's teardown when the app is closed — third-party, recorded not fixed
+
+* **ID:** f-20260830-50 · **Status:** open · **Area:** app-startup · **Root:** - · **Entry:** inline · **Blocked:** upstream-mesa
+* **Where:** not in this repository. `WebKitWebProcess` (PID 2040300, 2026-08-30 17:16:24 CEST,
+  SIGABRT, 45 MB core retained by systemd-coredump).
+* **Defect:** closing the window printed `corrupted double-linked list` to the `pnpm dev` terminal.
+  Read from the core with `coredumpctl debug 2040300`, the main thread is unambiguous:
+  `__libc_start_main` → `exit()` → `__run_exit_handlers (status=0, run_dtors=true)` → four frames of
+  `libwebkit2gtk-4.1.so.0` (atexit/static destructors) → `libgbm.so.1` → `gbm/dri_gbm.so` → three
+  frames of `libgallium-26.1.4-1~24.04-tux1.so` → `__libc_free (mem=0x63dc82366df0)` →
+  `_int_free_merge_chunk (size=22688)` → `unlink_chunk` → `malloc_printerr("corrupted double-linked
+  list")` → `abort`. Concurrently LWP 2040378 sits in `__call_tls_dtors` → `libwebkit2gtk-4.1.so.0`
+  → `libEGL_mesa.so.0`: a WebKit thread-local destructor tearing EGL down while the main thread
+  frees the same driver state. `status=0` proves the web process was exiting cleanly; the abort is a
+  teardown race / double free between Mesa's EGL and GBM paths.
+* **Why it is not ours:** the crashing process is the WebKit *web content* process. No En Croissant
+  frame appears in either stack and none of this repository's Rust runs in that process. Stack:
+  WebKitGTK 2.52.3-0ubuntu0.24.04.1, Mesa 26.1.4-1~24.04-tux1 (TUXEDO rebuild), AMD radeonsi
+  (RX 7600), Wayland. Intermittent, not deterministic: the same build shut down cleanly at
+  2026-08-29 20:07 and 2026-08-30 07:41 (`~/.local/share/org.encroissant.app/logs/en-croissant.log`
+  records the `Wave-3 supervisor shutdown hook` line for both), and this is the only
+  `WebKitWebProcess` core dump on the machine.
+* **Why it matters, and how little:** impact is post-exit only — the application has already done
+  its work. `src/state/store/tabStorage.ts:310-317` flushes on `pagehide`, which runs during page
+  teardown, long before the `exit()` handlers that abort, so nothing the renderer persists is at
+  risk. The cost is a 45 MB core dump per occurrence and a confusing message in the dev terminal.
+* **Considered and rejected:** `WEBKIT_DISABLE_DMABUF_RENDERER=1` avoids the GBM path entirely and
+  would make the abort impossible. It is not applied: it disables the accelerated compositing path
+  globally to hide a driver bug this project does not own, and it would mask a future teardown
+  regression that *is* ours. Do not re-derive this — it was weighed on 2026-08-30 and declined by
+  Felix along with repeated open/close cycles, a debug-symbol run and an upstream report, on the
+  grounds that one occurrence of a third-party race justifies none of them.
+* **Fix shape:** none in this repository. The recurrence check is `coredumpctl list | grep WebKit`;
+  if it starts appearing regularly, the choice above is worth reopening, and a useful upstream
+  report would need the Mesa and WebKitGTK ddeb debug symbols to produce a symbolised backtrace.
+  Note that the Mesa build is TUXEDO's rebuild, not stock Ubuntu.
+* **Found by:** Claude investigation of the crash Felix reported, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### App exit terminates nothing deterministically: engine children can outlive the process, and game engines always do
+
+* **ID:** f-20260830-51 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs:1372-1391` (the whole exit path), `src-tauri/src/game.rs:817`
+  (`GameManager`, no shutdown-all), `src-tauri/src/engine/process.rs:495-520` (child spawn).
+* **Defect:** the `RunEvent::ExitRequested` arm is the application's only exit handling — there is no
+  `RunEvent::Exit` handler and no `on_window_event`/`CloseRequested` anywhere in `src-tauri/src` —
+  and it guarantees nothing:
+  * it matches `ExitRequested { .. }`, discarding `api`, so `prevent_exit()` is never called;
+  * `engine_supervisor.terminate_all()` is `spawn`ed and never awaited (`main.rs:1377-1380`);
+  * the Linux sound-server oneshot is sent and never joined (`main.rs:1382-1388`).
+
+  Control then returns to tao, which hard-exits from inside `.run()`
+  (`tao-*/src/platform_impl/linux/event_loop.rs:983`: `let exit_code = self.run_return(callback);
+  process::exit(exit_code)`). `Ok(())` at `main.rs:1393` is unreachable, no `Drop` runs, and the
+  tokio runtime is never shut down — so whether the spawned cleanup completes is a pure race against
+  `process::exit`.
+* **Second, deterministic hole:** game-session engines are not touched at all. The comment at
+  `main.rs:1374-1375` parks them ("Game sessions retain their own engines until their Wave-4
+  migration") and `GameManager` has no shutdown-all, so every engine held by a live game is orphaned
+  on exit by construction rather than by race. `LiveSession::shutdown_and_join` (`game.rs:806-815`)
+  and `terminate_game_engines` (`game.rs:893`) exist and are reached only from `abort_game`
+  (`game.rs:1356`) and session replacement (`game.rs:1087`).
+* **No backstop:** there is no `Drop` on `EngineActor`, `SupervisedEngine`, `EngineSupervisor`,
+  `EngineRuntime` or `ChildUciIo`, and no `kill_on_drop(true)` on the spawned UCI `Command`. A child
+  the cleanup did not reach is re-parented to init and keeps running. The renderer does not help:
+  `killEngines` runs on *tab* close (`src/components/tabs/BoardsPage.tsx:81`), and on a window close
+  React never unmounts, so nothing in `src/` runs either.
+* **Why it matters:** this is upstream issue #723 verbatim — engine children outliving the
+  application — the leak `e5422566` fixed and the Wave-3 rewrite (`97c29add`) reintroduced as a
+  race. `.claude/rules/async-resource-invariants.md` names "application exit" as a cleanup path that
+  must be enumerated for every spawn, and `.claude/rules/engine-lifecycle.md` cites this exact
+  incident as the reason.
+* **Fix shape:** capture `api`, `prevent_exit()` on the first pass guarded by an `AtomicBool` so the
+  re-entry from `AppHandle::exit` is allowed through, run the cleanup under one bounded
+  `tokio::time::timeout` budget, and call `app_handle.exit(0)` unconditionally afterwards — outside
+  the timed block, so a hung or panicking cleanup can never leave a windowless process running with
+  nothing left to close it. Cleanup body: `terminate_all()`, then a new `GameManager::shutdown_all()`
+  composed from the existing `shutdown_and_join` + `terminate_game_engines`, then the sound-server
+  signal. Extract the body into an async fn so it is reachable from tests — the closure passed to
+  `.run()` is not. Add `kill_on_drop(true)` as defence in depth for the drop-without-terminate path
+  (it cannot help on `process::exit`, where nothing drops).
+* **Found by:** Claude, while investigating the unrelated WebKit shutdown abort `f-20260830-50`,
+  2026-08-30. The two findings share only the minute they were found in; there is no common cause.
+
+**Handled 2026-08-30.** The exit path now completes before the process does.
+
+* `main.rs` matches `ExitRequested { api, .. }`, calls `prevent_exit()` once — guarded by
+  `ExitGuard` so the request raised by our own `AppHandle::exit` is let through — and runs the
+  cleanup in its own task, so a panic there arrives as a `JoinError` rather than unwinding past
+  the exit. `app_handle.exit(0)` is unconditional and outside the budget: a cleanup that hangs
+  must never leave a windowless process alive.
+* `shutdown_backend` awaits `terminate_all()` then the new `GameManager::shutdown_all()` under one
+  15 s budget (`SHUTDOWN_BUDGET`), sized for several engines at their 3 s `quit` deadline, and logs
+  which of the two outcomes happened.
+* `GameManager::shutdown_all()` signals and joins each live session. It deliberately does **not**
+  call `terminate_game_engines` itself: the game loop already does that on its way out, and a
+  second teardown path for the same children is what this class of defect is made of. Sessions are
+  collected before the first `await`, because a held `DashMap` iterator would deadlock against the
+  loop's own `complete_exact`.
+* `kill_on_drop(true)` on the UCI child as a backstop for the drop-without-terminate path.
+
+Tests: `terminate_all_reaps_every_registered_actor`,
+`shutdown_all_signals_and_joins_every_live_session`, `shutdown_all_is_a_no_op_without_live_sessions`,
+plus the guard and budget tests in `main.rs`. `cargo fmt/check/clippy/test` (334),
+`test:coverage:backend` and the backend ratchet are green.
+
+**Still outstanding, and not something an agent can do:** the live check. Start the app, spawn an
+analysis engine and a game engine, close the window, and confirm `pgrep -af 'stockfish|/engines/'`
+prints nothing. Per `.claude/skills/verify-ui/SKILL.md` that check is Felix's.
