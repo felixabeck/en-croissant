@@ -1133,6 +1133,81 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_descends_through_nested_directories() {
+        // `recursive_delete_rejects_symlink_children_without_traversing_them` does reach the
+        // recursive call, but only to have it fail: the child is a symlink, so `?` propagates out
+        // of the walk and the loop never reaches a second entry, the `.`/`..` skip, or the
+        // closing `unlinkat(REMOVEDIR)`. Nothing deliberately drives the *successful* descent.
+        // What actually reached it was other tests' workspace cleanup, and only where that
+        // cleanup happens to take the permanent-delete path — on GitHub's runner the directory
+        // arm runs exactly once (from the test above) against 21 times here, which is the whole
+        // of the cross-machine coverage gap in `f-20260829-01`. Three levels, because two would
+        // still pass if the recursion only ever unwound once.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let victim = root.join("victim");
+        let middle = victim.join("middle");
+        let deepest = middle.join("deepest");
+        std::fs::create_dir_all(&deepest).expect("tree");
+        std::fs::write(victim.join("top.pgn"), b"top").expect("top file");
+        std::fs::write(middle.join("middle.pgn"), b"middle").expect("middle file");
+        std::fs::write(deepest.join("deepest.pgn"), b"deepest").expect("deepest file");
+        std::fs::write(root.join("sibling.pgn"), b"sibling").expect("sibling file");
+        let parent = std::fs::File::open(&root).expect("parent FD");
+
+        remove_entry_at(
+            &parent,
+            std::ffi::OsStr::new("victim"),
+            inode(&victim),
+            true,
+        )
+        .expect("recursive delete");
+
+        assert!(!victim.exists(), "the whole subtree is gone");
+        assert_eq!(
+            std::fs::read(root.join("sibling.pgn")).expect("sibling intact"),
+            b"sibling",
+            "the descent stays inside the named entry"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_rejects_a_symlink_planted_below_the_top_level() {
+        // The test above refuses a symlink that is a direct child of the removed entry, so the
+        // walk rejects it before descending into any directory. The property that matters is that
+        // the refusal survives a real descent: the `statat`/`NOFOLLOW` check is per entry, so a
+        // symlink reached only after two directory levels must hit the same arm rather than be
+        // followed out of the tree.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        let victim = root.join("victim");
+        let deepest = victim.join("middle").join("deepest");
+        std::fs::create_dir_all(&deepest).expect("tree");
+        std::fs::create_dir(&outside).expect("outside");
+        std::fs::write(outside.join("keep"), b"outside").expect("outside file");
+        std::os::unix::fs::symlink(&outside, deepest.join("link")).expect("link");
+        let parent = std::fs::File::open(&root).expect("parent FD");
+
+        assert!(matches!(
+            remove_entry_at(
+                &parent,
+                std::ffi::OsStr::new("victim"),
+                inode(&victim),
+                true
+            ),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(
+            std::fs::read(outside.join("keep")).expect("outside intact"),
+            b"outside",
+            "the descent never followed the link"
+        );
+    }
+
     struct Fault(
         Option<AtomicFileFaultPoint>,
         Option<AtomicFileFaultPoint>,
