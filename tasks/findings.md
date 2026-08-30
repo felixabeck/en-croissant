@@ -153,6 +153,40 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   artifact only exists because `3a2142c1` moved the upload to `always()` — before that, a red
   ratchet withheld exactly the measurement needed to explain it.
 
+* **2026-08-30 — the disagreement is diagnosed at record level, and it is one function.** Comparing
+  CI's `backend-coverage` artifact (run 33278503556) with atlas's LCOV on the *same* commit
+  `b8f844de`, area `app-infrastructure`:
+
+  ```
+    src-tauri/src/infra/fs.rs      atlas 443/1468    CI 440/1468   <-- the entire gap
+    every other file in the area   identical
+  ```
+
+  Within `fs.rs`, ~170 branch records flip in each direction and cancel out — `BRDA` block/branch
+  identity is not stable across builds, so the exact-count ratchet is largely comparing two LLVM
+  numberings rather than two coverage results. Exactly three records differ with no counterpart:
+  `BRDA:409,0,1`, `BRDA:412,0,1` and `BRDA:412,1,3`, all inside `remove_tree_at`'s directory walk.
+* **The mechanism is not a machine-dependent filesystem.** It is how often the directory arm runs:
+  `DA:407` is 21 on atlas and **1** on the runner, with `DA:414`/`DA:416` at 30/9 versus **0/0**.
+  The single CI entry is the symlink-refusal test, whose `?` propagates out of the walk before the
+  loop reaches a second entry, the `.`/`..` skip, or the closing `unlinkat(REMOVEDIR)`. Atlas
+  reaches it 21 times only because other tests' workspace cleanup takes the permanent-delete branch
+  of `file_workspace.rs:515` on this host and does not on the runner. Nothing was ever asserting
+  that path — it was being covered by accident, differently per environment.
+* **Also corrected: the numbers in the header of this finding.** Three consecutive
+  `pnpm test:coverage:backend` runs on unmodified `HEAD` today measure `app-infrastructure` at
+  **747/2018** on atlas, identical across all six areas, and `coverage:backend:check` **passes**.
+  The 745 recorded earlier does not reproduce on this tree and should not be relied on. The live
+  three-way split is: atlas 747, baseline 746, CI 744.
+* **Resolution attempted — a test, not a baseline.** `f-20260830-01` adds a deterministic descent
+  test, which changes nothing on atlas (fs.rs is 443/1468 before and after) and should move CI from
+  744 to 747 by covering exactly those three records. If the next CI run confirms it, this finding
+  closes with the baseline untouched, and `d-20260829-02` stays unexercised for the backend.
+* **If CI does not confirm it**, the remaining difference is `BRDA` renumbering rather than
+  coverage, and the answer is `f-20260829-15`'s — stop ratcheting this area on raw branch-record
+  counts. Lowering the floor to 744 remains the wrong move either way: it would retire the only
+  enforcement of a recursive-delete path that guards against directory traversal.
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
@@ -672,7 +706,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### `remove_tree_at` recursion into a nested subdirectory is not deterministically tested
 
-* **ID:** f-20260830-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260830-01 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/infra/fs.rs:413-414`, the recursive arm of the `RawDir` walk:
   `if bytes != b"." && bytes != b".." { remove_tree_at(&child, OsStr::from_bytes(bytes))?; }`.
 * **Defect:** the recursion is only reached when the directory being removed *contains a
@@ -692,4 +726,149 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Side effect worth having:** with the line deterministically covered, atlas and CI agree at
   4208/6292 lines for `app-infrastructure`, removing the only real cross-machine difference there.
 * **Found by:** diffing CI's `backend-coverage` artifact (run 33277621360) against the local LCOV,
+  2026-08-30.
+
+* **Corrected 2026-08-30, before any of the below was acted on.** The premise recorded above — that
+  `fs.rs:413` is "reached by nothing deliberate" and is the single differing *line* record — is
+  **wrong**, and a review lens caught it at 99 confidence. Measured on atlas against unmodified
+  `HEAD`: `DA:413` is hit 18 times and every branch record in the walk is already covered
+  (`BRDA:409,0,{0,1}` and `BRDA:412,{0,1},{0..3}` all non-zero). The pre-existing test
+  `recursive_delete_rejects_symlink_children_without_traversing_them` **does** execute the
+  recursive call — that call is how its symlink child gets inspected and refused.
+* **What is actually true, from CI's artifact for run 33278503556 against atlas's LCOV on the same
+  commit `b8f844de`:** the entire cross-machine gap is in this one function, and it is a difference
+  in *how often the directory arm is entered at all*, not in which line is instrumented.
+
+  ```
+              DA:407 (directory arm)   DA:414   DA:416 (unlinkat REMOVEDIR)
+    atlas               21                30        9
+    CI                   1                 0        0
+  ```
+
+  On the runner the arm is entered exactly once — by the symlink test, whose `?` propagates out of
+  the walk before the loop reaches a second entry, the `.`/`..` skip, or the closing `unlinkat`.
+  On atlas it is entered 21 times, because other tests' workspace cleanup takes the
+  permanent-delete branch of `file_workspace.rs:515` here and does not there. The three branch
+  records that CI misses and atlas covers — `BRDA:409,0,1`, `BRDA:412,0,1`, `BRDA:412,1,3` — are
+  exactly the 747 vs 744 difference in `app-infrastructure`.
+* **So the tests are still the right answer, for a better reason than the one first recorded.** They
+  do not fix a gap on atlas (fs.rs measures 443/1468 before and after, unchanged). They make the
+  successful descent happen *deterministically in every environment*, instead of as a side effect of
+  which cleanup path the host filesystem selects. The falsifiable prediction: CI moves 744 -> 747
+  and `coverage:backend:check` passes there against the unchanged 746 baseline.
+
+* **Handled 2026-08-30.** Two tests added to `src-tauri/src/infra/fs.rs`, each proven to fail
+  against the defect it exists for rather than merely to pass:
+  * `recursive_delete_descends_through_nested_directories` — three levels with a file at each and a
+    sibling outside the removed entry. Replacing the recursive call with a no-op fails it with
+    `DirectoryNotEmpty`; three levels rather than two, so a recursion that only ever unwinds once
+    cannot pass it.
+  * `recursive_delete_rejects_a_symlink_planted_below_the_top_level` — the link sits two directory
+    levels below the removed entry, so unlike the pre-existing test it is reached only after a real
+    descent. Dropping `AtFlags::SYMLINK_NOFOLLOW` from the `statat` — a real directory-traversal
+    escape, since the link then resolves to a directory and the walk deletes outside the tree —
+    fails both refusal tests.
+* **Not done:** re-verifying `(dev, ino)` during the walk. The guard is established once, at the top
+  of `remove_entry_at`; per-level protection is `NOFOLLOW` plus the `FileType` match, which is what
+  the two refusal tests now pin at two depths. Substitution racing the walk is a separate defect and
+  is filed as its own finding, not claimed as covered here.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### `remove_entry_at` verifies an inode and then removes a path, with nothing binding the two
+
+* **ID:** f-20260830-02 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/fs.rs:836-838` (`assert_entry_identity` then
+  `unix::remove_tree_at(parent, name)`), and `fs.rs:392-406` for the same pattern one level down
+  (`statat` then `openat`/`unlinkat` on the same `name`).
+* **Defect:** the `(dev, ino)` guard is checked once, against a *name*, and every subsequent
+  syscall re-resolves that name. Between the assertion and the removal, a concurrent writer can
+  replace the entry: `NOFOLLOW` blocks a symlink substitution, but not replacement by another real
+  directory or file. The walk then deletes a tree whose identity was never authorised, while the
+  entry that *was* authorised survives elsewhere. Inside the recursion the guard is not
+  re-established at all — each level repeats `statat` -> `openat`/`unlinkat` with no check that the
+  descriptor it opened is the inode `RawDir` reported.
+* **Why it matters here:** this is the one function in the codebase that deletes user data
+  recursively, and the identity guard is the entire reason it is considered safe to point at a
+  renderer-supplied path. A guard that does not survive to the syscall it guards is decoration.
+* **Shape of a fix (open — this is why `Entry: build`):** either re-`statat` the opened descriptor
+  with `fstat` and compare `(dev, ino)` before acting at each level, or move to `openat2` with
+  `RESOLVE_NO_SYMLINKS`/`RESOLVE_BENEATH` and hold descriptors rather than re-resolving names. The
+  choice affects the minimum kernel version and is a real design decision, not an implementation
+  detail.
+* **Found by:** `$push` review lenses (adjacent-defects and adversarial, both 99 confidence) over
+  the `f-20260830-01` test diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Recursive delete puts 8 KiB on the stack per directory level, with no depth bound
+
+* **ID:** f-20260830-03 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/fs.rs:407` — `let mut buffer = [MaybeUninit::uninit(); 8192];`
+  inside the `FileType::Directory` arm, with the recursive call at `fs.rs:413`.
+* **Defect:** the `RawDir` buffer is a stack array allocated once per recursion level, and the
+  recursion has no depth limit. A directory tree nested deep enough — which a user can create, and
+  which an archive extracted into the workspace can create without the user noticing — exhausts the
+  thread stack. Stack overflow in Rust aborts the process; it is not a catchable error, so this is
+  an application-kill on user-controlled input rather than a failed operation.
+* **Contradicts a standing rule:** `.claude/rules/async-resource-invariants.md` requires that
+  anything which accumulates is bounded and that the bound is stated. Recursion depth here is
+  unbounded and unstated.
+* **Shape of a fix (open):** an explicit depth limit returning `Error::ResourceLimit` (the pattern
+  `read_bounded_engine_line` already uses for a different unbounded input), or convert the walk to
+  an iterative one holding an explicit stack of descriptors. The second removes the class instead
+  of capping it, but changes the error-reporting shape.
+* **Found by:** `$push` review lens (adjacent defects, 98 confidence) over the `f-20260830-01` test
+  diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### A failed recursive delete reports failure after having already deleted part of the tree
+
+* **ID:** f-20260830-04 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/fs.rs:409-415` — the `?` on the recursive call and on
+  `entries.next()`, inside a loop that has already unlinked earlier siblings.
+* **Defect:** an error partway through the walk — a nested symlink, an unreadable directory, a
+  `RawDir` error, a concurrent mutation — propagates out after siblings visited earlier were
+  permanently unlinked. The caller sees only `Err`, with no indication that anything was removed.
+  `file_workspace.rs:515` treats that `Err` as "the entry is still there" and keeps its authority
+  entry, so the recorded state and the filesystem disagree, in the direction of claiming data still
+  exists after it has been destroyed.
+* **Note on scope:** partial progress is unavoidable for a recursive unlink; what is missing is
+  that the error does not *say* it happened, so no caller can react to it. The two new refusal
+  tests in `f-20260830-01` exercise exactly this path (the symlink is rejected mid-walk) and assert
+  only that the outside tree survives — they do not pin what happened inside `victim`.
+* **Shape of a fix (open):** carry a "partially removed" flag or a removed-entry count in the error,
+  and decide at `file_workspace.rs:515` what the authority entry should then say. That is a
+  contract question about the workspace model, not a local repair.
+* **Found by:** `$push` review lens (adjacent defects, 96 confidence) over the `f-20260830-01` test
+  diff, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Recursive delete crosses mount boundaries
+
+* **ID:** f-20260830-05 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/fs.rs:398-406` — `openat` with `NOFOLLOW`, which refuses a
+  symlink but accepts a mount point.
+* **Defect:** a bind mount or any mounted filesystem inside the tree being removed is opened as an
+  ordinary directory, so the walk descends into it and deletes the *mounted* content before the
+  final `unlinkat(..., REMOVEDIR)` fails with `EBUSY`. The containment property the `NOFOLLOW`
+  checks exist to provide — deletion stays inside the named subtree — does not hold across a mount,
+  and the failure is reported only after the damage.
+* **Why it is worth a decision rather than a silent accept:** the same `(dev, ino)` pair that the
+  top-level guard compares is exactly what changes at a mount boundary, so the information needed
+  to refuse is already being read at `fs.rs:392` and simply is not compared against the parent.
+* **Shape of a fix (open):** compare `st_dev` against the parent directory's at each level and
+  refuse on change, or use `openat2` with `RESOLVE_NO_XDEV`. Both are cheap; whether crossing should
+  be an error or a skip is the actual question.
+* **Found by:** `$push` review lens (adversarial, 98 confidence) over the `f-20260830-01` test diff,
   2026-08-30.
