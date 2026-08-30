@@ -98,3 +98,18 @@ test("rejects a sensitive-path glob with no tracked match", async () => {
   const root = await fixture();
   assert.match((await checkGateRouting(root, { tracked: [] })).join("\n"), /matches no tracked/u);
 });
+
+test("treats pnpm subcommands and flags as invocations, not script names", async () => {
+  // `pnpm dlx shellcheck@4.1.0 ...` once resolved as a nested script named "dlx",
+  // which failed hooks:check for a script that was never referenced. A leading
+  // flag misparsed the same way: `pnpm -s all:check` resolved to "-s".
+  const root = await fixture();
+  const packagePath = join(root, "package.json");
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+  packageJson.scripts["all:check"] =
+    "node scripts/check-example.mjs && pnpm nested:check && pnpm dlx shellcheck@4.1.0 x.sh && pnpm -s nested:check";
+  await writeFile(packagePath, JSON.stringify(packageJson));
+  const problems = (await checkGateRouting(root, { tracked })).join("\n");
+  assert.doesNotMatch(problems, /\bdlx\b/u);
+  assert.doesNotMatch(problems, /"-s"|\s-s\b/u);
+});

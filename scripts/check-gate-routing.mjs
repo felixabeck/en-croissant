@@ -42,10 +42,54 @@ function fencedBlocks(markdown) {
   return blocks;
 }
 
+// pnpm subcommands that take a PACKAGE or a path, not a script name. Without this
+// set, `pnpm dlx shellcheck@4.1.0` resolves as a nested script called "dlx" and the
+// checker reports a missing script that was never referenced. Leading flags are
+// skipped for the same reason: `pnpm -s lint:ci` must resolve to lint:ci, not "-s".
+const PNPM_SUBCOMMANDS = new Set([
+  "add",
+  "audit",
+  "bin",
+  "config",
+  "create",
+  "dedupe",
+  "deploy",
+  "dlx",
+  "env",
+  "exec",
+  "fetch",
+  "import",
+  "init",
+  "install",
+  "licenses",
+  "link",
+  "ls",
+  "list",
+  "outdated",
+  "pack",
+  "patch",
+  "patch-commit",
+  "prune",
+  "publish",
+  "rebuild",
+  "recursive",
+  "remove",
+  "root",
+  "server",
+  "setup",
+  "store",
+  "unlink",
+  "update",
+  "why",
+]);
+
 function pnpmReferences(command) {
-  return [...command.matchAll(/(?:^|[;&|]\s*|\s)pnpm(?:\s+run)?\s+([\w:-]+)/gu)].map(
-    (match) => match[1],
-  );
+  const matches = [
+    ...command.matchAll(/(?:^|[;&|]\s*|\s)pnpm((?:\s+-{1,2}[\w-]+)*)(?:\s+run)?\s+([\w:@.-]+)/gu),
+  ];
+  return matches
+    .map((match) => match[2])
+    .filter((name) => !PNPM_SUBCOMMANDS.has(name) && !name.startsWith("-"));
 }
 
 function workflowRunCommands(workflow) {
