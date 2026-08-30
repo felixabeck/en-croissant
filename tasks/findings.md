@@ -1014,3 +1014,264 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   production comparison executes; confirmed red against reverting
   `opened.st_dev != compared_parent_dev` to `false`. The `statx`/`MOUNT_ROOT` branch itself remains
   unexercised, and that is a limitation rather than something this cluster papered over.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The crate cannot compile for the configured macOS *or* Windows release targets
+
+* **ID:** f-20260830-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** two independent breaks.
+  * **macOS:** `src-tauri/src/infra/fs.rs:53` (`#[cfg(unix)] mod unix`), using `rustix::fs::RawDir`
+    at `fs.rs:347` (`sync_tree`) and `fs.rs:408` (`remove_tree_at`).
+  * **Windows:** `src-tauri/src/file_workspace.rs:663` (`permanently_delete_workspace_entry`) and
+    its siblings are ungated `#[tauri::command]`s that call `mutation_target`
+    (`file_workspace.rs:135`), which is `#[cfg(unix)]` with no `not(unix)` counterpart. `mod
+    file_workspace;` at `main.rs:12` is unconditional and the commands are registered
+    unconditionally at `main.rs:1143`.
+* **Defect (macOS):** rustix exports `RawDir` only under `#[cfg(linux_kernel)]`
+  (`~/.cargo/registry/src/*/rustix-1.1.4/src/fs/mod.rs:48`, and `build.rs:166` sets that cfg for
+  Linux and Android only). The module that uses it is gated on plain `#[cfg(unix)]`, which includes
+  macOS. `release.yml:16-24` builds `aarch64-apple-darwin` and `x86_64-apple-darwin` as release
+  targets, so two configured targets reference an item that does not exist for them.
+* **Defect (Windows):** the unix-only helpers have no non-unix counterpart, so the ungated commands
+  that call them do not resolve. `release.yml` builds `windows-latest` as a third target.
+* **Why nothing has caught it:** `test.yml:13` runs `ubuntu-latest` only, so no per-commit gate ever
+  compiles for macOS. `release.yml` runs only on a `v*` tag or manual dispatch. `RawDir` entered in
+  the 2026-08-09 audit commit `97c29add`, which is after the last tag `v0.15.0` (2026-03-17) — so
+  the breakage has never been through a release and nobody has hit it. **Three of the four
+  configured release targets are therefore unbuildable and nothing says so**, which is the finding's
+  real weight: the missing gate, not any one `cfg` attribute.
+* **Why it is `build` and not `inline`:** the fix is a real design question, not a mechanical one.
+  Either the module gets a second directory-reading implementation for non-Linux unix
+  (`fdopendir`/`readdir`, which has different error and reentrancy properties), or the affected
+  functions are narrowed to `#[cfg(target_os = "linux")]` and their callers get a non-Linux path, or
+  macOS is dropped from `release.yml` as a deliberate decision. That last one is a product call and
+  is not an agent's to make.
+* **Verification is the hard part, and it is why this was not folded into the
+  `remove-tree-unhardened` cluster:** there is no macOS host and no macOS SDK on `tuxedo-atlas`, so
+  any port would be unproven code sitting behind a green Linux-only gate — which is the exact
+  failure mode this repository's gate discipline exists to prevent. Whoever takes this needs either
+  a macOS runner added to `test.yml` or a `cargo check --target *-apple-darwin` route that actually
+  resolves the SDK. **Adding the compile check to CI is arguably the whole finding**; the code fix
+  is downstream of being able to see it fail.
+* **Found by:** the `review-plan` and `review-root-cause` lenses (100 and 99 confidence) during the
+  plan review of the `remove-tree-unhardened` cluster, 2026-08-30, and confirmed directly against
+  the vendored rustix source and both workflow files.
+
+### Deleting a workspace directory leaves an authority record for every descendant behind
+
+* **ID:** f-20260830-07 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority.rs:3361` (`remove_workspace_entry`), reached from
+  `src-tauri/src/file_workspace.rs:663` (`permanently_delete_workspace_entry`); records are created
+  for every descendant by `tree_entry` at `src-tauri/src/file_workspace.rs:218-245`.
+* **Defect:** `list_file_workspace` walks the tree and calls `register_entry` for **every**
+  directory and file it finds, so each descendant holds a persistent authority record.
+  `remove_workspace_entry` removes exactly one record — the handle it was given — and returns.
+  Deleting a directory with a hundred files under it therefore destroys a hundred files and leaves a
+  hundred records naming paths that no longer exist. Nothing prunes them: `refresh_persistent`
+  (`path_authority.rs:3431`) only re-validates recorded paths and marks them unavailable, and there
+  is no watcher.
+* **This is not confined to the failure path.** It happens on the ordinary, fully successful delete.
+  It was found while working `f-20260830-04` (partial deletion), but a partial delete only makes the
+  same accumulation harder to reason about; it is not its cause.
+* **Contradicts a standing rule:** `.claude/rules/async-resource-invariants.md` — "Bound anything
+  that accumulates — logs, caches, registries — and say what the bound is." The persistent registry
+  is a registry, it accumulates across every create-and-delete cycle, and it has no bound and no
+  reclamation.
+* **Severity is availability and size, not escalation.** A stale record fails closed:
+  `workspace_mutation_target` (`path_authority.rs:3325`) re-verifies `(dev, ino)` through
+  `open_verified_parent` and refuses on a mismatch, so a stale record cannot be used to reach a
+  different file. The cost is an unbounded registry that is persisted through `commit_candidate` on
+  every mutation, so it grows the saved state and the work of every save.
+* **Why it is `build`:** pruning by path prefix looks obvious and is not. `commit_candidate`'s
+  persistence protocol, the pending-artifact intents at `path_authority.rs:3010-3096`, and the
+  trash/restore lifecycle all read `self.persistent`, and a prefix sweep has to be right about
+  which of those a removed subtree may still be referenced by. That is a contract question about
+  the authority model, in a 3600-line file, and it deserves its own plan.
+* **Found by:** the `review-root-cause` lens (96 confidence) during the plan review of the
+  `remove-tree-unhardened` cluster, 2026-08-30. Confirmed directly by reading `tree_entry` and
+  `remove_workspace_entry`.
+
+### Every backend error reaches the renderer as one opaque string, so the UI classifies it by substring
+
+* **ID:** f-20260830-08 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/error.rs:216-231` (the hand-written `serde::Serialize` and `specta::Type`
+  impls) and `src/platform/errors.ts:37-54` (`normalizeError`).
+* **Defect:** `Error` implements `Type` as `DataType::Primitive(PrimitiveType::String)` and
+  `Serialize` as `serializer.serialize_str(self.to_string())`. Every one of the enum's ~40 variants
+  — including the ones carrying structured data, `OperationAndCleanup { primary, cleanup }` and
+  `PartialRemoval { removed_entries, cause }` — is flattened to prose before it crosses the IPC
+  boundary. `src/bindings/generated.ts` consequently types every command as
+  `Promise<Result<T, string>>` and contains no `Error` type at all.
+  The renderer then has to reconstruct the category it was never sent:
+  `normalizeError` lowercases the message and tests it for the substrings `cancel`, `abort`,
+  `network`, `timeout`, `fetch`, `not found`, `missing`, `permission`, `denied`, `invalid`,
+  `validation`, defaulting to `unexpected`.
+* **Why it matters:** the coupling is invisible and untyped in both directions. Rewording a Rust
+  `#[error("...")]` string — an act that looks purely cosmetic and passes every gate, including
+  `pnpm bindings:check`, which cannot see it — silently reclassifies an error in the UI. In the
+  other direction a variant carrying real data cannot deliver it: a partial destructive delete has
+  to be recognised by its prose or not at all.
+* **Contradicts a standing rule:** `.claude/rules/ipc-events.md` and
+  `.claude/rules/async-resource-invariants.md` both require typed errors returned from commands and
+  mapped at the facade. This is the one contract in the IPC surface that is deliberately untyped,
+  and it is the error contract.
+* **Partially mitigated, deliberately, by the `remove-tree-unhardened` work (2026-08-30):** that
+  cluster adds a `partially-applied` category to `normalizeError`, keyed on the stable message
+  prefix of `Error::PartialRemoval`, with a test on each side of the boundary pinning the exact
+  string so a reword goes red instead of silent. That follows the file's existing idiom because
+  replacing the idiom is this finding, not that one.
+* **Why it is `build`:** giving `Error` a real Specta type changes the error type of every
+  `#[tauri::command]` in the app and every renderer call site, regenerates
+  `src/bindings/generated.ts` wholesale, and needs a decision about how much backend detail may
+  cross into the renderer at all — `.claude/rules/ipc-events.md` explicitly forbids moving a raw
+  backend diagnostic into the renderer, so a structured error has to be designed, not merely
+  derived. Also worth deciding: whether the substring table survives as a fallback for variants
+  that stay prose.
+* **Found by:** the `review-ipc-contract` and `review-error-handling` lenses (94 and 98 confidence)
+  during the plan review of the `remove-tree-unhardened` cluster, 2026-08-30.
+
+### Every removal in `infra/fs.rs` unlinks by name, and Linux offers no way to unlink by descriptor
+
+* **ID:** f-20260830-09 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/fs.rs` — every `unlinkat` call site: the two arms of
+  `remove_tree_at` (`fs.rs:394`, `fs.rs:416`), `remove_entry_at` (`fs.rs:840`),
+  `remove_optional_regular_at` (`fs.rs:859`) and `remove_regular_at`.
+* **Defect:** the module verifies an object's `(st_dev, st_ino)` and then unlinks a *name*, and
+  `unlinkat` re-resolves that name. A writer who can create entries in the containing directory can
+  substitute a same-type object in the window between the last `statat` and the `unlinkat`, so the
+  authorized inode survives and a different one is destroyed.
+* **This is the irreducible remainder of `f-20260830-02`, not a restatement of it.** That finding is
+  handled: the descent is now bound to descriptors, `RawDirEntry::ino()` is compared against the
+  `statat` each recursion level already performs, and the top-level expectation is threaded in from
+  the authority. Those close every window that *can* be closed at this layer. This one cannot be:
+  **Linux has no `funlinkat`** (FreeBSD has it; rustix 1.1.4 exposes no such call — verified by
+  grep over the vendored source), so there is no syscall that removes the object a descriptor
+  refers to. `openat2`, `statx` and `fstat` all resolve or describe; none of them unlink.
+* **Bounded, which is why it is filed rather than treated as a red gate.** The kernel refuses the
+  dangerous shapes on its own: `unlinkat(name, 0)` against a substituted directory fails `EISDIR`;
+  `unlinkat(name, REMOVEDIR)` against a substituted file fails `ENOTDIR` and against a non-empty
+  directory fails `ENOTEMPTY`. The only substitutions that succeed are an *empty* directory, which
+  destroys no data, and a regular file placed by someone who can already write into the directory
+  being deleted. Nothing outside the named subtree is reachable.
+* **What a fix would have to look like:** hold the parent directory under an exclusive lease for the
+  duration (no such primitive for this), or move the whole subtree to a private staging name before
+  walking it so the attacker no longer has a path to race on — `renameat` has the same
+  name-resolution property, but it is a *single* window per delete instead of one per entry, and it
+  is `RENAME_NOREPLACE`-able. That is a real design option and the reason this is `Entry: build`
+  rather than a permanent "won't fix".
+* **Found by:** the `review-plan` and `review-root-cause` lenses (100 and 99 confidence) in round 2
+  of the plan review for the `remove-tree-unhardened` cluster, 2026-08-30, arguing that
+  `f-20260830-02` was not closed. They were right that the window exists; the part of it that no
+  plan can close is recorded here instead of being argued away in a plan that closes.
+
+### Below Linux 5.8 the recursive delete cannot see a same-filesystem bind mount
+
+* **ID:** f-20260830-10 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/fs.rs`, the mount check in `remove_tree_at` added while handling
+  `f-20260830-05`.
+* **Defect:** the walk refuses to cross a mount using two checks — `statx` with
+  `StatxAttributes::MOUNT_ROOT` as the primary, and an `st_dev` comparison against the parent as
+  the backstop. `MOUNT_ROOT` requires Linux 5.8 and is reported as available through
+  `stx_attributes_mask`; below that the code has only `st_dev`, and **a bind mount whose source is
+  on the same filesystem keeps the same device number**. On such a kernel the walk therefore enters
+  a bind-mounted directory and deletes its contents before the mount point's own
+  `unlinkat(REMOVEDIR)` fails `EBUSY`.
+* **Why this was accepted rather than closed, and it is not an effort argument.** The only
+  mechanism that closes it on every kernel is refusing to descend whenever the kernel cannot prove
+  the absence of a mount — which stops permanent deletion from working at all below 5.8 (August
+  2020), to defend against a configuration that requires `CAP_SYS_ADMIN` or a user namespace to
+  create. Breaking a working feature for a user who deliberately mounted something into their own
+  workspace is the worse of the two failures. Parsing `/proc/self/mountinfo` was also considered:
+  it is complete on any kernel, but it adds a parser plus a `/proc` dependency and carries its own
+  read-then-mount race.
+* **What would settle it:** a decision on the minimum supported kernel. If En Croissant declares
+  Linux 5.8 as its floor — every currently maintained desktop distribution is well past it; RHEL 8
+  at 4.18 is the notable exception — then `MOUNT_ROOT` becomes unconditional, the `st_dev`
+  backstop and this finding both disappear, and the refusal is total. That is a product decision
+  about supported platforms, which is why this is `Entry: build` and not `inline`.
+* **Related:** the sibling finding about the three unbuildable release targets. Both are really the
+  same question — which platforms this application claims to support — approached from opposite
+  ends, and answering it once would resolve part of each.
+* **Found by:** the `review-plan`, `review-root-cause` and `review-error-handling` lenses (100, 100
+  and 99 confidence) in round 2 of the plan review for the `remove-tree-unhardened` cluster,
+  2026-08-30.
+
+### Every confirmation-error message is English in all 16 locales, because its key is built dynamically
+
+* **ID:** f-20260830-11 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/common/ConfirmModal.tsx:7-18` (`confirmationErrorMessage`), which calls
+  `t(\`Common.ConfirmationError.${category}\`, { defaultValue: ... })` with the category computed at
+  runtime by `normalizeError` (`src/platform/errors.ts:37`).
+* **Defect:** the key is a template literal, so `i18next-cli extract` cannot see it. Any
+  `Common.ConfirmationError.*` entry written into the catalogues by hand is deleted again the next
+  time `pnpm lint:ci` runs — its pipeline ends in `i18next-cli extract --ci`, which fails the build
+  precisely *because* it rewrote the files. `src/translation/en-US.json` accordingly contains **no**
+  `ConfirmationError` key at all, for any of the six categories. Every one of those messages
+  therefore reaches a German, Korean or Ukrainian user in English, from the `defaultValue`.
+* **How it was found, which is the part worth keeping:** the `remove-tree-unhardened` cluster added
+  a seventh category (`partially-applied`) and wrote real translations into all 16 catalogues. The
+  extractor removed all 16 in the same `lint:ci` run, and `pnpm i18n:check` still passed —
+  consistently absent is complete. The gate cannot see this class of defect at all: it compares
+  every locale against `en-US`, so a key missing from *all* of them is invisible.
+* **Why it is `build`:** the fix is a choice, not a repair. Either the six (now seven) categories
+  get a static lookup table so the extractor sees literal keys — cheap and mechanical, but it moves
+  the copy away from the point of use — or `i18next-cli` is configured to preserve this key prefix,
+  which needs the config to be right about which prefixes are dynamic and stays fragile. Either way
+  the copy for all seven categories has to be written in 16 languages, which is the actual work.
+  There is also a prior question worth settling once: how many other dynamically built keys exist
+  in this codebase and are silently untranslated for the same reason.
+* **Scope note:** this is not specific to the new category. It is the pre-existing state for
+  `cancelled`, `network`, `not-found`, `permission`, `validation` and `unexpected`.
+* **Found by:** the `remove-tree-unhardened` `build` run, 2026-08-30, when `lint:ci` failed with
+  "Some files were updated. This should not happen in CI mode." after the catalogues were edited.
+
+### A cancelled or failed workspace folder picker produces an unhandled rejection and no user feedback
+
+* **ID:** f-20260830-12 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/files/FilesPage.tsx:48-52` (`chooseWorkspace`), wired to a `Button`'s
+  `onClick` further down the same component.
+* **Defect:** `await tauri.issueFileWorkspace()` is not guarded. React's `onClick` does not consume
+  the returned promise, so any rejection — the user dismissing the native folder dialog, a denied
+  path, an authority error — becomes an unhandled promise rejection. The user sees nothing at all:
+  no error, no indication the dialog was cancelled, and the workspace silently stays as it was.
+  `setWorkspace` and `setWorkspaceDisplayName` simply never run.
+* **Why it is not fixed alongside the `remove-tree-unhardened` cluster that found it:** it raises a
+  design question that cluster has no standing to answer — *where does a workspace-selection
+  failure surface?* Swallowing it is right for a cancelled dialog and wrong for a real error, and
+  this component has no error channel for the picker: the `error` it renders comes from the SWR
+  listing hook, which describes a different operation. Answering that means deciding whether the
+  platform facade should distinguish user-cancellation from failure (`src/platform/errors.ts`
+  already has a `cancelled` category, so the pieces exist), and whether the page grows a
+  notification surface or reuses one. That is a plan, not a patch.
+* **Related:** the same page's delete flow was just given exactly this treatment — see
+  `f-20260830-04` and `d-20260830-05`, where a destructive failure was made visible rather than
+  swallowed. The picker is the same question with a different answer for the cancel case, and
+  whoever takes this should read that decision first rather than re-deriving it.
+* **Found by:** the `review-error-handling` lens (95 confidence) over the cumulative diff of the
+  `remove-tree-unhardened` cluster, 2026-08-30. Pre-existing; not introduced by that diff.
+
+### The permanent-delete confirmation flow has no e2e coverage, only jsdom with the modal mocked
+
+* **ID:** f-20260830-13 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/files/FilesPage.test.tsx` (`trash confirmations`) is the only coverage;
+  nothing under `e2e/` reaches the Files purge flow.
+* **Defect:** the tests that prove a destructive delete warns the user run in jsdom with the Tauri
+  command mocked and Mantine's modal primitives stubbed. What they verify is that the component
+  computes the right category and calls the right things. They cannot see the warning being
+  invisible at the real modal boundary — wrong z-index, the dialog closing before the message
+  renders, the `role="alert"` node never reaching the accessibility tree, the copy overflowing its
+  container at 320px.
+* **Why it matters more here than for an ordinary surface:** this is the message shown when files
+  were destroyed and the operation still failed. If it does not actually reach the screen, the
+  fallback the user gets is the generic "The action could not be completed. Please try again." —
+  which is false, and the jsdom tests would stay green while it happened.
+* **Why it is `build` and its own finding:** `e2e/` runs through `pnpm test:e2e:container` inside
+  the pinned Playwright image with committed snapshots (`d-20260829-01`), so adding a spec means
+  adding snapshots recorded in that image, and reaching this flow needs a workspace fixture and a
+  trashed entry — neither exists in the current specs. That is e2e-harness work, not a test to
+  append to an existing file.
+* **Found by:** the `review-tests` lens (94 confidence) over the cumulative diff of the
+  `remove-tree-unhardened` cluster, 2026-08-30.
