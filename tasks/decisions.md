@@ -436,3 +436,29 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   to pick before the name is chosen. **It is changeable later** at the cost of moving the data
   directory and re-registering roots, which was understood when this was decided.
 * **Decided by:** Felix, 2026-08-30 · **Superseded-by:** -
+
+### d-20260830-17 — Correction to d-20260830-16's rationale: the bundle identifier IS user-visible
+
+* **Governs:** f-20260830-44
+* **Chosen:** `d-20260830-16` stands unchanged — the identifier is `com.chessriddle.encroissant`
+  (`.dev` for the development config), and every reason it gives for that value still holds. What is
+  corrected here is one clause of its *reasoning*, not the decision: it states the identifier "is
+  never user-visible — it appears only in a filesystem path and the keyring service name". That is
+  incomplete. `src-tauri/src/oauth.rs` carried an independent second copy of the same string as the
+  Lichess OAuth `ClientId`, and Lichess displays the client id verbatim on its authorization screen,
+  so the identifier is the name under which this build asks a real third party for a real user's
+  token.
+* **Rejected:** editing `d-20260830-16` in place to fix the clause — rule 4c: a recorded decision is
+  reversed or amended by Felix in the chat and by nothing else, and an agent rewriting the record to
+  agree with the work in front of it is exactly the failure that rule exists to stop. Also rejected:
+  leaving the clause uncorrected, because a later session reading "never user-visible" would
+  reasonably conclude the identifier can be changed without any external consequence.
+* **Because:** the clause was offered as an argument *for* the chosen value, not as a constraint on
+  it, so its being wrong does not disturb the choice — it only removes one of the reasons. The
+  practical consequence is recorded so it is not rediscovered: changing the identifier again also
+  changes what Lichess shows the user at authorization time, on top of moving the app-data directory
+  and the keyring namespace that `d-20260830-15` already sequenced around.
+  Commit `6c2749ad` removes the duplication rather than rewriting the second literal, so
+  `tauri.conf.json` is now the single place the fork's identity is written and the two can no longer
+  drift apart.
+* **Decided by:** Claude (autonomous, `full auto`), 2026-08-30 · **Superseded-by:** -
