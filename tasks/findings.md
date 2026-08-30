@@ -2499,3 +2499,85 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   download page are **explicitly out of scope here** and stay open for a later run — they need a
   product name that is not chosen yet. Read both decisions before planning; they are answers, not
   questions to re-derive.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### `llvm-cov export` segfaults on this machine, so `pnpm test:coverage:backend` cannot complete
+
+* **ID:** f-20260830-45 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `scripts/rust-branch-coverage.mjs:96-107` (the per-source `llvm-cov export` loop),
+  driven by `package.json:21` (`test:coverage:backend`).
+* **Defect:** every `llvm-cov export -format=lcov -instr-profile=backend-coverage/src-tauri.profdata
+  <test-exe> -sources <one .rs file>` invocation dies with SIGSEGV. Observed 2026-08-30 between
+  15:13:37 and 15:16:41 CEST: **11+ coredumps**, walking different source files
+  (`src-tauri/src/chess.rs`, `src-tauri/src/db/schema.rs`, one call with no `-sources`), from a run
+  in a Konsole tab. The stack is a single frame with no symbol
+  (`#0 0x00007a73a6627eef n/a (n/a + 0x0)`), and the binary has no build-id.
+* **It is not the toolchain build.** The first dumps came from
+  `nightly-2025-06-01-.../bin/llvm-cov` — the pinned toolchain — and by 15:16:41 the **stable**
+  toolchain's `llvm-cov` was segfaulting on the same work. Two independently built binaries failing
+  the same way points at the input pair or at an LLVM bug reachable from it, not at one bad install.
+* **The inputs are intact, checked read-only:**
+  - `backend-coverage/src-tauri.profdata` (600 848 bytes, 13:03:13) parses:
+    `llvm-profdata show --all-functions` prints counters normally.
+  - `src-tauri/target/llvm-cov-target/debug/deps/en_croissant-2f491e9e29676d77` exists
+    (378 662 672 bytes, 13:02:57) — a consistent pair with the profdata.
+  - 108 `.profraw` files present.
+  - No resource pressure: 71 GB RAM available, 1.3 TB disk free.
+* **Why it matters:** `test:coverage:backend` is a mandatory push gate for any `src-tauri/**` change
+  (`.agents/skills/push/SKILL.md`), and `coverage:backend:check` reads the LCOV it writes. While
+  this reproduces, **no backend change can be pushed through the documented gate route.** It also
+  contradicts the `CLAUDE.md` "Repository state" note, which records `pnpm test:coverage:backend` as
+  measured green on atlas since 2026-08-29 — so this is a regression against a recorded measurement,
+  and the note is now wrong until this is resolved.
+* **Not silent, at least.** `scripts/rust-branch-coverage.mjs:23` tests `result.status !== 0`, and a
+  SIGSEGV yields `status: null`, so the script throws rather than writing a short LCOV. A crashed
+  export fails the gate; it does not quietly pass it. That is the one thing that does not need
+  fixing here.
+* **Side effect worth clearing:** each dump is 1.2-1.5 MB and
+  `/var/lib/systemd/coredump/` is already at 179 MB.
+* **Fix shape:** first establish reproducibility outside the crashing run — one `llvm-cov export`
+  by hand against the same profdata/exe pair, with and without `-sources`, on both toolchains. If it
+  reproduces, bisect the input: try `--ignore-filename-regex` alone, a smaller `-sources` set, and a
+  freshly regenerated profdata from the current `.profraw` set. The `-sources`-per-file loop is
+  `rust-branch-coverage.mjs`'s own design choice, so if the crash is specific to that shape, a
+  single export plus in-process filtering is the repair rather than a toolchain change. Do not pin a
+  different toolchain before the input is ruled out — the stable/nightly split already argues
+  against a toolchain cause.
+* **Found by:** Claude, 2026-08-30, while running the `f-20260830-44` build; the crashes belong to a
+  foreign process in a Konsole tab (cgroup `app-org.kde.konsole-882738.scope`), not to this session,
+  whose own children were all dead by 15:13:27.
+
+* **Reproduced independently and narrowed, 2026-08-30 15:2x (Claude, from the `f-20260830-44` build session).**
+  The crash is **not** confined to the Konsole run that surfaced it and **not** caused by the
+  `-sources` loop. Run by hand against the same pair
+  (`backend-coverage/src-tauri.profdata` + `.../deps/en_croissant-2f491e9e29676d77`):
+  - `llvm-cov export -format=lcov -instr-profile=... <exe> -sources <one .rs>` → SIGSEGV, rc 139.
+  - the same command **without** `-sources` → SIGSEGV, rc 139.
+  llvm-cov prints `PLEASE submit a bug report to https://github.com/llvm/llvm-project/issues/`, so
+  it is an upstream LLVM crash, not a bad argument. `scripts/rust-branch-coverage.mjs`'s per-file
+  loop only multiplies it.
+* **Hypothesis RULED OUT — stale accumulated `.profraw` files.** `rust-branch-coverage.mjs:63-65`
+  globs **every** `.profraw` under `src-tauri/target/llvm-cov-target` and merges the lot, and it
+  never cleans; 108 were present, 107 of them older than the current test binary (profraws from
+  08:45-11:16, binary rebuilt 13:02:57). That is a genuinely suspicious shape — mixing coverage
+  mappings from differently-built binaries is a known way to break llvm-cov — and it is wrong here:
+  - re-merging the full set into a fresh profdata: still SIGSEGV.
+  - merging **only** the single profraw newer than the binary and exporting from that: still SIGSEGV.
+  So `cargo llvm-cov clean` will not fix it. **Do not spend a second run on this idea.**
+* **Also ruled out:** corrupt profdata (`llvm-profdata show --all-functions` prints counters
+  normally), a missing or mismatched executable (present, 378 662 672 bytes, timestamp-consistent
+  with the profdata), and resource exhaustion (71 GB RAM available, 1.3 TB disk free).
+* **Still open, and the next thing to try:** the binary is 378 MB, and the stack is a single
+  unsymbolised frame. Candidates in order — (1) run the export under `llvm-symbolizer` on PATH to
+  get a real backtrace, which is the one cheap step that would identify the LLVM code path;
+  (2) test whether a *smaller* instrumented target (a single unit-test binary rather than the
+  `--bin en-croissant` build) exports cleanly, which would point at a size or section-count limit;
+  (3) compare against the CI runner, where this gate is green — `.github/workflows/test.yml`
+  installs the same pinned versions, so a divergence there is the strongest available signal.
+* **Consequence for the ledger, stated plainly:** while this reproduces, `pnpm test:coverage:backend`
+  and `pnpm coverage:backend:check` **cannot be run on atlas**, so no `src-tauri/**` change can
+  satisfy the documented gate set locally. Any run that needs them must report them as *not run*
+  and name this finding rather than skipping them silently.
