@@ -1,45 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { readdir, readFile, writeFile } from "node:fs/promises";
-import { relative, resolve, sep } from "node:path";
+import { resolve } from "node:path";
+import { excluded, matches, normalisePath } from "./coverage-scope.mjs";
 
 const METRICS = ["lines", "functions", "branches"];
 
 function emptyMetrics() {
   return Object.fromEntries(METRICS.map((metric) => [metric, { covered: 0, total: 0 }]));
-}
-
-function globToRegExp(pattern) {
-  let expression = "";
-  for (let index = 0; index < pattern.length; index += 1) {
-    if (pattern.slice(index, index + 3) === "**/") {
-      expression += "(?:.*/)?";
-      index += 2;
-    } else if (pattern.slice(index, index + 2) === "**") {
-      expression += ".*";
-      index += 1;
-    } else if (pattern[index] === "*") {
-      expression += "[^/]*";
-    } else {
-      expression += pattern[index].replace(/[.+^${}()|[\]\\]/g, "\\$&");
-    }
-  }
-  return new RegExp(`^${expression}$`);
-}
-
-function matches(path, patterns) {
-  return patterns.some((pattern) => globToRegExp(pattern).test(path));
-}
-
-function excluded(path, source) {
-  return matches(
-    path,
-    source.exclude.map((entry) => (typeof entry === "string" ? entry : entry.pattern)),
-  );
-}
-
-function normalisePath(path, root) {
-  const absolute = resolve(root, path);
-  return relative(root, absolute).split(sep).join("/");
 }
 
 async function filesBelow(directory, root) {

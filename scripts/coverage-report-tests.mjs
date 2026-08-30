@@ -13,6 +13,13 @@ import {
   scopeSignature,
   writeBaseline,
 } from "./coverage-report.mjs";
+import {
+  excluded,
+  excludePatterns,
+  globToRegExp,
+  matches,
+  normalisePath,
+} from "./coverage-scope.mjs";
 
 const config = {
   version: 1,
@@ -321,4 +328,36 @@ test("writes a baseline with exact integer totals", async () => {
   const baseline = JSON.parse(await readFile(path, "utf8"));
   assert.deepEqual(baseline.areas.utilities.lines, { covered: 1, total: 2 });
   assert.doesNotThrow(() => assertBaseline(areas, baseline));
+});
+
+test("matches exclude entries as globs, not as exact paths", () => {
+  // The Rust coverage gate used to compare these as literal paths, so a glob
+  // entry silently excluded nothing and its file reached llvm-cov's -sources,
+  // where a file with no coverage records segfaults the exporter.
+  const source = { exclude: [{ pattern: "src-tauri/src/**/mod.rs" }] };
+  assert.equal(excluded("src-tauri/src/infra/mod.rs", source), true);
+  assert.equal(excluded("src-tauri/src/db/mod.rs", source), true);
+  assert.equal(excluded("src-tauri/src/chess.rs", source), false);
+});
+
+test("accepts exclude entries written as bare strings or as objects", () => {
+  assert.deepEqual(excludePatterns({ exclude: ["a/b.rs", { pattern: "c/**" }] }), [
+    "a/b.rs",
+    "c/**",
+  ]);
+  assert.equal(excluded("c/d/e.rs", { exclude: ["a/b.rs", { pattern: "c/**" }] }), true);
+});
+
+test("anchors globs and keeps a single star inside one path segment", () => {
+  assert.equal(globToRegExp("src/*.ts").test("src/a.ts"), true);
+  assert.equal(globToRegExp("src/*.ts").test("src/nested/a.ts"), false);
+  assert.equal(globToRegExp("src/**/a.ts").test("src/a.ts"), true);
+  assert.equal(matches("src/a.ts", ["nope/**", "src/*.ts"]), true);
+  assert.equal(matches("src/a.ts", []), false);
+});
+
+test("normalises paths to repo-relative POSIX form for matching", () => {
+  const root = sep === "/" ? "/tmp/repo" : "C:\\repo";
+  assert.equal(normalisePath(join(root, "src", "a.ts"), root), "src/a.ts");
+  assert.equal(normalisePath("src/a.ts", root), "src/a.ts");
 });

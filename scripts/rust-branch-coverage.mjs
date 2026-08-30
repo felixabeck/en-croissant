@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { excluded, normalisePath } from "./coverage-scope.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifestPath = resolve(projectRoot, "src-tauri/Cargo.toml");
@@ -13,16 +14,27 @@ const profilePath = resolve(outputDirectory, "src-tauri.profdata");
 const coverageConfigPath = resolve(projectRoot, "backend-coverage-areas.json");
 const toolchain = "nightly-2025-06-01";
 
-function run(command, argumentsList, options = {}) {
-  const result = spawnSync(command, argumentsList, {
+function attempt(command, argumentsList, options = {}) {
+  return spawnSync(command, argumentsList, {
     cwd: projectRoot,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
     ...options,
   });
+}
+
+function run(command, argumentsList, options = {}) {
+  const result = attempt(command, argumentsList, options);
   if (result.status !== 0) {
     if (result.stderr) process.stderr.write(result.stderr);
-    throw result.error ?? new Error(`${command} exited with status ${result.status}`);
+    if (result.error) throw result.error;
+    // A process killed by a signal reports status null, which on its own names
+    // neither the signal nor the command that died.
+    if (result.signal)
+      throw new Error(
+        `${command} died with ${result.signal}: ${command} ${argumentsList.join(" ")}`,
+      );
+    throw new Error(`${command} exited with status ${result.status}`);
   }
   return result.stdout ?? "";
 }
@@ -77,39 +89,72 @@ if (executableCandidates.length === 0)
 executableCandidates.sort((left, right) => right.modified - left.modified);
 const executable = executableCandidates[0].path;
 
-// LLVM currently crashes while exporting this crate's complete branch map in one
-// invocation. Per-source exports consume the identical instrumented profile and
-// preserve exact LCOV branch counters without dropping the branch gate.
+// llvm-cov segfaults in CoverageMapping::getInstantiationGroups when a path handed
+// to -sources has no coverage records at all — a file whose statements are never
+// instrumented, such as module declarations or a Diesel table! block. Reproduced on
+// LLVM 20.1 and 22.1; upstream llvm/llvm-project#119558. Such files must therefore be
+// declared in backend-coverage-areas.json's exclude list. This is NOT a limit on how
+// many sources one invocation can take: one export over every record-bearing source
+// yields byte-identical LCOV to one export per source.
 const coverageConfig = JSON.parse(await readFile(coverageConfigPath, "utf8"));
-const excludedSources = new Set(
-  coverageConfig.sources.flatMap((source) =>
-    source.exclude.map((entry) =>
-      resolve(projectRoot, typeof entry === "string" ? entry : entry.pattern),
-    ),
-  ),
-);
-const sources = await filesBelow(
-  resolve(projectRoot, "src-tauri/src"),
-  (path) => path.endsWith(".rs") && !excludedSources.has(path),
-);
-const records = [];
-for (const source of sources.sort()) {
-  const lcov = run(llvmCov, [
-    "export",
-    "-format=lcov",
-    `-instr-profile=${profilePath}`,
-    executable,
-    "-sources",
-    source,
-  ]);
-  if (lcov.includes("SF:")) records.push(lcov.trimEnd());
-}
-if (records.length === 0) throw new Error("Rust branch coverage export was empty");
-await writeFile(outputPath, `${records.join("\n")}\n`);
+const sources = (
+  await filesBelow(resolve(projectRoot, "src-tauri/src"), (path) => path.endsWith(".rs"))
+)
+  .filter((path) => {
+    const relativePath = normalisePath(path, projectRoot);
+    return !coverageConfig.sources.some((source) => excluded(relativePath, source));
+  })
+  .sort();
+if (sources.length === 0) throw new Error("Rust coverage found no sources to export");
 
-const branchRecords = records.reduce(
-  (total, record) => total + (record.match(/^BRDA:/gm)?.length ?? 0),
-  0,
-);
+const exportArguments = [
+  "export",
+  "-format=lcov",
+  `-instr-profile=${profilePath}`,
+  executable,
+  "-sources",
+  ...sources,
+];
+const exported = attempt(llvmCov, exportArguments);
+
+// A signal here almost always means one source carries no coverage records. Name the
+// offenders instead of failing with a bare "exited with status null": re-probing each
+// source costs well under a second and runs only on this path.
+if (exported.signal) {
+  const offenders = sources.filter(
+    (source) =>
+      attempt(llvmCov, [
+        "export",
+        "-format=lcov",
+        `-instr-profile=${profilePath}`,
+        executable,
+        "-sources",
+        source,
+      ]).signal !== null,
+  );
+  if (offenders.length > 0)
+    throw new Error(
+      [
+        "Rust coverage export crashed on sources with no coverage records:",
+        ...offenders.map((source) => `  ${normalisePath(source, projectRoot)}`),
+        "Add them to backend-coverage-areas.json exclude with a reason, or add tests.",
+        "(llvm-cov getInstantiationGroups segfault, upstream llvm/llvm-project#119558)",
+      ].join("\n"),
+    );
+}
+if (exported.status !== 0) {
+  if (exported.stderr) process.stderr.write(exported.stderr);
+  if (exported.error) throw exported.error;
+  throw new Error(
+    `${llvmCov} died with ${exported.signal ?? `status ${exported.status}`} while exporting LCOV`,
+  );
+}
+
+const lcov = exported.stdout ?? "";
+const sourceCount = lcov.match(/^SF:/gm)?.length ?? 0;
+if (sourceCount === 0) throw new Error("Rust branch coverage export was empty");
+await writeFile(outputPath, `${lcov.trimEnd()}\n`);
+
+const branchRecords = lcov.match(/^BRDA:/gm)?.length ?? 0;
 if (branchRecords === 0) throw new Error("Rust coverage export contains no branch data");
-console.log(`Rust LCOV: ${records.length} sources, ${branchRecords} branch records`);
+console.log(`Rust LCOV: ${sourceCount} sources, ${branchRecords} branch records`);
