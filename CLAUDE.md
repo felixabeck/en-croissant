@@ -60,22 +60,34 @@ planning any change:
 - **Coverage and bundle size are ratcheted, not just floored.** `coverage-areas.json` /
   `backend-coverage-areas.json` set permanent per-area minimums, and
   `coverage-baselines.json` / `backend-coverage-baselines.json` independently reject a lower
-  covered count or a lower coverage ratio; deliberately, there is no total-count ratchet.
-  `bundle-budgets.json` caps entry, largest-lazy, and total gzip bytes. Never lower a floor or
+  covered count or a lower coverage ratio; deliberately, there is no total-count ratchet. Both
+  comparisons run against a baseline shrunk by however many records the measurement lost, so
+  deleting covered code is neutral rather than a regression — before that, removing one provably
+  dead branch reddened the gate and the cheapest way to stay green was to leave dead code in place
+  (`f-20260829-15`, `d-20260829-03`). The allowance is bounded by the shrink and every use is
+  printed, and it makes the recorded *scope* the only remaining guard against narrowing the measured
+  set. `bundle-budgets.json` caps entry, largest-lazy, and total gzip bytes. Never lower a floor or
   rewrite a baseline to accept a regression — see `docs/coverage.md`.
 
 **Mutation testing is not a per-commit gate.** It lives in `.github/workflows/mutation.yml`,
 dispatchable and scheduled weekly, with the eight backend packages as a matrix over the runner's
 `BACKEND_MUTATION_PACKAGE` selector. It answers a different question from the gates — a surviving
 mutant means a test is missing, not that the change under review is wrong — and a single sequential
-backend run is slow enough to crowd GitHub's 6-hour per-job limit. `test.yml` therefore runs neither
-suite.
+backend run is slow enough to crowd GitHub's 6-hour per-job limit. `test.yml` runs
+`mutation:frontend` (~21 s) on every push and never `mutation:backend`.
 
 `pnpm mutation:backend` runs `cargo-mutants` with `--in-place`: it mutates the **real** working
 tree rather than a copy, to avoid duplicating the multi-gigabyte target directory. Nothing else may
-touch the tree while it runs — no other gate, no `git add`, no parallel session — and an interrupted
-run leaves `/* ~ changed by cargo-mutants ~ */` markers in tracked source, so check
-`git status -- src-tauri` after any abort.
+touch the tree while it runs — no other gate, no `git add`, no parallel session. That is now
+enforced rather than merely written down (`f-20260829-09`): the runner refuses to start on a dirty
+`src-tauri` or a failing `git`, holds an fsynced exclusive fence at
+`mutants.out/backend/.mutation-in-progress` for the whole run, and clears it only after proving no
+tracked file under `src-tauri` still carries a `~ changed by cargo-mutants ~` marker. An abort
+leaves the fence behind by construction, and the next run — or `pnpm mutation:guard:check`, which
+`$push` runs before any other gate — refuses and prints an ordered recovery: terminate any live
+mutator first, then restore **only** the marked files, then remove the fence. Never
+`git checkout -- src-tauri` wholesale; that destroys a concurrent editor's work along with the
+mutant.
 
 Mechanical classes already covered by a checker, so review effort belongs elsewhere:
 untranslated JSX and missing locale keys (`pnpm i18n:jsx`, `pnpm i18n:check`), direct
