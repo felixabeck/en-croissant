@@ -89,13 +89,18 @@ if (executableCandidates.length === 0)
 executableCandidates.sort((left, right) => right.modified - left.modified);
 const executable = executableCandidates[0].path;
 
-// llvm-cov segfaults in CoverageMapping::getInstantiationGroups when a path handed
-// to -sources has no coverage records at all — a file whose statements are never
-// instrumented, such as module declarations or a Diesel table! block. Reproduced on
-// LLVM 20.1 and 22.1; upstream llvm/llvm-project#119558. Such files must therefore be
-// declared in backend-coverage-areas.json's exclude list. This is NOT a limit on how
-// many sources one invocation can take: one export over every record-bearing source
-// yields byte-identical LCOV to one export per source.
+// Under --branch coverage, llvm-cov segfaults in
+// CoverageMapping::getInstantiationGroups on certain sources, so those have to stay
+// out of the export. Upstream llvm/llvm-project#119558 (open since Dec 2024, still
+// present in LLVM 22.1) is tracking it: it fires only with --branch, and the crashing
+// files there are macro-expanded code (#[async_trait] impls) that carry plenty of
+// coverage records. So do NOT assume the trigger is "a file with no records" — that
+// happens to describe this crate's three, and would not describe a macro-heavy file
+// added later. Measured here: db/schema.rs (a Diesel table! block) crashes any export
+// it takes part in, while engine/mod.rs and infra/mod.rs crash only when exported on
+// their own. All three are declared in backend-coverage-areas.json's exclude list.
+// This is NOT a limit on how many sources one invocation can take: one export over
+// the remaining sources yields byte-identical LCOV to one export per source.
 const coverageConfig = JSON.parse(await readFile(coverageConfigPath, "utf8"));
 const sources = (
   await filesBelow(resolve(projectRoot, "src-tauri/src"), (path) => path.endsWith(".rs"))
@@ -117,9 +122,9 @@ const exportArguments = [
 ];
 const exported = attempt(llvmCov, exportArguments);
 
-// A signal here almost always means one source carries no coverage records. Name the
-// offenders instead of failing with a bare "exited with status null": re-probing each
-// source costs well under a second and runs only on this path.
+// Name the sources that actually crash instead of failing with a bare "exited with
+// status null": re-probing each one costs well under a second and runs only on this
+// path. It reports what crashed, without assuming why.
 if (exported.signal) {
   const offenders = sources.filter(
     (source) =>
@@ -135,10 +140,10 @@ if (exported.signal) {
   if (offenders.length > 0)
     throw new Error(
       [
-        "Rust coverage export crashed on sources with no coverage records:",
+        "llvm-cov segfaulted while exporting these sources:",
         ...offenders.map((source) => `  ${normalisePath(source, projectRoot)}`),
-        "Add them to backend-coverage-areas.json exclude with a reason, or add tests.",
-        "(llvm-cov getInstantiationGroups segfault, upstream llvm/llvm-project#119558)",
+        "This is the --branch coverage crash in upstream llvm/llvm-project#119558.",
+        "Declare them in backend-coverage-areas.json exclude, with a reason.",
       ].join("\n"),
     );
 }
