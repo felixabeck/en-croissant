@@ -63,3 +63,7 @@ tasks/.decisions-announced.json.lock
 tasks/*.tmp-*
 tasks/*.candidate-*
 tasks/.*.part
+
+# `build` run artefacts. Plans are a run artefact, not a deliverable — the permanent
+# trail is the commit messages and `tasks/findings.md`.
+tasks/plans/

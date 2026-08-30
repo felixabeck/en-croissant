@@ -94,3 +94,143 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   f-20260829-15; this decision is the local workaround, not the fix.
 * **Decided by:** Claude Code, autonomously while Felix was away, under his standing instruction to
   proceed — flagged in the report for him to reverse if he disagrees · **Superseded-by:** -
+
+## 2026-08-30 — recorded through the decisions lock
+
+### d-20260830-01 — How does the recursive delete bind a verified inode to the syscall that acts on it: `openat2` or `fstat` on the opened descriptor?
+
+* **Governs:** f-20260830-02, f-20260830-05
+* **Chosen:** `openat(..., NOFOLLOW)` followed by `rustix::fs::fstat` on the descriptor actually
+  held, compared against the inode `RawDirEntry::ino()` reported for that child; plus the expected
+  identity threaded from `remove_entry_at` into the walk so `assert_entry_identity`'s result is used
+  rather than recomputed; plus the child's own `statat` compared against the listing, which costs no
+  extra syscall because the recursion already performs it.
+* **Rejected:** `openat2` with `RESOLVE_NO_SYMLINKS` / `RESOLVE_BENEATH` / `RESOLVE_NO_XDEV`.
+* **Because:** four reasons, none of them effort. (1) `openat2` resolves a *name*, so a directory
+  substituted for another directory *inside* the subtree is opened normally — it does not close
+  f-20260830-02, and the `fstat` comparison would be needed beside it anyway. (2) It does nothing
+  for the depth bound. (3) rustix 1.1.4 issues the raw `__NR_OPENAT2` syscall with no fallback
+  (`backend/linux_raw/fs/syscalls.rs:83`) and returns `ENOSYS` below Linux 5.6, so a delete
+  primitive built on it stops working rather than checking less — a second implementation must
+  exist beside it. (4) It deepens the Linux-only dependency in a file that already cannot compile
+  for three of the four configured release targets.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-02 — Is the recursion depth capped, or is the walk converted to an iterative explicit stack?
+
+* **Governs:** f-20260830-03
+* **Chosen:** keep the recursion and bound it — `MAX_REMOVE_TREE_DEPTH = 64`, refusing with
+  `Error::ResourceLimit`, with `REMOVE_TREE_DIR_BUFFER_BYTES = 8192` named beside it because the
+  worst-case stack is the product of the two (~512 KiB against a Tokio worker's 2 MiB).
+* **Rejected:** converting the walk to an iterative explicit stack of descriptors.
+* **Because:** the iterative form removes the stack-overflow class rather than capping it, which is
+  genuinely the stronger property — but it trades the thread stack for `RLIMIT_NOFILE` (commonly
+  1024) and still needs one `RawDir` buffer per open level, so the memory moves to the heap and the
+  resource is merely a different one. `.claude/rules/async-resource-invariants.md` requires a stated
+  bound either way, so the bound has to be paid for in both designs; having paid for it, the
+  recursion is the smaller expression of the same guarantee.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-03 — How is a mount boundary detected, and what does the walk do below the kernel version that can detect it?
+
+* **Governs:** f-20260830-05
+* **Chosen:** `statx` with `StatxAttributes::MOUNT_ROOT` as the primary check, guarded by
+  `stx_attributes_mask` exactly as rustix's own documented recipe does
+  (`rustix-1.1.4/src/fs/statx.rs:183-200`), with an `st_dev` comparison against the parent as a
+  backstop. Crossing is refused with `Error::InvalidInput`. Below Linux 5.8 only `st_dev` applies,
+  and the residual — a same-filesystem bind mount is invisible there — is stated in a code comment
+  and filed as its own finding rather than described as graceful degradation.
+* **Rejected:** three alternatives. (a) `st_dev` alone, which was this run's first choice and is
+  wrong: a bind mount whose source is on the same filesystem keeps the device number, so it accepts
+  exactly the case the finding names. (b) Refusing to descend whenever the kernel cannot prove the
+  absence of a mount, which stops permanent deletion from working at all below 5.8. (c) Parsing
+  `/proc/self/mountinfo`, which is complete on any kernel but adds a parser and a `/proc`
+  dependency and carries its own read-then-mount race.
+* **Because:** (a) is a correctness failure and was reversed on lens evidence within this run. (b)
+  breaks a working feature for users on pre-2020 kernels in order to defend against a configuration
+  that requires `CAP_SYS_ADMIN` or a user namespace to create — the wrong trade in the wrong
+  direction, since the uncovered case is a user who mounted something into their own workspace
+  rather than an attacker. (c) buys the residual back at the cost of permanent parsing surface for
+  a case already covered on every kernel since August 2020.
+* **Note for whoever answers the supported-platform question:** if Linux 5.8 is declared the floor,
+  `MOUNT_ROOT` becomes unconditional and both the backstop and the filed residual disappear.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-04 — What happens to the authority record when a recursive delete fails partway, and when it completes but the parent sync fails?
+
+* **Governs:** f-20260830-04
+* **Chosen:** two different answers, because the two states are different. On a **partial** removal
+  the record is **kept**: the top directory still exists — `unlinkat(REMOVEDIR)` never ran — with an
+  unchanged inode, so the record still resolves to the object it names and is accurate. On a
+  **completed** removal whose final `parent.sync_all()` failed, the record is **removed** and
+  `Error::CommittedDurabilityUncertain` is returned afterwards, because the entry is genuinely gone.
+* **Rejected:** removing the record on a partial removal (it would discard a valid capability and
+  leave the surviving files unreachable until a relist), and the current code's `?` on the sync
+  failure (it exits before `remove_workspace_entry`, keeping a record for an entry that no longer
+  exists — the exact stale-state defect this cluster exists to remove).
+* **Because:** the authority's invariant is that a usable record resolves to the same object and
+  type it recorded (`path_authority.rs:3325`, `:3614-3635`). A partial removal does not violate it;
+  a completed removal does. Mapping the sync failure to `CommittedDurabilityUncertain` without also
+  fixing the caller would have made that path strictly worse than the plain `Io` it replaces — a
+  review lens caught this at 99 confidence.
+* **Not fixed here, and filed separately:** every *descendant* of a removed directory keeps its own
+  authority record, on the successful path too, because `tree_entry` registers each one
+  (`file_workspace.rs:218-245`) and `remove_workspace_entry` removes exactly one
+  (`path_authority.rs:3361`). That is an unbounded registry against
+  `.claude/rules/async-resource-invariants.md` and belongs to `path_authority.rs`.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-05 — How does the renderer learn that a destructive operation partly happened, given that every backend error crosses IPC as a plain string?
+
+* **Governs:** f-20260830-04
+* **Chosen:** a `partially-applied` category in `src/platform/errors.ts`'s `normalizeError`,
+  matching the two static message literals `partially removed:` (`Error::PartialRemoval`) and
+  `committed but durability uncertain:` (`Error::CommittedDurabilityUncertain`), placed before the
+  existing `not found` / `missing` tests so a nested cause cannot capture it. `FilesPage` relists
+  only on that category and its copy does not promise that a refresh succeeded. The contract is
+  pinned by three tests: the backend asserts the exact serialized literal, the frontend asserts that
+  literal categorises, and the component test asserts the rendered copy — because the test
+  translation mock returns `defaultValue`, so a category assertion alone would not notice the copy
+  reverting.
+* **Rejected:** giving `Error` a real `specta::Type` instead of the hand-written
+  `DataType::Primitive(String)` at `error.rs:225-231`, so the renderer receives a structured error.
+* **Because:** that is the right long-term answer and it is a repo-wide IPC decision, not this
+  cluster's: it re-types the error of every `#[tauri::command]` in the application, regenerates
+  `src/bindings/generated.ts` wholesale, and needs a ruling on how much backend detail may cross
+  into the renderer at all — `.claude/rules/ipc-events.md` forbids moving a raw backend diagnostic
+  there, so a structured error must be designed rather than derived. It is filed as its own finding.
+  Until then the substring idiom is the file's own established mechanism (eleven existing keys), and
+  the three tests are what make its fragility loud instead of silent.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-06 — Does `Error::PartialRemoval` carry its cause as a `String` or as a typed error?
+
+* **Governs:** f-20260830-04
+* **Chosen:** `PartialRemoval { removed_entries: usize, cause: Box<Error> }`.
+* **Rejected:** `cause: String`.
+* **Because:** the walk stops for materially different reasons — `ResourceLimit` (depth bound),
+  `Conflict` (an entry was substituted), `InvalidInput` (a symlink, a special file, a mount) — and a
+  backend caller that wants to distinguish them is exactly who this error is for. Flattening to a
+  string at construction discards that for no gain, since the outer `Display` flattens it for IPC
+  either way. `removed_entries` rather than `removed` so the unit is readable from the shape.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260830-07 — `docs/coverage.md` and the repo-root `CLAUDE.md` both say the coverage ratchet rejects a larger total. The implementation says it deliberately does not. Which is corrected?
+
+* **Governs:** -
+* **Chosen:** correct both documents to match the implementation. `scripts/coverage-report.mjs:249-257`
+  runs exactly two ratchets, with a comment written on purpose: *"Two independent ratchets, and
+  deliberately no third one on `total`"* — covered may never drop, and the ratio may never drop.
+  Fully covered growth passes, and a *shrinking* total (deleting dead or untested code) improves
+  both ratchets and must pass.
+* **Rejected:** adding a total ratchet to the script so the documents become true.
+* **Because:** the code's comment states the reason the third ratchet was left out, and it is
+  right — a total ratchet punishes deleting untested code, which is the cleanup mutation testing
+  asks for and which `d-20260829-03` already recorded as a live problem. The documents are the
+  thing that drifted.
+* **Why this is worth recording rather than just editing:** the wrong sentence is in the
+  always-loaded project contract, so every agent reads "a larger total is rejected" and can talk
+  itself into rewriting a baseline it never needed to touch — which `docs/coverage.md` and
+  `d-20260829-02` both forbid. The stale doc was actively pushing toward the one action the rule
+  prohibits.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
