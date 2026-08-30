@@ -49,9 +49,8 @@ Affected by `src-tauri/**` or root Rust/Tauri configuration:
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo check --manifest-path src-tauri/Cargo.toml --all-targets
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml --all-targets
-pnpm test:coverage:backend
-pnpm coverage:backend:check
+pnpm gate:ensure backend-test
+pnpm gate:ensure backend-coverage
 ```
 
 `test:coverage:backend` needs the pinned `nightly-2025-06-01` toolchain with `llvm-tools-preview` and `cargo-llvm-cov` 0.8.7 (the versions `.github/workflows/test.yml` installs); `coverage:backend:check` reads the LCOV it writes, so the two run in that order. `spawn cargo ENOENT` from any of these means `~/.cargo/bin` is missing from that shell's `PATH`, not that the checkout is broken — prefix the call with `PATH="$HOME/.cargo/bin:$PATH"`.
@@ -66,9 +65,8 @@ pnpm tauri:boundary:check
 pnpm ui:boundary:check
 pnpm coverage:report:test
 pnpm bundle:report:test
-pnpm test:coverage
-pnpm coverage:frontend:check
-pnpm build-vite
+pnpm gate:ensure frontend-coverage
+pnpm gate:ensure frontend-build
 pnpm bundle:check
 ```
 
@@ -79,6 +77,27 @@ The order is not cosmetic: `coverage:frontend:check` reads `coverage/lcov.info` 
 The coverage floors in `coverage-areas.json` / `backend-coverage-areas.json` and the baselines in the two `*-baselines.json` files are ratchets, and `bundle-budgets.json` caps gzip bytes. A red ratchet is a finding about the diff. Never run `coverage:baseline:*` or edit a budget to make a gate pass.
 
 For visible UI changes, run the repo-local `$verify-ui` workflow after the static gates (it owns `pnpm test:e2e:container` and the live Tauri-window check). Retain screenshots of every affected flow. Missing screenshots are not evidence that layout is correct.
+
+### Exact-tree gate receipts
+
+The six expensive gates are registered in `scripts/gate-receipt.mjs`. Use `ensure` for normal gate
+runs, `run` when fresh evidence is required, and `check` only to query the cache:
+
+```bash
+pnpm gate:ensure backend-test
+pnpm gate:ensure backend-coverage
+pnpm gate:ensure frontend-coverage
+pnpm gate:ensure frontend-build
+pnpm gate:ensure e2e-container
+pnpm gate:ensure tauri-build
+pnpm gate:run frontend-build
+pnpm gate:check frontend-build
+pnpm gates:receipt:test
+```
+
+Receipts are reusable only for a clean exact tree with the same command, platform, toolchain, and
+an unexpired timestamp. A miss runs the gate under `ensure`; `check` never starts one. Gate failures
+propagate their own exit codes, and a tree change during a run refuses the receipt.
 
 ### Cross-layer contracts
 

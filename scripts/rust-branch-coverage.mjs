@@ -3,6 +3,7 @@ import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { excluded, normalisePath } from "./coverage-scope.mjs";
+import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifestPath = resolve(projectRoot, "src-tauri/Cargo.toml");
@@ -12,7 +13,7 @@ const outputDirectory = resolve(projectRoot, "backend-coverage");
 const outputPath = resolve(outputDirectory, "lcov.info");
 const profilePath = resolve(outputDirectory, "src-tauri.profdata");
 const coverageConfigPath = resolve(projectRoot, "backend-coverage-areas.json");
-const toolchain = "nightly-2025-06-01";
+const toolchain = RUST_COVERAGE_TOOLCHAIN;
 
 function attempt(command, argumentsList, options = {}) {
   return spawnSync(command, argumentsList, {

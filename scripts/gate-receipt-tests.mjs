@@ -1,0 +1,248 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { executeAction, GATES } from "./gate-receipt.mjs";
+
+const EXPECTED_GATES = {
+  "backend-test": "cargo test --manifest-path src-tauri/Cargo.toml --all-targets",
+  "backend-coverage": "pnpm test:coverage:backend && pnpm coverage:backend:check",
+  "frontend-coverage": "pnpm test:coverage && pnpm coverage:frontend:check",
+  "frontend-build": "pnpm build-vite",
+  "e2e-container": "pnpm test:e2e:container",
+  "tauri-build": "pnpm build",
+};
+
+function runGit(root, ...argumentsList) {
+  const result = spawnSync("git", argumentsList, { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+}
+
+async function fixture() {
+  const directory = await mkdtemp(join(tmpdir(), "gate-receipt-test-"));
+  const root = join(directory, "repo");
+  await mkdir(root);
+  runGit(root, "init", "--quiet");
+  await writeFile(join(root, ".gitignore"), ".gate-receipts/\n");
+  await writeFile(join(root, "tracked.txt"), "initial\n");
+  runGit(root, "add", ".gitignore", "tracked.txt");
+  runGit(
+    root,
+    "-c",
+    "user.name=Gate Receipt Test",
+    "-c",
+    "user.email=gate-receipt@example.invalid",
+    "commit",
+    "--quiet",
+    "-m",
+    "fixture",
+  );
+  return { directory, root };
+}
+
+function fakeToolchain(version = "one") {
+  return () => ({ fake: version });
+}
+
+function nodeCommand(source) {
+  return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(source)}`;
+}
+
+function silentOutput() {
+  return { error() {}, log() {} };
+}
+
+async function record(root, options = {}) {
+  return executeAction({
+    action: "run",
+    gate: "frontend-build",
+    repoRoot: root,
+    fingerprintToolchain: fakeToolchain(),
+    command: nodeCommand("process.exit(0)"),
+    output: silentOutput(),
+    ...options,
+  });
+}
+
+test("registry maps all six gates to their exact command strings", () => {
+  assert.deepEqual(GATES, EXPECTED_GATES);
+});
+
+test("1. hit on a clean, unchanged tree", async () => {
+  const { directory, root } = await fixture();
+  const marker = join(directory, "runs.txt");
+  const command = nodeCommand(
+    `require("node:fs").appendFileSync(${JSON.stringify(marker)}, "run\\n")`,
+  );
+  assert.equal(await record(root, { command }), 0);
+  assert.equal(
+    executeAction({
+      action: "ensure",
+      gate: "frontend-build",
+      repoRoot: root,
+      fingerprintToolchain: fakeToolchain(),
+      command,
+      output: silentOutput(),
+    }),
+    0,
+  );
+  assert.equal(await readFile(marker, "utf8"), "run\n");
+});
+
+test("2. miss after a tracked file changes", async () => {
+  const { root } = await fixture();
+  assert.equal(await record(root), 0);
+  await writeFile(join(root, "tracked.txt"), "committed change\n");
+  runGit(root, "add", "tracked.txt");
+  runGit(
+    root,
+    "-c",
+    "user.name=Gate Receipt Test",
+    "-c",
+    "user.email=gate-receipt@example.invalid",
+    "commit",
+    "--quiet",
+    "-m",
+    "change tree",
+  );
+  assert.equal(
+    executeAction({
+      action: "check",
+      gate: "frontend-build",
+      repoRoot: root,
+      fingerprintToolchain: fakeToolchain(),
+      command: nodeCommand("process.exit(0)"),
+      output: silentOutput(),
+    }),
+    1,
+  );
+});
+
+test("3. miss on a dirty worktree", async () => {
+  const { root } = await fixture();
+  assert.equal(await record(root), 0);
+  await writeFile(join(root, "untracked.txt"), "dirty\n");
+  assert.equal(
+    executeAction({
+      action: "check",
+      gate: "frontend-build",
+      repoRoot: root,
+      fingerprintToolchain: fakeToolchain(),
+      command: nodeCommand("process.exit(0)"),
+      output: silentOutput(),
+    }),
+    1,
+  );
+});
+
+test("4. miss on a changed toolchain fingerprint", async () => {
+  const { root } = await fixture();
+  assert.equal(await record(root), 0);
+  assert.equal(
+    executeAction({
+      action: "check",
+      gate: "frontend-build",
+      repoRoot: root,
+      fingerprintToolchain: fakeToolchain("two"),
+      command: nodeCommand("process.exit(0)"),
+      output: silentOutput(),
+    }),
+    1,
+  );
+});
+
+test("5. miss after TTL expiry", async () => {
+  const { root } = await fixture();
+  const createdAt = Date.parse("2026-08-30T00:00:00Z");
+  assert.equal(await record(root, { now: () => createdAt }), 0);
+  assert.equal(
+    executeAction({
+      action: "check",
+      gate: "frontend-build",
+      repoRoot: root,
+      now: () => createdAt + 1001,
+      ttlMs: 1000,
+      fingerprintToolchain: fakeToolchain(),
+      command: nodeCommand("process.exit(0)"),
+      output: silentOutput(),
+    }),
+    1,
+  );
+});
+
+test("6. miss after the gate failed (no receipt written, gate's exit code propagated)", async () => {
+  const { root } = await fixture();
+  const status = await record(root, { command: nodeCommand("process.exit(23)") });
+  assert.equal(status, 23);
+  assert.equal(existsSync(join(root, ".gate-receipts", "frontend-build.json")), false);
+});
+
+test("7. REFUSAL to write a receipt when the tree mutates between the pre- and post-fingerprint", async () => {
+  const { root } = await fixture();
+  const command = nodeCommand(
+    `require("node:fs").writeFileSync(${JSON.stringify(join(root, "tracked.txt"))}, "mutated\\n")`,
+  );
+  assert.equal(await record(root, { command }), 3);
+  assert.equal(existsSync(join(root, ".gate-receipts", "frontend-build.json")), false);
+});
+
+test("changed commands, changed platforms, malformed receipts, and unavailable tools are misses", async () => {
+  const { root } = await fixture();
+  const command = nodeCommand("process.exit(0)");
+  assert.equal(await record(root, { command }), 0);
+  assert.equal(
+    executeAction({
+      action: "check",
+      gate: "frontend-build",
+      repoRoot: root,
+      fingerprintToolchain: fakeToolchain(),
+      command: nodeCommand("process.exit(1)"),
+      output: silentOutput(),
+    }),
+    1,
+  );
+
+  const receiptPath = join(root, ".gate-receipts", "frontend-build.json");
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  receipt.platform = "different-platform";
+  await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`);
+  assert.equal(
+    executeAction({
+      action: "check",
+      gate: "frontend-build",
+      repoRoot: root,
+      fingerprintToolchain: fakeToolchain(),
+      command,
+      output: silentOutput(),
+    }),
+    1,
+  );
+
+  assert.equal(
+    executeAction({
+      action: "check",
+      gate: "frontend-build",
+      repoRoot: root,
+      fingerprintToolchain: () => undefined,
+      command,
+      output: silentOutput(),
+    }),
+    1,
+  );
+
+  await writeFile(receiptPath, "not json\n");
+  assert.equal(
+    executeAction({
+      action: "check",
+      gate: "frontend-build",
+      repoRoot: root,
+      fingerprintToolchain: fakeToolchain(),
+      command: nodeCommand("process.exit(0)"),
+      output: silentOutput(),
+    }),
+    1,
+  );
+});

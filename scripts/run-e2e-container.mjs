@@ -16,14 +16,12 @@
 // silent drift this script exists to prevent.
 
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { playwrightImage } from "./playwright-image.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const require = createRequire(import.meta.url);
-const { version } = require("@playwright/test/package.json");
-const image = `mcr.microsoft.com/playwright:v${version}-noble`;
+const image = playwrightImage();
 
 const docker = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], {
   encoding: "utf8",

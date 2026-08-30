@@ -18,6 +18,7 @@ playwright-report/
 test-results/
 coverage
 backend-coverage
+.gate-receipts/
 dist
 dist-ssr
 *.local
