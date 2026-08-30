@@ -40,7 +40,6 @@ const colorSchemeManager = localStorageColorSchemeManager({
 import ErrorComponent from "@/components/ErrorComponent";
 import { useConversionProgress } from "@/hooks/useConversionProgress";
 import { useDocumentLanguage } from "@/hooks/useDocumentLanguage";
-import { checkForUpdates } from "@/platform/updater";
 import { initUserAgent } from "@/utils/http";
 import { routeTree } from "./routeTree.gen";
 import { appCssVariablesResolver, createAppTheme } from "./styles/theme";
@@ -93,12 +92,6 @@ function useAppStartup() {
           return undefined;
         }
         info("React app started successfully");
-
-        await checkForUpdates({
-          signal,
-          onError: (startupError) => warn(`Failed to check for updates: ${startupError.message}`),
-        });
-        if (signal.aborted) return detach;
 
         const store = getDefaultStore();
         const telemetryEnabled = store.get(telemetryEnabledAtom);

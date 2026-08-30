@@ -149,7 +149,6 @@
           "src/platform/native.ts",
           "src/platform/operation.ts",
           "src/platform/tauri.ts",
-          "src/platform/updater.ts",
           "src/platform/useTauriListener.ts",
           "src/utils/pathCapabilities.ts",
           "src/utils/sound.ts"

@@ -15,5 +15,4 @@ export {
     type as osType,
     version as OSVersion,
 } from "@tauri-apps/plugin-os";
-export { exit, relaunch } from "@tauri-apps/plugin-process";
-export { check } from "@tauri-apps/plugin-updater";
+export { exit } from "@tauri-apps/plugin-process";

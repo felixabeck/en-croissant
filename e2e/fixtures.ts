@@ -54,7 +54,6 @@ const tauriBootstrap = () => {
         "plugin:app|version": { result: "0.0.0-e2e" },
         "plugin:app|tauri_version": { result: "2.10.0" },
         "plugin:cli|cli_matches": { result: { args: { file: { occurrences: 0, value: null } } } },
-        "plugin:updater|check": { result: null },
         "plugin:path|resolve_directory": { result: "/e2e/documents" },
         "plugin:path|resolve": { result: "/e2e/documents" },
         "plugin:fs|exists": { result: true },

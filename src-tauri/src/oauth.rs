@@ -842,6 +842,7 @@ mod tests {
         server_error: bool,
         listener_ignores_shutdown: bool,
         exchange_started: Arc<AtomicBool>,
+        revoke_calls: Arc<AtomicUsize>,
         listener_stopped: Arc<AtomicBool>,
         listener_aborted: Arc<AtomicBool>,
         listener_starts: Arc<AtomicUsize>,
@@ -857,6 +858,7 @@ mod tests {
                 server_error: false,
                 listener_ignores_shutdown: false,
                 exchange_started: Arc::new(AtomicBool::new(false)),
+                revoke_calls: Arc::new(AtomicUsize::new(0)),
                 listener_stopped: Arc::new(AtomicBool::new(false)),
                 listener_aborted: Arc::new(AtomicBool::new(false)),
                 listener_starts: Arc::new(AtomicUsize::new(0)),
@@ -886,6 +888,7 @@ mod tests {
         }
 
         async fn revoke_token(&self, _: &str) -> Result<(), Error> {
+            self.revoke_calls.fetch_add(1, Ordering::Relaxed);
             if self.revoke_error {
                 Err(Error::OAuthFailure(OAUTH_FAILURE.into()))
             } else {
@@ -1194,6 +1197,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removing_an_unknown_account_does_not_revoke_a_provider_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
+            crate::credentials::MemoryCredentialStore::default(),
+        )));
+        credentials.initialize(temp.path()).unwrap();
+        let services = MockServices::new();
+
+        assert_eq!(
+            remove_lichess_account_internal(LichessAccountHandle::new(), credentials, &services)
+                .await
+                .unwrap(),
+            LichessAccountRemoval::NotFound
+        );
+        assert_eq!(services.revoke_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
     async fn concurrent_attempts_keep_independent_callback_transactions() {
         let lifecycle = Arc::new(AuthLifecycle::default());
         let first_state = CsrfToken::new_random();
@@ -1249,6 +1270,57 @@ mod tests {
             CallbackResult::AcceptedCode
         );
         assert!(task.await.expect("task join").is_ok());
+    }
+
+    #[tokio::test]
+    async fn callback_without_state_is_rejected_before_transaction_lookup() {
+        let lifecycle = AuthLifecycle::default();
+
+        assert_eq!(
+            lifecycle
+                .accept_callback(CallbackQuery {
+                    code: Some(AuthorizationCode::new("code".into())),
+                    state: None,
+                    error: None,
+                })
+                .await,
+            CallbackResult::Mismatch
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_callback_state_reports_no_active_transaction_when_idle() {
+        let lifecycle = AuthLifecycle::default();
+
+        assert_eq!(
+            lifecycle
+                .accept_callback(CallbackQuery {
+                    code: Some(AuthorizationCode::new("code".into())),
+                    state: Some(CsrfToken::new("unknown".into())),
+                    error: None,
+                })
+                .await,
+            CallbackResult::Missing
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_with_code_and_error_is_treated_as_rejection() {
+        let lifecycle = AuthLifecycle::default();
+        let state = CsrfToken::new_random();
+        let (_, callback_rx) = lifecycle.begin(state.clone()).await.unwrap();
+
+        assert_eq!(
+            lifecycle
+                .accept_callback(CallbackQuery {
+                    code: Some(AuthorizationCode::new("code".into())),
+                    state: Some(state),
+                    error: Some("access_denied".into()),
+                })
+                .await,
+            CallbackResult::AcceptedRejection
+        );
+        assert!(matches!(callback_rx.await, Ok(CallbackSignal::Rejected)));
     }
 
     #[tokio::test]

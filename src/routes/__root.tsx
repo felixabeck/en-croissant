@@ -6,7 +6,6 @@ import { getCurrentWindow } from "@/platform/native";
 import { platform } from "@/platform/native";
 import { exit } from "@/platform/native";
 import { tauri } from "@/platform/tauri";
-import { checkForUpdates as checkForUpdatesService } from "@/platform/updater";
 import { useAtom, useAtomValue } from "jotai";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -94,17 +93,6 @@ function RootLayout() {
     });
   }, [navigate, setActiveTab, setTabs, t]);
 
-  const checkForUpdates = useCallback(async () => {
-    await checkForUpdatesService({
-      interactive: true,
-      onError: (error) =>
-        notifications.show({
-          color: "red",
-          message: error.message,
-        }),
-    });
-  }, []);
-
   const runNativeMenuAction = useCallback(
     async (command: () => Promise<unknown>, successMessage?: string) => {
       try {
@@ -150,15 +138,6 @@ function RootLayout() {
     [t],
   );
 
-  const checkForUpdatesOption = useMemo(
-    () => ({
-      label: t("Menu.Help.CheckUpdate"),
-      id: "check_for_updates",
-      action: checkForUpdates,
-    }),
-    [checkForUpdates, t],
-  );
-
   const appMenu = useMemo<MenuGroup>(
     () => ({
       label: t("Menu.Application.Menu"),
@@ -170,7 +149,6 @@ function RootLayout() {
           id: aboutOption.id,
           action: aboutOption.action,
         },
-        checkForUpdatesOption,
         { kind: "separator" },
         {
           label: `${t("SideBar.Settings")}${menuEllipsis}`,
@@ -191,7 +169,7 @@ function RootLayout() {
         },
       ],
     }),
-    [aboutOption, checkForUpdatesOption, openSettings, t],
+    [aboutOption, openSettings, t],
   );
 
   const macOSEditMenu = useMemo<MenuGroup>(
@@ -306,14 +284,13 @@ function RootLayout() {
               void runNativeMenuAction(() => tauri.openAppLog(), t("Menu.Help.OpenLogs")),
           },
           { kind: "separator" },
-          ...(!isMacOS ? [checkForUpdatesOption, aboutOption] : []),
+          ...(!isMacOS ? [aboutOption] : []),
         ],
       },
     ],
     [
       aboutOption,
       appMenu,
-      checkForUpdatesOption,
       createNewTab,
       isMacOS,
       keyMap,

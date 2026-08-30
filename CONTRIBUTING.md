@@ -53,8 +53,8 @@ The following steps will get you setup to contribute changes to this repo:
 - **Only `pnpm dev` is isolated.** `pnpm tauri dev`, `cargo tauri dev` and a bare `cargo run` do not
   merge the config, so they run under the release identifier and write the installed release's data.
   A debug build that starts under a non-`.dev` identifier logs a warning saying so.
-- Two things the identifier does not cover: a database folder chosen explicitly in the app's
-  settings is honoured as given, and the updater still points at the production endpoint.
+- One thing the identifier does not cover: a database folder chosen explicitly in the app's
+  settings is honoured as given.
 - Seed the dev directory by copying out of the release directory, for example
   `cp -r ~/.local/share/com.chessriddle.encroissant/{engines,images} ~/.local/share/com.chessriddle.encroissant.dev/`.
   Keyring secrets do not follow a file copy: a copied `lichess-accounts.json` lists accounts whose
