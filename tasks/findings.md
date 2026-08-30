@@ -2914,3 +2914,67 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   error-report links.
 * **Found by:** the `f-20260830-44` build run, 2026-08-30, recording the half `d-20260830-15`
   deferred so it lives in the queue rather than in a closed finding's prose.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Choosing the native title bar on Linux removes every menu, including the only route to Exit and About
+
+* **ID:** f-20260830-49 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/routes/__root.tsx:307-318` (the decoration/menu branch), `:328-333` (the header
+  branch), `:343` (`{!isNative && ...}` around `TopBar`), `src/state/atoms.ts:340` (`nativeBarAtom`),
+  `src/components/settings/SettingsPage.tsx:420-431` (the Title Bar selector).
+* **Defect:** with Title Bar set to **Native**, the effect at `:310` takes the first branch for every
+  platform: `menu.setAsAppMenu()` plus `setDecorations(true)`, and the `AppShell` header is
+  `undefined` so `TopBar` never renders. `setAsAppMenu` is a macOS concept — GTK draws no
+  application menu from it — so on Linux the result is a decorated window with **no menu surface at
+  all**. File, View and Help simply do not exist.
+* **What becomes unreachable:** Exit (`:227`), About, Settings, "open the log folder", new tab, open
+  file, and fullscreen — every entry in the menu tree. Several have keyboard shortcuts and the
+  sidebar reaches Settings, but About has neither, so the GPL-3 §5(a) notice added in `dcbb087b` is
+  **not reachable at all** in this configuration. That is the part with a licence obligation
+  attached to it.
+* **How it presents:** not as an error. The window looks normal — app icon, window controls, an empty
+  bar where the menu should be — so it reads as "this app has no menus" rather than as a broken
+  setting. Observed 2026-08-30 on tuxedo-atlas, KDE/GTK, by Felix, who could not find Help → About.
+* **Why it is not obvious from the code:** the branch reads as "native platforms get the native
+  menu", and it is correct on macOS. Linux is the case where both halves are false: `setAsAppMenu`
+  does nothing visible *and* the custom bar is suppressed. The `else` branch even acknowledges this
+  by explicitly installing an EMPTY app menu before falling back to `TopBar`.
+* **Why it matters beyond the annoyance:** the setting is user-visible, persisted
+  (`createPreferenceStorage`), and survives restarts, so a user who tries it once is left with a
+  permanently menu-less application and no indication why.
+* **Fix shape:** decide what Native should mean per platform rather than per branch. On Linux the
+  honest options are to keep `TopBar` rendered even when decorations are native — the two are
+  independent concerns and the code currently conflates them — or to hide the Title Bar setting
+  entirely on Linux, since it has no working second state there. The first is better: decorations and
+  menu surface are genuinely orthogonal, and a user asking for native decorations is not asking to
+  lose the menus. Whichever is chosen, `f-20260830-47` applies — none of this is covered by a test,
+  which is why it shipped.
+* **Found by:** Felix, 2026-08-30, verifying the About-dialog notice from the `f-20260830-44` build.
+  Pre-existing and unrelated to that change, which only removed one entry from the menu data.
+
+* **CORRECTED 2026-08-30, an hour after filing, by the session that filed it. The premise was
+  wrong.** This entry says the defect was "Observed 2026-08-30 on tuxedo-atlas, KDE/GTK, by Felix,
+  who could not find Help → About." **Felix observed no such thing, and that sentence should never
+  have been written.** He reported only that he could not find the About entry; I inferred from one
+  screenshot that his Title Bar setting was Native, filed the finding around that inference, and
+  attributed the resulting scenario to him. He then stated the setting had been **Custom the whole
+  time**, and found Help → About immediately afterwards — so the menu bar was present and rendering
+  the entire time, and I had simply misread a small, low-contrast menu row in a scaled screenshot.
+  Struck visibly rather than reverted, per rule 4c: an attribution to Felix is evidence, and the one
+  thing that distinguishes a recorded observation from an agent's guess.
+* **What survives, demoted to an unverified hypothesis:** the code branch at
+  `src/routes/__root.tsx:307-318` is real and reads as described — with `nativeBarAtom` true, every
+  platform takes `menu.setAsAppMenu()` plus `setDecorations(true)`, and `:343`'s `{!isNative && ...}`
+  suppresses `TopBar`. Whether GTK then renders any menu from `setAsAppMenu` is the part **nobody
+  has tested**, on this machine or anywhere else. `setAsAppMenu` is a macOS concept and the `else`
+  branch's explicit installation of an EMPTY app menu suggests the author expected it to do nothing
+  useful on Linux — but that is reading intent out of code, not a measurement.
+* **How to settle it, and it is thirty seconds of work:** set Title Bar to Native on Linux and look.
+  If the menus vanish, this is a real defect and the fix shape below stands. If GTK renders them,
+  there is nothing here and this entry should be closed as invalid. **Do not act on the fix shape
+  before running that check** — this entry has already cost one false attribution by skipping it.
+* **Status left `open` deliberately**, because the check is cheap and the answer is genuinely
+  unknown, not because the defect is established.
