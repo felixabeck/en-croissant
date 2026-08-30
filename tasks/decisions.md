@@ -508,3 +508,27 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   not-a-push-gate — is Claude's design, not his. Recorded separately per universal rule 4c: an
   attribution to Felix is evidence, and the parts he did not choose must not travel under his name.
   · **Superseded-by:** -
+
+### d-20260830-19 — Which of `.claude` and `.agents` is the canonical skill tree?
+
+* **Governs:** -
+* **Chosen:** `.claude/skills/**` is canonical; `.agents/skills/**` holds short Codex bridges that restate no gate command. Enforced by `scripts/check-skill-bridges.mjs`, which also fails any file naming a bridge as the gate source.
+* **Rejected:** keeping `push` canonical in `.agents` (the pre-existing state), and ChessRiddle's byte-identical generated mirror.
+* **Because:** `~/.claude/skills/build/SKILL.md` step 0 reads `.claude/skills/push/SKILL.md` as its source for gate mapping, sensitive-path globs and the project Skip catalog, so every `build` run landed on a 10-line bridge. The repository also contradicted itself — `verify-ui` was already canonical in `.claude` — and Korrigio uses this same direction. A mirror was rejected because bridges carry real Codex-runtime deltas here (committer name, leaf-versus-orchestrator), which a byte-identical copy cannot express.
+* **Decided by:** build run 2026-08-30 agent-tooling-parity · **Superseded-by:** -
+
+### d-20260830-20 — Should a gate that cannot run its check report success?
+
+* **Governs:** -
+* **Chosen:** No. An unavailable `actionlint` fails `workflows:check`, and an absent sibling checkout fails `findings:parity:check`. Each is waivable only through an explicit named flag that neither `package.json` nor CI passes.
+* **Rejected:** printing `SKIP` and exiting 0, which is what both originally did — in the actionlint case because this run's own phase instruction asked for it.
+* **Because:** five review lenses independently reported the same shape: the condition that prevents the comparison is preserved and relabelled as success, so drift passes on any machine lacking the tool or the sibling path. A gate's exit code is read as "this was checked and was fine"; "could not check" must never be spelled the same way. The waiver flag keeps the genuinely toolless case usable without making silence the default.
+* **Decided by:** build run 2026-08-30 agent-tooling-parity · **Superseded-by:** -
+
+### d-20260830-21 — Repairing another repository's broken tooling in order to file a finding into it
+
+* **Governs:** -
+* **Chosen:** Repair it, leave the repair uncommitted in that repository's working tree, file a finding there describing both the breakage and the waiting repair, and report it to Felix. Applied to `correction-app/scripts/findings.py`, which had three Python 2 `except` clauses committed on 2026-08-28 and had not parsed since.
+* **Rejected:** filing nothing there and reporting the breakage to Felix instead; and committing the repair in that repository.
+* **Because:** Felix's instruction for this run was to file the `_atomic_write` port into both siblings, and filing requires a working CLI — the repair was instrumental to the instruction, not scope creep. Committing it there was rejected because that repository's own gates and push review have not seen it, and a drain was holding its ledger lock at the time. Leaving it uncommitted with a finding that names it keeps the repair discoverable without smuggling an unreviewed change into someone else's history.
+* **Decided by:** build run 2026-08-30 agent-tooling-parity · **Superseded-by:** -

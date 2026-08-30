@@ -3215,3 +3215,68 @@ regressions — plus the proof that the wiring invokes them.
   against the actor's own lifecycle rather than bolted onto a shutdown change. One lens is enough
   for it (`review-engine-protocol`).
 * **Found by:** the `n2-conventions` push-review lens, 2026-08-30 (confidence 96).
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The four new tooling checkers each carry their own directory walker
+
+* **ID:** f-20260830-54 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+
+`scripts/check-skill-bridges.mjs`, `scripts/check-tool-version-parity.mjs` and
+`scripts/check-gate-routing.mjs` each implement their own recursive repository walk, and each
+maintains its own exclusion handling. `review-minimalism` flagged this at confidence 92 during the
+2026-08-30 tooling-parity run.
+
+The glob half of the same finding was fixed in that run: all three now route through the
+`globToRegExp` and `matches` exports of `scripts/coverage-scope.mjs` instead of compiling globs by
+hand. The walk half was not, so the three files still differ in what they skip and in whether they
+follow symlinks.
+
+Fix: one shared enumerator with exclusions passed as data, beside the existing glob helpers rather
+than inside any one checker. Prefer the tracked-path inventory where a checker only cares about
+tracked files, since `git ls-files` already answers that and cannot disagree with git.
+
+Also in the same class, smaller: `scripts/check-skill-bridges.mjs:4-5` exports `CODEX_ONLY` and
+`CLAUDE_ONLY` allowlists that are both empty, with injectable overrides no caller and no test
+uses. `review-minimalism` at 94 called it an unrequested escape hatch in a checker whose value is
+that it is strict. Delete both unless a skill actually needs to exist on one side only — Korrigio
+needs that allowance for `local-ci` and `frontend-design`, this repository currently does not.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Three of the new checkers' suites assert less than their checker promises
+
+* **ID:** f-20260830-55 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+
+`review-tests` found three places where the tooling added on 2026-08-30 has a suite that would
+stay green while the checker stopped doing its job. The blockers it found alongside these were
+fixed in that run; these three were filed rather than fixed because each needs a judgement about
+what the right assertion is, not just an extra case.
+
+* `scripts/gate-receipt-tests.mjs` — every toolchain case injects a fake fingerprint for
+  `frontend-build`, so the per-gate `REQUIRED_TOOLS` registry is never exercised. Deleting a real
+  probe — the Playwright image derivation, the nightly Rust pin, `cargo-llvm-cov` — leaves the
+  whole suite green and permits a false cache hit on a gate whose toolchain is no longer
+  fingerprinted (confidence 98). The open question is whether to assert the registry's shape or to
+  drive each gate's probe for real, which costs the tool invocations the tests currently avoid.
+* `scripts/check-skill-bridges-tests.mjs:52` — the canonical-pointer case asserts only that the
+  canonical path occurs somewhere in the bridge. A bridge saying "do not read
+  `.claude/skills/push/SKILL.md`" and then carrying divergent instructions under the line cap
+  passes (confidence 98). Anchoring "delegation" mechanically is the design question: the line cap
+  is a proxy for it and a weak one.
+* `scripts/findings-parity-tests.py` — `review-minimalism` reads the divergence framework as
+  ~220 lines serving one declared divergence, arguing the pinned digest alone already rejects every
+  added, removed, adjacent and same-size-substituted change (confidence 96). Worth deciding
+  deliberately rather than by default: the framework's value is that it stays honest when a SECOND
+  divergence appears, which is the situation the ledger contract expects to recur.
+
+Related, same run and same class, no Root because the cause differs: `scripts/run-backend-mutation-tests.mjs`
+asserted the mutation-guard preflight against `.agents/skills/push/SKILL.md` and went red when that
+file became a bridge. Nothing generic caught the dangling reference — `check-skill-bridges.mjs`
+scans documentation for bridge-as-gate-source claims but not scripts, and extending it there would
+flag the bridge checker's own fixtures. Distinguishing a fixture from an assertion is the open
+question.
