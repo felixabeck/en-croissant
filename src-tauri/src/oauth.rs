@@ -413,8 +413,17 @@ impl OAuthServices for ProdOAuthServices {
 }
 
 pub struct AuthInternalConfig<'a> {
+    pub client_id: &'a str,
     pub token_url_override: &'a str,
     pub timeout_duration: Duration,
+}
+
+fn auth_internal_config(config: &tauri::Config) -> AuthInternalConfig<'_> {
+    AuthInternalConfig {
+        client_id: &config.identifier,
+        token_url_override: "https://lichess.org/api/token",
+        timeout_duration: Duration::from_secs(300),
+    }
 }
 
 #[tauri::command]
@@ -450,10 +459,7 @@ pub async fn authenticate(
                     .expect("OAuth account mutex poisoned") = Some(account);
                 Ok(())
             },
-            AuthInternalConfig {
-                token_url_override: "https://lichess.org/api/token",
-                timeout_duration: Duration::from_secs(300),
-            },
+            auth_internal_config(app.config()),
             ProdOAuthServices,
         )
         .await;
@@ -581,7 +587,7 @@ where
             &mut listener,
             open_browser,
             emit_token,
-            config.token_url_override,
+            &config,
             &services,
         ),
     )
@@ -610,7 +616,7 @@ async fn authenticate_after_listener<O, E, S>(
     listener: &mut ListenerHandle,
     open_browser: O,
     emit_token: E,
-    token_url_override: &str,
+    config: &AuthInternalConfig<'_>,
     services: &S,
 ) -> Result<(), Error>
 where
@@ -618,7 +624,11 @@ where
     E: FnOnce(String) -> Result<(), String>,
     S: OAuthServices,
 {
-    let client = match oauth_client(&listener.redirect_url, token_url_override) {
+    let client = match oauth_client(
+        &listener.redirect_url,
+        config.client_id,
+        config.token_url_override,
+    ) {
         Ok(client) => client,
         Err(source) => {
             error!("OAuth client setup failed: {source}");
@@ -678,7 +688,11 @@ where
     }
 }
 
-fn oauth_client(redirect_url: &str, token_url_override: &str) -> Result<BasicClient, String> {
+fn oauth_client(
+    redirect_url: &str,
+    client_id: &str,
+    token_url_override: &str,
+) -> Result<BasicClient, String> {
     let auth_url =
         AuthUrl::new("https://lichess.org/oauth".into()).map_err(|source| source.to_string())?;
     let token_url =
@@ -686,7 +700,7 @@ fn oauth_client(redirect_url: &str, token_url_override: &str) -> Result<BasicCli
     let redirect_url =
         RedirectUrl::new(redirect_url.into()).map_err(|source| source.to_string())?;
     Ok(BasicClient::new(
-        ClientId::new("org.encroissant.app".into()),
+        ClientId::new(client_id.into()),
         None,
         auth_url,
         Some(token_url),
@@ -810,6 +824,15 @@ mod tests {
         assert!(provider_http_client().is_ok());
     }
 
+    #[test]
+    fn production_auth_config_sources_client_id_from_shipped_tauri_config() {
+        let config = serde_json::from_str::<tauri::Config>(include_str!("../tauri.conf.json"))
+            .expect("repository Tauri configuration must deserialize");
+        let auth_config = auth_internal_config(&config);
+        assert_eq!(config.identifier, "com.chessriddle.encroissant");
+        assert_eq!(auth_config.client_id, config.identifier);
+    }
+
     #[derive(Clone)]
     struct MockServices {
         bind_error: Option<String>,
@@ -912,6 +935,7 @@ mod tests {
 
     fn config() -> AuthInternalConfig<'static> {
         AuthInternalConfig {
+            client_id: "test-client-id",
             token_url_override: "http://mock/token",
             timeout_duration: Duration::from_secs(1),
         }
@@ -919,6 +943,7 @@ mod tests {
 
     fn short_config() -> AuthInternalConfig<'static> {
         AuthInternalConfig {
+            client_id: "test-client-id",
             token_url_override: "http://mock/token",
             timeout_duration: Duration::from_millis(20),
         }
@@ -926,6 +951,7 @@ mod tests {
 
     fn deadline_config() -> AuthInternalConfig<'static> {
         AuthInternalConfig {
+            client_id: "test-client-id",
             token_url_override: "http://mock/token",
             timeout_duration: Duration::from_millis(100),
         }
@@ -985,6 +1011,36 @@ mod tests {
         assert!(matches!(result, Err(Error::OAuthFailure(message)) if message == OAUTH_FAILURE));
         assert!(lifecycle.is_idle().await);
         assert!(services.listener_stopped.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn authentication_url_carries_configured_client_id() {
+        let lifecycle = Arc::new(AuthLifecycle::default());
+        let services = MockServices::new();
+        let opened_url = Arc::new(std::sync::Mutex::new(None));
+        let captured_url = opened_url.clone();
+        let result = authenticate_internal(
+            "user".into(),
+            lifecycle,
+            move |url| {
+                *captured_url.lock().expect("captured URL mutex") =
+                    Some(url::Url::parse(url).expect("OAuth authorization URL"));
+                Err("stop after capturing URL".into())
+            },
+            |_| Ok(()),
+            config(),
+            services,
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::OAuthFailure(message)) if message == OAUTH_FAILURE));
+        let opened_url = opened_url.lock().expect("captured URL mutex");
+        let client_id = opened_url
+            .as_ref()
+            .expect("browser opener receives a URL")
+            .query_pairs()
+            .find_map(|(key, value)| (key == "client_id").then(|| value.into_owned()));
+        assert_eq!(client_id.as_deref(), Some("test-client-id"));
     }
 
     #[tokio::test]

@@ -44,7 +44,7 @@
   },
   "productName": "en-croissant",
   "mainBinaryName": "en-croissant",
-  "identifier": "org.encroissant.app",
+  "identifier": "com.chessriddle.encroissant",
   "plugins": {
     "cli": {
       "args": [

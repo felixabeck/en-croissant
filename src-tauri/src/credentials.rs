@@ -20,8 +20,8 @@ use std::{
 };
 
 /// Appended to the bundle identifier to form the OS credential-manager service name.  The release
-/// identifier `org.encroissant.app` must keep producing `org.encroissant.app.lichess`: renaming the
-/// namespace would orphan every token an installed release has already stored.
+/// and development identifiers deliberately produce disjoint namespaces so neither build can
+/// access tokens stored by the other.
 const KEYRING_SERVICE_SUFFIX: &str = ".lichess";
 const REGISTRY_FILE: &str = "lichess-accounts.json";
 const REGISTRY_VERSION: u8 = 2;
@@ -82,8 +82,8 @@ pub trait CredentialStore: Send + Sync + 'static {
 
 /// The operating-system credential manager is shared by every build on the machine, so the service
 /// name is derived from the bundle identifier rather than hard-coded.  A development build runs
-/// under `org.encroissant.app.dev` and therefore cannot read, overwrite or delete the tokens of an
-/// installed release.
+/// under the development identifier and therefore cannot read, overwrite or delete the tokens of
+/// an installed release.
 pub struct OsCredentialStore {
     service: String,
 }
@@ -718,17 +718,17 @@ mod tests {
         );
     }
 
-    /// Renaming the namespace would orphan every token an installed release already stored, so the
-    /// release identifier must keep producing the historical service name.
+    /// The configured release and development identifiers must produce their corresponding,
+    /// disjoint credential-manager service names.
     #[test]
     fn keyring_service_is_derived_from_the_bundle_identifier() {
         assert_eq!(
-            OsCredentialStore::new("org.encroissant.app").service,
-            "org.encroissant.app.lichess"
+            OsCredentialStore::new("com.chessriddle.encroissant").service,
+            "com.chessriddle.encroissant.lichess"
         );
         assert_eq!(
-            OsCredentialStore::new("org.encroissant.app.dev").service,
-            "org.encroissant.app.dev.lichess"
+            OsCredentialStore::new("com.chessriddle.encroissant.dev").service,
+            "com.chessriddle.encroissant.dev.lichess"
         );
     }
 
