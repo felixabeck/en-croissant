@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     process::Stdio,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -317,7 +317,9 @@ pub struct SupervisedEngine {
 #[derive(Default)]
 pub struct EngineSupervisor {
     next_generation: AtomicU64,
+    sealed: AtomicBool,
     actors: DashMap<EngineKey, SupervisedEngine>,
+    registration: Mutex<()>,
     // Every lifecycle transition for an exact key takes this lock before it
     // observes or mutates `actors`.  The map itself is concurrent, but it
     // cannot make remove → await shutdown → insert atomic.
@@ -325,6 +327,13 @@ pub struct EngineSupervisor {
 }
 
 impl EngineSupervisor {
+    async fn reject_replacement_during_shutdown(actor: &EngineActor) -> Error {
+        if let Err(error) = actor.terminate().await {
+            error!("engine spawned during shutdown could not be terminated cleanly: {error}");
+        }
+        Error::Conflict("application is shutting down".into())
+    }
+
     fn lifecycle_slot(&self, key: &EngineKey) -> Arc<Mutex<()>> {
         self.lifecycle
             .entry(key.clone())
@@ -340,6 +349,9 @@ impl EngineSupervisor {
     ) -> Result<SupervisedEngine, Error> {
         let lifecycle = self.lifecycle_slot(&key);
         let _transition = lifecycle.lock().await;
+        if self.sealed.load(Ordering::SeqCst) {
+            return Err(Self::reject_replacement_during_shutdown(&actor).await);
+        }
         if let Some(previous) = self.actors.get(&key).map(|entry| entry.clone()) {
             let previous_actor = previous.actor.clone();
             // A replacement must observe the old search boundary before any
@@ -350,6 +362,11 @@ impl EngineSupervisor {
                 self.actors.remove(&key);
             }
             combine_shutdown_results(stop, terminate)?;
+        }
+        let registration = self.registration.lock().await;
+        if self.sealed.load(Ordering::SeqCst) {
+            drop(registration);
+            return Err(Self::reject_replacement_during_shutdown(&actor).await);
         }
         let generation = self
             .next_generation
@@ -372,6 +389,9 @@ impl EngineSupervisor {
     ) -> Result<SupervisedEngine, Error> {
         let lifecycle = self.lifecycle_slot(&key);
         let _transition = lifecycle.lock().await;
+        if self.sealed.load(Ordering::SeqCst) {
+            return Err(Self::reject_replacement_during_shutdown(&actor).await);
+        }
         if let Some(previous) = self.actors.get(&key).map(|entry| entry.clone()) {
             let previous_actor = previous.actor.clone();
             let stop = previous_actor.stop_current().await;
@@ -380,6 +400,11 @@ impl EngineSupervisor {
                 self.actors.remove(&key);
             }
             combine_shutdown_results(stop, terminate)?;
+        }
+        let registration = self.registration.lock().await;
+        if self.sealed.load(Ordering::SeqCst) {
+            drop(registration);
+            return Err(Self::reject_replacement_during_shutdown(&actor).await);
         }
         let generation = self
             .next_generation
@@ -433,27 +458,47 @@ impl EngineSupervisor {
             .filter(|entry| entry.key().tab == tab)
             .map(|entry| (entry.key().clone(), entry.value().generation))
             .collect();
+        self.terminate_targets(targets).await
+    }
+
+    pub async fn terminate_all(&self) -> Result<(), Error> {
         let mut failures = Vec::new();
-        for (key, generation) in targets {
-            if let Err(error) = self.terminate_exact(&key, generation).await {
-                failures.push(format!("{}:{}: {error}", key.tab, key.engine));
+        self.sealed.store(true, Ordering::SeqCst);
+        // Synchronize with the final publication check in `replace*`. Once
+        // this barrier is crossed, no production path can add another actor.
+        drop(self.registration.lock().await);
+        loop {
+            let targets: Vec<_> = self
+                .actors
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().generation))
+                .collect();
+            if targets.is_empty() {
+                break;
+            }
+            if let Err(error) = self.terminate_targets(targets).await {
+                failures.push(error.to_string());
             }
         }
         aggregate_shutdown_failures(failures)
     }
 
-    pub async fn terminate_all(&self) -> Result<(), Error> {
-        let targets: Vec<_> = self
-            .actors
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.value().generation))
+    async fn terminate_targets(&self, targets: Vec<(EngineKey, u64)>) -> Result<(), Error> {
+        let results = futures_util::future::join_all(targets.into_iter().map(
+            |(key, generation)| async move {
+                let result = self.terminate_exact(&key, generation).await;
+                (key, result)
+            },
+        ))
+        .await;
+        let failures = results
+            .into_iter()
+            .filter_map(|(key, result)| {
+                result
+                    .err()
+                    .map(|error| format!("{}:{}: {error}", key.tab, key.engine))
+            })
             .collect();
-        let mut failures = Vec::new();
-        for (key, generation) in targets {
-            if let Err(error) = self.terminate_exact(&key, generation).await {
-                failures.push(format!("{}:{}: {error}", key.tab, key.engine));
-            }
-        }
         aggregate_shutdown_failures(failures)
     }
 }
@@ -1217,6 +1262,7 @@ mod tests {
         fail_write: bool,
         fail_stop: bool,
         read_delay: Option<Duration>,
+        terminate_delay: Option<Duration>,
     }
     type RecordedWrites = Arc<Mutex<Vec<String>>>;
     type FakeActor = (EngineActor, RecordedWrites);
@@ -1238,6 +1284,9 @@ mod tests {
             Ok(self.lines.pop_front().flatten())
         }
         async fn terminate(&mut self, _: Duration) -> Result<(), Error> {
+            if let Some(delay) = self.terminate_delay {
+                tokio::time::sleep(delay).await;
+            }
             self.terminate_calls.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(())
         }
@@ -1260,6 +1309,7 @@ mod tests {
             fail_write,
             fail_stop: false,
             read_delay,
+            terminate_delay: None,
         };
         let deadlines = EngineDeadlines {
             search: Duration::from_millis(20),
@@ -1268,6 +1318,27 @@ mod tests {
         };
         (
             (EngineActor::new(Box::new(io), deadlines), writes),
+            terminate_calls,
+        )
+    }
+
+    fn actor_with_terminate_delay(delay: Duration) -> FakeActorWithTermination {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let terminate_calls = Arc::new(AtomicUsize::new(0));
+        let io = FakeIo {
+            writes: writes.clone(),
+            lines: VecDeque::new(),
+            terminate_calls: terminate_calls.clone(),
+            fail_write: false,
+            fail_stop: false,
+            read_delay: None,
+            terminate_delay: Some(delay),
+        };
+        (
+            (
+                EngineActor::new(Box::new(io), EngineDeadlines::default()),
+                writes,
+            ),
             terminate_calls,
         )
     }
@@ -1282,6 +1353,7 @@ mod tests {
             fail_write: false,
             fail_stop: true,
             read_delay: None,
+            terminate_delay: None,
         };
         (
             (
@@ -1413,6 +1485,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminate_all_terminates_registered_actors_concurrently() {
+        let supervisor = EngineSupervisor::default();
+        let per_actor_delay = Duration::from_millis(100);
+        for index in 0..4 {
+            let key = EngineKey::new("tab".into(), format!("engine-{index}")).unwrap();
+            let ((actor, _), _) = actor_with_terminate_delay(per_actor_delay);
+            supervisor.replace(key, actor).await.unwrap();
+        }
+
+        let started = std::time::Instant::now();
+        supervisor.terminate_all().await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "four 100 ms terminations must overlap rather than taking their 400 ms sum"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminate_all_seals_the_supervisor_against_replacement() {
+        let supervisor = EngineSupervisor::default();
+        supervisor.terminate_all().await.unwrap();
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+
+        assert!(matches!(
+            supervisor.replace(key, actor).await,
+            Err(Error::Conflict(message)) if message == "application is shutting down"
+        ));
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn terminate_all_drains_an_actor_published_during_shutdown() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let initial_key = EngineKey::new("tab".into(), "initial".into()).unwrap();
+        let ((initial, _), _) = actor_with_terminate_delay(Duration::from_millis(100));
+        supervisor.replace(initial_key, initial).await.unwrap();
+
+        let shutdown = tokio::spawn({
+            let supervisor = supervisor.clone();
+            async move { supervisor.terminate_all().await }
+        });
+        while !supervisor.sealed.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let slipped_key = EngineKey::new("tab".into(), "slipped".into()).unwrap();
+        let ((slipped, _), terminated) = actor_with(&[], false, None);
+        supervisor.actors.insert(
+            slipped_key.clone(),
+            SupervisedEngine {
+                generation: 99,
+                actor: Arc::new(slipped),
+                cancelled: Arc::new(AtomicBool::new(false)),
+            },
+        );
+
+        shutdown.await.unwrap().unwrap();
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&slipped_key).is_none());
+    }
+
+    #[tokio::test]
     async fn uci_acknowledgements_are_exact_and_timeout_is_bounded() {
         let (actor, _) = actor(&["uciok-not-an-ack"]);
         assert!(matches!(
@@ -1442,6 +1576,7 @@ mod tests {
             fail_write: false,
             fail_stop: false,
             read_delay: None,
+            terminate_delay: None,
         };
         let actor = EngineActor::new(Box::new(io), EngineDeadlines::default());
         let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();

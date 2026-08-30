@@ -15,6 +15,7 @@ import {
   APP_BINARY,
   Session,
   appProcesses,
+  processExists,
   requirePrerequisites,
   shutdown,
   startCompositor,
@@ -24,6 +25,12 @@ import {
 
 const screenshotIndex = process.argv.indexOf("--screenshot");
 const screenshotPath = screenshotIndex === -1 ? undefined : process.argv[screenshotIndex + 1];
+const closeControlProbe = `
+  const labelled = document.querySelector('button[aria-label="Close window"]');
+  const controls = document.querySelector('[class*="windowControls"]');
+  const fallback = controls ? controls.querySelector('button:last-of-type') : null;
+  return labelled ? "label" : fallback ? "fallback" : false;
+`;
 
 const failures = [];
 const check = (condition, description, detail) => {
@@ -35,10 +42,14 @@ const check = (condition, description, detail) => {
 };
 
 process.on("exit", () => void shutdown());
-process.on("SIGINT", () => {
-  void shutdown();
-  process.exit(1);
-});
+let signalShutdown;
+const handleSignal = () => {
+  if (signalShutdown) return;
+  signalShutdown = shutdown()
+    .catch((error) => console.error(`cleanup failed: ${error.message}`))
+    .finally(() => process.exit(1));
+};
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, handleSignal);
 
 try {
   requirePrerequisites();
@@ -52,11 +63,13 @@ try {
   const readLog = () => readFile(logFile, "utf8").catch(() => "");
 
   const session = await Session.open(APP_BINARY);
-  await waitFor("the renderer to mount", async () => {
-    const ready = await session
-      .execute("return document.querySelector('button[aria-label=\"Close window\"]') !== null")
-      .catch(() => false);
-    return ready;
+  const closeControl = await waitFor("the renderer to mount its window controls", async () =>
+    session.execute(closeControlProbe).catch(() => false),
+  ).catch((error) => {
+    throw new Error(
+      "could not find the close control: expected the translated label or the last button " +
+        `in the window-controls group (${error.message})`,
+    );
   });
 
   check(
@@ -64,10 +77,13 @@ try {
     "the real Tauri IPC bridge is present (not a test mock)",
   );
 
-  const labels = await session.execute(
-    "return Array.from(document.querySelectorAll('[aria-label]')).map(e => e.getAttribute('aria-label'))",
+  check(
+    closeControl === "label" || closeControl === "fallback",
+    "the custom title bar rendered its window controls",
+    closeControl === "fallback"
+      ? "the translated close label was absent; the last button in the window-controls group will be used"
+      : undefined,
   );
-  check(labels.includes("Close window"), "the custom title bar rendered its window controls");
 
   if (screenshotPath) {
     await writeFile(screenshotPath, Buffer.from(await session.screenshot(), "base64"));
@@ -75,29 +91,50 @@ try {
   }
 
   const running = appProcesses();
+  const application = running.find(({ cmd }) => /release\/en-croissant/.test(cmd));
+  const webkitServicePids = application
+    ? running
+        .filter(
+          ({ ppid, cmd }) =>
+            ppid === application.pid && /WebKitWebProcess|WebKitNetworkProcess/.test(cmd),
+        )
+        .map(({ pid }) => pid)
+    : [];
+  const trackedPids = application ? [application.pid, ...webkitServicePids] : [];
+  const describeProcesses = (processes) =>
+    processes.map(({ pid, ppid, cmd }) => `${pid} ${ppid} ${cmd}`).join("\n      ");
   check(
-    running.some((line) => /release\/en-croissant/.test(line)),
+    application !== undefined,
     "the application process is running before the close",
-    running.join("\n      "),
+    describeProcesses(running),
   );
 
   // The app's own control, so this is the real RunEvent::ExitRequested path rather than a kill.
   await session.execute(
-    `document.querySelector('button[aria-label="Close window"]').click(); return 1;`,
+    `
+      const labelled = document.querySelector('button[aria-label="Close window"]');
+      const controls = document.querySelector('[class*="windowControls"]');
+      const fallback = controls ? controls.querySelector('button:last-of-type') : null;
+      const close = labelled || fallback;
+      if (!close) throw new Error("could not find the close control in the window-controls group");
+      setTimeout(() => close.click(), 0);
+      return 1;
+    `,
   );
 
   const gone = await waitFor(
-    "the application to exit",
-    () => appProcesses().every((line) => !/release\/en-croissant/.test(line)),
+    `application pid ${application?.pid ?? "unknown"} and its recorded WebKit service pids to exit`,
+    () => trackedPids.every((pid) => !processExists(pid)),
     { timeoutMs: 30_000 },
   ).catch(() => false);
-  check(gone, "the application exited after its own close control was used");
-
-  const leftovers = appProcesses().filter((line) => /release\/en-croissant/.test(line));
+  const survivors = trackedPids.filter(processExists);
+  const trackedDescription =
+    `application pid ${application?.pid ?? "unknown"} and recorded WebKit service pids ` +
+    `[${webkitServicePids.join(", ") || "none"}]`;
   check(
-    leftovers.length === 0,
-    "no application or WebKit service process outlived the close",
-    leftovers.join("\n      "),
+    application !== undefined && gone && survivors.length === 0,
+    `${trackedDescription} do not exist after the close`,
+    survivors.length > 0 ? `surviving pids: ${survivors.join(", ")}` : undefined,
   );
 
   const log = await readLog();
@@ -112,6 +149,7 @@ try {
       ? "the budget elapsed instead — children may still be running"
       : undefined,
   );
+  check(log.includes("Sound server shutdown signalled"), "the sound server shutdown was signalled");
 
   console.log("\nshutdown log:");
   for (const line of log.split("\n").filter((line) => /Shutdown|Sound server/.test(line))) {

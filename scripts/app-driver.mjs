@@ -14,9 +14,10 @@
 // particular always opens a native picker, so no engine can be registered from here — a check that
 // needs a live engine child is still Felix's.
 //
-// Prerequisites, both one-off:
+// Prerequisites, all three one-off:
 //   sudo apt install webkit2gtk-driver     (must match the installed libwebkit2gtk version)
 //   cargo install tauri-driver --locked
+//   sudo apt install kwin-wayland
 
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -31,6 +32,10 @@ export const APP_BINARY = join(projectRoot, "src-tauri", "target", "release", "e
 
 const DRIVER_PORT = 4444;
 const NATIVE_PORT = 4445;
+const FETCH_TIMEOUT_MS = 5_000;
+const OUTPUT_LIMIT = 64 * 1024;
+const TERM_TIMEOUT_MS = 5_000;
+const KILL_TIMEOUT_MS = 2_000;
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -42,6 +47,7 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 const started = [];
 let profileDirectory;
+let shutdownPromise;
 
 function launch(command, args, options = {}) {
   const child = spawn(command, args, {
@@ -53,18 +59,51 @@ function launch(command, args, options = {}) {
   return child;
 }
 
+function outputBuffer() {
+  let value = "";
+  return {
+    push(chunk) {
+      value = (value + String(chunk)).slice(-OUTPUT_LIMIT);
+    },
+    text() {
+      return value;
+    },
+  };
+}
+
 function collect(child, sink) {
   child.stdout?.on("data", (chunk) => sink.push(String(chunk)));
   child.stderr?.on("data", (chunk) => sink.push(String(chunk)));
 }
 
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function waitFor(label, probe, { timeoutMs = 45_000, everyMs = 200 } = {}) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const value = await probe();
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error(`timed out waiting for ${label}`);
+
+    let timer;
+    const value = await Promise.race([
+      Promise.resolve().then(() => probe()),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), remainingMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
     if (value) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
-    await sleep(everyMs);
+
+    const delayMs = Math.min(everyMs, deadline - Date.now());
+    if (delayMs <= 0) throw new Error(`timed out waiting for ${label}`);
+    await sleep(delayMs);
   }
 }
 
@@ -93,7 +132,7 @@ export function requirePrerequisites() {
 
 /** An off-screen Wayland compositor. The window never appears on, or takes focus from, the desktop. */
 export async function startCompositor({ width = 1400, height = 900 } = {}) {
-  const output = [];
+  const output = outputBuffer();
   const kwin = launch("kwin_wayland", [
     "--virtual",
     "--width",
@@ -104,24 +143,39 @@ export async function startCompositor({ width = 1400, height = 900 } = {}) {
   collect(kwin, output);
   const socket = await waitFor("the nested compositor socket", () => {
     const match = output
-      .join("")
+      .text()
       .match(/Accepting client connections on sockets: QList\("([^"]+)"\)/);
     return match?.[1];
   });
-  return { socket, output };
+  return { socket, output: output.text() };
 }
 
 /**
  * The app inherits this environment, so `HOME` decides which profile it reads and writes. It gets a
- * throwaway one by default: `tauri-plugin-window-state` persists geometry on exit, and a headless
- * 1400x900 run must not resize the window Felix actually uses.
+ * throwaway one: `tauri-plugin-window-state` persists geometry on exit, and a headless 1400x900 run
+ * must not resize the window Felix actually uses. XDG overrides are removed so they cannot bypass it.
  */
-export async function startDriver({ waylandDisplay, isolateProfile = true }) {
-  const output = [];
-  const env = { ...process.env, WAYLAND_DISPLAY: waylandDisplay };
-  if (isolateProfile) {
-    profileDirectory = await mkdtemp(join(tmpdir(), "en-croissant-verify-"));
-    env.HOME = profileDirectory;
+export async function startDriver({ waylandDisplay }) {
+  const output = outputBuffer();
+  const env = {
+    ...process.env,
+    WAYLAND_DISPLAY: waylandDisplay,
+    LANG: "en_US.UTF-8",
+    LC_ALL: "en_US.UTF-8",
+  };
+
+  try {
+    const response = await fetchWithTimeout(`http://127.0.0.1:${DRIVER_PORT}/status`);
+    if (response.body) await response.body.cancel().catch(() => {});
+    throw new Error(`refusing to start tauri-driver: port ${DRIVER_PORT} is already answering`);
+  } catch (error) {
+    if (error.message.includes(`port ${DRIVER_PORT} is already answering`)) throw error;
+  }
+
+  profileDirectory = await mkdtemp(join(tmpdir(), "en-croissant-verify-"));
+  env.HOME = profileDirectory;
+  for (const name of ["XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"]) {
+    delete env[name];
   }
   const driver = launch(
     "tauri-driver",
@@ -129,15 +183,22 @@ export async function startDriver({ waylandDisplay, isolateProfile = true }) {
     { env },
   );
   collect(driver, output);
-  await waitFor("tauri-driver to accept connections", async () => {
+  await waitFor(`tauri-driver to accept connections on port ${DRIVER_PORT}`, async () => {
+    if (driver.exitCode !== null || driver.signalCode !== null) {
+      throw new Error(
+        `tauri-driver exited before port ${DRIVER_PORT} became ready ` +
+          `(exit code ${driver.exitCode ?? "none"}, signal ${driver.signalCode ?? "none"})`,
+      );
+    }
     try {
-      await fetch(`http://127.0.0.1:${DRIVER_PORT}/status`);
+      const response = await fetchWithTimeout(`http://127.0.0.1:${DRIVER_PORT}/status`);
+      if (response.body) await response.body.cancel().catch(() => {});
       return true;
     } catch {
       return false;
     }
   });
-  return { output, profileDirectory };
+  return { output: output.text(), profileDirectory };
 }
 
 /** Minimal WebDriver client. The wire protocol is JSON over HTTP, so this needs no dependency. */
@@ -147,7 +208,7 @@ export class Session {
   }
 
   static async open(application = APP_BINARY, tauriOptions = {}) {
-    const response = await fetch(`http://127.0.0.1:${DRIVER_PORT}/session`, {
+    const response = await fetchWithTimeout(`http://127.0.0.1:${DRIVER_PORT}/session`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -160,7 +221,7 @@ export class Session {
   }
 
   async call(method, path, payload) {
-    const response = await fetch(this.base + path, {
+    const response = await fetchWithTimeout(this.base + path, {
       method,
       headers: payload ? { "content-type": "application/json" } : undefined,
       body: payload ? JSON.stringify(payload) : undefined,
@@ -170,33 +231,9 @@ export class Session {
     return body.value;
   }
 
-  title() {
-    return this.call("GET", "/title");
-  }
-
-  source() {
-    return this.call("GET", "/source");
-  }
-
   /** Runs in the page, so `window.__TAURI_INTERNALS__` and the real IPC bridge are reachable. */
   execute(script, args = []) {
     return this.call("POST", "/execute/sync", { script, args });
-  }
-
-  async find(selector) {
-    const element = await this.call("POST", "/element", {
-      using: "css selector",
-      value: selector,
-    });
-    return Object.values(element)[0];
-  }
-
-  click(elementId) {
-    return this.call("POST", `/element/${elementId}/click`, {});
-  }
-
-  text(elementId) {
-    return this.call("GET", `/element/${elementId}/text`);
   }
 
   /** Base64 PNG of the page — not of the window, so GTK chrome is not in it. */
@@ -205,7 +242,7 @@ export class Session {
   }
 
   quit() {
-    return fetch(this.base, { method: "DELETE" }).catch(() => {});
+    return fetchWithTimeout(this.base, { method: "DELETE" }).catch(() => {});
   }
 }
 
@@ -217,23 +254,94 @@ export function appProcesses() {
       .split("\n")
       .filter((line) => /release\/en-croissant|WebKitWebProcess|WebKitNetworkProcess/.test(line))
       .filter((line) => !/\bgrep\b/.test(line))
-      .map((line) => line.trim());
+      .map((line) => {
+        const [pid, ppid, ...command] = line.trim().split(/\s+/);
+        return { pid: Number(pid), ppid: Number(ppid), cmd: command.join(" ") };
+      })
+      .filter(({ pid, ppid }) => Number.isInteger(pid) && Number.isInteger(ppid));
   } catch {
     return [];
   }
 }
 
-export async function shutdown() {
-  for (const child of started.reverse()) {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {
-      /* already gone */
+export function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+function processGroupExists(pid) {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+}
+
+function signalProcessGroup(pid, signal) {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch (error) {
+    if (error.code !== "ESRCH") {
+      console.error(`cleanup: could not send ${signal} to process group ${pid}: ${error.message}`);
     }
+    return false;
   }
-  started.length = 0;
-  if (profileDirectory) {
-    await rm(profileDirectory, { recursive: true, force: true }).catch(() => {});
-    profileDirectory = undefined;
+}
+
+async function groupGone(pid, timeoutMs) {
+  try {
+    await waitFor(`process group ${pid} to exit`, () => !processGroupExists(pid), {
+      timeoutMs,
+      everyMs: 100,
+    });
+    return true;
+  } catch {
+    return false;
   }
+}
+
+async function cleanUp() {
+  const children = started.splice(0).reverse();
+  const groupPids = children.map((child) => child.pid).filter((pid) => Number.isInteger(pid));
+
+  for (const pid of groupPids) signalProcessGroup(pid, "SIGTERM");
+
+  const termResults = await Promise.all(
+    groupPids.map(async (pid) => ({ pid, gone: await groupGone(pid, TERM_TIMEOUT_MS) })),
+  );
+  const termSurvivors = termResults.filter(({ gone }) => !gone).map(({ pid }) => pid);
+
+  for (const pid of termSurvivors) {
+    console.error(`cleanup: process group ${pid} survived SIGTERM; escalating to SIGKILL`);
+    signalProcessGroup(pid, "SIGKILL");
+  }
+
+  await Promise.all(termSurvivors.map((pid) => groupGone(pid, KILL_TIMEOUT_MS)));
+
+  const survivors = groupPids.filter(processGroupExists);
+  if (survivors.length > 0) {
+    console.error(`cleanup: process groups still alive after SIGKILL: ${survivors.join(", ")}`);
+  }
+
+  for (const child of children) {
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+  }
+
+  const profileToRemove = profileDirectory;
+  profileDirectory = undefined;
+  if (profileToRemove) {
+    await rm(profileToRemove, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+export function shutdown() {
+  if (!shutdownPromise) shutdownPromise = cleanUp();
+  return shutdownPromise;
 }

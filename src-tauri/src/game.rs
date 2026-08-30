@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     io::{self, BufRead, BufReader, Cursor, Read},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Instant,
@@ -799,24 +799,54 @@ struct LiveSession {
     session: u64,
     controller: Arc<RwLock<GameController>>,
     shutdown: watch::Sender<bool>,
-    join: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    join: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl LiveSession {
-    async fn shutdown_and_join(&self) {
+    async fn shutdown_and_join(&self, join_budget: Duration) -> Result<(), Error> {
         self.controller.write().await.cancel_engine_request();
         let _ = self.shutdown.send(true);
-        if let Some(join) = self.join.lock().await.take() {
-            if let Err(error) = join.await {
-                error!("game loop join failed: {error}");
+        let join = match self.join.lock() {
+            Ok(mut join) => join.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        if let Some(mut join) = join {
+            match tokio::time::timeout(join_budget, &mut join).await {
+                Ok(result) => result
+                    .map_err(|error| Error::Conflict(format!("game loop join failed: {error}")))?,
+                Err(_) => {
+                    join.abort();
+                    let _ = join.await;
+                    let engines = {
+                        let controller = self.controller.read().await;
+                        controller
+                            .white_engine
+                            .iter()
+                            .chain(controller.black_engine.iter())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
+                    let primary =
+                        Error::Conflict(format!("game loop did not exit within {join_budget:?}"));
+                    return match terminate_game_engines(engines).await {
+                        Ok(()) => Err(primary),
+                        Err(cleanup) => Err(Error::OperationAndCleanup {
+                            primary: primary.to_string(),
+                            cleanup: cleanup.to_string(),
+                        }),
+                    };
+                }
             }
         }
+        Ok(())
     }
 }
 
 pub struct GameManager {
     games: DashMap<GameId, Arc<LiveSession>>,
     next_session: AtomicU64,
+    sealed: AtomicBool,
+    registration: Mutex<()>,
     lifecycle: DashMap<GameId, Arc<Mutex<()>>>,
     completed: Mutex<CompletedGames>,
 }
@@ -893,12 +923,16 @@ fn resolve_game_engine_executable(
 async fn terminate_game_engines(
     engines: impl IntoIterator<Item = Arc<EngineActor>>,
 ) -> Result<(), Error> {
-    let mut failures = Vec::new();
-    for engine in engines {
-        if let Err(error) = engine.terminate().await {
-            failures.push(error.to_string());
-        }
-    }
+    let failures = futures_util::future::join_all(
+        engines
+            .into_iter()
+            .map(|engine| async move { engine.terminate().await }),
+    )
+    .await
+    .into_iter()
+    .filter_map(Result::err)
+    .map(|error| error.to_string())
+    .collect::<Vec<_>>();
     if failures.is_empty() {
         Ok(())
     } else {
@@ -914,6 +948,8 @@ impl GameManager {
         Self {
             games: DashMap::new(),
             next_session: AtomicU64::new(0),
+            sealed: AtomicBool::new(false),
+            registration: Mutex::new(()),
             lifecycle: DashMap::new(),
             completed: Mutex::new(CompletedGames::default()),
         }
@@ -924,6 +960,14 @@ impl GameManager {
             .entry(game_id.to_owned())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
+    }
+
+    fn ensure_accepting_starts(&self) -> Result<(), Error> {
+        if self.sealed.load(Ordering::SeqCst) {
+            Err(Error::Conflict("application is shutting down".into()))
+        } else {
+            Ok(())
+        }
     }
 
     async fn complete_exact(
@@ -971,6 +1015,7 @@ impl GameManager {
         app: AppHandle,
         authority: &std::sync::Mutex<Option<PathAuthority>>,
     ) -> Result<GameState, Error> {
+        self.ensure_accepting_starts()?;
         let lifecycle = self.lifecycle_slot(&game_id);
         let _transition = lifecycle.lock().await;
         let session = self
@@ -1072,7 +1117,7 @@ impl GameManager {
             session,
             controller: controller.clone(),
             shutdown: shutdown_tx,
-            join: Mutex::new(None),
+            join: std::sync::Mutex::new(None),
         });
 
         // Construct and validate the entire replacement before disturbing a
@@ -1084,7 +1129,9 @@ impl GameManager {
             let _ = self
                 .games
                 .remove_if(&game_id, |_, current| current.session == old_game.session);
-            old_game.shutdown_and_join().await;
+            old_game
+                .shutdown_and_join(EngineDeadlines::default().quit)
+                .await?;
         }
         self.completed.lock().await.latest.insert(
             game_id.clone(),
@@ -1093,7 +1140,49 @@ impl GameManager {
                 disposition: SessionDisposition::Active,
             },
         );
+        let registration = self.registration.lock().await;
+        if let Err(error) = self.ensure_accepting_starts() {
+            drop(registration);
+            self.completed.lock().await.latest.remove(&game_id);
+            let engines = {
+                let controller = controller.read().await;
+                controller
+                    .white_engine
+                    .iter()
+                    .chain(controller.black_engine.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            if let Err(cleanup) = terminate_game_engines(engines).await {
+                error!("game engines spawned during shutdown could not be terminated: {cleanup}");
+            }
+            return Err(error);
+        }
         self.games.insert(game_id.clone(), live.clone());
+
+        let (start_loop, start_loop_rx) = tokio::sync::oneshot::channel();
+        let manager = Arc::downgrade(self);
+        let loop_game_id = game_id.clone();
+        let loop_live = live.clone();
+        let loop_app = app.clone();
+        let join = tokio::spawn(async move {
+            if start_loop_rx.await.is_ok() {
+                game_loop(
+                    loop_game_id,
+                    loop_live,
+                    shutdown_rx,
+                    move_notify_rx,
+                    loop_app,
+                    manager,
+                )
+                .await;
+            }
+        });
+        match live.join.lock() {
+            Ok(mut slot) => *slot = Some(join),
+            Err(poisoned) => *poisoned.into_inner() = Some(join),
+        }
+        drop(registration);
 
         // A FEN (or a validated initial move sequence) may already be
         // terminal. Register the LiveSession first, then publish exactly once
@@ -1105,17 +1194,7 @@ impl GameManager {
         if initially_finished {
             let _ = live.shutdown.send(true);
         }
-
-        let manager = Arc::downgrade(self);
-        let join = tokio::spawn(game_loop(
-            game_id,
-            live.clone(),
-            shutdown_rx,
-            move_notify_rx,
-            app,
-            manager,
-        ));
-        *live.join.lock().await = Some(join);
+        let _ = start_loop.send(());
 
         Ok(state)
     }
@@ -1356,22 +1435,50 @@ impl GameManager {
     /// Shuts every live session down and joins its loop, which is what actually
     /// reaps that session's engine children: the loop terminates them through
     /// `terminate_game_engines` on its way out (see the tail of `run_game_loop`).
-    /// Calling that here as well would be a second teardown path for the same
-    /// children, so this deliberately only signals and joins.
+    /// Calling that here as well would normally be a second teardown path for
+    /// the same children. The exception is a loop that exceeds `join_budget`:
+    /// it is aborted and its engines are terminated directly before returning.
     ///
     /// The sessions are collected before the first `await` — holding a `DashMap`
     /// iterator across one would deadlock against the loop's own
     /// `complete_exact`, which removes the entry it is joining on.
-    pub async fn shutdown_all(&self) {
-        let sessions: Vec<_> = self
-            .games
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect();
-        for (game_id, session) in sessions {
-            session.shutdown_and_join().await;
-            self.games
-                .remove_if(&game_id, |_, current| current.session == session.session);
+    pub async fn shutdown_all(&self, join_budget: Duration) -> Result<(), Error> {
+        self.sealed.store(true, Ordering::SeqCst);
+        drop(self.registration.lock().await);
+        let mut failures = Vec::new();
+        loop {
+            let sessions: Vec<_> = self
+                .games
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+                .collect();
+            if sessions.is_empty() {
+                break;
+            }
+            let results = futures_util::future::join_all(sessions.into_iter().map(
+                |(game_id, session)| async move {
+                    let result = session.shutdown_and_join(join_budget).await;
+                    if result.is_ok() {
+                        self.games
+                            .remove_if(&game_id, |_, current| current.session == session.session);
+                    }
+                    (game_id, result)
+                },
+            ))
+            .await;
+            for (game_id, result) in results {
+                if let Err(error) = result {
+                    failures.push(format!("{game_id}: {error}"));
+                }
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Conflict(format!(
+                "failed to shut down one or more games: {}",
+                failures.join("; ")
+            )))
         }
     }
 
@@ -1398,7 +1505,19 @@ impl GameManager {
                 },
             );
         }
-        game.shutdown_and_join().await;
+        // The abort itself has already committed: the session is tombstoned and
+        // removed, and a loop that ignored its signal had its engines terminated
+        // directly. A cleanup that ran long is therefore not a failed abort, and
+        // surfacing it as one would show the user an error for an operation that
+        // succeeded and give them nothing they could act on. It is logged, not
+        // returned. Shutdown is the opposite case and does propagate: there the
+        // caller is `shutdown_backend`, which must know whether a child survived.
+        if let Err(error) = game
+            .shutdown_and_join(EngineDeadlines::default().quit)
+            .await
+        {
+            error!("game {game_id} aborted, but its teardown reported: {error}");
+        }
         Ok(())
     }
 
@@ -3258,7 +3377,7 @@ mod tests {
                 session: 1,
                 controller: controller.clone(),
                 shutdown,
-                join: Mutex::new(None),
+                join: std::sync::Mutex::new(None),
             }),
         );
         manager.complete_exact("game", 1, &controller).await;
@@ -3282,7 +3401,7 @@ mod tests {
                 session: 2,
                 controller: replacement.clone(),
                 shutdown,
-                join: Mutex::new(None),
+                join: std::sync::Mutex::new(None),
             }),
         );
         manager.complete_exact("game", 1, &controller).await;
@@ -3321,13 +3440,13 @@ mod tests {
                     session,
                     controller,
                     shutdown,
-                    join: Mutex::new(Some(join)),
+                    join: std::sync::Mutex::new(Some(join)),
                 }),
             );
             joined_flags.push(joined);
         }
 
-        manager.shutdown_all().await;
+        manager.shutdown_all(Duration::from_secs(1)).await.unwrap();
 
         assert!(
             manager.games.is_empty(),
@@ -3344,7 +3463,105 @@ mod tests {
     #[tokio::test]
     async fn shutdown_all_is_a_no_op_without_live_sessions() {
         let manager = GameManager::new();
-        manager.shutdown_all().await;
+        manager.shutdown_all(Duration::from_secs(1)).await.unwrap();
+        assert!(manager.games.is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_all_seals_the_manager_against_new_games() {
+        let manager = GameManager::new();
+        manager.shutdown_all(Duration::from_secs(1)).await.unwrap();
+        assert!(matches!(
+            manager.ensure_accepting_starts(),
+            Err(Error::Conflict(message)) if message == "application is shutting down"
+        ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_all_drains_a_session_published_while_shutdown_is_running() {
+        let manager = Arc::new(GameManager::new());
+        let controller = Arc::new(RwLock::new(
+            GameController::new("initial".into(), 1, human_config()).unwrap(),
+        ));
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
+        let initial_join = tokio::spawn(async move {
+            while shutdown_rx.changed().await.is_ok() {
+                if *shutdown_rx.borrow() {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    break;
+                }
+            }
+        });
+        manager.games.insert(
+            "initial".into(),
+            Arc::new(LiveSession {
+                session: 1,
+                controller,
+                shutdown,
+                join: std::sync::Mutex::new(Some(initial_join)),
+            }),
+        );
+
+        let shutdown = tokio::spawn({
+            let manager = manager.clone();
+            async move { manager.shutdown_all(Duration::from_secs(1)).await }
+        });
+        while !manager.sealed.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let controller = Arc::new(RwLock::new(
+            GameController::new("slipped".into(), 2, human_config()).unwrap(),
+        ));
+        let (slipped_shutdown, mut slipped_shutdown_rx) = watch::channel(false);
+        let joined = Arc::new(AtomicBool::new(false));
+        let slipped_join = tokio::spawn({
+            let joined = joined.clone();
+            async move {
+                while slipped_shutdown_rx.changed().await.is_ok() {
+                    if *slipped_shutdown_rx.borrow() {
+                        joined.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
+            }
+        });
+        manager.games.insert(
+            "slipped".into(),
+            Arc::new(LiveSession {
+                session: 2,
+                controller,
+                shutdown: slipped_shutdown,
+                join: std::sync::Mutex::new(Some(slipped_join)),
+            }),
+        );
+
+        shutdown.await.unwrap().unwrap();
+        assert!(manager.games.is_empty());
+        assert!(joined.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn caller_budget_abandons_a_game_loop_that_never_exits() {
+        let manager = GameManager::new();
+        let controller = Arc::new(RwLock::new(
+            GameController::new("stuck".into(), 1, human_config()).unwrap(),
+        ));
+        let (shutdown, _) = watch::channel(false);
+        let join = tokio::spawn(std::future::pending::<()>());
+        manager.games.insert(
+            "stuck".into(),
+            Arc::new(LiveSession {
+                session: 1,
+                controller,
+                shutdown,
+                join: std::sync::Mutex::new(Some(join)),
+            }),
+        );
+
+        let budget = Duration::from_millis(50);
+        let started = std::time::Instant::now();
+        assert!(manager.shutdown_all(budget).await.is_err());
+        assert!(started.elapsed() >= budget);
         assert!(manager.games.is_empty());
     }
 
