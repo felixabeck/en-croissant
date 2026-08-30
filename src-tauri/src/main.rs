@@ -1114,6 +1114,56 @@ fn promote_path_capability(
         .promote_dialog(&id, path_class, display_name, operations)
 }
 
+/// Whole-process budget for shutdown cleanup.
+///
+/// Engines are terminated sequentially and each one is allowed
+/// `EngineDeadlines::quit` (3 s) to leave on its own before it is force-killed,
+/// so this has to cover several of them; it exists to bound the pathological
+/// case, not the normal one, where every engine exits in milliseconds.
+const SHUTDOWN_BUDGET: Duration = Duration::from_secs(15);
+
+/// `prevent_exit` is honoured on *every* `ExitRequested`, including the one
+/// `AppHandle::exit` raises once cleanup is done. Without this the process could
+/// never leave the event loop.
+#[derive(Default)]
+struct ExitGuard(std::sync::atomic::AtomicBool);
+
+impl ExitGuard {
+    /// `true` for the first exit request only — the one that owns the cleanup.
+    fn claim(&self) -> bool {
+        !self.0.swap(true, std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Runs `cleanup` to completion or abandons it after `budget`, reporting which
+/// happened. The caller must exit either way: a cleanup that hangs must not
+/// leave a windowless process alive with nothing left to close it.
+async fn run_within_budget(
+    budget: Duration,
+    cleanup: impl std::future::Future<Output = ()>,
+) -> bool {
+    tokio::time::timeout(budget, cleanup).await.is_ok()
+}
+
+/// Every teardown the process owns. Awaited before the event loop is allowed to
+/// exit, because tao exits the process from inside `run()` — no `Drop` runs
+/// afterwards and any child that was not reaped here is re-parented to init.
+async fn shutdown_backend(supervisor: &EngineSupervisor, games: &GameManager, budget: Duration) {
+    log::info!("Shutdown requested: terminating engines and live games");
+    let completed = run_within_budget(budget, async {
+        if let Err(error) = supervisor.terminate_all().await {
+            log::error!("engine shutdown failed: {error}");
+        }
+        games.shutdown_all().await;
+    })
+    .await;
+    if completed {
+        log::info!("Shutdown cleanup finished");
+    } else {
+        log::error!("Shutdown budget of {budget:?} elapsed; exiting with children still running");
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let specta_builder = tauri_specta::Builder::new()
         .commands(tauri_specta::collect_commands!(
@@ -1369,24 +1419,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         })
         .build(context)?
-        .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                // Actor shutdown is owned by EngineSupervisor.  Game sessions
-                // retain their own engines until their Wave-4 migration.
+        .run({
+            let guard = ExitGuard::default();
+            move |app, event| {
+                let tauri::RunEvent::ExitRequested { api, .. } = &event else {
+                    return;
+                };
+                if !guard.claim() {
+                    // The cleanup already ran; this is our own `exit` coming back.
+                    return;
+                }
+                // Tao calls `process::exit` from inside `run()`, so nothing after
+                // this point gets a second chance: the event loop has to stay
+                // alive until the children are reaped.
+                api.prevent_exit();
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let state = app_handle.state::<AppState>();
-                    let _ = state.engine_supervisor.terminate_all().await;
-                });
-                #[cfg(target_os = "linux")]
-                if let Some(shutdown_state) = app.try_state::<sound::SoundShutdownTx>() {
-                    if let Ok(mut tx_guard) = shutdown_state.0.lock() {
-                        if let Some(tx) = tx_guard.take() {
-                            let _ = tx.send(());
-                            log::info!("Wave-3 supervisor shutdown hook");
+                    // The cleanup runs in its own task so that a panic inside it
+                    // arrives here as a `JoinError` instead of unwinding past the
+                    // `exit` below.
+                    let cleanup = tauri::async_runtime::spawn({
+                        let app_handle = app_handle.clone();
+                        async move {
+                            let state = app_handle.state::<AppState>();
+                            shutdown_backend(
+                                &state.engine_supervisor,
+                                &state.game_manager,
+                                SHUTDOWN_BUDGET,
+                            )
+                            .await;
+                        }
+                    });
+                    if let Err(error) = cleanup.await {
+                        log::error!("shutdown cleanup did not finish: {error}");
+                    }
+                    #[cfg(target_os = "linux")]
+                    if let Some(shutdown_state) = app_handle.try_state::<sound::SoundShutdownTx>() {
+                        if let Ok(mut tx_guard) = shutdown_state.0.lock() {
+                            if let Some(tx) = tx_guard.take() {
+                                let _ = tx.send(());
+                                log::info!("Sound server shutdown signalled");
+                            }
                         }
                     }
-                }
+                    // Unconditional, and outside the budget: a cleanup that hung
+                    // or panicked must never leave a windowless process running.
+                    app_handle.exit(0);
+                });
             }
         });
 
@@ -1480,5 +1559,50 @@ mod search_cache_tests {
         assert!(same.try_lock().is_err());
         assert!(other.try_lock().is_ok());
         drop(held);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_first_exit_request_owns_the_cleanup() {
+        let guard = ExitGuard::default();
+        assert!(guard.claim(), "the first request must run the cleanup");
+        assert!(
+            !guard.claim(),
+            "the request raised by our own exit must be let through"
+        );
+        assert!(!guard.claim());
+    }
+
+    #[tokio::test]
+    async fn a_cleanup_that_finishes_reports_completion() {
+        assert!(run_within_budget(Duration::from_secs(30), async {}).await);
+    }
+
+    #[tokio::test]
+    async fn a_cleanup_that_hangs_is_abandoned_at_the_budget() {
+        // A real budget rather than a paused clock: tokio's time control needs
+        // the `test-util` feature, and 50 ms of wall clock buys the same proof.
+        let budget = Duration::from_millis(50);
+        let started = std::time::Instant::now();
+        assert!(
+            !run_within_budget(budget, async {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            })
+            .await,
+            "a hung cleanup must be reported as unfinished, not awaited forever"
+        );
+        assert!(started.elapsed() >= budget);
+    }
+
+    #[tokio::test]
+    async fn shutdown_with_nothing_running_is_a_no_op_and_repeatable() {
+        let supervisor = EngineSupervisor::default();
+        let games = GameManager::new();
+        shutdown_backend(&supervisor, &games, Duration::from_secs(30)).await;
+        shutdown_backend(&supervisor, &games, Duration::from_secs(30)).await;
     }
 }

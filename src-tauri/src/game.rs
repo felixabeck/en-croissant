@@ -1353,6 +1353,28 @@ impl GameManager {
         Ok(state)
     }
 
+    /// Shuts every live session down and joins its loop, which is what actually
+    /// reaps that session's engine children: the loop terminates them through
+    /// `terminate_game_engines` on its way out (see the tail of `run_game_loop`).
+    /// Calling that here as well would be a second teardown path for the same
+    /// children, so this deliberately only signals and joins.
+    ///
+    /// The sessions are collected before the first `await` — holding a `DashMap`
+    /// iterator across one would deadlock against the loop's own
+    /// `complete_exact`, which removes the entry it is joining on.
+    pub async fn shutdown_all(&self) {
+        let sessions: Vec<_> = self
+            .games
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+        for (game_id, session) in sessions {
+            session.shutdown_and_join().await;
+            self.games
+                .remove_if(&game_id, |_, current| current.session == session.session);
+        }
+    }
+
     pub async fn abort_game(&self, game_id: &str, expected_session: u64) -> Result<(), Error> {
         let lifecycle = self.lifecycle_slot(game_id);
         let _transition = lifecycle.lock().await;
@@ -3266,6 +3288,64 @@ mod tests {
         manager.complete_exact("game", 1, &controller).await;
         assert_eq!(manager.get_game_state("game", 2).await.unwrap().session, 2);
         assert!(manager.completed.lock().await.snapshots.len() <= COMPLETED_GAME_SNAPSHOTS);
+    }
+
+    #[tokio::test]
+    async fn shutdown_all_signals_and_joins_every_live_session() {
+        use std::sync::atomic::AtomicBool;
+
+        let manager = GameManager::new();
+        let mut joined_flags = Vec::new();
+        for (game_id, session) in [("first", 1u64), ("second", 2u64)] {
+            let controller = Arc::new(RwLock::new(
+                GameController::new(game_id.into(), session, human_config()).unwrap(),
+            ));
+            let (shutdown, mut shutdown_rx) = watch::channel(false);
+            let joined = Arc::new(AtomicBool::new(false));
+            // Stands in for `run_game_loop`, whose tail is what actually
+            // terminates that session's engines once the loop breaks.
+            let join = tokio::spawn({
+                let joined = joined.clone();
+                async move {
+                    while shutdown_rx.changed().await.is_ok() {
+                        if *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                    joined.store(true, Ordering::SeqCst);
+                }
+            });
+            manager.games.insert(
+                game_id.into(),
+                Arc::new(LiveSession {
+                    session,
+                    controller,
+                    shutdown,
+                    join: Mutex::new(Some(join)),
+                }),
+            );
+            joined_flags.push(joined);
+        }
+
+        manager.shutdown_all().await;
+
+        assert!(
+            manager.games.is_empty(),
+            "every session must be removed, not left behind as a live entry"
+        );
+        for joined in joined_flags {
+            assert!(
+                joined.load(Ordering::SeqCst),
+                "each game loop must be joined, not merely signalled"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_all_is_a_no_op_without_live_sessions() {
+        let manager = GameManager::new();
+        manager.shutdown_all().await;
+        assert!(manager.games.is_empty());
     }
 
     #[tokio::test]

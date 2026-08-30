@@ -506,7 +506,12 @@ impl EngineRuntime {
             .current_dir(working_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            // Backstop for the one exit path `terminate` does not own: an actor
+            // dropped without being terminated. It cannot help on process exit,
+            // where nothing is dropped at all — that is what the bounded
+            // shutdown in `main` is for.
+            .kill_on_drop(true);
         #[cfg(unix)]
         {
             let inherited_fds = executable.inherited_fds();
@@ -1379,6 +1384,32 @@ mod tests {
             supervisor.get_exact(&key).unwrap().generation,
             second.generation
         );
+    }
+
+    #[tokio::test]
+    async fn terminate_all_reaps_every_registered_actor() {
+        let supervisor = EngineSupervisor::default();
+        let mut registered = Vec::new();
+        for (tab, engine) in [("first", "a"), ("second", "b")] {
+            let key = EngineKey::new(tab.into(), engine.into()).unwrap();
+            let ((actor, _), terminated) = actor_with(&[], false, None);
+            supervisor.replace(key.clone(), actor).await.unwrap();
+            registered.push((key, terminated));
+        }
+
+        supervisor.terminate_all().await.unwrap();
+
+        for (key, terminated) in registered {
+            assert_eq!(
+                terminated.load(AtomicOrdering::SeqCst),
+                1,
+                "every registered actor must be terminated, not only the first"
+            );
+            assert!(
+                supervisor.get_exact(&key).is_none(),
+                "a terminated actor must leave no registry entry behind"
+            );
+        }
     }
 
     #[tokio::test]

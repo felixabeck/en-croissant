@@ -158,7 +158,7 @@ The audit implementation is committed; `master` tracks `origin/master` and is we
 commit count or "in sync" here** — it is wrong the moment anything is committed, and it was.
 
 The working checkout is on **`tuxedo-atlas`** (cloned 2026-08-29 from `felixabeck/en-croissant` over
-SSH; commits are ssh-signed). Measured green on this machine: `pnpm test`, `cargo test` (306),
+SSH; commits are ssh-signed). Measured green on this machine: `pnpm test`, `cargo test` (334),
 `pnpm lint:ci`, `pnpm bindings:check`, both boundary checks, `pnpm bundle:check`, `pnpm build`
 (Tauri release, `--no-bundle`), and — since the toolchain was completed on 2026-08-29 —
 `pnpm test:coverage:backend`.
