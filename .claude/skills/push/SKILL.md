@@ -158,6 +158,21 @@ src-tauri/Cargo.toml
 src-tauri/Cargo.lock
 ```
 
+`review-tauri-security` is a mandatory additive lens whenever the diff touches any of these
+paths:
+
+```text
+src-tauri/src/oauth.rs
+src-tauri/src/credentials.rs
+src/utils/session.ts
+src-tauri/src/fs.rs
+src-tauri/src/infra/**
+docs/signed-download-manifests.md
+```
+
+It does not replace `review-ipc-contract`: capability and CSP scope, `src-tauri/tauri.conf.json`,
+the Specta registry and generated bindings, and listener lifetimes remain owned by that lens.
+
 Triage every ≥80-confidence finding as `Fix` or `Skip(reason)`, repair every genuine long-term gain, inspect each repair diff, and rerun every gate invalidated by the repair. Security and filesystem refusal paths must be exercised, not merely read.
 
 En-Croissant runtime compatibility addition: the lens executor, its model rungs and the fallback switch are governed by `~/.claude/references/review-lens-contract.md`. Do not restate them here. If a runtime exposes none of the contract's model names, use independent typed reviewer agents with the smallest self-contained context and disclose that the review used the same model family as the author. Do not silently run the lenses inline while fan-out exists. AntiGravity reviews follow Felix's configured quota order: Gemini first, then Claude Opus at its second-highest reasoning level; never Sonnet or GPT there.
