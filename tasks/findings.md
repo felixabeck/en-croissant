@@ -807,7 +807,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### `remove_entry_at` verifies an inode and then removes a path, with nothing binding the two
 
-* **ID:** f-20260830-02 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-02 · **Status:** handled · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/fs.rs:836-838` (`assert_entry_identity` then
   `unix::remove_tree_at(parent, name)`), and `fs.rs:392-406` for the same pattern one level down
   (`statat` then `openat`/`unlinkat` on the same `name`).
@@ -829,13 +829,41 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Found by:** `$push` review lenses (adjacent-defects and adversarial, both 99 confidence) over
   the `f-20260830-01` test diff, 2026-08-30.
 
+* **Handled 2026-08-30**, commits `69421a04` and `dfd1cf6f`. The guard now survives into the
+  descent, which is the escalation path, and the part that cannot be closed is filed rather than
+  glossed.
+  * `remove_entry_at` threads `assert_entry_identity`'s expectation into the walk instead of
+    letting it re-`statat` from scratch.
+  * Each child's `RawDirEntry::ino()` is passed into its recursive call and compared against the
+    `statat` that call already performed — no extra syscall; the recursion previously did that
+    lookup and simply trusted it.
+  * Every `openat(..., NOFOLLOW)` is followed by `fstat` on the descriptor actually held,
+    compared with `same_inode` against what was expected. The descriptor is pinned to the object
+    it opened, so the listing, the recursion and every child open below it are bound to a verified
+    inode.
+* **Not closable, and filed as its own finding:** Linux has no `funlinkat`, so the terminal
+  `unlinkat` resolves a name. Verified against the vendored rustix 1.1.4 — no such call exists.
+  The residual is confined by the kernel's own refusals (a substituted directory fails `EISDIR`, a
+  substituted file `ENOTDIR`, a non-empty directory `ENOTEMPTY`), so the only substitutions that
+  succeed are an empty directory, which destroys nothing, and a regular file placed by someone who
+  can already write into the tree being deleted.
+* **Two tests, and the second exists because the first was not enough.** A review lens found at 96
+  confidence that swapping the entry at `BeforeChildOpen` proves only the post-`openat` `fstat` —
+  restricting the expected-inode check to depth zero would have left it green. `BeforeChildStat`
+  and `recursive_delete_rejects_child_substitution_before_stat` close that. Both were confirmed by
+  performing the revert: deleting the expected-inode comparison turns two tests red.
+* **Rejected: `openat2` with `RESOLVE_NO_SYMLINKS`/`RESOLVE_BENEATH`.** It resolves a name, so a
+  directory substituted for another directory inside the subtree is opened normally; it would have
+  needed the `fstat` comparison beside it regardless, and it returns `ENOSYS` below Linux 5.6 with
+  no fallback in rustix. `d-20260830-01`.
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### Recursive delete puts 8 KiB on the stack per directory level, with no depth bound
 
-* **ID:** f-20260830-03 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-03 · **Status:** handled · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/fs.rs:407` — `let mut buffer = [MaybeUninit::uninit(); 8192];`
   inside the `FileType::Directory` arm, with the recursive call at `fs.rs:413`.
 * **Defect:** the `RawDir` buffer is a stack array allocated once per recursion level, and the
@@ -853,13 +881,30 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Found by:** `$push` review lens (adjacent defects, 98 confidence) over the `f-20260830-01` test
   diff, 2026-08-30.
 
+* **Handled 2026-08-30**, commits `69421a04` and `dfd1cf6f`. The walk refuses at
+  `MAX_REMOVE_TREE_DEPTH = 64` with `Error::ResourceLimit`, the variant this codebase already uses
+  for a bounded input in 57 places; the wording follows `read_bounded_engine_line`.
+* **The bare `8192` was half the safety argument, so it is now named.**
+  `REMOVE_TREE_DIR_BUFFER_BYTES` sits beside the depth constant with a comment stating that the
+  worst-case stack is their product — 512 KiB against a Tokio worker's 2 MiB.
+* **Off-by-one, caught by a review lens at 97 confidence and fixed:** the first cut refused at
+  `depth > MAX_REMOVE_TREE_DEPTH`, which admits depths 0 through 64 and therefore 65 buffers, about
+  520 KiB. It refuses at `>=`, so exactly 64 buffers exist and the comment is true rather than
+  approximately true.
+* **Test:** `MAX_REMOVE_TREE_DEPTH + 1` real nested directories, no seam involved. Confirmed red
+  against restoring `>`.
+* **Rejected: converting the walk to an iterative explicit stack.** It removes the class instead of
+  capping it, which is the stronger property — but it trades the thread stack for `RLIMIT_NOFILE`
+  and still needs one `RawDir` buffer per open level, so the bound is required either way.
+  `d-20260830-02`.
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### A failed recursive delete reports failure after having already deleted part of the tree
 
-* **ID:** f-20260830-04 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-04 · **Status:** handled · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/fs.rs:409-415` — the `?` on the recursive call and on
   `entries.next()`, inside a loop that has already unlinked earlier siblings.
 * **Defect:** an error partway through the walk — a nested symlink, an unreadable directory, a
@@ -878,13 +923,59 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Found by:** `$push` review lens (adjacent defects, 96 confidence) over the `f-20260830-01` test
   diff, 2026-08-30.
 
+* **Handled 2026-08-30**, commits `69421a04`, `7bb28c6a` and `dfd1cf6f`. The error now says what
+  happened *and* reaches the person it happened to — the second half turned out to be the whole
+  difficulty.
+* **Backend:** `Error::PartialRemoval { removed_entries: usize, cause: Box<Error> }`. The walk
+  counts successful unlinks; a mid-walk failure with a non-zero count is wrapped, and a failure
+  that removed nothing stays the error it was. `cause` is boxed rather than stringified so a
+  backend caller can still distinguish a depth refusal from a substitution from a symlink
+  (`d-20260830-06`). Adding a variant changed no bindings: `Error` has a hand-written
+  `specta::Type` exporting it as `DataType::Primitive(String)` — measured, not assumed.
+* **A second, worse case found while fixing this one.** `remove_entry_at`'s final
+  `parent.sync_all()` runs *after* the entry is gone, and propagated as a plain `Io`, so a
+  **completed** deletion also read as "nothing happened". It maps to
+  `CommittedDurabilityUncertain`, and `permanently_delete_workspace_entry` now drops the authority
+  record before returning it — previously the `?` returned first and left a record for an entry
+  that no longer existed. A `PartialRemoval` keeps the record, because the top directory still
+  exists with an unchanged inode. `d-20260830-04`.
+* **The backend half alone closed nothing**, which two review lenses said at 98 and 94 confidence
+  and which was correct. Every `Error` crosses IPC as a plain string; `ConfirmModal` runs it
+  through `normalizeError`, both new cases fell through to `unexpected`, and the user was shown
+  "The action could not be completed. Please try again." — a false statement at the one moment
+  files were destroyed. `normalizeError` gained an `applied-despite-error` category matching the
+  two static literals, and `FilesPage` relists on it. `d-20260830-05`.
+* **The category is `applied-despite-error`, not `partially-applied`** — renamed after a lens
+  pointed out at 98 confidence that it also covers `CommittedDurabilityUncertain`, where the
+  deletion completed in full. What it means is "the destructive change reached the filesystem even
+  though this is an error", which is exactly what decides whether the view must be refreshed.
+* **It is tested first, ahead of every other branch**, because it is the only category keyed on a
+  literal this codebase owns while the others match generic English words a wrapped cause can
+  contain. A partial removal whose cause reads "connection aborted" would otherwise be reported as
+  `cancelled`. The test table is worded so every case would be claimed by a different branch if the
+  order were wrong.
+* **A relist failure never becomes the reported outcome.** The first cut swallowed it only on the
+  partial path; a lens found at 99 confidence that a failing `mutate()` on the *success* path still
+  surfaced as "could not be completed" for a delete that had happened. Both paths go through one
+  helper now, pinned by a test that goes red when the `.catch` is removed.
+* **Both backend branches are tested**, which took removing two obstacles the first attempt
+  reported as blockers rather than working around: the `#[cfg(test)]` removal seam in `infra::fs`
+  is widened to `pub(crate)` under `cfg(test)` only, and the command body was extracted into
+  `permanently_delete_entry(&AppState, ..)` because `tauri::State` cannot be built in a unit test.
+  The tests assert the record's fate positively in both directions and were confirmed red against a
+  one-line revert.
+* **Filed rather than done here:** the untyped IPC error channel that forces the substring contract
+  at all; the English-only `Common.ConfirmationError.*` copy, which `i18next-cli extract --ci`
+  strips from all 16 catalogues because the key is built dynamically; and the absence of any e2e
+  coverage for this flow.
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### Recursive delete crosses mount boundaries
 
-* **ID:** f-20260830-05 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-05 · **Status:** handled · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/fs.rs:398-406` — `openat` with `NOFOLLOW`, which refuses a
   symlink but accepts a mount point.
 * **Defect:** a bind mount or any mounted filesystem inside the tree being removed is opened as an
@@ -900,3 +991,26 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   be an error or a skip is the actual question.
 * **Found by:** `$push` review lens (adversarial, 98 confidence) over the `f-20260830-01` test diff,
   2026-08-30.
+
+* **Handled 2026-08-30**, commits `69421a04` and `dfd1cf6f`. Crossing is refused with
+  `Error::InvalidInput`, worded like the two refusals already in that arm.
+* **Two checks, because one of them was wrong.** The first cut compared `st_dev` against the
+  parent's. A review lens refuted it at 99 confidence: **a bind mount whose source is on the same
+  filesystem keeps the device number**, so `st_dev` alone accepts precisely the case this finding
+  names. The primary check is now `statx` with `StatxAttributes::MOUNT_ROOT`, guarded by
+  `stx_attributes_mask` exactly as rustix's own documented recipe does
+  (`rustix-1.1.4/src/fs/statx.rs:183-200`); `st_dev` stays as the backstop, since it is the only
+  check available when the attribute is not.
+* **Below Linux 5.8 only the backstop applies**, so a same-filesystem bind mount is invisible
+  there. That is stated in a code comment and **filed as its own finding**, not called graceful
+  degradation. Holding it was a judgement, not a saving: the alternative is refusing to delete at
+  all when the kernel cannot prove the absence of a mount, which breaks a working feature for
+  pre-2020 kernels against a configuration that needs `CAP_SYS_ADMIN` to create. Parsing
+  `/proc/self/mountinfo` was considered and rejected. `d-20260830-03`.
+* **What the test proves, and what it does not.** No test anywhere under `src-tauri/` can create a
+  mount unprivileged — verified. The first cut had the seam force the detector's *answer*, which
+  two lenses correctly called worthless at 100 and 99 confidence: replacing the whole detector with
+  `false` left it green. The seam now overrides the detector's *input*, the parent device, so the
+  production comparison executes; confirmed red against reverting
+  `opened.st_dev != compared_parent_dev` to `false`. The `statx`/`MOUNT_ROOT` branch itself remains
+  unexercised, and that is a limitation rather than something this cluster papered over.
