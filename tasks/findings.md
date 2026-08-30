@@ -1467,3 +1467,91 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   append to an existing file.
 * **Found by:** the `review-tests` lens (94 confidence) over the cumulative diff of the
   `remove-tree-unhardened` cluster, 2026-08-30.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The `_atomic_write` fix has not reached the two sibling copies of `findings.py`
+
+* **ID:** f-20260830-14 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `~/Projekte/chess-tactics-app/scripts/findings.py` and
+  `~/Projekte/correction-app/scripts/findings.py`, the `finally` block of `_atomic_write`.
+* **Defect:** `f-20260829-14` was fixed in `en-croissant` only (commit `514cfb40`). Both siblings
+  still re-raise a failing `tmp.unlink` when the write did not commit, so a failed ledger write
+  followed by a failed cleanup still reaches the operator as "could not remove /tmp/...tmp-x" while
+  the reason the ledger could not be written is discarded. `scripts/findings.py` is deliberately
+  identical across Felix's projects (`~/.claude/references/findings-ledger-contract.md`), so this is
+  a **declared pending divergence**, which that contract permits — not a fork nobody chose. It stops
+  being permitted once the port lands or the copies drift further.
+* **Why it was not done in that run:** both checkouts are live and were moving while they were being
+  measured — `chess-tactics-app` went from 11 to 12 commits ahead of `origin/develop`;
+  `correction-app` went from 5 dirty files to 0 to 3, and from 2 to 3 commits ahead. Committing into
+  a tree moving underneath, on top of an unpushed stack that run had not reviewed and could not
+  push, was judged worse than declaring the pendency (`d-20260830-11`).
+* **The exact change to apply.** In `_atomic_write`'s `finally` block, replace the
+  `if committed: print(...) else: raise` pair with an unconditional warning so both diagnostics
+  survive:
+
+  ```python
+          except OSError as exc:
+              # Never re-raise here. A ``raise`` inside ``finally`` replaces the
+              # exception already in flight, so a failed write followed by a failed
+              # cleanup would reach ``main`` as "could not remove /tmp/...tmp-x" and
+              # the reason the ledger could not be written would be gone. For a tool
+              # whose whole purpose is not losing findings, that is the wrong half to
+              # keep. Report the orphaned temporary file instead, so both diagnostics
+              # survive, and let the primary error propagate.
+              detail = "after atomic write" if committed else "after a failed atomic write"
+              print(
+                  f"WARN could not clean up temporary file {tmp} {detail}: {exc}",
+                  file=sys.stderr,
+              )
+  ```
+
+* **Per repository.** `chess-tactics-app` was byte-identical to en-croissant before this fix
+  (md5 `edc21d38`), so the patch applies exactly and the result should diff to zero hunks against
+  en-croissant. `correction-app` has already diverged independently (md5 `1c0ea94d`); read its block
+  before patching rather than applying blind, and check whether its divergence is declared anywhere.
+* **Proof after porting:** in each repository,
+  `diff -u <(git -C ~/Projekte/en-croissant show HEAD:scripts/findings.py) scripts/findings.py`
+  and confirm the `_atomic_write` hunk is gone. en-croissant's
+  `scripts/findings-atomic-write-tests.py` is repo-local and is **not** part of the shared tool; a
+  sibling may copy it, but it must not be added to `findings.py`.
+* **Found by:** the `gate-scripts` build run, 2026-08-30, while closing f-20260829-14.
+
+### Nothing detects divergence between this repository's `findings.py` and the sibling copies
+
+* **ID:** f-20260830-15 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `scripts/findings.py`; the missing guard would live beside
+  `scripts/findings-atomic-write-tests.py` and in `.github/workflows/test.yml`.
+* **Defect:** `~/.claude/references/findings-ledger-contract.md` requires `findings.py` to stay
+  identical across Felix's projects and says that clause "is enforced, not merely asserted" —
+  Korrigio carries `backend/tests/scripts/test_findings_upstream_parity.py`, which diffs the local
+  file against the sibling repository's *committed* copy and holds a closed list of declared
+  divergences, failing in both directions. **En Croissant has no such test.** The copies have
+  already drifted here: `correction-app` differs (md5 `1c0ea94d` against `edc21d38`) and nothing
+  reported it, and this repository now carries a deliberate one-hunk divergence of its own
+  (`d-20260830-11`) whose only record is a finding somebody has to read.
+* **Why this is `build` and not `inline`:** the design question is real and answering it wrongly
+  produces a gate that looks green and checks nothing. **The sibling repository does not exist on a
+  CI runner.** A parity test that skips when the sibling is absent is vacuous in exactly the
+  environment that matters — the same defect this repository already hit when two
+  `ui:boundary:check` rules were diff-scoped and were therefore vacuous on every clean checkout,
+  including every CI run. Options that need weighing, none of them free:
+  * vendor the canonical copy's hash or content into this repository and compare against that, which
+    makes CI meaningful but adds a second artefact to keep current;
+  * run the parity check only locally and accept that CI cannot, which is honest but repeats the
+    vacuous-gate shape unless the local gate is genuinely mandatory in `$push`;
+  * publish `findings.py` from one place — a small shared repository or a released artefact — and
+    have each project vendor it, which removes the divergence class outright and is the largest
+    change;
+  * declare divergences in a checked-in list, as Korrigio does, so an undeclared hunk fails and a
+    stale declaration also fails.
+* **Constraint on any answer:** whatever is built must fail in **both** directions. An undeclared
+  hunk is a fork nobody chose, and a declaration that no longer matches a hunk means the divergence
+  was ported and the entry must go, so the list cannot rot into a permanent amnesty. That is the
+  contract's own wording and it is the part that makes the mechanism worth having.
+* **Related:** the pending port filed alongside this entry, and `d-20260830-11`, which declared the
+  current divergence. Korrigio's implementation is the reference to read first.
+* **Found by:** the `gate-scripts` build run, 2026-08-30, while closing f-20260829-14.
