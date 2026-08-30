@@ -1652,6 +1652,32 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Both confirmed by grep, not
   by inference.
 
+* **Partially overtaken 2026-08-30 by commit `04921a1d`, and deliberately only partially.**
+  Defect 1 said `useOperation` is "51 lines of untested abstraction". It is now tested:
+  `src/platform/operation.test.tsx` covers idle/pending/success, the error path and its re-throw,
+  the abort-vs-error distinction, cancellation, unmount cleanup, and the stale-generation guard.
+* **That does not answer this finding — it narrows it.** The tests were written because deleting
+  the well-covered `src/platform/updater.ts` in the same commit dropped the `tauri-ipc-platform`
+  area to 69.00% against its permanent 70% floor, and covering the area's genuinely untested member
+  was the honest response. Deleting `operation.ts` would ALSO have cleared the floor, and that is
+  precisely why it was not done: clearing a coverage ratchet by deleting code is the gaming the
+  shrink-adjusted baselines exist to prevent (`docs/coverage.md`, `d-20260829-03`).
+* **The real question this finding asks is still open, and it is the more important half:**
+  `useOperation` still has ZERO production consumers. `CLAUDE.md`'s layout table names
+  `src/platform/operation.ts` as part of the renderer's sanctioned door to Tauri, and
+  `.claude/rules/async-resource-invariants.md` mandates exactly the contract it implements — "one
+  operation type has one facade and one error/loading/cancellation contract". So the choice is
+  **adopt or delete**, and it is a design decision about the facade, not a cleanup:
+  - **Adopt** — migrate the ad-hoc async paths that currently hand-roll loading/error/cancellation
+    onto it, which is what the rule asks for and what the audit presumably intended.
+  - **Delete** — accept that the facade shipped a primitive nobody wired up, and remove it together
+    with its tests and its `coverage-areas.json` entry.
+  Two review lenses (`review-minimalism` 99, `review-code-quality` 99) argued for deletion on this
+  run's diff. That was not overruled — it was left to this finding, which already owns the question
+  and names `unwrap.tsx` alongside it. **Whoever takes this must decide adopt-vs-delete first;**
+  the tests are not an argument for keeping it.
+* Defect 2 (`unwrap.tsx` unreachable) is untouched by that commit and remains exactly as filed.
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
@@ -2443,7 +2469,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### The fork checks upstream's update endpoint on every launch and trusts upstream's signing key, so a future upstream release would replace this build
 
-* **ID:** f-20260830-44 · **Status:** open · **Area:** app-startup · **Root:** fork-identity-not-separated · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-44 · **Status:** handled · **Area:** app-startup · **Root:** fork-identity-not-separated · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/tauri.conf.json:58-63` (`updater.endpoints`, `updater.pubkey`), `:45-47`
   (`productName`, `identifier`); `src/App.tsx:97` (the automatic check);
   `src/utils/engines.ts:173` (the engine manifest origin).
@@ -2500,13 +2526,62 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   product name that is not chosen yet. Read both decisions before planning; they are answers, not
   questions to re-derive.
 
+* **Handled 2026-08-30 (build run, `full auto`).** The identity half is done, exactly as
+  `d-20260830-15` scoped it and `d-20260830-16` valued it. Commits, in order:
+  - `6c2749ad` — bundle identifier is `com.chessriddle.encroissant` (`.dev` in the dev config), so
+    the app-data directory, config directory, log directory, window-state file, asset-protocol scope
+    and keyring service name are all disjoint from an installed upstream build.
+  - `04921a1d` — the updater is gone end to end: Rust plugin and Cargo dependency, `plugins.updater`
+    block, `createUpdaterArtifacts`, both capability permissions plus `process:allow-restart`, the
+    npm dependency, `src/platform/updater.ts` and its test, the startup check, the Help-menu item,
+    the e2e stub, and four catalogue keys.
+  - `dcbb087b` — the GPL-3 §5(a) notice in the README and the About dialog, translated into all 16
+    catalogues, naming what, by whom, from when, and under which licence.
+  - Follow-ups from the review of that diff: `868f0711`, `ae7226f9`, `b293ef42`, `2dfcafd7`,
+    `626188b4`, `971255a5`.
+* **One thing was found that the entry did not name, and it changes `d-20260830-16`'s reasoning.**
+  `src-tauri/src/oauth.rs:689` held a **second, independent copy** of the identifier as the Lichess
+  OAuth `ClientId` — the name under which this build asks a real third party for a real user's
+  token, and one Lichess shows the user on its authorization screen. It was not derived from the
+  configuration, so the rename would not have reached it. Rather than substitute a new literal,
+  which leaves the drift mechanism that caused the defect, the client id is now sourced from
+  `app.config().identifier` through `AuthInternalConfig`, making `tauri.conf.json` the single place
+  the fork's identity is written. `d-20260830-16` itself stands; only its "never user-visible"
+  clause is wrong, corrected in `d-20260830-17` rather than by editing his record.
+* **Rejected alternative, and why it matters:** blanking `updater.endpoints` and `updater.pubkey`
+  in place, which is the literal wording of `d-20260830-15`. Measured: `tauri-cli` treats a truthy
+  `createUpdaterArtifacts` as updater-enabled and then requires the block and its non-optional
+  pubkey, so deleting only the block fails the build — the artefact key has to go too, and once it
+  does no updater artefact is produced and the plugin has nothing left to do. Full removal is the
+  same objective executed completely, and it deletes the trusted key rather than leaving it one
+  config edit from live. `src/platform/no-updater.test.ts` now fails if any part of it returns.
+* **Two coverage consequences, neither absorbed by touching a number.** Deleting the well-covered
+  `updater.ts` dropped `tauri-ipc-platform` under its 70% line floor; the answer was to test
+  `src/platform/operation.ts`, which was 0/25 (see `f-20260830-18`, annotated — its zero-consumer
+  half is untouched and still the real question). Threading the client id dropped
+  `oauth-credentials` under its 53% branch floor; the answer was tests over real uncovered
+  production branches in `oauth.rs` and `credentials.rs`, 132/252 to 147/268. No floor was lowered
+  and no baseline number rewritten. Both are instances of `f-20260829-04`: backend coverage measures
+  `#[cfg(test)]` modules, so writing tests moves that ratchet in both directions at once.
+* **Deferred half, now carried by `f-20260830-48` under the same root:** `productName`, `mainBinaryName`, `bundle.publisher`
+  (still `"Francisco Salgueiro"`), a fork-owned signing keypair and a re-introduced updater pointed
+  at this repository's releases, `.github/workflows/release.yml` (still signing with
+  `secrets.TAURI_PRIVATE_KEY`), the unsigned engine manifest at `src/utils/engines.ts:173` fetched
+  from `www.encroissant.org` with the CSP and capability entries that permit it, the
+  `www.encroissant.org` links in the README and About, upstream's issue-tracker link in
+  `ErrorComponent.tsx`, and the download page. All of it needs a product name that is not chosen
+  yet, which is exactly why it was deferred. Filed as `f-20260830-48` rather than left in this
+  entry's prose, so it sits in the queue where a later run will actually pick it up.
+* `src-tauri/Cargo.toml` `authors` is deliberately unchanged: GPL-3 §4 requires preserving the
+  original copyright notices, so removing upstream's attribution would be the opposite of compliance.
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### `llvm-cov export` segfaults on this machine, so `pnpm test:coverage:backend` cannot complete
 
-* **ID:** f-20260830-45 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-45 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `scripts/rust-branch-coverage.mjs:96-107` (the per-source `llvm-cov export` loop),
   driven by `package.json:21` (`test:coverage:backend`).
 * **Defect:** every `llvm-cov export -format=lcov -instr-profile=backend-coverage/src-tauri.profdata
@@ -2570,7 +2645,8 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Also ruled out:** corrupt profdata (`llvm-profdata show --all-functions` prints counters
   normally), a missing or mismatched executable (present, 378 662 672 bytes, timestamp-consistent
   with the profdata), and resource exhaustion (71 GB RAM available, 1.3 TB disk free).
-* **Still open, and the next thing to try:** the binary is 378 MB, and the stack is a single
+* **SUPERSEDED — what I wrongly proposed trying next; the correction below retired all three:**
+  the binary is 378 MB, and the stack is a single
   unsymbolised frame. Candidates in order — (1) run the export under `llvm-symbolizer` on PATH to
   get a real backtrace, which is the one cheap step that would identify the LLVM code path;
   (2) test whether a *smaller* instrumented target (a single unit-test binary rather than the
@@ -2581,3 +2657,260 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   and `pnpm coverage:backend:check` **cannot be run on atlas**, so no `src-tauri/**` change can
   satisfy the documented gate set locally. Any run that needs them must report them as *not run*
   and name this finding rather than skipping them silently.
+
+* **CORRECTION, 2026-08-30 ~15:25 (Claude, separate session, from the PID 428686 coredump).** The
+  root cause is identified and **three claims above are refuted by measurement**. Recorded as a
+  visible correction rather than a rewrite, per rule 4c; nothing here is attributed to Felix.
+* **Root cause: `llvm-cov` segfaults when a source file with NO coverage records enters the
+  requested set** — named through `-sources`, or picked up by a bare full export. Crash frame is
+  `llvm::coverage::CoverageMapping::getInstantiationGroups(llvm::StringRef) + 319`, obtained by
+  running the export with the LLVM stack dump captured rather than under `llvm-symbolizer`. It is
+  **not** a size, breadth or section-count limit.
+  - Per-file sweep of all 37 `.rs` files under `src-tauri/src` against the same profdata/exe pair:
+    **34 export cleanly, exactly 3 crash.** The three are `db/schema.rs` (Diesel `table!`),
+    `engine/mod.rs` and `infra/mod.rs` — precisely the three `backend-coverage-areas.json` already
+    excludes for "no executable statements to instrument".
+  - `-sources chess.rs` alone → ok, 20302 bytes. `-sources chess.rs` **plus**
+    `--ignore-filename-regex=chess.rs` → SIGSEGV: the file is requested but filtered out of the
+    mapping, so it has no records. `--ignore-filename-regex='.*'` (mapping fully empty) → ok, exit 0.
+  - `report` and `export -summary-only` crash identically on such a file, so **no non-crashing probe
+    exists** to ask llvm-cov whether a file has records.
+* **REFUTED — "every `llvm-cov export ... -sources <one .rs>` invocation dies with SIGSEGV".** 34 of
+  37 succeed. The three that crash are exactly the three the script never passes to `-sources`.
+* **REFUTED — "no backend change can be pushed through the documented gate route" / "`pnpm
+  test:coverage:backend` cannot be run on atlas".** The gate is healthy. Replicating the script's own
+  source computation (parse `backend-coverage-areas.json`, resolve `exclude`, walk `src-tauri/src`)
+  yields **34 sources; all 34 export with exit 0**. `backend-coverage/lcov.info` (1 304 776 bytes,
+  34 `SF:`, 4306 `BRDA:`) was written at **13:03 today by a successful run of that very gate** —
+  about two hours before this finding was filed. A single export over those same 34 sources
+  reproduces that file byte-for-byte.
+  **Consequence: the `CLAUDE.md` "Repository state" note is correct and must NOT be amended.**
+* **REFUTED — attribution of the 15:13-15:19 coredumps.** They are not "a foreign process in a
+  Konsole tab". Cgroup `app-org.kde.konsole-882738.scope/tab(882759).scope` is the investigating
+  session's own cgroup; those 11 dumps are its deliberate bisection runs (per-file sweep, directory
+  `-sources`, both toolchains). The one genuine external crash is the **11:27** dump, PID 428686,
+  cgroup `app-code-5653.scope` (VS Code) — an ad-hoc experiment that combined
+  `--ignore-filename-regex=chess.rs` with `-sources chess.rs`. `--ignore-filename-regex` appears
+  nowhere in the repo, tracked or untracked, so that command was never the gate.
+* **Not a toolchain problem, and not fixed upstream.** Reproduced on **LLVM 20.1.5**
+  (nightly-2025-06-01) *and* **LLVM 22.1.8** (stable). Control: both versions export record-bearing
+  files fine, so this is not a profdata incompatibility either. Upstream
+  `llvm/llvm-project#119558` carries the identical crash frame, has been open since Dec 2024, and
+  never identified the trigger.
+* **The three "next things to try" above are retired — do not spend a run on any of them.**
+  (1) `llvm-symbolizer`: the frame is already identified, above. (2) A smaller instrumented target:
+  size is not the trigger; a 20 KB single-source export from the same 378 MB binary succeeds.
+  (3) CI comparison: CI is green for the same reason local is green — it exports the same 34
+  record-bearing sources.
+* **What is actually worth fixing** (in progress in the correcting session, area `gate-scripts`):
+  - `rust-branch-coverage.mjs`'s comment misdiagnoses the crash as a per-invocation breadth limit.
+    The 34-call loop can be one call with byte-identical output.
+  - `run()` reports `status: null` on signal death, so a future record-less file fails the gate with
+    `Error: .../llvm-cov exited with status null`, naming nothing.
+  - **Latent divergence:** `coverage-report.mjs:11-36` matches `exclude` entries as **globs**;
+    `rust-branch-coverage.mjs:83-90` matches them as **exact paths**. They agree today only because
+    all three entries are literal. A `src-tauri/src/**/mod.rs` entry — the natural way to express the
+    crashing class — would be honoured by the report script and ignored by the coverage script.
+  - The margin is thin: `db/models.rs` has **2** instrumented functions, `db/ops.rs`,
+    `engine/uci.rs` and `infra/runtime.rs` have 4. A file is two functions from becoming record-less.
+
+* **Mechanism refined, same session, after the fix was built — the correction above was imprecise
+  about multi-source exports.** There are two distinct behaviours, not one:
+  - **Single-source export** (`-sources <one file>`): crashes for **every** record-less file. All
+    three of `db/schema.rs`, `engine/mod.rs`, `infra/mod.rs` segfault when named alone.
+  - **Multi-source export**: only **`db/schema.rs`** crashes. Bisected against the same pair —
+    all 37 → SIGSEGV; **37 minus `db/schema.rs` → exit 0, 34 `SF:`**; 37 minus `engine/mod.rs` →
+    still SIGSEGV; 37 minus `infra/mod.rs` → still SIGSEGV; 36 keeping *both* `mod.rs` files but
+    dropping `schema.rs` → exit 0. The two `mod.rs` files are simply never visited when other
+    sources are present; they contribute no `SF:` record and are otherwise inert.
+  The plausible distinction is that `db/schema.rs` is a Diesel `table!` file that participates in
+  macro expansion — a bare full export with only the three excluded still pulls in
+  `diesel-2.1.4/src/macros/mod.rs` and four other dependency files — so it carries instantiation
+  groups without function records, which is the state `getInstantiationGroups` mishandles. The two
+  `mod.rs` files have no presence in the mapping at all. That distinction is **not** verified
+  against LLVM source and is offered as a hypothesis, not a finding.
+  **Nothing about the repair changes:** the exclude list still has to name every record-less file,
+  because each one crashes the moment it is exported alone, which is what the failure-path probe
+  does.
+* **Fixed, same session.** `scripts/rust-branch-coverage.mjs` now runs **one** export over the
+  record-bearing sources instead of 34, verified **byte-identical** to the committed
+  `backend-coverage/lcov.info` (1 304 776 bytes, 34 `SF:`, 4306 `BRDA:`); the misdiagnosing comment
+  is replaced with the real mechanism; `run()` reports the signal and the failing argv instead of
+  `status null`; and a signal from the export re-probes each source and fails naming the offender:
+  verified by leaving `db/schema.rs` in the set, which produced
+  `Rust coverage export crashed on sources with no coverage records: src-tauri/src/db/schema.rs`.
+  The exclude matching moved to a shared `scripts/coverage-scope.mjs` used by both
+  `coverage-report.mjs` and `rust-branch-coverage.mjs`, closing the glob-versus-exact-path
+  divergence; four tests cover it (20/20 green).
+* **Not re-run: the full `pnpm test:coverage:backend`.** The working tree carries another session's
+  uncommitted changes to `src-tauri/src/credentials.rs`, `src-tauri/src/oauth.rs` and both
+  `tauri*.conf.json`, so a cargo rebuild would have measured their work in progress and overwritten
+  `lcov.info` with it. The export half was verified against the existing profdata/binary instead;
+  the cargo half of the script is untouched. **Someone should run the full gate once that tree is
+  clean.** `pnpm coverage:backend:check` passes against the unmodified `lcov.info`.
+
+* **Mechanism claim WITHDRAWN, same session — the upstream thread refutes it.** Both annotations
+  above explain the crash as "a source file with no coverage records". **Do not rely on that.**
+  Reading the actual `llvm/llvm-project#119558` thread (not a summary of it):
+  - **@TroyKomodo, the day it was filed:** it only happens with **`--branch`** coverage. This crate
+    exports with `--branch`, so that is very likely the precondition here too.
+  - **@ds1sqe, 2026-02-07:** published a minimal reproducer and a deeper isolation than this one —
+    of 167 source files tested individually, exactly 8 crashed, all `#[tonic::async_trait]` gRPC
+    impls with non-trivial bodies; the same macro with trivial bodies did not crash. Those files
+    **carry plenty of coverage records.** That directly contradicts "no records" as the cause.
+  - **@BloodStainedCrow, 2026-06-25:** posted the symbolised backtrace; frame 4 is
+    `llvm::CoverageReport::prepareSingleFileReport`.
+  The honest common thread between their case and ours is **macro-expanded code producing
+  instantiation groups under `--branch`** — `#[async_trait]` there, a Diesel `table!` block here —
+  and even that is an observation, not a verified mechanism.
+* **What remains true is only what was measured here**, and the repair rests on that, not on any
+  mechanism: `db/schema.rs` crashes any export it takes part in; `engine/mod.rs` and `infra/mod.rs`
+  crash only when exported alone; the other 34 sources export cleanly; excluding the three makes a
+  single export byte-identical to the old per-source loop.
+* **Consequence for the code, now corrected in the working tree:** the comment in
+  `rust-branch-coverage.mjs` and the failure message no longer claim a cause. The message reads
+  "llvm-cov segfaulted while exporting these sources", points at the `--branch` crash upstream, and
+  the probe reports *what* crashed without asserting *why*. The earlier wording would have
+  misdirected whoever hits this next — a macro-heavy file added later could crash while carrying
+  records, and would not have matched the description.
+* **No upstream report will be filed.** Everything this investigation could contribute is already in
+  the thread and in more depth, and the one thing that looked novel — the single-source crash on a
+  record-less file — cannot be shown to be the same bug rather than a second null path into the same
+  function without a standalone non-Rust reproducer that has not been built. Felix's standing bar is
+  that a report goes out only when it is certain, never on a hypothesis; this does not meet it.
+
+* **Closed 2026-08-30 by the session that filed it.** The correction above is right and this entry
+  was wrong. The gate was never down: `llvm-cov export` crashes only when a source with no coverage
+  records enters the requested set, and `backend-coverage-areas.json` already excluded all three
+  such files, so the gate never passed them. My two "reproductions" used exactly those inputs — one
+  named `db/schema.rs` directly, the other was a bare full export that picks the three up
+  implicitly. `backend-coverage/lcov.info` had been written by a successful run of this very gate at
+  13:03, two hours before I declared it broken.
+* **The commit that filed this, `3d81d273`, therefore asserts something false in its message**, and
+  a commit message reads as attested months later. It is left in history rather than amended, and
+  named here so archaeology finds the correction with it. Rule 4c: strike visibly, never quietly.
+* **What was actually wrong is fixed**, by `5adc07bc` and `818e7900`: the exporter now runs one
+  export instead of 34, names the offending source when a signal kills it, and no longer attributes
+  the crash to a cause nobody established. Both backend gates run green on this machine —
+  `coverage:backend:check` passed on the final tree of this run.
+* **Status: handled**, on the strength of those two commits, not of this entry's own diagnosis.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The two coverage scripts still duplicate their shared logic, and the new tests exercise the helpers rather than the exporter
+
+* **ID:** f-20260830-46 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `scripts/coverage-report.mjs:181` (`scopeSignature`), `scripts/coverage-scope.mjs:38`
+  (`excludePatterns`), `scripts/rust-branch-coverage.mjs:131` (the diagnostic re-probe),
+  `scripts/coverage-report-tests.mjs:333-336`.
+* **Defect 1 — the extraction stopped half way.** `5adc07bc` correctly pulled the glob matching into
+  `scripts/coverage-scope.mjs` and routed both scripts through it, which is what fixed the
+  glob-versus-exact-path divergence between them. But `scopeSignature()` in `coverage-report.mjs`
+  still normalises the `exclude` list itself, inline, instead of calling the shared
+  `excludePatterns()` helper right next to it. Two normalisations of the same field is precisely the
+  shape that produced the original divergence — a future change to what an `exclude` entry may look
+  like has to land in two places again, and the one that gets missed silently changes the recorded
+  scope signature rather than erroring.
+* **Defect 2 — the same duplication in the exporter.** `rust-branch-coverage.mjs` builds its
+  `llvm-cov export` argument list once for the bulk export and again, by hand, in the per-source
+  diagnostic re-probe that runs when a signal kills the bulk call. The probe exists to name the
+  offending source, so a drift between the two argument lists would make it probe something other
+  than what actually crashed — the one moment its answer has to be exact.
+* **Defect 3 — the new tests do not reach the thing that changed.** `coverage-report-tests.mjs`'s
+  added cases call the shared helper functions only. Nothing calls the Rust exporter or drives
+  `coverage-report.mjs` as a consumer, so reverting the one-call export, the exclusion wiring, or
+  the signal diagnostic would leave every suite green. There is also no runnable test that forces a
+  signal death and checks the revised message, which is the whole point of that code path.
+* **Defect 4 — a comment that contradicts its own commit series.** `coverage-report-tests.mjs:336`
+  attributes the llvm-cov crash to files with no coverage records. `818e7900` deliberately withdrew
+  that attribution from `rust-branch-coverage.mjs` because the trigger was never established; the
+  test comment kept the retracted claim. Two files in the same series now say opposite things about
+  the same crash, and the next reader has no way to tell which is current.
+* **Why it matters:** these scripts are the instrument every other gate is judged by. A wrong
+  coverage number is worse than a missing one, because it is trusted.
+* **Fix shape:** route `scopeSignature()` through `excludePatterns()`; share one argument builder
+  between the bulk export and the probe; add a test that drives the exporter end to end against a
+  fixture profdata, or failing that one that forces the signal path and asserts the diagnostic names
+  the offender; delete or correct the stale comment so it matches `818e7900`.
+* **Found by:** `review-minimalism` (98, 94), `review-code-quality` (99) and `review-tests` (99, 97)
+  over the cumulative diff of the `f-20260830-44` build, 2026-08-30. Deferred rather than fixed
+  there: the commits under review (`5adc07bc`, `818e7900`) came from a different session working in
+  this area at the same time, and this run's own area was fork identity.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The native menu tree in `__root.tsx` has no test at all, in either platform variant
+
+* **ID:** f-20260830-47 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/routes/__root.tsx:141-320` — `appMenu`, the macOS Application menu, the non-macOS
+  Help menu, and the `useMemo` dependency arrays that rebuild them.
+* **Defect:** nothing exercises menu construction. `src/index.test.tsx` mocks `App` entirely, and the
+  Playwright specs never open a native menu, because the menus are built through
+  `@tauri-apps/api/menu` and have no DOM presence to assert against. So a missing entry, an action
+  wired to the wrong callback, or a stale `useMemo` dependency array that stops the menu rebuilding
+  after a locale or platform change all pass every gate this repository runs.
+* **Concretely, right now:** commit `04921a1d` removed one entry from both menu variants. Whether
+  both still contain Exit and About, and whether the dependency arrays are still correct after the
+  removal, is currently established by reading the diff and by nothing else.
+* **Why it matters:** this is the application's only route to Exit, About, Settings and the log
+  folder on the non-macOS build. The failure mode is silent — a menu that renders with one item
+  missing looks exactly like a menu.
+* **Fix shape:** the menu definitions are pure data derived from `t`, `isMacOS` and a set of
+  callbacks. Extract that derivation into a function that takes those inputs and returns the menu
+  tree, leave the `@tauri-apps/api/menu` construction as the only untested part, then assert the
+  tree: both variants contain the expected ids, each action is the intended callback, and changing
+  the locale or the platform produces a different tree. That also removes the need to mock the Tauri
+  menu API to get coverage of the part that actually changes.
+* **Found by:** `review-tests` (97) over the cumulative diff of the `f-20260830-44` build,
+  2026-08-30. Deferred rather than fixed there: extracting the menu derivation is a refactor of a
+  file that run only edited to delete an entry from, and it wants its own plan.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The fork still ships upstream's product name, publisher and engine-manifest origin, and has no release channel of its own
+
+* **ID:** f-20260830-48 · **Status:** open · **Area:** app-startup · **Root:** fork-identity-not-separated · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/tauri.conf.json:45-46` (`productName`, `mainBinaryName`), `:23`
+  (`bundle.publisher`), `:69` (window title); `.github/workflows/release.yml:69-83`;
+  `src/utils/engines.ts:173`; `src-tauri/tauri.conf.json` CSP and
+  `src-tauri/capabilities/main.json` for the `www.encroissant.org` origin;
+  `src/components/About.tsx` and `README.md` link blocks; `src/components/ErrorComponent.tsx`.
+* **Defect:** `f-20260830-44` separated the fork's *identity* — bundle identifier, keyring
+  namespace, OAuth client id, update channel, GPL-3 §5(a) notice. Everything that depends on a
+  chosen public product name was deferred by `d-20260830-15` and is still outstanding:
+  - `productName` and `mainBinaryName` are `en-croissant`, and `bundle.publisher` is
+    `"Francisco Salgueiro"`. A bundle built today would install under upstream's name and claim
+    upstream as its publisher. (`Cargo.toml` `authors` is a different matter and must stay — GPL-3
+    §4 requires preserving the original copyright notices.)
+  - **There is no update channel at all.** The updater was removed rather than repointed, because
+    no fork-owned minisign keypair exists. Re-introducing one needs the keypair, a private key in
+    CI, and `.github/workflows/release.yml`, which still signs with `secrets.TAURI_PRIVATE_KEY` — a
+    secret this fork does not have. Until then a shipped build cannot be updated.
+    `src/platform/no-updater.test.ts` deliberately fails if any updater surface returns, so
+    re-introduction is an explicit act that must delete that test.
+  - `src/utils/engines.ts:173` fetches the default-engine manifest from `www.encroissant.org`, an
+    origin this fork does not control, over a manifest whose signature key is upstream's. The CSP
+    and the capability scope permit that origin specifically.
+  - The README and the About dialog still link to `www.encroissant.org`, and `ErrorComponent.tsx`
+    still sends users to upstream's issue tracker.
+* **Why it matters:** the takeover path is closed, so this is no longer urgent, but it is the
+  difference between "a fork that cannot be hijacked" and "a product". The engine-manifest origin is
+  the sharpest of these: it is a live network dependency on infrastructure the fork does not own,
+  and its integrity rests on upstream's key.
+* **Blocked on a product decision, not on engineering:** every item needs a public name for the
+  fork, which Felix has not chosen. `d-20260830-16` deliberately picked a bundle identifier that
+  does *not* commit to one, precisely so the identity work could land first.
+* **Fix shape:** choose the product name; set `productName`, `mainBinaryName`, `publisher` and the
+  window title; generate a fork-owned minisign keypair and store the private half in CI; rewrite
+  `release.yml` around it; re-introduce the updater pointed at this repository's releases and delete
+  the no-updater guard test; host the engine manifest at a controlled origin, re-sign it with the
+  fork's key, and narrow the CSP and capability scope to that origin; update the README, About and
+  error-report links.
+* **Found by:** the `f-20260830-44` build run, 2026-08-30, recording the half `d-20260830-15`
+  deferred so it lives in the queue rather than in a closed finding's prose.
