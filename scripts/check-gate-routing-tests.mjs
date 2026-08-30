@@ -113,3 +113,27 @@ test("treats pnpm subcommands and flags as invocations, not script names", async
   assert.doesNotMatch(problems, /\bdlx\b/u);
   assert.doesNotMatch(problems, /"-s"|\s-s\b/u);
 });
+
+test("validates every path-glob block in the review section, not just one", async () => {
+  // The locator once demanded exactly one text block, which coupled "the sensitive-path
+  // registry" to "the only fenced text in section 3". Adding a mandatory-lens path list
+  // beside it - entirely legitimate - threw instead of checking it.
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(
+    skillPath,
+    skill.replace(
+      "## 4. Finish",
+      "A mandatory additive lens covers:\n\n```text\nscripts/**\n```\n\n## 4. Finish",
+    ),
+  );
+  assert.deepEqual(await checkGateRouting(root, { tracked }), []);
+
+  const withDeadGlob = (await readFile(skillPath, "utf8")).replace(
+    "```text\nscripts/**\n```\n\n## 4. Finish",
+    "```text\nnever/matches/**\n```\n\n## 4. Finish",
+  );
+  await writeFile(skillPath, withDeadGlob);
+  assert.match((await checkGateRouting(root, { tracked })).join("\n"), /never\/matches/u);
+});

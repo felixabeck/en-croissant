@@ -127,14 +127,21 @@ function sensitivePatterns(pushSkill) {
   const section = pushSkill.slice(sectionStart);
   const nextHeading = section.slice(1).search(/^## /mu);
   const bounded = nextHeading < 0 ? section : section.slice(0, nextHeading + 1);
+  // EVERY text block in the review section is a path-glob list: the sensitive-path
+  // registry that sets the review tier, and any mandatory-lens path list beside it.
+  // All of them are validated. An earlier version demanded exactly ONE block, which
+  // coupled "the glob registry" to "the only fenced text here" and broke the moment a
+  // second, entirely legitimate list was added.
   const blocks = fencedBlocks(bounded).filter((block) => block.language === "text");
-  if (blocks.length !== 1) {
-    throw new Error(`${PUSH_SKILL} must have exactly one text block in its "## 3." section`);
+  if (blocks.length === 0) {
+    throw new Error(`${PUSH_SKILL} has no path-glob text block in its "## 3." section`);
   }
-  return blocks[0].contents
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#"));
+  return blocks.flatMap((block) =>
+    block.contents
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#")),
+  );
 }
 
 function validateGateCommands(pushSkill, scripts, repoRoot) {
