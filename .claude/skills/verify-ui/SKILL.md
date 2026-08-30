@@ -1,6 +1,6 @@
 ---
 name: verify-ui
-description: Verify En Croissant UI changes. Automated proof is Playwright e2e; the live product is the Tauri window. Chrome MCP is not a valid verifier for this desktop app.
+description: Verify En Croissant UI changes. Pixels are Playwright e2e; the real product is driven off-screen by `pnpm verify:app`; only native GTK chrome is left to Felix. Chrome MCP is never a valid verifier for this desktop app.
 ---
 
 # Verify UI (En Croissant)
@@ -9,7 +9,15 @@ This file is the source of truth. Codex follows
 `.agents/skills/verify-ui/SKILL.md` after reading this contract.
 
 TypeScript + vitest catch code correctness, not layout. Chrome MCP cannot
-attach to the Tauri webview. There is no documented remote-devtools path.
+attach to the Tauri webview and never will: the window is WebKitGTK, which
+speaks no Chrome DevTools Protocol. That is an engine difference, not a
+configuration gap.
+
+**It does not follow that only Felix can check the real product.** Until
+2026-08-30 this file said "there is no documented remote-devtools path", and
+that was wrong — Tauri documents WebDriver testing, and on Linux it drives the
+real window through `WebKitWebDriver`. Nobody had tried it. `pnpm verify:app`
+now does (proof 2 below).
 
 ## What counts as proof
 
@@ -34,11 +42,35 @@ attach to the Tauri webview. There is no documented remote-devtools path.
    the host, and a direct `playwright ... --update-snapshots` is denied in the
    project settings, because host-rendered images would overwrite the
    canonical ones.
-2. **Live product window:** `pnpm dev` opens the Tauri webview. The agent
-   cannot attach Chrome MCP (Claude-in-chrome or user-wide
-   chrome-devtools) to that window. Say so and ask Felix to look, or stop
-   at the e2e evidence. Do not report the Tauri window as browser-verified.
-3. **Invalid evidence:** `pnpm start-vite` on `http://localhost:1420`
+2. **The real application, driven:** `pnpm verify:app`. It starts an
+   off-screen compositor (`kwin_wayland --virtual`), then `tauri-driver` ->
+   `WebKitWebDriver` -> the release binary, and drives the actual product: real
+   Rust backend, real IPC, real WebKitGTK. It runs the app under a throwaway
+   `HOME`, because `tauri-plugin-window-state` persists geometry on exit and a
+   headless run must not resize the window Felix uses. `scripts/app-driver.mjs`
+   is the harness; the WebDriver wire protocol is JSON over HTTP, so it needs no
+   npm dependency. `--screenshot <path>` writes a PNG of the page.
+
+   **What it reaches:** anything in the page, plus process-level facts — that
+   the app starts, answers script, exits through its own close control, and
+   leaves no child behind.
+
+   **What it cannot reach, permanently:** native GTK chrome. The menu bar, the
+   window decorations and every file dialog are drawn by GTK, not by the page,
+   and WebDriver only sees the page. `issue_engine_binary`
+   (`src-tauri/src/main.rs`) always opens a native picker and takes no path
+   argument, so **no engine can be registered from here** — any check that needs
+   a live engine child is still Felix's.
+
+   Prerequisites, both one-off and named in the failure message if missing:
+   `sudo apt install webkit2gtk-driver` (must match the installed
+   `libwebkit2gtk-4.1-0`) and `cargo install tauri-driver --locked`. It needs
+   `pnpm build` first, because it drives the release binary. Not a push gate:
+   CI has no compositor and it wants a release build.
+3. **Live product window:** `pnpm dev` opens the Tauri webview. This is still
+   Felix's check, and still the only route for native menus, native dialogs and
+   window chrome. Do not report the Tauri window as browser-verified.
+4. **Invalid evidence:** `pnpm start-vite` on `http://localhost:1420`
    plus any Chrome MCP. Vite-only has no Tauri backend. `TopBar.tsx` calls
    `getCurrentWebviewWindow()` at module scope and crashes with
    `Cannot read properties of undefined (reading 'metadata')`. A blank
@@ -49,19 +81,22 @@ repo has no `scripts/dev-up.sh`.
 
 ## After a visible UI change
 
-4. Run `pnpm test:e2e:container` (add `-- --project=<name>` for a single
+5. Run `pnpm test:e2e:container` (add `-- --project=<name>` for a single
    affected project). Keep the snapshots. Missing snapshots are not
    evidence that layout is correct.
-5. For responsive work, the committed matrix already includes 320px and
+6. For responsive work, the committed matrix already includes 320px and
    200% font-scale. That layout is a known open defect (clipped headings,
    `f-20260829-02` in `tasks/findings.md`); a screenshot that records the
    clip is not evidence that it is fixed.
-6. If the change can only be judged in the real webview (native dialogs,
-   engine process, window chrome), start `pnpm dev` if it is not already
-   running and name the window check as Felix's, not the agent's.
+7. If the behaviour only exists in the real product — lifecycle, IPC, process
+   teardown, anything the mocked container suite cannot answer — run
+   `pnpm verify:app` and report what it asserted.
+8. Only if the change can be judged nowhere but in native GTK chrome (menus,
+   dialogs, decorations), start `pnpm dev` and name the window check as
+   Felix's, not the agent's. That set is now much smaller than it was.
 
 ## Report
 
-Name the e2e command and result, which snapshots moved, and whether a
-Tauri window check is still needed. Do not claim Chrome MCP verified the
-app.
+Name the commands and results, which snapshots moved, and whether a native GTK
+check is still needed. Do not claim Chrome MCP verified the app, and do not
+claim `pnpm verify:app` verified a menu, a dialog or a window decoration.

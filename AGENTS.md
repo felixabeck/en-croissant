@@ -51,9 +51,13 @@ Read it rather than guessing; the commands themselves live in `package.json` scr
 is its bridge for you. **Read it before verifying any UI change.** Chrome MCP cannot attach to the
 Tauri webview, and `pnpm start-vite` plus a browser is not evidence — `TopBar.tsx` calls
 `getCurrentWebviewWindow()` at module scope and the page crashes without a Tauri backend. Automated
-proof is `pnpm test:e2e:container`, which runs the suite inside the pinned Playwright image so the
-committed screenshots do not depend on which machine recorded them. Never re-record snapshots
-natively.
+proof for pixels is `pnpm test:e2e:container`, which runs the suite inside the pinned Playwright
+image so the committed screenshots do not depend on which machine recorded them. Never re-record
+snapshots natively.
+
+For behaviour in the real product, `pnpm verify:app` drives the actual Tauri window off-screen
+through `tauri-driver` and `WebKitWebDriver` — real backend, real IPC, real WebKitGTK. Native GTK
+chrome (menus, dialogs, decorations) is outside both and stays Felix's.
 
 ## Findings you cannot fix here
 

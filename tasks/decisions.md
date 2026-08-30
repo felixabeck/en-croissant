@@ -462,3 +462,40 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   `tauri.conf.json` is now the single place the fork's identity is written and the two can no longer
   drift apart.
 * **Decided by:** Claude (autonomous, `full auto`), 2026-08-30 · **Superseded-by:** -
+
+### d-20260830-18 — The real Tauri window is driven off-screen by `pnpm verify:app`; only native GTK chrome stays manual
+
+* **Governs:** f-20260830-51
+* **Chosen:** a WebDriver harness against the real product — `kwin_wayland --virtual` (an off-screen
+  compositor) → `tauri-driver` → `WebKitWebDriver` → the release binary, with the real Rust backend,
+  real IPC and real WebKitGTK. `scripts/app-driver.mjs` is the harness and `scripts/verify-app.mjs`
+  the check, wired as `pnpm verify:app`. The WebDriver wire protocol is JSON over HTTP, so the
+  client is ~60 lines and adds **no npm dependency**. The app runs under a throwaway `HOME`, because
+  `tauri-plugin-window-state` persists geometry on exit and a headless 1400x900 run must not resize
+  the window Felix actually uses.
+* **Rejected:** continuing to treat the live product as unverifiable by an agent. Until this entry,
+  `.claude/skills/verify-ui/SKILL.md` asserted "there is no documented remote-devtools path" and
+  every session repeated it. Half of that was right and permanent — Chrome MCP cannot attach,
+  because the window is WebKitGTK and speaks no Chrome DevTools Protocol, which is an engine
+  difference and not a configuration gap. The other half was simply wrong: Tauri documents WebDriver
+  testing and states that driving directly is supported on Linux and Windows. A repo-wide search
+  found **zero** occurrences of `tauri-driver`, `WebKitWebDriver` or `xvfb` — it had never been
+  attempted. Also rejected: a second Playwright suite against the real window, because its
+  screenshots could never share a baseline with the Chromium ones; the two answer different
+  questions and are kept apart deliberately.
+* **Because:** every claim about lifecycle, IPC or process teardown previously terminated in "ask
+  Felix to look". That is a permanent tax on him and, worse, an evidence gap: the shutdown fix in
+  f-20260830-51 could be unit-tested but not shown to run in the product. It now is — clicking the
+  app's own close control produces `Shutdown requested…` → `Shutdown cleanup finished` in the log
+  and leaves no application or WebKit service process behind, which is exactly the property that was
+  broken.
+* **What it deliberately does not cover:** native GTK chrome. The menu bar, window decorations and
+  every file dialog are drawn by GTK, not by the page, and WebDriver only sees the page. In
+  particular `issue_engine_binary` (`src-tauri/src/main.rs`) opens a native picker and takes no path
+  argument, so **an engine cannot be registered from the harness** and any check needing a live
+  engine child remains Felix's. That the engine-termination path itself reaps correctly rests on the
+  unit tests over `terminate_all` and `shutdown_all`, plus the proof that the wiring runs.
+* **Not a push gate:** it wants a release build and a compositor, and CI has neither. Prerequisites
+  are one-off and named in the failure message: `sudo apt install webkit2gtk-driver` (matching the
+  installed `libwebkit2gtk-4.1-0`, 2.52.3 here) and `cargo install tauri-driver --locked`.
+* **Decided by:** Felix, 2026-08-30 · **Superseded-by:** -

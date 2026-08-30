@@ -39,6 +39,7 @@
     "i18n:check": "node scripts/i18n-completeness.mjs",
     "i18n:types": "i18next-cli types",
     "i18n:sync": "i18next-cli sync",
+    "verify:app": "node scripts/verify-app.mjs",
     "test:e2e": "playwright test",
     "test:e2e:container": "node scripts/run-e2e-container.mjs",
     "test:e2e:update": "node scripts/run-e2e-container.mjs --update-snapshots"

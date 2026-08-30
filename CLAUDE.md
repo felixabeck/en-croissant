@@ -145,11 +145,22 @@ directly whenever a diff touches `tasks/`.
 
 `.claude/skills/verify-ui/SKILL.md` is the canonical contract (`.agents/skills/verify-ui/SKILL.md`
 is its Codex bridge). **Read it before verifying any visible change.** The short version, because
-getting this wrong is the recurring mistake: Chrome MCP cannot attach to the Tauri webview, and
-`pnpm start-vite` plus a browser is not evidence — `TopBar.tsx` calls `getCurrentWebviewWindow()`
-at module scope and the page crashes without a Tauri backend. Automated proof is
-`pnpm test:e2e:container`; the live product is the window `pnpm dev` opens, and that check is
-Felix's, not an agent's.
+getting this wrong is the recurring mistake: Chrome MCP cannot attach to the Tauri webview — the
+window is WebKitGTK and speaks no CDP — and `pnpm start-vite` plus a browser is not evidence,
+because `TopBar.tsx` calls `getCurrentWebviewWindow()` at module scope and the page crashes without
+a Tauri backend.
+
+There are two automated proofs, answering different questions. `pnpm test:e2e:container` pins
+renderer **pixels** in Chromium against a mocked IPC surface. `pnpm verify:app` pins **behaviour**
+in the actual product: it drives the real window off-screen through `kwin_wayland --virtual` →
+`tauri-driver` → `WebKitWebDriver` → the release binary, with the real Rust backend and real IPC
+(`scripts/app-driver.mjs`). Use it for lifecycle, IPC and process-teardown claims. It needs
+`webkit2gtk-driver` (apt) and `tauri-driver` (cargo), plus a `pnpm build`, and is not a push gate.
+
+What remains Felix's is now only **native GTK chrome** — menus, file dialogs, window decorations.
+WebDriver sees the page, not the GTK widgets around it, and `issue_engine_binary` always opens a
+native picker, so registering an engine (and therefore any check needing a live engine child)
+cannot be automated this way.
 
 ## Repository state (as of 2026-08-30)
 

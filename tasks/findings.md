@@ -3095,3 +3095,23 @@ plus the guard and budget tests in `main.rs`. `cargo fmt/check/clippy/test` (334
 **Still outstanding, and not something an agent can do:** the live check. Start the app, spawn an
 analysis engine and a game engine, close the window, and confirm `pgrep -af 'stockfish|/engines/'`
 prints nothing. Per `.claude/skills/verify-ui/SKILL.md` that check is Felix's.
+
+**Live check done, 2026-08-30 — and it is no longer Felix's.** The paragraph above said the
+open/close verification could not be done by an agent. That was true of every route then known and
+is no longer true: `pnpm verify:app` (`d-20260830-18`) drives the real window off-screen. Against
+the release binary carrying this fix, clicking the app's own Close control produced
+
+```
+[15:49:06] Shutdown requested: terminating engines and live games
+[15:49:06] Shutdown cleanup finished
+[15:49:06] Sound server shutdown signalled
+```
+
+and the process tree went from `en-croissant` + `WebKitNetworkProcess` + `WebKitWebProcess` to
+nothing. So the new `ExitRequested` wiring runs end to end in the product, inside its budget, and
+leaves no child behind.
+
+**One part is still not covered end to end:** no *engine* child was running, because an engine can
+only be registered through `issue_engine_binary`, which opens a native GTK picker that WebDriver
+cannot drive. That engines specifically are reaped rests on the unit tests over `terminate_all` and
+`shutdown_all` plus the proof above that the wiring invokes them.
