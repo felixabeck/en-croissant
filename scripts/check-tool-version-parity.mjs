@@ -10,7 +10,10 @@ export const PARITY_FAMILIES = [
     declarations: [
       {
         globs: ["scripts/*.mjs"],
-        pattern: /\bconst\s+toolchain\s*=\s*["'](nightly-\d{4}-\d{2}-\d{2})["']/gu,
+        // Any exported or local const holding the pin, so extracting it into a shared
+        // module keeps the authority rather than losing it. Binding to one identifier
+        // name made the authority vanish the moment the constant moved.
+        pattern: /\bconst\s+\w+\s*=\s*["'](nightly-\d{4}-\d{2}-\d{2})["']/gu,
         authority: true,
         exclude: TEST_FILE_GLOBS,
       },

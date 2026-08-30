@@ -102,3 +102,29 @@ test("CLI exits non-zero when a discovered declaration disagrees", async () => {
   assert.match(result.stderr, /.github\/workflows\/test.yml/u);
   assert.match(result.stderr, /.claude\/skills\/push\/SKILL.md/u);
 });
+
+test("keeps the nightly authority when the constant moves to a shared module", async () => {
+  // The authority pattern once bound to the identifier `toolchain`. Extracting the pin
+  // into scripts/toolchain-versions.mjs as RUST_COVERAGE_TOOLCHAIN made the authority
+  // vanish - "expected exactly one authority; found 0" - so the family silently lost the
+  // only executable declaration it ranks the others against.
+  const root = await fixture();
+  await put(root, "scripts/rust-coverage.mjs", 'import { PIN } from "./toolchain-versions.mjs";\n');
+  await put(
+    root,
+    "scripts/toolchain-versions.mjs",
+    'export const RUST_COVERAGE_TOOLCHAIN = "nightly-2025-06-01";\n',
+  );
+  assert.deepEqual(await checkToolVersionParity(root), []);
+
+  await put(
+    root,
+    "scripts/toolchain-versions.mjs",
+    'export const RUST_COVERAGE_TOOLCHAIN = "nightly-2025-06-02";\n',
+  );
+  const findings = (await checkToolVersionParity(root)).join("\n");
+  assert.match(
+    findings,
+    /authority scripts\/toolchain-versions.mjs:1 declares "nightly-2025-06-02"/u,
+  );
+});
