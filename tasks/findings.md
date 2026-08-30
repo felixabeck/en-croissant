@@ -58,7 +58,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### 1. Backend branch coverage is machine-dependent — atlas measures one branch fewer than the baseline
 
-* **ID:** f-20260829-01 · **Status:** open · **Area:** gate-scripts · **Root:** machine-dependent-measurement · **Entry:** build · **Blocked:** none
+* **ID:** f-20260829-01 · **Status:** handled · **Area:** gate-scripts · **Root:** machine-dependent-measurement · **Entry:** build · **Blocked:** none
 * **Where:** `scripts/rust-branch-coverage.mjs`, `backend-coverage-baselines.json`
   (`app-infrastructure`), area paths `src-tauri/src/error.rs`, `src-tauri/src/infra/**`,
   `src-tauri/src/main.rs`.
@@ -186,6 +186,34 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   coverage, and the answer is `f-20260829-15`'s — stop ratcheting this area on raw branch-record
   counts. Lowering the floor to 744 remains the wrong move either way: it would retire the only
   enforcement of a recursive-delete path that guards against directory traversal.
+
+* **Closed 2026-08-30 by CI run 33298305678 on `4d3f8ffa` — green, with no baseline rewritten.**
+  The prediction recorded above held to the record:
+
+  ```
+    area                          CI before    CI now      atlas   baseline
+    app-infrastructure             744/2018   747/2018   747/2018   746/2018
+    filesystem-native-boundaries   379/1052   379/1052   379/1052   379/1052
+    oauth-credentials               130/244    130/244    130/244    130/244
+    database-search                 249/378    249/378    249/378    247/376
+    engine-game-chess               292/526    292/526    292/526    258/468
+    auxiliary-domain-services         29/36      29/36      29/36      27/34
+  ```
+
+  The three records that were zero on the runner are now hit: `BRDA:409,0,1` = 3,
+  `BRDA:412,0,1` = 4, `BRDA:412,1,3` = 4. **Every area now measures identically on atlas and on
+  GitHub's runner.** The instrument was never describing a different machine — one function was
+  being covered by accident, at a rate that depended on which cleanup path the host filesystem
+  selected, and asserting it deliberately made the two environments agree.
+* **`d-20260829-02` is spent without being exercised for the backend.** It authorised re-recording
+  the baseline from CI's LCOV. Doing so would have written the floor down to 744 and permanently
+  retired the enforcement of a recursive-delete path that guards against directory traversal. The
+  delta audit it asked for is what showed that: the delta was three branch records in one function,
+  not a stale instrument.
+* **The root `machine-dependent-measurement` does not survive for the backend half.** The frontend
+  half of that root (`f-20260829-06`) was a genuinely stale baseline and was re-recorded. This half
+  was a missing test wearing the same symptoms. Two findings, one apparent root, two different
+  causes — worth remembering before the next ratchet disagreement is attributed to the machine.
 
 ---
 

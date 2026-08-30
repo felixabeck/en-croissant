@@ -139,7 +139,7 @@ at module scope and the page crashes without a Tauri backend. Automated proof is
 `pnpm test:e2e:container`; the live product is the window `pnpm dev` opens, and that check is
 Felix's, not an agent's.
 
-## Repository state (as of 2026-08-29)
+## Repository state (as of 2026-08-30)
 
 The audit implementation is committed; `master` tracks `origin/master` and is well ahead of
 `upstream/master`. Work here is a side project, picked up in bursts. **Do not restate an exact
@@ -153,17 +153,24 @@ SSH; commits are ssh-signed). Measured green on this machine: `pnpm test`, `carg
 
 What is **not** settled, all of it filed in `tasks/findings.md` rather than only described here:
 
-- **Both coverage ratchets are red on atlas, and neither is a regression** — `f-20260829-01`
-  (backend: `app-infrastructure` 745/2018 against a baseline of 746/2018, deterministic across two
-  runs, on a tree whose branch total matches the baseline exactly) and `f-20260829-06` (frontend:
-  `tauri-ipc-platform` 156/218 against 155/215, with six of ten areas measuring differently here
-  than the baselines record, none of those files changed). They share the root
-  `machine-dependent-measurement`: the baselines describe some other machine's instrumentation.
-  **Never rewrite a baseline to clear this** (`docs/coverage.md`). `.claude/settings.json` denies
-  the known spellings of `coverage:baseline:*` and of a direct `--write-baseline` call, but treat
-  that as a speed bump rather than enforcement: a deny list matches command strings, and a
-  determined invocation can always phrase itself differently. The rule is what binds; the deny list
-  only makes the wrong thing harder to type by accident.
+- **Both coverage ratchets are green again, and only one of them was a stale instrument.** They
+  looked like one problem under the root `machine-dependent-measurement` and were two. The frontend
+  (`f-20260829-06`) really was a baseline describing a machine nobody uses, and was re-recorded from
+  CI under `d-20260829-02`. The backend (`f-20260829-01`) was a **missing test wearing the same
+  symptoms**: the entire atlas-versus-runner gap was three branch records in `remove_tree_at`'s
+  directory walk, which no test drove deliberately — it was reached only as a side effect of other
+  tests' workspace cleanup, 21 times here and once on the runner. Asserting the descent
+  (`f-20260830-01`) made all six areas measure *identically* in both environments, with no baseline
+  touched. **Before attributing the next ratchet disagreement to the machine, check whether the
+  divergent records are simply untested**; and note that `BRDA` block/branch identity is not stable
+  across builds, so ~170 records routinely flip in each direction and cancel.
+  **Never rewrite a baseline to clear a red ratchet** (`docs/coverage.md`) — lowering the backend
+  floor to the runner's 744 would have permanently retired the only enforcement of a recursive
+  delete that guards against directory traversal. `.claude/settings.json` denies the known spellings
+  of `coverage:baseline:*` and of a direct `--write-baseline` call, but treat that as a speed bump
+  rather than enforcement: a deny list matches command strings, and a determined invocation can
+  always phrase itself differently. The rule is what binds; the deny list only makes the wrong thing
+  harder to type by accident.
 - **Mutation testing now has valid evidence on this tree for the first time** (`f-20260829-05`,
   handled), after the pinned tooling was installed on atlas on 2026-08-29. The **backend is green**:
   all eight packages, 324 mutants, 305 caught, 9 timeouts, 10 unviable, **0 survivors**. The
@@ -180,6 +187,11 @@ E2E runs go through `pnpm test:e2e:container`, inside the pinned Playwright imag
 is `d-20260829-01` in `tasks/decisions.md`. The committed snapshots already match what that image
 renders (8/8 green there on 2026-08-29, none rewritten); it is the *native* run on atlas that fails,
 on glyph antialiasing alone. Never re-record snapshots on a host.
+
+CI on the fork is green end to end as of run 33298305678 (2026-08-30) — linter, both boundary
+checks, both coverage ratchets, bindings, bundle budgets, container e2e, and `mutation:frontend`.
+That is the reference measurement: a gate is settled when the runner agrees with this machine, not
+when it passes here.
 
 Also note that the 2026-08-09 audit was produced by a Gemini-driven agent run and **has not been
 reviewed line by line**. What was proven at the time is that the gates then run were green — not
