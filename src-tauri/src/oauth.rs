@@ -669,7 +669,14 @@ where
                         info!("OAuth identity credential stored");
                         Ok(())
                     },
-                    Ok(_) | Err(_) => Err(Error::OAuthFailure(OAUTH_FAILURE.into())),
+                    Ok(_) => {
+                        warn!("OAuth verified identity did not match requested account");
+                        Err(Error::OAuthFailure(OAUTH_FAILURE.into()))
+                    }
+                    Err(source) => {
+                        error!("OAuth identity verification failed: {source}");
+                        Err(Error::OAuthFailure(OAUTH_FAILURE.into()))
+                    }
                 },
                 Err(source) => {
                     error!("OAuth token exchange failed: {source}");
@@ -833,11 +840,21 @@ mod tests {
         assert_eq!(auth_config.client_id, config.identifier);
     }
 
+    #[test]
+    fn development_auth_config_uses_fork_identifier() {
+        let config =
+            serde_json::from_str::<serde_json::Value>(include_str!("../tauri.dev.conf.json"))
+                .expect("repository development Tauri configuration must deserialize");
+        assert_eq!(config["identifier"], "com.chessriddle.encroissant.dev");
+    }
+
     #[derive(Clone)]
     struct MockServices {
         bind_error: Option<String>,
         exchange_error: Option<String>,
         exchange_pending: bool,
+        verified_username: String,
+        verify_error: Option<String>,
         revoke_error: bool,
         server_error: bool,
         listener_ignores_shutdown: bool,
@@ -854,6 +871,8 @@ mod tests {
                 bind_error: None,
                 exchange_error: None,
                 exchange_pending: false,
+                verified_username: "user".into(),
+                verify_error: None,
                 revoke_error: false,
                 server_error: false,
                 listener_ignores_shutdown: false,
@@ -884,7 +903,10 @@ mod tests {
         }
 
         async fn verify_identity(&self, _: &str) -> Result<String, Error> {
-            Ok("user".into())
+            match self.verify_error.clone() {
+                Some(source) => Err(Error::OAuthFailure(source)),
+                None => Ok(self.verified_username.clone()),
+            }
         }
 
         async fn revoke_token(&self, _: &str) -> Result<(), Error> {
@@ -1499,6 +1521,32 @@ mod tests {
         );
         assert!(lifecycle.is_idle().await);
         assert!(services.listener_stopped.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn identity_mismatch_and_verification_failure_return_generic_error() {
+        let lifecycle = Arc::new(AuthLifecycle::default());
+        let mut services = MockServices::new();
+        services.verified_username = "different-user".into();
+        let task = start_attempt(lifecycle.clone(), services, |_| Ok(()));
+        tokio::task::yield_now().await;
+        assert_eq!(
+            send_valid(lifecycle.clone()).await,
+            CallbackResult::AcceptedCode
+        );
+        assert!(
+            matches!(task.await.expect("task join"), Err(Error::OAuthFailure(message)) if message == OAUTH_FAILURE)
+        );
+
+        let lifecycle = Arc::new(AuthLifecycle::default());
+        let mut services = MockServices::new();
+        services.verify_error = Some("identity endpoint unavailable".into());
+        let task = start_attempt(lifecycle.clone(), services, |_| Ok(()));
+        tokio::task::yield_now().await;
+        assert_eq!(send_valid(lifecycle).await, CallbackResult::AcceptedCode);
+        assert!(
+            matches!(task.await.expect("task join"), Err(Error::OAuthFailure(message)) if message == OAUTH_FAILURE)
+        );
     }
 
     #[tokio::test]

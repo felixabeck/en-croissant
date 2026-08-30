@@ -754,4 +754,83 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn invalid_and_absent_handles_do_not_reach_the_credential_store() {
+        let invalid = LichessAccountMetadata {
+            handle: LichessAccountHandle("not-a-uuid".into()),
+            username: "invalid".into(),
+        };
+        let manager = CredentialManager {
+            store: Arc::new(UnboundCredentialStore),
+            persistence: Arc::new(AtomicRegistryPersistence),
+            registry: Mutex::new(RegistryFile {
+                version: REGISTRY_VERSION,
+                accounts: BTreeMap::from([(
+                    invalid.handle.0.clone(),
+                    AccountRecord::Active(invalid.clone()),
+                )]),
+            }),
+            registry_path: Mutex::new(None),
+        };
+        let absent = LichessAccountHandle("56d05779-a8d4-426b-97a6-a237a4b4d31d".into());
+
+        assert_eq!(
+            (
+                manager.token(&invalid.handle).ok(),
+                manager.remove(&invalid.handle).ok(),
+                manager.remove(&absent).ok(),
+                manager.list(),
+            ),
+            (Some(None), Some(None), Some(None), vec![invalid],)
+        );
+    }
+
+    #[test]
+    fn registry_version_migration_and_pathless_persistence_are_explicit() {
+        let manager = CredentialManager::default();
+        let current = RegistryFile {
+            version: REGISTRY_VERSION,
+            accounts: BTreeMap::new(),
+        };
+        let outdated = RegistryFile {
+            version: REGISTRY_VERSION - 1,
+            accounts: BTreeMap::new(),
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let legacy_path = temp.path().join(REGISTRY_FILE);
+        let legacy = LichessAccountMetadata {
+            handle: LichessAccountHandle("56d05779-a8d4-426b-97a6-a237a4b4d31d".into()),
+            username: "Felix".into(),
+        };
+        let write = fs::write(
+            &legacy_path,
+            r#"{"version":1,"accounts":[{"handle":"56d05779-a8d4-426b-97a6-a237a4b4d31d","username":"Felix"}]}"#,
+        );
+        let migrated = manager.load_registry(&legacy_path).ok().map(|registry| {
+            (
+                registry.version,
+                registry
+                    .accounts
+                    .values()
+                    .map(|record| record.metadata().clone())
+                    .collect::<Vec<_>>(),
+            )
+        });
+
+        assert_eq!(
+            (
+                manager.validate_registry(&outdated).is_err(),
+                manager.persist_locked(&current).ok(),
+                write.is_ok(),
+                migrated,
+            ),
+            (
+                true,
+                Some(RegistryCommit::Durable),
+                true,
+                Some((REGISTRY_VERSION, vec![legacy])),
+            )
+        );
+    }
 }
