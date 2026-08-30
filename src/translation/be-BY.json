@@ -1,5 +1,6 @@
 {
   "translation": {
+    "About.ModificationNotice": "Мадыфікаваная версія En Croissant, мадыфікаваная Felix Beck з {{date}}. Распаўсюджваецца на ўмовах GNU General Public License Версіі 3 без гарантыі.",
     "About.OperatingSystem": "Аперацыйная сістэма",
     "About.TauriVersion": "Версія Tauri",
     "Accounts.EditName": "Змяніць імя гульца",

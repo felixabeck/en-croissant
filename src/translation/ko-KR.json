@@ -1,5 +1,6 @@
 {
   "translation": {
+    "About.ModificationNotice": "En Croissant의 수정 버전이며, {{date}}부터 Felix Beck이 수정했습니다. GNU General Public License 버전 3에 따라 배포되며 어떠한 보증도 제공하지 않습니다.",
     "About.OperatingSystem": "운영 체제",
     "About.TauriVersion": "Tauri 버전",
     "Accounts.EditName": "플레이어 이름 수정",

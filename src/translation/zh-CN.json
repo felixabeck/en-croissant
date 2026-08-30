@@ -1,5 +1,6 @@
 {
   "translation": {
+    "About.ModificationNotice": "En Croissant 的修改版本，自 {{date}} 起由 Felix Beck 修改。根据 GNU General Public License 第 3 版发布，不提供任何保证。",
     "About.OperatingSystem": "操作系统",
     "About.TauriVersion": "Tauri 版本",
     "Accounts.EditName": "编辑棋手名称",

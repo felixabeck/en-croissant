@@ -44,6 +44,10 @@ function AboutModal({
         {t("About.OperatingSystem")}: {info?.os} {info?.architecture} {info?.osVersion}
       </Text>
 
+      <Text size="xs" c="dimmed">
+        {t("About.ModificationNotice", { date: "2026-08-09" })}
+      </Text>
+
       <br />
 
       <Anchor href="https://www.encroissant.org" target="_blank" rel="noreferrer">

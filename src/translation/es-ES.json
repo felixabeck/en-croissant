@@ -1,5 +1,6 @@
 {
   "translation": {
+    "About.ModificationNotice": "Versión modificada de En Croissant, modificada por Felix Beck desde {{date}}. Distribuida bajo la GNU General Public License versión 3, sin garantía.",
     "About.OperatingSystem": "Sistema operativo",
     "About.TauriVersion": "Versión de Tauri",
     "Accounts.EditName": "Editar nombre del jugador",

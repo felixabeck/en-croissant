@@ -1,7 +1,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/franciscoBSalgueiro/en-croissant">
-    <img width="115" height="115" src="https://github.com/franciscoBSalgueiro/en-croissant/blob/master/src-tauri/icons/icon.png" alt="Logo">
+    <img width="115" height="115" src="https://github.com/franciscoBSalgueiro/en-croissant/blob/master/src-tauri/icons/icon.png" alt="Logo of the original En Croissant project">
   </a>
 
 <h3 align="center">En Croissant</h3>
@@ -19,6 +19,10 @@
     <a href="https://www.encroissant.org/docs">Explore the docs</a>
   </p>
 </div>
+
+> **This is a modified version of [En Croissant](https://github.com/franciscoBSalgueiro/en-croissant).**
+> Modified by Felix Beck since 2026-08-09, and released under the GNU General Public License v3.0
+> with no warranty. Not affiliated with, nor endorsed by, the original project.
 
 En-Croissant is an open-source, cross-platform chess GUI that aims to be powerful, customizable and easy to use.
 
@@ -39,7 +43,7 @@ Refer to the [Tauri documentation](https://tauri.app/start/prerequisites/) for t
 En-Croissant uses pnpm as the package manager for dependencies. Refer to the [pnpm install instructions](https://pnpm.io/installation) for how to install it on your platform.
 
 ```bash
-git clone https://github.com/franciscoBSalgueiro/en-croissant
+git clone https://github.com/felixabeck/en-croissant
 cd en-croissant
 pnpm install
 pnpm build
