@@ -66,6 +66,9 @@ jobs:
       - name: Test backend mutation runner
         run: pnpm mutation:runner:test
 
+      - name: Test findings ledger atomic write
+        run: pnpm findings:test
+
       - name: Run frontend tests and coverage
         run: pnpm test:coverage
 

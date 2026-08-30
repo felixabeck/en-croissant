@@ -80,12 +80,18 @@ Affected by `tasks/**` or `scripts/findings.py`:
 
 ```bash
 python3 scripts/findings.py check
+pnpm findings:test
 ```
 
-This repository has no Python test suite, so nothing else validates the ledger. A malformed
-header or an area outside the closed vocabulary silently drops a finding out of the derived queue,
-which is exactly the loss the ledger exists to prevent. `tasks/findings.md` names this gate as
-`$push`'s job, so it runs here.
+`check` validates the ledger: a malformed header or an area outside the closed vocabulary silently
+drops a finding out of the derived queue, which is exactly the loss the ledger exists to prevent.
+`tasks/findings.md` names this gate as `$push`'s job, so it runs here.
+
+`findings:test` is the only test over `scripts/findings.py` itself, and it is deliberately narrow —
+it pins the failure reporting of `_atomic_write` (f-20260829-14), not the tool's behaviour at large.
+`scripts/findings.py` is byte-identical across Felix's projects by contract, so **nothing
+repository-specific may be added to it**; a change there is a change to every copy, and the test
+lives beside it rather than inside it for that reason.
 
 ### CI, dependencies, and release mechanics
 

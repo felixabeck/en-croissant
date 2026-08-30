@@ -1391,14 +1391,18 @@ def _atomic_write(path: Path, text: str, *, durable_directory: bool = False) -> 
         try:
             tmp.unlink(missing_ok=True)
         except OSError as exc:
-            if committed:
-                print(
-                    f"WARN could not clean up temporary file {tmp} after atomic "
-                    f"write: {exc}",
-                    file=sys.stderr,
-                )
-            else:
-                raise
+            # Never re-raise here. A ``raise`` inside ``finally`` replaces the
+            # exception already in flight, so a failed write followed by a failed
+            # cleanup would reach ``main`` as "could not remove /tmp/...tmp-x" and
+            # the reason the ledger could not be written would be gone. For a tool
+            # whose whole purpose is not losing findings, that is the wrong half to
+            # keep. Report the orphaned temporary file instead, so both diagnostics
+            # survive, and let the primary error propagate.
+            detail = "after atomic write" if committed else "after a failed atomic write"
+            print(
+                f"WARN could not clean up temporary file {tmp} {detail}: {exc}",
+                file=sys.stderr,
+            )
 
 
 @contextmanager
