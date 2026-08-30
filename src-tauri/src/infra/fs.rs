@@ -82,14 +82,28 @@ mod unix {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum RemovalFaultPoint {
         BeforeTopOpen,
+        BeforeChildStat,
         BeforeChildOpen,
-        AfterChildRemoved,
+        AfterEntryRemoved,
         ParentSync,
     }
 
     #[cfg(test)]
     pub(crate) trait RemovalInjector {
-        fn inject(&self, _: RemovalFaultPoint) -> std::io::Result<Option<bool>> {
+        fn inject(&self, _: RemovalFaultPoint) -> std::io::Result<Option<u64>> {
+            Ok(None)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) struct RemovalFault(pub(crate) RemovalFaultPoint);
+
+    #[cfg(test)]
+    impl RemovalInjector for RemovalFault {
+        fn inject(&self, point: RemovalFaultPoint) -> std::io::Result<Option<u64>> {
+            if point == self.0 {
+                return Err(std::io::Error::other("injected removal failure"));
+            }
             Ok(None)
         }
     }
@@ -106,7 +120,7 @@ mod unix {
     }
 
     #[cfg(test)]
-    pub(super) fn inject_removal(point: RemovalFaultPoint) -> Result<Option<bool>, Error> {
+    pub(super) fn inject_removal(point: RemovalFaultPoint) -> Result<Option<u64>, Error> {
         TEST_REMOVAL_INJECTOR.with(|current| {
             current
                 .borrow()
@@ -439,7 +453,7 @@ mod unix {
         parent_dev: u64,
         removed_entries: &mut usize,
     ) -> Result<(), Error> {
-        if depth > MAX_REMOVE_TREE_DEPTH {
+        if depth >= MAX_REMOVE_TREE_DEPTH {
             return Err(Error::ResourceLimit(format!(
                 "directory cleanup exceeded {MAX_REMOVE_TREE_DEPTH} levels"
             )));
@@ -460,18 +474,18 @@ mod unix {
                 fs::unlinkat(parent, name, AtFlags::empty()).map_err(|e| io(e.into()))?;
                 *removed_entries += 1;
                 #[cfg(test)]
-                inject_removal(RemovalFaultPoint::AfterChildRemoved)?;
+                inject_removal(RemovalFaultPoint::AfterEntryRemoved)?;
                 Ok(())
             }
             FileType::Directory => {
                 #[cfg(test)]
-                let forced_mount = if depth == 0 {
-                    None
+                let compared_parent_dev = if depth == 0 {
+                    parent_dev
                 } else {
-                    inject_removal(RemovalFaultPoint::BeforeChildOpen)?
+                    inject_removal(RemovalFaultPoint::BeforeChildOpen)?.unwrap_or(parent_dev)
                 };
                 #[cfg(not(test))]
-                let forced_mount: Option<bool> = None;
+                let compared_parent_dev = parent_dev;
                 let child = File::from(
                     fs::openat(
                         parent,
@@ -482,7 +496,7 @@ mod unix {
                     .map_err(|e| io(e.into()))?,
                 );
                 let opened = fs::fstat(&child).map_err(|e| io(e.into()))?;
-                if (opened.st_dev, opened.st_ino) != (stat.st_dev, stat.st_ino) {
+                if !same_inode(&opened, &stat) {
                     return Err(Error::Conflict(
                         "directory cleanup entry changed concurrently".into(),
                     ));
@@ -490,10 +504,10 @@ mod unix {
                 // `MOUNT_ROOT` requires Linux 5.8. When the bit is unavailable, or `statx`
                 // returns `NOSYS`, the device check is the fallback; a same-filesystem bind mount
                 // is therefore invisible below that kernel floor.
-                let is_mount = match forced_mount {
-                    Some(answer) => answer,
-                    None if opened.st_dev != parent_dev => true,
-                    None => match fs::statx(
+                let is_mount = if opened.st_dev != compared_parent_dev {
+                    true
+                } else {
+                    match fs::statx(
                         &child,
                         "",
                         AtFlags::EMPTY_PATH | AtFlags::NO_AUTOMOUNT,
@@ -509,7 +523,7 @@ mod unix {
                         }
                         Err(Errno::NOSYS) => false,
                         Err(error) => return Err(io(error.into())),
-                    },
+                    }
                 };
                 if is_mount {
                     return Err(Error::InvalidInput(
@@ -527,6 +541,8 @@ mod unix {
                     let entry = entry.map_err(|e| io(e.into()))?;
                     let bytes = entry.file_name().to_bytes();
                     if bytes != b"." && bytes != b".." {
+                        #[cfg(test)]
+                        inject_removal(RemovalFaultPoint::BeforeChildStat)?;
                         remove_tree_at(
                             &child,
                             OsStr::from_bytes(bytes),
@@ -542,7 +558,7 @@ mod unix {
                 fs::unlinkat(parent, name, AtFlags::REMOVEDIR).map_err(|e| io(e.into()))?;
                 *removed_entries += 1;
                 #[cfg(test)]
-                inject_removal(RemovalFaultPoint::AfterChildRemoved)?;
+                inject_removal(RemovalFaultPoint::AfterEntryRemoved)?;
                 Ok(())
             }
             _ => Err(Error::InvalidInput(
@@ -698,7 +714,7 @@ mod unix {
 }
 
 #[cfg(all(test, unix))]
-pub(crate) use unix::{set_test_removal_injector, RemovalFaultPoint, RemovalInjector};
+pub(crate) use unix::{set_test_removal_injector, RemovalFault, RemovalFaultPoint};
 
 pub fn atomic_replace_with_precommit<F, I, P>(
     target: &Path,
@@ -1384,8 +1400,8 @@ mod tests {
 
     #[cfg(unix)]
     impl unix::RemovalInjector for RemovalSwap {
-        fn inject(&self, point: unix::RemovalFaultPoint) -> std::io::Result<Option<bool>> {
-            if point == self.point {
+        fn inject(&self, point: unix::RemovalFaultPoint) -> std::io::Result<Option<u64>> {
+            if point == self.point && self.replacement.exists() {
                 std::fs::remove_dir_all(&self.target)?;
                 std::fs::rename(&self.replacement, &self.target)?;
             }
@@ -1394,22 +1410,27 @@ mod tests {
     }
 
     #[cfg(unix)]
-    struct RemovalFault {
-        point: unix::RemovalFaultPoint,
-        mount_answer: Option<bool>,
+    struct ParentDeviceOverride(u64);
+
+    #[cfg(unix)]
+    impl unix::RemovalInjector for ParentDeviceOverride {
+        fn inject(&self, point: unix::RemovalFaultPoint) -> std::io::Result<Option<u64>> {
+            if point == unix::RemovalFaultPoint::BeforeChildOpen {
+                return Ok(Some(self.0));
+            }
+            Ok(None)
+        }
     }
 
     #[cfg(unix)]
-    impl unix::RemovalInjector for RemovalFault {
-        fn inject(&self, point: unix::RemovalFaultPoint) -> std::io::Result<Option<bool>> {
-            if point != self.point {
-                return Ok(None);
-            }
-            match self.mount_answer {
-                Some(answer) => Ok(Some(answer)),
-                None => Err(std::io::Error::other("injected removal failure")),
-            }
-        }
+    fn removal_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, (u64, u64), File) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(&victim).expect("victim");
+        let expected = inode(&victim);
+        let parent = File::open(&root).expect("parent FD");
+        (temp, root, victim, expected, parent)
     }
 
     #[cfg(unix)]
@@ -1428,15 +1449,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn recursive_delete_rejects_top_level_substitution() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join("root");
-        let victim = root.join("victim");
+        let (_temp, root, victim, expected, parent) = removal_fixture();
         let replacement = root.join("replacement");
-        std::fs::create_dir_all(&victim).expect("victim");
         std::fs::create_dir(&replacement).expect("replacement");
         std::fs::write(replacement.join("keep"), b"replacement").expect("replacement content");
-        let expected = inode(&victim);
-        let parent = File::open(&root).expect("parent FD");
 
         let error = remove_entry_with_injector(
             &parent,
@@ -1460,17 +1476,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn recursive_delete_rejects_child_substitution() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join("root");
-        let victim = root.join("victim");
+        let (_temp, root, victim, expected, parent) = removal_fixture();
         let child = victim.join("child");
         let replacement = root.join("replacement");
         std::fs::create_dir_all(&child).expect("child");
         std::fs::create_dir(&replacement).expect("replacement");
         std::fs::write(replacement.join("keep"), b"replacement").expect("replacement content");
-        let expected = inode(&victim);
-        let parent = File::open(&root).expect("parent FD");
-
         let error = remove_entry_with_injector(
             &parent,
             OsStr::new("victim"),
@@ -1492,24 +1503,46 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn recursive_delete_refuses_a_forced_mount_answer() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join("root");
-        let victim = root.join("victim");
+    fn recursive_delete_rejects_child_substitution_before_stat() {
+        let (_temp, root, victim, expected, parent) = removal_fixture();
         let child = victim.join("child");
+        let replacement = root.join("replacement");
         std::fs::create_dir_all(&child).expect("child");
-        std::fs::write(child.join("keep"), b"content").expect("child content");
-        let expected = inode(&victim);
-        let parent = File::open(&root).expect("parent FD");
+        std::fs::create_dir(&replacement).expect("replacement");
+        std::fs::write(replacement.join("keep"), b"replacement").expect("replacement content");
 
         let error = remove_entry_with_injector(
             &parent,
             OsStr::new("victim"),
             expected,
-            Box::new(RemovalFault {
-                point: unix::RemovalFaultPoint::BeforeChildOpen,
-                mount_answer: Some(true),
+            Box::new(RemovalSwap {
+                point: unix::RemovalFaultPoint::BeforeChildStat,
+                target: child.clone(),
+                replacement,
             }),
+        )
+        .expect_err("substitution must be rejected");
+
+        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(
+            std::fs::read(child.join("keep")).expect("substituted tree survives"),
+            b"replacement"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_refuses_a_forced_parent_device() {
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
+        let child = victim.join("child");
+        std::fs::create_dir_all(&child).expect("child");
+        std::fs::write(child.join("keep"), b"content").expect("child content");
+
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Box::new(ParentDeviceOverride(expected.0.wrapping_add(1))),
         )
         .expect_err("mount must be rejected");
 
@@ -1523,43 +1556,34 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn recursive_delete_refuses_more_than_the_maximum_depth() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join("root");
-        let victim = root.join("victim");
-        std::fs::create_dir_all(&victim).expect("victim");
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
         let mut current = victim.clone();
-        for level in 0..=unix::MAX_REMOVE_TREE_DEPTH {
+        for level in 1..unix::MAX_REMOVE_TREE_DEPTH {
             current = current.join(format!("level-{level}"));
             std::fs::create_dir(&current).expect("nested directory");
         }
-        let parent = File::open(&root).expect("parent FD");
-
-        let error = remove_entry_at(&parent, OsStr::new("victim"), inode(&victim), true)
+        let boundary = current.join("boundary");
+        std::fs::write(&boundary, b"content").expect("boundary entry");
+        let error = remove_entry_at(&parent, OsStr::new("victim"), expected, true)
             .expect_err("depth must be bounded");
 
         assert!(matches!(error, Error::ResourceLimit(_)));
-        assert!(current.is_dir(), "the deepest directory survives");
+        assert!(boundary.is_file(), "the refused entry survives");
     }
 
     #[cfg(unix)]
     #[test]
     fn recursive_delete_reports_partial_progress() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join("root");
-        let victim = root.join("victim");
-        std::fs::create_dir_all(&victim).expect("victim");
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
         std::fs::write(victim.join("removed"), b"content").expect("child content");
-        let expected = inode(&victim);
-        let parent = File::open(&root).expect("parent FD");
 
         let error = remove_entry_with_injector(
             &parent,
             OsStr::new("victim"),
             expected,
-            Box::new(RemovalFault {
-                point: unix::RemovalFaultPoint::AfterChildRemoved,
-                mount_answer: None,
-            }),
+            Box::new(unix::RemovalFault(
+                unix::RemovalFaultPoint::AfterEntryRemoved,
+            )),
         )
         .expect_err("post-removal failure must be reported");
 
@@ -1576,22 +1600,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn recursive_delete_maps_parent_sync_failure_after_complete_removal() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join("root");
-        let victim = root.join("victim");
-        std::fs::create_dir_all(&victim).expect("victim");
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
         std::fs::write(victim.join("removed"), b"content").expect("child content");
-        let expected = inode(&victim);
-        let parent = File::open(&root).expect("parent FD");
 
         let error = remove_entry_with_injector(
             &parent,
             OsStr::new("victim"),
             expected,
-            Box::new(RemovalFault {
-                point: unix::RemovalFaultPoint::ParentSync,
-                mount_answer: None,
-            }),
+            Box::new(unix::RemovalFault(unix::RemovalFaultPoint::ParentSync)),
         )
         .expect_err("parent sync failure must preserve commit status");
 

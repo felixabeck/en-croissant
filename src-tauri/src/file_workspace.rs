@@ -705,21 +705,10 @@ fn permanently_delete_entry(
 mod tests {
     use super::*;
     use crate::infra::{
-        fs::{set_test_removal_injector, RemovalFaultPoint, RemovalInjector},
+        fs::{set_test_removal_injector, RemovalFault, RemovalFaultPoint},
         path_authority::PathAuthority,
     };
     use tempfile::TempDir;
-
-    struct RemovalFault(RemovalFaultPoint);
-
-    impl RemovalInjector for RemovalFault {
-        fn inject(&self, point: RemovalFaultPoint) -> std::io::Result<Option<bool>> {
-            if point == self.0 {
-                return Err(std::io::Error::other("injected removal failure"));
-            }
-            Ok(None)
-        }
-    }
 
     fn workspace_state() -> (TempDir, AppState, FileWorkspaceHandle) {
         let directory = tempfile::tempdir().expect("temporary workspace parent");
@@ -811,7 +800,7 @@ mod tests {
             &state,
             &workspace,
             &entry,
-            RemovalFaultPoint::AfterChildRemoved,
+            RemovalFaultPoint::AfterEntryRemoved,
         )
         .expect_err("post-removal failure must be reported");
 

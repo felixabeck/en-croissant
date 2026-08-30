@@ -224,6 +224,19 @@ describe("trash confirmations", () => {
     );
   });
 
+  test("successful permanent-delete is not reported as failed when relisting fails", async () => {
+    await completeTrash();
+    mocks.mutate.mockClear();
+    mocks.mutate.mockRejectedValueOnce(new Error("list unavailable"));
+    click("Delete permanently");
+    await act(async () => button("Common.Delete").click());
+    expect(mocks.permanentlyDeleteWorkspaceEntry).toHaveBeenCalledTimes(1);
+    expect(mocks.mutate).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.textContent).not.toContain("The action could not be completed");
+    expect(container.textContent).not.toContain("list unavailable");
+  });
+
   test("partial permanent-delete keeps its error when relisting fails", async () => {
     await completeTrash();
     mocks.mutate.mockClear();

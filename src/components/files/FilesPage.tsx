@@ -320,21 +320,25 @@ export default function FilesPage() {
           opened
           onClose={() => setPurgeTarget(null)}
           onConfirm={async () => {
+            // A relist failure must never become the reported outcome of a delete. Reporting a
+            // completed destructive delete as "could not be completed" is worse than a stale
+            // list, and after a partial delete it hides the one message the user needs.
+            const relist = async () => {
+              setTrashed(null);
+              await mutate().catch(() => {});
+            };
             try {
               await tauri.permanentlyDeleteWorkspaceEntry(workspace!, purgeTarget.handle);
             } catch (cause) {
-              if (normalizeError(cause).category === "partially-applied") {
-                setTrashed(null);
-                try {
-                  await mutate();
-                } catch {
-                  // Keep the destructive operation's original error when relisting fails.
-                }
+              // `applied-despite-error` means files were destroyed even though this failed, so
+              // what is on screen no longer matches the disk. Any other failure left the entry
+              // in the trash, where the banner correctly still offers to restore it.
+              if (normalizeError(cause).category === "applied-despite-error") {
+                await relist();
               }
               throw cause;
             }
-            setTrashed(null);
-            await mutate();
+            await relist();
           }}
         />
       )}

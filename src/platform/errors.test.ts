@@ -15,9 +15,10 @@ describe("normalizeError", () => {
     });
 
     // Each cause below is worded so that some *other* branch would claim it if
-    // `partially-applied` were not tested first. The Rust literals these mirror are the
-    // `#[error(...)]` text of `Error::PartialRemoval` and `Error::CommittedDurabilityUncertain`;
-    // rewording either one turns this red, which is the point of pinning it here.
+    // `applied-despite-error` were not tested first. These are copies of the Rust literals, so
+    // this test pins only THIS side of the contract: rewording `Error::PartialRemoval` or
+    // `Error::CommittedDurabilityUncertain` does not turn it red. The backend asserts the
+    // literals it emits, in `infra::fs`'s tests, and that is the half that catches a reword.
     test.each([
         "Partially removed: 2 entries were deleted before failing: child not found",
         "Committed but durability uncertain: parent not found",
@@ -26,6 +27,6 @@ describe("normalizeError", () => {
         "Partially removed: 1 entries were deleted before failing: permission denied",
         "Committed but durability uncertain: invalid argument",
     ])("categorizes destructive changes that could not be fully reported", (message) => {
-        expect(normalizeError(new Error(message)).category).toBe("partially-applied");
+        expect(normalizeError(new Error(message)).category).toBe("applied-despite-error");
     });
 });
