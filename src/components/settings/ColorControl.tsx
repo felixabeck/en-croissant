@@ -1,5 +1,11 @@
-import { CheckIcon, ColorSwatch, Group, Input, useMantineTheme } from "@mantine/core";
-import { useColorScheme } from "@mantine/hooks";
+import {
+  CheckIcon,
+  ColorSwatch,
+  Group,
+  Input,
+  useComputedColorScheme,
+  useMantineTheme,
+} from "@mantine/core";
 import { useAtom } from "jotai";
 import { primaryColorAtom } from "@/state/atoms";
 import { useTranslation } from "react-i18next";
@@ -8,7 +14,10 @@ export default function ColorControl() {
   const { t } = useTranslation();
   const [primaryColor, setPrimaryColor] = useAtom(primaryColorAtom);
   const theme = useMantineTheme();
-  const colorScheme = useColorScheme();
+  // Mantine's own scheme, not the OS preference: `useColorScheme` from @mantine/hooks reads
+  // prefers-color-scheme and ignores the in-app Theme setting, so a dark app on a light
+  // desktop resolved to "light" here.
+  const colorScheme = useComputedColorScheme("dark");
 
   const colors = Object.keys(theme.colors).map((color) => (
     <ColorSwatch

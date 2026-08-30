@@ -1,5 +1,15 @@
-import { Box, Divider, Group, Overlay, Paper, ScrollArea, Stack, Table, Text } from "@mantine/core";
-import { useColorScheme } from "@mantine/hooks";
+import {
+  Box,
+  Divider,
+  Group,
+  Overlay,
+  Paper,
+  ScrollArea,
+  Stack,
+  Table,
+  Text,
+  useComputedColorScheme,
+} from "@mantine/core";
 import {
   IconArrowRight,
   IconArrowsSplit,
@@ -68,7 +78,10 @@ function GameNotation({ topBar, controls }: { topBar?: boolean; controls?: React
   const invisible = topBar && invisibleValue;
   const showComments = useAtomValue(currentShowCommentsAtom);
   const [tableView] = useAtom(tableViewAtom);
-  const colorScheme = useColorScheme();
+  // Mantine's own scheme, not the OS preference: `useColorScheme` from @mantine/hooks reads
+  // prefers-color-scheme and ignores the in-app Theme setting, so a dark app on a light
+  // desktop resolved to "light" here.
+  const colorScheme = useComputedColorScheme("dark");
 
   const keyMap = useAtomValue(keyMapAtom);
   useHotkeys(keyMap.TOGGLE_BLUR.keys, () => setInvisible((v) => !v));

@@ -1,5 +1,4 @@
-import { Box, Button, Group, Image, Menu, Text } from "@mantine/core";
-import { useColorScheme } from "@mantine/hooks";
+import { Box, Button, Group, Image, Menu, Text, useComputedColorScheme } from "@mantine/core";
 import { getCurrentWebviewWindow } from "@/platform/native";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -81,7 +80,11 @@ type MenuGroup = {
 
 function TopBar({ menuActions }: { menuActions: MenuGroup[] }) {
   const { t } = useTranslation();
-  const colorScheme = useColorScheme();
+  // Mantine's own scheme, not the OS preference. `useColorScheme` from @mantine/hooks
+  // reads prefers-color-scheme and ignores the in-app Theme setting entirely, so a dark
+  // app on a light desktop painted these labels dark-7 on the dark bar and the menu bar
+  // looked empty. `useComputedColorScheme` resolves the app scheme, "auto" included.
+  const colorScheme = useComputedColorScheme("dark");
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
