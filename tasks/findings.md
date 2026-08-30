@@ -3020,6 +3020,45 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   report would need the Mesa and WebKitGTK ddeb debug symbols to produce a symbolised backtrace.
   Note that the Mesa build is TUXEDO's rebuild, not stock Ubuntu.
 * **Found by:** Claude investigation of the crash Felix reported, 2026-08-30.
+* **Update, 2026-08-30 evening — two more occurrences, and it does not reproduce on demand.**
+  Three cores now, identical frame for frame: 17:16:24 (2040300), 18:18:26 (2781353), 18:19:14
+  (2784575). The environment read out of the cores puts them in **two** environments, not one:
+  17:16 was `pnpm dev` on the real session (`npm_lifecycle_event=dev`, `WAYLAND_DISPLAY=wayland-0`),
+  18:18 and 18:19 were `pnpm verify:app` (`TAURI_AUTOMATION=true`,
+  `WEBKIT_INSPECTOR_SERVER=127.0.0.1:57211`, nested `kwin_wayland --virtual`). It is also **not
+  device-specific**: core 2040300 references `/dev/dri/renderD128` (RX 7600) 24 times, core 2781353
+  references `/dev/dri/renderD129` (Granite Ridge iGPU) 34 times. Both are radeonsi, so the driver
+  attribution above holds, but "RX 7600" is only half of it.
+* **Reproduction attempted and failed — 30 runs, zero aborts.** Two independent attempts:
+  * 18 open/close cycles of the **real release binary in the crashing configuration** — its own
+    nested `kwin_wayland --virtual`, throwaway `HOME`, the committed harness driven headlessly
+    (13 short cycles, 5 holding the window open 45 s). Run from a copy of `scripts/app-driver.mjs`
+    with `DRIVER_PORT`/`NATIVE_PORT` patched to 4544/4545 and `APP_BINARY` absolute, so a
+    `pnpm verify:app` running concurrently in this repository could not collide with it. Repeat that
+    way, not by running `verify:app` twice.
+  * 12 runs of a standalone GTK3 + WebKit2 4.1 page (Python, `gir1.2-webkit2-4.1`), accelerated
+    compositing forced via `HardwareAccelerationPolicy.ALWAYS`, a live WebGL context to put an EGL
+    context on a second thread, once pinned to the dGPU with `DRI_PRIME`. Verified on the way that
+    its web process maps `libgbm`/`libgallium`/`libEGL_mesa` and holds DRI fds — it is on the
+    crashing path, it simply does not lose the race.
+* **Therefore the planned isolation arms were NOT run** (`WEBKIT_DISABLE_DMABUF_RENDERER=1`,
+  `LIBGL_ALWAYS_SOFTWARE=1`, and a Mesa 26.1.4-vs-26.0.5 comparison via `apt download` +
+  `dpkg-deb -x` + `LIBGL_DRIVERS_PATH`/`GBM_BACKENDS_PATH`). Against a baseline that does not fail,
+  a clean arm measures nothing. They stay the right arms the day a trigger is known.
+* **Still not reported upstream, now for a different reason than on the afternoon of the same day:**
+  not the occurrence count, but that there is no reproducer to hand a maintainer and the Mesa frames
+  cannot be symbolised (the `-tux1` rebuild publishes no `-dbgsym` anywhere). A report of a rare,
+  unsymbolised race gets closed.
+* **What to do the next time a core appears** (verified 2026-08-30, needs no root and no apt source
+  change): `curl -O http://ddebs.ubuntu.com/pool/main/w/webkit2gtk/libwebkit2gtk-4.1-0-dbgsym_2.52.3-0ubuntu0.24.04.1_amd64.ddeb`
+  (HTTP 200), `dpkg-deb -x` it into a scratch directory, then `set debug-file-directory
+  <dir>/usr/lib/debug` in gdb before `coredumpctl debug <pid>`. WebKitGTK here is the stock Ubuntu
+  build, so this names the atexit frame — which is what decides whether WebKit destroys the GBM
+  device too late or Mesa frees it twice. Worth doing on the *next* core rather than re-deriving all
+  of the above.
+* **The decision against `WEBKIT_DISABLE_DMABUF_RENDERER=1` stands unchanged** and was not reopened
+  here. The recurrence is recorded as evidence; the call is Felix's.
+* **Also updated by:** Claude, 2026-08-30 evening, on Felix's request to investigate the two new cores.
 
 ---
 
