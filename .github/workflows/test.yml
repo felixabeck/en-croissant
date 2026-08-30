@@ -69,6 +69,9 @@ jobs:
           pnpm gates:routing:test
           pnpm tools:parity:check
           pnpm tools:parity:test
+          pnpm workflows:check
+          pnpm workflows:permissions:test
+          pnpm hooks:check
 
       - name: Test coverage report parser
         run: pnpm coverage:report:test

@@ -43,7 +43,19 @@ the file yourself before working in that area.** A rule binds whether or not it 
 ## Gates
 
 `.claude/skills/push/SKILL.md` is the single source for which gate runs for which changed path.
-Read it rather than guessing; the commands themselves live in `package.json` scripts.
+Read it rather than guessing; gate scripts live in `package.json`, while the contract also names
+direct tool invocations.
+
+## Multi-agent coordination
+
+* Set `GIT_COMMITTER_NAME` to the acting agent (`Claude Code`, `Codex`, or `Grok`); author stays
+  Felix Beck, with no co-author or AI trailer. Claude Code reads `.claude/skills/push/SKILL.md`,
+  Codex reaches it through `.agents/skills/push/SKILL.md`, whose delta names `Codex`, and
+  `.grok/rules/grok-croissant.md` points at the canonical file.
+* Per commit, run the narrowest affected checks from the canonical push mapping; once per task,
+  after the last commit, run the full affected set. Never commit on red.
+* Handoffs longer than a few lines go in `tasks/handoffs/YYYY-MM-DD-<slug>.md`, never through Felix;
+  pass the receiving agent the file path.
 
 ## Verifying a visible change
 

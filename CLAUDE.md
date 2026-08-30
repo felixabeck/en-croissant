@@ -51,8 +51,8 @@ Read it rather than reconstructing the mapping here; `.agents/skills/push/SKILL.
 to it, and both defer to `~/.claude/references/push-review-policy.md` for authorization, review,
 triage, and red-gate behavior.
 
-Gate commands themselves live in `package.json` scripts. Two properties worth knowing before
-planning any change:
+Gate scripts live in `package.json`; the path mapping and any direct tool invocations live in the
+canonical push contract. Two properties worth knowing before planning any change:
 
 - **The binding is proven, not trusted.** `pnpm bindings:check` re-runs the debug Specta exporter
   and fails if the checked-in `src/bindings/generated.ts` differs by a byte. Editing the generated
@@ -99,7 +99,7 @@ untranslated JSX and missing locale keys (`pnpm i18n:jsx`, `pnpm i18n:check`), d
 
 Adversarial review runs in two tiers, and names never collide between them. Six project-independent
 lenses live in `~/.claude/agents/review-*.md` (`plan`, `minimalism`, `root-cause`, `tests`,
-`code-quality`, `error-handling`); five En-Croissant-specific ones live in `.claude/agents/` and
+`code-quality`, `error-handling`); six En-Croissant-specific ones live in `.claude/agents/` and
 carry this codebase's failure history:
 
 | Lens | Owns | Triggered by a diff touching |
@@ -136,11 +136,30 @@ session's context, and never only into a handoff message.
 - The area vocabulary is a **closed set**, listed in the ledger header; `check` rejects any other
   value. Adding an area is a deliberate edit to that list.
 - The universal contract — field meanings, ranking, the decision discipline, the lock protocol — is
-  `~/.claude/references/findings-ledger-contract.md`. `scripts/findings.py` is deliberately
-  identical across Felix's projects; nothing project-specific may be added to it.
+  `~/.claude/references/findings-ledger-contract.md`. A parity gate keeps `scripts/findings.py`
+  aligned across Felix's projects; this checkout has one declared, `port_pending` divergence for
+  `f-20260829-14`, and nothing project-specific may be added to it.
 
-This repository has no Python test suite, so nothing gates `findings.py check` automatically. Run it
-directly whenever a diff touches `tasks/`.
+CI runs `python3 scripts/findings.py check` in `.github/workflows/test.yml`. Run it directly whenever
+a diff touches `tasks/`.
+
+## Multi-agent coordination
+
+This repository is worked on by Claude Code, Codex, and Grok. The following coordination rules apply
+to all three agents.
+
+* Committer attribution: `GIT_COMMITTER_NAME` is the acting agent (`Claude Code`, `Codex`, or `Grok`).
+  The author remains Felix Beck. No co-author or AI trailer is added. Claude Code reads
+  `.claude/skills/push/SKILL.md` directly; Codex reaches it through `.agents/skills/push/SKILL.md`,
+  whose Codex delta names its own committer; and `.grok/rules/grok-croissant.md` points at the
+  canonical file.
+* Gate scope is split, because the full set is slow enough that running it per commit is not
+  practical. Per commit, run the narrowest affected checks from the mapping in
+  `.claude/skills/push/SKILL.md`. Once per task, after the last commit, run the full affected set.
+  Never commit on red.
+* Handoffs longer than a few lines are repo files at
+  `tasks/handoffs/YYYY-MM-DD-<slug>.md`, never pasted through Felix. The receiving agent gets the
+  file path.
 
 ## Verifying UI changes
 
@@ -191,10 +210,10 @@ What is **not** settled, all of it filed in `tasks/findings.md` rather than only
   **Never rewrite a baseline to clear a red ratchet** (`docs/coverage.md`) — lowering the backend
   floor to the runner's 744 would have permanently retired the only enforcement of a recursive
   delete that guards against directory traversal. `.claude/settings.json` denies the known spellings
-  of `coverage:baseline:*` and of a direct `--write-baseline` call, but treat that as a speed bump
-  rather than enforcement: a deny list matches command strings, and a determined invocation can
-  always phrase itself differently. The rule is what binds; the deny list only makes the wrong thing
-  harder to type by accident.
+  of `coverage:baseline:*` and of a direct `--write-baseline` call, as well as the repository's e2e
+  snapshot-update and force-push command forms. `.claude/hooks/block-env-files.sh` adds semantic
+  protection for secret-file access. These are defense-in-depth guards: the rule is what binds, and
+  a determined invocation can phrase a command differently.
 - **Mutation testing now has valid evidence on this tree for the first time** (`f-20260829-05`,
   handled), after the pinned tooling was installed on atlas on 2026-08-29. The **backend is green**:
   all eight packages, 324 mutants, 305 caught, 9 timeouts, 10 unviable, **0 survivors**. The
@@ -214,6 +233,9 @@ on glyph antialiasing alone. Never re-record snapshots on a host.
 
 CI on the fork is green end to end as of run 33298305678 (2026-08-30) — linter, both boundary
 checks, both coverage ratchets, bindings, bundle budgets, container e2e, and `mutation:frontend`.
+The current test workflow additionally runs routing, skills, tool-parity, and findings-ledger
+validation. Workflow-permission validation is in the push contract, but the current test workflow
+does not invoke that checker.
 That is the reference measurement: a gate is settled when the runner agrees with this machine, not
 when it passes here.
 
