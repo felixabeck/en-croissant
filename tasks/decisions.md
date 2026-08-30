@@ -487,8 +487,12 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   Felix to look". That is a permanent tax on him and, worse, an evidence gap: the shutdown fix in
   f-20260830-51 could be unit-tested but not shown to run in the product. It now is — clicking the
   app's own close control produces `Shutdown requested…` → `Shutdown cleanup finished` in the log
-  and leaves no application or WebKit service process behind, which is exactly the property that was
-  broken.
+  and leaves neither the application process nor the WebKit service processes it fathered behind,
+  which is exactly the property that was broken. That assertion is **pid-scoped**: the harness
+  records the app's pid and the pids of the WebKit children whose parent it is, then proves those
+  exact pids are gone. A blanket "no WebKitWebProcess anywhere" would be untrue on a desktop
+  running other WebKitGTK applications — the first version of this check filtered them out
+  entirely and therefore proved nothing, which the push review of 2026-08-30 caught.
 * **What it deliberately does not cover:** native GTK chrome. The menu bar, window decorations and
   every file dialog are drawn by GTK, not by the page, and WebDriver only sees the page. In
   particular `issue_engine_binary` (`src-tauri/src/main.rs`) opens a native picker and takes no path
@@ -498,4 +502,9 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
 * **Not a push gate:** it wants a release build and a compositor, and CI has neither. Prerequisites
   are one-off and named in the failure message: `sudo apt install webkit2gtk-driver` (matching the
   installed `libwebkit2gtk-4.1-0`, 2.52.3 here) and `cargo install tauri-driver --locked`.
-* **Decided by:** Felix, 2026-08-30 · **Superseded-by:** -
+* **Decided by:** Felix chose that the harness be built, and to build it in the running session
+  ("can we do it right here to build the real AppHarness", 2026-08-30). Everything below that — WebDriver
+  over an off-screen compositor rather than a second Playwright suite, the throwaway `HOME`,
+  not-a-push-gate — is Claude's design, not his. Recorded separately per universal rule 4c: an
+  attribution to Felix is evidence, and the parts he did not choose must not travel under his name.
+  · **Superseded-by:** -

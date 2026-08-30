@@ -3115,3 +3115,103 @@ leaves no child behind.
 only be registered through `issue_engine_binary`, which opens a native GTK picker that WebDriver
 cannot drive. That engines specifically are reaped rests on the unit tests over `terminate_all` and
 `shutdown_all` plus the proof above that the wiring invokes them.
+
+**Push review, 2026-08-30 — the first fix was incomplete and the proof was overstated.** Thirteen
+lenses ran on Codex over `merge-base..HEAD`; eleven returned `REVISE`. The guarantee this entry
+claims did not hold in the tail, and the harness that "proved" it was not asserting what it printed.
+What was wrong, and is now fixed:
+
+* **The budget preserved the very leak it was meant to close.** `terminate_all` terminated engines
+  *sequentially*, each allowed its 3 s quit deadline, under one 15 s process budget — so roughly six
+  unresponsive engines exhausted the budget before the later ones were signalled at all, and the
+  process then exited with them alive. Engine, game and sound teardown now run concurrently
+  (`tokio::join!`, `join_all`), so the budget bounds the *slowest* resource rather than their sum.
+  `terminate_tab` and `terminate_all` were the same loop twice and now share one
+  `terminate_targets` helper (universal rule 11).
+* **A second exit request during cleanup killed the process mid-teardown.** The two-state
+  `ExitGuard` treated *every* request after the first as its own `AppHandle::exit`, so a second
+  user or OS request was let through to tao. It is now three-state (Idle/Running/Done) and keeps
+  calling `prevent_exit()` for the whole cleanup.
+* **A command in flight could register a child after the snapshot.** `get_best_moves` → `replace`
+  and `start_game` → `games.insert` could publish a freshly spawned child after shutdown had taken
+  its snapshot, and `process::exit` then orphaned it. Both registries now take a shutdown seal plus
+  a registration mutex, refuse new registrations with `Conflict("application is shutting down")`,
+  terminate anything that arrived in the race, and drain in a loop until empty.
+* **Failure was reported as success.** Teardown errors were logged and `Shutdown cleanup finished`
+  was written unconditionally. The success line is now only written when nothing failed.
+* **The sound server was still signalled but never joined** — the original async-resource violation
+  this entry described. Its `JoinHandle` now lives in `SoundServerLifecycle` beside the sender and
+  is awaited inside the budget, which also makes `shutdown_backend`'s "every teardown the process
+  owns" true rather than aspirational.
+* **A mutex guard was held across `.await`** in `LiveSession::shutdown_and_join` (the `if let`
+  scrutinee temporary), against the explicit invariant. The handle is now taken in its own
+  statement.
+* **`abort_game` keeps its old contract deliberately.** The teardown error is logged, not returned:
+  the abort itself has committed by then, so surfacing it would show the user a failure for an
+  operation that succeeded. Shutdown is the opposite case and does propagate.
+
+**The proof was also wrong, and that matters more than the code.** `verify-app.mjs` printed "no
+application or WebKit service process outlived the close" while filtering its process list back down
+to the application binary — the WebKit lines were discarded before the assertion, so the sentence
+was never tested. It is now pid-scoped: the app's pid and the pids of the WebKit children it
+fathered are recorded while it runs and proven gone afterwards. The fix run demonstrated the new
+assertion going red against a simulated survivor before restoring it. The harness also gained XDG
+isolation (setting only `HOME` left the real profile reachable), port-ownership and readiness
+checks, `fetch` abort deadlines, SIGTERM/SIGKILL escalation on cleanup, and a locale-independent
+close selector.
+
+**Still not covered end to end, unchanged:** no *engine* child participates, because
+`issue_engine_binary` opens a native GTK picker that WebDriver cannot drive. Engine reaping rests on
+the unit tests over `terminate_all`/`shutdown_all` — now including concurrency, sealing and drain
+regressions — plus the proof that the wiring invokes them.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### Three lifecycle registries grow without bound: engine `lifecycle`, game `lifecycle`, and `completed.latest`
+
+* **ID:** f-20260830-52 · **Status:** open · **Area:** engine-uci · **Root:** unbounded-registry-retention · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs:318` (`EngineSupervisor::lifecycle`),
+  `src-tauri/src/game.rs:817` (`GameManager::lifecycle`), and `game.rs` `CompletedGames::latest`.
+* **Defect:** all three are `DashMap`s keyed by an unbounded identifier — engine key, game id — and
+  nothing ever removes an entry. `lifecycle_slot` inserts on first use and the slot is never
+  reclaimed, so every distinct engine key and every distinct game id ever seen is retained for the
+  life of the process. `completed.latest` is the same: `completed.snapshots` is explicitly capped at
+  `COMPLETED_GAME_SNAPSHOTS`, and the `latest` map beside it is not.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` states that anything which
+  accumulates must be bounded and must say what the bound is. These are the counter-example in the
+  same files the rule governs. The practical leak is slow — it needs many distinct keys in one
+  session — but it is unbounded by construction rather than merely large.
+* **Why it is not fixed in the diff that found it:** removing a lifecycle slot is not a deletion,
+  it is a lock-lifetime question. The slot is an `Arc<Mutex<()>>` that concurrent transitions clone
+  and hold; dropping the map entry while another task owns a clone silently splits the lock in two,
+  so the next two transitions for that key are no longer mutually excluded. Getting it right needs a
+  design decision (reference-counted reclamation, generation-tagged slots, or an explicit
+  quiescent-key sweep), which is why this is `Entry: build` and not an inline fix.
+* **Found by:** the `n2-conventions` push-review lens, 2026-08-30 (confidence 96-98), while
+  reviewing the shutdown work of `f-20260830-51`. Three lenses reported the same class.
+
+---
+
+## 2026-08-30 — filed through the inbox spool
+
+### The engine stderr reader is a detached task with no owner, no cancellation and no terminal state
+
+* **ID:** f-20260830-53 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs`, in `EngineRuntime::spawn` — the
+  `tokio::spawn` that reads the child's stderr.
+* **Defect:** the task's `JoinHandle` is dropped at the spawn site. It has no owner, no
+  cancellation path, no identity tying it to the engine whose stderr it drains, and no observable
+  terminal state; it ends only as a side effect of the pipe closing when the child is reaped. Its
+  byte budget (`MAX_ENGINE_STDERR_BYTES`) is enforced, so this is a lifetime defect rather than an
+  unbounded one.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` requires every spawn to name its
+  owner and the exit paths it is cleaned up on. This one names none, and it sits in the file whose
+  shutdown path was just rewritten precisely because an unowned spawn is how engine children
+  outlived the application (`f-20260830-51`, upstream issue #723).
+* **Why it is not fixed in the diff that found it:** it is genuinely outside that diff's area — the
+  spawn path, not the teardown path — and the fix is a small ownership change that should be judged
+  against the actor's own lifecycle rather than bolted onto a shutdown change. One lens is enough
+  for it (`review-engine-protocol`).
+* **Found by:** the `n2-conventions` push-review lens, 2026-08-30 (confidence 96).

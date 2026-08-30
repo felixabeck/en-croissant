@@ -9,13 +9,10 @@ Read `.claude/skills/verify-ui/SKILL.md` first and follow that contract.
 This file only names the Codex runtime: do not use in-app Browser or
 chrome-devtools on `pnpm start-vite` as layout evidence.
 
-Two pointers, because these are the commands you will otherwise guess wrong:
+Two commands, because these are the ones you will otherwise guess wrong:
 
 * Pixels: `pnpm test:e2e:container`, never the native `pnpm test:e2e`.
-* Real product behaviour: `pnpm verify:app`. It drives the actual Tauri window
-  off-screen through `tauri-driver` and `WebKitWebDriver` — real backend, real
-  IPC, real WebKitGTK. Use it for lifecycle, IPC and process-teardown claims
-  that the mocked container suite cannot answer.
+* Real product behaviour: `pnpm verify:app`.
 
-Native GTK chrome — menus, file dialogs, window decorations — is outside both,
-and stays Felix's. The reasoning lives in the canonical file.
+What each proves, what neither reaches, and why, is in the canonical file. Read
+it rather than this line.
