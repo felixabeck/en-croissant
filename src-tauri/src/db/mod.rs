@@ -2419,6 +2419,11 @@ mod tests {
     use pgn_reader::BufferedReader;
 
     #[test]
+    fn finish_database_deletion_returns_ok_when_the_tail_succeeds() {
+        assert!(finish_database_deletion(true, 2, Ok(())).is_ok());
+    }
+
+    #[test]
     fn finish_database_deletion_preserves_sidecar_only_error() {
         let result = finish_database_deletion(
             false,
@@ -2505,6 +2510,76 @@ mod tests {
         assert_eq!(unlink_database_files(&target, &expected_source).unwrap(), 1);
         assert!(!database.exists());
         assert!(shared_sidecar.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unlink_database_files_skips_duplicate_legacy_leaf_on_extensionless_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("foo");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let preferred = get_index_path(&database);
+        assert_eq!(preferred, legacy_index_path(&database));
+        SearchIndex::default()
+            .write_to_with_source(&preferred, expected_source.clone())
+            .unwrap();
+        let (parent, leaf) =
+            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
+                .unwrap();
+        let target = DatabaseFileTarget {
+            parent,
+            leaf,
+            identity: expected_source.object,
+        };
+
+        assert_eq!(unlink_database_files(&target, &expected_source).unwrap(), 2);
+        assert!(!database.exists());
+        assert!(!preferred.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unlink_database_files_rejects_a_substituted_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("swap.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let (parent, leaf) =
+            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
+                .unwrap();
+        std::fs::remove_file(&database).unwrap();
+        std::fs::create_dir(&database).unwrap();
+        let target = DatabaseFileTarget {
+            parent,
+            leaf,
+            identity: expected_source.object,
+        };
+
+        let error = unlink_database_files(&target, &expected_source).unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)));
+        assert!(database.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unlink_database_files_rejects_an_identity_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("mismatch.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let (parent, leaf) =
+            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
+                .unwrap();
+        let target = DatabaseFileTarget {
+            parent,
+            leaf,
+            identity: (0, 0),
+        };
+
+        let error = unlink_database_files(&target, &expected_source).unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)));
+        assert!(database.exists());
     }
 
     #[test]
