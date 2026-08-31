@@ -15,7 +15,10 @@ use crate::{
         schema::*,
     },
     error::Error,
-    infra::path_authority::{DatabaseHandle, FileWorkspaceHandle, PathOperation},
+    infra::{
+        fs::AtomicFileOutcome,
+        path_authority::{DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathOperation},
+    },
     opening::get_opening_from_setup,
     AppState,
 };
@@ -625,13 +628,21 @@ pub async fn convert_pgn(
 }
 
 pub fn generate_search_index(
-    db_path: &Path,
+    handle: &DatabaseHandle,
     state: &tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    state.database_repository.with_write_lock(db_path, || {
-        state
-            .database_repository
-            .with_index_lock(db_path, || generate_search_index_locked(db_path, state))
+    let db_path = resolve_database(state, handle, PathOperation::DatabaseMutate)?;
+    let target = state
+        .pgn_path_authority
+        .lock()
+        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+        .database_file_target(handle, PathOperation::DatabaseMutate)?;
+    state.database_repository.with_write_lock(&db_path, || {
+        state.database_repository.with_index_lock(&db_path, || {
+            generate_search_index_locked(&db_path, &target, state)
+        })
     })
 }
 
@@ -653,13 +664,14 @@ struct SearchIndexGameRecord {
 
 fn generate_search_index_locked(
     db_path: &Path,
+    target: &DatabaseFileTarget,
     state: &tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     let mut database_connection = get_db_or_create(state, db_path)?;
     let db = &mut *database_connection;
-    let index_path = get_index_path(db_path);
+    let index_leaf = search_index::preferred_sidecar_leaf(&target.leaf);
 
-    info!("Generating search index at {:?}", index_path);
+    info!("Generating search index for {:?}", db_path);
     let start = Instant::now();
 
     let games: Vec<SearchIndexGameRecord> = games::table
@@ -698,9 +710,18 @@ fn generate_search_index_locked(
         writer.push(entry);
     }
     let source = IndexSource::from_database_identity(
-        &state.database_repository.database_identity(db_path)?,
+        &state
+            .database_repository
+            .database_identity_expected(db_path, target.identity)?,
     )?;
-    writer.write_to_with_source(&index_path, source)?;
+    match writer.write_to_at(&target.parent, &index_leaf, source)? {
+        AtomicFileOutcome::DurableCommit => {}
+        AtomicFileOutcome::CommittedDurabilityUncertain(_) => {
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::SearchIndexReplacement,
+            ));
+        }
+    }
     search::invalidate_search_cache(state, db_path);
 
     info!("Search index generated in {:?}", start.elapsed());
@@ -2288,8 +2309,6 @@ pub async fn preload_reference_db(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseRead)?;
-
     search::preload_search_index(&file, &state).await
 }
 
@@ -2297,6 +2316,21 @@ pub async fn preload_reference_db(
 mod tests {
     use super::*;
     use pgn_reader::BufferedReader;
+
+    #[test]
+    fn search_index_generation_uses_fd_relative_atomic_writer() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("fn generate_search_index_locked")
+            .nth(1)
+            .unwrap()
+            .split("#[derive(Serialize, Type)]")
+            .next()
+            .unwrap();
+        assert!(body.contains("write_to_at"));
+        assert!(!body.contains("atomic_replace(&"));
+        assert!(!body.contains("std::fs::remove_file"));
+    }
 
     #[test]
     fn pagination_limit_offset_validates_and_uses_i64_arithmetic() {

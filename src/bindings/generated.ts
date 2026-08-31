@@ -1009,7 +1009,7 @@ export type DatabaseProgress = { id: string; progress: number }
 export type DatabaseRootHandle = { id: PathRef; kind: DatabaseRootHandleKind }
 export type DatabaseRootHandleKind = "databaseRoot"
 export type DrawReason = "stalemate" | "insufficientMaterial" | "threefoldRepetition" | "fiftyMoveRule" | "agreement"
-export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveFileReplacement" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "GzipFileReplacement" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "RegistryReplacement" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation"
+export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveFileReplacement" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "GzipFileReplacement" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "RegistryReplacement" | "SearchIndexReplacement" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation"
 export type EngineConfig = { name: string; options: UciOptionConfig[] }
 /**
  * Opaque exact executable capability. It is distinct from its installation root.

@@ -28,12 +28,14 @@ use crate::{
         normalize_games, resolve_database,
         schema::*,
         search_index::{
-            get_index_path, GameResult, IndexSource, MmapSearchIndex, SearchGameEntryRef,
+            get_index_path, legacy_sidecar_leaf, preferred_sidecar_leaf,
+            promote_legacy_index_sidecar_at, GameResult, IndexSource, MmapSearchIndex,
+            SearchGameEntryRef,
         },
         MaterialCount,
     },
     error::Error,
-    infra::path_authority::{DatabaseHandle, PathOperation},
+    infra::path_authority::{DatabaseFileTarget, DatabaseHandle, PathOperation},
     progress::{begin_progress, update_progress_with_state, ProgressLease, ProgressState},
     AppState, SearchIndexIdentity, SearchResultKey,
 };
@@ -160,63 +162,133 @@ fn is_end_reachable(end: u16, pos: u16) -> bool {
 }
 
 async fn load_search_index(
-    file: &Path,
+    handle: &DatabaseHandle,
     state: &tauri::State<'_, AppState>,
 ) -> Result<(SearchIndexIdentity, MmapSearchIndex), Error> {
-    let database = file.canonicalize()?;
-    let index_path = super::search_index::promote_legacy_index_sidecar(&database)?
-        .unwrap_or_else(|| get_index_path(&database));
-    let expected_source = IndexSource::from_database_identity(
-        &state.database_repository.database_identity(&database)?,
-    )?;
-    match MmapSearchIndex::open(&index_path) {
-        Ok(index) if index.source() == &expected_source => {
-            let identity = SearchIndexIdentity::for_database(&database, expected_source.clone())?;
-            if let Some(cached) = state.search_cache.get_index(&identity) {
-                return Ok((identity, cached));
-            }
-            state
-                .search_cache
-                .insert_index(identity.clone(), index.clone());
-            return Ok((identity, index));
-        }
-        Ok(_) => {}
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
-            ) => {}
-        Err(error) => return Err(Error::from(error)),
+    let database = resolve_database(state, handle, PathOperation::DatabaseRead)?.canonicalize()?;
+    let read_target = database_file_target(state, handle, PathOperation::DatabaseRead)?;
+    let db_identity = state
+        .database_repository
+        .database_identity_expected(&database, read_target.identity)?;
+    let expected_source = IndexSource::from_database_identity(&db_identity)?;
+    if let Some(index) = open_valid_preferred(&read_target, &expected_source)? {
+        return cache_loaded_index(state, &database, expected_source, index);
     }
 
     // Different queries for the same database may arrive concurrently. One
     // per-index lock serializes only generation/loading for that archive.
     let generation_lock = GenerationLockCleanup {
         state,
-        index: index_path.clone(),
-        lock: state.search_cache.generation_lock(index_path),
+        index: get_index_path(&database),
+        lock: state
+            .search_cache
+            .generation_lock(get_index_path(&database)),
     };
     let _generation_guard = generation_lock.lock.lock().await;
 
-    let expected_source = IndexSource::from_database_identity(
-        &state.database_repository.database_identity(&database)?,
-    )?;
-    let needs_generation = MmapSearchIndex::open(get_index_path(&database))
-        .map(|index| index.source() != &expected_source)
-        .unwrap_or(true);
-    if needs_generation {
-        info!("Search index is absent, corrupt, or stale; generating automatically...");
-        super::generate_search_index(&database, state)?;
+    let read_target = database_file_target(state, handle, PathOperation::DatabaseRead)?;
+    let db_identity = state
+        .database_repository
+        .database_identity_expected(&database, read_target.identity)?;
+    let expected_source = IndexSource::from_database_identity(&db_identity)?;
+    if let Some(index) = open_valid_preferred(&read_target, &expected_source)? {
+        return cache_loaded_index(state, &database, expected_source, index);
     }
 
-    let index = MmapSearchIndex::open(get_index_path(&database))?;
-    let expected_source = IndexSource::from_database_identity(
-        &state.database_repository.database_identity(&database)?,
+    let mutate_target = database_file_target(state, handle, PathOperation::DatabaseMutate)?;
+    let preferred_leaf = preferred_sidecar_leaf(&mutate_target.leaf);
+    let legacy_leaf = legacy_sidecar_leaf(&mutate_target.leaf);
+    promote_legacy_index_sidecar_at(
+        &mutate_target.parent,
+        &preferred_leaf,
+        &legacy_leaf,
+        &db_identity,
     )?;
-    if index.source() != &expected_source {
-        return Err(Error::Conflict("search index changed while loading".into()));
+    if let Some(index) = open_valid_preferred(&mutate_target, &expected_source)? {
+        return cache_loaded_index(state, &database, expected_source, index);
     }
-    let identity = SearchIndexIdentity::for_database(&database, expected_source)?;
+
+    info!("Search index is absent, corrupt, or stale; generating automatically...");
+    let generation_error = match super::generate_search_index(handle, state) {
+        Ok(()) => None,
+        Err(
+            error @ Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::SearchIndexReplacement,
+            ),
+        ) => Some(error),
+        Err(error) => return Err(error),
+    };
+
+    let read_target = database_file_target(state, handle, PathOperation::DatabaseRead)?;
+    let db_identity = state
+        .database_repository
+        .database_identity_expected(&database, read_target.identity)?;
+    let expected_source = IndexSource::from_database_identity(&db_identity)?;
+    let Some(index) = open_valid_preferred(&read_target, &expected_source)? else {
+        return Err(generation_error
+            .unwrap_or_else(|| Error::Conflict("search index changed while loading".into())));
+    };
+    cache_loaded_index(state, &database, expected_source, index)
+}
+
+fn database_file_target(
+    state: &AppState,
+    handle: &DatabaseHandle,
+    operation: PathOperation,
+) -> Result<DatabaseFileTarget, Error> {
+    state
+        .pgn_path_authority
+        .lock()
+        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+        .database_file_target(handle, operation)
+}
+
+fn open_valid_preferred(
+    target: &DatabaseFileTarget,
+    expected_source: &IndexSource,
+) -> Result<Option<MmapSearchIndex>, Error> {
+    #[cfg(unix)]
+    {
+        use rustix::{
+            fs::{self as rfs, Mode, OFlags},
+            io::Errno,
+        };
+        let leaf = preferred_sidecar_leaf(&target.leaf);
+        let file = match rfs::openat(
+            &target.parent,
+            &leaf,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(file) => std::fs::File::from(file),
+            Err(error) if error == Errno::NOENT || error == Errno::LOOP => return Ok(None),
+            Err(error) => return Err(Error::Io(Box::new(error.into()))),
+        };
+        let index = match MmapSearchIndex::open_file(file) {
+            Ok(index) => index,
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
+            Err(error) => return Err(Error::from(error)),
+        };
+        Ok((index.source() == expected_source).then_some(index))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (target, expected_source);
+        Err(Error::Conflict(
+            "fd-relative search index loading is unsupported on this platform".into(),
+        ))
+    }
+}
+
+fn cache_loaded_index(
+    state: &AppState,
+    database: &Path,
+    expected_source: IndexSource,
+    index: MmapSearchIndex,
+) -> Result<(SearchIndexIdentity, MmapSearchIndex), Error> {
+    let identity = SearchIndexIdentity::for_database(database, expected_source)?;
     if let Some(index) = state.search_cache.get_index(&identity) {
         return Ok((identity, index));
     }
@@ -234,7 +306,7 @@ pub fn invalidate_search_cache(state: &AppState, database: &Path) {
 }
 
 pub async fn preload_search_index(
-    file: &Path,
+    file: &DatabaseHandle,
     state: &tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     let (_, index) = load_search_index(file, state).await?;
@@ -479,7 +551,8 @@ async fn search_position_inner(
     state: tauri::State<'_, AppState>,
     progress: &SearchProgress,
 ) -> Result<(Vec<PositionStats>, Vec<NormalizedGame>), Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseRead)?;
+    let database_handle = file;
+    let file = resolve_database(&state, &database_handle, PathOperation::DatabaseRead)?;
 
     let database = file.canonicalize()?;
     let collision_lock = state
@@ -501,7 +574,7 @@ async fn search_position_inner(
 
     let permit = state.new_request.acquire().await.unwrap();
 
-    let (identity, mmap_index) = load_search_index(&file, &state).await?;
+    let (identity, mmap_index) = load_search_index(&database_handle, &state).await?;
     let cache_key = SearchResultKey::new(query.clone(), identity);
     if let Some(result) = state.search_cache.get_result(&cache_key) {
         return Ok(result);
@@ -661,7 +734,8 @@ pub async fn is_position_in_db(
     query: GameQuery,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseRead)?;
+    let database_handle = file;
+    let file = resolve_database(&state, &database_handle, PathOperation::DatabaseRead)?;
     let database = file.canonicalize()?;
     let collision_lock = state
         .search_cache
@@ -685,7 +759,7 @@ pub async fn is_position_in_db(
 
     let permit = state.new_request.acquire().await.unwrap();
 
-    let (identity, mmap_index) = load_search_index(&file, &state).await?;
+    let (identity, mmap_index) = load_search_index(&database_handle, &state).await?;
     let cache_key = SearchResultKey::new(query.clone(), identity);
     if let Some(result) = state.search_cache.get_result(&cache_key) {
         return Ok(!result.0.is_empty());
@@ -733,6 +807,154 @@ pub async fn is_position_in_db(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        db::{legacy_index_path, SearchIndex},
+        infra::{
+            fs::{set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector},
+            path_authority::{PathAuthority, PathClass},
+        },
+    };
+    use diesel::Connection;
+    use tempfile::TempDir;
+
+    fn loader_test_case(
+        operations: Vec<PathOperation>,
+    ) -> (
+        TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        DatabaseHandle,
+        PathBuf,
+    ) {
+        use diesel::connection::SimpleConnection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("search.db3");
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        connection
+            .batch_execute(super::super::CREATE_TABLES_SQL)
+            .unwrap();
+        connection
+            .batch_execute("INSERT INTO Info (Name, Value) VALUES ('Version', '2.0.0');")
+            .unwrap();
+        drop(connection);
+
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let grant = authority
+            .grant_dialog_operations(
+                &database,
+                "search",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                std::time::Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let commit = authority
+            .promote_dialog(&grant, PathClass::PersistentFile, "search", operations)
+            .unwrap();
+        let handle = DatabaseHandle::new(commit.id);
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        (dir, app.handle().clone(), handle, database)
+    }
+
+    fn loader_source(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        database: &Path,
+    ) -> IndexSource {
+        IndexSource::from_database_identity(
+            &app.state::<AppState>()
+                .database_repository
+                .database_identity(database)
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn search_index_database_read_only_loads_valid_preferred_sidecar() {
+        let (_dir, app, handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
+        SearchIndex::default()
+            .write_to_with_source(get_index_path(&database), loader_source(&app, &database))
+            .unwrap();
+
+        let loaded =
+            tauri::async_runtime::block_on(load_search_index(&handle, &app.state::<AppState>()));
+        assert!(loaded.is_ok());
+    }
+
+    #[test]
+    fn search_index_database_read_only_never_promotes_or_generates() {
+        let (_legacy_dir, legacy_app, legacy_handle, legacy_database) =
+            loader_test_case(vec![PathOperation::DatabaseRead]);
+        let legacy = legacy_index_path(&legacy_database);
+        SearchIndex::default()
+            .write_to_with_source(&legacy, loader_source(&legacy_app, &legacy_database))
+            .unwrap();
+        let result = tauri::async_runtime::block_on(load_search_index(
+            &legacy_handle,
+            &legacy_app.state::<AppState>(),
+        ));
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+        assert!(legacy.exists());
+        assert!(!get_index_path(&legacy_database).exists());
+
+        let (_missing_dir, missing_app, missing_handle, missing_database) =
+            loader_test_case(vec![PathOperation::DatabaseRead]);
+        let result = tauri::async_runtime::block_on(load_search_index(
+            &missing_handle,
+            &missing_app.state::<AppState>(),
+        ));
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+        assert!(!get_index_path(&missing_database).exists());
+        assert!(!legacy_index_path(&missing_database).exists());
+    }
+
+    #[test]
+    fn search_index_generation_parent_sync_loads_committed_index() {
+        struct ParentSyncFailure;
+        impl AtomicWriterInjector for ParentSyncFailure {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::ParentSync {
+                    Err(std::io::Error::other("injected parent sync failure"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let (_dir, app, handle, database) = loader_test_case(vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+        ]);
+        set_test_atomic_file_injector(Some(Box::new(ParentSyncFailure)));
+        let result =
+            tauri::async_runtime::block_on(load_search_index(&handle, &app.state::<AppState>()));
+        set_test_atomic_file_injector(None);
+
+        if let Err(error) = result {
+            panic!("{error:?}");
+        }
+        assert!(get_index_path(&database).exists());
+    }
+
+    #[test]
+    fn search_index_loader_uses_fd_relative_authority_boundaries() {
+        let source = include_str!("search.rs");
+        let loader = source
+            .split("async fn load_search_index")
+            .nth(1)
+            .unwrap()
+            .split("fn database_file_target")
+            .next()
+            .unwrap();
+        assert!(loader.contains("database_file_target"));
+        assert!(loader.contains("promote_legacy_index_sidecar_at"));
+        assert!(!loader.contains("atomic_replace(&"));
+        assert!(!loader.contains("std::fs::remove_file"));
+    }
 
     fn assert_partial_match(fen1: &str, fen2: &str) {
         let query = PositionQuery::partial_from_fen(fen1).unwrap();

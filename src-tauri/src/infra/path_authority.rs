@@ -60,6 +60,20 @@ pub(crate) struct WorkspaceMutationTarget {
     pub(crate) is_dir: bool,
     path: PathBuf,
 }
+pub(crate) struct DatabaseFileTarget {
+    pub(crate) parent: fs::File,
+    pub(crate) leaf: OsString,
+    pub(crate) identity: (u64, u64),
+}
+
+#[cfg(unix)]
+struct RetainedWorkspaceTarget {
+    parent: fs::File,
+    leaf: OsString,
+    identity: (u64, u64),
+    target_is_dir: bool,
+    path: PathBuf,
+}
 impl WorkspaceMutationTarget {
     pub(crate) fn path(&self) -> &Path {
         &self.path
@@ -2705,6 +2719,36 @@ impl PathAuthority {
         )
     }
 
+    #[cfg(unix)]
+    pub(crate) fn database_file_target(
+        &mut self,
+        handle: &DatabaseHandle,
+        operation: PathOperation,
+    ) -> Result<DatabaseFileTarget, Error> {
+        if !matches!(
+            operation,
+            PathOperation::DatabaseRead | PathOperation::DatabaseMutate
+        ) {
+            return Err(Error::InvalidInput(
+                "invalid database file operation".into(),
+            ));
+        }
+        let target = self.retained_workspace_target(
+            &FileWorkspaceHandle::new(handle.path_ref().clone()),
+            operation,
+        )?;
+        if target.target_is_dir {
+            return Err(Error::InvalidInput(
+                "database handle must identify a regular file".into(),
+            ));
+        }
+        Ok(DatabaseFileTarget {
+            parent: target.parent,
+            leaf: target.leaf,
+            identity: target.identity,
+        })
+    }
+
     pub(crate) fn remove_database(&mut self, handle: &DatabaseHandle) -> Result<(), Error> {
         match self.remove_workspace_entry(
             &FileWorkspaceHandle::new(handle.path_ref().clone()),
@@ -3359,31 +3403,50 @@ impl PathAuthority {
         &mut self,
         handle: &FileWorkspaceHandle,
     ) -> Result<WorkspaceMutationTarget, Error> {
+        let target = self.retained_workspace_target(handle, PathOperation::WritePgn)?;
+        let directory = if target.target_is_dir {
+            Some(crate::infra::fs::open_verified_directory(
+                &target.path,
+                target.identity,
+            )?)
+        } else {
+            None
+        };
+        Ok(WorkspaceMutationTarget {
+            parent: target.parent,
+            directory,
+            leaf: target.leaf,
+            identity: target.identity,
+            is_dir: target.target_is_dir,
+            path: target.path,
+        })
+    }
+
+    #[cfg(unix)]
+    fn retained_workspace_target(
+        &mut self,
+        handle: &FileWorkspaceHandle,
+        required_operation: PathOperation,
+    ) -> Result<RetainedWorkspaceTarget, Error> {
         let entry = self
             .persistent
             .get(&handle.path_ref().id)
             .cloned()
             .ok_or_else(|| Error::InvalidInput("workspace entry is not persistent".into()))?;
-        if !entry.stored.operations.contains(&PathOperation::WritePgn) {
+        if !entry.stored.operations.contains(&required_operation) {
             return Err(Error::InvalidInput(
-                "workspace entry does not permit writes".into(),
+                "workspace entry does not permit this operation".into(),
             ));
         }
         let path = entry.stored.path.to_path()?;
         let expected = (entry.stored.identity.a, entry.stored.identity.b);
         let (parent, leaf) =
             crate::infra::fs::open_verified_parent(&path, expected, entry.stored.target_is_dir)?;
-        let directory = if entry.stored.target_is_dir {
-            Some(crate::infra::fs::open_verified_directory(&path, expected)?)
-        } else {
-            None
-        };
-        Ok(WorkspaceMutationTarget {
+        Ok(RetainedWorkspaceTarget {
             parent,
-            directory,
             leaf,
             identity: expected,
-            is_dir: entry.stored.target_is_dir,
+            target_is_dir: entry.stored.target_is_dir,
             path,
         })
     }
@@ -3988,6 +4051,47 @@ mod tests {
     }
     fn authority(dir: &tempfile::TempDir, clock: Arc<TestClock>) -> PathAuthority {
         PathAuthority::open_with_clock(dir.path().join("registry.json"), vec![], clock, 2).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_target_enforces_the_exact_stored_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("readonly.db3");
+        fs::write(&database, b"database").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let grant = authority
+            .grant_dialog(
+                &database,
+                "readonly",
+                PathClass::SingleDialogGrant,
+                PathOperation::DatabaseRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let committed = authority
+            .promote_dialog(
+                &grant,
+                PathClass::PersistentFile,
+                "readonly",
+                vec![PathOperation::DatabaseRead],
+            )
+            .unwrap();
+        let handle = DatabaseHandle::new(committed.id);
+
+        let target = authority
+            .database_file_target(&handle, PathOperation::DatabaseRead)
+            .unwrap();
+        assert_eq!(target.leaf, OsString::from("readonly.db3"));
+        assert!(matches!(
+            authority.database_file_target(&handle, PathOperation::DatabaseMutate),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            authority.database_file_target(&handle, PathOperation::DatabaseExport),
+            Err(Error::InvalidInput(_))
+        ));
     }
     #[test]
     fn dialog_grants_enforce_operation_expiry_revoke_and_uses() {

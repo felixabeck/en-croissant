@@ -1,4 +1,5 @@
 use std::{
+    ffi::{OsStr, OsString},
     fs::File,
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -9,7 +10,11 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::{error::Error, infra::fs::atomic_replace};
+use crate::{
+    db::DatabaseIdentity,
+    error::{DurabilityStage, Error},
+    infra::fs::{atomic_replace, atomic_replace_at, remove_optional_regular_at, AtomicFileOutcome},
+};
 
 const MAGIC: &[u8; 4] = b"ECSI";
 const VERSION: u32 = 6;
@@ -214,14 +219,34 @@ impl SearchIndex {
     }
 
     pub fn write_to<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
-        self.write_to_with_source(path, IndexSource::default())
+        match self.write_to_with_source(path, IndexSource::default())? {
+            AtomicFileOutcome::DurableCommit => Ok(()),
+            AtomicFileOutcome::CommittedDurabilityUncertain(_) => Err(
+                Error::CommittedDurabilityUncertain(DurabilityStage::SearchIndexReplacement),
+            ),
+        }
     }
 
     pub fn write_to_with_source<P: AsRef<Path>>(
         &self,
         path: P,
         source: IndexSource,
-    ) -> Result<(), Error> {
+    ) -> Result<AtomicFileOutcome, Error> {
+        let bytes = self.archive_bytes(source)?;
+        atomic_replace(path.as_ref(), |file| write_archive(file, &bytes))
+    }
+
+    pub(crate) fn write_to_at(
+        &self,
+        parent: &File,
+        leaf: &OsStr,
+        source: IndexSource,
+    ) -> Result<AtomicFileOutcome, Error> {
+        let bytes = self.archive_bytes(source)?;
+        atomic_replace_at(parent, leaf, |file| write_archive(file, &bytes))
+    }
+
+    fn archive_bytes(&self, source: IndexSource) -> Result<Vec<u8>, Error> {
         let archive = SearchArchive {
             source,
             index: self.clone(),
@@ -233,20 +258,16 @@ impl SearchIndex {
                 "search index validation before publish failed: {error}"
             ))
         })?;
-        let path = path.as_ref();
-
-        // A partial index must never be observable as valid. The atomic writer
-        // syncs the data and parent directory before exposing the replacement.
-        atomic_replace(path, |file| {
-            file.write_all(MAGIC).map_err(Error::from)?;
-            file.write_all(&VERSION.to_le_bytes())
-                .map_err(Error::from)?;
-            file.write_all(&[0; HEADER_SIZE - 8]).map_err(Error::from)?;
-            file.write_all(&bytes).map_err(Error::from)?;
-            Ok(())
-        })
-        .map(|_| ())
+        Ok(bytes.to_vec())
     }
+}
+
+fn write_archive(file: &mut File, bytes: &[u8]) -> Result<(), Error> {
+    file.write_all(MAGIC).map_err(Error::from)?;
+    file.write_all(&VERSION.to_le_bytes())
+        .map_err(Error::from)?;
+    file.write_all(&[0; HEADER_SIZE - 8]).map_err(Error::from)?;
+    file.write_all(bytes).map_err(Error::from)
 }
 
 impl Default for SearchIndex {
@@ -376,8 +397,12 @@ pub struct MmapSearchIndex {
 }
 
 impl MmapSearchIndex {
+    #[cfg(test)]
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = File::open(path)?;
+        Self::open_file(File::open(path)?)
+    }
+
+    pub(crate) fn open_file(file: File) -> io::Result<Self> {
         // `Mmap::map` is unsafe because callers must retain the mapping. This
         // type owns it, never exposes mutable bytes, and validates every rkyv
         // offset before any archive data is read.
@@ -461,13 +486,15 @@ impl MmapSearchIndex {
 pub fn get_index_path(db_path: &Path) -> PathBuf {
     let filename = db_path
         .file_name()
-        .map(|name| {
-            let mut name = name.to_os_string();
-            name.push(".ecsi");
-            name
-        })
+        .map(preferred_sidecar_leaf)
         .unwrap_or_else(|| "database.ecsi".into());
     db_path.with_file_name(filename)
+}
+
+pub(crate) fn preferred_sidecar_leaf(database_leaf: &OsStr) -> OsString {
+    let mut leaf = database_leaf.to_os_string();
+    leaf.push(".ecsi");
+    leaf
 }
 
 /// Pre-2.0 builds replaced the database extension (`foo.db3` → `foo.ecsi`).
@@ -475,7 +502,17 @@ pub fn get_index_path(db_path: &Path) -> PathBuf {
 /// and therefore cannot collide with a database whose base name differs only
 /// by extension.
 pub fn legacy_index_path(db_path: &Path) -> PathBuf {
-    db_path.with_extension("ecsi")
+    let filename = db_path
+        .file_name()
+        .map(legacy_sidecar_leaf)
+        .unwrap_or_else(|| "database.ecsi".into());
+    db_path.with_file_name(filename)
+}
+
+pub(crate) fn legacy_sidecar_leaf(database_leaf: &OsStr) -> OsString {
+    Path::new(database_leaf)
+        .with_extension("ecsi")
+        .into_os_string()
 }
 
 /// Promotes the pre-2.0 extension-replacing sidecar without ever overwriting
@@ -492,28 +529,68 @@ pub fn legacy_index_path(db_path: &Path) -> PathBuf {
 /// still replace that pathname. In that case provenance on every later load
 /// forces regeneration, while this bounded filesystem race remains visible
 /// rather than being misrepresented as atomic deletion.
+#[cfg(test)]
 pub fn promote_legacy_index_sidecar(db_path: &Path) -> Result<Option<PathBuf>, Error> {
     let database = db_path.canonicalize()?;
-    let preferred = get_index_path(&database);
-    if preferred.exists() {
-        return Ok(None);
-    }
-    let legacy = legacy_index_path(&database);
-    if !legacy.is_file() {
-        return Ok(None);
-    }
-    let archive = match MmapSearchIndex::open(&legacy) {
-        Ok(archive) => archive,
-        Err(_) => return Ok(None),
+    let metadata = database.metadata()?;
+    let object = crate::infra::path_authority::opened_file_identity(&File::open(&database)?)?;
+    let identity = DatabaseIdentity {
+        path: database.clone(),
+        data_revision: 0,
+        object,
+        length: metadata.len(),
+        modified: metadata.modified()?,
     };
-    let expected = IndexSource::from_database(&database, archive.source().revision)?;
-    if archive.source() != &expected {
-        return Ok(None);
+    let (parent, database_leaf) = crate::infra::fs::open_verified_parent(&database, object, false)?;
+    let preferred_leaf = preferred_sidecar_leaf(&database_leaf);
+    let legacy_leaf = legacy_sidecar_leaf(&database_leaf);
+    Ok(
+        promote_legacy_index_sidecar_at(&parent, &preferred_leaf, &legacy_leaf, &identity)?
+            .then(|| database.with_file_name(preferred_leaf)),
+    )
+}
+
+#[cfg(unix)]
+pub(crate) fn promote_legacy_index_sidecar_at(
+    parent: &File,
+    preferred_leaf: &OsStr,
+    legacy_leaf: &OsStr,
+    db_identity: &DatabaseIdentity,
+) -> Result<bool, Error> {
+    use rustix::{
+        fs::{self as rfs, AtFlags, Mode, OFlags},
+        io::Errno,
+    };
+
+    match rfs::statat(parent, preferred_leaf, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => return Ok(false),
+        Err(error) if error == Errno::NOENT => {}
+        Err(error) => return Err(Error::Io(Box::new(error.into()))),
     }
-    let mut source = File::open(&legacy)?;
+    let mut source = match rfs::openat(
+        parent,
+        legacy_leaf,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(file) => File::from(file),
+        Err(error) if error == Errno::NOENT || error == Errno::LOOP => return Ok(false),
+        Err(error) => return Err(Error::Io(Box::new(error.into()))),
+    };
+    if !source.metadata()?.is_file() {
+        return Ok(false);
+    }
+    let archive = match MmapSearchIndex::open_file(source.try_clone()?) {
+        Ok(archive) => archive,
+        Err(_) => return Ok(false),
+    };
+    let expected = IndexSource::from_database_identity(db_identity)?;
+    if archive.source() != &expected {
+        return Ok(false);
+    }
     let legacy_object = crate::infra::path_authority::opened_file_identity(&source)?;
-    atomic_replace(&preferred, |destination| {
-        legacy_file_identity(&legacy, legacy_object)?;
+    let outcome = atomic_replace_at(parent, preferred_leaf, |destination| {
+        legacy_file_identity_at(parent, legacy_leaf, legacy_object)?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
             let read = source.read(&mut buffer).map_err(Error::from)?;
@@ -526,13 +603,33 @@ pub fn promote_legacy_index_sidecar(db_path: &Path) -> Result<Option<PathBuf>, E
         }
         Ok(())
     })?;
-    legacy_file_identity(&legacy, legacy_object)?;
-    std::fs::remove_file(&legacy)?;
-    Ok(Some(preferred))
+    match outcome {
+        AtomicFileOutcome::DurableCommit => {
+            legacy_file_identity_at(parent, legacy_leaf, legacy_object)?;
+            remove_optional_regular_at(parent, legacy_leaf)?;
+            Ok(true)
+        }
+        AtomicFileOutcome::CommittedDurabilityUncertain(_) => Err(
+            Error::CommittedDurabilityUncertain(DurabilityStage::SearchIndexReplacement),
+        ),
+    }
 }
 
-fn legacy_file_identity(path: &Path, expected: (u64, u64)) -> Result<(u64, u64), Error> {
-    let identity = crate::infra::path_authority::opened_file_identity(&File::open(path)?)?;
+#[cfg(unix)]
+fn legacy_file_identity_at(
+    parent: &File,
+    leaf: &OsStr,
+    expected: (u64, u64),
+) -> Result<(u64, u64), Error> {
+    use rustix::fs::{self as rfs, AtFlags, FileType};
+    let stat = rfs::statat(parent, leaf, AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|error| Error::Io(Box::new(error.into())))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(Error::Conflict(
+            "legacy search sidecar changed during promotion".into(),
+        ));
+    }
+    let identity = (stat.st_dev, stat.st_ino);
     if identity != expected {
         return Err(Error::Conflict(
             "legacy search sidecar changed during promotion".into(),
@@ -544,7 +641,22 @@ fn legacy_file_identity(path: &Path, expected: (u64, u64)) -> Result<(u64, u64),
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::fs::{
+        open_verified_parent, set_test_atomic_file_injector, AtomicFileFaultPoint,
+        AtomicWriterInjector,
+    };
     use tempfile::tempdir;
+
+    struct ParentSyncFailure;
+    impl AtomicWriterInjector for ParentSyncFailure {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == AtomicFileFaultPoint::ParentSync {
+                Err(std::io::Error::other("injected parent sync failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
 
     #[test]
     fn test_roundtrip() {
@@ -823,6 +935,83 @@ mod tests {
         );
         assert_eq!(std::fs::read(&collision_preferred).unwrap(), b"preferred");
         assert!(collision_legacy.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_index_promotion_parent_sync_keeps_legacy_sidecar() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("uncertain.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let metadata = database.metadata().unwrap();
+        let object =
+            crate::infra::path_authority::opened_file_identity(&File::open(&database).unwrap())
+                .unwrap();
+        let identity = DatabaseIdentity {
+            path: database.clone(),
+            data_revision: 0,
+            object,
+            length: metadata.len(),
+            modified: metadata.modified().unwrap(),
+        };
+        let legacy = legacy_index_path(&database);
+        SearchIndex::default()
+            .write_to_with_source(
+                &legacy,
+                IndexSource::from_database_identity(&identity).unwrap(),
+            )
+            .unwrap();
+        let (parent, database_leaf) = open_verified_parent(&database, object, false).unwrap();
+        let preferred_leaf = preferred_sidecar_leaf(&database_leaf);
+        let legacy_leaf = legacy_sidecar_leaf(&database_leaf);
+
+        set_test_atomic_file_injector(Some(Box::new(ParentSyncFailure)));
+        let result =
+            promote_legacy_index_sidecar_at(&parent, &preferred_leaf, &legacy_leaf, &identity);
+        set_test_atomic_file_injector(None);
+
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                DurabilityStage::SearchIndexReplacement
+            ))
+        ));
+        assert!(database.with_file_name(preferred_leaf).exists());
+        assert!(legacy.exists());
+    }
+
+    #[test]
+    fn search_index_write_to_reports_uncertain_parent_sync() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("uncertain.ecsi");
+        set_test_atomic_file_injector(Some(Box::new(ParentSyncFailure)));
+        let result = SearchIndex::default().write_to(&path);
+        set_test_atomic_file_injector(None);
+
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                DurabilityStage::SearchIndexReplacement
+            ))
+        ));
+        assert!(path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_index_write_to_at_refuses_substituted_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::write(&outside, b"outside").unwrap();
+        let parent = File::open(dir.path()).unwrap();
+        let leaf = OsStr::new("database.db3.ecsi");
+        symlink(&outside, dir.path().join(leaf)).unwrap();
+
+        let result = SearchIndex::default().write_to_at(&parent, leaf, IndexSource::default());
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
     }
 
     #[test]
