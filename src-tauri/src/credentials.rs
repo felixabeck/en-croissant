@@ -253,6 +253,11 @@ impl CredentialManager {
         Self::with_persistence(store, Arc::new(AtomicRegistryPersistence))
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_uncertain_persistence(store: Arc<dyn CredentialStore>) -> Self {
+        Self::with_persistence(store, Arc::new(UncertainRegistryPersistence))
+    }
+
     fn with_persistence(
         store: Arc<dyn CredentialStore>,
         persistence: Arc<dyn RegistryPersistence>,
@@ -263,11 +268,6 @@ impl CredentialManager {
             registry: Mutex::new(RegistryFile::default()),
             registry_path: Mutex::new(None),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_uncertain_persistence(store: Arc<dyn CredentialStore>) -> Self {
-        Self::with_persistence(store, Arc::new(UncertainRegistryPersistence))
     }
 
     pub fn initialize(&self, app_data: &Path) -> Result<(), Error> {
@@ -321,13 +321,22 @@ impl CredentialManager {
         self.store.get(&handle.key())
     }
 
+    async fn spawn_blocking<T, F>(self: &Arc<Self>, work: F) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<Self>) -> Result<T, Error> + Send + 'static,
+    {
+        let manager = self.clone();
+        BLOCKING_GATEWAY
+            .spawn_cancellable(CancellationToken::new(), move |_| work(manager))
+            .await
+    }
+
     pub async fn token_async(
         self: &Arc<Self>,
         handle: LichessAccountHandle,
     ) -> Result<Option<String>, Error> {
-        let manager = self.clone();
-        BLOCKING_GATEWAY
-            .spawn_cancellable(CancellationToken::new(), move |_| manager.token(&handle))
+        self.spawn_blocking(move |manager| manager.token(&handle))
             .await
     }
 
@@ -407,11 +416,7 @@ impl CredentialManager {
         username: String,
         token: String,
     ) -> Result<LichessAccountStoreResult, Error> {
-        let manager = self.clone();
-        BLOCKING_GATEWAY
-            .spawn_cancellable(CancellationToken::new(), move |_| {
-                manager.store_lichess_token(username, token)
-            })
+        self.spawn_blocking(move |manager| manager.store_lichess_token(username, token))
             .await
     }
 
@@ -465,9 +470,7 @@ impl CredentialManager {
         self: &Arc<Self>,
         handle: LichessAccountHandle,
     ) -> Result<Option<RemovedLichessCredential>, Error> {
-        let manager = self.clone();
-        BLOCKING_GATEWAY
-            .spawn_cancellable(CancellationToken::new(), move |_| manager.remove(&handle))
+        self.spawn_blocking(move |manager| manager.remove(&handle))
             .await
     }
 
@@ -520,14 +523,7 @@ impl CredentialManager {
     }
 
     fn load_registry(&self, path: &Path) -> Result<RegistryFile, Error> {
-        let mut options = fs::OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW);
-        }
-        let mut file = match options.open(path) {
+        let mut file = match open_registry_file(path) {
             Ok(file) => file,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(RegistryFile {
@@ -538,8 +534,7 @@ impl CredentialManager {
             Err(source) => return Err(Error::CredentialFailure(source.to_string())),
         };
         #[cfg(unix)]
-        file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))
-            .map_err(|source| Error::CredentialFailure(source.to_string()))?;
+        chmod_registry_file(&file)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
             .map_err(|source| Error::CredentialFailure(source.to_string()))?;
@@ -628,17 +623,29 @@ fn secure_directory(path: &Path) -> Result<(), Error> {
         .map_err(|source| Error::CredentialFailure(source.to_string()))
 }
 
-#[cfg(unix)]
-fn secure_registry_file(path: &Path) -> Result<(), Error> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+fn open_registry_file(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
+}
 
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|source| Error::CredentialFailure(source.to_string()))?;
+#[cfg(unix)]
+fn chmod_registry_file(file: &fs::File) -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
     file.set_permissions(PermissionsExt::from_mode(0o600))
         .map_err(|source| Error::CredentialFailure(source.to_string()))
+}
+
+#[cfg(unix)]
+fn secure_registry_file(path: &Path) -> Result<(), Error> {
+    let file =
+        open_registry_file(path).map_err(|source| Error::CredentialFailure(source.to_string()))?;
+    chmod_registry_file(&file)
 }
 
 #[cfg(test)]
@@ -732,6 +739,23 @@ mod tests {
                 return Err(Error::CredentialFailure("injected".into()));
             }
             AtomicRegistryPersistence.write(path, bytes)
+        }
+    }
+
+    struct UncertainOnWrite {
+        writes: Mutex<usize>,
+        uncertain_on: usize,
+    }
+    impl RegistryPersistence for UncertainOnWrite {
+        fn write(&self, path: &Path, bytes: &[u8]) -> Result<RegistryCommit, Error> {
+            let mut writes = self.writes.lock().unwrap();
+            *writes += 1;
+            AtomicRegistryPersistence.write(path, bytes)?;
+            if *writes == self.uncertain_on {
+                Ok(RegistryCommit::CommittedDurabilityUncertain)
+            } else {
+                Ok(RegistryCommit::Durable)
+            }
         }
     }
 
@@ -835,10 +859,15 @@ mod tests {
     }
 
     #[test]
-    fn durability_uncertain_after_rename_retains_committed_state() {
+    fn durability_uncertain_pending_add_journal_is_reported() {
         let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(MemoryCredentialStore::default());
-        let manager = CredentialManager::with_uncertain_persistence(store);
+        let manager = CredentialManager::with_persistence(
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(UncertainOnWrite {
+                writes: Mutex::new(0),
+                uncertain_on: 2,
+            }),
+        );
         manager.initialize(temp.path()).unwrap();
         let result = manager
             .store_lichess_token("a".into(), "secret".into())
@@ -848,18 +877,60 @@ mod tests {
     }
 
     #[test]
-    fn durability_uncertain_removal_retains_the_committed_removal() {
+    fn durability_uncertain_final_add_journal_is_reported() {
         let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(MemoryCredentialStore::default());
-        let manager = CredentialManager::with_uncertain_persistence(store);
+        let manager = CredentialManager::with_persistence(
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(UncertainOnWrite {
+                writes: Mutex::new(0),
+                uncertain_on: 3,
+            }),
+        );
+        manager.initialize(temp.path()).unwrap();
+        let result = manager
+            .store_lichess_token("a".into(), "secret".into())
+            .unwrap();
+        assert!(result.durability_uncertain);
+        assert_eq!(manager.list(), vec![result.account]);
+    }
+
+    #[test]
+    fn durability_uncertain_pending_delete_journal_is_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CredentialManager::with_persistence(
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(UncertainOnWrite {
+                writes: Mutex::new(0),
+                uncertain_on: 4,
+            }),
+        );
         manager.initialize(temp.path()).unwrap();
         let account = manager
             .store_lichess_token("a".into(), "secret".into())
             .unwrap()
             .account;
-
         let removal = manager.remove(&account.handle).unwrap().unwrap();
+        assert!(removal.durability_uncertain);
+        assert_eq!(removal.token.as_deref(), Some("secret"));
+        assert!(manager.list().is_empty());
+    }
 
+    #[test]
+    fn durability_uncertain_final_delete_journal_is_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CredentialManager::with_persistence(
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(UncertainOnWrite {
+                writes: Mutex::new(0),
+                uncertain_on: 5,
+            }),
+        );
+        manager.initialize(temp.path()).unwrap();
+        let account = manager
+            .store_lichess_token("a".into(), "secret".into())
+            .unwrap()
+            .account;
+        let removal = manager.remove(&account.handle).unwrap().unwrap();
         assert!(removal.durability_uncertain);
         assert_eq!(removal.token.as_deref(), Some("secret"));
         assert!(manager.list().is_empty());

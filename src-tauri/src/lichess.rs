@@ -14,6 +14,8 @@ const EXPLORER_URL: &str = "https://explorer.lichess.org";
 const MAX_JSON_BYTES: usize = 5 * 1024 * 1024;
 const MAX_EXPLORER_QUERY_BYTES: usize = 8 * 1024;
 const MAX_EXPLORER_QUERY_PAIRS: usize = 64;
+const MIN_LICHESS_USERNAME_BYTES: usize = 2;
+const MAX_LICHESS_USERNAME_BYTES: usize = 30;
 
 #[derive(Clone, Debug, Deserialize, Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -63,7 +65,7 @@ fn exact_url(base: &str, path: &str, query: Option<&str>) -> Result<Url, Error> 
 
 pub(crate) fn lichess_user_segment(username: &str) -> Result<&str, Error> {
     let username = username.trim();
-    if !(2..=30).contains(&username.len())
+    if !(MIN_LICHESS_USERNAME_BYTES..=MAX_LICHESS_USERNAME_BYTES).contains(&username.len())
         || !username
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
@@ -84,7 +86,12 @@ async fn authenticated_json(
         .token_async(handle.clone())
         .await?
         .ok_or_else(|| Error::InvalidInput("Lichess account is unavailable".into()))?;
-    let response = client.get(url).bearer_auth(token).send().await?;
+    let response = client
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|_| Error::OAuthFailure("Lichess request failed".into()))?;
     if !response.status().is_success() {
         return Err(Error::OAuthFailure("Lichess request was rejected".into()));
     }
@@ -94,7 +101,10 @@ async fn authenticated_json(
     {
         return Err(Error::ResourceLimit("Lichess response is too large".into()));
     }
-    let body = response.bytes().await?;
+    let body = response
+        .bytes()
+        .await
+        .map_err(|_| Error::OAuthFailure("Lichess request failed".into()))?;
     if body.len() > MAX_JSON_BYTES {
         return Err(Error::ResourceLimit("Lichess response is too large".into()));
     }
@@ -114,7 +124,11 @@ async fn public_json(
     url: Url,
     require_json: bool,
 ) -> Result<String, Error> {
-    let response = client.get(url).send().await?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| Error::InvalidInput("Lichess request failed".into()))?;
     if !response.status().is_success() {
         return Err(Error::InvalidInput("Lichess request was rejected".into()));
     }
@@ -124,7 +138,10 @@ async fn public_json(
     {
         return Err(Error::ResourceLimit("Lichess response is too large".into()));
     }
-    let body = response.bytes().await?;
+    let body = response
+        .bytes()
+        .await
+        .map_err(|_| Error::InvalidInput("Lichess request failed".into()))?;
     if body.len() > MAX_JSON_BYTES {
         return Err(Error::ResourceLimit("Lichess response is too large".into()));
     }
@@ -134,10 +151,6 @@ async fn public_json(
     }
     String::from_utf8(body.to_vec())
         .map_err(|_| Error::InvalidInput("Lichess returned invalid UTF-8".into()))
-}
-
-fn shared_json_http_client(state: &AppState) -> std::sync::Arc<reqwest::Client> {
-    state.json_http_client.clone()
 }
 
 fn encode_query_pair(key: &str, value: &str) -> String {
@@ -153,8 +166,7 @@ pub async fn get_public_lichess_json(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, Error> {
     let (url, require_json) = public_lichess_url(request)?;
-    let client = shared_json_http_client(&state);
-    public_json(&client, url, require_json).await
+    public_json(&state.json_http_client, url, require_json).await
 }
 
 fn public_lichess_url(request: PublicLichessRequest) -> Result<(Url, bool), Error> {
@@ -306,12 +318,7 @@ mod tests {
     #[test]
     fn json_and_oauth_requests_reuse_the_app_state_client() {
         let state = AppState::default();
-        let public_client = shared_json_http_client(&state);
         let services = crate::oauth::ProdOAuthServices::new(state.json_http_client.clone());
-        assert!(std::sync::Arc::ptr_eq(
-            &public_client,
-            &state.json_http_client
-        ));
         assert!(services.shares_http_client(&state.json_http_client));
     }
 

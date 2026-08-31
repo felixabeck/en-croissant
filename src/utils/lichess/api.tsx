@@ -406,10 +406,8 @@ export async function getFidePlayer(query: string) {
   if (!Number.isNaN(Number(query))) {
     const result = await tauri.getPublicLichessJson({ kind: "fide", query });
     return JSON.parse(result);
-  } else {
-    const result = await tauri.getPublicLichessJson({ kind: "fide", query });
-    const data = JSON.parse(result);
-    return data[0];
   }
-  throw new Error("Player not found");
+  const result = await tauri.getPublicLichessJson({ kind: "fide", query });
+  const data = JSON.parse(result);
+  return data[0];
 }

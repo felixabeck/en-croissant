@@ -549,8 +549,8 @@ async fn remove_lichess_account_internal<S: OAuthServices>(
     let Some(removal) = credentials.remove_async(handle).await? else {
         return Ok(LichessAccountRemoval::NotFound);
     };
-    // The local removal is already durable. A provider outage is represented honestly without
-    // rolling local access back into existence.
+    // Local removal is already committed. A provider outage, or an unconfirmed parent
+    // fsync, is reported on the result without rolling local access back into existence.
     Ok(LichessAccountRemoval::Removed {
         revocation_pending: match removal.token {
             Some(token) => services.revoke_token(&token).await.is_err(),
@@ -875,13 +875,6 @@ mod tests {
         assert!(
             matches!(error, oauth2::reqwest::Error::Other(message) if message.contains("exceeded"))
         );
-    }
-
-    #[test]
-    fn production_services_clone_the_app_state_http_client() {
-        let state = AppState::default();
-        let services = ProdOAuthServices::new(state.json_http_client.clone());
-        assert!(services.shares_http_client(&state.json_http_client));
     }
 
     #[test]
