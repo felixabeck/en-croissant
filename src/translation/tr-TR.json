@@ -386,6 +386,7 @@
     "Engines.Card.Type": "Tür",
     "Engines.Empty.AddHint": "Bir satranç motoru ekleyerek başlayın.",
     "Engines.Empty.NoInstalled": "Yüklü motor yok",
+    "Engines.FileMissing": "(dosya eksik)",
     "Engines.Logs.Empty": "Henüz günlük yok",
     "Engines.Logs.Export": "Günlükleri dışa aktar",
     "Engines.Logs.Filter.All": "Tümü",

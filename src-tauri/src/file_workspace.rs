@@ -155,13 +155,9 @@ fn durability_uncertainty(
     outcome: crate::infra::fs::AtomicFileOutcome,
     stage: crate::error::DurabilityStage,
 ) -> Option<crate::error::DurabilityStage> {
-    match outcome {
-        crate::infra::fs::AtomicFileOutcome::DurableCommit => None,
-        crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
-            log::warn!("{stage} parent sync failed: {error}");
-            Some(stage)
-        }
-    }
+    crate::infra::fs::map_atomic_file_outcome(outcome, stage, |error| {
+        log::warn!("{stage} parent sync failed: {error}");
+    })
 }
 
 fn ensure_registered_descendant(

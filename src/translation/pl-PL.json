@@ -392,6 +392,7 @@
     "Engines.Card.Type": "Typ",
     "Engines.Empty.AddHint": "Dodaj silnik, aby rozpocząć",
     "Engines.Empty.NoInstalled": "Nie zainstalowano żadnych silników",
+    "Engines.FileMissing": "(brak pliku)",
     "Engines.Logs.Empty": "Brak dostępnych dzienników",
     "Engines.Logs.Export": "Eksportuj dzienniki",
     "Engines.Logs.Filter.All": "Wszystkie",

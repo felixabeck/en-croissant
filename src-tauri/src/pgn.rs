@@ -417,14 +417,14 @@ fn copy_range(
 }
 
 fn outcome(result: crate::infra::fs::AtomicFileOutcome) -> Result<(), Error> {
-    match result {
-        crate::infra::fs::AtomicFileOutcome::DurableCommit => Ok(()),
-        crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
-            log::warn!("PGN edit parent sync failed: {error}");
-            Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::PgnEdit,
-            ))
-        }
+    if let Some(stage) = crate::infra::fs::map_atomic_file_outcome(
+        result,
+        crate::error::DurabilityStage::PgnEdit,
+        |error| log::warn!("PGN edit parent sync failed: {error}"),
+    ) {
+        Err(Error::CommittedDurabilityUncertain(stage))
+    } else {
+        Ok(())
     }
 }
 
@@ -440,9 +440,6 @@ fn edit_existing(
         return Err(Error::Cancellation);
     }
     outcome(resolved.replace_pgn_atomic(&snapshot, |source, temporary| {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancellation);
-        }
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }

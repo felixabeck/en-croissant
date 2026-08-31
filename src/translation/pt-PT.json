@@ -389,6 +389,7 @@
     "Engines.Card.Type": "Tipo",
     "Engines.Empty.AddHint": "Adicione um motor para começar",
     "Engines.Empty.NoInstalled": "Não há motores instalados",
+    "Engines.FileMissing": "(ficheiro em falta)",
     "Engines.Logs.Empty": "Ainda não há registos disponíveis",
     "Engines.Logs.Export": "Exportar registos",
     "Engines.Logs.Filter.All": "Todos",

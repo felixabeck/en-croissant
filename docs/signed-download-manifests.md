@@ -4,9 +4,9 @@
 
 The `/engines`, `/databases`, and `/puzzle_databases` manifest documents are unsigned. For each
 entry, `signature` authenticates only `downloadLink` together with `sha256`; `path`, `name`,
-`version`, `os`, `bmi2`, and `imageUrl` are not covered. The backend's `Component::Normal` check
-(`src-tauri/src/infra/path_authority.rs:2343-2364`) and `validate_components`
-(`src-tauri/src/infra/path_authority.rs:3436-3455`) remain the containment boundary. Manifest
+`version`, `os`, `bmi2`, and `imageUrl` are not covered. The backend's `register_installed_engine`
+`Component::Normal` check and `validate_components` in
+`src-tauri/src/infra/path_authority.rs` remain the containment boundary. Manifest
 signing is not implemented here because `d-20260830-15` defers the fork's self-hosted manifest
 and download page to a later run.
 

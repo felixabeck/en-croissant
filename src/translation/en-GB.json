@@ -386,6 +386,7 @@
     "Engines.Card.Type": "Type",
     "Engines.Empty.AddHint": "Add an engine to get started",
     "Engines.Empty.NoInstalled": "No engines installed",
+    "Engines.FileMissing": "(file missing)",
     "Engines.Logs.Empty": "No logs available yet",
     "Engines.Logs.Export": "Export logs",
     "Engines.Logs.Filter.All": "All",

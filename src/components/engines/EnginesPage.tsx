@@ -698,7 +698,11 @@ export function EngineName({ engine }: { engine: Engine }) {
   const isMissing = engine.type === "local" && fileExists === false;
   const inspectionFailed = engine.type === "local" && error !== undefined;
   const hasError = isMissing || inspectionFailed;
-  const status = isMissing ? "(file missing)" : inspectionFailed ? `(${t("Common.Error")})` : "";
+  const status = isMissing
+    ? t("Engines.FileMissing")
+    : inspectionFailed
+      ? `(${t("Common.Error")})`
+      : "";
 
   return (
     <Group wrap="nowrap">

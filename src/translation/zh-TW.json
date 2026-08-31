@@ -383,6 +383,7 @@
     "Engines.Card.Type": "類型",
     "Engines.Empty.AddHint": "添加引擎以开始使用",
     "Engines.Empty.NoInstalled": "未安装任何引擎",
+    "Engines.FileMissing": "(檔案不存在)",
     "Engines.Logs.Empty": "尚無可用日誌",
     "Engines.Logs.Export": "匯出日誌",
     "Engines.Logs.Filter.All": "全部",

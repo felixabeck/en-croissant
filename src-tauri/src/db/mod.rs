@@ -2007,16 +2007,17 @@ pub async fn export_to_pgn(
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .resolve(destination.path_ref(), PathOperation::WritePgn, &[])?;
     let snapshot = resolved.pgn_snapshot()?;
-    match resolved.replace_pgn_atomic(&snapshot, |_, temporary| {
+    let outcome = resolved.replace_pgn_atomic(&snapshot, |_, temporary| {
         temporary.write_all(&bytes).map_err(Error::from)
-    })? {
-        crate::infra::fs::AtomicFileOutcome::DurableCommit => Ok(()),
-        crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
-            log::warn!("database PGN replacement parent sync failed: {error}");
-            Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::DatabasePgnReplacement,
-            ))
-        }
+    })?;
+    if let Some(stage) = crate::infra::fs::map_atomic_file_outcome(
+        outcome,
+        crate::error::DurabilityStage::DatabasePgnReplacement,
+        |error| log::warn!("database PGN replacement parent sync failed: {error}"),
+    ) {
+        Err(Error::CommittedDurabilityUncertain(stage))
+    } else {
+        Ok(())
     }
 }
 

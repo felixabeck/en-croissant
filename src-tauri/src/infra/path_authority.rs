@@ -3649,18 +3649,19 @@ impl PathAuthority {
             pending_artifacts: pending_artifacts.to_vec(),
         })
         .map_err(|e| Error::InvalidInput(e.to_string()))?;
-        match replace(
+        let outcome = replace(
             &self.registry_path,
             Box::new(move |f| f.write_all(&bytes).map_err(Error::from)),
-        )? {
-            AtomicFileOutcome::DurableCommit => Ok(CommitDurability::Durable),
-            AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
-                log::warn!("path authority registry replacement parent sync failed: {error}");
-                Ok(CommitDurability::DurabilityUncertain(
-                    crate::error::DurabilityStage::RegistryReplacement,
-                ))
-            }
-        }
+        )?;
+        let stage = crate::infra::fs::map_atomic_file_outcome(
+            outcome,
+            crate::error::DurabilityStage::RegistryReplacement,
+            |error| log::warn!("path authority registry replacement parent sync failed: {error}"),
+        );
+        Ok(match stage {
+            Some(stage) => CommitDurability::DurabilityUncertain(stage),
+            None => CommitDurability::Durable,
+        })
     }
 }
 fn validate_persisted_shape(entry: &StoredEntry) -> Result<(), Error> {
@@ -4251,13 +4252,20 @@ mod tests {
         fs::create_dir_all(victim.join("nested")).unwrap();
         fs::write(victim.join("nested/game.pgn"), b"*").unwrap();
         fs::write(workspace.join("sibling.pgn"), b"*").unwrap();
-        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let registry = dir.path().join("registry.json");
+        let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
         let grant = authority
             .grant_dialog_operations(
                 &workspace,
                 "workspace",
                 PathClass::BoundedDialogGrant,
-                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                vec![
+                    PathOperation::ReadPgn,
+                    PathOperation::WritePgn,
+                    PathOperation::DatabaseRead,
+                    PathOperation::PuzzleRead,
+                    PathOperation::EngineInstall,
+                ],
                 Duration::from_secs(30),
                 1,
             )
@@ -4268,7 +4276,13 @@ mod tests {
                     &grant,
                     PathClass::PersistentCustomRoot,
                     "workspace",
-                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                    vec![
+                        PathOperation::ReadPgn,
+                        PathOperation::WritePgn,
+                        PathOperation::DatabaseRead,
+                        PathOperation::PuzzleRead,
+                        PathOperation::EngineInstall,
+                    ],
                 )
                 .unwrap()
                 .id,
@@ -4298,6 +4312,24 @@ mod tests {
             .register_workspace_child(&root, &[OsString::from("sibling.pgn")], "sibling")
             .unwrap();
         fs::remove_dir_all(&victim).unwrap();
+
+        authority.active_database_root = Some(victim_handle.path_ref().clone());
+        authority.active_puzzle_root = Some(victim_handle.path_ref().clone());
+        authority.active_engine_root = Some(victim_handle.path_ref().clone());
+        authority.pending_artifacts.push(PendingArtifact {
+            id: PathRef::fresh(),
+            root: victim_handle.path_ref().clone(),
+            filename: NativePath::from_path(Path::new("artifact.pgn")),
+            display_name: "artifact".into(),
+            operations: vec![PathOperation::ReadPgn],
+            baseline: None,
+            root_identity: None,
+            payload_size: 0,
+            payload_sha256: String::new(),
+            payload_bound: false,
+            installed_identity: None,
+            installed_ctime_nanos: None,
+        });
 
         struct ParentSync;
         impl AtomicWriterInjector for ParentSync {
@@ -4329,6 +4361,18 @@ mod tests {
         assert!(authority
             .persistent
             .contains_key(&sibling_handle.path_ref().id));
+
+        let reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        for removed in [&victim_handle, &nested_handle, &game_handle] {
+            assert!(!reloaded.persistent.contains_key(&removed.path_ref().id));
+        }
+        assert!(reloaded
+            .persistent
+            .contains_key(&sibling_handle.path_ref().id));
+        assert_eq!(reloaded.active_database_root, None);
+        assert_eq!(reloaded.active_puzzle_root, None);
+        assert_eq!(reloaded.active_engine_root, None);
+        assert!(reloaded.pending_artifacts.is_empty());
     }
 
     #[cfg(unix)]

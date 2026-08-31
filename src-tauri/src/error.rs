@@ -45,49 +45,6 @@ impl std::fmt::Display for DurabilityStage {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ErrorCategory {
-    Authentication,
-    Cancellation,
-    Chess,
-    Conflict,
-    Credential,
-    Database,
-    Durability,
-    Input,
-    Io,
-    MissingResource,
-    Network,
-    OperationAndCleanup,
-    Parsing,
-    PartialRemoval,
-    Platform,
-    ResourceLimit,
-}
-
-impl std::fmt::Display for ErrorCategory {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Authentication => "authentication failure",
-            Self::Cancellation => "cancellation",
-            Self::Chess => "chess data failure",
-            Self::Conflict => "conflict",
-            Self::Credential => "credential failure",
-            Self::Database => "database failure",
-            Self::Durability => "durability failure",
-            Self::Input => "invalid input",
-            Self::Io => "I/O failure",
-            Self::MissingResource => "missing resource",
-            Self::Network => "network failure",
-            Self::OperationAndCleanup => "operation and cleanup failure",
-            Self::Parsing => "parsing failure",
-            Self::PartialRemoval => "partial removal",
-            Self::Platform => "platform failure",
-            Self::ResourceLimit => "resource limit",
-        })
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -220,22 +177,20 @@ pub enum Error {
 }
 
 impl Error {
-    fn category(&self) -> ErrorCategory {
+    fn category(&self) -> &'static str {
         match self {
-            Self::Io(_) => ErrorCategory::Io,
+            Self::Io(_) => "I/O failure",
             Self::Zip(_) | Self::ParseInt(_) | Self::Fen(_) | Self::ParseUciMove(_) => {
-                ErrorCategory::Parsing
+                "parsing failure"
             }
-            Self::Tauri(_) | Self::TauriOpener(_) => ErrorCategory::Platform,
-            Self::Reqwest(_) => ErrorCategory::Network,
+            Self::Tauri(_) | Self::TauriOpener(_) => "platform failure",
+            Self::Reqwest(_) => "network failure",
             Self::ChessPosition(_)
             | Self::IllegalUciMove(_)
             | Self::ParseSan(_)
-            | Self::IllegalSan(_) => ErrorCategory::Chess,
-            Self::Diesel(_) | Self::R2d2(_) => ErrorCategory::Database,
-            Self::SystemTime(_) | Self::InvalidInput(_) | Self::InvalidColor(_) => {
-                ErrorCategory::Input
-            }
+            | Self::IllegalSan(_) => "chess data failure",
+            Self::Diesel(_) | Self::R2d2(_) => "database failure",
+            Self::SystemTime(_) | Self::InvalidInput(_) | Self::InvalidColor(_) => "invalid input",
             Self::NoStdin
             | Self::NoStdout
             | Self::NoMovesFound
@@ -244,23 +199,21 @@ impl Error {
             | Self::NoPuzzles
             | Self::GameNotFound(_)
             | Self::EngineNotInitialized
-            | Self::EngineDisconnected => ErrorCategory::MissingResource,
+            | Self::EngineDisconnected => "missing resource",
             Self::NotDistinctPlayers
             | Self::GameNotInProgress
             | Self::NotHumanTurn
             | Self::NotEngineTurn
             | Self::EngineTimeout(_)
             | Self::AnalysisCancelled
-            | Self::Conflict(_) => ErrorCategory::Conflict,
-            Self::ResourceLimit(_) => ErrorCategory::ResourceLimit,
-            Self::OAuthFailure(_) => ErrorCategory::Authentication,
-            Self::CredentialFailure(_) | Self::CredentialRecoveryRequired => {
-                ErrorCategory::Credential
-            }
-            Self::Cancellation => ErrorCategory::Cancellation,
-            Self::CommittedDurabilityUncertain(_) => ErrorCategory::Durability,
-            Self::PartialRemoval { .. } => ErrorCategory::PartialRemoval,
-            Self::OperationAndCleanup { .. } => ErrorCategory::OperationAndCleanup,
+            | Self::Conflict(_) => "conflict",
+            Self::ResourceLimit(_) => "resource limit",
+            Self::OAuthFailure(_) => "authentication failure",
+            Self::CredentialFailure(_) | Self::CredentialRecoveryRequired => "credential failure",
+            Self::Cancellation => "cancellation",
+            Self::CommittedDurabilityUncertain(_) => "durability failure",
+            Self::PartialRemoval { .. } => "partial removal",
+            Self::OperationAndCleanup { .. } => "operation and cleanup failure",
         }
     }
 }
@@ -376,6 +329,38 @@ impl Type for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, Once};
+
+    struct CapturingLogger;
+
+    static CAPTURED_LOGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static CAPTURING_LOGGER: CapturingLogger = CapturingLogger;
+    static LOGGER_INIT: Once = Once::new();
+
+    impl log::Log for CapturingLogger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                CAPTURED_LOGS
+                    .lock()
+                    .expect("captured log mutex poisoned")
+                    .push(record.args().to_string());
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    fn install_capturing_logger() {
+        LOGGER_INIT.call_once(|| {
+            log::set_logger(&CAPTURING_LOGGER)
+                .expect("capturing logger could not be installed in this test binary");
+            log::set_max_level(log::LevelFilter::Warn);
+        });
+    }
 
     #[test]
     fn test_committed_durability_uncertain_mapping() {
@@ -422,6 +407,66 @@ mod tests {
             serde_json::to_string(&error).expect("serialize cleanup error"),
             "\"Operation failed; temporary cleanup also failed\""
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durability_producer_logs_native_cause() {
+        install_capturing_logger();
+        const CAUSE: &str = "/private/durability-log-test: native cause";
+        CAPTURED_LOGS
+            .lock()
+            .expect("captured log mutex poisoned")
+            .clear();
+
+        struct ParentSyncFailure;
+        impl crate::infra::fs::AtomicWriterInjector for ParentSyncFailure {
+            fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == crate::infra::fs::AtomicFileFaultPoint::ParentSync {
+                    Err(std::io::Error::other(CAUSE))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        struct ResetAtomicInjector;
+        impl Drop for ResetAtomicInjector {
+            fn drop(&mut self) {
+                crate::infra::fs::set_test_atomic_file_injector(None);
+            }
+        }
+
+        let directory = tempfile::tempdir().expect("durability log directory");
+        let root = directory.path().join("root");
+        std::fs::create_dir(&root).expect("durability log root");
+        let mut authority = crate::infra::path_authority::PathAuthority::open(
+            directory.path().join("registry.json"),
+            vec![],
+        )
+        .expect("path authority");
+        crate::infra::fs::set_test_atomic_file_injector(Some(Box::new(ParentSyncFailure)));
+        let _reset = ResetAtomicInjector;
+        let commit = authority
+            .migrate_legacy_os_path(
+                root.into_os_string(),
+                "durability log root",
+                crate::infra::path_authority::PathClass::PersistentCustomRoot,
+                vec![crate::infra::path_authority::PathOperation::DownloadFile],
+            )
+            .expect("registry commit");
+
+        assert!(matches!(
+            commit.durability,
+            crate::infra::path_authority::CommitDurability::DurabilityUncertain(
+                DurabilityStage::RegistryReplacement
+            )
+        ));
+        assert!(CAPTURED_LOGS
+            .lock()
+            .expect("captured log mutex poisoned")
+            .iter()
+            .any(|message| message.contains(CAUSE)));
     }
 
     #[test]

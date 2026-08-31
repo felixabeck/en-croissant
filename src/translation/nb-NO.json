@@ -386,6 +386,7 @@
     "Engines.Card.Type": "Type",
     "Engines.Empty.AddHint": "Legg til en motor for å komme i gang",
     "Engines.Empty.NoInstalled": "Ingen motorer installert",
+    "Engines.FileMissing": "(fil mangler)",
     "Engines.Logs.Empty": "Ingen logger tilgjengelig ennå",
     "Engines.Logs.Export": "Eksporter logger",
     "Engines.Logs.Filter.All": "Alle",

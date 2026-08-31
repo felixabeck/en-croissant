@@ -392,6 +392,7 @@
     "Engines.Card.Type": "Тип",
     "Engines.Empty.AddHint": "Додайте рушій, щоб почати",
     "Engines.Empty.NoInstalled": "Немає встановлених рушіїв",
+    "Engines.FileMissing": "(файл відсутній)",
     "Engines.Logs.Empty": "Журналів ще немає",
     "Engines.Logs.Export": "Експортувати журнали",
     "Engines.Logs.Filter.All": "Усі",

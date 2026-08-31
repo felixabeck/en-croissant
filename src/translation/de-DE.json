@@ -386,6 +386,7 @@
     "Engines.Card.Type": "Typ",
     "Engines.Empty.AddHint": "Füge eine Engine hinzu, um zu beginnen",
     "Engines.Empty.NoInstalled": "Nicht installiert",
+    "Engines.FileMissing": "(Datei fehlt)",
     "Engines.Logs.Empty": "Noch keine Protokolle verfügbar",
     "Engines.Logs.Export": "Protokolle exportieren",
     "Engines.Logs.Filter.All": "Alle",

@@ -31,17 +31,12 @@ const ARTIFACT_MANIFEST_PUBLIC_KEY: &str =
 fn download_target_durability(
     outcome: crate::infra::fs::AtomicFileOutcome,
 ) -> Option<crate::infra::path_authority::CommitDurability> {
-    match outcome {
-        crate::infra::fs::AtomicFileOutcome::DurableCommit => None,
-        crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
-            log::warn!("download target replacement parent sync failed: {error}");
-            Some(
-                crate::infra::path_authority::CommitDurability::DurabilityUncertain(
-                    crate::error::DurabilityStage::DownloadTargetReplacement,
-                ),
-            )
-        }
-    }
+    let stage = crate::infra::fs::map_atomic_file_outcome(
+        outcome,
+        crate::error::DurabilityStage::DownloadTargetReplacement,
+        |error| log::warn!("download target replacement parent sync failed: {error}"),
+    )?;
+    Some(crate::infra::path_authority::CommitDurability::DurabilityUncertain(stage))
 }
 
 /// A release-key signed artifact digest. The signature binds URL and hash.
@@ -534,17 +529,16 @@ where
             } else {
                 let target_dir = path.parent().unwrap_or_else(|| Path::new("."));
                 std::fs::create_dir_all(target_dir)?;
-                match atomic_replace(&path, |target_file| {
+                let outcome = atomic_replace(&path, |target_file| {
                     std::io::copy(&mut file, target_file)?;
                     Ok(())
-                })? {
-                    crate::infra::fs::AtomicFileOutcome::DurableCommit => {}
-                    crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(e) => {
-                        log::warn!("archive file replacement parent sync failed: {e}");
-                        return Err(Error::CommittedDurabilityUncertain(
-                            crate::error::DurabilityStage::ArchiveFileReplacement,
-                        ));
-                    }
+                })?;
+                if let Some(stage) = crate::infra::fs::map_atomic_file_outcome(
+                    outcome,
+                    crate::error::DurabilityStage::ArchiveFileReplacement,
+                    |error| log::warn!("archive file replacement parent sync failed: {error}"),
+                ) {
+                    return Err(Error::CommittedDurabilityUncertain(stage));
                 }
             }
             if cancellation.is_cancelled() {
@@ -1254,7 +1248,7 @@ fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) ->
     let target_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
     create_private_dir_all(target_dir)?;
 
-    match atomic_replace(target_path, |target_file| {
+    let outcome = atomic_replace(target_path, |target_file| {
         let mut decoder = flate2::read::GzDecoder::new(file);
         let compressed = decoder.get_ref().metadata()?.len();
         let mut total_expanded = 0;
@@ -1272,14 +1266,13 @@ fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) ->
             ));
         }
         Ok(())
-    })? {
-        crate::infra::fs::AtomicFileOutcome::DurableCommit => {}
-        crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(e) => {
-            log::warn!("gzip file replacement parent sync failed: {e}");
-            return Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::GzipFileReplacement,
-            ));
-        }
+    })?;
+    if let Some(stage) = crate::infra::fs::map_atomic_file_outcome(
+        outcome,
+        crate::error::DurabilityStage::GzipFileReplacement,
+        |error| log::warn!("gzip file replacement parent sync failed: {error}"),
+    ) {
+        return Err(Error::CommittedDurabilityUncertain(stage));
     }
     Ok(())
 }
@@ -1396,9 +1389,12 @@ fn resolve_engine_binary_for_inspection(
         Err(Error::InvalidInput(_)) => Err(Error::InvalidInput(
             "engine binary inspection could not be authorized".into(),
         )),
-        Err(_) => Err(Error::Conflict(
-            "engine binary inspection could not be completed".into(),
-        )),
+        Err(error) => {
+            log::warn!("engine binary inspection failed: {error}");
+            Err(Error::Conflict(
+                "engine binary inspection could not be completed".into(),
+            ))
+        }
     }
 }
 

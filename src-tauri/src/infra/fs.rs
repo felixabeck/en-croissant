@@ -14,6 +14,21 @@ pub enum AtomicFileOutcome {
     DurableCommit,
     CommittedDurabilityUncertain(std::io::Error),
 }
+
+pub(crate) fn map_atomic_file_outcome(
+    outcome: AtomicFileOutcome,
+    stage: crate::error::DurabilityStage,
+    on_uncertain: impl FnOnce(&std::io::Error),
+) -> Option<crate::error::DurabilityStage> {
+    match outcome {
+        AtomicFileOutcome::DurableCommit => None,
+        AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
+            on_uncertain(&error);
+            Some(stage)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AtomicInstalledFile {
     pub outcome: AtomicFileOutcome,

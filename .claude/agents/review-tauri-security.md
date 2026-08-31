@@ -95,8 +95,8 @@ one for the same native-only storage and lifetime guarantees as the existing acc
    special files. A lexical prefix or an early `canonicalize` is not enough if a later join,
    missing ancestor or symlink swap can change the object; require the authority's operation
    check, identity check and no-follow descriptor path. Pay particular attention to the
-   canonicalisation fallback and root comparison in `src-tauri/src/infra/path.rs:57-162`, and to
-   callers that bypass `PathAuthority::resolve` or turn a renderer-supplied name back into a
+   component validation and identity-checked resolution in `src-tauri/src/infra/path_authority.rs`,
+   and to callers that bypass `PathAuthority::resolve` or turn a renderer-supplied name back into a
    native path.
 5. **Writes, extraction and recursive deletion cannot escape.** Inspect every `join`, `rename`,
    `unlink`, `remove_dir`, `remove_dir_all`, `create_dir_all` and archive extraction in the named

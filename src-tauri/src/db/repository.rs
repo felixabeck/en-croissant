@@ -15,6 +15,8 @@ use crate::error::Error;
 use super::{migrations, ConnectionOptions, DatabaseSchemaIdentity};
 
 const MAX_OPEN_DATABASES: usize = 16;
+// Maximum number of pooled SQLite connections per database.
+const MAX_CONNECTIONS_PER_DATABASE: u32 = 16;
 
 type SqlitePool = Pool<ConnectionManager<SqliteConnection>>;
 /// A pooled connection cannot outlive the repository lifecycle lease which
@@ -397,7 +399,7 @@ impl DatabaseRepository {
         }
 
         let pool = Pool::builder()
-            .max_size(16)
+            .max_size(MAX_CONNECTIONS_PER_DATABASE)
             .connection_customizer(Box::new(ConnectionOptions))
             .build(ConnectionManager::<SqliteConnection>::new(key))?;
         let entry = Arc::new(DatabaseEntry {

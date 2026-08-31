@@ -392,6 +392,7 @@
     "Engines.Card.Type": "Тып",
     "Engines.Empty.AddHint": "Дадайце рухавік, каб пачаць",
     "Engines.Empty.NoInstalled": "Няма ўсталяваных рухавікоў",
+    "Engines.FileMissing": "(файл адсутнічае)",
     "Engines.Logs.Empty": "Журналы яшчэ недаступныя",
     "Engines.Logs.Export": "Экспартаваць журналы",
     "Engines.Logs.Filter.All": "Усе",

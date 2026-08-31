@@ -383,6 +383,7 @@
     "Engines.Card.Type": "유형",
     "Engines.Empty.AddHint": "시작하려면 엔진을 추가하세요",
     "Engines.Empty.NoInstalled": "설치된 엔진 없음",
+    "Engines.FileMissing": "(파일 없음)",
     "Engines.Logs.Empty": "아직 사용 가능한 로그가 없습니다",
     "Engines.Logs.Export": "로그 내보내기",
     "Engines.Logs.Filter.All": "전체",

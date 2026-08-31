@@ -392,6 +392,7 @@
     "Engines.Card.Type": "Тип",
     "Engines.Empty.AddHint": "Добавьте движок, чтобы начать",
     "Engines.Empty.NoInstalled": "Нет установленных движков",
+    "Engines.FileMissing": "(файл отсутствует)",
     "Engines.Logs.Empty": "Журналов пока нет",
     "Engines.Logs.Export": "Экспортировать журналы",
     "Engines.Logs.Filter.All": "Все",
