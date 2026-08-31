@@ -4309,3 +4309,16 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 * **Found by:** `$push` high-review lens `review-error-handling` (confidence 94) over
   `8307bacc..HEAD`, 2026-08-31. Deferred: this run's loaded context is the UCI aggregation
   loops in `src-tauri/src/chess.rs`, not the renderer tree store.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### Empty the Rust filesystem-surface allowlist by routing remaining production reaches through PathAuthority
+
+* **ID:** f-20260901-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** the shrink-only allowlist in `scripts/check-rust-release-surface.mjs` (`INITIAL_FS_SURFACE_ALLOWLIST` / `INITIAL_FS_SURFACE_COUNTS`), covering production `std::fs` / `tokio::fs` / pathname `atomic_replace` in `credentials.rs`, `db/mod.rs`, `db/repository.rs`, `db/search_index.rs`, `file_workspace.rs`, `fs.rs`, `main.rs`, `puzzle.rs`, `sound.rs`.
+* **Defect:** f-20260830-23 landed the write-time gate (R3/R4) with those nine files exempted at pinned match counts. The original invariant — every filesystem reach goes through PathAuthority, and pathname `&Path` primitives are not callable from outside it — is still false for those files. `atomic_replace(&Path)` remains `pub` and is still used from `main.rs`, `credentials.rs`, `fs.rs` and `search_index.rs`.
+* **Why it matters:** the gate stops *new* modules; it does not stop a new `std::fs::write` in `main.rs` except via the per-file count (same-count substitution on one line still passes). Emptying the allowlist is what makes the convention true.
+* **Fix shape:** route each remaining production site through PathAuthority / descriptor `*_at` forms, then shrink the allowlist and counts to empty. Related: f-20260830-23 (the gate; Root `-`, so named here rather than shared). Do not reopen clippy.toml (`d-20260901-02`).
+* **Found by:** Grok, drain session d0b4541b, while closing f-20260830-23, 2026-09-01.
