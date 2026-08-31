@@ -4171,3 +4171,63 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 * **Handled:** `store_lichess_token` returns `LichessAccountStoreResult { account, durability_uncertain }`. `AuthenticationStatus::Succeeded` carries the flag; the poller still upserts. Removal is `Removed { revocation_pending, durability_uncertain }`. Accounts shows `Home.Accounts.LinkDurabilityUncertain` instead of `AuthenticationFailed`. Native success with a failed public fetch still upserts `{ id, username }`. Pending vs final persist uncertainty are tested independently.
 * **Commits:** `4544875b` (IPC + UI), `3a1b856d` (independent persist tests).
 * **Rejected:** mapping uncertain persist to `Failed` (Felix, d-20260831-18); a fourth unit variant `RemovedDurabilityUncertain` (d-20260831-20).
+
+---
+
+## 2026-08-31 — filed through the inbox spool
+
+### Native pickers in AddDatabase, DatabasesPage export, and AccountCard still ignore rejection
+
+* **ID:** f-20260831-15 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/components/databases/AddDatabase.tsx` (`issuePgnWorkspace` in FileInput `onClick`),
+  `src/components/databases/DatabasesPage.tsx` (`issuePgnExportDestination` inside `try/finally` with
+  no `catch`), `src/components/home/AccountCard.tsx` (`ensureDownloadDestination` /
+  `issueDownloadDestination` in a download click that only has `finally`).
+* **Defect:** the same unhandled-rejection class as `f-20260830-12`. A dismissed native dialog is
+  `Error::Cancellation` and becomes an unhandled promise rejection; a real failure is silent.
+  `f-20260830-12` closed FilesPage, AddPuzzle, and Settings onto `errorUnlessCancelled`. These three
+  sites were left because they have no test that would go red if the catch were omitted
+  (plan-review, confidence 100).
+* **Why it matters:** cancel looks like a hung click; a permission failure never notifies.
+* **Fix shape:** the same catch as FilesPage: `errorUnlessCancelled`, notify on non-null, `void` the
+  click promise. Add a DirectorySetting-sized test per site so reverting the catch is red. Helper
+  and Display contract already exist (`d-20260831-25`, `d-20260831-26`).
+* **Found by:** locate + `review-error-handling` over the `f-20260830-12` build, 2026-08-31.
+  Related: `f-20260830-12` (same class, Root `-`, handled in this run).
+
+### Tab-tree flush failures are only logged, so a full sessionStorage quota drops pending edits on quit
+
+* **ID:** f-20260831-16 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/state/store/tabStorage.ts` `flush()` (`:282-294`).
+* **Defect:** each pending tree write is inside `try/catch` that only `warn`s. If sessionStorage is full when `beforeunload`/`pagehide` flushes, the debounce is dropped and the next load restores the last successful write with no user-facing error. `.claude/rules/persisted-state.md` requires a handled, comprehensible quota failure — the live `serializeStorageValue` path already has one; flush does not.
+* **Why it matters:** quitting with a large game open is the realistic quota case (`d250925f`). The user thinks the last moves were saved.
+* **Fix shape:** surface the same quota error the store uses on a live write; keep the per-key try so one full tab cannot block flushing the others.
+* **Found by:** `review-persisted-state` over the `f-20260830-12` cumulative diff, 2026-08-31, confidence 99. Pre-existing, different area from the picker work.
+* **Lens:** `review-persisted-state`
+
+### Workspace ID migration removes legacy tree keys before the new envelope is durably written
+
+* **ID:** f-20260831-17 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/state/workspace.ts` `repairWorkspace` (`:64-67`) then `createWorkspaceStorage.getItem` (`:110-115`).
+* **Defect:** copied trees are flushed and uniquely-owned legacy tab IDs are `remove`d, and only afterwards is the migrated workspace envelope `setItem`ed. If that envelope write fails (quota, private-mode, abort), the next startup still sees the old tab metadata (old IDs) whose trees are already gone, and reconstructs empty tabs.
+* **Why it matters:** a one-time migration plus a full quota is a silent loss of every open game tree, not a recoverable hydrate failure.
+* **Fix shape:** persist the new envelope (or fail closed) before deleting legacy tree keys; if the envelope write fails, leave the old keys in place. The comment at `:64-66` already states the intent — the envelope write is outside `repairWorkspace` and so does not honour it.
+* **Found by:** `review-persisted-state` over the `f-20260830-12` cumulative diff, 2026-08-31, confidence 96. Pre-existing. Related: the tabStorage flush finding filed in the same review (Root `-`).
+
+### Engine list persistence is uncompressed, unbounded, and its async setItem is uncaught
+
+* **ID:** f-20260831-18 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/state/atoms.ts` `enginesStorage` (`:172-188`) feeding `enginesAtom` via `atomWithStorage` / `createAsyncZodStorage`.
+* **Defect:** engine state is written to localStorage key `engines` as uncompressed JSON. `setItem` is async and neither awaited nor caught, so a quota `QuotaExceededError` becomes an unhandled rejection and the edit disappears on reload. Tree state already compresses and raises a user-facing quota error (`src/state/store/debouncedStorage.ts`); this adapter does not.
+* **Why it matters:** a handful of engines with option maps is usually small, but the contract is the same quota as every other origin-scoped key, and an unhandled rejection is the failure `persisted-state.md` names.
+* **Fix shape:** route writes through `serializeStorageValue` (or the same quota-handled helper the tree uses), catch `setItem`, and tell the user when the engine list could not be saved. Do not invent a second storage encoding.
+* **Found by:** `review-persisted-state` over the `f-20260830-12` cumulative diff, 2026-08-31, confidence 96. Pre-existing. The same lens also claimed a missing migration from `engines/engines.json`; that path is not in this tree, so it is not part of this finding.
+
+### stopEngine and killEngine rejections are discarded at the call site
+
+* **ID:** f-20260831-19 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/utils/engines.ts` `stopEngine` / `killEngine` (`:165-171`); callers `src/components/boards/EvalListener.tsx` (`void stopEngine`, `:232-270`), `src/components/panels/analysis/EngineSelection.tsx` (`:22`), `src/components/panels/analysis/EngineSettingsForm.tsx` (`killEngine`, `:143`).
+* **Defect:** the wrappers return the facade promise. Callers fire-and-forget, including with `void`, which does not catch. `stop_engine` can return timeout or disconnected errors, which become unhandled rejections while the UI still treats the engine as stopped.
+* **Why it matters:** `.claude/rules/engine-lifecycle.md` — a stop that failed is not a stop. The unwrap removal in `f-20260830-18` did not introduce this; it only made the wrappers pass the already-throwing facade through.
+* **Fix shape:** each caller catches with `errorUnlessCancelled` / `notifyUnlessCancelled` (or a dedicated engine-stop path) and does not mark the engine stopped until the command succeeds. Related: `f-20260831-11` (removing a local engine does not terminate its process) is a different defect, Root `-`.
+* **Found by:** `review-error-handling` over the `f-20260830-12` cumulative diff, 2026-08-31, confidence 97. Different area from the picker work.
