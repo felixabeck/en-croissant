@@ -4245,3 +4245,26 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 * **Why it matters:** `.claude/rules/engine-lifecycle.md` — a stop that failed is not a stop. The unwrap removal in `f-20260830-18` did not introduce this; it only made the wrappers pass the already-throwing facade through.
 * **Fix shape:** each caller catches with `errorUnlessCancelled` / `notifyUnlessCancelled` (or a dedicated engine-stop path) and does not mark the engine stopped until the command succeeds. Related: `f-20260831-11` (removing a local engine does not terminate its process) is a different defect, Root `-`.
 * **Found by:** `review-error-handling` over the `f-20260830-12` cumulative diff, 2026-08-31, confidence 97. Different area from the picker work.
+
+---
+
+## 2026-08-31 — filed through the inbox spool
+
+### Final child reaping after force-kill is an unbounded `child.wait()`
+
+* **ID:** f-20260831-20 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs`, `ChildUciIo::terminate` after `start_kill()` —
+  `self.child.wait().await` with no timeout.
+* **Defect:** the graceful `quit` wait is bounded by `deadlines.quit`, but the force-kill path
+  then awaits reaping with no deadline. A child that ignores SIGKILL (uninterruptible sleep)
+  or a wait that never returns stalls `EngineRuntime::terminate`, so the new stderr-drain
+  timeout is never reached and tab/app shutdown waits forever.
+* **Why it matters:** the comment at the site says a failed graceful wait is never a reason
+  to abandon the child, and that is a real invariant — bounding the wait leaks a zombie.
+  Leaving it unbounded leaks the whole supervisor. That is a design question, not a timeout
+  constant to pick in this push: abandon after kill, or stall.
+* **Related:** f-20260830-53 (handled) owns the stderr drain; this is the child-reap path
+  that still sits in front of that join. Root `-` because the cause is not the drain's
+  missing owner.
+* **Found by:** `$push` high-review lenses `n3-adjacent` (confidence 90) and
+  `n5-adversarial` (confidence 98) over `685825c0..HEAD`, 2026-08-31.
