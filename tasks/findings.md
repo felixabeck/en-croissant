@@ -2140,7 +2140,7 @@ anchor, correctly.
 
 ### The Rust filesystem boundary is convention only — the renderer side is gate-enforced, the native side is not
 
-* **ID:** f-20260830-23 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-23 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** no `src-tauri/clippy.toml` exists; `scripts/check-tauri-command-boundary.mjs` and
   `scripts/check-ui-boundaries.mjs` cover only the renderer.
 * **Defect:** `infra/fs.rs` exposes `atomic_replace(&Path, ...)` as a `pub` path-taking function,
@@ -2157,6 +2157,13 @@ anchor, correctly.
   `infra/fs.rs` should stop taking raw `&Path` at all, and how to scope the lint so test modules and
   the primitives themselves are exempt without punching a hole through the rule.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+**Handled 2026-09-01.** `scripts/check-rust-release-surface.mjs` now enforces R3 (production `std::fs` / `tokio::fs` calls, including module aliases and imported `File::open`) and R4 (pathname `atomic_replace` / `atomic_replace_with_precommit` / `atomic_install_dir` imports, globs, FQNs, turbofish and aliases) outside `src-tauri/src/infra/`. Test-only regions are exempt after a parser fix for multiline and statement-level `#[cfg(test)]`. Enumeration uses `listWorkingTreeFiles` (`pathspec: src-tauri/src`), so untracked leaks fail closed. Nine current production files sit on a shrink-only allowlist with pinned match counts. `clippy.toml` was rejected (`d-20260901-02`). Emptying the allowlist is a native-fs follow-on filed through the inbox.
+
+* **Commits:** `367113a3`
+* **Rejected:** clippy `disallowed-methods` as the gate; migrating the 48 sites in this run; `AuthorizedPath` on pathname primitives; a fifth walker; Path-method matching (false positive on `AccountRecord::metadata`).
+* **Decisions:** d-20260901-01 slice · d-20260901-02 checker not clippy · d-20260901-03 shrink-only allowlist.
+* **Left open:** f-20260830-46, -54, -55 at their filed `inline` tiers.
 
 ---
 
