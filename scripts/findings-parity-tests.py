@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER = REPO_ROOT / "scripts" / "findings.py"
-SIBLING_REPO = Path("/home/felixb/Projekte/chess-tactics-app")
+SIBLING_REPO = REPO_ROOT.parent / "chess-tactics-app"
 SIBLING_REF = "4c83bf50c55bab8dc4a9babf5797f6cb019766e6"
 ALLOW_MISSING_SIBLING = "--allow-missing-sibling"
 
@@ -68,8 +68,9 @@ EXPECTED_DELTA_DIGEST = (
 PARITY_PATH = "scripts/findings.py"
 
 STALENESS_HEADING = (
-    "WARN the sibling has moved past the pinned SIBLING_REF; this copy was "
-    "reconciled against an older revision:"
+    "WARN the pinned SIBLING_REF and the sibling's history disagree, so this "
+    "copy was reconciled against a revision that is no longer the sibling's "
+    "newest for this file:"
 )
 
 # Each item is asserted verbatim by the integration test, so that a future
@@ -109,14 +110,27 @@ class ProbeFailure(Exception):
     """
 
 
+def _run_git(repo: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run git for the parity gate, decoding leniently.
+
+    ``errors="replace"`` is deliberate: a commit subject is not required to be
+    UTF-8, and under a strict decode a foreign commit message would raise
+    ``UnicodeDecodeError`` — a ``ValueError``, so it would slip past every
+    ``OSError`` guard here and surface as a raw traceback instead of a labelled
+    gate failure.
+    """
+    return subprocess.run(
+        ["git", "-C", str(repo), *arguments],
+        capture_output=True,
+        check=False,
+        text=True,
+        errors="replace",
+    )
+
+
 def _probe(repo: Path, *arguments: str) -> str:
     try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), *arguments],
-            capture_output=True,
-            check=False,
-            text=True,
-        )
+        result = _run_git(repo, *arguments)
     except OSError as error:
         raise ProbeFailure(f"git {' '.join(arguments)}: {error}") from error
     if result.returncode != 0:
@@ -125,9 +139,7 @@ def _probe(repo: Path, *arguments: str) -> str:
     return result.stdout
 
 
-def _pin_staleness(
-    repo: Path, ref: str, path: str = PARITY_PATH
-) -> list[str]:
+def _pin_staleness(repo: Path, ref: str) -> list[str]:
     """Advisory lines describing how far the sibling has moved past the pin.
 
     An empty list means the pin still names the newest sibling commit touching
@@ -142,12 +154,7 @@ def _pin_staleness(
     # two copies have in fact parted -- reported as "current", which is the
     # false green this probe exists to remove.
     try:
-        ancestry = subprocess.run(
-            ["git", "-C", str(repo), "merge-base", "--is-ancestor", pinned, "HEAD"],
-            capture_output=True,
-            check=False,
-            text=True,
-        )
+        ancestry = _run_git(repo, "merge-base", "--is-ancestor", pinned, "HEAD")
     except OSError as error:
         raise ProbeFailure(f"git merge-base --is-ancestor: {error}") from error
     if ancestry.returncode not in (0, 1):
@@ -160,55 +167,62 @@ def _pin_staleness(
             f"`{ref}..HEAD` cannot enumerate the drift."
         )
 
-    newest = _probe(repo, "log", "-1", "--format=%H", "HEAD", "--", path).strip()
+    newest = _probe(
+        repo, "log", "-1", "--format=%H", "HEAD", "--", PARITY_PATH
+    ).strip()
     if not newest:
         lines.append(
-            f"NO-COMMIT the sibling's HEAD has no commit touching {path} at all."
+            f"NO-COMMIT the sibling's HEAD has no commit touching {PARITY_PATH} "
+            "at all."
         )
         return lines
     if newest == pinned and not lines:
         return lines
 
+    # The pathspec is what keeps this a parity signal rather than a feed of the
+    # sibling's every commit. Without it a warning fires on unrelated work,
+    # which is how an advisory line becomes noise nobody reads.
     newer = [
         line
         for line in _probe(
-            repo, "log", "--format=%H %s", f"{pinned}..HEAD", "--", path
+            repo, "log", "--format=%H %s", f"{pinned}..HEAD", "--", PARITY_PATH
         ).splitlines()
         if line.strip()
     ]
     lines.extend(f"NEWER {line}" for line in newer)
     if not newer and newest != pinned:
+        # Nothing on HEAD's side touches the file more recently than the pin,
+        # yet HEAD's tip for the file is a different commit. That is the pin
+        # being AHEAD of HEAD's history for this file — reached when the pin
+        # sits on a branch carrying a change HEAD does not have. Calling it
+        # "newer" would be backwards, and claiming it is unreachable from the
+        # pin is false here: it is usually the pin's own ancestor.
         subject = _probe(repo, "log", "-1", "--format=%s", newest).strip()
         lines.append(
-            f"NEWER {newest} {subject} (newest sibling commit touching {path}; "
-            "not reachable from the pin, so the pin is ahead of it)"
+            f"PIN-AHEAD {newest} {subject} (HEAD's newest commit touching "
+            f"{PARITY_PATH}; the pin carries a later change to this file that "
+            "HEAD does not, so the pin is ahead of the sibling's own history)"
         )
     return lines
 
 
 def _read_committed_sibling() -> str:
-    git_dir = subprocess.run(
-        ["git", "-C", str(SIBLING_REPO), "rev-parse", "--git-dir"],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
+    try:
+        git_dir = _run_git(SIBLING_REPO, "rev-parse", "--git-dir")
+    except OSError as error:
+        # git itself could not start. Without this, main() — which catches only
+        # AssertionError — would print a raw traceback instead of a labelled
+        # gate failure.
+        raise AssertionError(
+            f"git could not be run against the chess-tactics-app sibling: {error}"
+        ) from error
     if git_dir.returncode != 0:
         detail = git_dir.stderr.strip() or "git rev-parse --git-dir failed"
         raise AssertionError(
             f"chess-tactics-app sibling checkout is present but unusable: {detail}"
         )
-    committed = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(SIBLING_REPO),
-            "show",
-            f"{SIBLING_REF}:scripts/findings.py",
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
+    committed = _run_git(
+        SIBLING_REPO, "show", f"{SIBLING_REF}:{PARITY_PATH}"
     )
     if committed.returncode != 0:
         detail = committed.stderr.strip() or "git show failed"
@@ -639,11 +653,142 @@ class FindingsParity(unittest.TestCase):
             printed = output.getvalue()
 
         self.assertEqual(return_code, 0, printed)
-        self.assertIn(STALENESS_HEADING, printed)
         self.assertIn(moved, printed)
-        for item in STALENESS_REMEDY:
-            self.assertIn(item, printed)
-        self.assertIn(STALENESS_ADVISORY_NOTE, printed)
+        # Spelled out rather than looped over STALENESS_REMEDY: deriving the
+        # expectation from the very tuple `main` prints makes the assertion
+        # tautological, so deleting a remedy would leave this green.
+        self.assertIn("re-pin SIBLING_REF to the newest sibling commit", printed)
+        self.assertIn("re-walk the hunks against DECLARED_DIVERGENCES", printed)
+        self.assertIn(
+            "re-pin BOTH EXPECTED_CHANGED_LINES and EXPECTED_DELTA_DIGEST", printed
+        )
+        self.assertIn("file the outstanding port", printed)
+        self.assertIn("does NOT fail the gate", printed)
+        self.assertIn("d-20260826-10", printed)
+
+    def test_probe_lists_only_findings_commits_after_real_movement(self) -> None:
+        """The pathspec must still filter once the pin is genuinely stale.
+
+        The current-pin test returns before this code path, so without this
+        fixture the second pathspec could be deleted and every test stayed
+        green while the warning began reporting the sibling's unrelated work.
+        """
+        with TemporaryDirectory() as temp:
+            repo = Path(temp)
+            self._sibling_fixture(repo)
+            pin = _fixture_head(repo)
+            _fixture_commit(repo, {"docs/unrelated.md": "noise\n"}, "unrelated work")
+            noise = _fixture_head(repo)
+            _fixture_commit(repo, {PARITY_PATH: "three\n"}, "third findings commit")
+            moved = _fixture_head(repo)
+
+            lines = _pin_staleness(repo, pin)
+
+        self.assertTrue(any(moved in line for line in lines), lines)
+        self.assertFalse(any(noise in line for line in lines), lines)
+
+    def test_probe_reports_a_pin_ahead_of_the_siblings_own_history(self) -> None:
+        """The pin carries a change to the file that HEAD does not have.
+
+        `pinned..HEAD -- path` is empty here, so the NEWER branch never fires,
+        and the distinct PIN-AHEAD line is the only evidence. It must not be
+        called NEWER: HEAD's tip for the file is the pin's own ancestor.
+        """
+        with TemporaryDirectory() as temp:
+            repo = Path(temp)
+            self._sibling_fixture(repo)
+            base = _fixture_head(repo)
+            _fixture_git(repo, "checkout", "--quiet", "-b", "side")
+            _fixture_commit(repo, {PARITY_PATH: "side\n"}, "side findings commit")
+            pin = _fixture_head(repo)
+            _fixture_git(repo, "checkout", "--quiet", "-B", "trunk", base)
+            _fixture_commit(repo, {"docs/unrelated.md": "trunk\n"}, "trunk work")
+
+            lines = _pin_staleness(repo, pin)
+
+        self.assertTrue(any(line.startswith("PIN-AHEAD ") for line in lines), lines)
+        self.assertTrue(any(base in line for line in lines), lines)
+        self.assertFalse(any(line.startswith("NEWER ") for line in lines), lines)
+
+    def test_probe_reports_a_sibling_with_no_history_for_the_file(self) -> None:
+        with TemporaryDirectory() as temp:
+            repo = Path(temp)
+            _fixture_git(repo, "init", "--quiet", ".")
+            _fixture_commit(repo, {"docs/only.md": "no findings here\n"}, "unrelated")
+            pin = _fixture_head(repo)
+
+            lines = _pin_staleness(repo, pin)
+
+        self.assertTrue(any(line.startswith("NO-COMMIT ") for line in lines), lines)
+
+    def test_probe_converts_an_oserror_into_a_probe_failure(self) -> None:
+        """git failing to START must fail closed, not read as "current"."""
+        with TemporaryDirectory() as temp:
+            repo = Path(temp)
+            self._sibling_fixture(repo)
+            pin = _fixture_head(repo)
+
+            def _cannot_start(*_args: object, **_kwargs: object) -> object:
+                raise OSError("git binary is missing")
+
+            with patch("subprocess.run", _cannot_start):
+                with self.assertRaises(ProbeFailure):
+                    _pin_staleness(repo, pin)
+
+    def test_probe_rejects_an_unexpected_merge_base_status(self) -> None:
+        """`--is-ancestor` answers 0 or 1; anything else is a broken probe.
+
+        Treating an unexpected status as "not an ancestor" would turn a git
+        malfunction into a confident claim about the sibling's history.
+        """
+        with TemporaryDirectory() as temp:
+            repo = Path(temp)
+            self._sibling_fixture(repo)
+            pin = _fixture_head(repo)
+
+            real = _run_git
+
+            def _fake(target: Path, *arguments: str) -> object:
+                if arguments[:2] == ("merge-base", "--is-ancestor"):
+                    return subprocess.CompletedProcess(
+                        args=list(arguments), returncode=128, stdout="", stderr="bad"
+                    )
+                return real(target, *arguments)
+
+            with patch(f"{__name__}._run_git", _fake):
+                with self.assertRaises(ProbeFailure):
+                    _pin_staleness(repo, pin)
+
+    def test_main_still_runs_the_parity_suite_after_warning(self) -> None:
+        """The advisory must not become an early return.
+
+        A `main` that printed the warning and returned 0 would skip every parity
+        check exactly when the sibling moved — the moment the checks matter
+        most. The patched suite fails, so a green result proves it never ran.
+        """
+
+        class _Failing(unittest.TestCase):
+            def test_not_ok(self) -> None:
+                self.fail("the parity suite must still run after the advisory")
+
+        with TemporaryDirectory() as temp:
+            repo = Path(temp)
+            self._sibling_fixture(repo)
+            pin = _fixture_head(repo)
+            _fixture_commit(repo, {PARITY_PATH: "five\n"}, "fifth findings commit")
+
+            output = StringIO()
+            with (
+                patch(f"{__name__}.SIBLING_REPO", repo),
+                patch(f"{__name__}.SIBLING_REF", pin),
+                patch(f"{__name__}.FindingsParity", _Failing),
+                redirect_stdout(output),
+            ):
+                return_code = main([])
+            printed = output.getvalue()
+
+        self.assertEqual(return_code, 1, printed)
+        self.assertIn(STALENESS_HEADING, printed)
 
     def test_main_fails_closed_when_the_probe_cannot_run(self) -> None:
         with TemporaryDirectory() as temp:
