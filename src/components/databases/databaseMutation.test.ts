@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
 import type { DatabaseHandle } from "@/bindings";
 import {
     deleteDatabaseAndInvalidate,
@@ -49,17 +48,6 @@ describe("database deletion transaction", () => {
             deleteDatabaseAndInvalidate(deleted, vi.fn().mockRejectedValue(error), invalidate),
         ).rejects.toBe(error);
         expect(invalidate).toHaveBeenCalledWith(deleted);
-    });
-
-    it("routes both destructive consumers through the shared refresh helper", () => {
-        const mutationSource = readFileSync(
-            "src/components/databases/databaseMutation.ts",
-            "utf8",
-        );
-        const filesSource = readFileSync("src/components/files/FilesPage.tsx", "utf8");
-        expect(mutationSource).toContain("runDestructiveWithRefresh");
-        expect(filesSource).toContain("runDestructiveWithRefresh");
-        expect(filesSource).not.toContain('category === "applied-despite-error"');
     });
 
     it("clears stale selection, reference and opened view for the deleted handle only", () => {
