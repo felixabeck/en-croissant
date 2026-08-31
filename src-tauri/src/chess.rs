@@ -283,6 +283,49 @@ fn parse_uci_attrs(
     Ok(best_moves)
 }
 
+fn score_is_bound(score: &Score) -> bool {
+    score.lower_bound == Some(true) || score.upper_bound == Some(true)
+}
+
+/// A finished MultiPV set sitting in `collected`. Callers publish only when
+/// `publishable`, but they always clear `collected` afterwards — mixed-depth
+/// and shallower sets still complete the sequence.
+struct CompleteMultiPv {
+    depth: u32,
+    nodes: u64,
+    publishable: bool,
+}
+
+/// Shared UCI `info` aggregation for the interactive and report paths.
+/// Bound scores are not evaluations (`64fad3d6`); out-of-sequence MultiPV
+/// lines are dropped; a complete set is one whose last line is `real_multipv`.
+fn ingest_info_line(
+    collected: &mut Vec<BestMoves>,
+    last_depth: u32,
+    real_multipv: u16,
+    line: BestMoves,
+) -> Option<CompleteMultiPv> {
+    if score_is_bound(&line.score) {
+        return None;
+    }
+    let multipv = line.multipv;
+    let depth = line.depth;
+    let nodes = line.nodes;
+    if multipv as usize != collected.len() + 1 {
+        return None;
+    }
+    collected.push(line);
+    if multipv != real_multipv {
+        return None;
+    }
+    let publishable = collected.iter().all(|x| x.depth == depth) && depth >= last_depth;
+    Some(CompleteMultiPv {
+        depth,
+        nodes,
+        publishable,
+    })
+}
+
 #[derive(Deserialize, Debug, Clone, Type, Derivative, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[derivative(Default)]
@@ -408,52 +451,42 @@ pub async fn get_best_moves(
                 UciMessage::Info(attrs) => {
                     match parse_uci_attrs(attrs, &proc.options.fen.parse()?, &proc.options.moves) {
                         Ok(best_moves) => {
-                            if best_moves.score.lower_bound == Some(true)
-                                || best_moves.score.upper_bound == Some(true)
-                            {
-                                continue;
-                            }
-                            let multipv = best_moves.multipv;
-                            let cur_depth = best_moves.depth;
-                            let cur_nodes = best_moves.nodes;
-                            if multipv as usize == proc.best_moves.len() + 1 {
-                                proc.best_moves.push(best_moves);
-                                if multipv == proc.real_multipv {
-                                    if proc.best_moves.iter().all(|x| x.depth == cur_depth)
-                                        && cur_depth >= proc.last_depth
-                                        && lim.check().is_ok()
-                                    {
-                                        let progress = (match proc.go_mode {
-                                            GoMode::Depth(depth) => {
-                                                (cur_depth as f64 / depth as f64) * 100.0
-                                            }
-                                            GoMode::Time(time) => {
-                                                (proc.start.elapsed().as_millis() as f64
-                                                    / time as f64)
-                                                    * 100.0
-                                            }
-                                            GoMode::Nodes(nodes) => {
-                                                (cur_nodes as f64 / nodes as f64) * 100.0
-                                            }
-                                            GoMode::PlayersTime(_) => 99.99,
-                                            GoMode::Infinite => 99.99,
-                                        })
-                                        .clamp(0.0, 100.0);
-                                        BestMovesPayload {
-                                            best_lines: proc.best_moves.clone(),
-                                            engine: id.clone(),
-                                            tab: tab.clone(),
-                                            fen: proc.options.fen.clone(),
-                                            moves: proc.options.moves.clone(),
-                                            progress,
+                            if let Some(set) = ingest_info_line(
+                                &mut proc.best_moves,
+                                proc.last_depth,
+                                proc.real_multipv,
+                                best_moves,
+                            ) {
+                                if set.publishable && lim.check().is_ok() {
+                                    let progress = (match proc.go_mode {
+                                        GoMode::Depth(depth) => {
+                                            (set.depth as f64 / depth as f64) * 100.0
                                         }
-                                        .emit(&app)?;
-                                        proc.last_depth = cur_depth;
-                                        proc.last_best_moves = proc.best_moves.clone();
-                                        proc.last_progress = progress as f32;
+                                        GoMode::Time(time) => {
+                                            (proc.start.elapsed().as_millis() as f64 / time as f64)
+                                                * 100.0
+                                        }
+                                        GoMode::Nodes(nodes) => {
+                                            (set.nodes as f64 / nodes as f64) * 100.0
+                                        }
+                                        GoMode::PlayersTime(_) => 99.99,
+                                        GoMode::Infinite => 99.99,
+                                    })
+                                    .clamp(0.0, 100.0);
+                                    BestMovesPayload {
+                                        best_lines: proc.best_moves.clone(),
+                                        engine: id.clone(),
+                                        tab: tab.clone(),
+                                        fen: proc.options.fen.clone(),
+                                        moves: proc.options.moves.clone(),
+                                        progress,
                                     }
-                                    proc.best_moves.clear();
+                                    .emit(&app)?;
+                                    proc.last_depth = set.depth;
+                                    proc.last_best_moves = proc.best_moves.clone();
+                                    proc.last_progress = progress as f32;
                                 }
+                                proc.best_moves.clear();
                             }
                         }
                         Err(e) => match e {
@@ -766,20 +799,17 @@ pub async fn analyze_game(
                     if let Ok(best_moves) =
                         parse_uci_attrs(attrs, &proc.options.fen.parse()?, moves)
                     {
-                        let multipv = best_moves.multipv;
-                        let cur_depth = best_moves.depth;
-                        if multipv as usize == proc.best_moves.len() + 1 {
-                            proc.best_moves.push(best_moves);
-                            if multipv == proc.real_multipv {
-                                if proc.best_moves.iter().all(|x| x.depth == cur_depth)
-                                    && cur_depth >= proc.last_depth
-                                {
-                                    current_analysis.best = proc.best_moves.clone();
-                                    proc.last_depth = cur_depth;
-                                }
-                                assert_eq!(proc.best_moves.len(), proc.real_multipv as usize);
-                                proc.best_moves.clear();
+                        if let Some(set) = ingest_info_line(
+                            &mut proc.best_moves,
+                            proc.last_depth,
+                            proc.real_multipv,
+                            best_moves,
+                        ) {
+                            if set.publishable {
+                                current_analysis.best = proc.best_moves.clone();
+                                proc.last_depth = set.depth;
                             }
+                            proc.best_moves.clear();
                         }
                     }
                 }
@@ -948,6 +978,148 @@ mod tests {
     fn pos(fen: &str) -> Chess {
         let fen: Fen = fen.parse().unwrap();
         Chess::from_setup(fen.into_setup(), CastlingMode::Chess960).unwrap()
+    }
+
+    fn start_fen() -> Fen {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            .parse()
+            .unwrap()
+    }
+
+    fn parsed_info(line: &str) -> BestMoves {
+        match parse_one(line) {
+            UciMessage::Info(attrs) => parse_uci_attrs(attrs, &start_fen(), &[]).unwrap(),
+            other => panic!("expected info, got {other:?}"),
+        }
+    }
+
+    fn ingest(
+        collected: &mut Vec<BestMoves>,
+        last_depth: u32,
+        real_multipv: u16,
+        line: &str,
+    ) -> Option<CompleteMultiPv> {
+        ingest_info_line(collected, last_depth, real_multipv, parsed_info(line))
+    }
+
+    #[test]
+    fn ingest_skips_lowerbound_and_keeps_the_exact_score() {
+        let mut collected = Vec::new();
+        assert!(ingest(
+            &mut collected,
+            0,
+            1,
+            "info depth 8 multipv 1 score cp 12 lowerbound nodes 100 pv e2e4"
+        )
+        .is_none());
+        assert!(collected.is_empty());
+
+        let set = ingest(
+            &mut collected,
+            0,
+            1,
+            "info depth 8 multipv 1 score cp 34 nodes 100 pv e2e4",
+        )
+        .expect("exact score should complete MultiPV 1");
+        assert!(set.publishable);
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].score.value, ScoreValue::Cp(34));
+        assert_ne!(collected[0].score.lower_bound, Some(true));
+    }
+
+    #[test]
+    fn ingest_skips_upperbound() {
+        let mut collected = Vec::new();
+        assert!(ingest(
+            &mut collected,
+            0,
+            1,
+            "info depth 8 multipv 1 score cp 12 upperbound nodes 100 pv e2e4"
+        )
+        .is_none());
+        assert!(collected.is_empty());
+    }
+
+    #[test]
+    fn ingest_bound_between_pvs_does_not_desync_sequence() {
+        let mut collected = Vec::new();
+        assert!(ingest(
+            &mut collected,
+            0,
+            2,
+            "info depth 8 multipv 1 score cp 20 nodes 100 pv e2e4"
+        )
+        .is_none());
+        assert_eq!(collected.len(), 1);
+
+        assert!(ingest(
+            &mut collected,
+            0,
+            2,
+            "info depth 8 multipv 1 score cp 40 lowerbound nodes 100 pv e2e4"
+        )
+        .is_none());
+        assert_eq!(collected.len(), 1);
+
+        let set = ingest(
+            &mut collected,
+            0,
+            2,
+            "info depth 8 multipv 2 score cp 5 nodes 100 pv d2d4",
+        )
+        .expect("PV2 should complete after a bound on PV1");
+        assert!(set.publishable);
+        assert_eq!(collected.len(), 2);
+        assert_eq!(collected[0].score.value, ScoreValue::Cp(20));
+        assert_eq!(collected[1].score.value, ScoreValue::Cp(5));
+    }
+
+    #[test]
+    fn ingest_rejects_out_of_sequence_multipv() {
+        let mut collected = Vec::new();
+        assert!(ingest(
+            &mut collected,
+            0,
+            2,
+            "info depth 8 multipv 2 score cp 5 nodes 100 pv d2d4"
+        )
+        .is_none());
+        assert!(collected.is_empty());
+    }
+
+    #[test]
+    fn ingest_mixed_depth_set_is_complete_but_not_publishable() {
+        let mut collected = Vec::new();
+        assert!(ingest(
+            &mut collected,
+            0,
+            2,
+            "info depth 8 multipv 1 score cp 20 nodes 100 pv e2e4"
+        )
+        .is_none());
+        let set = ingest(
+            &mut collected,
+            0,
+            2,
+            "info depth 7 multipv 2 score cp 5 nodes 100 pv d2d4",
+        )
+        .expect("mixed depths still complete the sequence");
+        assert!(!set.publishable);
+        assert_eq!(collected.len(), 2);
+    }
+
+    #[test]
+    fn ingest_shallower_than_last_depth_is_not_publishable() {
+        let mut collected = Vec::new();
+        let set = ingest(
+            &mut collected,
+            10,
+            1,
+            "info depth 8 multipv 1 score cp 20 nodes 100 pv e2e4",
+        )
+        .expect("a shallower set still completes MultiPV 1");
+        assert!(!set.publishable);
+        assert_eq!(set.depth, 8);
     }
 
     #[test]
