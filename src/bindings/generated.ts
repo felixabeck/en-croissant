@@ -984,7 +984,7 @@ export type ClockUpdateEvent = { gameId: string; session: bigint; revision: bigi
  * Persistence result paired with a committed path identifier. `DurabilityUncertain` means the
  * replacement happened but syncing its parent directory failed; callers must not retry.
  */
-export type CommitDurability = "Durable" | { DurabilityUncertain: string }
+export type CommitDurability = "Durable" | { DurabilityUncertain: DurabilityStage }
 /**
  * Import progress for a PGN-to-database conversion. A conversion has no total
  * to divide by until it finishes, so this reports the counters the UI shows
@@ -1009,6 +1009,7 @@ export type DatabaseProgress = { id: string; progress: number }
 export type DatabaseRootHandle = { id: PathRef; kind: DatabaseRootHandleKind }
 export type DatabaseRootHandleKind = "databaseRoot"
 export type DrawReason = "stalemate" | "insufficientMaterial" | "threefoldRepetition" | "fiftyMoveRule" | "agreement"
+export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveFileReplacement" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "GzipFileReplacement" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "RegistryReplacement" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation"
 export type EngineConfig = { name: string; options: UciOptionConfig[] }
 /**
  * Opaque exact executable capability. It is distinct from its installation root.

@@ -420,7 +420,10 @@ fn outcome(result: crate::infra::fs::AtomicFileOutcome) -> Result<(), Error> {
     match result {
         crate::infra::fs::AtomicFileOutcome::DurableCommit => Ok(()),
         crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
-            Err(Error::CommittedDurabilityUncertain(error.to_string()))
+            log::warn!("PGN edit parent sync failed: {error}");
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::PgnEdit,
+            ))
         }
     }
 }

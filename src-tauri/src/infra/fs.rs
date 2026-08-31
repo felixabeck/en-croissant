@@ -102,7 +102,9 @@ mod unix {
     impl RemovalInjector for RemovalFault {
         fn inject(&self, point: RemovalFaultPoint) -> std::io::Result<Option<u64>> {
             if point == self.0 {
-                return Err(std::io::Error::other("injected removal failure"));
+                return Err(std::io::Error::other(
+                    r"/private/removal C:\private\removal: injected removal failure",
+                ));
             }
             Ok(None)
         }
@@ -219,10 +221,15 @@ mod unix {
         let unlink = fs::unlinkat(dir, temp, AtFlags::empty()).err();
         match injected.or_else(|| unlink.map(Into::into)) {
             None => primary,
-            Some(cleanup) => Error::OperationAndCleanup {
-                primary: primary.to_string(),
-                cleanup: cleanup.to_string(),
-            },
+            Some(cleanup) => {
+                log::error!(
+                    "atomic replacement failed: {primary}; temporary cleanup failed: {cleanup}"
+                );
+                Error::OperationAndCleanup {
+                    primary: primary.to_string(),
+                    cleanup: cleanup.to_string(),
+                }
+            }
         }
     }
 
@@ -682,7 +689,10 @@ mod unix {
             .inject(AtomicDirFaultPoint::ParentSync)
             .and_then(|_| parent_dir.sync_all())
         {
-            return Err(Error::CommittedDurabilityUncertain(error.to_string()));
+            log::warn!("directory installation parent sync failed: {error}");
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::DirectoryInstall,
+            ));
         }
         if let Some(original) = original.as_ref() {
             if let Err(error) = injector
@@ -700,14 +710,20 @@ mod unix {
                     .map_err(|e| std::io::Error::other(e.to_string()))
                 })
             {
-                return Err(Error::CommittedDurabilityUncertain(format!(
-                    "directory installed; old tree remains at {}: {error}",
+                log::error!(
+                    "directory installed but old tree cleanup at {} failed: {error}",
                     source.display()
-                )));
+                );
+                return Err(Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::OldDirectoryCleanup,
+                ));
             }
-            parent_dir
-                .sync_all()
-                .map_err(|e| Error::CommittedDurabilityUncertain(e.to_string()))?;
+            if let Err(error) = parent_dir.sync_all() {
+                log::warn!("old directory cleanup parent sync failed: {error}");
+                return Err(Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::OldDirectoryCleanupSync,
+                ));
+            }
         }
         Ok(())
     }
@@ -1019,11 +1035,17 @@ pub(crate) fn remove_entry_at(
     }
     #[cfg(test)]
     if let Err(error) = unix::inject_removal(unix::RemovalFaultPoint::ParentSync) {
-        return Err(Error::CommittedDurabilityUncertain(error.to_string()));
+        log::warn!("workspace removal parent sync failed: {error}");
+        return Err(Error::CommittedDurabilityUncertain(
+            crate::error::DurabilityStage::WorkspaceRemoval,
+        ));
     }
-    parent
-        .sync_all()
-        .map_err(|error| Error::CommittedDurabilityUncertain(error.to_string()))?;
+    if let Err(error) = parent.sync_all() {
+        log::warn!("workspace removal parent sync failed: {error}");
+        return Err(Error::CommittedDurabilityUncertain(
+            crate::error::DurabilityStage::WorkspaceRemoval,
+        ));
+    }
     Ok(())
 }
 
@@ -1587,6 +1609,11 @@ mod tests {
         )
         .expect_err("post-removal failure must be reported");
 
+        let serialized = serde_json::to_string(&error).expect("serialize partial removal");
+        assert!(!serialized.contains("/private/removal"));
+        assert!(!serialized.contains(r"C:\private\removal"));
+        assert!(!serialized.contains("injected removal failure"));
+
         assert!(matches!(
             error,
             Error::PartialRemoval {
@@ -1610,6 +1637,11 @@ mod tests {
             Box::new(unix::RemovalFault(unix::RemovalFaultPoint::ParentSync)),
         )
         .expect_err("parent sync failure must preserve commit status");
+
+        assert_eq!(
+            serde_json::to_string(&error).expect("serialize removal error"),
+            "\"Committed but durability uncertain: workspace removal\""
+        );
 
         assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
         assert!(!victim.exists(), "the tree was completely removed");
@@ -2004,9 +2036,16 @@ mod tests {
             parent: dir.path().to_path_buf(),
         };
         match atomic_replace_with_injector(&third, &real_cleanup_fault, |_| Ok(())) {
-            Err(Error::OperationAndCleanup { primary, cleanup }) => {
+            Err(error @ Error::OperationAndCleanup { .. }) => {
+                let Error::OperationAndCleanup { primary, cleanup } = &error else {
+                    unreachable!();
+                };
                 assert!(primary.contains("primary"));
                 assert!(!cleanup.is_empty());
+                assert_eq!(
+                    serde_json::to_string(&error).expect("serialize cleanup error"),
+                    "\"Operation failed; temporary cleanup also failed\""
+                );
             }
             other => panic!("expected structured cleanup error, got {other:?}"),
         }

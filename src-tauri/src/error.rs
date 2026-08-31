@@ -1,5 +1,92 @@
+use serde::Serialize;
 use shakmaty::Chess;
 use specta::Type;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
+pub enum DurabilityStage {
+    ArchiveCommitMarker,
+    ArchiveFileReplacement,
+    ArchiveReservationJournal,
+    DatabasePgnReplacement,
+    DirectoryInstall,
+    DownloadTargetReplacement,
+    GzipFileReplacement,
+    OldDirectoryCleanup,
+    OldDirectoryCleanupSync,
+    PgnEdit,
+    RegistryReplacement,
+    WorkspacePgnCreation,
+    WorkspaceRemoval,
+    WorkspaceSidecarCreation,
+}
+
+impl std::fmt::Display for DurabilityStage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::ArchiveCommitMarker => {
+                "artifact commit marker, which may have committed; do not retry"
+            }
+            Self::ArchiveFileReplacement => "archive file replacement",
+            Self::ArchiveReservationJournal => {
+                "artifact reservation journal, which may have committed; do not install or retry"
+            }
+            Self::DatabasePgnReplacement => "database PGN replacement",
+            Self::DirectoryInstall => "directory installation",
+            Self::DownloadTargetReplacement => "download target replacement",
+            Self::GzipFileReplacement => "gzip file replacement",
+            Self::OldDirectoryCleanup => "old directory cleanup",
+            Self::OldDirectoryCleanupSync => "old directory cleanup sync",
+            Self::PgnEdit => "PGN edit",
+            Self::RegistryReplacement => "registry replacement",
+            Self::WorkspacePgnCreation => "workspace PGN creation",
+            Self::WorkspaceRemoval => "workspace removal",
+            Self::WorkspaceSidecarCreation => "workspace sidecar creation",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ErrorCategory {
+    Authentication,
+    Cancellation,
+    Chess,
+    Conflict,
+    Credential,
+    Database,
+    Durability,
+    Input,
+    Io,
+    MissingResource,
+    Network,
+    OperationAndCleanup,
+    Parsing,
+    PartialRemoval,
+    Platform,
+    ResourceLimit,
+}
+
+impl std::fmt::Display for ErrorCategory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Authentication => "authentication failure",
+            Self::Cancellation => "cancellation",
+            Self::Chess => "chess data failure",
+            Self::Conflict => "conflict",
+            Self::Credential => "credential failure",
+            Self::Database => "database failure",
+            Self::Durability => "durability failure",
+            Self::Input => "invalid input",
+            Self::Io => "I/O failure",
+            Self::MissingResource => "missing resource",
+            Self::Network => "network failure",
+            Self::OperationAndCleanup => "operation and cleanup failure",
+            Self::Parsing => "parsing failure",
+            Self::PartialRemoval => "partial removal",
+            Self::Platform => "platform failure",
+            Self::ResourceLimit => "resource limit",
+        })
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -117,16 +204,65 @@ pub enum Error {
     Cancellation,
 
     #[error("Committed but durability uncertain: {0}")]
-    CommittedDurabilityUncertain(String),
+    CommittedDurabilityUncertain(DurabilityStage),
 
-    #[error("Partially removed: {removed_entries} entries were deleted before failing: {cause}")]
+    #[error(
+        "Partially removed: {removed_entries} entries were deleted before failing: {}",
+        .cause.category()
+    )]
     PartialRemoval {
         removed_entries: usize,
         cause: Box<Error>,
     },
 
-    #[error("Operation failed: {primary}; temporary cleanup also failed: {cleanup}")]
+    #[error("Operation failed; temporary cleanup also failed")]
     OperationAndCleanup { primary: String, cleanup: String },
+}
+
+impl Error {
+    fn category(&self) -> ErrorCategory {
+        match self {
+            Self::Io(_) => ErrorCategory::Io,
+            Self::Zip(_) | Self::ParseInt(_) | Self::Fen(_) | Self::ParseUciMove(_) => {
+                ErrorCategory::Parsing
+            }
+            Self::Tauri(_) | Self::TauriOpener(_) => ErrorCategory::Platform,
+            Self::Reqwest(_) => ErrorCategory::Network,
+            Self::ChessPosition(_)
+            | Self::IllegalUciMove(_)
+            | Self::ParseSan(_)
+            | Self::IllegalSan(_) => ErrorCategory::Chess,
+            Self::Diesel(_) | Self::R2d2(_) => ErrorCategory::Database,
+            Self::SystemTime(_) | Self::InvalidInput(_) | Self::InvalidColor(_) => {
+                ErrorCategory::Input
+            }
+            Self::NoStdin
+            | Self::NoStdout
+            | Self::NoMovesFound
+            | Self::MissingReferenceDatabase
+            | Self::NoOpeningFound
+            | Self::NoPuzzles
+            | Self::GameNotFound(_)
+            | Self::EngineNotInitialized
+            | Self::EngineDisconnected => ErrorCategory::MissingResource,
+            Self::NotDistinctPlayers
+            | Self::GameNotInProgress
+            | Self::NotHumanTurn
+            | Self::NotEngineTurn
+            | Self::EngineTimeout(_)
+            | Self::AnalysisCancelled
+            | Self::Conflict(_) => ErrorCategory::Conflict,
+            Self::ResourceLimit(_) => ErrorCategory::ResourceLimit,
+            Self::OAuthFailure(_) => ErrorCategory::Authentication,
+            Self::CredentialFailure(_) | Self::CredentialRecoveryRequired => {
+                ErrorCategory::Credential
+            }
+            Self::Cancellation => ErrorCategory::Cancellation,
+            Self::CommittedDurabilityUncertain(_) => ErrorCategory::Durability,
+            Self::PartialRemoval { .. } => ErrorCategory::PartialRemoval,
+            Self::OperationAndCleanup { .. } => ErrorCategory::OperationAndCleanup,
+        }
+    }
 }
 
 impl From<std::io::Error> for Error {
@@ -243,10 +379,76 @@ mod tests {
 
     #[test]
     fn test_committed_durability_uncertain_mapping() {
-        let err = Error::CommittedDurabilityUncertain("disk failure".into());
+        let err = Error::CommittedDurabilityUncertain(DurabilityStage::RegistryReplacement);
         assert_eq!(
             err.to_string(),
-            "Committed but durability uncertain: disk failure"
+            "Committed but durability uncertain: registry replacement"
+        );
+    }
+
+    #[test]
+    fn every_durability_label_serializes_without_native_diagnostics() {
+        let stages = [
+            DurabilityStage::ArchiveFileReplacement,
+            DurabilityStage::DatabasePgnReplacement,
+            DurabilityStage::DirectoryInstall,
+            DurabilityStage::DownloadTargetReplacement,
+            DurabilityStage::GzipFileReplacement,
+            DurabilityStage::OldDirectoryCleanup,
+            DurabilityStage::OldDirectoryCleanupSync,
+            DurabilityStage::PgnEdit,
+            DurabilityStage::RegistryReplacement,
+            DurabilityStage::WorkspacePgnCreation,
+            DurabilityStage::WorkspaceRemoval,
+            DurabilityStage::WorkspaceSidecarCreation,
+        ];
+        for stage in stages {
+            let serialized = serde_json::to_string(&Error::CommittedDurabilityUncertain(stage))
+                .expect("serialize durability error");
+            assert!(serialized.starts_with("\"Committed but durability uncertain: "));
+            assert!(!serialized.contains("/private/producer"));
+            assert!(!serialized.contains(r"C:\producer"));
+            assert!(!serialized.contains("raw operating system failure"));
+        }
+    }
+
+    #[test]
+    fn operation_and_cleanup_serialization_omits_both_diagnostics() {
+        let error = Error::OperationAndCleanup {
+            primary: "/private/producer: raw operating system failure".into(),
+            cleanup: r"C:\producer: access denied".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&error).expect("serialize cleanup error"),
+            "\"Operation failed; temporary cleanup also failed\""
+        );
+    }
+
+    #[test]
+    fn partial_removal_serialization_retains_only_the_typed_cause_category() {
+        let err = Error::PartialRemoval {
+            removed_entries: 2,
+            cause: Box::new(Error::from(std::io::Error::other(
+                "/private/root: raw operating system failure",
+            ))),
+        };
+        assert!(matches!(
+            err,
+            Error::PartialRemoval {
+                cause,
+                ..
+            } if matches!(*cause, Error::Io(_))
+        ));
+
+        let err = Error::PartialRemoval {
+            removed_entries: 2,
+            cause: Box::new(Error::from(std::io::Error::other(
+                "/private/root: raw operating system failure",
+            ))),
+        };
+        assert_eq!(
+            serde_json::to_string(&err).expect("serialize error"),
+            "\"Partially removed: 2 entries were deleted before failing: I/O failure\""
         );
     }
 }

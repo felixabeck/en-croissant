@@ -2012,7 +2012,10 @@ pub async fn export_to_pgn(
     })? {
         crate::infra::fs::AtomicFileOutcome::DurableCommit => Ok(()),
         crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
-            Err(Error::CommittedDurabilityUncertain(error.to_string()))
+            log::warn!("database PGN replacement parent sync failed: {error}");
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::DatabasePgnReplacement,
+            ))
         }
     }
 }

@@ -25,6 +25,22 @@ const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60 * 60);
 const ARTIFACT_MANIFEST_PUBLIC_KEY: &str =
     "RWSF3PMxhuaQf7613UytN4bdF7FQyBymLJVDIG3OE8xNa+0fcs6KE6/J";
 
+fn download_target_durability(
+    outcome: crate::infra::fs::AtomicFileOutcome,
+) -> Option<crate::infra::path_authority::CommitDurability> {
+    match outcome {
+        crate::infra::fs::AtomicFileOutcome::DurableCommit => None,
+        crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
+            log::warn!("download target replacement parent sync failed: {error}");
+            Some(
+                crate::infra::path_authority::CommitDurability::DurabilityUncertain(
+                    crate::error::DurabilityStage::DownloadTargetReplacement,
+                ),
+            )
+        }
+    }
+}
+
 /// A release-key signed artifact digest. The signature binds URL and hash.
 #[derive(Clone, Debug, Deserialize, Type)]
 pub struct ArtifactIntegrity {
@@ -521,7 +537,10 @@ where
                 })? {
                     crate::infra::fs::AtomicFileOutcome::DurableCommit => {}
                     crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(e) => {
-                        return Err(Error::CommittedDurabilityUncertain(e.to_string()));
+                        log::warn!("archive file replacement parent sync failed: {e}");
+                        return Err(Error::CommittedDurabilityUncertain(
+                            crate::error::DurabilityStage::ArchiveFileReplacement,
+                        ));
                     }
                 }
             }
@@ -762,13 +781,8 @@ pub(crate) async fn download_to_destination(
             .activate_download_artifact(reservation)
         {
             Ok(mut artifact) => {
-                if let crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(error) =
-                    target_durability
-                {
-                    artifact.durability =
-                        crate::infra::path_authority::CommitDurability::DurabilityUncertain(
-                            error.to_string(),
-                        );
+                if let Some(durability) = download_target_durability(target_durability) {
+                    artifact.durability = durability;
                 }
                 Some(artifact)
             }
@@ -859,11 +873,8 @@ pub(crate) async fn install_staged_pgn_artifact(
         target_durability.ctime_nanos,
     )?;
     let mut artifact = authority.activate_download_artifact(&reservation)?;
-    if let crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(error) =
-        target_durability.outcome
-    {
-        artifact.durability =
-            crate::infra::path_authority::CommitDurability::DurabilityUncertain(error.to_string());
+    if let Some(durability) = download_target_durability(target_durability.outcome) {
+        artifact.durability = durability;
     }
     Ok(artifact)
 }
@@ -1223,7 +1234,10 @@ fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) ->
     })? {
         crate::infra::fs::AtomicFileOutcome::DurableCommit => {}
         crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(e) => {
-            return Err(Error::CommittedDurabilityUncertain(e.to_string()));
+            log::warn!("gzip file replacement parent sync failed: {e}");
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::GzipFileReplacement,
+            ));
         }
     }
     Ok(())
@@ -1342,6 +1356,20 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[test]
+    fn download_durability_mapper_serializes_only_its_closed_label() {
+        let durability = download_target_durability(
+            crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(
+                std::io::Error::other(r"C:\private\download: access denied"),
+            ),
+        )
+        .expect("uncertain durability");
+        assert_eq!(
+            serde_json::to_string(&durability).expect("serialize durability"),
+            r#"{"DurabilityUncertain":"DownloadTargetReplacement"}"#
+        );
+    }
 
     #[test]
     fn download_registry_is_bounded_exact_and_cleans_up() {

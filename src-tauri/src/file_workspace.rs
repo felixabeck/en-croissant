@@ -151,11 +151,15 @@ fn sidecar_leaf(leaf: &std::ffi::OsStr) -> Result<std::ffi::OsString, Error> {
         .ok_or_else(|| Error::InvalidInput("PGN has no filename".into()))
 }
 
-fn durability_uncertainty(outcome: crate::infra::fs::AtomicFileOutcome) -> Option<String> {
+fn durability_uncertainty(
+    outcome: crate::infra::fs::AtomicFileOutcome,
+    stage: crate::error::DurabilityStage,
+) -> Option<crate::error::DurabilityStage> {
     match outcome {
         crate::infra::fs::AtomicFileOutcome::DurableCommit => None,
         crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
-            Some(error.to_string())
+            log::warn!("{stage} parent sync failed: {error}");
+            Some(stage)
         }
     }
 }
@@ -382,10 +386,13 @@ fn paired_rename(
         );
         return match rollback {
             Ok(()) => Err(error),
-            Err(rollback) => Err(Error::OperationAndCleanup {
-                primary: error.to_string(),
-                cleanup: rollback.to_string(),
-            }),
+            Err(rollback) => {
+                log::error!("paired rename failed: {error}; rollback failed: {rollback}");
+                Err(Error::OperationAndCleanup {
+                    primary: error.to_string(),
+                    cleanup: rollback.to_string(),
+                })
+            }
         };
     }
     Ok(())
@@ -434,29 +441,43 @@ pub async fn create_workspace_file(
             use std::io::Write;
             file.write_all(pgn.as_bytes()).map_err(Error::from)
         })?;
-    let pgn_uncertainty = durability_uncertainty(installed.outcome);
+    let pgn_uncertainty = durability_uncertainty(
+        installed.outcome,
+        crate::error::DurabilityStage::WorkspacePgnCreation,
+    );
     let info_leaf = sidecar_leaf(&target_leaf)?;
-    let sidecar_outcome =
-        match crate::infra::fs::atomic_replace_at(parent_dir, &info_leaf, |file| {
+    let sidecar_outcome = match crate::infra::fs::atomic_replace_at(
+        parent_dir,
+        &info_leaf,
+        |file| {
             use std::io::Write;
             file.write_all(
                 &serde_json::to_vec(&metadata).map_err(|e| Error::InvalidInput(e.to_string()))?,
             )
             .map_err(Error::from)
-        }) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                let rollback = crate::infra::fs::remove_regular_at(parent_dir, &target_leaf);
-                return match rollback {
-                    Ok(()) => Err(error),
-                    Err(rollback) => Err(Error::OperationAndCleanup {
+        },
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let rollback = crate::infra::fs::remove_regular_at(parent_dir, &target_leaf);
+            return match rollback {
+                Ok(()) => Err(error),
+                Err(rollback) => {
+                    log::error!(
+                            "workspace sidecar creation failed: {error}; PGN rollback failed: {rollback}"
+                        );
+                    Err(Error::OperationAndCleanup {
                         primary: error.to_string(),
                         cleanup: rollback.to_string(),
-                    }),
-                };
-            }
-        };
-    let sidecar_uncertainty = durability_uncertainty(sidecar_outcome);
+                    })
+                }
+            };
+        }
+    };
+    let sidecar_uncertainty = durability_uncertainty(
+        sidecar_outcome,
+        crate::error::DurabilityStage::WorkspaceSidecarCreation,
+    );
     let handle = register_created_entry(
         state.inner(),
         &workspace,
@@ -515,6 +536,9 @@ pub fn create_workspace_directory(
             match crate::infra::fs::remove_entry_at(parent_dir, &target_leaf, identity, true) {
                 Ok(()) => return Err(error),
                 Err(rollback) => {
+                    log::error!(
+                        "workspace directory registration failed: {error}; rollback failed: {rollback}"
+                    );
                     return Err(Error::OperationAndCleanup {
                         primary: error.to_string(),
                         cleanup: rollback.to_string(),
@@ -685,7 +709,7 @@ fn permanently_delete_entry(
         source.is_dir,
     ) {
         Ok(()) => None,
-        Err(Error::CommittedDurabilityUncertain(error)) => Some(error),
+        Err(Error::CommittedDurabilityUncertain(stage)) => Some(stage),
         Err(error) => return Err(error),
     };
     if !source.is_dir {
@@ -902,16 +926,20 @@ mod tests {
         fs::write(&pgn, "*").expect("PGN");
         assert!(timestamp(&pgn).unwrap() > 0);
         assert_eq!(
-            durability_uncertainty(crate::infra::fs::AtomicFileOutcome::DurableCommit),
+            durability_uncertainty(
+                crate::infra::fs::AtomicFileOutcome::DurableCommit,
+                crate::error::DurabilityStage::WorkspacePgnCreation,
+            ),
             None
         );
         assert_eq!(
             durability_uncertainty(
                 crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(
-                    std::io::Error::other("sync failed"),
-                )
+                    std::io::Error::other("/private/workspace: sync failed"),
+                ),
+                crate::error::DurabilityStage::WorkspaceSidecarCreation,
             ),
-            Some("sync failed".into())
+            Some(crate::error::DurabilityStage::WorkspaceSidecarCreation)
         );
     }
 }

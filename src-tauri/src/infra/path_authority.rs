@@ -552,7 +552,7 @@ pub struct PathDescriptor {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
 pub enum CommitDurability {
     Durable,
-    DurabilityUncertain(String),
+    DurabilityUncertain(crate::error::DurabilityStage),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
 pub struct PathCommit {
@@ -3083,10 +3083,12 @@ impl PathAuthority {
         )?;
         match durability {
             CommitDurability::Durable => self.pending_artifacts = next_pending,
-            CommitDurability::DurabilityUncertain(error) => {
-                return Err(Error::CommittedDurabilityUncertain(format!(
-                    "artifact reservation journal may have committed; do not install or retry: {error}"
-                )));
+            CommitDurability::DurabilityUncertain(_) => {
+                // The stage the commit reports is the registry write; what the caller must not do
+                // is act on the reservation, so name that instead.
+                return Err(Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::ArchiveReservationJournal,
+                ));
             }
         }
         Ok(PendingArtifactReservation {
@@ -3241,11 +3243,9 @@ impl PathAuthority {
                 self.pending_artifacts = next;
                 Ok(())
             }
-            CommitDurability::DurabilityUncertain(error) => {
-                Err(Error::CommittedDurabilityUncertain(format!(
-                    "artifact commit marker may have committed; do not retry: {error}"
-                )))
-            }
+            CommitDurability::DurabilityUncertain(_) => Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::ArchiveCommitMarker,
+            )),
         }
     }
 
@@ -3556,7 +3556,10 @@ impl PathAuthority {
         )? {
             AtomicFileOutcome::DurableCommit => Ok(CommitDurability::Durable),
             AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
-                Ok(CommitDurability::DurabilityUncertain(error.to_string()))
+                log::warn!("path authority registry replacement parent sync failed: {error}");
+                Ok(CommitDurability::DurabilityUncertain(
+                    crate::error::DurabilityStage::RegistryReplacement,
+                ))
             }
         }
     }
@@ -4804,16 +4807,21 @@ mod tests {
         impl AtomicWriterInjector for Uncertain {
             fn inject(&self, p: AtomicFileFaultPoint) -> std::io::Result<()> {
                 if p == AtomicFileFaultPoint::ParentSync {
-                    Err(std::io::Error::other("durability"))
+                    Err(std::io::Error::other(
+                        "/private/registry: raw operating system failure",
+                    ))
                 } else {
                     Ok(())
                 }
             }
         }
-        assert!(matches!(
-            a.save_with_injector(&Uncertain),
-            Ok(CommitDurability::DurabilityUncertain(_))
-        ));
+        let durability = a
+            .save_with_injector(&Uncertain)
+            .expect("uncertain registry commit");
+        assert_eq!(
+            serde_json::to_string(&durability).expect("serialize durability"),
+            r#"{"DurabilityUncertain":"RegistryReplacement"}"#
+        );
     }
     #[test]
     fn persisted_transient_or_invalid_entries_are_rejected() {

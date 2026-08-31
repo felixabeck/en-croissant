@@ -200,7 +200,8 @@ impl RegistryPersistence for AtomicRegistryPersistence {
             AtomicFileOutcome::DurableCommit => Ok(RegistryCommit::Durable),
             // The rename happened.  Keeping the new in-memory state is the only truthful action;
             // compensating can destroy the only committed copy after a parent-fsync failure.
-            AtomicFileOutcome::CommittedDurabilityUncertain(_) => {
+            AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
+                log::warn!("credential registry replacement parent sync failed: {error}");
                 Ok(RegistryCommit::CommittedDurabilityUncertain)
             }
         }
