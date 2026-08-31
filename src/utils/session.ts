@@ -144,7 +144,7 @@ export async function initializePersistedSessions(): Promise<void> {
         migrations.map(async ({ username, token }) => {
             try {
                 const result = await tauri.migrateLegacyLichessToken(username, token);
-                return result;
+                return result.account;
             } catch {
                 return null;
             }

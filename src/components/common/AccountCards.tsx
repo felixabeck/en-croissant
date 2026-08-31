@@ -1,4 +1,5 @@
 import { tauri } from "@/platform/tauri";
+import { notifications } from "@mantine/notifications";
 import { Divider, Group, ScrollArea, Stack, Text, TextInput } from "@mantine/core";
 import { IconCheck, IconEdit, IconX } from "@tabler/icons-react";
 import { useAtom, useAtomValue } from "jotai";
@@ -182,6 +183,7 @@ function LichessOrChessCom({
   setDatabases: React.Dispatch<React.SetStateAction<ManagedDatabaseInfo[]>>;
   setSessions: React.Dispatch<React.SetStateAction<Session[]>>;
 }) {
+  const { t } = useTranslation();
   if (session.lichess?.account) {
     const account = session.lichess.account;
     const lichessSession = session.lichess;
@@ -222,9 +224,16 @@ function LichessOrChessCom({
         logout={async () => {
           if (lichessSession.handle) {
             const removal = await tauri.removeLichessAccount(lichessSession.handle);
-            // Do not claim a logout that the native credential manager could not commit.  A
-            // `removed_revocation_pending` result is still locally logged out truthfully.
-            if (removal === "not_found") return;
+            if (removal.state === "not_found") return;
+            if (removal.durability_uncertain) {
+              notifications.show({
+                message: t("Home.Accounts.RemoveDurabilityUncertain", {
+                  defaultValue:
+                    "The account was removed, but the save could not be fully confirmed. Do not retry.",
+                }),
+                color: "orange",
+              });
+            }
           }
           setSessions((sessions) => sessions.filter((s) => s.lichess?.account.id !== account.id));
         }}

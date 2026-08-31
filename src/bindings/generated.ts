@@ -660,7 +660,7 @@ async removeLichessAccount(handle: LichessAccountHandle) : Promise<Result<Liches
  * One-way bridge for pre-credential-store renderer records. The caller must erase the supplied
  * legacy token from Web Storage after this succeeds; this command never returns it.
  */
-async migrateLegacyLichessToken(username: string, token: string) : Promise<Result<LichessAccountMetadata, string>> {
+async migrateLegacyLichessToken(username: string, token: string) : Promise<Result<LichessAccountStoreResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("migrate_legacy_lichess_token", { username, token }) };
 } catch (e) {
@@ -976,7 +976,7 @@ export type ArtifactIntegrity = { sha256: string; signature: string }
  */
 export type ArtifactPublication = { handle: FileWorkspaceHandle; durability: CommitDurability }
 export type AuthenticationJob = string
-export type AuthenticationStatus = { state: "pending" } | { state: "succeeded"; account: LichessAccountMetadata } | { state: "failed" }
+export type AuthenticationStatus = { state: "pending" } | { state: "succeeded"; account: LichessAccountMetadata; durability_uncertain?: boolean } | { state: "failed" }
 export type BestMoves = { nodes: bigint; depth: number; score: Score; uciMoves: string[]; sanMoves: string[]; multipv: number; nps: bigint }
 export type BestMovesPayload = { bestLines: BestMoves[]; engine: string; tab: string; fen: string; moves: string[]; progress: number }
 export type ClockUpdateEvent = { gameId: string; session: bigint; revision: bigint; whiteTime: bigint | null; blackTime: bigint | null }
@@ -1070,7 +1070,8 @@ export type GameStatus = "playing" | { finished: { result: GameResult } }
 export type GoMode = { t: "PlayersTime"; c: PlayersTime } | { t: "Depth"; c: number } | { t: "Time"; c: number } | { t: "Nodes"; c: number } | { t: "Infinite" }
 export type LichessAccountHandle = string
 export type LichessAccountMetadata = { handle: LichessAccountHandle; username: string }
-export type LichessAccountRemoval = "not_found" | "removed" | "removed_revocation_pending"
+export type LichessAccountRemoval = { state: "not_found" } | { state: "removed"; revocation_pending: boolean; durability_uncertain: boolean }
+export type LichessAccountStoreResult = { account: LichessAccountMetadata; durability_uncertain: boolean }
 export type LichessExplorerEndpoint = "lichess" | "masters" | "player"
 export type MoveAnalysis = { best: BestMoves[]; novelty: boolean; is_sacrifice: boolean }
 export type NormalizedGame = { id: number; fen: string; event: string; event_id: number; site: string; site_id: number; date?: string | null; time?: string | null; round?: string | null; white: string; white_id: number; white_elo?: number | null; black: string; black_id: number; black_elo?: number | null; result: Outcome; time_control?: string | null; eco?: string | null; ply_count?: number | null; moves: string }

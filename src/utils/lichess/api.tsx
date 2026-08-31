@@ -90,10 +90,10 @@ export type LichessAccount = {
       score: number;
     };
   };
-  createdAt: number;
-  disabled: boolean;
-  tosViolation: boolean;
-  profile: {
+  createdAt?: number;
+  disabled?: boolean;
+  tosViolation?: boolean;
+  profile?: {
     country: string;
     location: string;
     bio: string;
@@ -104,18 +104,18 @@ export type LichessAccount = {
     ecfRating: number;
     links: string;
   };
-  seenAt: number;
-  patron: boolean;
-  verified: boolean;
-  playTime: {
+  seenAt?: number;
+  patron?: boolean;
+  verified?: boolean;
+  playTime?: {
     total: number;
     tv: number;
   };
-  title: string;
-  url: string;
-  playing: string;
-  completionRate: number;
-  count: {
+  title?: string;
+  url?: string;
+  playing?: string;
+  completionRate?: number;
+  count?: {
     all: number;
     rated: number;
     ai: number;
@@ -130,11 +130,11 @@ export type LichessAccount = {
     import: number;
     me: number;
   };
-  streaming: boolean;
-  followable: boolean;
-  following: boolean;
-  blocking: boolean;
-  followsYou: boolean;
+  streaming?: boolean;
+  followable?: boolean;
+  following?: boolean;
+  blocking?: boolean;
+  followsYou?: boolean;
 };
 
 const lichessAccountSchema = z

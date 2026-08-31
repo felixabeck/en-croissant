@@ -168,7 +168,7 @@ beforeEach(async () => {
   mocks.getDatabases.mockResolvedValue([]);
   mocks.getLichessAccount.mockResolvedValue({ username: "player" });
   mocks.getChessComAccount.mockResolvedValue({});
-  mocks.authenticateLichess.mockResolvedValue(false);
+  mocks.authenticateLichess.mockResolvedValue({ ok: false });
   mocks.migrateLegacyLichessToken.mockResolvedValue({ status: "ok", data: { handle: "handle" } });
   vi.resetModules();
   Accounts = (await import("./Accounts")).default;
@@ -187,6 +187,24 @@ afterEach(async () => {
 });
 
 describe("account authentication", () => {
+  test("closes on success with a durability warning and hides native text", async () => {
+    mocks.authenticateLichess.mockResolvedValue({ ok: true, durabilityUncertain: true });
+
+    openModal();
+    chooseBrowserLogin();
+    await submit();
+
+    expect(document.querySelector("[role='dialog']")).toBeNull();
+    expect(mocks.notificationsShow).toHaveBeenCalledWith({
+      message: "Home.Accounts.LinkDurabilityUncertain",
+      color: "orange",
+    });
+    expect(JSON.stringify(mocks.notificationsShow.mock.calls)).not.toContain(
+      "Home.Accounts.AuthenticationFailed",
+    );
+    expect(JSON.stringify(mocks.notificationsShow.mock.calls)).not.toContain("native");
+  });
+
   test("keeps the modal open and hides native authentication errors", async () => {
     const backendError = "backend error containing token=private-token";
     mocks.authenticateLichess.mockRejectedValue(new Error(backendError));
@@ -222,7 +240,7 @@ describe("account authentication", () => {
   });
 
   test("locks duplicate submits while authentication is pending", async () => {
-    let resolveAuthentication: ((result: boolean) => void) | undefined;
+    let resolveAuthentication: ((result: { ok: false }) => void) | undefined;
     mocks.authenticateLichess.mockImplementation(
       () =>
         new Promise((resolve) => {
@@ -242,7 +260,7 @@ describe("account authentication", () => {
     expect(mocks.authenticateLichess).toHaveBeenCalledTimes(1);
     expect(document.querySelector<HTMLButtonElement>("button[type='submit']")?.disabled).toBe(true);
 
-    await act(async () => resolveAuthentication?.(false));
+    await act(async () => resolveAuthentication?.({ ok: false }));
     await act(async () => root.unmount());
   });
 });

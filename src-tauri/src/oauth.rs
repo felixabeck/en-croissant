@@ -26,7 +26,7 @@ use tokio::{
 };
 
 use crate::{
-    credentials::{LichessAccountHandle, LichessAccountMetadata},
+    credentials::{LichessAccountHandle, LichessAccountMetadata, LichessAccountStoreResult},
     error::Error,
     AppState,
 };
@@ -263,16 +263,22 @@ pub struct AuthenticationJob {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum AuthenticationStatus {
     Pending,
-    Succeeded { account: LichessAccountMetadata },
+    Succeeded {
+        account: LichessAccountMetadata,
+        #[serde(default)]
+        durability_uncertain: bool,
+    },
     Failed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum LichessAccountRemoval {
     NotFound,
-    Removed,
-    RemovedRevocationPending,
+    Removed {
+        revocation_pending: bool,
+        durability_uncertain: bool,
+    },
 }
 
 pub struct ListenerHandle {
@@ -471,7 +477,7 @@ pub async fn authenticate(
             )
             .await
             {
-                Ok(account) => AuthenticationStatus::Succeeded { account },
+                Ok(status) => status,
                 Err(source) => {
                     error!("OAuth native credential persistence failed: {source}");
                     AuthenticationStatus::Failed
@@ -488,13 +494,19 @@ async fn persist_stashed_lichess_token(
     username: String,
     credentials: Arc<crate::credentials::CredentialManager>,
     stashed_token: Arc<std::sync::Mutex<Option<String>>>,
-) -> Result<LichessAccountMetadata, Error> {
+) -> Result<AuthenticationStatus, Error> {
     let token = stashed_token
         .lock()
         .map_err(|_| Error::Conflict("OAuth token stash was unavailable".into()))?
         .take()
         .ok_or_else(|| Error::OAuthFailure(OAUTH_FAILURE.into()))?;
-    credentials.store_lichess_token_async(username, token).await
+    let result = credentials
+        .store_lichess_token_async(username, token)
+        .await?;
+    Ok(AuthenticationStatus::Succeeded {
+        account: result.account,
+        durability_uncertain: result.durability_uncertain,
+    })
 }
 
 #[tauri::command]
@@ -529,15 +541,17 @@ async fn remove_lichess_account_internal<S: OAuthServices>(
     credentials: Arc<crate::credentials::CredentialManager>,
     services: &S,
 ) -> Result<LichessAccountRemoval, Error> {
-    let Some(token) = credentials.remove_async(handle).await? else {
+    let Some(removal) = credentials.remove_async(handle).await? else {
         return Ok(LichessAccountRemoval::NotFound);
     };
     // The local removal is already durable. A provider outage is represented honestly without
     // rolling local access back into existence.
-    Ok(if services.revoke_token(&token).await.is_ok() {
-        LichessAccountRemoval::Removed
-    } else {
-        LichessAccountRemoval::RemovedRevocationPending
+    Ok(LichessAccountRemoval::Removed {
+        revocation_pending: match removal.token {
+            Some(token) => services.revoke_token(&token).await.is_err(),
+            None => false,
+        },
+        durability_uncertain: removal.durability_uncertain,
     })
 }
 
@@ -549,7 +563,7 @@ pub async fn migrate_legacy_lichess_token(
     username: String,
     token: String,
     state: tauri::State<'_, AppState>,
-) -> Result<LichessAccountMetadata, Error> {
+) -> Result<LichessAccountStoreResult, Error> {
     migrate_legacy_token_internal(
         username,
         token,
@@ -564,7 +578,7 @@ async fn migrate_legacy_token_internal<S: OAuthServices>(
     token: String,
     credentials: Arc<crate::credentials::CredentialManager>,
     services: &S,
-) -> Result<LichessAccountMetadata, Error> {
+) -> Result<LichessAccountStoreResult, Error> {
     let verified_username = services.verify_identity(&token).await?;
     if !verified_username.eq_ignore_ascii_case(username.trim()) {
         return Err(Error::OAuthFailure(OAUTH_FAILURE.into()));
@@ -1199,7 +1213,7 @@ mod tests {
             crate::credentials::MemoryCredentialStore::default(),
         )));
         credentials.initialize(temp.path()).unwrap();
-        let account = migrate_legacy_token_internal(
+        let result = migrate_legacy_token_internal(
             "user".into(),
             "legacy-token".into(),
             credentials.clone(),
@@ -1207,8 +1221,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(account.username, "user");
-        assert_eq!(credentials.list(), vec![account]);
+        assert_eq!(result.account.username, "user");
+        assert!(!result.durability_uncertain);
+        assert_eq!(credentials.list(), vec![result.account]);
         assert!(
             !std::fs::read_to_string(temp.path().join("lichess-accounts.json"))
                 .unwrap()
@@ -1223,11 +1238,45 @@ mod tests {
         )));
         let stash = Arc::new(std::sync::Mutex::new(Some("token".into())));
 
-        let account = persist_stashed_lichess_token("user".into(), credentials.clone(), stash)
+        let status = persist_stashed_lichess_token("user".into(), credentials.clone(), stash)
             .await
             .unwrap();
 
+        let AuthenticationStatus::Succeeded {
+            account,
+            durability_uncertain,
+        } = status
+        else {
+            panic!("successful persistence must produce a successful status");
+        };
         assert_eq!(account.username, "user");
+        assert!(!durability_uncertain);
+        assert_eq!(credentials.list(), vec![account]);
+    }
+
+    #[tokio::test]
+    async fn persist_stashed_token_maps_uncertain_durability_to_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let credentials = Arc::new(
+            crate::credentials::CredentialManager::with_uncertain_persistence(Arc::new(
+                crate::credentials::MemoryCredentialStore::default(),
+            )),
+        );
+        credentials.initialize(temp.path()).unwrap();
+        let stash = Arc::new(std::sync::Mutex::new(Some("token".into())));
+
+        let status = persist_stashed_lichess_token("user".into(), credentials.clone(), stash)
+            .await
+            .unwrap();
+
+        let AuthenticationStatus::Succeeded {
+            account,
+            durability_uncertain,
+        } = status
+        else {
+            panic!("uncertain persistence must remain successful");
+        };
+        assert!(durability_uncertain);
         assert_eq!(credentials.list(), vec![account]);
     }
 
@@ -1272,14 +1321,46 @@ mod tests {
         credentials.initialize(temp.path()).unwrap();
         let account = credentials
             .store_lichess_token("user".into(), "token".into())
-            .unwrap();
+            .unwrap()
+            .account;
         let mut services = MockServices::new();
         services.revoke_error = true;
         assert_eq!(
             remove_lichess_account_internal(account.handle, credentials.clone(), &services)
                 .await
                 .unwrap(),
-            LichessAccountRemoval::RemovedRevocationPending
+            LichessAccountRemoval::Removed {
+                revocation_pending: true,
+                durability_uncertain: false,
+            }
+        );
+        assert!(credentials.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn uncertain_removal_and_revocation_failure_report_both_flags() {
+        let temp = tempfile::tempdir().unwrap();
+        let credentials = Arc::new(
+            crate::credentials::CredentialManager::with_uncertain_persistence(Arc::new(
+                crate::credentials::MemoryCredentialStore::default(),
+            )),
+        );
+        credentials.initialize(temp.path()).unwrap();
+        let account = credentials
+            .store_lichess_token("user".into(), "token".into())
+            .unwrap()
+            .account;
+        let mut services = MockServices::new();
+        services.revoke_error = true;
+
+        assert_eq!(
+            remove_lichess_account_internal(account.handle, credentials.clone(), &services)
+                .await
+                .unwrap(),
+            LichessAccountRemoval::Removed {
+                revocation_pending: true,
+                durability_uncertain: true,
+            }
         );
         assert!(credentials.list().is_empty());
     }

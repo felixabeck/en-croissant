@@ -22,6 +22,33 @@ beforeEach(() => {
 });
 
 describe("initializePersistedSessions", () => {
+    test("reconciles the opaque handle returned by a successful migration", async () => {
+        localStorage.setItem(
+            "sessions",
+            JSON.stringify([
+                {
+                    player: "player",
+                    updatedAt: 1,
+                    lichess: {
+                        username: "player",
+                        account: { id: "player", username: "player" },
+                        accessToken: "legacy-token",
+                    },
+                },
+            ]),
+        );
+        mocks.migrateLegacyLichessToken.mockResolvedValue({
+            account: { username: "player", handle: "migrated-handle" },
+            durability_uncertain: false,
+        });
+        const { initializePersistedSessions } = await import("./session");
+
+        await initializePersistedSessions();
+
+        const sessions = JSON.parse(localStorage.getItem("sessions")!);
+        expect(sessions[0].lichess.handle).toBe("migrated-handle");
+    });
+
     test("removes credential storage when the sanitized overwrite fails", async () => {
         localStorage.setItem(
             "sessions",

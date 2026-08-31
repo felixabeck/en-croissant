@@ -52,6 +52,18 @@ pub struct LichessAccountMetadata {
     pub username: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct LichessAccountStoreResult {
+    pub account: LichessAccountMetadata,
+    pub durability_uncertain: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RemovedLichessCredential {
+    pub token: Option<String>,
+    pub durability_uncertain: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "state", content = "account", rename_all = "snake_case")]
 enum AccountRecord {
@@ -210,6 +222,17 @@ impl RegistryPersistence for AtomicRegistryPersistence {
     }
 }
 
+#[cfg(test)]
+struct UncertainRegistryPersistence;
+
+#[cfg(test)]
+impl RegistryPersistence for UncertainRegistryPersistence {
+    fn write(&self, path: &Path, bytes: &[u8]) -> Result<RegistryCommit, Error> {
+        AtomicRegistryPersistence.write(path, bytes)?;
+        Ok(RegistryCommit::CommittedDurabilityUncertain)
+    }
+}
+
 /// One mutex covers the public journal and all credential-store mutations.  It prevents this
 /// process from exposing an account before a durable intent exists or interleaving compensations.
 pub struct CredentialManager {
@@ -242,6 +265,11 @@ impl CredentialManager {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_uncertain_persistence(store: Arc<dyn CredentialStore>) -> Self {
+        Self::with_persistence(store, Arc::new(UncertainRegistryPersistence))
+    }
+
     pub fn initialize(&self, app_data: &Path) -> Result<(), Error> {
         fs::create_dir_all(app_data)
             .map_err(|source| Error::CredentialFailure(source.to_string()))?;
@@ -263,7 +291,10 @@ impl CredentialManager {
             .registry
             .lock()
             .expect("credential registry mutex poisoned");
-        self.persist_locked(&registry)?;
+        log_uncertain_commit(
+            self.persist_locked(&registry)?,
+            "credential registry initialization",
+        );
         drop(registry);
         #[cfg(unix)]
         secure_registry_file(&path)?;
@@ -304,7 +335,7 @@ impl CredentialManager {
         &self,
         username: String,
         token: String,
-    ) -> Result<LichessAccountMetadata, Error> {
+    ) -> Result<LichessAccountStoreResult, Error> {
         let mut registry = self
             .registry
             .lock()
@@ -324,7 +355,10 @@ impl CredentialManager {
             self.store
                 .set(&existing.handle.key(), &token)
                 .map_err(|_| Error::CredentialRecoveryRequired)?;
-            return Ok(existing);
+            return Ok(LichessAccountStoreResult {
+                account: existing,
+                durability_uncertain: false,
+            });
         }
         let metadata = LichessAccountMetadata {
             handle: LichessAccountHandle::new(),
@@ -334,7 +368,10 @@ impl CredentialManager {
             metadata.handle.0.clone(),
             AccountRecord::PendingAdd(metadata.clone()),
         );
-        self.persist_locked(&registry)?;
+        let mut durability_uncertain = matches!(
+            self.persist_locked(&registry)?,
+            RegistryCommit::CommittedDurabilityUncertain
+        );
         if self.store.set(&metadata.handle.key(), &token).is_err() {
             // A credential manager may write the secret and still fail while committing its own
             // metadata. The already-durable intent must remain: startup can inspect the keyring
@@ -346,21 +383,30 @@ impl CredentialManager {
             metadata.handle.0.clone(),
             AccountRecord::Active(metadata.clone()),
         );
-        if let Err(error) = self.persist_locked(&registry) {
-            registry.accounts.insert(
-                metadata.handle.0.clone(),
-                AccountRecord::PendingAdd(metadata.clone()),
-            );
-            return Err(error);
+        match self.persist_locked(&registry) {
+            Ok(RegistryCommit::Durable) => {}
+            Ok(RegistryCommit::CommittedDurabilityUncertain) => {
+                durability_uncertain = true;
+            }
+            Err(error) => {
+                registry.accounts.insert(
+                    metadata.handle.0.clone(),
+                    AccountRecord::PendingAdd(metadata.clone()),
+                );
+                return Err(error);
+            }
         }
-        Ok(metadata)
+        Ok(LichessAccountStoreResult {
+            account: metadata,
+            durability_uncertain,
+        })
     }
 
     pub(crate) async fn store_lichess_token_async(
         self: &Arc<Self>,
         username: String,
         token: String,
-    ) -> Result<LichessAccountMetadata, Error> {
+    ) -> Result<LichessAccountStoreResult, Error> {
         let manager = self.clone();
         BLOCKING_GATEWAY
             .spawn_cancellable(CancellationToken::new(), move |_| {
@@ -371,7 +417,10 @@ impl CredentialManager {
 
     /// Removes local access first. Provider revocation is deliberately a separate best-effort
     /// network concern; its failure cannot make the local deletion result untrue.
-    pub fn remove(&self, handle: &LichessAccountHandle) -> Result<Option<String>, Error> {
+    pub(crate) fn remove(
+        &self,
+        handle: &LichessAccountHandle,
+    ) -> Result<Option<RemovedLichessCredential>, Error> {
         if !handle.valid() {
             return Ok(None);
         }
@@ -387,23 +436,35 @@ impl CredentialManager {
             handle.0.clone(),
             AccountRecord::PendingDelete(metadata.clone()),
         );
-        self.persist_locked(&registry)?;
+        let mut durability_uncertain = matches!(
+            self.persist_locked(&registry)?,
+            RegistryCommit::CommittedDurabilityUncertain
+        );
         let token = self.token(&metadata.handle)?;
         self.store.delete(&metadata.handle.key())?;
         registry.accounts.remove(&handle.0);
-        if let Err(error) = self.persist_locked(&registry) {
-            registry
-                .accounts
-                .insert(handle.0.clone(), AccountRecord::PendingDelete(metadata));
-            return Err(error);
+        match self.persist_locked(&registry) {
+            Ok(RegistryCommit::Durable) => {}
+            Ok(RegistryCommit::CommittedDurabilityUncertain) => {
+                durability_uncertain = true;
+            }
+            Err(error) => {
+                registry
+                    .accounts
+                    .insert(handle.0.clone(), AccountRecord::PendingDelete(metadata));
+                return Err(error);
+            }
         }
-        Ok(token)
+        Ok(Some(RemovedLichessCredential {
+            token,
+            durability_uncertain,
+        }))
     }
 
     pub async fn remove_async(
         self: &Arc<Self>,
         handle: LichessAccountHandle,
-    ) -> Result<Option<String>, Error> {
+    ) -> Result<Option<RemovedLichessCredential>, Error> {
         let manager = self.clone();
         BLOCKING_GATEWAY
             .spawn_cancellable(CancellationToken::new(), move |_| manager.remove(&handle))
@@ -426,7 +487,10 @@ impl CredentialManager {
                 AccountRecord::Active(_) => {
                     if self.store.get(&metadata.handle.key())?.is_none() {
                         registry.accounts.remove(&handle);
-                        self.persist_locked(&registry)?;
+                        log_uncertain_commit(
+                            self.persist_locked(&registry)?,
+                            "credential registry active-account reconciliation",
+                        );
                     }
                 }
                 AccountRecord::PendingAdd(_) => {
@@ -437,12 +501,18 @@ impl CredentialManager {
                     } else {
                         registry.accounts.remove(&handle);
                     }
-                    self.persist_locked(&registry)?;
+                    log_uncertain_commit(
+                        self.persist_locked(&registry)?,
+                        "credential registry pending-add reconciliation",
+                    );
                 }
                 AccountRecord::PendingDelete(_) => {
                     self.store.delete(&metadata.handle.key())?;
                     registry.accounts.remove(&handle);
-                    self.persist_locked(&registry)?;
+                    log_uncertain_commit(
+                        self.persist_locked(&registry)?,
+                        "credential registry pending-delete reconciliation",
+                    );
                 }
             }
         }
@@ -535,6 +605,12 @@ impl CredentialManager {
         self.persistence
             .write(&path, &bytes)
             .map_err(|_| Error::CredentialFailure("credential registry update failed".into()))
+    }
+}
+
+fn log_uncertain_commit(commit: RegistryCommit, operation: &str) {
+    if commit == RegistryCommit::CommittedDurabilityUncertain {
+        log::warn!("{operation} committed, but durability could not be confirmed");
     }
 }
 
@@ -659,23 +735,16 @@ mod tests {
         }
     }
 
-    struct UncertainPersistence;
-    impl RegistryPersistence for UncertainPersistence {
-        fn write(&self, path: &Path, bytes: &[u8]) -> Result<RegistryCommit, Error> {
-            AtomicRegistryPersistence.write(path, bytes)?;
-            Ok(RegistryCommit::CommittedDurabilityUncertain)
-        }
-    }
-
     #[test]
     fn public_registry_survives_restart_without_secret() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
         let manager = CredentialManager::new(store.clone());
         manager.initialize(temp.path()).unwrap();
-        let account = manager
+        let result = manager
             .store_lichess_token("Felix".into(), "not-in-registry".into())
             .unwrap();
+        let account = result.account;
         let content = fs::read_to_string(temp.path().join(REGISTRY_FILE)).unwrap();
         assert!(!content.contains("not-in-registry"));
         let after_restart = CredentialManager::new(store);
@@ -728,7 +797,8 @@ mod tests {
         manager.initialize(temp.path()).unwrap();
         let account = manager
             .store_lichess_token("a".into(), "secret".into())
-            .unwrap();
+            .unwrap()
+            .account;
         {
             let mut registry = manager.registry.lock().unwrap();
             registry.accounts.insert(
@@ -768,12 +838,31 @@ mod tests {
     fn durability_uncertain_after_rename_retains_committed_state() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
-        let manager = CredentialManager::with_persistence(store, Arc::new(UncertainPersistence));
+        let manager = CredentialManager::with_uncertain_persistence(store);
+        manager.initialize(temp.path()).unwrap();
+        let result = manager
+            .store_lichess_token("a".into(), "secret".into())
+            .unwrap();
+        assert!(result.durability_uncertain);
+        assert_eq!(manager.list(), vec![result.account]);
+    }
+
+    #[test]
+    fn durability_uncertain_removal_retains_the_committed_removal() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(MemoryCredentialStore::default());
+        let manager = CredentialManager::with_uncertain_persistence(store);
         manager.initialize(temp.path()).unwrap();
         let account = manager
             .store_lichess_token("a".into(), "secret".into())
-            .unwrap();
-        assert_eq!(manager.list(), vec![account]);
+            .unwrap()
+            .account;
+
+        let removal = manager.remove(&account.handle).unwrap().unwrap();
+
+        assert!(removal.durability_uncertain);
+        assert_eq!(removal.token.as_deref(), Some("secret"));
+        assert!(manager.list().is_empty());
     }
 
     #[test]
@@ -784,11 +873,13 @@ mod tests {
         manager.initialize(temp.path()).unwrap();
         let first = manager
             .store_lichess_token("Felix".into(), "first-token".into())
-            .unwrap();
+            .unwrap()
+            .account;
         let second = manager
             .store_lichess_token("felix".into(), "replacement-token".into())
             .unwrap();
-        assert_eq!(first, second);
+        assert!(!second.durability_uncertain);
+        assert_eq!(first, second.account);
         assert_eq!(manager.list(), vec![first.clone()]);
         assert_eq!(
             store.get(&first.handle.key()).unwrap().as_deref(),
@@ -867,10 +958,15 @@ mod tests {
         let account = manager
             .store_lichess_token_async("user".into(), "secret".into())
             .await
-            .unwrap();
+            .unwrap()
+            .account;
         assert_eq!(
-            manager.remove_async(account.handle).await.unwrap(),
-            Some("secret".into())
+            manager
+                .remove_async(account.handle)
+                .await
+                .unwrap()
+                .and_then(|removal| removal.token),
+            Some("secret".into()),
         );
 
         let observed = store.threads.lock().unwrap();

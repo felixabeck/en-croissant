@@ -75,6 +75,16 @@ function Accounts() {
     });
   }, [t]);
 
+  const showLinkDurabilityUncertain = useCallback(() => {
+    notifications.show({
+      message: t("Home.Accounts.LinkDurabilityUncertain", {
+        defaultValue:
+          "The account is linked, but the save could not be fully confirmed. Do not retry.",
+      }),
+      color: "orange",
+    });
+  }, [t]);
+
   const addChessCom = useCallback(
     async (player: string, username: string): Promise<boolean> => {
       const p = player !== "" ? player : username;
@@ -109,7 +119,13 @@ function Accounts() {
     async (player: string, username: string, withLogin: boolean): Promise<boolean> => {
       if (withLogin) {
         try {
-          return await authenticateLichess(player, username);
+          const result = await authenticateLichess(player, username);
+          if (!result.ok) {
+            showAuthenticationFailed();
+            return false;
+          }
+          if (result.durabilityUncertain) showLinkDurabilityUncertain();
+          return true;
         } catch {
           // Native errors are intentionally not exposed in the interface.
         }
@@ -118,7 +134,7 @@ function Accounts() {
       }
       return addLichessNoLogin(player, username);
     },
-    [addLichessNoLogin, showAuthenticationFailed],
+    [addLichessNoLogin, showAuthenticationFailed, showLinkDurabilityUncertain],
   );
 
   return (
