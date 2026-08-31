@@ -2778,6 +2778,25 @@ impl PathAuthority {
         let _ = self.resolve(root.path_ref(), PathOperation::DownloadFile, &[])?;
         Ok(root.path_ref().clone())
     }
+
+    /// Copies the authority markers needed to classify a download before a single-use dialog
+    /// grant is consumed by [`Self::resolve`].
+    pub(crate) fn download_operations(
+        &mut self,
+        id: &PathRef,
+    ) -> Result<Vec<PathOperation>, Error> {
+        self.evict_dialogs();
+        self.persistent
+            .get(&id.id)
+            .map(|entry| entry.stored.operations.clone())
+            .or_else(|| {
+                self.dialogs
+                    .get(&id.id)
+                    .map(|grant| grant.entry.stored.operations.clone())
+            })
+            .ok_or_else(|| Error::InvalidInput("unknown, revoked, or expired path grant".into()))
+    }
+
     pub fn resolve(
         &mut self,
         id: &PathRef,

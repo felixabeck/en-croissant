@@ -111,6 +111,7 @@ impl Drop for DownloadLease {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OpClass {
     Lichess,
     Engine,
@@ -125,17 +126,81 @@ enum PayloadFormat {
 }
 
 impl OpClass {
-    fn from_id(id: &str) -> Result<Self, Error> {
-        if id.starts_with("lichess_") {
-            Ok(Self::Lichess)
-        } else if id.starts_with("engine_") {
+    fn from_operations(
+        operations: &[crate::infra::path_authority::PathOperation],
+    ) -> Result<Self, Error> {
+        use crate::infra::path_authority::PathOperation;
+
+        let engine = operations.iter().any(|operation| {
+            matches!(
+                operation,
+                PathOperation::DownloadArchive
+                    | PathOperation::EngineInstall
+                    | PathOperation::EngineExecute
+                    | PathOperation::EngineConfigure
+            )
+        });
+        let database = operations.iter().any(|operation| {
+            matches!(
+                operation,
+                PathOperation::DatabaseRead
+                    | PathOperation::DatabaseMutate
+                    | PathOperation::DatabaseCreate
+                    | PathOperation::DatabaseExport
+            )
+        });
+        let puzzle = operations.iter().any(|operation| {
+            matches!(
+                operation,
+                PathOperation::PuzzleRead | PathOperation::PuzzleDelete
+            )
+        });
+        let marker_classes = usize::from(engine) + usize::from(database) + usize::from(puzzle);
+        if marker_classes > 1 {
+            return Err(Error::InvalidInput(
+                "download destination mixes operation classes".into(),
+            ));
+        }
+        let only_engine = operations.iter().all(|operation| {
+            matches!(
+                operation,
+                PathOperation::DownloadFile
+                    | PathOperation::DownloadArchive
+                    | PathOperation::EngineInstall
+                    | PathOperation::EngineExecute
+                    | PathOperation::EngineConfigure
+            )
+        });
+        let only_database = operations.iter().all(|operation| {
+            matches!(
+                operation,
+                PathOperation::DownloadFile
+                    | PathOperation::DatabaseRead
+                    | PathOperation::DatabaseMutate
+                    | PathOperation::DatabaseCreate
+                    | PathOperation::DatabaseExport
+            )
+        });
+        let only_puzzle = operations.iter().all(|operation| {
+            matches!(
+                operation,
+                PathOperation::DownloadFile
+                    | PathOperation::PuzzleRead
+                    | PathOperation::PuzzleDelete
+            )
+        });
+        if engine && only_engine {
             Ok(Self::Engine)
-        } else if id.starts_with("db_") {
+        } else if database && only_database {
             Ok(Self::Db)
-        } else if id.starts_with("puzzle_db_") {
+        } else if puzzle && only_puzzle {
             Ok(Self::PuzzleDb)
+        } else if operations == [PathOperation::DownloadFile] {
+            Ok(Self::Lichess)
         } else {
-            Err(Error::InvalidInput("Unknown operation class".into()))
+            Err(Error::InvalidInput(
+                "download destination has no recognized operation class".into(),
+            ))
         }
     }
 
@@ -218,14 +283,11 @@ fn validate_download_url(url: &reqwest::Url) -> Result<(), Error> {
 }
 
 fn validate_artifact_integrity(
-    id: &str,
+    op: OpClass,
     url: &str,
     integrity: Option<&ArtifactIntegrity>,
 ) -> Result<(), Error> {
-    let required = matches!(
-        OpClass::from_id(id)?,
-        OpClass::Engine | OpClass::Db | OpClass::PuzzleDb
-    );
+    let required = matches!(op, OpClass::Engine | OpClass::Db | OpClass::PuzzleDb);
     let Some(integrity) = integrity else {
         return if required {
             Err(Error::InvalidInput(
@@ -264,7 +326,7 @@ fn is_bearer_origin(url: &reqwest::Url) -> bool {
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn download_file_core<F>(
-    id: &str,
+    op: OpClass,
     url: &str,
     path: &Path,
     transport: &dyn crate::infra::net::DownloadTransport,
@@ -276,7 +338,7 @@ where
     F: FnMut(f32) -> Result<(), Error>,
 {
     download_file_core_control(
-        id,
+        op,
         url,
         path,
         transport,
@@ -291,7 +353,7 @@ where
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn download_file_core_control<F>(
-    id: &str,
+    op: OpClass,
     url: &str,
     path: &Path,
     transport: &dyn crate::infra::net::DownloadTransport,
@@ -304,7 +366,7 @@ where
     F: FnMut(f32) -> Result<(), Error>,
 {
     download_file_core_control_with_integrity(
-        id,
+        op,
         url,
         path,
         transport,
@@ -319,7 +381,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 async fn download_file_core_control_with_integrity<F>(
-    id: &str,
+    op: OpClass,
     url: &str,
     path: &Path,
     transport: &dyn crate::infra::net::DownloadTransport,
@@ -335,8 +397,6 @@ where
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let op = OpClass::from_id(id)?;
-
     let parsed_url =
         reqwest::Url::parse(url).map_err(|_| Error::InvalidInput("Invalid URL".into()))?;
     validate_download_url(&parsed_url)?;
@@ -582,13 +642,51 @@ pub async fn download_file(
     .map(|_| ())
 }
 
+fn sanitize_download_error(error: Error) -> Error {
+    match error {
+        Error::Io(_) => Error::Io(Box::new(std::io::Error::other("I/O failure"))),
+        error => error,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn download_to_destination(
+pub(crate) async fn download_to_destination<R: tauri::Runtime>(
     id: &str,
     url: &str,
     destination: crate::infra::path_authority::PathRef,
     filename: String,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    bearer_token: Option<&str>,
+    total_size: Option<u32>,
+    job_id: String,
+    register_pgn_artifact: bool,
+    integrity: Option<&ArtifactIntegrity>,
+) -> Result<Option<crate::infra::path_authority::ArtifactPublication>, Error> {
+    download_to_destination_inner(
+        id,
+        url,
+        destination,
+        filename,
+        app,
+        state,
+        bearer_token,
+        total_size,
+        job_id,
+        register_pgn_artifact,
+        integrity,
+    )
+    .await
+    .map_err(sanitize_download_error)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_to_destination_inner<R: tauri::Runtime>(
+    id: &str,
+    url: &str,
+    destination: crate::infra::path_authority::PathRef,
+    filename: String,
+    app: &tauri::AppHandle<R>,
     state: &AppState,
     bearer_token: Option<&str>,
     total_size: Option<u32>,
@@ -600,27 +698,33 @@ pub(crate) async fn download_to_destination(
     // visible progress. No failed setup may leave a running progress entry.
     uuid::Uuid::parse_str(&job_id)
         .map_err(|_| Error::InvalidInput("download job ID must be a UUID".into()))?;
-    validate_artifact_integrity(id, url, integrity)?;
-    let lease = state.download_registry.begin(&job_id)?;
-    let staged = tempfile::tempdir().map_err(|error| Error::Io(Box::new(error)))?;
-    let staged_file = staged.path().join("payload");
     let filename = std::ffi::OsString::from(filename);
-    let resolved = state
-        .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .resolve(
+    let (op, resolved) = {
+        let mut authority_guard = state
+            .pgn_path_authority
+            .lock()
+            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+        let authority = authority_guard
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+        let operations = authority.download_operations(&destination)?;
+        let op = OpClass::from_operations(&operations)?;
+        validate_artifact_integrity(op, url, integrity)?;
+        let resolved = authority.resolve(
             &destination,
             crate::infra::path_authority::PathOperation::DownloadFile,
             std::slice::from_ref(&filename),
         )?;
+        (op, resolved)
+    };
+    let lease = state.download_registry.begin(&job_id)?;
+    let staged = tempfile::tempdir().map_err(|error| Error::Io(Box::new(error)))?;
+    let staged_file = staged.path().join("payload");
     let progress_lease = begin_progress(&state.progress_state, app, id.to_owned())?;
     let result = match tokio::time::timeout(
         DOWNLOAD_DEADLINE,
         download_file_core_control_with_integrity(
-            id,
+            op,
             url,
             &staged_file,
             state.http_transport.as_ref(),
@@ -919,6 +1023,45 @@ pub async fn download_lichess_games(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
+    download_lichess_games_runtime(
+        handle,
+        destination,
+        filename,
+        player,
+        since_ms,
+        estimated_size,
+        job_id,
+        &app,
+        state.inner(),
+    )
+    .await
+    .map_err(sanitize_download_error)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_lichess_games_runtime<R: tauri::Runtime>(
+    handle: crate::credentials::LichessAccountHandle,
+    destination: crate::infra::path_authority::PathRef,
+    filename: String,
+    player: String,
+    since_ms: Option<i64>,
+    estimated_size: Option<u32>,
+    job_id: String,
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
+    let operations = state
+        .pgn_path_authority
+        .lock()
+        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+        .download_operations(&destination)?;
+    if OpClass::from_operations(&operations)? != OpClass::Lichess {
+        return Err(Error::InvalidInput(
+            "Lichess download requires a Lichess destination".into(),
+        ));
+    }
     let (url, player) = lichess_games_url(&player, since_ms)?;
     let token = state
         .credentials
@@ -930,8 +1073,8 @@ pub async fn download_lichess_games(
         url.as_str(),
         destination,
         filename,
-        &app,
-        state.inner(),
+        app,
+        state,
         Some(&token),
         estimated_size,
         job_id,
@@ -940,6 +1083,33 @@ pub async fn download_lichess_games(
     )
     .await?
     .ok_or_else(|| Error::Conflict("Lichess download did not register an artifact".into()))
+}
+
+fn resolve_engine_archive_destination(
+    state: &AppState,
+    destination: &crate::infra::path_authority::PathRef,
+    directory_name: &std::ffi::OsStr,
+) -> Result<(OpClass, crate::infra::path_authority::ResolvedPath), Error> {
+    let mut authority_guard = state
+        .pgn_path_authority
+        .lock()
+        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+    let authority = authority_guard
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+    let operations = authority.download_operations(destination)?;
+    let op = OpClass::from_operations(&operations)?;
+    if op != OpClass::Engine {
+        return Err(Error::InvalidInput(
+            "engine archive requires an engine destination".into(),
+        ));
+    }
+    let resolved = authority.resolve(
+        destination,
+        crate::infra::path_authority::PathOperation::DownloadArchive,
+        &[directory_name.to_os_string()],
+    )?;
+    Ok((op, resolved))
 }
 
 /// Downloads and atomically installs an engine archive into an authority-managed directory.
@@ -958,54 +1128,74 @@ pub async fn download_engine_archive(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    if !id.starts_with("engine_") {
-        return Err(Error::InvalidInput("engine archive ID required".into()));
-    }
-    uuid::Uuid::parse_str(&job_id)
-        .map_err(|_| Error::InvalidInput("download job ID must be a UUID".into()))?;
-    validate_artifact_integrity(&id, &url, Some(&integrity))?;
-    let lease = state.download_registry.begin(&job_id)?;
-    let staging = private_tempdir()?;
-    let extracted = staging.path().join("extracted");
-    let resolved = state
-        .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .resolve(
-            &destination,
-            crate::infra::path_authority::PathOperation::DownloadArchive,
-            &[std::ffi::OsString::from(directory_name)],
-        )?;
-    let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
-    let result = match tokio::time::timeout(
-        DOWNLOAD_DEADLINE,
-        download_file_core_control_with_integrity(
-            &id,
-            &url,
-            &extracted,
-            state.http_transport.as_ref(),
-            None,
-            None,
-            lease.cancellation_token(),
-            Some(&integrity.sha256),
-            |progress| {
+    let result = async {
+        let directory_name = std::ffi::OsString::from(directory_name);
+        let (op, resolved) =
+            resolve_engine_archive_destination(state.inner(), &destination, &directory_name)?;
+        uuid::Uuid::parse_str(&job_id)
+            .map_err(|_| Error::InvalidInput("download job ID must be a UUID".into()))?;
+        validate_artifact_integrity(op, &url, Some(&integrity))?;
+        let lease = state.download_registry.begin(&job_id)?;
+        let staging = private_tempdir()?;
+        let extracted = staging.path().join("extracted");
+        let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
+        let result = match tokio::time::timeout(
+            DOWNLOAD_DEADLINE,
+            download_file_core_control_with_integrity(
+                op,
+                &url,
+                &extracted,
+                state.http_transport.as_ref(),
+                None,
+                None,
+                lease.cancellation_token(),
+                Some(&integrity.sha256),
+                |progress| {
+                    update_progress_with_state(
+                        &state.progress_state,
+                        &app,
+                        &progress_lease,
+                        progress,
+                        ProgressState::Running,
+                    )
+                },
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                let error =
+                    Error::EngineTimeout("engine archive download deadline exceeded".into());
                 update_progress_with_state(
                     &state.progress_state,
                     &app,
                     &progress_lease,
-                    progress,
-                    ProgressState::Running,
-                )
-            },
-        ),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => {
-            let error = Error::EngineTimeout("engine archive download deadline exceeded".into());
+                    0.0,
+                    ProgressState::Failed,
+                )?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = result {
+            let terminal = if matches!(error, Error::Cancellation) {
+                ProgressState::Cancelled
+            } else {
+                ProgressState::Failed
+            };
+            update_progress_with_state(
+                &state.progress_state,
+                &app,
+                &progress_lease,
+                0.0,
+                terminal,
+            )?;
+            return Err(error);
+        }
+        let install_result = crate::infra::blocking::BLOCKING_GATEWAY
+            .spawn(move || resolved.atomic_install_download_dir(&extracted))
+            .await;
+        if let Err(error) = install_result {
             update_progress_with_state(
                 &state.progress_state,
                 &app,
@@ -1015,36 +1205,16 @@ pub async fn download_engine_archive(
             )?;
             return Err(error);
         }
-    };
-    if let Err(error) = result {
-        let terminal = if matches!(error, Error::Cancellation) {
-            ProgressState::Cancelled
-        } else {
-            ProgressState::Failed
-        };
-        update_progress_with_state(&state.progress_state, &app, &progress_lease, 0.0, terminal)?;
-        return Err(error);
-    }
-    let install_result = crate::infra::blocking::BLOCKING_GATEWAY
-        .spawn(move || resolved.atomic_install_download_dir(&extracted))
-        .await;
-    if let Err(error) = install_result {
         update_progress_with_state(
             &state.progress_state,
             &app,
             &progress_lease,
-            0.0,
-            ProgressState::Failed,
-        )?;
-        return Err(error);
+            100.0,
+            ProgressState::Succeeded,
+        )
     }
-    update_progress_with_state(
-        &state.progress_state,
-        &app,
-        &progress_lease,
-        100.0,
-        ProgressState::Succeeded,
-    )
+    .await;
+    result.map_err(sanitize_download_error)
 }
 
 #[tauri::command]
@@ -1439,6 +1609,148 @@ mod tests {
         .unwrap()
     }
 
+    fn database_destination(
+        dir: &tempfile::TempDir,
+    ) -> (
+        crate::infra::path_authority::PathAuthority,
+        crate::infra::path_authority::PathRef,
+    ) {
+        let database_root = dir.path().join("databases");
+        std::fs::create_dir(&database_root).unwrap();
+        let mut authority = test_path_authority(dir);
+        let root = authority
+            .get_or_create_database_root(&database_root, "Databases")
+            .unwrap();
+        (authority, root.id)
+    }
+
+    #[test]
+    fn from_operations_derives_exclusive_download_classes() {
+        use crate::infra::path_authority::PathOperation::*;
+
+        assert_eq!(
+            OpClass::from_operations(&[DownloadFile]).unwrap(),
+            OpClass::Lichess
+        );
+        assert_eq!(
+            OpClass::from_operations(&[DownloadArchive, EngineInstall]).unwrap(),
+            OpClass::Engine
+        );
+        assert_eq!(
+            OpClass::from_operations(&[
+                DatabaseRead,
+                DatabaseMutate,
+                DatabaseCreate,
+                DatabaseExport,
+                DownloadFile,
+            ])
+            .unwrap(),
+            OpClass::Db
+        );
+        assert_eq!(
+            OpClass::from_operations(&[PuzzleRead, PuzzleDelete, DownloadFile]).unwrap(),
+            OpClass::PuzzleDb
+        );
+        assert_eq!(
+            OpClass::from_operations(&[DownloadFile, EngineExecute]).unwrap(),
+            OpClass::Engine
+        );
+        for operations in [
+            vec![DatabaseRead, PuzzleRead],
+            vec![EngineInstall, DatabaseRead],
+            vec![EngineConfigure, PuzzleDelete],
+            vec![],
+            vec![ReadPgn],
+        ] {
+            assert!(matches!(
+                OpClass::from_operations(&operations),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn lichess_prefixed_id_cannot_skip_signature() {
+        let dir = tempdir().unwrap();
+        let (authority, destination) = database_destination(&dir);
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = tauri::test::mock_app();
+
+        let error = download_to_destination(
+            "lichess_spoof",
+            "https://www.encroissant.org/database.db3",
+            destination,
+            "database.db3".into(),
+            app.handle(),
+            &state,
+            None,
+            None,
+            uuid::Uuid::new_v4().to_string(),
+            false,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Invalid input: signed artifact integrity metadata required"
+        );
+    }
+
+    #[tokio::test]
+    async fn lichess_games_reject_database_destination() {
+        let dir = tempdir().unwrap();
+        let (authority, destination) = database_destination(&dir);
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = tauri::test::mock_app();
+
+        let error = download_lichess_games_runtime(
+            crate::credentials::LichessAccountHandle::new(),
+            destination,
+            "games.pgn".into(),
+            "player".into(),
+            None,
+            None,
+            uuid::Uuid::new_v4().to_string(),
+            app.handle(),
+            &state,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidInput(_)));
+    }
+
+    #[test]
+    fn download_engine_archive_rejects_database_destination() {
+        let dir = tempdir().unwrap();
+        let (authority, destination) = database_destination(&dir);
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+
+        let error = match resolve_engine_archive_destination(
+            &state,
+            &destination,
+            std::ffi::OsStr::new("engine_1"),
+        ) {
+            Ok(_) => panic!("database destination must not resolve for an engine archive"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, Error::InvalidInput(_)));
+    }
+
+    #[test]
+    fn download_io_serializes_without_path() {
+        let error = sanitize_download_error(Error::Io(Box::new(std::io::Error::other(
+            "/private/staging/payload: permission denied",
+        ))));
+        let serialized = serde_json::to_string(&error).unwrap();
+        assert_eq!(serialized, "\"I/O failure\"");
+        assert!(!serialized.contains("staging"));
+    }
+
     #[test]
     fn download_lichess_games_rejects_traversal_player_before_push() {
         assert!(matches!(
@@ -1662,7 +1974,7 @@ mod tests {
         };
 
         let res = download_file_core(
-            "lichess_test",
+            OpClass::Lichess,
             "https://lichess.org/test",
             &target,
             &mock,
@@ -1700,7 +2012,7 @@ mod tests {
         };
 
         let res = download_file_core(
-            "lichess_test",
+            OpClass::Lichess,
             "https://lichess.org/test",
             &target,
             &mock,
@@ -1747,7 +2059,7 @@ mod tests {
         };
 
         let res = download_file_core(
-            "lichess_test",
+            OpClass::Lichess,
             "https://lichess.org/test",
             &target,
             &mock,
@@ -1775,7 +2087,7 @@ mod tests {
             requests_seen: std::sync::Mutex::new(vec![]),
         };
         let error = download_file_core(
-            "lichess_test",
+            OpClass::Lichess,
             "https://lichess.org:444/export",
             &dir.path().join("out.pgn"),
             &mock,
@@ -2030,8 +2342,8 @@ mod tests {
 
     #[test]
     fn database_and_engine_artifacts_require_a_signed_manifest() {
-        for id in ["db_1", "engine_1"] {
-            let error = validate_artifact_integrity(id, "https://www.encroissant.org/file", None)
+        for op in [OpClass::Db, OpClass::Engine] {
+            let error = validate_artifact_integrity(op, "https://www.encroissant.org/file", None)
                 .unwrap_err();
             assert_eq!(
                 error.to_string(),
@@ -2043,7 +2355,7 @@ mod tests {
     #[test]
     fn puzzle_database_artifacts_require_valid_signed_manifest() {
         let url = "https://www.encroissant.org/puzzles/file.db3";
-        let missing = validate_artifact_integrity("puzzle_db_1", url, None).unwrap_err();
+        let missing = validate_artifact_integrity(OpClass::PuzzleDb, url, None).unwrap_err();
         assert_eq!(
             missing.to_string(),
             "Invalid input: signed artifact integrity metadata required"
@@ -2054,7 +2366,7 @@ mod tests {
             signature: "invalid minisign signature".into(),
         };
         let invalid_signature =
-            validate_artifact_integrity("puzzle_db_1", url, Some(&invalid)).unwrap_err();
+            validate_artifact_integrity(OpClass::PuzzleDb, url, Some(&invalid)).unwrap_err();
         assert_eq!(
             invalid_signature.to_string(),
             "Invalid input: invalid artifact manifest signature"
@@ -2069,7 +2381,7 @@ mod tests {
                 .into(),
         };
         assert!(validate_artifact_integrity(
-            "engine_1",
+            OpClass::Engine,
             "https://www.encroissant.org/engine.zip",
             Some(&integrity),
         )
@@ -2092,7 +2404,7 @@ mod tests {
             requests_seen: std::sync::Mutex::new(vec![]),
         };
         let error = download_file_core_control_with_integrity(
-            "db_1",
+            OpClass::Db,
             "https://www.encroissant.org/data.db3",
             &target,
             &mock,
@@ -2122,7 +2434,7 @@ mod tests {
             requests_seen: std::sync::Mutex::new(vec![]),
         };
         let error = download_file_core_control(
-            "lichess_test",
+            OpClass::Lichess,
             "https://lichess.org/export",
             &target,
             &mock,
@@ -2156,7 +2468,7 @@ mod tests {
         };
 
         let res = download_file_core(
-            "lichess_test",
+            OpClass::Lichess,
             "https://lichess.org/test",
             &target,
             &mock,

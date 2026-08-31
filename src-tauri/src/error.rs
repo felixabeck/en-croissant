@@ -64,7 +64,7 @@ pub enum Error {
     #[error(transparent)]
     TauriOpener(Box<tauri_plugin_opener::Error>),
 
-    #[error(transparent)]
+    #[error("network failure")]
     Reqwest(Box<reqwest::Error>),
 
     #[error(transparent)]
@@ -332,6 +332,17 @@ impl Type for Error {
 mod tests {
     use super::*;
     use std::sync::{Mutex, Once};
+
+    #[test]
+    fn reqwest_serializes_as_network_failure() {
+        let reqwest_error = reqwest::Client::new()
+            .get("http://[")
+            .build()
+            .expect_err("invalid URL must fail request construction");
+        let serialized = serde_json::to_string(&Error::from(reqwest_error)).unwrap();
+        assert_eq!(serialized, "\"network failure\"");
+        assert!(!serialized.contains("http"));
+    }
 
     struct CapturingLogger;
 
