@@ -532,3 +532,176 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
 * **Rejected:** filing nothing there and reporting the breakage to Felix instead; and committing the repair in that repository.
 * **Because:** Felix's instruction for this run was to file the `_atomic_write` port into both siblings, and filing requires a working CLI — the repair was instrumental to the instruction, not scope creep. Committing it there was rejected because that repository's own gates and push review have not seen it, and a drain was holding its ledger lock at the time. Leaving it uncommitted with a finding that names it keeps the repair discoverable without smuggling an unreviewed change into someone else's history.
 * **Decided by:** build run 2026-08-30 agent-tooling-parity · **Superseded-by:** -
+
+## 2026-08-31 — recorded through the decisions lock
+
+### d-20260831-01 — Correction to d-20260830-05: the renderer error category is `applied-despite-error`, not `partially-applied`
+
+* **Governs:** f-20260830-07, f-20260830-04
+* **Chosen:** the category name is `applied-despite-error`, exactly as
+  `src/platform/errors.ts` already implements it and `src/components/files/FilesPage.tsx` already
+  filters on it. `d-20260830-05`'s prose says `partially-applied`; that name was never shipped and
+  must not be introduced. The decision's substance is unchanged and was implemented faithfully: one
+  category, matched on the two exact Rust literals `partially removed:` and
+  `committed but durability uncertain:`, tested on both sides.
+* **Rejected:** following `d-20260830-05`'s literal name. Implementing it would have created a
+  category `FilesPage` does not filter on, so a destructive operation that partly succeeded would
+  have stopped relisting — the exact failure that decision exists to prevent. Also rejected:
+  editing `d-20260830-05` in place, per universal rule 4c.
+* **Because:** `errors.ts` carries a comment explaining why the name was deliberately avoided — the
+  `CommittedDurabilityUncertain` case removed everything it was asked to, so "partially applied" is
+  false for half the cases the category covers. The implementation is the later and better-informed
+  of the two, and the record is corrected beside the original rather than rewritten, following
+  `d-20260830-17`'s precedent in this same ledger.
+* **How it surfaced:** three review lenses independently refused to implement the `native-fs`
+  cluster's phase 5 because the plan named a category that does not exist, at confidence 100 each.
+  They were right to stop rather than guess.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-02 — Enable zip opening books, or delete the unreachable zip arm?
+
+* **Governs:** f-20260829-11
+* **Chosen:** enable. `.zip` is added to `opening_book_ext`, the `("book.zip", None)` assertion is
+  corrected, and a test drives the outer dispatch with a real archive.
+* **Rejected:** deleting the `Some("zip")` arm and `read_zip_inner_cancellable`.
+* **Because:** the evidence says this was an accidental fork regression, not a decision. Upstream
+  `455ba6be` is titled "add support for zipped opening books" and added both the arm and
+  `opening_book_ext` — the latter to detect the format of the file *inside* the archive. Fork
+  commit `97c29add` then reused that inner-only helper for the outer dispatch and wrote the
+  assertion to match the resulting behaviour. The zip reader is complete working code with
+  decompression-bomb limits and cancellation, and the live user-facing error still says
+  "Use .pgn, .epd, .bin, or .zip". Deleting would have removed a working feature in order to
+  preserve the regression.
+* **Nesting is not a risk:** the inner member dispatch matches only epd/pgn/bin, so a zip inside a
+  zip falls to its existing arm with the accurate "Zip must contain a .pgn, .epd, or .bin file".
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-03 — How is the manifest-supplied engine `path` constrained in the client schema?
+
+* **Governs:** f-20260830-27
+* **Chosen:** reject NUL, backslash, a leading `/`, a Windows drive prefix, empty segments and any
+  `.`/`..` segment — while keeping multiple `/`-separated segments legal — and document it as
+  defence in depth in front of the backend, never as the boundary.
+* **Rejected:** the finding's own suggestion of constraining `path` to a single normal component.
+* **Because:** it would reject every real engine entry. `AddEngine.tsx` computes
+  `engine.path.split("/").at(-1)`, and `register_installed_engine` folds *every* normal component
+  onto the engine root, so real manifests use nested paths. This is worth recording precisely
+  because the finding text recommends the wrong fix at first glance.
+* **Also rejected:** deleting the refinement entirely, which a review lens proposed at confidence 90
+  on the grounds that it duplicates native validation and can drift. It fails closed one layer
+  earlier, before a download and an install start, and the finding explicitly asks for it; the
+  drift risk is answered by the tests and by not claiming it is the boundary.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-04 — Does the read-only engine probe get its own `PathOperation`, or reuse `EngineExecute`?
+
+* **Governs:** f-20260830-26
+* **Chosen:** a new read-class `PathOperation::EngineBinaryInspect`, granted at
+  `register_engine_file`, with a load-time backfill restricted to `PersistentFile` records whose
+  operation vector is exactly the legacy engine-file triple.
+* **Rejected:** reusing `EngineExecute`, which is already granted at the same mint site, is already
+  read class, and needs no variant, no generated-binding change and no migration. Also rejected:
+  bumping `SCHEMA_VERSION`, since the backfill is idempotent.
+* **Because:** "may I spawn this process" is not "does this file exist", and a capability model is
+  worth having only if the name means what it says. `EngineBinaryInspect` is deliberately not
+  accepted by `read_bytes` or `into_read_file`, so it authorizes inspection rather than reading the
+  executable — which is also why it is named *Inspect* and not *Read*, after a lens pointed out that
+  the earlier name claimed an authority it never grants.
+* **The migration is the real cost, and it is why the backfill is narrow.** `get_or_create_persistent_file`
+  matches on exact operation-vector equality, so an unrestricted backfill would have caught engine
+  *root* records too — they carry the same three operations — broken `get_or_create_engine_root`'s
+  reuse, and minted a new durable root capability on every restart. Two review lenses found that at
+  98 and 99 confidence before any code existed. A test now proves a reloaded root keeps its exact
+  vector and id.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-05 — Are the durability error payloads redacted per site, or made safe by construction?
+
+* **Governs:** f-20260830-39, f-20260830-07
+* **Chosen:** by construction. `Error::CommittedDurabilityUncertain` and
+  `CommitDurability::DurabilityUncertain` carry a `DurabilityStage` from a closed set instead of a
+  free-form `String`; `PartialRemoval` renders its cause's category rather than the cause;
+  `OperationAndCleanup` renders a stable message. Every producer logs the real OS cause through
+  `log::`, which the crate already depends on and `main.rs` already uses.
+* **Rejected:** redacting the three sites the finding named. Also rejected: giving `Error` a real
+  `specta::Type` so the renderer receives a structured error.
+* **Because:** eight producers filled that `String` with `io::Error::to_string()`, and
+  `error.rs`'s `Serialize` sends the whole `Display` across IPC, so patching three call sites would
+  have left the mechanism and the other five. A review lens made exactly that objection at
+  confidence 99. The `specta::Type` answer is the general one and is out of scope by
+  `d-20260830-05`, which weighed it and filed it separately; this closes two variant pairs without
+  touching that decision.
+* **Discarding the cause was never an option:** redaction that loses the diagnostic trades one
+  defect for another. `log::` keeps it on the Rust side, and a capturing-logger test now proves the
+  calls are actually made, because assertions on the serialized string alone would have stayed
+  green if every log call were deleted.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-06 — What prunes authority records on a partial removal, and what happens if the registry save then fails?
+
+* **Governs:** f-20260830-07
+* **Chosen:** on a *completed* removal the whole subtree's records go. On a **partial** removal the
+  top record stays — `d-20260830-04`, because the top directory still exists with an unchanged
+  inode — while descendants are reconciled individually through the identity re-stat the authority
+  already performs: what still resolves survives, what was actually deleted does not. If
+  `save_entries` then fails, the prune is simply not adopted, and that residual is written down at
+  the site rather than repaired.
+* **Rejected:** keeping every descendant record on the partial path, which leaves exactly the
+  dangling accumulation this finding exists to remove — a review lens caught that at confidence 100.
+  Rejected: pruning by `PartialRemoval`'s `removed_entries` count, which names no paths. Rejected:
+  a load-time sweep removing records whose object no longer resolves.
+* **Because:** this extends `d-20260830-04` rather than reversing it — that decision ruled on the
+  *top* record and said nothing about descendants, some of which a partial removal has genuinely
+  deleted. The load-time sweep is the tempting repair and it is unsafe: a capability on an unmounted
+  volume does not resolve either, which is exactly why `refresh_persistent` marks unavailable
+  instead of removing. Adopting a prune in memory that was not persisted would make in-memory state
+  diverge from disk, which is worse than the residual it fixes. The accumulation is therefore
+  bounded by registry-save failures rather than by ordinary create-and-delete use, and it is filed
+  as its own finding so it is tracked rather than only commented.
+* **Scope of the claimed bound:** workspace records no longer outlive the objects they name. The
+  registry as a whole is *not* bounded — it also holds engine binaries, engine resources, engine
+  images, opening books and downloaded PGNs — and two lenses refuted an earlier, wider claim.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-07 — How do a deletion and a cfg-gating get a regression anchor at all?
+
+* **Governs:** f-20260830-22, f-20260830-40
+* **Chosen:** a narrow repo-local checker, `scripts/check-rust-release-surface.mjs`, with two
+  line-oriented rules over `git ls-files` output — no file-level `#![allow(dead_code)]` under
+  `src-tauri/src` outside a shrink-only allowlist, and no public fault-injection item or import
+  outside a `#[cfg(test)]` region. It is wired into `package.json`, `test.yml` and the push skill's
+  Rust/Tauri gate list, and its own tests assert all three wirings.
+* **Rejected:** annotating the open `f-20260830-23` with the rules it owes and shipping the two
+  phases unanchored. Rejected: building the general Rust boundary gate that finding describes
+  (`src-tauri/clippy.toml`, filesystem-call containment). Rejected: a fifth directory walker.
+* **Because:** deleting dead code and gating test scaffolding leave nothing a test can observe —
+  reverting either left `cargo check`, `clippy -D warnings`, the unit tests and the coverage
+  ratchet all green. Four lenses across two review rounds reported that at 99-100 confidence and
+  explicitly refused the annotation, on the grounds that annotating a finding is not a test. They
+  were right: that absence is how a dead second path authority survived in the tree behind a
+  file-level suppression in the first place. The general gate stays `f-20260830-23`'s, which is now
+  annotated so it absorbs these two rules rather than duplicating them.
+* **It lands last, not first.** An earlier draft made it the first phase; its rules are violated by
+  the pre-deletion and pre-gating tree by construction, so no ordering exists in which it lands
+  first and green. The two phases it guards take their anchor from its fixture tests, which are
+  revert-sensitive without depending on commit order.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-08 — Where do the two live helpers from the deleted `infra/path.rs` go?
+
+* **Governs:** f-20260830-22
+* **Chosen:** `safe_canonicalize` is folded into the `canonical_database_path` wrapper that already
+  existed in `db/repository.rs` and did nothing but call it — one function under the existing name,
+  its three call sites unchanged — and `to_utf8_str` is inlined at its single call site.
+* **Rejected:** moving `safe_canonicalize` into `src-tauri/src/infra/fs.rs`. Rejected: moving it in
+  under a new name beside the existing wrapper.
+* **Because:** `infra/fs.rs` is the descriptor-based primitive layer beside `path_authority`, and a
+  pathname-string canonicaliser there would invite new callers to canonicalise a path instead of
+  resolving a capability — the exact confusion this whole deletion removes. Introducing a second
+  `canonicalize_database_path` beside the existing `canonical_database_path` would have left two
+  near-identical names with no stated difference, which a review lens caught at confidence 98.
+* **The name mattered too:** "safe_canonicalize" reads as a security primitive, and the function is
+  not one — it normalises for identity and tolerates a non-existent final component. It now carries
+  a doc comment saying exactly that, so the false claim the deleted comment made
+  ("AuthorizedPath already does this for command inputs") is not replaced by a quieter one.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -

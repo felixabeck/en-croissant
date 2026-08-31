@@ -749,7 +749,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### `opening_book_ext` never returns `"zip"`, so the whole zip opening-book branch is dead
 
-* **ID:** f-20260829-11 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260829-11 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/game.rs:1854-1865` (`opening_book_ext`), the `Some("zip")` arm at
   `game.rs:1973`, and the test at `game.rs:2911-2919`.
 * **Defect:** `opening_book_ext` maps only `.epd`, `.pgn` and `.bin`, returning `None` otherwise.
@@ -764,6 +764,20 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   regression for anyone whose books are zipped.
 * **Found by:** the adjacent-defects lens (confidence 100) during the `$push` review of the
   2026-08-29 setup work; verified by reading both sites.
+
+Enabled. `.zip` was never deliberately disabled: upstream `455ba6be` ("add support for zipped
+opening books") added both the arm and `opening_book_ext`, the latter for detecting the format of
+the member *inside* the archive, and fork commit `97c29add` then reused that inner-only helper for
+the outer dispatch and wrote `("book.zip", None)` to match. Decision recorded as `d-20260831-02`.
+
+Commit `9d3dba98`. `opening_book_ext` returns `Some("zip")`, the assertion is corrected, and a new
+test drives `apply_opening_book_descriptor` — the outer dispatch — with a real archive containing a
+`.epd` member. That test is the point: the three existing zip tests call `read_zip_inner*` directly,
+which is exactly why nothing went red when the outer dispatch broke. Reverting the one-line fix was
+verified to make it fail with the unsupported-format error before the commit was made.
+
+A zip nested inside a zip is unchanged: the inner dispatch matches only epd/pgn/bin and routes
+everything else to its existing arm with "Zip must contain a .pgn, .epd, or .bin file".
 
 ---
 
@@ -1213,7 +1227,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### The crate cannot compile for the configured macOS *or* Windows release targets
 
-* **ID:** f-20260830-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** felix-decision
 * **Where:** two independent breaks.
   * **macOS:** `src-tauri/src/infra/fs.rs:53` (`#[cfg(unix)] mod unix`), using `rustix::fs::RawDir`
     at `fs.rs:347` (`sync_tree`) and `fs.rs:408` (`remove_tree_at`).
@@ -1252,9 +1266,64 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   plan review of the `remove-tree-unhardened` cluster, 2026-08-30, and confirmed directly against
   the vendored rustix source and both workflow files.
 
+**Investigated but not fixed, and parked on Felix.** Worked as part of the `native-fs` cluster on
+2026-08-31; the other seven findings in that cluster landed.
+
+**What was proved, statically.** macOS: `infra/fs.rs`'s directory-walk module is gated on plain
+`#[cfg(unix)]` but uses `rustix::fs::RawDir`, `statx`, `StatxFlags`, `StatxAttributes::MOUNT_ROOT`
+and `AtFlags::EMPTY_PATH`/`NO_AUTOMOUNT` — six references across five sites, all exported by rustix
+only under `linux_kernel` (or, for the flags, `linux_like`), confirmed against the vendored
+`rustix-1.1.4` source. `RenameFlags::EXCHANGE` is *not* a break: Apple rustix defines it as
+`RENAME_SWAP`. Windows: seven ungated `#[tauri::command]`s in `file_workspace.rs` call the
+`#[cfg(unix)]` helpers `mutation_target`, `register_created_entry` and `paired_rename`, and both
+`mod file_workspace;` and the command registration in `main.rs` are unconditional.
+
+**What was proved, empirically, and it is the decisive part: this machine cannot observe the
+defect.** `rustup target add` plus `cargo check --target` was run for both targets.
+`aarch64-apple-darwin` dies in `bzip2-sys` with `cc: error: unrecognized command-line option
+'-arch'`; `x86_64-pc-windows-msvc` dies in the same crate with `error occurred in cc-rs: failed to
+find tool "lib.exe"`. Both stop in a dependency build script long before reaching this crate's own
+errors. There is no macOS SDK and no MSVC toolchain here, so no local route surfaces it — and
+therefore no local route verifies a port either. A real macOS and Windows runner is the only
+instrument.
+
+* **Decision:** Does this fork support macOS and Windows?
+  * **(a) Keep them, and port.** `infra/fs.rs` gets a second directory-reading implementation for
+    non-Linux unix (`fdopendir`/`readdir`, with different error and reentrancy properties) and a
+    mount-detection fallback; `file_workspace.rs`'s seven commands get Windows counterparts for
+    identity-checked mutation, paired rename and recursive removal. Then `test.yml` gains
+    `cargo check` jobs on `macos-latest` and `windows-latest` — using the platform setup
+    `release.yml` already has — so it can never silently drift again. Cost: a few hundred lines of
+    platform code that cannot be compiled or tested on this machine, verified only by CI, in a file
+    whose Linux-specific design was chosen deliberately three days ago (`d-20260830-01` through
+    `d-20260830-03`).
+  * **(b) Declare Linux-only, and make the config say so.** Drop the macOS and Windows entries from
+    `release.yml`'s matrix, gate `file_workspace`'s commands and their registration to Linux, and
+    remove the inherited macOS/Windows bundle blocks from `tauri.conf.json`. Cheap, verifiable
+    today, and it makes the promise and the implementation agree. Cost: the fork gives up two
+    platforms upstream supports, and reversing it later is the porting work in (a) plus whatever has
+    accumulated by then.
+  * **Ruled out:** adding the CI compile-check jobs *now*, before either answer. Measured: the jobs
+    would be red on arrival, and `d-20260830-20` settled that a gate which cannot report the truth
+    must not report success — so there is no honest "add it red and fix later" variant. Also ruled
+    out: verifying a port locally, which the two cross-compile attempts above proved impossible.
+  * **Recommend:** (b), Linux-only, for now. The evidence is that the fork has already chosen it in
+    every way except its config: the 2026-08-09 audit built Linux-specific primitives knowingly,
+    `d-20260830-01` explicitly noted that three of four targets already could not build and deepened
+    the Linux dependency anyway, `d-20260830-15` defers the fork's release channel entirely, the
+    last tag predates the fork, and the machine is Linux. Writing an unverifiable macOS port for a
+    build nobody has ever produced is the larger risk. **Against it:** upstream ships all three
+    platforms, so (b) is a visible narrowing of what this fork could ever be, and it is much easier
+    to keep a port working than to write one later — the divergence only grows.
+  * **Could not determine:** whether the fork is ever intended to ship to anyone but Felix. Nothing
+    in the repository says: there is no README, no `docs/context/`, and `tauri.conf.json` still
+    carries upstream's publisher. That is the fact the whole question turns on, and it is not
+    derivable from the code.
+  * **Session:** 291b4f09-b746-4078-bdc2-32760714373b — transcript `~/.claude/projects/*/291b4f09-b746-4078-bdc2-32760714373b.jsonl`; cross-compile log kept at `/tmp/build-291b4f09-b746-4078-bdc2-32760714373b/xcompile.log`
+
 ### Deleting a workspace directory leaves an authority record for every descendant behind
 
-* **ID:** f-20260830-07 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-07 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority.rs:3361` (`remove_workspace_entry`), reached from
   `src-tauri/src/file_workspace.rs:663` (`permanently_delete_workspace_entry`); records are created
   for every descendant by `tree_entry` at `src-tauri/src/file_workspace.rs:218-245`.
@@ -1285,6 +1354,45 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Found by:** the `review-root-cause` lens (96 confidence) during the plan review of the
   `remove-tree-unhardened` cluster, 2026-08-30. Confirmed directly by reading `tree_entry` and
   `remove_workspace_entry`.
+
+Handled. Commit `ad03e196`.
+
+`remove_workspace_entry` now prunes the whole subtree in the same registry commit, reusing the
+component-aware `strip_prefix` walk `rebase_workspace_entries` already established, and taking the
+removed entry's path and directory flag from the registry rather than from the caller.
+
+On a *partial* removal the top record stays — `d-20260830-04` — while descendants are reconciled
+individually through the identity re-stat the authority already performs. A review lens showed at
+confidence 100 that keeping every descendant on that path leaves exactly the accumulation this
+finding is about, since a partial removal has genuinely deleted some of them. `d-20260831-06`
+records that, and records why the tempting general repair — dropping records at load time whose
+object no longer resolves — is unsafe: a capability on an unmounted volume does not resolve either,
+which is why `refresh_persistent` marks unavailable instead of removing.
+
+Three further leaks on the same path went with it. `commit_candidate` clears an active database,
+puzzle or engine root whose record has gone. Pending artifact intents whose root this operation
+removed are dropped, since activation would fail and startup recovery skips them forever. And the
+`CommitDurability` that `remove_workspace_entry` used to discard is propagated, so a registry fsync
+failure after the files are gone stops being reported as success.
+
+`permanently_delete_entry` is restructured so authority reconciliation always runs once the unlink
+succeeded. The sidecar cleanup `?` returned *before* it, so a sidecar failure left a deleted file
+holding a live capability — a lens caught that at 97. Failures after the unlink now map to
+`CommittedDurabilityUncertain`, so `normalizeError` categorises them as `applied-despite-error` and
+`FilesPage` relists. That category name is not what `d-20260830-05` wrote; see `d-20260831-01`.
+
+**The bound is narrow and stated as such:** workspace records no longer outlive the objects they
+name. The registry as a whole is *not* bounded — it also holds engine binaries, engine resources,
+engine images, opening books and downloaded PGNs — and two lenses refuted a wider claim in the plan.
+
+**Not done, and filed:** if `save_entries` fails the prune is not adopted, so the records survive
+until something else reconciles. That is deliberate — in-memory state must not diverge from what was
+persisted — and now has its own finding rather than living only in a code comment.
+
+**A test gap in the first version was caught and closed:** the removal tests asserted only private
+in-memory maps, so persisting the pre-delete state while adopting the prune only in memory would
+have passed and then resurrected every stale record on restart. One test now reopens the registry
+from disk (commit `2565ee3d`).
 
 ### Every backend error reaches the renderer as one opaque string, so the UI classifies it by substring
 
@@ -1762,7 +1870,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### A second, weaker path authority is still in the tree, dead, behind a file-level `allow(dead_code)` — and a comment asserts it is protecting callers
 
-* **ID:** f-20260830-22 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-22 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path.rs` (236 lines, `#![allow(dead_code)]` at line 1);
   the false comment at `src-tauri/src/db/repository.rs:559`.
 * **Defect:** `infra/path.rs` contains `AuthorizedPath` and `PathGrants` — a prefix-allow-list
@@ -1784,6 +1892,29 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   of the file and the `PathGrants` field from `AppState`, and correct the comment.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Confirmed by grepping every
   caller, not by inference.
+
+Deleted. Commit `eef9148c`. `infra/path.rs` is gone, along with `pub mod path;` and the
+`AppState.path_grants` field it backed. The caller map was re-verified over the whole crate
+including tests before deleting: `grant()` and `revoke()` had zero callers, so `resolve()` could
+only return `None`, and `validate_regular_file`, `validate_directory`, `check_extension`,
+`canonical_compare`, `AuthorizedPath::parse`, `as_path` and `into_inner` had none either.
+
+The two live helpers went to their single consumer rather than to `infra/fs.rs` — `d-20260831-08`
+records why, and why `safe_canonicalize` was folded into the existing `canonical_database_path`
+wrapper instead of arriving beside it under a second name. The false comment at
+`db/repository.rs` is replaced by one that says what the function actually does: it normalises for
+identity, it is not a containment check, and it tolerates a missing final component.
+`CHESS_LOGIC_MAP.md` no longer names the removed field or module.
+
+Coverage: the deletion is a shrink, the shrink-aware baseline forgave it, and the
+`app-infrastructure` floor still holds. No baseline or floor was touched; `pnpm gate:ensure
+backend-coverage` was part of the phase proof rather than left to the final gate run.
+
+**Regression anchor:** rule R1 of the new `scripts/check-rust-release-surface.mjs` (commit
+`f9141425`, `d-20260831-07`). Restoring this module means restoring its file-level
+`#![allow(dead_code)]`, which R1 rejects because its allowlist may only shrink; restoring it without
+the suppression fails clippy. Four review lenses refused to accept an annotation in place of that
+anchor, correctly.
 
 ---
 
@@ -1905,7 +2036,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### `file_exists` demands a write capability to answer a read question, and reports every failure as "file absent"
 
-* **ID:** f-20260830-26 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-26 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs:1293-1311` (`file_exists`) and `:1320-1337`
   (`get_file_metadata`); the write-class list at `src-tauri/src/infra/path_authority.rs:1432-1444`;
   sole consumer `src/components/engines/EnginesPage.tsx:688-697,715-717`.
@@ -1927,13 +2058,42 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   consequence (an engine being re-downloaded) was checked against the call site and does not occur;
   the over-demand and the error collapse do.
 
+Handled. Commit `c4fc3002`. A new read-class `PathOperation::EngineBinaryInspect` replaces
+`EngineInstall` on `file_exists` and `get_file_metadata`; `d-20260831-04` records why a dedicated
+variant was chosen over reusing the already-granted `EngineExecute`, and why the name says
+*Inspect* — it is deliberately not accepted by `read_bytes` or `into_read_file`, and a test pins
+that.
+
+The load-time backfill is narrow on purpose: `PersistentFile` records whose operation vector is
+exactly the legacy engine-file triple. Engine *root* records carry the same three operations and
+are `PersistentCustomRoot`; two review lenses showed at 98 and 99 confidence that an unrestricted
+backfill would break `get_or_create_engine_root`'s exact-vector reuse and mint a new durable root
+capability on every restart — the same unbounded growth `f-20260830-07` is about. A test proves a
+reloaded root keeps its exact vector and id. The backfill is idempotent, so `SCHEMA_VERSION` is
+unchanged.
+
+The error collapse is closed at both ends. `file_exists` returns `Ok(false)` only for a genuine
+`NotFound`; denial and every other failure are typed errors, and neither probe propagates the raw
+resolution error — `validate_target` calls `symlink_metadata(path)?` and `Error` serialises its
+whole `Display`, so a bare `?` would have put a native path into the renderer.
+`get_file_metadata` got the same mapping, which a lens caught as missing at 96.
+
+`EngineName` no longer re-collapses the distinction it was just given: three states, with a
+rejection rendering `Common.Error` rather than the missing-file label. Its test drives the real
+fetcher rather than mocking SWR, after the first version of that test was found to pass even if the
+renderer went back to reporting denials as "file missing".
+
+**Not done here, and filed:** the label still cannot distinguish denial from an unknown handle from
+a replaced object — all three render one string. The hardcoded English literal that sat beside it is
+fixed (`Engines.FileMissing`, sixteen catalogues, commit `2565ee3d`).
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### The engine manifest is transport-trusted and supplies a path component, while its signature fields protect a different value
 
-* **ID:** f-20260830-27 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-27 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/utils/engines.ts:104-113` (schema) and `:172-179` (fetch),
   `src/components/engines/AddEngine.tsx:220-228`, guarded by
   `src-tauri/src/infra/path_authority.rs:2338-2356` and `validate_components` at `:3436-3459`.
@@ -1960,6 +2120,31 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 * **Note for upstream:** the manifest endpoint and its trust model are inherited from upstream
   unchanged — this is not a defect the audit introduced.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+Handled for the half this repository can close; the other half is filed rather than pretended away.
+
+Commit `1c307330`. The client schema now rejects everything the backend would reject — NUL,
+backslash, a leading `/`, a Windows drive prefix, empty segments from a doubled or trailing slash,
+and any `.` or `..` segment — and is commented as defence in depth in front of `Component::Normal`
+and `validate_components`, which remain the containment boundary. `docs/signed-download-manifests.md`
+is retitled and carries an authentication-scope section, and the same statement sits as a comment
+beside the schema and the fetch. `defaultEngineManifestSchema` is exported so its test can reach it.
+
+**This finding's own suggested fix was wrong and is rejected with evidence.** Constraining `path` to
+a single normal component would reject every real engine entry: `AddEngine.tsx` computes
+`engine.path.split("/").at(-1)`, and `register_installed_engine` folds *every* normal component onto
+the engine root. Recorded as `d-20260831-03`.
+
+**Signing the manifest is not done and is not claimed.** This fork does not serve
+`www.encroissant.org`, and `d-20260830-15` (Felix, 2026-08-30) defers the fork's self-hosted engine
+manifest and download page to a later run — so a document signature cannot be produced from here.
+A review lens objected at confidence 96 that the client constraint hardens a symptom without
+authenticating the state that produced it, and it is right; that is why the signing work is filed as
+its own finding, with `d-20260830-15` named as its precondition and the existing `minisign-verify`
+machinery named as what it can reuse.
+
+**Also found while here, and filed separately:** the operation class that decides whether a download
+must be signed at all is derived from a renderer-supplied `id` string prefix.
 
 ---
 
@@ -2328,7 +2513,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### Extracted archive directories are group-writable, and a deep archive makes every reinstall report failure after succeeding
 
-* **ID:** f-20260830-39 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-39 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs:1116,1119,1181,1184` (`create_dir_all`), `:1261-1267`
   (`private_output_file`), `:1045-1047` (`validate_archive_path`);
   `src-tauri/src/infra/fs.rs:76` (`MAX_REMOVE_TREE_DEPTH = 64`), `:456-460`, `:687-704`.
@@ -2358,13 +2543,45 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   `validate_archive_path` to match `MAX_REMOVE_TREE_DEPTH`.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
 
+Handled. Commit `2736e832`.
+
+**Permissions.** One `DirBuilder::mode(0o700)` helper replaces every `create_dir_all` in the
+extraction and install paths, and the three staging `TempDir`s are created with explicit 0700.
+The mode tests set umask to `0o000` and assert the exact mode: four review lenses independently
+showed at confidence 100 that the first version, using umask `0o022`, would have stayed green on a
+revert, because the unfixed `create_dir_all` yields 0755 under that umask and 0755 already satisfies
+a "not group-writable" assertion. umask is process-global, so the assertions serialise and restore
+it on every exit path.
+
+**Depth.** `validate_archive_path` now bounds the `Component::Normal` count, derived from
+`MAX_REMOVE_TREE_DEPTH` rather than hard-coded; `d-20260830-02` fixes that cap and it is unchanged.
+The constant was `pub(super)` inside the private `unix` module, so it is widened at the declaration
+and re-exported — a re-export alone cannot widen visibility, which a lens caught at 98. The existing
+1024-byte bound is named beside it.
+
+**The off-by-one was measured, not reasoned:** 63 components install and reinstall cleanly; 64
+reproduce the false failure, committing the exchange and then returning
+`CommittedDurabilityUncertain` on every subsequent reinstall. That is the failing-before evidence
+for this fix.
+
+**The finding's own two corrections both held.** The old tree is not leaked — `TempDir::drop` runs
+`remove_dir_all`, which has no depth cap — and `infra/fs.rs`'s `create_dir_at` is a leaf `mkdirat`
+taking `(parent, name)`, not a recursive creator, so it was not usable here.
+
+**Deliberately not done:** directories installed before this change keep their 0775. Rewriting the
+modes of existing user data on upgrade is a separate and riskier change, and is stated here rather
+than silently omitted.
+
+The raw staging path and OS diagnostic this path used to hand the renderer are gone as a class
+rather than at this one site — see `f-20260830-40`'s note and `d-20260831-05`.
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### Fault-injection scaffolding ships in release builds, next to two suppressions that no longer suppress anything
 
-* **ID:** f-20260830-40 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-40 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/infra/fs.rs:25,38,1180,1188,1196` (ungated), against `:81-130`
   (correctly gated); `:760` and `:1100` (stale suppressions);
   `src-tauri/src/infra/path_authority.rs:3564,3578`; `src-tauri/src/fs.rs:1041-1043` (shadowing).
@@ -2385,6 +2602,37 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   two layers with no added behaviour, so a reader at the call site (`fs.rs:1132`, `:1197`) cannot
   tell which one runs and misses where the real `RENAME_EXCHANGE` and backup semantics live.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+Handled. Commit `7b9afd3a`, with the error-payload half in `6d9c8e4b` and the anchor in `f9141425`.
+
+**Gating.** Both atomic seams now use the pattern the removal seam twenty lines away already used:
+a `#[cfg(test)]` thread-local plus `inject_atomic_file` / `inject_atomic_dir`, whose call sites sit
+individually gated inside the ungated operations. All sixteen injection points keep their exact
+positions — ten in the file path, six in the directory path.
+
+Three review lenses refuted the first plan at 94-97 confidence: routing production through "an
+ungated inner that performs no injection" cannot preserve in-operation injection points, so the
+tests would have exercised a wrapper rather than the shipped path. They were right, and the plan was
+rewritten before any code existed.
+
+`path_authority.rs` turned out to be a consumer too, which the finding did not mention: it imported
+`AtomicWriterInjector` and `atomic_replace_with_injector` **ungated** at module scope, which is why
+the trait had to exist in a release build at all. Its two `*_with_injector` helpers and their tests
+are converted with it. `atomic_install_dir_with_injector` is gone entirely — tests set the
+thread-local — which also removed the caveat that made a naive `cfg` gate break the build.
+
+**Suppressions.** Both `#[allow(dead_code)]` are removed; `atomic_replace_at` and
+`atomic_replace_at_identified` have production callers in `file_workspace.rs` and clippy `-D
+warnings` agrees.
+
+**Shadow.** The private `atomic_install_dir` in `fs.rs` whose whole body called
+`crate::infra::fs::atomic_install_dir` is deleted and both callers name the real one.
+
+**Regression anchor:** rule R2 of `scripts/check-rust-release-surface.mjs` — no public
+`FaultPoint`/`Injector`/`_with_injector` item or import outside a `#[cfg(test)]` region — plus
+`cargo check` without `--all-targets`, which fails if a production signature names a fault type
+again. The checker was verified by hand to fail on both reverts before its commit. `d-20260831-07`
+records why the checker was built rather than the gap annotated onto `f-20260830-23`.
 
 ---
 
