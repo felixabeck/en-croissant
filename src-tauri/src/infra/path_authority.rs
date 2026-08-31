@@ -517,6 +517,7 @@ pub enum PathOperation {
     PuzzleDelete,
     EngineExecute,
     EngineConfigure,
+    EngineBinaryInspect,
     EngineResourceRead,
     OpeningBookRead,
     ImageRead,
@@ -1650,8 +1651,21 @@ impl PathAuthority {
                 )));
             }
             let mut loaded = BTreeMap::new();
-            for stored in registry.entries {
+            for mut stored in registry.entries {
                 validate_persisted_shape(&stored)?;
+                let legacy_engine_file_operations = [
+                    PathOperation::EngineExecute,
+                    PathOperation::EngineConfigure,
+                    PathOperation::EngineInstall,
+                ];
+                if stored.class == PathClass::PersistentFile
+                    && stored.operations == legacy_engine_file_operations
+                {
+                    // This exact, class-restricted backfill is idempotent, so the registry schema
+                    // does not need to change. Engine roots are PersistentCustomRoot and must keep
+                    // their exact operation vector for stable reuse across restarts.
+                    stored.operations.push(PathOperation::EngineBinaryInspect);
+                }
                 let mut entry = Entry {
                     stored,
                     availability: PathAvailability::Unavailable,
@@ -2186,6 +2200,7 @@ impl PathAuthority {
             PathOperation::EngineExecute,
             PathOperation::EngineConfigure,
             PathOperation::EngineInstall,
+            PathOperation::EngineBinaryInspect,
         ];
         Ok(EngineHandle::new(
             self.get_or_create_persistent_file(path, display_name, operations)?
@@ -5159,6 +5174,82 @@ mod tests {
     }
 
     #[test]
+    fn legacy_engine_file_is_backfilled_and_reused_after_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("engine");
+        fs::write(&executable, b"engine").unwrap();
+        let clock = Arc::new(TestClock::new(1));
+        let mut path_authority = authority(&dir, clock.clone());
+        let legacy = path_authority
+            .get_or_create_persistent_file(
+                &executable,
+                "engine",
+                vec![
+                    PathOperation::EngineExecute,
+                    PathOperation::EngineConfigure,
+                    PathOperation::EngineInstall,
+                ],
+            )
+            .unwrap();
+        drop(path_authority);
+
+        let mut reloaded = authority(&dir, clock);
+        let registered = reloaded
+            .register_engine_file(&executable, "engine")
+            .unwrap();
+        assert_eq!(registered.path_ref(), &legacy.id);
+        assert_eq!(reloaded.persistent.len(), 1);
+        assert_eq!(
+            reloaded
+                .persistent
+                .get(&legacy.id.id)
+                .unwrap()
+                .stored
+                .operations,
+            vec![
+                PathOperation::EngineExecute,
+                PathOperation::EngineConfigure,
+                PathOperation::EngineInstall,
+                PathOperation::EngineBinaryInspect,
+            ]
+        );
+    }
+
+    #[test]
+    fn engine_root_is_not_backfilled_and_reuses_its_id_after_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("engines");
+        fs::create_dir(&root).unwrap();
+        let clock = Arc::new(TestClock::new(1));
+        let mut path_authority = authority(&dir, clock.clone());
+        let original = path_authority
+            .get_or_create_engine_root(&root, "Engines")
+            .unwrap();
+        drop(path_authority);
+
+        let mut reloaded = authority(&dir, clock);
+        let reused = reloaded
+            .get_or_create_engine_root(&root, "Engines")
+            .unwrap();
+        assert_eq!(reused, original);
+        assert_eq!(reloaded.persistent.len(), 1);
+        assert_eq!(
+            reloaded
+                .persistent
+                .get(&original.path_ref().id)
+                .unwrap()
+                .stored
+                .operations,
+            vec![
+                PathOperation::DownloadArchive,
+                PathOperation::EngineInstall,
+                PathOperation::EngineExecute,
+                PathOperation::EngineConfigure,
+            ]
+        );
+    }
+
+    #[test]
     fn windows_launch_sealing_covers_execute_and_configure_engine_operations() {
         assert!(!allows_delete_sharing_for_operation(
             PathOperation::EngineExecute,
@@ -5199,6 +5290,7 @@ mod tests {
             PathOperation::PuzzleRead,
             PathOperation::EngineExecute,
             PathOperation::EngineConfigure,
+            PathOperation::EngineBinaryInspect,
             PathOperation::OpeningBookRead,
             PathOperation::ImageRead,
             PathOperation::DownloadFile,
@@ -5291,5 +5383,25 @@ mod tests {
         assert!(path_authority
             .engine_executable(&handle, PathOperation::EngineConfigure)
             .is_ok());
+    }
+
+    #[test]
+    fn engine_binary_inspection_cannot_read_bytes_or_become_a_read_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("engine");
+        fs::write(&executable, b"engine").unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let handle = path_authority
+            .register_engine_file(&executable, "engine")
+            .unwrap();
+
+        let mut byte_reader = path_authority
+            .resolve(handle.path_ref(), PathOperation::EngineBinaryInspect, &[])
+            .unwrap();
+        assert!(byte_reader.read_bytes().is_err());
+        let file_reader = path_authority
+            .resolve(handle.path_ref(), PathOperation::EngineBinaryInspect, &[])
+            .unwrap();
+        assert!(file_reader.into_read_file().is_err());
     }
 }

@@ -1096,7 +1096,7 @@ export type PathDescriptor = { id: PathRef; displayName: string; class: PathClas
 /**
  * Exact least-privilege operation accepted by a capability.
  */
-export type PathOperation = "readPgn" | "writePgn" | "databaseRead" | "databaseMutate" | "databaseCreate" | "databaseExport" | "puzzleRead" | "puzzleDelete" | "engineExecute" | "engineConfigure" | "engineResourceRead" | "openingBookRead" | "imageRead" | "downloadFile" | "downloadArchive" | "engineInstall" | "snapshotWrite" | "logWrite" | "openShell"
+export type PathOperation = "readPgn" | "writePgn" | "databaseRead" | "databaseMutate" | "databaseCreate" | "databaseExport" | "puzzleRead" | "puzzleDelete" | "engineExecute" | "engineConfigure" | "engineBinaryInspect" | "engineResourceRead" | "openingBookRead" | "imageRead" | "downloadFile" | "downloadArchive" | "engineInstall" | "snapshotWrite" | "logWrite" | "openShell"
 /**
  * Opaque renderer-safe identifier. It deliberately has no path parsing API.
  */

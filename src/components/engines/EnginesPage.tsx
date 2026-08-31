@@ -684,8 +684,9 @@ function JSONModal({
   );
 }
 
-function EngineName({ engine }: { engine: Engine }) {
-  const { data: fileExists, isLoading } = useSWRImmutable(
+export function EngineName({ engine }: { engine: Engine }) {
+  const { t } = useTranslation();
+  const { data: fileExists, error } = useSWRImmutable(
     ["file-exists", engine.type === "local" ? capabilityKey(engine.handle) : null],
     async () => {
       if (engine.type !== "local") return true;
@@ -694,7 +695,10 @@ function EngineName({ engine }: { engine: Engine }) {
     },
   );
 
-  const hasError = engine.type === "local" && !isLoading && !fileExists;
+  const isMissing = engine.type === "local" && fileExists === false;
+  const inspectionFailed = engine.type === "local" && error !== undefined;
+  const hasError = isMissing || inspectionFailed;
+  const status = isMissing ? "(file missing)" : inspectionFailed ? `(${t("Common.Error")})` : "";
 
   return (
     <Group wrap="nowrap">
@@ -713,7 +717,7 @@ function EngineName({ engine }: { engine: Engine }) {
       )}
       <Stack gap={0}>
         <Text fw="bold" lineClamp={1} c={hasError ? "red" : undefined}>
-          {engine.name} {hasError ? "(file missing)" : ""}
+          {engine.name} {status}
         </Text>
         <Text size="xs" c="dimmed" style={{ wordWrap: "break-word" }} lineClamp={1}>
           {engine.type === "local" ? engine.filename : engine.url}
