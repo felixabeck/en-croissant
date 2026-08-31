@@ -101,12 +101,31 @@ export type DefaultEngine = Omit<LocalEngine, "handle" | "filename"> & {
     imageUrl?: string;
 };
 
-const defaultEngineManifestSchema = z
+/**
+ * The manifest document is unsigned. Per-entry signatures authenticate only the download URL and
+ * SHA-256, so path and other metadata remain untrusted until the backend validates them.
+ */
+export const defaultEngineManifestSchema = z
     .object({
         type: z.literal("local"),
         name: z.string().min(1),
         version: z.string(),
-        path: z.string().min(1),
+        path: z
+            .string()
+            .min(1)
+            // DEFENCE IN DEPTH: mirror the backend's relative-component checks; the backend
+            // remains the containment boundary (`src-tauri/src/infra/path_authority.rs`).
+            .refine(
+                (path) =>
+                    !path.includes("\0") &&
+                    !path.includes("\\") &&
+                    !path.startsWith("/") &&
+                    !/^[A-Za-z]:/.test(path) &&
+                    !path.includes("//") &&
+                    !path.endsWith("/") &&
+                    path.split("/").every((segment) => segment !== "." && segment !== ".."),
+                "path must contain only relative, non-traversing components",
+            ),
         downloadLink: z.string().url(),
         sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
         signature: z.string().min(1),
@@ -170,6 +189,8 @@ export function getBestMoves(
 export function useDefaultEngines(os: Platform | undefined, opened: boolean) {
     const { data, error, isLoading } = useSWR(opened ? os : null, async (os: Platform) => {
         const bmi2: boolean = await tauri.isBmi2Compatible();
+        // The manifest document is unsigned: per-entry signatures authenticate only
+        // `${downloadLink}\n${sha256}`; `path` and the other metadata are not covered.
         const url = new URL("/engines", "https://www.encroissant.org");
         url.searchParams.set("os", os);
         url.searchParams.set("bmi2", String(bmi2));

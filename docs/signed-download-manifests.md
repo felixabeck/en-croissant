@@ -1,6 +1,17 @@
-# Signed download manifests
+# Signed download artifacts — and the unsigned manifest around them
 
-The `/engines`, `/databases`, and `/puzzle_databases` production manifests are security boundaries. Every downloadable entry must contain:
+## Authentication scope
+
+The `/engines`, `/databases`, and `/puzzle_databases` manifest documents are unsigned. For each
+entry, `signature` authenticates only `downloadLink` together with `sha256`; `path`, `name`,
+`version`, `os`, `bmi2`, and `imageUrl` are not covered. The backend's `Component::Normal` check
+(`src-tauri/src/infra/path_authority.rs:2343-2364`) and `validate_components`
+(`src-tauri/src/infra/path_authority.rs:3436-3455`) remain the containment boundary. Manifest
+signing is not implemented here because `d-20260830-15` defers the fork's self-hosted manifest
+and download page to a later run.
+
+The `/engines`, `/databases`, and `/puzzle_databases` production endpoints provide metadata for
+downloadable artifacts. Every downloadable entry must contain:
 
 - `sha256`: exactly 64 hexadecimal characters for the downloaded bytes.
 - `signature`: a Minisign signature created by the release key whose artifact-verification public key is compiled into `src-tauri/src/fs.rs`.

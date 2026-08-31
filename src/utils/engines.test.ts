@@ -1,5 +1,53 @@
 import { describe, expect, it } from "vitest";
-import { engineSchema } from "./engines";
+import { defaultEngineManifestSchema, engineSchema } from "./engines";
+
+const manifestEntry = {
+    type: "local" as const,
+    name: "Stockfish",
+    version: "17",
+    downloadLink: "https://www.encroissant.org/engines/stockfish.zip",
+    sha256: "a".repeat(64),
+    signature: "minisign signature",
+    os: "linux" as const,
+    bmi2: true,
+};
+
+function parseManifestPath(path: string) {
+    return defaultEngineManifestSchema.safeParse({ ...manifestEntry, path });
+}
+
+describe("default engine manifest paths", () => {
+    it("accepts single- and multi-component engine paths", () => {
+        const accepted = ["stockfish", "stockfish-17/stockfish-ubuntu-x86-64-bmi2"];
+        // Compared as a whole so a failure names the offending path; `expect` takes no message
+        // argument under oxlint's `valid-expect`.
+        expect(accepted.map((path) => [path, parseManifestPath(path).success])).toStrictEqual(
+            accepted.map((path) => [path, true]),
+        );
+    });
+
+    it("rejects paths the backend cannot safely resolve", () => {
+        const rejected = [
+            ["/etc/passwd", "leading slash"],
+            ["../../evil", "parent-directory segment"],
+            ["a//b", "empty segment from a doubled slash"],
+            ["a/./b", "current-directory segment"],
+            ["a/", "trailing empty segment"],
+            ["/a", "leading slash"],
+            ["a\0b", "NUL"],
+            ["C:\\Windows\\system32", "backslash"],
+            ["C:/Windows/system32", "Windows drive prefix"],
+            ["C:evil", "Windows drive prefix"],
+        ] as const;
+
+        expect(
+            rejected.map(([path, reason]) => [
+                `${path}: ${reason}`,
+                parseManifestPath(path).success,
+            ]),
+        ).toStrictEqual(rejected.map(([path, reason]) => [`${path}: ${reason}`, false]));
+    });
+});
 
 describe("engine persistence", () => {
     it("accepts public metadata with an opaque native handle", () => {

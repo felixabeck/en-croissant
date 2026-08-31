@@ -59,7 +59,8 @@ These are real trust transitions in this repository, not a generic security chec
   engine, database and puzzle operations and verifies a Minisign payload at
   `src-tauri/src/fs.rs:206-239`; the downloaded bytes are hashed and compared before commit at
   `src-tauri/src/fs.rs:454-463`. The exact URL/hash payload and rejection of unsigned legacy
-  entries are part of `docs/signed-download-manifests.md:3-22`.
+  entries are part of the "Signed payload" and "Authentication scope" sections of
+  `docs/signed-download-manifests.md`.
 
 There is no separate refresh-token type or refresh endpoint in these named files today. Do not
 invent a current refresh flow or report its absence as a defect; review any diff that introduces
@@ -110,7 +111,7 @@ one for the same native-only storage and lifetime guarantees as the existing acc
    `/engines`, `/databases` or `/puzzle_databases` path, require the complete schema, exactly
    64 hexadecimal SHA-256 characters, the compiled release key, and a cryptographic signature
    over the exact URL plus lowercase digest described at
-   `docs/signed-download-manifests.md:3-14`. Check that missing fields cannot short-circuit
+   `docs/signed-download-manifests.md`. Check that missing fields cannot short-circuit
    verification, that the signature is verified before transport, that streamed bytes are hashed,
    and that the digest comparison gates extraction and atomic installation. Reject non-cryptographic
    comparisons, computed-but-unused digests, URL normalisation that changes the signed bytes, and
