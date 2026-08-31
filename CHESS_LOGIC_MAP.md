@@ -27,7 +27,6 @@ It holds no bare collections; each concern is behind a type that owns its own cl
 | `puzzle_cache` | `Arc<Mutex<PuzzleCache>>` | puzzle sets |
 | `http_transport` | `Arc<dyn infra::net::DownloadTransport>` | outbound HTTP, swappable in tests |
 | `download_registry` | `Arc<fs::DownloadRegistry>` | in-flight downloads |
-| `path_grants` | `infra::path::PathGrants` | per-path filesystem grants |
 
 `sound::SoundServerPort` and `sound::SoundShutdownTx` are managed separately (`main.rs:1328-1353`),
 because the local sound server (Linux) may fail to bind and the app must still start.
@@ -36,7 +35,7 @@ Modules: `chess` (engine analysis commands), `engine/{process,types,uci}` (UCI s
 `db/{mod,search,repository,ops,encoding,search_index,models,schema,migrations}`, `game` (active game
 lifecycle), `pgn` + `lexer` (parsing and the offset index), `opening`, `puzzle`, `fs`, `oauth`,
 `credentials`, `lichess`, `chesscom`, `progress`, `sound`, `file_workspace`, and `infra/*`
-(`path_authority`, `path`, `net`, `fs`, `blocking`, `runtime`, `validation`).
+(`path_authority`, `net`, `fs`, `blocking`, `runtime`, `validation`).
 
 ## 2. The renderer boundary
 

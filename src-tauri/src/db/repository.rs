@@ -10,7 +10,7 @@ use diesel::{
     Connection, SqliteConnection,
 };
 
-use crate::{error::Error, infra::path::safe_canonicalize};
+use crate::error::Error;
 
 use super::{migrations, ConnectionOptions, DatabaseSchemaIdentity};
 
@@ -374,7 +374,10 @@ impl DatabaseRepository {
 
     fn entry(&self, path: &Path) -> Result<(PathBuf, Arc<DatabaseEntry>), Error> {
         let canonical = canonical_database_path(path)?;
-        let key = crate::infra::path::to_utf8_str(&canonical)?.to_owned();
+        let key = canonical
+            .to_str()
+            .ok_or_else(|| Error::InvalidInput("Path is not valid UTF-8".into()))?
+            .to_owned();
         let mut state = self
             .state
             .lock()
@@ -555,10 +558,43 @@ impl DatabaseEntry {
     }
 }
 
+/// Normalizes a path for use as a repository identity key.
+///
+/// This is not a containment check. It canonicalizes the existing ancestor and preserves any
+/// missing suffix, so a non-existent final component is accepted.
 fn canonical_database_path(path: &Path) -> Result<PathBuf, Error> {
-    // AuthorizedPath already does this for command inputs. Keeping it here
-    // makes internal callers follow the same identity rule.
-    safe_canonicalize(path)
+    if path.exists() {
+        let meta = std::fs::symlink_metadata(path)?;
+        if meta.is_symlink() {
+            return Err(Error::InvalidInput("Symlink target is not allowed".into()));
+        }
+        let canon = std::fs::canonicalize(path)?;
+        return Ok(canon);
+    }
+
+    let mut current = path.to_path_buf();
+    let mut components_to_add = Vec::new();
+    while !current.exists() {
+        if let Some(file_name) = current.file_name() {
+            components_to_add.push(file_name.to_os_string());
+        } else {
+            return Err(Error::InvalidInput("Invalid path component".into()));
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+
+    if !current.exists() {
+        return Err(Error::InvalidInput("No existing ancestor".into()));
+    }
+
+    let mut canon = std::fs::canonicalize(&current)?;
+    for comp in components_to_add.into_iter().rev() {
+        canon.push(comp);
+    }
+
+    Ok(canon)
 }
 
 #[cfg(test)]

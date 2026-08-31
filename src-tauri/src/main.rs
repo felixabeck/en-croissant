@@ -405,8 +405,6 @@ pub struct AppState {
     pub http_transport: Arc<dyn crate::infra::net::DownloadTransport>,
     #[derivative(Default(value = "Arc::new(crate::fs::DownloadRegistry::default())"))]
     pub download_registry: Arc<crate::fs::DownloadRegistry>,
-    #[derivative(Default(value = "Default::default()"))]
-    pub path_grants: crate::infra::path::PathGrants,
 }
 
 #[tauri::command]
