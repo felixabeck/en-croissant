@@ -1,5 +1,5 @@
 import { tauri } from "@/platform/tauri";
-import { normalizeError } from "@/platform/errors";
+import { runDestructiveWithRefresh } from "@/platform/errors";
 import { Button, Center, Group, Paper, Select, Stack, Text, TextInput, Title } from "@mantine/core";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
@@ -327,18 +327,10 @@ export default function FilesPage() {
               setTrashed(null);
               await mutate().catch(() => {});
             };
-            try {
-              await tauri.permanentlyDeleteWorkspaceEntry(workspace!, purgeTarget.handle);
-            } catch (cause) {
-              // `applied-despite-error` means files were destroyed even though this failed, so
-              // what is on screen no longer matches the disk. Any other failure left the entry
-              // in the trash, where the banner correctly still offers to restore it.
-              if (normalizeError(cause).category === "applied-despite-error") {
-                await relist();
-              }
-              throw cause;
-            }
-            await relist();
+            await runDestructiveWithRefresh(
+              () => tauri.permanentlyDeleteWorkspaceEntry(workspace!, purgeTarget.handle),
+              relist,
+            );
           }}
         />
       )}

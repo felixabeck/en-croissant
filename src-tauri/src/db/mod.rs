@@ -16,7 +16,7 @@ use crate::{
     },
     error::Error,
     infra::{
-        fs::AtomicFileOutcome,
+        fs::{remove_optional_regular_at, remove_regular_at, AtomicFileOutcome},
         path_authority::{DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathOperation},
     },
     opening::get_opening_from_setup,
@@ -40,7 +40,8 @@ use shakmaty::{
 };
 use specta::Type;
 use std::{
-    fs::{remove_file, File},
+    ffi::OsStr,
+    fs::File,
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
     time::{Instant, SystemTime},
@@ -1768,29 +1769,122 @@ pub async fn delete_database(
 ) -> Result<(), Error> {
     let handle = file.clone();
     let file = resolve_database(&state, &file, PathOperation::DatabaseMutate)?;
-
-    state.database_repository.delete_exclusive(&file, || {
-        for path in [
-            file.clone(),
-            get_index_path(&file),
-            legacy_index_path(&file),
-        ] {
-            if let Err(error) = remove_file(path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    return Err(Error::from(error));
-                }
-            }
-        }
-        search::invalidate_search_cache(&state, &file);
-        Ok(())
-    })?;
-    state
+    let target = state
         .pgn_path_authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .remove_database(&handle)
+        .database_file_target(&handle, PathOperation::DatabaseMutate)?;
+    let expected_source = IndexSource::from_database_identity(
+        &state
+            .database_repository
+            .database_identity_expected(&file, target.identity)?,
+    )?;
+    let mut primary_gone = false;
+    let mut unlinked = 0;
+    let unlink_result = state.database_repository.delete_exclusive(&file, || {
+        unlinked = unlink_database_files(&target, &expected_source)?;
+        primary_gone = true;
+        Ok(())
+    });
+    if let Err(error) = unlink_result {
+        return finish_database_deletion(primary_gone, unlinked, Err(error));
+    }
+
+    search::invalidate_search_cache(&state, &file);
+    let registry_result = (|| {
+        state
+            .pgn_path_authority
+            .lock()
+            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+            .remove_database(&handle)
+    })();
+    finish_database_deletion(primary_gone, unlinked, registry_result)
+}
+
+fn finish_database_deletion(
+    primary_gone: bool,
+    unlinked: usize,
+    tail: Result<(), Error>,
+) -> Result<(), Error> {
+    match tail {
+        Ok(()) => Ok(()),
+        Err(error) if !primary_gone => Err(error),
+        Err(error @ Error::CommittedDurabilityUncertain(_)) => Err(error),
+        Err(error) => Err(Error::PartialRemoval {
+            removed_entries: unlinked,
+            cause: Box::new(error),
+        }),
+    }
+}
+
+#[cfg(unix)]
+fn unlink_database_files(
+    target: &DatabaseFileTarget,
+    expected_source: &IndexSource,
+) -> Result<usize, Error> {
+    use rustix::fs::{self as rfs, AtFlags, FileType};
+
+    fn existed_as_regular(parent: &File, leaf: &OsStr) -> bool {
+        rfs::statat(parent, leaf, AtFlags::SYMLINK_NOFOLLOW)
+            .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile)
+    }
+
+    let preferred_leaf = search_index::preferred_sidecar_leaf(&target.leaf);
+    let legacy_leaf = search_index::legacy_sidecar_leaf(&target.leaf);
+    let mut unlinked = 0;
+
+    let preferred_existed = existed_as_regular(&target.parent, &preferred_leaf);
+    remove_optional_regular_at(&target.parent, &preferred_leaf)?;
+    unlinked += usize::from(preferred_existed);
+
+    if legacy_leaf != preferred_leaf
+        && legacy_sidecar_matches(&target.parent, &legacy_leaf, expected_source)?
+    {
+        let legacy_existed = existed_as_regular(&target.parent, &legacy_leaf);
+        remove_optional_regular_at(&target.parent, &legacy_leaf)?;
+        unlinked += usize::from(legacy_existed);
+    }
+
+    let stat = rfs::statat(&target.parent, &target.leaf, AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|error| Error::Io(Box::new(error.into())))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+        || (stat.st_dev, stat.st_ino) != target.identity
+    {
+        return Err(Error::Conflict("database changed before deletion".into()));
+    }
+    remove_regular_at(&target.parent, &target.leaf)?;
+    Ok(unlinked + 1)
+}
+
+#[cfg(unix)]
+fn legacy_sidecar_matches(
+    parent: &File,
+    leaf: &OsStr,
+    expected_source: &IndexSource,
+) -> Result<bool, Error> {
+    use rustix::{
+        fs::{self as rfs, Mode, OFlags},
+        io::Errno,
+    };
+
+    let file = match rfs::openat(
+        parent,
+        leaf,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(file) => File::from(file),
+        Err(error) if error == Errno::NOENT || error == Errno::LOOP => return Ok(false),
+        Err(error) => return Err(Error::Io(Box::new(error.into()))),
+    };
+    if !file.metadata()?.is_file() {
+        return Ok(false);
+    }
+    Ok(MmapSearchIndex::open_file(file).is_ok_and(|archive| archive.source() == expected_source))
 }
 
 fn delete_orphaned_data(db: &mut SqliteConnection) -> Result<(), Error> {
@@ -2316,6 +2410,110 @@ pub async fn preload_reference_db(
 mod tests {
     use super::*;
     use pgn_reader::BufferedReader;
+
+    #[test]
+    fn finish_database_deletion_preserves_sidecar_only_error() {
+        let result = finish_database_deletion(
+            false,
+            1,
+            Err(Error::from(std::io::Error::other("sidecar failure"))),
+        );
+        let error = result.unwrap_err();
+        assert!(matches!(error, Error::Io(_)));
+        assert!(!error.to_string().starts_with("Partially removed:"));
+    }
+
+    #[test]
+    fn finish_database_deletion_wraps_post_primary_failure() {
+        let error =
+            finish_database_deletion(true, 1, Err(Error::Conflict("x".into()))).unwrap_err();
+        assert!(matches!(error, Error::PartialRemoval { .. }));
+        assert!(error.to_string().starts_with("Partially removed:"));
+    }
+
+    #[test]
+    fn finish_database_deletion_preserves_durability_uncertainty() {
+        let error = finish_database_deletion(
+            true,
+            1,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::RegistryReplacement,
+            )),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::RegistryReplacement)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_database_stops_at_invalid_preferred_sidecar_before_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("ordered.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        std::fs::create_dir(get_index_path(&database)).unwrap();
+        let (parent, leaf) =
+            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
+                .unwrap();
+        let target = DatabaseFileTarget {
+            parent,
+            leaf,
+            identity: expected_source.object,
+        };
+
+        let error = unlink_database_files(&target, &expected_source).unwrap_err();
+        assert!(matches!(error, Error::InvalidInput(_)));
+        assert!(database.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_database_leaves_colliding_legacy_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let collision_owner = dir.path().join("foo");
+        let database = dir.path().join("foo.db3");
+        std::fs::write(&collision_owner, b"database").unwrap();
+        std::fs::write(&database, b"database").unwrap();
+        let shared_sidecar = get_index_path(&collision_owner);
+        assert_eq!(shared_sidecar, legacy_index_path(&database));
+        SearchIndex::default()
+            .write_to_with_source(
+                &shared_sidecar,
+                IndexSource::from_database(&collision_owner, 0).unwrap(),
+            )
+            .unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let (parent, leaf) =
+            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
+                .unwrap();
+        let target = DatabaseFileTarget {
+            parent,
+            leaf,
+            identity: expected_source.object,
+        };
+
+        assert_eq!(unlink_database_files(&target, &expected_source).unwrap(), 1);
+        assert!(!database.exists());
+        assert!(shared_sidecar.exists());
+    }
+
+    #[test]
+    fn delete_database_uses_fd_relative_target_and_outcome_mapper() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("pub async fn delete_database")
+            .nth(1)
+            .unwrap()
+            .split("fn finish_database_deletion")
+            .next()
+            .unwrap();
+        assert!(body.contains("finish_database_deletion"));
+        assert!(body.contains("database_file_target"));
+        assert!(!body.contains("remove_file"));
+    }
 
     #[test]
     fn search_index_generation_uses_fd_relative_atomic_writer() {

@@ -1,6 +1,7 @@
 import type { DatabaseHandle } from "@/bindings";
 import type { SuccessDatabaseInfo } from "@/utils/db";
 import { databaseHandleKey, sameDatabaseHandle } from "@/utils/db";
+import { runDestructiveWithRefresh } from "@/platform/errors";
 
 export type DatabaseRemovalState = {
     selected: string | null;
@@ -26,6 +27,8 @@ export async function deleteDatabaseAndInvalidate(
     remove: (database: DatabaseHandle) => Promise<unknown>,
     invalidate: (database: DatabaseHandle) => void,
 ): Promise<void> {
-    await remove(deleted);
-    invalidate(deleted);
+    await runDestructiveWithRefresh(
+        () => remove(deleted),
+        () => invalidate(deleted),
+    );
 }

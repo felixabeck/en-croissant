@@ -72,3 +72,24 @@ export function normalizeError(error: unknown): AppError {
 
     return { category, message, diagnostic: message };
 }
+
+export async function runDestructiveWithRefresh<T>(
+    run: () => Promise<T>,
+    refresh: () => void | Promise<void>,
+): Promise<T> {
+    try {
+        const result = await run();
+        await refresh();
+        return result;
+    } catch (cause) {
+        if (normalizeError(cause).category === "applied-despite-error") {
+            try {
+                await refresh();
+            } catch {
+                // A refresh failure must not replace the destructive outcome.
+            }
+            throw cause;
+        }
+        throw cause;
+    }
+}

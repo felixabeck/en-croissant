@@ -1,5 +1,5 @@
-import { describe, expect, test } from "vitest";
-import { normalizeError } from "./errors";
+import { describe, expect, test, vi } from "vitest";
+import { normalizeError, runDestructiveWithRefresh } from "./errors";
 
 describe("normalizeError", () => {
     test("redacts bearer tokens and local paths", () => {
@@ -28,5 +28,35 @@ describe("normalizeError", () => {
         "Committed but durability uncertain: invalid argument",
     ])("categorizes destructive changes that could not be fully reported", (message) => {
         expect(normalizeError(new Error(message)).category).toBe("applied-despite-error");
+    });
+});
+
+describe("runDestructiveWithRefresh", () => {
+    test("refreshes after success", async () => {
+        const refresh = vi.fn();
+        await expect(runDestructiveWithRefresh(async () => "done", refresh)).resolves.toBe("done");
+        expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    test("refreshes and preserves an applied-despite-error rejection", async () => {
+        const refresh = vi.fn();
+        const error = new Error(
+            "Partially removed: 1 entries were deleted before failing: conflict",
+        );
+        await expect(
+            runDestructiveWithRefresh(async () => Promise.reject(error), refresh),
+        ).rejects.toBe(error);
+        expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    test("does not refresh after an ordinary rejection", async () => {
+        const refresh = vi.fn();
+        await expect(
+            runDestructiveWithRefresh(
+                async () => Promise.reject(new Error("native failed")),
+                refresh,
+            ),
+        ).rejects.toThrow("native failed");
+        expect(refresh).not.toHaveBeenCalled();
     });
 });
