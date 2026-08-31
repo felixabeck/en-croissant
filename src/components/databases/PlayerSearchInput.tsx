@@ -4,7 +4,6 @@ import { IconSearch } from "@tabler/icons-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type DatabaseHandle, type Player } from "@/bindings";
 import { query_players } from "@/utils/db";
-import { unwrap } from "@/utils/unwrap";
 
 export function PlayerSearchInput({
   label,
@@ -30,13 +29,16 @@ export function PlayerSearchInput({
       return;
     }
 
-    tauri.getPlayer(file, value).then((res) => {
-      if (playerLookupVersion.current !== lookupVersion) return;
-      const player = unwrap(res);
-      if (player?.name) {
-        setTempValue(player.name);
-      }
-    });
+    tauri
+      .getPlayer(file, value)
+      .then((res) => {
+        if (playerLookupVersion.current !== lookupVersion) return;
+        const player = res;
+        if (player?.name) {
+          setTempValue(player.name);
+        }
+      })
+      .catch(() => {});
   }, [file, value]);
 
   async function handleChange(val: string) {

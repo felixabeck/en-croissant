@@ -1,0 +1,99 @@
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  countPgnGames: vi.fn(),
+  notify: vi.fn(),
+  setCurrentTab: vi.fn(),
+  setGames: vi.fn(),
+}));
+const currentTabAtom = {};
+const currentTab = {
+  gameOrigin: {
+    kind: "file" as const,
+    gameNumber: 0,
+    file: {
+      type: "file" as const,
+      handle: { id: { id: "workspace-token" }, kind: "fileWorkspace" as const },
+      name: "games.pgn",
+      numGames: 3,
+      metadata: { type: "game" as const, tags: [] },
+      lastModified: 1,
+    },
+  },
+};
+
+vi.mock("@/platform/tauri", () => ({ tauri: { countPgnGames: mocks.countPgnGames } }));
+vi.mock("@/state/atoms", () => ({ currentTabAtom }));
+vi.mock("jotai", () => ({
+  useAtom: () => [currentTab, mocks.setCurrentTab],
+}));
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
+vi.mock("@mantine/core", () => {
+  const element = ({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
+    <div {...props}>{children}</div>
+  );
+  return {
+    Code: element,
+    Divider: element,
+    Group: element,
+    Text: element,
+    Tooltip: element,
+  };
+});
+vi.mock("@tabler/icons-react", () => ({ IconReload: () => null }));
+vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("@/components/common/IconAction", () => ({
+  IconAction: ({
+    children,
+    label,
+    onClick,
+  }: {
+    children: React.ReactNode;
+    label: string;
+    onClick: () => void;
+  }) => (
+    <button type="button" aria-label={label} onClick={onClick}>
+      {children}
+    </button>
+  ),
+}));
+vi.mock("@/utils/format", () => ({ formatNumber: (value: number) => String(value) }));
+vi.mock("@/utils/tabs", () => ({
+  getTabFile: (tab: typeof currentTab) => tab.gameOrigin.file,
+}));
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+let container: HTMLDivElement;
+let root: Root;
+
+beforeEach(async () => {
+  vi.clearAllMocks();
+  mocks.countPgnGames.mockRejectedValue(new Error("permission denied"));
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  const FileInfo = (await import("./FileInfo")).default;
+  await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
+});
+
+afterEach(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+test("notifies when reloading a file fails without clearing its games", async () => {
+  await act(async () => {
+    container.querySelector("button")!.click();
+    await Promise.resolve();
+  });
+
+  expect(mocks.notify).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: "permission denied",
+  });
+  expect(mocks.setGames).not.toHaveBeenCalled();
+});

@@ -1,5 +1,7 @@
 import { tauri } from "@/platform/tauri";
+import { errorUnlessCancelled } from "@/platform/errors";
 import { Code, Divider, Group, Text, Tooltip } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { IconReload } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { useTranslation } from "react-i18next";
@@ -7,7 +9,6 @@ import { currentTabAtom } from "@/state/atoms";
 import { IconAction } from "@/components/common/IconAction";
 import { formatNumber } from "@/utils/format";
 import { getTabFile } from "@/utils/tabs";
-import { unwrap } from "@/utils/unwrap";
 
 function FileInfo({
   setGames,
@@ -19,6 +20,37 @@ function FileInfo({
   const tabFile = getTabFile(tab);
 
   if (!tabFile) return null;
+  async function reload() {
+    try {
+      const v = await tauri.countPgnGames(tabFile.handle);
+      setCurrentTab((prev) => {
+        if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
+          return prev;
+        }
+        return {
+          ...prev,
+          gameOrigin: {
+            ...prev.gameOrigin,
+            file: {
+              ...prev.gameOrigin.file,
+              numGames: v,
+            },
+          },
+        };
+      });
+      setGames(new Map());
+    } catch (cause) {
+      const visible = errorUnlessCancelled(cause);
+      if (visible) {
+        notifications.show({
+          color: "red",
+          title: t("Common.Error"),
+          message: visible.message,
+        });
+      }
+    }
+  }
+
   return (
     <>
       <Group justify="space-between" py="sm" px="md">
@@ -37,26 +69,7 @@ function FileInfo({
             label={t("Files.Reload")}
             variant="outline"
             size="sm"
-            onClick={() =>
-              tauri.countPgnGames(tabFile.handle).then((v) => {
-                setCurrentTab((prev) => {
-                  if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
-                    return prev;
-                  }
-                  return {
-                    ...prev,
-                    gameOrigin: {
-                      ...prev.gameOrigin,
-                      file: {
-                        ...prev.gameOrigin.file,
-                        numGames: unwrap(v),
-                      },
-                    },
-                  };
-                });
-                setGames(new Map());
-              })
-            }
+            onClick={() => void reload()}
           >
             <IconReload size="1rem" />
           </IconAction>

@@ -1,4 +1,5 @@
 import { tauri } from "@/platform/tauri";
+import { errorUnlessCancelled } from "@/platform/errors";
 import {
   Badge,
   Box,
@@ -13,6 +14,7 @@ import {
   UnstyledButton,
 } from "@mantine/core";
 import { useAtom, useSetAtom, useStore } from "jotai";
+import { notifications } from "@mantine/notifications";
 import { useCallback, useEffect, useState } from "react";
 import {
   activeTabAtom,
@@ -25,7 +27,6 @@ import {
 } from "@/state/atoms";
 import type { Tab } from "@/utils/tabs";
 import { createTab } from "@/utils/tabs";
-import { unwrap } from "@/utils/unwrap";
 import CreateRepertoireModal from "./CreateRepertoireModal";
 import ImportModal from "./ImportModal";
 import classes from "./NewTabHome.module.css";
@@ -148,44 +149,55 @@ export default function NewTabHome({ id }: { id: string }) {
 
   const openRecentFile = useCallback(
     async (file: RecentFile) => {
-      const [pgnResult, countResult] = await Promise.all([
-        tauri.readGames(file.handle, 0, 0),
-        tauri.countPgnGames(file.handle),
-      ]);
-      const pgn = unwrap(pgnResult);
-      const numGames = unwrap(countResult);
-      const tabId = await createTab({
-        tab: {
-          name: file.name,
-          type: "analysis",
-        },
-        setTabs,
-        setActiveTab,
-        pgn: pgn[0] || "",
-        gameOrigin: {
-          kind: "file",
-          gameNumber: 0,
-          file: {
-            type: "file",
+      try {
+        const [pgnResult, countResult] = await Promise.all([
+          tauri.readGames(file.handle, 0, 0),
+          tauri.countPgnGames(file.handle),
+        ]);
+        const pgn = pgnResult;
+        const numGames = countResult;
+        const tabId = await createTab({
+          tab: {
             name: file.name,
-            handle: file.handle,
-            numGames,
-            metadata: { type: file.type, tags: [] },
-            lastModified: Math.floor(Date.now() / 1000),
+            type: "analysis",
           },
-        },
-      });
-      if (file.type === "repertoire") {
-        store.set(tabFamily(tabId), "practice");
+          setTabs,
+          setActiveTab,
+          pgn: pgn[0] || "",
+          gameOrigin: {
+            kind: "file",
+            gameNumber: 0,
+            file: {
+              type: "file",
+              name: file.name,
+              handle: file.handle,
+              numGames,
+              metadata: { type: file.type, tags: [] },
+              lastModified: Math.floor(Date.now() / 1000),
+            },
+          },
+        });
+        if (file.type === "repertoire") {
+          store.set(tabFamily(tabId), "practice");
+        }
+        store.set(addRecentFileAtom, {
+          name: file.name,
+          handle: file.handle,
+          type: file.type,
+        });
+        navigate({ to: "/" });
+      } catch (cause) {
+        const visible = errorUnlessCancelled(cause);
+        if (visible) {
+          notifications.show({
+            color: "red",
+            title: t("Common.Error"),
+            message: visible.message,
+          });
+        }
       }
-      store.set(addRecentFileAtom, {
-        name: file.name,
-        handle: file.handle,
-        type: file.type,
-      });
-      navigate({ to: "/" });
     },
-    [setTabs, setActiveTab, store, navigate],
+    [setTabs, setActiveTab, store, navigate, t],
   );
 
   const cards = [

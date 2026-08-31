@@ -5,10 +5,8 @@ const native = vi.hoisted(() => ({
     killEngine: vi.fn(),
     getBestMoves: vi.fn(),
 }));
-const unwrap = vi.hoisted(() => vi.fn((value) => value));
 
 vi.mock("@/platform/tauri", () => ({ tauri: native }));
-vi.mock("./unwrap", () => ({ unwrap }));
 
 import { getBestMoves, killEngine, stopEngine } from "./engines";
 
@@ -23,20 +21,18 @@ const engine = {
 
 describe("engine IPC controllers", () => {
     it("stops and kills the selected engine through the opaque engine id", async () => {
-        native.stopEngine.mockResolvedValue({ ok: true });
-        native.killEngine.mockResolvedValue({ ok: true });
+        native.stopEngine.mockResolvedValue(undefined);
+        native.killEngine.mockResolvedValue(undefined);
 
         await expect(stopEngine(engine, "tab-1")).resolves.toBeUndefined();
         await expect(killEngine(engine, "tab-1")).resolves.toBeUndefined();
 
         expect(native.stopEngine).toHaveBeenCalledWith("engine-1", "tab-1");
         expect(native.killEngine).toHaveBeenCalledWith("engine-1", "tab-1");
-        expect(unwrap).toHaveBeenCalledWith({ ok: true });
     });
 
     it("returns native analysis results and preserves native failures", async () => {
-        native.getBestMoves.mockResolvedValue({ ok: [12, []] });
-        unwrap.mockImplementationOnce((value) => value.ok);
+        native.getBestMoves.mockResolvedValue([12, []]);
 
         await expect(
             getBestMoves(engine, "tab-2", { t: "Depth", c: 12 }, {} as never),

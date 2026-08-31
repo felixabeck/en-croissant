@@ -12,7 +12,6 @@ import {
     type EngineOptions,
     type GoMode,
 } from "@/bindings";
-import { unwrap } from "./unwrap";
 
 export const requiredEngineSettings = ["MultiPV", "Threads", "Hash"];
 
@@ -164,15 +163,11 @@ export const engineSchema = z.union([localEngineSchema, remoteEngineSchema]);
 export type Engine = z.output<typeof engineSchema>;
 
 export function stopEngine(engine: LocalEngine, tab: string): Promise<void> {
-    return tauri.stopEngine(engine.id, tab).then((r) => {
-        unwrap(r);
-    });
+    return tauri.stopEngine(engine.id, tab);
 }
 
 export function killEngine(engine: LocalEngine, tab: string): Promise<void> {
-    return tauri.killEngine(engine.id, tab).then((r) => {
-        unwrap(r);
-    });
+    return tauri.killEngine(engine.id, tab);
 }
 
 export function getBestMoves(
@@ -181,9 +176,7 @@ export function getBestMoves(
     goMode: GoMode,
     options: EngineOptions,
 ): Promise<[number, BestMoves[]] | null> {
-    return tauri
-        .getBestMoves(engine.id, engine.handle, tab, goMode, options)
-        .then((r) => unwrap(r));
+    return tauri.getBestMoves(engine.id, engine.handle, tab, goMode, options);
 }
 
 export function useDefaultEngines(os: Platform | undefined, opened: boolean) {
