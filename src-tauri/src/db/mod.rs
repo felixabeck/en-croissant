@@ -2582,6 +2582,28 @@ mod tests {
         assert!(database.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn unlink_database_files_skips_a_legacy_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("legacy-dir.db3");
+        std::fs::write(&database, b"database").unwrap();
+        std::fs::create_dir(legacy_index_path(&database)).unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let (parent, leaf) =
+            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
+                .unwrap();
+        let target = DatabaseFileTarget {
+            parent,
+            leaf,
+            identity: expected_source.object,
+        };
+
+        assert_eq!(unlink_database_files(&target, &expected_source).unwrap(), 1);
+        assert!(!database.exists());
+        assert!(legacy_index_path(&database).is_dir());
+    }
+
     #[test]
     fn delete_database_uses_fd_relative_target_and_outcome_mapper() {
         let source = include_str!("mod.rs");
