@@ -2939,7 +2939,7 @@ records why the checker was built rather than the gap annotated onto `f-20260830
   returning an error rather than asserting.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
 
-* **Handled:** the report-path `assert_eq!(best_moves.len(), real_multipv)` is gone. The sequence guard in `ingest_info_line` is the collector invariant; a complete set that is mixed-depth or shallower still clears without panicking. Proof: `ingest_mixed_depth_set_is_complete_but_not_publishable`, `ingest_shallower_than_last_depth_is_not_publishable`, `ingest_rejects_out_of_sequence_multipv`.
+* **Handled:** the report-path `assert_eq!(proc.best_moves.len(), proc.real_multipv as usize)` is gone. The sequence guard in `ingest_info_line` is the collector invariant; a complete set that is mixed-depth or shallower still clears without panicking. Proof: `ingest_mixed_depth_set_is_complete_but_not_publishable`, `ingest_shallower_than_last_depth_is_not_publishable`, `ingest_rejects_out_of_sequence_multipv`.
 * **Commits:** `10192873`
 * **Rejected:** returning an `Error` from both loops for a mismatch the surrounding conditions cannot produce.
 
@@ -4264,8 +4264,8 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 * **Where:** `src-tauri/src/engine/process.rs`, `ChildUciIo::terminate` after `start_kill()` —
   `self.child.wait().await` with no timeout.
 * **Defect:** the graceful `quit` wait is bounded by `deadlines.quit`, but the force-kill path
-  then awaits reaping with no deadline. A child that ignores SIGKILL (uninterruptible sleep)
-  or a wait that never returns stalls `EngineRuntime::terminate`, so the new stderr-drain
+  then awaits reaping with no deadline. A child in uninterruptible sleep cannot be delivered
+  SIGKILL, so `wait` never returns. That stalls `EngineRuntime::terminate`; the new stderr-drain
   timeout is never reached and tab/app shutdown waits forever.
 * **Why it matters:** the comment at the site says a failed graceful wait is never a reason
   to abandon the child, and that is a real invariant — bounding the wait leaks a zombie.
