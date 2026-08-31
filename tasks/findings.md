@@ -2924,7 +2924,7 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 
 ### `assert_eq!` on engine-subprocess output in one of two structurally identical loops
 
-* **ID:** f-20260830-43 · **Status:** open · **Area:** engine-uci · **Root:** panic-on-untrusted-input · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-43 · **Status:** handled · **Area:** engine-uci · **Root:** panic-on-untrusted-input · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/chess.rs:780`, against the sibling loop at `:419-421`.
 * **Defect:** `assert_eq!(proc.best_moves.len(), proc.real_multipv as usize)` fires on values derived
   entirely from engine stdout — `chess.rs:402` reads the line, `:407` parses it, `:409`
@@ -2938,6 +2938,10 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 * **Fix shape:** decide which loop is right; if the invariant is real, enforce it in both by
   returning an error rather than asserting.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+* **Handled:** the report-path `assert_eq!(best_moves.len(), real_multipv)` is gone. The sequence guard in `ingest_info_line` is the collector invariant; a complete set that is mixed-depth or shallower still clears without panicking. Proof: `ingest_mixed_depth_set_is_complete_but_not_publishable`, `ingest_shallower_than_last_depth_is_not_publishable`, `ingest_rejects_out_of_sequence_multipv`.
+* **Commits:** `10192873`
+* **Rejected:** returning an `Error` from both loops for a mismatch the surrounding conditions cannot produce.
 
 ---
 
@@ -4077,7 +4081,7 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 
 ### `analyze_game` accepts `lowerbound`/`upperbound` scores as final, while the interactive path rejects them
 
-* **ID:** f-20260831-10 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260831-10 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/chess.rs`, the report path (`analyze_game`) writing into
   `current_analysis.best`; the interactive path a few hundred lines earlier already rejects bound
   scores.
@@ -4095,6 +4099,10 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
   near-identical copy.
 * **Found by:** the `review-engine-protocol` lens (confidence 99) over the cumulative diff of the
   `native-fs` cluster, 2026-08-31, and independently during that cluster's plan review. Pre-existing.
+
+* **Handled:** both UCI loops go through `ingest_info_line`, which drops `lowerbound`/`upperbound` scores, enforces sequential MultiPV, and returns a complete set only when the last line is `real_multipv`. `analyze_game` can no longer store a bound as the annotated evaluation. Proof: `ingest_skips_lowerbound_and_keeps_the_exact_score`, `ingest_skips_upperbound`, `ingest_bound_between_pvs_does_not_desync_sequence`.
+* **Commits:** `10192873`
+* **Rejected:** copying the four-line bound skip into the report loop only (the two loops would drift again); taking the rest of the `engine-uci` area cluster through `build`.
 
 ### Removing a local engine deletes renderer state without terminating its process
 
