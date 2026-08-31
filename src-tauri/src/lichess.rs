@@ -81,7 +81,8 @@ async fn authenticated_json(
 ) -> Result<String, Error> {
     let token = state
         .credentials
-        .token(handle)?
+        .token_async(handle.clone())
+        .await?
         .ok_or_else(|| Error::InvalidInput("Lichess account is unavailable".into()))?;
     let response = client()?.get(url).bearer_auth(token).send().await?;
     if !response.status().is_success() {

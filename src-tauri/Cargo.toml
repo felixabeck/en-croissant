@@ -75,7 +75,7 @@ bytes = "1.12.1"
 base64 = "0.22.1"
 uuid = { version = "1.24.0", features = ["v4"] }
 rustix = { version = "1.1.4", features = ["fs"] }
-keyring = "3.6.3"
+keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust", "apple-native", "windows-native"] }
 sha2 = "0.10"
 minisign-verify = "0.2.2"
 

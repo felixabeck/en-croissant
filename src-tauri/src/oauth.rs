@@ -438,8 +438,10 @@ pub async fn authenticate(
     let job = lifecycle.create_job();
     let job_id = job.id.clone();
     let opener = app.clone();
-    let completed_account = Arc::new(std::sync::Mutex::new(None));
-    let account_for_delivery = completed_account.clone();
+    let stashed_token = Arc::new(std::sync::Mutex::new(None));
+    let token_for_delivery = stashed_token.clone();
+    let username_for_store = username.clone();
+    let credentials_for_store = credentials.clone();
     tauri::async_runtime::spawn(async move {
         let result = authenticate_internal(
             username.clone(),
@@ -451,12 +453,10 @@ pub async fn authenticate(
                     .map_err(|source| source.to_string())
             },
             move |access_token| {
-                let account = credentials
-                    .store_lichess_token(username, access_token)
-                    .map_err(|_| "credential storage failed".to_string())?;
-                *account_for_delivery
+                *token_for_delivery
                     .lock()
-                    .expect("OAuth account mutex poisoned") = Some(account);
+                    .map_err(|_| "OAuth token stash was unavailable".to_string())? =
+                    Some(access_token);
                 Ok(())
             },
             auth_internal_config(app.config()),
@@ -464,18 +464,37 @@ pub async fn authenticate(
         )
         .await;
         let status = match result {
-            Ok(()) => completed_account
-                .lock()
-                .expect("OAuth account mutex poisoned")
-                .clone()
-                .map_or(AuthenticationStatus::Failed, |account| {
-                    AuthenticationStatus::Succeeded { account }
-                }),
+            Ok(()) => match persist_stashed_lichess_token(
+                username_for_store,
+                credentials_for_store,
+                stashed_token,
+            )
+            .await
+            {
+                Ok(account) => AuthenticationStatus::Succeeded { account },
+                Err(source) => {
+                    error!("OAuth native credential persistence failed: {source}");
+                    AuthenticationStatus::Failed
+                }
+            },
             Err(_) => AuthenticationStatus::Failed,
         };
         lifecycle.complete_job(&job_id, status);
     });
     Ok(job)
+}
+
+async fn persist_stashed_lichess_token(
+    username: String,
+    credentials: Arc<crate::credentials::CredentialManager>,
+    stashed_token: Arc<std::sync::Mutex<Option<String>>>,
+) -> Result<LichessAccountMetadata, Error> {
+    let token = stashed_token
+        .lock()
+        .map_err(|_| Error::Conflict("OAuth token stash was unavailable".into()))?
+        .take()
+        .ok_or_else(|| Error::OAuthFailure(OAUTH_FAILURE.into()))?;
+    credentials.store_lichess_token_async(username, token).await
 }
 
 #[tauri::command]
@@ -510,7 +529,7 @@ async fn remove_lichess_account_internal<S: OAuthServices>(
     credentials: Arc<crate::credentials::CredentialManager>,
     services: &S,
 ) -> Result<LichessAccountRemoval, Error> {
-    let Some(token) = credentials.remove(&handle)? else {
+    let Some(token) = credentials.remove_async(handle).await? else {
         return Ok(LichessAccountRemoval::NotFound);
     };
     // The local removal is already durable. A provider outage is represented honestly without
@@ -550,7 +569,9 @@ async fn migrate_legacy_token_internal<S: OAuthServices>(
     if !verified_username.eq_ignore_ascii_case(username.trim()) {
         return Err(Error::OAuthFailure(OAUTH_FAILURE.into()));
     }
-    credentials.store_lichess_token(verified_username, token)
+    credentials
+        .store_lichess_token_async(verified_username, token)
+        .await
 }
 
 pub async fn authenticate_internal<O, E, S>(
@@ -780,6 +801,22 @@ mod tests {
     use super::*;
     use axum::http::Uri;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    struct RejectingCredentialStore;
+
+    impl crate::credentials::CredentialStore for RejectingCredentialStore {
+        fn set(&self, _key: &str, _secret: &str) -> Result<(), Error> {
+            Err(Error::CredentialFailure("injected".into()))
+        }
+
+        fn get(&self, _key: &str) -> Result<Option<String>, Error> {
+            Ok(None)
+        }
+
+        fn delete(&self, _key: &str) -> Result<(), Error> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn oauth_http_response_conversion_preserves_http_02_status_headers_and_body() {
@@ -1176,6 +1213,35 @@ mod tests {
             !std::fs::read_to_string(temp.path().join("lichess-accounts.json"))
                 .unwrap()
                 .contains("legacy-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_stashed_token_returns_the_stored_account() {
+        let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
+            crate::credentials::MemoryCredentialStore::default(),
+        )));
+        let stash = Arc::new(std::sync::Mutex::new(Some("token".into())));
+
+        let account = persist_stashed_lichess_token("user".into(), credentials.clone(), stash)
+            .await
+            .unwrap();
+
+        assert_eq!(account.username, "user");
+        assert_eq!(credentials.list(), vec![account]);
+    }
+
+    #[tokio::test]
+    async fn persist_stashed_token_returns_a_store_error() {
+        let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
+            RejectingCredentialStore,
+        )));
+        let stash = Arc::new(std::sync::Mutex::new(Some("token".into())));
+
+        assert!(
+            persist_stashed_lichess_token("user".into(), credentials, stash)
+                .await
+                .is_err()
         );
     }
 

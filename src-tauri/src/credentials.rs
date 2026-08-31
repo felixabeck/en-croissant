@@ -6,6 +6,7 @@
 
 use crate::{
     error::Error,
+    infra::blocking::BLOCKING_GATEWAY,
     infra::fs::{atomic_replace, AtomicFileOutcome},
 };
 use keyring::Entry;
@@ -14,10 +15,11 @@ use specta::Type;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+use tokio_util::sync::CancellationToken;
 
 /// Appended to the bundle identifier to form the OS credential-manager service name.  The release
 /// and development identifiers deliberately produce disjoint namespaces so neither build can
@@ -244,11 +246,7 @@ impl CredentialManager {
         fs::create_dir_all(app_data)
             .map_err(|source| Error::CredentialFailure(source.to_string()))?;
         #[cfg(unix)]
-        fs::set_permissions(
-            app_data,
-            std::os::unix::fs::PermissionsExt::from_mode(0o700),
-        )
-        .map_err(|source| Error::CredentialFailure(source.to_string()))?;
+        secure_directory(app_data)?;
         let path = app_data.join(REGISTRY_FILE);
         let registry = self.load_registry(&path)?;
         *self
@@ -259,11 +257,6 @@ impl CredentialManager {
             .registry_path
             .lock()
             .expect("credential path mutex poisoned") = Some(path.clone());
-        #[cfg(unix)]
-        if path.exists() {
-            fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
-                .map_err(|source| Error::CredentialFailure(source.to_string()))?;
-        }
         // Commit legacy metadata-only registries to the journalled format before reconciliation
         // is allowed to touch the native credential manager.
         let registry = self
@@ -272,6 +265,8 @@ impl CredentialManager {
             .expect("credential registry mutex poisoned");
         self.persist_locked(&registry)?;
         drop(registry);
+        #[cfg(unix)]
+        secure_registry_file(&path)?;
         self.reconcile()
     }
 
@@ -293,6 +288,16 @@ impl CredentialManager {
             return Ok(None);
         }
         self.store.get(&handle.key())
+    }
+
+    pub async fn token_async(
+        self: &Arc<Self>,
+        handle: LichessAccountHandle,
+    ) -> Result<Option<String>, Error> {
+        let manager = self.clone();
+        BLOCKING_GATEWAY
+            .spawn_cancellable(CancellationToken::new(), move |_| manager.token(&handle))
+            .await
     }
 
     pub(crate) fn store_lichess_token(
@@ -351,6 +356,19 @@ impl CredentialManager {
         Ok(metadata)
     }
 
+    pub(crate) async fn store_lichess_token_async(
+        self: &Arc<Self>,
+        username: String,
+        token: String,
+    ) -> Result<LichessAccountMetadata, Error> {
+        let manager = self.clone();
+        BLOCKING_GATEWAY
+            .spawn_cancellable(CancellationToken::new(), move |_| {
+                manager.store_lichess_token(username, token)
+            })
+            .await
+    }
+
     /// Removes local access first. Provider revocation is deliberately a separate best-effort
     /// network concern; its failure cannot make the local deletion result untrue.
     pub fn remove(&self, handle: &LichessAccountHandle) -> Result<Option<String>, Error> {
@@ -380,6 +398,16 @@ impl CredentialManager {
             return Err(error);
         }
         Ok(token)
+    }
+
+    pub async fn remove_async(
+        self: &Arc<Self>,
+        handle: LichessAccountHandle,
+    ) -> Result<Option<String>, Error> {
+        let manager = self.clone();
+        BLOCKING_GATEWAY
+            .spawn_cancellable(CancellationToken::new(), move |_| manager.remove(&handle))
+            .await
     }
 
     fn reconcile(&self) -> Result<(), Error> {
@@ -422,14 +450,29 @@ impl CredentialManager {
     }
 
     fn load_registry(&self, path: &Path) -> Result<RegistryFile, Error> {
-        if !path.exists() {
-            return Ok(RegistryFile {
-                version: REGISTRY_VERSION,
-                accounts: BTreeMap::new(),
-            });
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
         }
-        let bytes =
-            fs::read(path).map_err(|source| Error::CredentialFailure(source.to_string()))?;
+        let mut file = match options.open(path) {
+            Ok(file) => file,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(RegistryFile {
+                    version: REGISTRY_VERSION,
+                    accounts: BTreeMap::new(),
+                });
+            }
+            Err(source) => return Err(Error::CredentialFailure(source.to_string())),
+        };
+        #[cfg(unix)]
+        file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))
+            .map_err(|source| Error::CredentialFailure(source.to_string()))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|source| Error::CredentialFailure(source.to_string()))?;
         let value: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|_| Error::CredentialFailure("credential registry is invalid".into()))?;
         let version = value.get("version").and_then(serde_json::Value::as_u64);
@@ -495,9 +538,68 @@ impl CredentialManager {
     }
 }
 
+#[cfg(unix)]
+fn secure_directory(path: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|source| Error::CredentialFailure(source.to_string()))?;
+    directory
+        .set_permissions(PermissionsExt::from_mode(0o700))
+        .map_err(|source| Error::CredentialFailure(source.to_string()))
+}
+
+#[cfg(unix)]
+fn secure_registry_file(path: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|source| Error::CredentialFailure(source.to_string()))?;
+    file.set_permissions(PermissionsExt::from_mode(0o600))
+        .map_err(|source| Error::CredentialFailure(source.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct ThreadRecordingStore {
+        inner: MemoryCredentialStore,
+        threads: Mutex<Vec<std::thread::ThreadId>>,
+    }
+
+    impl CredentialStore for ThreadRecordingStore {
+        fn set(&self, key: &str, secret: &str) -> Result<(), Error> {
+            self.threads
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
+            self.inner.set(key, secret)
+        }
+
+        fn get(&self, key: &str) -> Result<Option<String>, Error> {
+            self.threads
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
+            self.inner.get(key)
+        }
+
+        fn delete(&self, key: &str) -> Result<(), Error> {
+            self.threads
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
+            self.inner.delete(key)
+        }
+    }
 
     #[derive(Default)]
     struct FailStore {
@@ -731,6 +833,80 @@ mod tests {
             OsCredentialStore::new("com.chessriddle.encroissant.dev").service,
             "com.chessriddle.encroissant.dev.lichess"
         );
+    }
+
+    #[test]
+    fn keyring_lockfile_includes_a_platform_backend() {
+        let manifest = include_str!("../Cargo.toml");
+        let lockfile = include_str!("../Cargo.lock");
+
+        for feature in [
+            "sync-secret-service",
+            "crypto-rust",
+            "apple-native",
+            "windows-native",
+        ] {
+            assert!(
+                manifest.contains(feature),
+                "missing keyring feature {feature}"
+            );
+        }
+        assert!(lockfile.contains("name = \"dbus-secret-service\""));
+    }
+
+    #[tokio::test]
+    async fn async_store_methods_do_not_run_on_the_caller_thread() {
+        let caller = std::thread::current().id();
+        let store = Arc::new(ThreadRecordingStore::default());
+        let manager = Arc::new(CredentialManager::new(store.clone()));
+        let temp = tempfile::tempdir().unwrap();
+        manager.initialize(temp.path()).unwrap();
+
+        let unknown = LichessAccountHandle::new();
+        assert_eq!(manager.token_async(unknown).await.unwrap(), None);
+        let account = manager
+            .store_lichess_token_async("user".into(), "secret".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.remove_async(account.handle).await.unwrap(),
+            Some("secret".into())
+        );
+
+        let observed = store.threads.lock().unwrap();
+        assert!(!observed.is_empty());
+        assert!(observed.iter().all(|thread| *thread != caller));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initialize_refuses_a_symlinked_app_data_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let link = temp.path().join("credentials");
+        symlink(&target, &link).unwrap();
+        let manager = CredentialManager::new(Arc::new(MemoryCredentialStore::default()));
+
+        assert!(manager.initialize(&link).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initialize_refuses_a_symlinked_registry_file() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("credentials");
+        fs::create_dir(&directory).unwrap();
+        let target = temp.path().join("registry-target.json");
+        fs::write(&target, r#"{"version":2,"accounts":{}}"#).unwrap();
+        symlink(&target, directory.join(REGISTRY_FILE)).unwrap();
+        let manager = CredentialManager::new(Arc::new(MemoryCredentialStore::default()));
+
+        assert!(manager.initialize(&directory).is_err());
     }
 
     /// Guessing a namespace would silently reach into the release's secrets, so the placeholder that

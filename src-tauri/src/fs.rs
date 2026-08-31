@@ -894,7 +894,8 @@ pub async fn download_lichess_games(
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
     let token = state
         .credentials
-        .token(&handle)?
+        .token_async(handle)
+        .await?
         .ok_or_else(|| Error::OAuthFailure("authenticated Lichess account unavailable".into()))?;
     let mut url = reqwest::Url::parse("https://lichess.org/api/games/user/")
         .map_err(|_| Error::OAuthFailure("invalid Lichess endpoint".into()))?;
