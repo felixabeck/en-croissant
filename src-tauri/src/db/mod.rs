@@ -2643,6 +2643,11 @@ mod tests {
             },
             Case {
                 page: None,
+                page_size: Some(1000),
+                expected: Ok((Some(1000), None)),
+            },
+            Case {
+                page: None,
                 page_size: Some(1001),
                 expected: Err(()),
             },

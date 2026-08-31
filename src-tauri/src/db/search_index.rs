@@ -1039,6 +1039,21 @@ mod tests {
     }
 
     #[test]
+    fn promote_skips_a_legacy_directory_and_unreadable_bytes() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("games.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let legacy = legacy_index_path(&database);
+        std::fs::create_dir(&legacy).unwrap();
+        assert_eq!(promote_legacy_index_sidecar(&database).unwrap(), None);
+        std::fs::remove_dir(&legacy).unwrap();
+        std::fs::write(&legacy, b"not an archive").unwrap();
+        assert_eq!(promote_legacy_index_sidecar(&database).unwrap(), None);
+        assert!(legacy.exists());
+        assert!(!get_index_path(&database).exists());
+    }
+
+    #[test]
     fn unprovenanced_legacy_sidecar_is_left_for_regeneration() {
         let dir = tempdir().unwrap();
         let database = dir.path().join("old.db3");
