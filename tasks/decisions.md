@@ -852,3 +852,51 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   `scripts/findings.py` the shared artefact while each project's harness is legitimately its own,
   pinning a different peer at a different ref with a different declaration set.
 * **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-16 — What does a "correct" layout mean at 320px viewport with the 200% app font scale?
+
+* **Governs:** f-20260829-02
+* **Chosen:** content must **reflow or become reachable by scrolling; it may never be silently
+  clipped**. An element whose content exceeds it is acceptable when some ancestor between it and the
+  clipping boundary provides `overflow-x: auto|scroll`, and is a defect when the nearest such
+  ancestor clips (`hidden`/`clip`) or when the overflow leaves the viewport. Horizontal *document*
+  scrolling remains disallowed, so `assertNoHorizontalOverflow` stays.
+* **Rejected:** giving the app a minimum content width and letting the whole document scroll
+  horizontally below it. That would make nothing clipped too, and it is less work, but it
+  contradicts two things the repository has already chosen: the compact branch at
+  `src/components/settings/SettingsPage.module.css:60` and `SettingsPage.tsx:127`, which is a reflow
+  strategy, and `assertNoHorizontalOverflow`, which the three 320px specs already assert and which a
+  scrolling document would have to be relaxed to accommodate. Also rejected: applying the font scale
+  to typography tokens only, leaving layout rem unscaled — it would fix the arithmetic at a stroke,
+  but scaling the whole UI is what browser zoom does and is usually what a user enlarging text wants,
+  and reclassifying every rem in the codebase and in Mantine's spacing system is a far larger and
+  more fragile change than reflowing four call sites.
+* **Because:** at root font 32px a 320px viewport is ten root-em wide, so no layout "fits"; the only
+  question a rule can usefully answer is whether unfitted content is *lost* or *reachable*. That
+  distinction is measurable, which is what makes it enforceable — see the companion decision on the
+  instrument. It is also what WCAG 1.4.10 asks for, and this combination is stricter than 1.4.10
+  requires, so the standard is a floor here rather than the target.
+* **Decided by:** build run 1ed74d8d (drain), 2026-08-31, on the `frontend-ui` cluster sliced to
+  f-20260829-02 · **Superseded-by:** -
+
+### d-20260831-17 — Can `assertNoHorizontalOverflow` be tightened to catch clipped content, or does it need a second assertion?
+
+* **Governs:** f-20260829-02
+* **Chosen:** it needs a **second, independent assertion** — `assertNoClippedContent()` in
+  `e2e/fixtures.ts` — which walks every element, keeps those whose `scrollWidth` exceeds their
+  `clientWidth`, and discards the ones that have a scrollable ancestor before a clipping one. The
+  existing assertion is kept unchanged; the two check different properties and neither implies the
+  other.
+* **Rejected:** tightening the existing assertion's threshold or widening it from
+  `documentElement.scrollWidth` to a per-element sweep in place. Rejected because it would silently
+  change what the three specs that already call it are asserting, and because the existing check is
+  still correct for its own question.
+* **Because:** measured on this tree at 320px/200%, `document.documentElement.scrollWidth` reports
+  320 while real content sits at `x = 353` and, on `/accounts`, at `x = 63` under the sidebar. Two
+  independent mechanisms defeat it: left-side overflow never contributes to `scrollWidth` at all, and
+  an ancestor with `overflow: hidden` absorbs the rest before it can propagate. A threshold cannot
+  repair a measurement of the wrong quantity. The replacement classification was run against this
+  tree and reports 83 clipped elements on `/settings`, 27 after the Appearance tab is opened, and 2
+  on `/accounts`, so it demonstrably goes red on the defect the suite was meant to catch.
+* **Decided by:** build run 1ed74d8d (drain), 2026-08-31, on the `frontend-ui` cluster sliced to
+  f-20260829-02 · **Superseded-by:** -

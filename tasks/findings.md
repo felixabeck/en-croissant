@@ -221,7 +221,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### 2. The 320px / 200% font-scale layout is broken and its screenshots record the breakage
 
-* **ID:** f-20260829-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260829-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** felix-decision
 * **Where:** `e2e/async-errors.spec.ts-snapshots/*`, `e2e/settings-responsive.spec.ts-snapshots/*`,
   and the components they render.
 * **Defect:** headings and account text are clipped at 320px with a 200% app font scale. The
@@ -233,6 +233,98 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   queue rather than only in a plan document.
 * **Note:** re-recording these snapshots in the container (2026-08-29 decision) does not fix this
   and is not evidence that it is fixed.
+
+* **Investigated 2026-08-31 by the `frontend-ui` build run (slice: this finding alone). The defect
+  is confirmed, its root causes are measured rather than inferred, and the fix is specified below —
+  but the run could not land it, for the authority reason in the `Decision:` bullet at the end.**
+* **Measurement method, so the next session does not repeat it:** a throwaway Playwright project at
+  320x720 with `localStorage["font-size"] = 200`, running against the real built renderer, walking
+  every element and classifying it as `LOST-at-viewport`, `CLIPPED-by-ancestor`, or exempt when any
+  ancestor between the element and the clip provides `overflow-x: auto|scroll`. Run natively, which
+  is legitimate here because only geometry was read and no screenshot was compared (`d-20260829-01`
+  establishes that native and container layout agree to the pixel and differ only in glyph
+  rasterisation). The harness was deleted afterwards; the tree is clean.
+* **Measured, at root font 32px and viewport 320px:** `/settings` has **83** irrecoverably clipped
+  elements before any interaction and **27** after activating the Appearance tab; `/accounts` has
+  **2**. `document.documentElement.scrollWidth` is **320** in all three states while real content
+  sits at `x = 353`.
+* **The instrument is blinder than the finding states, and this is a sharpening of it, not a
+  correction.** The entry says `assertNoHorizontalOverflow` passes "because the content is clipped
+  inside its container". Measured, two further mechanisms defeat it independently: overflow to the
+  *left* (`x = 63` on `/accounts`, under the sidebar) never contributes to `scrollWidth` at all, and
+  an ancestor with `overflow: hidden` absorbs the rest before it can reach `documentElement`. So the
+  assertion cannot be repaired by tightening its threshold — it measures the wrong quantity.
+* **Root cause 1 — the app font scale scales the chrome and the spacing, not just the text.**
+  `src/App.tsx:146` sets `document.documentElement.style.fontSize = "200%"`, so the root em becomes
+  32px and *every* rem length in the app doubles, including Mantine's spacing tokens. On a 320px
+  viewport: the `3rem` navbar (`src/routes/__root.tsx:323`) takes 96px, leaving 224px; `Stack px="md"`
+  (`SettingsPage.tsx:826`) takes 32px on each side; `Card p="lg"` (`:827`) takes 40px on each side.
+  224 - 64 - 80 = **76px of usable content width**, which is what the 83 clipped elements are clipped
+  into. The viewport is the one quantity that does not scale.
+* **Root cause 2 — the responsive breakpoints cannot see the scale.** `SettingsPage.tsx:127` uses
+  `useMediaQuery("(max-width: 50rem)")` and `SettingsPage.module.css:60` uses the same threshold.
+  `rem` in a media query resolves against the *initial* font size, never the scaled root, so both
+  mean 800px at every scale. They fire correctly at 320px — the compact branch really is active —
+  but nothing in the codebase can express "the effective content width is now ten root-em", which is
+  the condition that actually matters.
+* **Root cause 3 — the custom title bar reserves 84% of its width for three buttons.**
+  `src/components/TopBar.module.css:20` gives `.windowControls` `flex: 0 0 auto` while
+  `:26-27` sizes each control `2.8125rem` wide. At 200% that is 3 x 90px = 270px of a 320px bar, so
+  `.menuArea` (`flex: 0 1 auto`, `min-width: 0`) collapses to 50px and clips File/View/Help with no
+  scroll affordance. This is the stray "cht" fragment in the `async-errors` snapshot: German
+  "Ansicht", clipped to its tail.
+* **Root cause 4 — long unbreakable words overflow their box with no wrapping opt-in.** On
+  `/accounts` the heading "No accounts connected" measures 290px inside a 144px `Center`
+  (`mantine-Center-root`, `scrollW=217 clientW=144`), and the German "Datenbanken" behaves the same
+  way on `/databases`. These are the only two clipped elements on `/accounts`, so this cause is
+  cheap to close on its own.
+* **Fix specification, in dependency order.** (1) Add `assertNoClippedContent()` to `e2e/fixtures.ts`
+  implementing exactly the classification above, and call it beside `assertNoHorizontalOverflow` in
+  the three 320px specs; keep the old assertion, which is still a valid check for a different thing.
+  (2) In the compact branch, stop spending scaled rem on horizontal padding — the navbar rail, the
+  settings `Stack px` and the `Card p` are the three places that matter, and together they are the
+  76px. (3) Give `.windowControls` a shrink allowance or move the menu into a scrollable strip.
+  (4) Add `overflow-wrap: break-word` where the two headings are rendered, and `min-width: 0` on the
+  `Center`/`Stack` chain that holds them.
+* **What "correct" means here was settled by this run and is not an open question** — see
+  `tasks/decisions.md`, the two entries recorded on 2026-08-31 for this finding: content must reflow
+  or become scrollable, never be silently clipped; a scrollable container is an acceptable outcome
+  and a clipped one is not. Do not re-derive that; it is derived from the repository's own existing
+  compact branch and from the assertion the suite already carries.
+* **Not absorbed, deliberately:** `src/routes/__root.tsx` is also named by `f-20260830-47` and
+  `f-20260830-49`, and `src/components/TopBar.tsx` neighbours them. Root cause 1 touches line 323 of
+  that file and root cause 3 touches the title bar, so whoever lands this and whoever lands those two
+  should expect to meet.
+* **Decision:** May a session re-record the four committed 320px/200% e2e snapshots inside the
+  pinned Playwright container, once, as the closing step of a reviewed layout fix?
+  * **(a) Yes — lift the snapshot-update deny for one run.** The layout fix lands complete: instrument,
+    all four root causes, refreshed snapshots, green gates, one push. Costs: the four images change in
+    the same commit as the code that changed them, so the diff that proves the fix is also the diff
+    that rewrites its own evidence — exactly the shape the guard exists to make deliberate.
+  * **(b) No — you run `pnpm test:e2e:update` yourself after the code lands.** Keeps the guard intact
+    and puts a human eye on the four images. Costs: the code cannot be committed before the images
+    exist, because `pnpm test:e2e:container` runs in CI and would be red between the two steps, so
+    this is not "commit then refresh" — it is one interactive session where you run one command
+    mid-run, and it recurs for every future visible change.
+  * **Ruled out:** deleting the four snapshots and letting Playwright regenerate them as "new" — that
+    is the denied action under another name, and it silently drops the only pixel record of three
+    projects. Also ruled out: narrowing the e2e matrix so the 320px projects stop asserting pixels —
+    `src-tauri/tauri.conf.json` declares no `minWidth`, so 320px is genuinely reachable and the
+    matrix is right to cover it. Also ruled out: shipping the instrument alone without the layout fix
+    — it goes red on today's tree by construction, so it cannot be committed either.
+  * **Recommend:** (a), because the guard's own recorded reason is host rendering
+    (`.claude/skills/verify-ui/SKILL.md`: "there is deliberately no script that re-records them on the
+    host"), and the project `Skip` catalog in `.claude/skills/push/SKILL.md` forbids re-recording
+    "natively" — neither reason reaches the container path, which that same file names as the
+    sanctioned route. Against it: the deny in `.claude/settings.json` is deliberately broader than
+    both of those texts, it is the only mechanical thing standing between an agent and a green-looking
+    gate, and `f-20260829-04` is already parked on the same authority boundary for the coverage
+    baselines — answering this one loosely would weaken that one too. If you prefer (b), say so and
+    the fix will be prepared as a single interactive session rather than a drain cluster.
+  * **Could not determine:** whether the four refreshed images would differ only where intended. That
+    needs the fix to exist and the container to run, and this run could not reach either.
+  * **Session:** 1ed74d8d-8302-41f3-9a68-c165accad91d — transcript
+    `~/.claude/projects/*/1ed74d8d-8302-41f3-9a68-c165accad91d.jsonl`
 
 ---
 
