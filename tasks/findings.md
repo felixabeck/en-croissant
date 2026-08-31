@@ -2007,7 +2007,7 @@ own decision.
 
 ### Renderer-supplied pagination is unvalidated: overflow panic in debug, `LIMIT -1` reads the whole table in release
 
-* **ID:** f-20260830-20 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-20 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs:1083-1090`, and the same expression at `:1399` and `:1471`.
   Type at `:984-986`; reachable from the registered commands `get_games`, `get_players`,
   `get_tournaments` (`main.rs:93-94`), exported as `getGames`/`getPlayers` in
@@ -2028,6 +2028,8 @@ own decision.
   call sites.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Confirmed by reading the
   expression, the type, the command registration and the absent `[profile]` section — not inferred.
+
+Handled by `d1c2fb34`. `pagination_limit_offset` rejects non-positive and >1000 page/page_size as InvalidInput and computes LIMIT/OFFSET in i64. All three of get_games, get_players, get_tournaments call it. Rejected: silent clamp, changing Specta to u32, renderer-side checks (d-20260831-22).
 
 ---
 
@@ -2057,6 +2059,8 @@ own decision.
   contract per call site. `db/search_index.rs:515-530` is a defect under any contract.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. The `search_index` sequence
   and the absent `#[must_use]` were both read directly.
+
+The overlapping promotion site (`search_index.rs` `atomic_replace` then unlink of the legacy sidecar) was fixed under f-20260830-33 / `eb3ddf82`: `promote_legacy_index_sidecar_at` now inspects `AtomicFileOutcome` and leaves the legacy file on `CommittedDurabilityUncertain`. `#[must_use]` and the other ten callers remain this finding.
 
 ---
 
@@ -2509,7 +2513,7 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
 
 ### `search_position` performs a create, fsync and unlink while holding only a `DatabaseRead` capability
 
-* **ID:** f-20260830-33 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-33 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/search.rs:482` (the capability), `:504` and `:167` and `:209` (the
   paths reached), `src-tauri/src/db/search_index.rs:515` (write) and `:530` (unlink), `:240`
   (regeneration write); the write-class list at `src-tauri/src/infra/path_authority.rs:1472-1481`.
@@ -2528,6 +2532,8 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
 * **Fix shape:** require `DatabaseMutate` for the promotion and regeneration paths, and resolve the
   sidecar through the authority rather than deriving it as a string.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+Handled by `eb3ddf82`. load_search_index keeps DatabaseRead for a valid preferred sidecar; promotion and generation re-resolve DatabaseMutate. Sidecar mutation uses PathAuthority::database_file_target (retained parent fd) plus atomic_replace_at / remove_optional_regular_at. Uncertain durability no longer unlinks the legacy copy. SearchIndexReplacement was added to DurabilityStage and bindings regenerated. The overlapping AtomicFileOutcome discard at promote (also named by f-20260830-21) is fixed here; #[must_use] and the other callers stay on 21. Rejected: always-Mutate on search; returning a PathBuf for callers to reopen (d-20260831-23).
 
 ---
 
@@ -3994,7 +4000,7 @@ allocated the id.
 
 ### Deleting a database removes its primary file first, so a later failure leaves it unusable and unretryable
 
-* **ID:** f-20260831-08 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-08 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs`, the database-deletion command: it unlinks the primary
   database file before its index sidecars.
 * **Defect:** if removing a later file fails, the command returns an ordinary `Io` error. The UI
@@ -4013,6 +4019,8 @@ allocated the id.
   across the boundary.
 * **Found by:** the `review-error-handling` lens (confidence 94) over the cumulative diff of the
   `native-fs` cluster, 2026-08-31. Pre-existing.
+
+Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching legacy sidecar, then primary, all via the retained parent fd. PartialRemoval is emitted only when the primary is gone; sidecar-only failures stay Io/InvalidInput. FilesPage and deleteDatabaseAndInvalidate share runDestructiveWithRefresh so applied-despite-error relists. No new error category (d-20260830-05, d-20260831-01, d-20260831-24). Rejected: PartialRemoval when only sidecars were removed; unlinking a colliding foo.ecsi that belongs to another database named foo.
 
 ### Engine results are bound to a tab and a position but not to the process that produced them
 
