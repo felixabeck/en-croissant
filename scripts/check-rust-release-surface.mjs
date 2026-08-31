@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 const INITIAL_DEAD_CODE_ALLOWLIST = Object.freeze([
   // Owner: f-20260830-25. This allowlist may only shrink.
@@ -9,6 +10,34 @@ const INITIAL_DEAD_CODE_ALLOWLIST = Object.freeze([
 ]);
 
 export const DEAD_CODE_ALLOWLIST = new Set(INITIAL_DEAD_CODE_ALLOWLIST);
+
+// Owner: f-20260830-23. This allowlist may only shrink.
+const INITIAL_FS_SURFACE_ALLOWLIST = Object.freeze([
+  "src-tauri/src/credentials.rs",
+  "src-tauri/src/db/mod.rs",
+  "src-tauri/src/db/repository.rs",
+  "src-tauri/src/db/search_index.rs",
+  "src-tauri/src/file_workspace.rs",
+  "src-tauri/src/fs.rs",
+  "src-tauri/src/main.rs",
+  "src-tauri/src/puzzle.rs",
+  "src-tauri/src/sound.rs",
+]);
+
+export const FS_SURFACE_ALLOWLIST = new Set(INITIAL_FS_SURFACE_ALLOWLIST);
+
+// Production R3+R4 match counts, measured by this checker. Shrink-only.
+export const INITIAL_FS_SURFACE_COUNTS = Object.freeze({
+  "src-tauri/src/credentials.rs": 5,
+  "src-tauri/src/db/mod.rs": 1,
+  "src-tauri/src/db/repository.rs": 6,
+  "src-tauri/src/db/search_index.rs": 3,
+  "src-tauri/src/file_workspace.rs": 5,
+  "src-tauri/src/fs.rs": 10,
+  "src-tauri/src/main.rs": 5,
+  "src-tauri/src/puzzle.rs": 1,
+  "src-tauri/src/sound.rs": 1,
+});
 
 const INJECTION_NAME = /(?:FaultPoint|Injector|_with_injector)/i;
 const PUBLIC_ITEM =
@@ -189,13 +218,163 @@ function testRegionAtDepth(regionStarts, braceDepth) {
   return regionStarts.some((startDepth) => braceDepth >= startDepth);
 }
 
-export function checkFaultInjectionSurface(path, source) {
+const FS_FN_NAMES = [
+  "write",
+  "read",
+  "read_to_string",
+  "read_dir",
+  "copy",
+  "create_dir",
+  "create_dir_all",
+  "remove_file",
+  "remove_dir",
+  "remove_dir_all",
+  "rename",
+  "hard_link",
+  "symlink",
+  "canonicalize",
+  "metadata",
+  "symlink_metadata",
+  "set_permissions",
+  "OpenOptions",
+  "DirBuilder",
+];
+const FS_FN = FS_FN_NAMES.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+const FILE_CTOR = "open|create|create_new";
+const PATHNAME_FNS = ["atomic_replace", "atomic_replace_with_precommit", "atomic_install_dir"];
+const TURBOFISH_CALL = "(?:\\s*::\\s*<[^>]*>)?\\s*\\(";
+
+function emptyImportState() {
+  return {
+    stdFsAliases: new Set(),
+    tokioFsAliases: new Set(),
+    infraFsAliases: new Set(),
+    importedFile: false,
+    importedOpenOptions: false,
+    importedDirBuilder: false,
+    importedFsFns: new Set(),
+    importedPathnameFns: new Set(),
+    globInfraFs: false,
+  };
+}
+
+function mergeImportState(target, extra) {
+  for (const name of extra.stdFsAliases) target.stdFsAliases.add(name);
+  for (const name of extra.tokioFsAliases) target.tokioFsAliases.add(name);
+  for (const name of extra.infraFsAliases) target.infraFsAliases.add(name);
+  target.importedFile = target.importedFile || extra.importedFile;
+  target.importedOpenOptions = target.importedOpenOptions || extra.importedOpenOptions;
+  target.importedDirBuilder = target.importedDirBuilder || extra.importedDirBuilder;
+  for (const name of extra.importedFsFns) target.importedFsFns.add(name);
+  for (const name of extra.importedPathnameFns) target.importedPathnameFns.add(name);
+  target.globInfraFs = target.globInfraFs || extra.globInfraFs;
+}
+
+function braceAwareSplit(text) {
+  const parts = [];
+  let current = "";
+  let depth = 0;
+  for (const character of text) {
+    if (character === "{") depth += 1;
+    if (character === "}") depth -= 1;
+    if (character === "," && depth === 0) {
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+function applyUseTree(prefix, tree, state) {
+  const trimmed = tree.trim();
+  if (!trimmed) return;
+  const groupStart = trimmed.indexOf("::{");
+  if (groupStart !== -1 && !trimmed.slice(0, groupStart).includes("{")) {
+    applyUseTree(
+      prefix ? `${prefix}::${trimmed.slice(0, groupStart)}` : trimmed.slice(0, groupStart),
+      trimmed.slice(groupStart + 2),
+      state,
+    );
+    return;
+  }
+  if (trimmed.endsWith("::*")) {
+    applyUseTree(prefix ? `${prefix}::${trimmed.slice(0, -3)}` : trimmed.slice(0, -3), "*", state);
+    return;
+  }
+  if (trimmed === "*") {
+    if (/(?:^|::)(?:std|tokio)::fs$/.test(prefix)) {
+      /* glob of std::fs / tokio::fs: treat as importing every function name */
+      for (const name of FS_FN_NAMES) state.importedFsFns.add(name);
+      state.importedFile = true;
+      state.importedOpenOptions = true;
+      state.importedDirBuilder = true;
+    }
+    if (/(?:infra|super)::fs$/.test(prefix) || prefix === "fs") state.globInfraFs = true;
+    return;
+  }
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    for (const inner of braceAwareSplit(trimmed.slice(1, -1))) applyUseTree(prefix, inner, state);
+    return;
+  }
+  const aliased = trimmed.match(/^(.+?)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)$/);
+  const raw = (aliased ? aliased[1] : trimmed).trim();
+  const local = aliased ? aliased[2] : raw.split("::").at(-1);
+  const full = prefix ? `${prefix}::${raw}` : raw;
+  if (raw === "self") {
+    if (/(?:^|::)std::fs$/.test(prefix)) state.stdFsAliases.add(local);
+    if (/(?:^|::)tokio::fs$/.test(prefix)) state.tokioFsAliases.add(local);
+    if (/(?:infra|super)::fs$/.test(prefix)) state.infraFsAliases.add(local);
+    return;
+  }
+  if (/^(?:std|tokio)::fs$/.test(full) || /^(?:std|tokio)::fs$/.test(raw)) {
+    const kind =
+      (full.startsWith("tokio") || raw.startsWith("tokio") ? "tokio" : "std") + "FsAliases";
+    state[kind].add(local === "fs" || aliased ? local : "fs");
+    if (!aliased) state[kind].add("fs");
+    return;
+  }
+  if (
+    /^(?:crate::)?infra::fs$/.test(full) ||
+    /^(?:crate::)?infra::fs$/.test(raw) ||
+    raw === "super::fs"
+  ) {
+    state.infraFsAliases.add(local);
+    return;
+  }
+  if (/(?:^|::)(?:std|tokio)::fs::File$/.test(full) || raw === "File") state.importedFile = true;
+  if (/(?:^|::)(?:std|tokio)::fs::OpenOptions$/.test(full) || raw === "OpenOptions") {
+    state.importedOpenOptions = true;
+  }
+  if (/(?:^|::)(?:std|tokio)::fs::DirBuilder$/.test(full) || raw === "DirBuilder") {
+    state.importedDirBuilder = true;
+  }
+  if (FS_FN_NAMES.includes(local) || FS_FN_NAMES.includes(raw.split("::").at(-1))) {
+    if (/(?:std|tokio)::fs/.test(full) || FS_FN_NAMES.includes(raw)) state.importedFsFns.add(local);
+  }
+  if (PATHNAME_FNS.includes(raw.split("::").at(-1)) || PATHNAME_FNS.includes(local)) {
+    if (/fs::/.test(full) || PATHNAME_FNS.includes(raw)) state.importedPathnameFns.add(local);
+  }
+}
+
+function parseUseBindings(text) {
+  const state = emptyImportState();
+  const compact = text.replace(/\s+/g, " ").trim().replace(/;$/, "");
+  const match = compact.match(/^(?:pub(?:\s*\(\s*(?:crate|super)\s*\))?\s+)?use\s+(.+)$/);
+  if (!match) return state;
+  applyUseTree("", match[1], state);
+  return state;
+}
+
+function walkGatedLines(source, onLine) {
   const lines = maskRustLines(source);
-  const violations = [];
   const testRegionStarts = [];
   let braceDepth = 0;
   let crateCfgTest = false;
   let pendingCfgTest = false;
+  let pendingGatedItem = false;
   let pendingUse = false;
   let useStatement = null;
 
@@ -212,35 +391,28 @@ export function checkFaultInjectionSurface(path, source) {
 
     const gatedAtLine =
       crateCfgTest || testRegionAtDepth(testRegionStarts, braceDepth) || pendingCfgTest;
-    const publicItem = PUBLIC_ITEM.exec(code);
-    if (publicItem && INJECTION_NAME.test(publicItem[1]) && !gatedAtLine) {
-      violations.push(
-        `${path}:${index + 1}: R2: public fault-injection item ${publicItem[1]} must be inside #[cfg(test)]`,
-      );
-    }
 
     const startsUse = USE_START.test(code);
     if (startsUse) {
       useStatement = { gated: gatedAtLine, text: code };
-      pendingUse = pendingCfgTest;
+      pendingUse = pendingCfgTest || itemCfg;
     } else if (useStatement) {
       useStatement.text += `\n${code}`;
     }
 
-    if (useStatement && INJECTION_NAME.test(useStatement.text) && !useStatement.gated) {
-      violations.push(
-        `${path}:${index + 1}: R2: use importing a fault-injection name must be inside #[cfg(test)]`,
-      );
-      useStatement.gated = true;
-    }
-
     const { opens, closes } = braceDelta(code);
     const startsItem = ITEM_START.test(code) || startsUse;
-    const isUseComplete = pendingUse && code.includes(";");
-    if (pendingCfgTest && !crateCfg && !itemCfg) {
-      if (startsUse) {
-        pendingUse = true;
-      } else if (startsItem && opens > 0) {
+    const isUseComplete = Boolean(useStatement && code.includes(";"));
+    const trimmed = code.trim();
+    const isAttribute = trimmed.startsWith("#");
+    const hasCode = trimmed.length > 0 && !isAttribute;
+
+    if ((pendingCfgTest || itemCfg) && !crateCfg) {
+      if (startsUse) pendingUse = true;
+      else if (startsItem) pendingGatedItem = true;
+      else if (hasCode && !pendingGatedItem && !pendingUse && !itemCfg) pendingCfgTest = false;
+
+      if (pendingGatedItem && opens > 0) {
         const openingOffset = firstOpeningBraceOffset(code);
         const depthAtOpening =
           braceDepth +
@@ -248,47 +420,213 @@ export function checkFaultInjectionSurface(path, source) {
           [...code.slice(0, openingOffset)].filter((character) => character === "{").length;
         testRegionStarts.push(depthAtOpening);
         pendingCfgTest = false;
-      } else if (startsItem && code.includes(";")) {
+        pendingGatedItem = false;
+      } else if (pendingGatedItem && code.includes(";") && opens === 0) {
         pendingCfgTest = false;
+        pendingGatedItem = false;
       }
     }
+
+    onLine({
+      index,
+      code,
+      gated: gatedAtLine,
+      useText: isUseComplete ? useStatement.text : null,
+      useGated: isUseComplete ? useStatement.gated : false,
+    });
+
     if (isUseComplete) {
       pendingCfgTest = false;
       pendingUse = false;
+      useStatement = null;
     }
 
     braceDepth += opens - closes;
     while (testRegionStarts.length && braceDepth < testRegionStarts.at(-1)) {
       testRegionStarts.pop();
     }
-    if (useStatement && code.includes(";")) useStatement = null;
   }
+}
+
+export function checkFaultInjectionSurface(path, source) {
+  const violations = [];
+
+  walkGatedLines(source, ({ index, code, gated, useText, useGated }) => {
+    const publicItem = PUBLIC_ITEM.exec(code);
+    if (publicItem && INJECTION_NAME.test(publicItem[1]) && !gated) {
+      violations.push(
+        `${path}:${index + 1}: R2: public fault-injection item ${publicItem[1]} must be inside #[cfg(test)]`,
+      );
+    }
+    if (useText && INJECTION_NAME.test(useText) && !useGated) {
+      violations.push(
+        `${path}:${index + 1}: R2: use importing a fault-injection name must be inside #[cfg(test)]`,
+      );
+    }
+  });
 
   return [...new Set(violations)];
 }
 
-export function checkRustReleaseSurface(sources, allowlist = DEAD_CODE_ALLOWLIST) {
+function isInfraPath(path) {
+  return path.startsWith("src-tauri/src/infra/");
+}
+
+function qualifiedFsCall(prefix, code) {
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const fn = new RegExp(`\\b${escaped}::(?:File::(?:${FILE_CTOR})|(?:${FS_FN}))\\b`);
+  return fn.test(code);
+}
+
+function pathnameCall(name, code) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}${TURBOFISH_CALL}`).test(code);
+}
+
+function collectFilesystemMatches(path, source) {
+  if (isInfraPath(path)) return [];
+  const matches = [];
+  const imports = emptyImportState();
+
+  walkGatedLines(source, ({ index, code, gated, useText, useGated }) => {
+    if (useText && !useGated) {
+      const parsed = parseUseBindings(useText);
+      mergeImportState(imports, parsed);
+      if (
+        parsed.importedPathnameFns.size > 0 ||
+        parsed.globInfraFs ||
+        parsed.infraFsAliases.size > 0
+      ) {
+        matches.push({ line: index + 1, rule: "R4", kind: "import" });
+      }
+    }
+    if (gated) return;
+
+    if (qualifiedFsCall("std::fs", code) || qualifiedFsCall("tokio::fs", code)) {
+      matches.push({ line: index + 1, rule: "R3", kind: "qualified" });
+    }
+    for (const alias of imports.stdFsAliases) {
+      if (qualifiedFsCall(alias, code))
+        matches.push({ line: index + 1, rule: "R3", kind: "alias" });
+    }
+    for (const alias of imports.tokioFsAliases) {
+      if (qualifiedFsCall(alias, code))
+        matches.push({ line: index + 1, rule: "R3", kind: "alias" });
+    }
+    if (imports.importedFile && new RegExp(`\\bFile::(?:${FILE_CTOR})\\b`).test(code)) {
+      matches.push({ line: index + 1, rule: "R3", kind: "file-ctor" });
+    }
+    if (imports.importedOpenOptions && /\bOpenOptions::/.test(code)) {
+      matches.push({ line: index + 1, rule: "R3", kind: "open-options" });
+    }
+    if (imports.importedDirBuilder && /\bDirBuilder::/.test(code)) {
+      matches.push({ line: index + 1, rule: "R3", kind: "dir-builder" });
+    }
+    for (const name of imports.importedFsFns) {
+      if (new RegExp(`\\b${name}\\s*\\(`).test(code)) {
+        matches.push({ line: index + 1, rule: "R3", kind: "imported-fn" });
+      }
+    }
+
+    if (/(?:crate::)?infra::fs::/.test(code) || /super::fs::/.test(code)) {
+      for (const name of PATHNAME_FNS) {
+        if (
+          pathnameCall(`${name.includes("atomic") ? "" : ""}${name}`, code) &&
+          new RegExp(`fs::${name}${TURBOFISH_CALL}`).test(code)
+        ) {
+          matches.push({ line: index + 1, rule: "R4", kind: "fqn" });
+        }
+      }
+    }
+    for (const alias of imports.infraFsAliases) {
+      for (const name of PATHNAME_FNS) {
+        if (new RegExp(`\\b${alias}::${name}${TURBOFISH_CALL}`).test(code)) {
+          matches.push({ line: index + 1, rule: "R4", kind: "alias-call" });
+        }
+      }
+    }
+    for (const name of PATHNAME_FNS) {
+      if (pathnameCall(name, code)) matches.push({ line: index + 1, rule: "R4", kind: "call" });
+    }
+    for (const name of imports.importedPathnameFns) {
+      if (pathnameCall(name, code))
+        matches.push({ line: index + 1, rule: "R4", kind: "imported-call" });
+    }
+    if (imports.globInfraFs) {
+      for (const name of PATHNAME_FNS) {
+        if (pathnameCall(name, code))
+          matches.push({ line: index + 1, rule: "R4", kind: "glob-call" });
+      }
+    }
+  });
+
+  const unique = [];
+  const seen = new Set();
+  for (const match of matches) {
+    const key = `${match.line}:${match.rule}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(match);
+  }
+  return unique;
+}
+
+export function checkFilesystemSurface(
+  sources,
+  allowlist = FS_SURFACE_ALLOWLIST,
+  counts = INITIAL_FS_SURFACE_COUNTS,
+) {
+  const entries = sourceEntries(sources);
+  const violations = [];
+  const allowedPaths = new Set(allowlist);
+
+  for (const path of allowedPaths) {
+    if (!INITIAL_FS_SURFACE_ALLOWLIST.includes(path)) {
+      violations.push(`R3: allowlist entry ${path} is not part of the shrink-only baseline`);
+    }
+  }
+
+  for (const { path, contents } of entries) {
+    const matches = collectFilesystemMatches(path, contents);
+    if (allowedPaths.has(path)) {
+      const expected = counts[path] ?? 0;
+      if (matches.length !== expected) {
+        violations.push(
+          `R3: ${path} has ${matches.length} production filesystem reaches, allowlisted for ${expected}`,
+        );
+      }
+      continue;
+    }
+    for (const match of matches) {
+      violations.push(
+        `${path}:${match.line}: ${match.rule}: production filesystem reach (${match.kind}) must be inside infra/, #[cfg(test)], or the shrink-only allowlist`,
+      );
+    }
+  }
+
+  return violations;
+}
+
+export function checkRustReleaseSurface(
+  sources,
+  allowlist = DEAD_CODE_ALLOWLIST,
+  fsAllowlist = FS_SURFACE_ALLOWLIST,
+  fsCounts = INITIAL_FS_SURFACE_COUNTS,
+) {
   const entries = sourceEntries(sources);
   return [
     ...checkDeadCodeSurface(entries, allowlist),
     ...entries.flatMap(({ path, contents }) => checkFaultInjectionSurface(path, contents)),
+    ...checkFilesystemSurface(entries, fsAllowlist, fsCounts),
   ];
 }
 
 export function listTrackedRustSources(workspaceRoot, runGit = spawnSync) {
-  const result = runGit("git", ["ls-files", "--", "src-tauri/src"], {
-    cwd: workspaceRoot,
-    encoding: "utf8",
-  });
-  if (result.error || result.status !== 0) {
-    const detail =
-      result.error?.message || result.stderr?.trim() || `exit status ${result.status ?? "unknown"}`;
-    throw new Error(`Cannot enumerate tracked Rust sources: git ls-files failed (${detail})`);
-  }
-  return String(result.stdout ?? "")
-    .split("\n")
-    .map((path) => path.trim())
-    .filter((path) => path.startsWith("src-tauri/src/") && path.endsWith(".rs"));
+  return listWorkingTreeFiles({
+    workspaceRoot,
+    pathspec: "src-tauri/src",
+    runGit,
+  }).filter((path) => path.startsWith("src-tauri/src/") && path.endsWith(".rs"));
 }
 
 export function runReleaseSurfaceCheck({
