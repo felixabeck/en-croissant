@@ -27,6 +27,7 @@ const fixtures = vi.hoisted(() => ({
       return update([{ value: "new-tab", name: "Home", type: "new" }]);
     }
   }),
+  storeSet: vi.fn(),
   dueStats: { due: 0, unseen: 0 },
 }));
 
@@ -42,7 +43,7 @@ vi.mock("@/state/atoms", () => ({
   addRecentFileAtom: fixtures.atoms.addRecentFile,
   deckAtomFamily: () => fixtures.atoms.deckFamily,
   recentFilesAtom: fixtures.atoms.recentFiles,
-  tabFamily: fixtures.atoms.tabFamily,
+  tabFamily: () => fixtures.atoms.tabFamily,
   tabsAtom: fixtures.atoms.tabs,
 }));
 vi.mock("jotai", () => ({
@@ -59,7 +60,7 @@ vi.mock("jotai", () => ({
     return [[], vi.fn()];
   },
   useSetAtom: () => vi.fn(),
-  useStore: () => ({ set: vi.fn() }),
+  useStore: () => ({ set: fixtures.storeSet }),
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@/utils/pathCapabilities", () => ({
@@ -229,6 +230,49 @@ test("keeps recent-file cancellation silent without creating a tab", async () =>
 
   expect(fixtures.notify).not.toHaveBeenCalled();
   expect(fixtures.createTab).not.toHaveBeenCalled();
+});
+
+test("hides due practice counts when a repertoire is fully practiced", async () => {
+  fixtures.dueStats = { due: 0, unseen: 0 };
+  fixtures.recentFiles = [
+    {
+      name: "white",
+      handle: { id: { id: "white" }, kind: "fileWorkspace" },
+      type: "repertoire",
+      lastOpened: 3,
+    },
+  ];
+  const NewTabHome = (await import("./NewTabHome")).default;
+  await act(async () => {
+    root.render(<NewTabHome id="new-tab" />);
+  });
+  expect(container.textContent).toContain("white");
+  expect(container.textContent).not.toContain("Board.Practice.Due");
+});
+
+test("opens a recent repertoire into the practice panel", async () => {
+  fixtures.recentFiles = [
+    {
+      name: "white.pgn",
+      handle: { id: { id: "white" }, kind: "fileWorkspace" },
+      type: "repertoire",
+      lastOpened: 3,
+    },
+  ];
+  const NewTabHome = (await import("./NewTabHome")).default;
+  await act(async () => {
+    root.render(<NewTabHome id="new-tab" />);
+  });
+  const recentFile = [...container.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("white"),
+  )!;
+  await act(async () => {
+    recentFile.click();
+  });
+  await vi.waitFor(() => {
+    expect(fixtures.createTab).toHaveBeenCalledOnce();
+    expect(fixtures.storeSet).toHaveBeenCalled();
+  });
 });
 
 test("shows due practice counts on recent repertoire files", async () => {
