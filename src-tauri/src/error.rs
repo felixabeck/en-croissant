@@ -374,6 +374,11 @@ mod tests {
     }
 
     #[test]
+    fn test_cancellation_display() {
+        assert_eq!(Error::Cancellation.to_string(), "Cancellation");
+    }
+
+    #[test]
     fn every_durability_label_serializes_without_native_diagnostics() {
         let stages = [
             DurabilityStage::ArchiveFileReplacement,

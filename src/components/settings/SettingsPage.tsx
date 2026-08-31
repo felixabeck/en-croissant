@@ -62,7 +62,7 @@ import {
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 import { analytics } from "@/platform/analytics";
-import { normalizeError } from "@/platform/errors";
+import { errorUnlessCancelled } from "@/platform/errors";
 import { IconAction } from "../common/IconAction";
 import BoardSelect from "./BoardSelect";
 import ColorControl from "./ColorControl";
@@ -141,9 +141,9 @@ export default function Page() {
   const [, setPuzzleWorkspaceGeneration] = useAtom(puzzleWorkspaceGenerationAtom);
   const showDirectoryError = useCallback(
     (error: unknown) => {
-      const normalized = normalizeError(error);
-      if (normalized.category !== "cancelled") {
-        notifications.show({ color: "red", title: t("Common.Error"), message: normalized.message });
+      const visible = errorUnlessCancelled(error);
+      if (visible) {
+        notifications.show({ color: "red", title: t("Common.Error"), message: visible.message });
       }
     },
     [t],

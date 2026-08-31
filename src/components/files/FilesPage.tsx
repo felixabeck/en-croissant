@@ -1,6 +1,7 @@
 import { tauri } from "@/platform/tauri";
-import { runDestructiveWithRefresh } from "@/platform/errors";
+import { errorUnlessCancelled, runDestructiveWithRefresh } from "@/platform/errors";
 import { Button, Center, Group, Paper, Select, Stack, Text, TextInput, Title } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -30,10 +31,12 @@ export default function FilesPage() {
   const [purgeTarget, setPurgeTarget] = useState<Entry | null>(null);
   const [moveTarget, setMoveTarget] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
+  const [picking, setPicking] = useState(false);
   const operationFailed = t("Files.OperationFailed", {
     defaultValue: "The file operation could not be completed. Please try again.",
   });
   const moveInFlight = useRef(false);
+  const pendingRef = useRef(false);
   const actionInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (action) actionInputRef.current?.focus();
@@ -46,9 +49,26 @@ export default function FilesPage() {
     setSelected(null);
   }, [workspace]);
   async function chooseWorkspace() {
-    const result = await tauri.issueFileWorkspace();
-    setWorkspace(result.handle);
-    setWorkspaceDisplayName(result.displayName);
+    if (pendingRef.current) return;
+    pendingRef.current = true;
+    setPicking(true);
+    try {
+      const result = await tauri.issueFileWorkspace();
+      setWorkspace(result.handle);
+      setWorkspaceDisplayName(result.displayName);
+    } catch (cause) {
+      const visible = errorUnlessCancelled(cause);
+      if (visible) {
+        notifications.show({
+          color: "red",
+          title: t("Common.Error"),
+          message: visible.message,
+        });
+      }
+    } finally {
+      pendingRef.current = false;
+      setPicking(false);
+    }
   }
   const parent = selected?.type === "directory" ? selected.handle : workspace;
   const directories = (
@@ -113,7 +133,7 @@ export default function FilesPage() {
       <Group justify="space-between">
         <Title>{t("Files.Title")}</Title>
         <Group>
-          <Button onClick={chooseWorkspace}>
+          <Button disabled={picking} onClick={() => void chooseWorkspace()}>
             {workspace
               ? t("Files.ChangeCollection", { defaultValue: "Change collection" })
               : t("Files.ChooseCollection", { defaultValue: "Choose collection" })}

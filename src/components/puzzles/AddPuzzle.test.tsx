@@ -22,6 +22,10 @@ vi.mock("@/utils/puzzles", () => ({
 }));
 vi.mock("@/platform/errors", () => ({
   normalizeError: () => ({ category: "unexpected", message: "Safe error" }),
+  errorUnlessCancelled: (error: unknown) =>
+    error instanceof Error && error.message === "Cancellation"
+      ? null
+      : { category: "unexpected", message: "Safe error" },
 }));
 vi.mock("@/platform/tauri", () => ({
   tauri: {
@@ -112,6 +116,14 @@ test("keeps the modal open and shows a normalized non-cancelled picker failure",
     title: "Common.Error",
     message: "Safe error",
   });
+});
+
+test("keeps the modal open silently when choosing a workspace is cancelled", async () => {
+  mocks.choosePuzzleDatabase.mockRejectedValue(new Error("Cancellation"));
+  const actions = await render();
+  await act(async () => host.querySelector("button")!.click());
+  expect(actions.setOpened).not.toHaveBeenCalled();
+  expect(mocks.notify).not.toHaveBeenCalled();
 });
 
 test("installs a downloaded database and refreshes the visible collection", async () => {

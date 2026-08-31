@@ -215,6 +215,14 @@ fn register_created_entry(
         .register_workspace_child_expected(workspace, &components, display_name, identity, is_dir)
 }
 
+fn map_folder_picker_join(error: tokio::task::JoinError) -> Error {
+    if error.is_cancelled() {
+        Error::Cancellation
+    } else {
+        Error::InvalidInput("folder picker task failed".into())
+    }
+}
+
 async fn tree_entry(
     state: &tauri::State<'_, AppState>,
     workspace: &FileWorkspaceHandle,
@@ -298,7 +306,7 @@ pub async fn issue_file_workspace(
             })
     })
     .await
-    .map_err(|_| Error::Cancellation)??;
+    .map_err(map_folder_picker_join)??;
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -811,6 +819,17 @@ mod tests {
         path_authority::PathAuthority,
     };
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_map_folder_picker_join() {
+        let error = tokio::task::spawn_blocking(|| panic!("folder picker panic"))
+            .await
+            .expect_err("panicking folder picker must return a join error");
+        assert!(matches!(
+            map_folder_picker_join(error),
+            Error::InvalidInput(message) if message == "folder picker task failed"
+        ));
+    }
 
     fn workspace_state() -> (TempDir, AppState, FileWorkspaceHandle) {
         let directory = tempfile::tempdir().expect("temporary workspace parent");

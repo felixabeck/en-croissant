@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   issueFileWorkspace: vi.fn(),
   setWorkspace: vi.fn(),
   setWorkspaceDisplayName: vi.fn(),
+  notify: vi.fn(),
   data: [] as Array<unknown>,
 }));
 const stateAtoms = vi.hoisted(() => ({ fileWorkspaceAtom: {}, fileWorkspaceDisplayNameAtom: {} }));
@@ -40,6 +41,7 @@ vi.mock("react-i18next", () => ({
       options?.defaultValue?.replace("{{name}}", options.name || "") || key,
   }),
 }));
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@mantine/core", () => ({
   Button: ({
     children,
@@ -317,6 +319,62 @@ test("collection selection keeps the native opaque handle and only display metad
 
   expect(mocks.setWorkspace).toHaveBeenCalledWith(nextWorkspace);
   expect(mocks.setWorkspaceDisplayName).toHaveBeenCalledWith("Games");
+});
+
+test("cancelled collection selection stays silent", async () => {
+  mocks.issueFileWorkspace.mockRejectedValueOnce(new Error("Cancellation"));
+
+  click("Change collection");
+  await settle();
+
+  expect(mocks.setWorkspace).not.toHaveBeenCalled();
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("failed collection selection notifies without changing the workspace", async () => {
+  mocks.issueFileWorkspace.mockRejectedValueOnce(new Error("permission denied"));
+
+  click("Change collection");
+  await settle();
+
+  expect(mocks.setWorkspace).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: "permission denied",
+  });
+});
+
+test("collection selection prevents duplicate pending requests and re-enables the button", async () => {
+  let resolve!: (result: unknown) => void;
+  mocks.issueFileWorkspace.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+
+  click("Change collection");
+  expect(button("Change collection").disabled).toBe(true);
+  click("Change collection");
+  expect(mocks.issueFileWorkspace).toHaveBeenCalledOnce();
+
+  resolve({ handle: workspace, displayName: "Games" });
+  await settle();
+  expect(button("Change collection").disabled).toBe(false);
+});
+
+test("collection selection can be retried after a rejection", async () => {
+  mocks.issueFileWorkspace
+    .mockRejectedValueOnce(new Error("permission denied"))
+    .mockResolvedValueOnce({ handle: workspace, displayName: "Games" });
+
+  click("Change collection");
+  await settle();
+  click("Change collection");
+  await settle();
+
+  expect(mocks.issueFileWorkspace).toHaveBeenCalledTimes(2);
 });
 
 describe("move controller", () => {

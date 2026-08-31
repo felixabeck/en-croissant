@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { normalizeError, runDestructiveWithRefresh } from "./errors";
+import { errorUnlessCancelled, normalizeError, runDestructiveWithRefresh } from "./errors";
 
 describe("normalizeError", () => {
     test("redacts bearer tokens and local paths", () => {
@@ -28,6 +28,17 @@ describe("normalizeError", () => {
         "Committed but durability uncertain: invalid argument",
     ])("categorizes destructive changes that could not be fully reported", (message) => {
         expect(normalizeError(new Error(message)).category).toBe("applied-despite-error");
+    });
+
+    test("categorizes cancellation and keeps it silent", () => {
+        expect(normalizeError(new Error("Cancellation")).category).toBe("cancelled");
+        expect(errorUnlessCancelled(new Error("Cancellation"))).toBeNull();
+    });
+
+    test("keeps a real failure visible", () => {
+        expect(errorUnlessCancelled(new Error("permission denied"))).toMatchObject({
+            category: "permission",
+        });
     });
 });
 

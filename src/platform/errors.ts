@@ -73,6 +73,11 @@ export function normalizeError(error: unknown): AppError {
     return { category, message, diagnostic: message };
 }
 
+export function errorUnlessCancelled(error: unknown): AppError | null {
+    const normalized = normalizeError(error);
+    return normalized.category === "cancelled" ? null : normalized;
+}
+
 export async function runDestructiveWithRefresh<T>(
     run: () => Promise<T>,
     refresh: () => void | Promise<void>,
