@@ -22,6 +22,7 @@ const fixtures = vi.hoisted(() => ({
     lastOpened: number;
   }>,
   setRecentFiles: vi.fn(),
+  dueStats: { due: 0, unseen: 0 },
 }));
 
 vi.mock("@/platform/tauri", () => ({
@@ -34,16 +35,31 @@ vi.mock("@mantine/notifications", () => ({ notifications: { show: fixtures.notif
 vi.mock("@/state/atoms", () => ({
   activeTabAtom: fixtures.atoms.activeTab,
   addRecentFileAtom: fixtures.atoms.addRecentFile,
-  deckAtomFamily: fixtures.atoms.deckFamily,
+  deckAtomFamily: () => fixtures.atoms.deckFamily,
   recentFilesAtom: fixtures.atoms.recentFiles,
   tabFamily: fixtures.atoms.tabFamily,
   tabsAtom: fixtures.atoms.tabs,
 }));
 vi.mock("jotai", () => ({
-  useAtom: (atom: symbol) =>
-    atom === fixtures.atoms.recentFiles
-      ? [fixtures.recentFiles, fixtures.setRecentFiles]
-      : [[], vi.fn()],
+  useAtom: (atom: symbol) => {
+    if (atom === fixtures.atoms.recentFiles) {
+      return [fixtures.recentFiles, fixtures.setRecentFiles];
+    }
+    if (atom === fixtures.atoms.tabs) {
+      return [
+        [{ value: "new-tab", name: "Home", type: "new" }],
+        vi.fn((update) => {
+          if (typeof update === "function") {
+            update([{ value: "new-tab", name: "Home", type: "new" }]);
+          }
+        }),
+      ];
+    }
+    if (atom === fixtures.atoms.deckFamily) {
+      return [{ positions: [] }, vi.fn()];
+    }
+    return [[], vi.fn()];
+  },
   useSetAtom: () => vi.fn(),
   useStore: () => ({ set: vi.fn() }),
 }));
@@ -51,7 +67,9 @@ vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@/utils/pathCapabilities", () => ({
   fileWorkspaceKey: (handle: { id: { id: string } }) => handle.id.id,
 }));
-vi.mock("@/components/files/opening", () => ({ getStats: () => ({ due: 0, unseen: 0 }) }));
+vi.mock("@/components/files/opening", () => ({
+  getStats: () => fixtures.dueStats,
+}));
 vi.mock("@/utils/tabs", () => ({ createTab: fixtures.createTab }));
 vi.mock("./CreateRepertoireModal", () => ({ default: () => null }));
 vi.mock("./ImportModal", () => ({ default: () => null }));
@@ -107,6 +125,7 @@ beforeEach(() => {
   fixtures.countPgnGames.mockResolvedValue(1);
   fixtures.createTab.mockResolvedValue("tab-id");
   fixtures.readGames.mockResolvedValue(["*"]);
+  fixtures.dueStats = { due: 0, unseen: 0 };
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -189,4 +208,61 @@ test("keeps recent-file cancellation silent without creating a tab", async () =>
 
   expect(fixtures.notify).not.toHaveBeenCalled();
   expect(fixtures.createTab).not.toHaveBeenCalled();
+});
+
+test("shows due practice counts on recent repertoire files", async () => {
+  fixtures.dueStats = { due: 2, unseen: 1 };
+  fixtures.recentFiles = [
+    {
+      name: "white.pgn",
+      handle: { id: { id: "white" }, kind: "fileWorkspace" },
+      type: "repertoire",
+      lastOpened: 3,
+    },
+  ];
+  const NewTabHome = (await import("./NewTabHome")).default;
+  await act(async () => {
+    root.render(<NewTabHome id="new-tab" />);
+  });
+  expect(container.textContent).toContain("Board.Practice.Due");
+});
+
+test("home cards start play, analysis, puzzles, import, and repertoire", async () => {
+  const NewTabHome = (await import("./NewTabHome")).default;
+  await act(async () => {
+    root.render(<NewTabHome id="new-tab" />);
+  });
+  for (const label of [
+    "Home.Card.PlayChess.Button",
+    "Home.Card.AnalysisBoard.Button",
+    "Home.Card.NewRepertoire.Button",
+    "Home.Card.ImportGame.Button",
+    "Home.Card.Puzzle.Button",
+  ]) {
+    const card = [...container.querySelectorAll("*")].find(
+      (element) => element.textContent === label,
+    );
+    expect(card).toBeTruthy();
+    await act(async () => {
+      (card as HTMLElement).click();
+    });
+  }
+});
+
+test("opens a recent file into a new analysis tab", async () => {
+  const NewTabHome = (await import("./NewTabHome")).default;
+
+  await act(async () => {
+    root.render(<NewTabHome id="new-tab" />);
+  });
+  const recentFile = [...container.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("stale"),
+  )!;
+  await act(async () => {
+    recentFile.click();
+    await Promise.resolve();
+  });
+
+  expect(fixtures.createTab).toHaveBeenCalledOnce();
+  expect(fixtures.notify).not.toHaveBeenCalled();
 });

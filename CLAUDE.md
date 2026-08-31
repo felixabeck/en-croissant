@@ -11,7 +11,7 @@ error history this project learns from; foreign upstream changes are never rewri
 | `src-tauri/src/` | Rust: commands, engine supervision, SQLite/Diesel database, PGN parsing, OAuth |
 | `src/` | React renderer: components, state, utils |
 | `src/bindings/generated.ts` | **Generated** by Specta from the Rust command/event registry — never hand-edited |
-| `src/platform/` | The renderer's only sanctioned door to Tauri (`tauri.ts`, `native.ts`, `errors.ts`, `operation.ts`) |
+| `src/platform/` | The renderer's only sanctioned door to Tauri (`tauri.ts`, `native.ts`, `errors.ts`) |
 | `src/state/` | Jotai atoms + per-tab zustand tree stores with `sessionStorage` persistence |
 | `e2e/` | Playwright specs with committed snapshots |
 | `scripts/` | Repo-local gate checkers (`check-bindings.mjs`, `check-tauri-command-boundary.mjs`, `check-ui-boundaries.mjs`, coverage and bundle reporters) |

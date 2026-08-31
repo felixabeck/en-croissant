@@ -61,7 +61,7 @@ vi.mock("@/components/common/IconAction", () => ({
 }));
 vi.mock("@/utils/format", () => ({ formatNumber: (value: number) => String(value) }));
 vi.mock("@/utils/tabs", () => ({
-  getTabFile: (tab: typeof currentTab) => tab.gameOrigin.file,
+  getTabFile: vi.fn((tab: typeof currentTab) => tab.gameOrigin.file),
 }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -84,11 +84,15 @@ afterEach(async () => {
   container.remove();
 });
 
-test("notifies when reloading a file fails without clearing its games", async () => {
+async function clickReload() {
   await act(async () => {
     container.querySelector("button")!.click();
     await Promise.resolve();
   });
+}
+
+test("notifies when reloading a file fails without clearing its games", async () => {
+  await clickReload();
 
   expect(mocks.notify).toHaveBeenCalledWith({
     color: "red",
@@ -96,4 +100,39 @@ test("notifies when reloading a file fails without clearing its games", async ()
     message: "permission denied",
   });
   expect(mocks.setGames).not.toHaveBeenCalled();
+});
+
+test("reloads the game count after a successful native count", async () => {
+  mocks.countPgnGames.mockResolvedValueOnce(7);
+  await clickReload();
+
+  expect(mocks.setGames).toHaveBeenCalledWith(new Map());
+  expect(mocks.setCurrentTab).toHaveBeenCalledOnce();
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("keeps a cancelled reload silent", async () => {
+  mocks.countPgnGames.mockRejectedValueOnce(new Error("Cancellation"));
+  await clickReload();
+
+  expect(mocks.notify).not.toHaveBeenCalled();
+  expect(mocks.setGames).not.toHaveBeenCalled();
+});
+
+test("reload updater leaves a non-file tab unchanged", async () => {
+  mocks.countPgnGames.mockResolvedValueOnce(9);
+  await clickReload();
+  const updater = mocks.setCurrentTab.mock.calls[0][0] as (prev: unknown) => unknown;
+  const playTab = { gameOrigin: { kind: "play" } };
+  expect(updater(playTab)).toBe(playTab);
+  const next = updater(currentTab) as typeof currentTab;
+  expect(next.gameOrigin.file.numGames).toBe(9);
+});
+
+test("renders nothing when the tab has no file", async () => {
+  const { getTabFile } = await import("@/utils/tabs");
+  vi.mocked(getTabFile).mockReturnValueOnce(null);
+  const FileInfo = (await import("./FileInfo")).default;
+  await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
+  expect(container.querySelector("button")).toBeNull();
 });

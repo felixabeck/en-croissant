@@ -46,7 +46,7 @@ Commands are `#[tauri::command] #[specta::specta]` functions, collected in
 The export is behind `#[cfg(debug_assertions)]`, so a release build exports nothing at all.
 
 - The renderer imports `commands` and `events` from `src/bindings/generated.ts`, and reaches Tauri
-  only through `src/platform/` (`tauri.ts`, `native.ts`, `errors.ts`, `operation.ts`).
+  only through `src/platform/` (`tauri.ts`, `native.ts`, `errors.ts`).
   `pnpm tauri:boundary:check` enforces both.
 - A new event goes into `collect_events!`. Emitting by bare string is how the `search_progress` and
   `convert_progress` incidents happened — see `.claude/rules/ipc-events.md`.
