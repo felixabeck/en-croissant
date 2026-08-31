@@ -215,11 +215,11 @@ fn register_created_entry(
         .register_workspace_child_expected(workspace, &components, display_name, identity, is_dir)
 }
 
-fn map_folder_picker_join(error: tokio::task::JoinError) -> Error {
+pub(crate) fn map_picker_join(error: tokio::task::JoinError) -> Error {
     if error.is_cancelled() {
         Error::Cancellation
     } else {
-        Error::InvalidInput("folder picker task failed".into())
+        Error::InvalidInput("native picker task failed".into())
     }
 }
 
@@ -306,7 +306,7 @@ pub async fn issue_file_workspace(
             })
     })
     .await
-    .map_err(map_folder_picker_join)??;
+    .map_err(map_picker_join)??;
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -821,14 +821,25 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn test_map_folder_picker_join() {
+    async fn test_map_picker_join_panic_is_not_cancellation() {
         let error = tokio::task::spawn_blocking(|| panic!("folder picker panic"))
             .await
             .expect_err("panicking folder picker must return a join error");
         assert!(matches!(
-            map_folder_picker_join(error),
-            Error::InvalidInput(message) if message == "folder picker task failed"
+            map_picker_join(error),
+            Error::InvalidInput(message) if message == "native picker task failed"
         ));
+    }
+
+    #[tokio::test]
+    async fn test_map_picker_join_cancelled() {
+        let handle = tokio::spawn(std::future::pending::<()>());
+        handle.abort();
+        let error = handle
+            .await
+            .expect_err("an aborted task must return a join error");
+        assert!(error.is_cancelled());
+        assert!(matches!(map_picker_join(error), Error::Cancellation));
     }
 
     fn workspace_state() -> (TempDir, AppState, FileWorkspaceHandle) {

@@ -68,8 +68,8 @@ use crate::game::{
 
 use crate::file_workspace::{
     create_workspace_directory, create_workspace_file, issue_file_workspace, list_file_workspace,
-    move_workspace_entry, permanently_delete_workspace_entry, rename_workspace_file,
-    restore_workspace_entry, trash_workspace_entry,
+    map_picker_join, move_workspace_entry, permanently_delete_workspace_entry,
+    rename_workspace_file, restore_workspace_entry, trash_workspace_entry,
 };
 use crate::fs::set_file_as_executable;
 use crate::lexer::lex_pgn;
@@ -436,7 +436,7 @@ async fn issue_pgn_workspace(
             .map_err(|error| Error::InvalidInput(format!("invalid native file selection: {error}")))
     })
     .await
-    .map_err(|_| Error::Cancellation)??;
+    .map_err(map_picker_join)??;
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -496,7 +496,7 @@ async fn issue_pgn_export_destination(
             .map_err(|error| Error::InvalidInput(format!("invalid native file selection: {error}")))
     })
     .await
-    .map_err(|_| Error::Cancellation)??;
+    .map_err(map_picker_join)??;
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -595,7 +595,7 @@ async fn issue_download_destination(
             })
     })
     .await
-    .map_err(|_| Error::Cancellation)??;
+    .map_err(map_picker_join)??;
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -646,7 +646,7 @@ async fn issue_database_workspace(
             })
     })
     .await
-    .map_err(|_| Error::Cancellation)??;
+    .map_err(map_picker_join)??;
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -755,7 +755,7 @@ async fn issue_engine_workspace(
             })
     })
     .await
-    .map_err(|_| Error::Cancellation)??;
+    .map_err(map_picker_join)??;
     let mut lock = state
         .pgn_path_authority
         .lock()
@@ -807,7 +807,7 @@ async fn issue_engine_binary(
             .map_err(|error| Error::InvalidInput(format!("invalid engine file selection: {error}")))
     })
     .await
-    .map_err(|_| Error::Cancellation)??;
+    .map_err(map_picker_join)??;
     let label = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -846,7 +846,7 @@ async fn issue_engine_resource(
             })
     })
     .await
-    .map_err(|_| Error::Cancellation)??;
+    .map_err(map_picker_join)??;
     let label = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -923,7 +923,7 @@ async fn issue_engine_image(
             })
     })
     .await
-    .map_err(|_| Error::Cancellation)??;
+    .map_err(map_picker_join)??;
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -1002,7 +1002,7 @@ async fn issue_opening_book(
             })
     })
     .await
-    .map_err(|_| Error::Cancellation)??;
+    .map_err(map_picker_join)??;
     let label = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())

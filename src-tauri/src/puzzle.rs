@@ -13,6 +13,7 @@ use tauri::Manager;
 use crate::{
     db::{puzzle_themes, puzzles, themes, DatabaseIdentity, DatabaseRepository, Puzzle},
     error::Error,
+    file_workspace::map_picker_join,
     infra::blocking::BLOCKING_GATEWAY,
 };
 
@@ -271,7 +272,7 @@ pub async fn issue_puzzle_workspace(
             .map_err(|error| Error::InvalidInput(format!("invalid native file selection: {error}")))
     })
     .await
-    .map_err(|_| Error::Cancellation)??;
+    .map_err(map_picker_join)??;
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
