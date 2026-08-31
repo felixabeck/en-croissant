@@ -236,6 +236,7 @@ const FS_FN_NAMES = [
   "metadata",
   "symlink_metadata",
   "set_permissions",
+  "read_link",
   "OpenOptions",
   "DirBuilder",
 ];
@@ -249,9 +250,9 @@ function emptyImportState() {
     stdFsAliases: new Set(),
     tokioFsAliases: new Set(),
     infraFsAliases: new Set(),
-    importedFile: false,
-    importedOpenOptions: false,
-    importedDirBuilder: false,
+    importedFileNames: new Set(),
+    importedOpenOptionsNames: new Set(),
+    importedDirBuilderNames: new Set(),
     importedFsFns: new Set(),
     importedPathnameFns: new Set(),
     globInfraFs: false,
@@ -262,9 +263,9 @@ function mergeImportState(target, extra) {
   for (const name of extra.stdFsAliases) target.stdFsAliases.add(name);
   for (const name of extra.tokioFsAliases) target.tokioFsAliases.add(name);
   for (const name of extra.infraFsAliases) target.infraFsAliases.add(name);
-  target.importedFile = target.importedFile || extra.importedFile;
-  target.importedOpenOptions = target.importedOpenOptions || extra.importedOpenOptions;
-  target.importedDirBuilder = target.importedDirBuilder || extra.importedDirBuilder;
+  for (const name of extra.importedFileNames) target.importedFileNames.add(name);
+  for (const name of extra.importedOpenOptionsNames) target.importedOpenOptionsNames.add(name);
+  for (const name of extra.importedDirBuilderNames) target.importedDirBuilderNames.add(name);
   for (const name of extra.importedFsFns) target.importedFsFns.add(name);
   for (const name of extra.importedPathnameFns) target.importedPathnameFns.add(name);
   target.globInfraFs = target.globInfraFs || extra.globInfraFs;
@@ -308,9 +309,9 @@ function applyUseTree(prefix, tree, state) {
     if (/(?:^|::)(?:std|tokio)::fs$/.test(prefix)) {
       /* glob of std::fs / tokio::fs: treat as importing every function name */
       for (const name of FS_FN_NAMES) state.importedFsFns.add(name);
-      state.importedFile = true;
-      state.importedOpenOptions = true;
-      state.importedDirBuilder = true;
+      state.importedFileNames.add("File");
+      state.importedOpenOptionsNames.add("OpenOptions");
+      state.importedDirBuilderNames.add("DirBuilder");
     }
     if (/(?:infra|super)::fs$/.test(prefix) || prefix === "fs") state.globInfraFs = true;
     return;
@@ -324,9 +325,10 @@ function applyUseTree(prefix, tree, state) {
   const local = aliased ? aliased[2] : raw.split("::").at(-1);
   const full = prefix ? `${prefix}::${raw}` : raw;
   if (raw === "self") {
-    if (/(?:^|::)std::fs$/.test(prefix)) state.stdFsAliases.add(local);
-    if (/(?:^|::)tokio::fs$/.test(prefix)) state.tokioFsAliases.add(local);
-    if (/(?:infra|super)::fs$/.test(prefix)) state.infraFsAliases.add(local);
+    const bound = aliased ? local : prefix.split("::").at(-1);
+    if (/(?:^|::)std::fs$/.test(prefix)) state.stdFsAliases.add(bound);
+    if (/(?:^|::)tokio::fs$/.test(prefix)) state.tokioFsAliases.add(bound);
+    if (/(?:infra|super)::fs$/.test(prefix)) state.infraFsAliases.add(bound);
     return;
   }
   if (/^(?:std|tokio)::fs$/.test(full) || /^(?:std|tokio)::fs$/.test(raw)) {
@@ -344,12 +346,14 @@ function applyUseTree(prefix, tree, state) {
     state.infraFsAliases.add(local);
     return;
   }
-  if (/(?:^|::)(?:std|tokio)::fs::File$/.test(full) || raw === "File") state.importedFile = true;
+  if (/(?:^|::)(?:std|tokio)::fs::File$/.test(full) || raw === "File") {
+    state.importedFileNames.add(local);
+  }
   if (/(?:^|::)(?:std|tokio)::fs::OpenOptions$/.test(full) || raw === "OpenOptions") {
-    state.importedOpenOptions = true;
+    state.importedOpenOptionsNames.add(local);
   }
   if (/(?:^|::)(?:std|tokio)::fs::DirBuilder$/.test(full) || raw === "DirBuilder") {
-    state.importedDirBuilder = true;
+    state.importedDirBuilderNames.add(local);
   }
   if (FS_FN_NAMES.includes(local) || FS_FN_NAMES.includes(raw.split("::").at(-1))) {
     if (/(?:std|tokio)::fs/.test(full) || FS_FN_NAMES.includes(raw)) state.importedFsFns.add(local);
@@ -392,7 +396,8 @@ function walkGatedLines(source, onLine) {
     const gatedAtLine =
       crateCfgTest || testRegionAtDepth(testRegionStarts, braceDepth) || pendingCfgTest;
 
-    const startsUse = USE_START.test(code);
+    const startsUse =
+      USE_START.test(code) || USE_START.test(code.replace(/^\s*(?:#\[[^\]]*\]\s*)+/, ""));
     if (startsUse) {
       useStatement = { gated: gatedAtLine, text: code };
       pendingUse = pendingCfgTest || itemCfg;
@@ -401,7 +406,8 @@ function walkGatedLines(source, onLine) {
     }
 
     const { opens, closes } = braceDelta(code);
-    const startsItem = ITEM_START.test(code) || startsUse;
+    const codeWithoutAttrs = code.replace(/^\s*(?:#\[[^\]]*\]\s*)+/, "");
+    const startsItem = ITEM_START.test(code) || ITEM_START.test(codeWithoutAttrs) || startsUse;
     const isUseComplete = Boolean(useStatement && code.includes(";"));
     const trimmed = code.trim();
     const isAttribute = trimmed.startsWith("#");
@@ -486,12 +492,17 @@ function pathnameCall(name, code) {
 function collectFilesystemMatches(path, source) {
   if (isInfraPath(path)) return [];
   const matches = [];
-  const imports = emptyImportState();
+  const events = [];
+  walkGatedLines(source, (event) => events.push(event));
 
-  walkGatedLines(source, ({ index, code, gated, useText, useGated }) => {
+  const imports = emptyImportState();
+  for (const { useText, useGated } of events) {
+    if (useText && !useGated) mergeImportState(imports, parseUseBindings(useText));
+  }
+
+  for (const { index, code, gated, useText, useGated } of events) {
     if (useText && !useGated) {
       const parsed = parseUseBindings(useText);
-      mergeImportState(imports, parsed);
       if (
         parsed.importedPathnameFns.size > 0 ||
         parsed.globInfraFs ||
@@ -500,7 +511,7 @@ function collectFilesystemMatches(path, source) {
         matches.push({ line: index + 1, rule: "R4", kind: "import" });
       }
     }
-    if (gated) return;
+    if (gated) continue;
 
     if (qualifiedFsCall("std::fs", code) || qualifiedFsCall("tokio::fs", code)) {
       matches.push({ line: index + 1, rule: "R3", kind: "qualified" });
@@ -513,14 +524,20 @@ function collectFilesystemMatches(path, source) {
       if (qualifiedFsCall(alias, code))
         matches.push({ line: index + 1, rule: "R3", kind: "alias" });
     }
-    if (imports.importedFile && new RegExp(`\\bFile::(?:${FILE_CTOR})\\b`).test(code)) {
-      matches.push({ line: index + 1, rule: "R3", kind: "file-ctor" });
+    for (const name of imports.importedFileNames) {
+      if (new RegExp(`\\b${name}::(?:${FILE_CTOR})\\b`).test(code)) {
+        matches.push({ line: index + 1, rule: "R3", kind: "file-ctor" });
+      }
     }
-    if (imports.importedOpenOptions && /\bOpenOptions::/.test(code)) {
-      matches.push({ line: index + 1, rule: "R3", kind: "open-options" });
+    for (const name of imports.importedOpenOptionsNames) {
+      if (new RegExp(`\\b${name}::`).test(code)) {
+        matches.push({ line: index + 1, rule: "R3", kind: "open-options" });
+      }
     }
-    if (imports.importedDirBuilder && /\bDirBuilder::/.test(code)) {
-      matches.push({ line: index + 1, rule: "R3", kind: "dir-builder" });
+    for (const name of imports.importedDirBuilderNames) {
+      if (new RegExp(`\\b${name}::`).test(code)) {
+        matches.push({ line: index + 1, rule: "R3", kind: "dir-builder" });
+      }
     }
     for (const name of imports.importedFsFns) {
       if (new RegExp(`\\b${name}\\s*\\(`).test(code)) {
@@ -528,23 +545,6 @@ function collectFilesystemMatches(path, source) {
       }
     }
 
-    if (/(?:crate::)?infra::fs::/.test(code) || /super::fs::/.test(code)) {
-      for (const name of PATHNAME_FNS) {
-        if (
-          pathnameCall(`${name.includes("atomic") ? "" : ""}${name}`, code) &&
-          new RegExp(`fs::${name}${TURBOFISH_CALL}`).test(code)
-        ) {
-          matches.push({ line: index + 1, rule: "R4", kind: "fqn" });
-        }
-      }
-    }
-    for (const alias of imports.infraFsAliases) {
-      for (const name of PATHNAME_FNS) {
-        if (new RegExp(`\\b${alias}::${name}${TURBOFISH_CALL}`).test(code)) {
-          matches.push({ line: index + 1, rule: "R4", kind: "alias-call" });
-        }
-      }
-    }
     for (const name of PATHNAME_FNS) {
       if (pathnameCall(name, code)) matches.push({ line: index + 1, rule: "R4", kind: "call" });
     }
@@ -552,13 +552,7 @@ function collectFilesystemMatches(path, source) {
       if (pathnameCall(name, code))
         matches.push({ line: index + 1, rule: "R4", kind: "imported-call" });
     }
-    if (imports.globInfraFs) {
-      for (const name of PATHNAME_FNS) {
-        if (pathnameCall(name, code))
-          matches.push({ line: index + 1, rule: "R4", kind: "glob-call" });
-      }
-    }
-  });
+  }
 
   const unique = [];
   const seen = new Set();
@@ -607,27 +601,24 @@ export function checkFilesystemSurface(
   return violations;
 }
 
-export function checkRustReleaseSurface(
-  sources,
-  allowlist = DEAD_CODE_ALLOWLIST,
-  fsAllowlist = FS_SURFACE_ALLOWLIST,
-  fsCounts = INITIAL_FS_SURFACE_COUNTS,
-) {
+export function checkRustReleaseSurface(sources, allowlist = DEAD_CODE_ALLOWLIST) {
   const entries = sourceEntries(sources);
   return [
     ...checkDeadCodeSurface(entries, allowlist),
     ...entries.flatMap(({ path, contents }) => checkFaultInjectionSurface(path, contents)),
-    ...checkFilesystemSurface(entries, fsAllowlist, fsCounts),
+    ...checkFilesystemSurface(entries),
   ];
 }
 
-export function listTrackedRustSources(workspaceRoot, runGit = spawnSync) {
+export function listRustSources(workspaceRoot, runGit = spawnSync) {
   return listWorkingTreeFiles({
     workspaceRoot,
     pathspec: "src-tauri/src",
     runGit,
   }).filter((path) => path.startsWith("src-tauri/src/") && path.endsWith(".rs"));
 }
+
+export const listTrackedRustSources = listRustSources;
 
 export function runReleaseSurfaceCheck({
   workspaceRoot = process.cwd(),
@@ -642,7 +633,7 @@ export function runReleaseSurfaceCheck({
       sources.set(path, readFile(absolutePath));
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`Cannot read tracked Rust source ${path}: ${detail}`);
+      throw new Error(`Cannot read Rust source ${path}: ${detail}`);
     }
   }
 

@@ -144,7 +144,7 @@ pub(crate) trait AtomicWriterInjector {}
         encoding: "utf8",
       });
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("Cannot read tracked Rust source src-tauri/src/missing.rs");
+      expect(result.stderr).toContain("Cannot read Rust source src-tauri/src/missing.rs");
     } finally {
       await rm(fixtureRoot, { recursive: true, force: true });
     }
@@ -380,6 +380,59 @@ mod tests {
         line.includes("has 2 production filesystem reaches, allowlisted for 1"),
       ),
     ).toBe(true);
+  });
+
+  test("R3 rejects use std::fs::{self} then fs::write", () => {
+    expect(
+      fsHits('use std::fs::{self};\nfn f() { fs::write("x", b""); }\n').some((line) =>
+        line.includes("R3:"),
+      ),
+    ).toBe(true);
+  });
+
+  test("R3 rejects File imported under an alias", () => {
+    expect(
+      fsHits('use std::fs::File as F;\nfn f() { F::open("x"); }\n').some((line) =>
+        line.includes("R3:"),
+      ),
+    ).toBe(true);
+  });
+
+  test("R3 sees a module-level use that follows the call", () => {
+    expect(
+      fsHits('fn f() { disk::write("x", b""); }\nuse std::fs as disk;\n').some((line) =>
+        line.includes("R3:"),
+      ),
+    ).toBe(true);
+  });
+
+  test("R3 rejects std::fs::read_link", () => {
+    expect(
+      fsHits('fn f() { std::fs::read_link("x"); }\n').some((line) => line.includes("R3:")),
+    ).toBe(true);
+  });
+
+  test("same-line cfg(test) item does not leak into the next production item", () => {
+    expect(
+      fsHits('#[cfg(test)] pub struct Fixture;\nfn f() { std::fs::write("x", b""); }\n').some(
+        (line) => line.includes("R3:"),
+      ),
+    ).toBe(true);
+  });
+
+  test("R3 rejects use std::fs::write then write()", () => {
+    expect(
+      fsHits('use std::fs::write;\nfn f() { write("x", b""); }\n').some((line) =>
+        line.includes("R3:"),
+      ),
+    ).toBe(true);
+  });
+
+  test("R3-only fixtures fail the composer even without pathname primitives", () => {
+    const composed = checkRustReleaseSurface(
+      sources([chess, 'fn f() { std::fs::write("x", b""); }\n']),
+    );
+    expect(composed.some((line) => line.includes("R3:"))).toBe(true);
   });
 
   test("an untracked leak.rs with std::fs::write fails the CLI with an R3 diagnostic", async () => {
