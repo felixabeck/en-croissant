@@ -37,9 +37,8 @@ const MAX_LOG_LINES: usize = 2_000;
 const MAX_LOG_BYTES: usize = 512 * 1024;
 const MAX_ENGINE_LINE_BYTES: usize = 64 * 1024;
 const MAX_ENGINE_STDERR_BYTES: usize = 512 * 1024;
-/// After the child is reaped the stderr pipe is at EOF. The drain task gets
-/// this long to observe it; a stuck reader is then aborted so `terminate`
-/// cannot stall on a logging task.
+/// Join budget for the stderr drain after `io.terminate` returns. A stuck
+/// drain is then aborted so `terminate` cannot stall on a logging task.
 const STDERR_REAP_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Engine transcript entries include explicit truncation metadata when bounded
@@ -197,15 +196,84 @@ async fn read_bounded_engine_line<R: AsyncBufRead + Unpin>(
     }
 }
 
-async fn drain_engine_stderr<R: AsyncBufRead + Unpin>(mut reader: R) {
-    let mut total = 0usize;
-    while let Ok(Some(line)) = read_bounded_engine_line(&mut reader).await {
-        total = total.saturating_add(line.len());
-        if total > MAX_ENGINE_STDERR_BYTES {
-            error!("Engine stderr truncated after {MAX_ENGINE_STDERR_BYTES} bytes");
-            break;
+async fn discard_engine_line_remainder<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<()> {
+    loop {
+        let (consumed, ended) = {
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                return Ok(());
+            }
+            match available.iter().position(|byte| *byte == b'\n') {
+                Some(index) => (index + 1, true),
+                None => (available.len(), false),
+            }
+        };
+        reader.consume(consumed);
+        if ended {
+            return Ok(());
         }
-        error!("Engine stderr: {line}");
+    }
+}
+
+async fn drain_engine_stderr<R: AsyncBufRead + Unpin>(reader: &mut R) {
+    let mut total = 0usize;
+    let mut truncated = false;
+    loop {
+        match read_bounded_engine_line(reader).await {
+            Ok(Some(line)) => {
+                let next_total = total.saturating_add(line.len());
+                if next_total > MAX_ENGINE_STDERR_BYTES {
+                    if !truncated {
+                        error!("Engine stderr truncated after {MAX_ENGINE_STDERR_BYTES} bytes");
+                        truncated = true;
+                    }
+                    continue;
+                }
+                total = next_total;
+                error!("Engine stderr: {line}");
+            }
+            Ok(None) => return,
+            Err(Error::InvalidInput(reason)) => {
+                error!("Engine stderr discarded non-UTF-8 line: {reason}");
+            }
+            Err(Error::ResourceLimit(reason)) => {
+                error!("Engine stderr discarded oversized line: {reason}");
+                if let Err(error) = discard_engine_line_remainder(reader).await {
+                    error!("Engine stderr drain ended while discarding oversized line: {error}");
+                    return;
+                }
+            }
+            Err(error) => {
+                error!("Engine stderr drain ended: {error}");
+                return;
+            }
+        }
+    }
+}
+
+struct AbortJoinHandleOnDrop {
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl AbortJoinHandleOnDrop {
+    fn new(handle: tokio::task::JoinHandle<()>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.handle.take();
+    }
+}
+
+impl Drop for AbortJoinHandleOnDrop {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
     }
 }
 
@@ -279,7 +347,7 @@ struct EngineRuntime {
     logs: BoundedLogs,
     /// Drain task for this runtime's child stderr. Taken and joined in
     /// `terminate`; aborted in `Drop` if the runtime is discarded first.
-    stderr_reader: Option<tokio::task::JoinHandle<()>>,
+    stderr_drain_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Cloneable client handle for the single-owner engine task. No caller holds a
@@ -556,7 +624,7 @@ impl EngineRuntime {
             next_request: 0,
             deadlines,
             logs: BoundedLogs::default(),
-            stderr_reader: None,
+            stderr_drain_task: None,
         }
     }
 
@@ -605,8 +673,11 @@ impl EngineRuntime {
             .map_err(|_| Error::EngineTimeout("spawning engine".into()))??;
         let stdin = child.stdin.take().ok_or(Error::NoStdin)?;
         let stdout = child.stdout.take().ok_or(Error::NoStdout)?;
-        let stderr_reader = child.stderr.take().map(|stderr| {
-            tokio::spawn(async move { drain_engine_stderr(BufReader::new(stderr)).await })
+        let stderr_drain_task = child.stderr.take().map(|stderr| {
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr);
+                drain_engine_stderr(&mut reader).await;
+            })
         });
         let mut runtime = Self::new(
             Box::new(ChildUciIo {
@@ -617,7 +688,7 @@ impl EngineRuntime {
             }),
             deadlines,
         );
-        runtime.stderr_reader = stderr_reader;
+        runtime.stderr_drain_task = stderr_drain_task;
         Ok(runtime)
     }
 
@@ -721,20 +792,40 @@ impl EngineRuntime {
     pub async fn terminate(&mut self) -> Result<(), Error> {
         self.state = EngineState::Terminating;
         let result = self.io.terminate(self.deadlines.quit).await;
-        self.reap_stderr_reader().await;
+        self.reap_stderr_drain().await;
         self.state = EngineState::Idle;
         result
     }
 
-    async fn reap_stderr_reader(&mut self) {
-        let Some(mut handle) = self.stderr_reader.take() else {
+    async fn reap_stderr_drain(&mut self) {
+        let Some(handle) = self.stderr_drain_task.take() else {
             return;
         };
-        match timeout(STDERR_REAP_TIMEOUT, &mut handle).await {
-            Ok(_) => {}
+        let mut guard = AbortJoinHandleOnDrop::new(handle);
+        let Some(handle) = guard.handle.as_mut() else {
+            return;
+        };
+        match timeout(STDERR_REAP_TIMEOUT, handle).await {
+            Ok(Ok(())) => guard.disarm(),
+            Ok(Err(error)) => {
+                error!("Engine stderr drain task failed while joining: {error}");
+                guard.disarm();
+            }
             Err(_) => {
+                let Some(handle) = guard.handle.as_mut() else {
+                    return;
+                };
                 handle.abort();
-                let _ = handle.await;
+                match handle.await {
+                    Ok(()) => error!("Engine stderr drain exceeded join budget and was aborted"),
+                    Err(error) if error.is_cancelled() => {
+                        error!("Engine stderr drain exceeded join budget and was aborted: {error}");
+                    }
+                    Err(error) => {
+                        error!("Engine stderr drain failed after abort: {error}");
+                    }
+                }
+                guard.disarm();
             }
         }
     }
@@ -780,7 +871,7 @@ impl EngineRuntime {
 
 impl Drop for EngineRuntime {
     fn drop(&mut self) {
-        if let Some(handle) = self.stderr_reader.take() {
+        if let Some(handle) = self.stderr_drain_task.take() {
             handle.abort();
         }
     }
@@ -1065,7 +1156,9 @@ async fn engine_actor_loop(
         }
     }
     if !terminated {
-        let _ = runtime.terminate().await;
+        if let Err(error) = runtime.terminate().await {
+            error!("engine actor failed to terminate after command channels closed: {error}");
+        }
     }
 }
 
@@ -1216,7 +1309,7 @@ mod tests {
             Arc,
         },
     };
-    use tokio::sync::Mutex;
+    use tokio::{io::AsyncBufReadExt, sync::Mutex};
 
     /// A real child process, spawned exactly the way production spawns an engine,
     /// must read the inode that was authorized at spawn time — not whatever the
@@ -1715,11 +1808,11 @@ mod tests {
         }
     }
 
-    fn pending_stderr_reader(finished: Arc<AtomicBool>) -> tokio::task::JoinHandle<()> {
-        pending_stderr_reader_started(finished, None)
+    fn pending_stderr_drain(finished: Arc<AtomicBool>) -> tokio::task::JoinHandle<()> {
+        pending_stderr_drain_started(finished, None)
     }
 
-    fn pending_stderr_reader_started(
+    fn pending_stderr_drain_started(
         finished: Arc<AtomicBool>,
         started: Option<oneshot::Sender<()>>,
     ) -> tokio::task::JoinHandle<()> {
@@ -1739,43 +1832,144 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminate_joins_a_finished_stderr_reader() {
-        let handle = tokio::spawn(async {});
-        let mut runtime = EngineRuntime::new(Box::new(fake_io()), EngineDeadlines::default());
-        runtime.stderr_reader = Some(handle);
-        tokio::time::timeout(Duration::from_millis(50), runtime.terminate())
-            .await
-            .expect("joining a finished stderr reader must not wait out the reap timeout")
-            .unwrap();
-        assert!(runtime.stderr_reader.is_none());
+    async fn stop_current_keeps_the_stderr_drain_alive() {
+        let mut io = fake_io();
+        io.lines.push_back(Some("bestmove e2e4".into()));
+        let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
+        let finished = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = oneshot::channel();
+        runtime.stderr_drain_task = Some(pending_stderr_drain_started(
+            finished.clone(),
+            Some(started_tx),
+        ));
+        started_rx.await.unwrap();
+        runtime.start_search(&GoMode::Depth(1)).await.unwrap();
+
+        runtime.stop_current().await.unwrap();
+
+        assert!(runtime.stderr_drain_task.is_some());
+        assert!(
+            !finished.load(AtomicOrdering::SeqCst),
+            "stop must not abort the stderr drain"
+        );
     }
 
     #[tokio::test]
-    async fn terminate_aborts_a_stuck_stderr_reader() {
+    async fn stderr_drain_consumes_input_after_the_log_budget_is_exceeded() {
+        let chunk = vec![b'x'; MAX_ENGINE_LINE_BYTES / 2];
+        let mut input = Vec::new();
+        while input.len() <= MAX_ENGINE_STDERR_BYTES {
+            input.extend_from_slice(&chunk);
+            input.push(b'\n');
+        }
+        input.extend_from_slice(b"still-alive\n");
+        let mut reader = BufReader::new(std::io::Cursor::new(input));
+
+        drain_engine_stderr(&mut reader).await;
+
+        assert!(
+            reader.fill_buf().await.unwrap().is_empty(),
+            "stderr drain must continue through EOF"
+        );
+    }
+
+    #[tokio::test]
+    async fn stderr_drain_discards_an_oversized_line_and_consumes_the_next_line() {
+        let mut input = vec![b'x'; MAX_ENGINE_LINE_BYTES + 1];
+        input.extend_from_slice(b"\nstill-alive\n");
+        let mut reader = BufReader::new(std::io::Cursor::new(input));
+
+        drain_engine_stderr(&mut reader).await;
+
+        assert!(
+            reader.fill_buf().await.unwrap().is_empty(),
+            "oversized stderr lines must not stop or spin the drain"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminate_lets_the_stderr_drain_finish_naturally_after_child_reap() {
+        let finished_naturally = Arc::new(AtomicBool::new(false));
+        let flag = finished_naturally.clone();
+        let drain = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            flag.store(true, AtomicOrdering::SeqCst);
+        });
+        let mut runtime = EngineRuntime::new(Box::new(fake_io()), EngineDeadlines::default());
+        runtime.stderr_drain_task = Some(drain);
+
+        runtime.terminate().await.unwrap();
+
+        assert!(
+            finished_naturally.load(AtomicOrdering::SeqCst),
+            "terminate must join the drain after child reap instead of aborting it immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_terminate_aborts_the_taken_stderr_drain() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = oneshot::channel();
+        let mut runtime = EngineRuntime::new(Box::new(fake_io()), EngineDeadlines::default());
+        runtime.stderr_drain_task = Some(pending_stderr_drain_started(
+            finished.clone(),
+            Some(started_tx),
+        ));
+        started_rx.await.unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), runtime.terminate())
+                .await
+                .is_err(),
+            "terminate must still be joining when the cancellation timeout fires"
+        );
+        tokio::time::timeout(Duration::from_millis(200), async {
+            while !finished.load(AtomicOrdering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a cancelled reap must leave the stderr drain terminal");
+    }
+
+    #[tokio::test]
+    async fn terminate_joins_a_finished_stderr_drain() {
+        let handle = tokio::spawn(async {});
+        let mut runtime = EngineRuntime::new(Box::new(fake_io()), EngineDeadlines::default());
+        runtime.stderr_drain_task = Some(handle);
+        tokio::time::timeout(Duration::from_millis(50), runtime.terminate())
+            .await
+            .expect("joining a finished stderr drain must not wait out the reap timeout")
+            .unwrap();
+        assert!(runtime.stderr_drain_task.is_none());
+    }
+
+    #[tokio::test]
+    async fn terminate_aborts_a_stuck_stderr_drain() {
         let finished = Arc::new(AtomicBool::new(false));
         let mut runtime = EngineRuntime::new(Box::new(fake_io()), EngineDeadlines::default());
-        runtime.stderr_reader = Some(pending_stderr_reader(finished.clone()));
+        runtime.stderr_drain_task = Some(pending_stderr_drain(finished.clone()));
         tokio::time::timeout(
             STDERR_REAP_TIMEOUT + Duration::from_millis(100),
             runtime.terminate(),
         )
         .await
-        .expect("terminate must abort a stuck stderr reader")
+        .expect("terminate must abort a stuck stderr drain")
         .unwrap();
-        assert!(runtime.stderr_reader.is_none());
+        assert!(runtime.stderr_drain_task.is_none());
         assert!(
             finished.load(AtomicOrdering::SeqCst),
-            "stderr reader must reach a terminal state on terminate"
+            "stderr drain must reach a terminal state on terminate"
         );
     }
 
     #[tokio::test]
-    async fn dropping_the_runtime_aborts_the_stderr_reader() {
+    async fn dropping_the_runtime_aborts_the_stderr_drain() {
         let finished = Arc::new(AtomicBool::new(false));
         let (started_tx, started_rx) = oneshot::channel();
         {
             let mut runtime = EngineRuntime::new(Box::new(fake_io()), EngineDeadlines::default());
-            runtime.stderr_reader = Some(pending_stderr_reader_started(
+            runtime.stderr_drain_task = Some(pending_stderr_drain_started(
                 finished.clone(),
                 Some(started_tx),
             ));
@@ -1784,7 +1978,7 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
         while !finished.load(AtomicOrdering::SeqCst) {
             if tokio::time::Instant::now() > deadline {
-                panic!("stderr reader must be aborted when the runtime is dropped");
+                panic!("stderr drain must be aborted when the runtime is dropped");
             }
             tokio::task::yield_now().await;
         }
@@ -1792,7 +1986,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn spawn_owns_the_stderr_reader_until_terminate() {
+    async fn spawn_owns_the_stderr_drain_until_terminate() {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("uci-stderr.sh");
@@ -1811,14 +2005,14 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            runtime.stderr_reader.is_some(),
+            runtime.stderr_drain_task.is_some(),
             "spawn must keep the stderr drain JoinHandle"
         );
         tokio::time::timeout(Duration::from_secs(2), runtime.terminate())
             .await
             .expect("terminate must join the stderr drain after the child exits")
             .unwrap();
-        assert!(runtime.stderr_reader.is_none());
+        assert!(runtime.stderr_drain_task.is_none());
     }
 
     #[tokio::test]
