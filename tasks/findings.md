@@ -2441,7 +2441,7 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
 
 ### The renderer chooses the URL path for Lichess requests, and every call rebuilds the HTTP client
 
-* **ID:** f-20260830-31 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-31 · **Status:** handled · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/lichess.rs:145-149` (validation + interpolation), `:202-210` (the
   post-hoc check), against the correct helper `exact_url` at `:56-70`; client at `:47-55`.
 * **Defect 1 — renderer-controlled path.** `PublicLichessRequest::Account { username }` is validated
@@ -2466,6 +2466,10 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. The no-host-change and
   no-credential corrections were verified against the `url` crate's `set_path` and the two request
   helpers, not assumed.
+
+* **Handled:** Public Lichess Account URLs go through `lichess_user_segment` (`[A-Za-z0-9_-]{2,30}`) and generalized `exact_url` that pins host/port to the intended base, so `../account` is `InvalidInput`. JSON and OAuth share `AppState.json_http_client` (10s/30s/30s); `fn client()` and `fn provider_http_client()` are gone. Proof: `public_account_url_rejects_traversal_and_invalid_usernames`, `json_and_oauth_requests_reuse_the_app_state_client`.
+* **Commits:** `60192478` (URL pin + shared client), `3a1b856d` (named timeouts, stable JSON errors).
+* **Rejected:** Reusing `ProdTransport`'s 3600s download client for JSON.
 
 ---
 
@@ -2531,7 +2535,7 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
 
 ### Lichess tokens are written to an in-process mock store and can never be read back — the `keyring` crate has no backend compiled in
 
-* **ID:** f-20260830-34 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-34 · **Status:** handled · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/Cargo.toml:79` (`keyring = "3.6.3"`, no features),
   `src-tauri/src/credentials.rs:106-112` (`OsCredentialStore::get`), `:289-294` (`token`),
   wired in as the production store at `src-tauri/src/main.rs:1371`.
@@ -2564,6 +2568,10 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Found by *refuting* a
   different claim (that the keyring call blocks on D-Bus) — the mechanism alleged there cannot occur,
   and establishing why exposed this.
+
+* **Handled:** `keyring` now enables `sync-secret-service`, `crypto-rust`, `apple-native`, and `windows-native`. `OsCredentialStore` still builds a fresh `Entry` per call, but a real backend makes that work. Async `token`/`store`/`remove` run on `BlockingGateway::spawn_cancellable`. Startup chmod of app-data/registry uses `O_NOFOLLOW`. Proof: `keyring_lockfile_includes_a_platform_backend`, `async_store_methods_do_not_run_on_the_caller_thread`, symlink-refusal tests. Default suite does not write a live Secret Service item.
+* **Commits:** `575ea99a` (backend + offload), `3a1b856d` (shared spawn helper).
+* **Rejected:** `linux-native` (d-20260830-14); `crypto-openssl` (d-20260831-21); default-suite D-Bus round-trip (unlock prompt / CI without a session bus).
 
 ---
 
@@ -4118,7 +4126,7 @@ allocated the id.
 
 ### Account linking reports success when the credential registry write may not have survived
 
-* **ID:** f-20260831-14 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-14 · **Status:** handled · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/credentials.rs`, `AtomicRegistryPersistence` — a parent-directory sync
   failure becomes `Ok(RegistryCommit::CommittedDurabilityUncertain)`; its production callers
   discard that status.
@@ -4140,3 +4148,7 @@ allocated the id.
 * **Found by:** the `review-error-handling` lens (confidence 96) over the cumulative diff of the
   `native-fs` cluster, 2026-08-31. Pre-existing; that cluster touched `credentials.rs` only to log
   the previously discarded cause.
+
+* **Handled:** `store_lichess_token` returns `LichessAccountStoreResult { account, durability_uncertain }`. `AuthenticationStatus::Succeeded` carries the flag; the poller still upserts. Removal is `Removed { revocation_pending, durability_uncertain }`. Accounts shows `Home.Accounts.LinkDurabilityUncertain` instead of `AuthenticationFailed`. Native success with a failed public fetch still upserts `{ id, username }`. Pending vs final persist uncertainty are tested independently.
+* **Commits:** `4544875b` (IPC + UI), `3a1b856d` (independent persist tests).
+* **Rejected:** mapping uncertain persist to `Failed` (Felix, d-20260831-18); a fourth unit variant `RemovedDurabilityUncertain` (d-20260831-20).
