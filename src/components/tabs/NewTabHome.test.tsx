@@ -272,12 +272,28 @@ test("home cards start play, analysis, puzzles, import, and repertoire", async (
     prev: Array<{ value: string; name: string; type: string }>,
   ) => Array<{ value: string; name: string; type: string }>;
   expect(playUpdate([{ value: "new-tab", name: "Home", type: "new" }])[0].type).toBe("play");
+  expect(playUpdate([])).toEqual([]);
   const analysisUpdate = fixtures.setTabs.mock.calls[1][0] as (
     prev: Array<{ value: string; name: string; type: string }>,
   ) => Array<{ value: string; name: string; type: string }>;
   expect(analysisUpdate([{ value: "new-tab", name: "Home", type: "new" }])[0].type).toBe(
     "analysis",
   );
+  expect(analysisUpdate([])).toEqual([]);
+  const puzzleUpdate = fixtures.setTabs.mock.calls[2][0] as (
+    prev: Array<{ value: string; name: string; type: string }>,
+  ) => Array<{ value: string; name: string; type: string }>;
+  expect(puzzleUpdate([{ value: "new-tab", name: "Home", type: "new" }])[0].type).toBe("puzzles");
+  expect(puzzleUpdate([])).toEqual([]);
+});
+
+test("shows an empty recent-files state", async () => {
+  fixtures.recentFiles = [];
+  const NewTabHome = (await import("./NewTabHome")).default;
+  await act(async () => {
+    root.render(<NewTabHome id="new-tab" />);
+  });
+  expect(container.textContent).toContain("Home.RecentFiles.NoRecentFiles");
 });
 
 test("keeps a recent file after a transient count failure", async () => {
@@ -302,6 +318,22 @@ test("drops a recent file that is gone", async () => {
     await Promise.resolve();
   });
   expect(fixtures.setRecentFiles).toHaveBeenCalledWith([]);
+});
+
+test("opens a recent file with an empty pgn as a blank analysis tab", async () => {
+  fixtures.readGames.mockResolvedValueOnce([]);
+  const NewTabHome = (await import("./NewTabHome")).default;
+  await act(async () => {
+    root.render(<NewTabHome id="new-tab" />);
+  });
+  const recentFile = [...container.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("stale"),
+  )!;
+  await act(async () => {
+    recentFile.click();
+    await Promise.resolve();
+  });
+  expect(fixtures.createTab).toHaveBeenCalledWith(expect.objectContaining({ pgn: "" }));
 });
 
 test("opens a recent file into a new analysis tab", async () => {

@@ -81,6 +81,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  currentTab.value = "tab-a";
+  currentTab.gameOrigin.file.numGames = 3;
   await act(async () => root.unmount());
   container.remove();
 });
@@ -130,6 +132,24 @@ test("reload updater leaves a non-file tab unchanged", async () => {
   expect(updater(otherTab)).toBe(otherTab);
   const next = updater(currentTab) as typeof currentTab;
   expect(next.gameOrigin.file.numGames).toBe(9);
+});
+
+test("reload ignores a count that finished after the tab changed", async () => {
+  let resolveCount!: (value: number) => void;
+  mocks.countPgnGames.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveCount = resolve;
+      }),
+  );
+  const pending = clickReload();
+  currentTab.value = "tab-b";
+  const FileInfo = (await import("./FileInfo")).default;
+  await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
+  await act(async () => resolveCount(11));
+  await pending;
+  expect(mocks.setCurrentTab).not.toHaveBeenCalled();
+  expect(mocks.setGames).not.toHaveBeenCalled();
 });
 
 test("renders nothing when the tab has no file", async () => {
