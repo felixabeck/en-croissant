@@ -238,6 +238,7 @@ fn parse_uci_attrs(
     moves: &[String],
 ) -> Result<BestMoves, Error> {
     let mut best_moves = BestMoves::default();
+    let mut score_seen = false;
 
     let mut pos = parse_fen_and_apply_moves(&fen.to_string(), moves)?;
     let turn = pos.turn();
@@ -267,12 +268,13 @@ fn parse_uci_attrs(
             }
             UciInfoAttribute::Score(score) => {
                 best_moves.score = score;
+                score_seen = true;
             }
             _ => (),
         }
     }
 
-    if best_moves.san_moves.is_empty() {
+    if best_moves.san_moves.is_empty() || !score_seen {
         return Err(Error::NoMovesFound);
     }
 
@@ -287,13 +289,14 @@ fn score_is_bound(score: &Score) -> bool {
     score.lower_bound == Some(true) || score.upper_bound == Some(true)
 }
 
-/// A finished MultiPV set sitting in `collected`. Callers publish only when
-/// `publishable`, but they always clear `collected` afterwards — mixed-depth
-/// and shallower sets still complete the sequence.
+/// A finished MultiPV set removed from `collected`. Ingest clears the collector
+/// on a complete set; callers do not. Mixed-depth and shallower sets still
+/// complete the sequence, but callers publish only when `publishable`.
 struct CompleteMultiPv {
     depth: u32,
     nodes: u64,
     publishable: bool,
+    lines: Vec<BestMoves>,
 }
 
 /// Shared UCI `info` aggregation for the interactive and report paths.
@@ -319,10 +322,12 @@ fn ingest_info_line(
         return None;
     }
     let publishable = collected.iter().all(|x| x.depth == depth) && depth >= last_depth;
+    let lines = std::mem::take(collected);
     Some(CompleteMultiPv {
         depth,
         nodes,
         publishable,
+        lines,
     })
 }
 
@@ -474,7 +479,7 @@ pub async fn get_best_moves(
                                     })
                                     .clamp(0.0, 100.0);
                                     BestMovesPayload {
-                                        best_lines: proc.best_moves.clone(),
+                                        best_lines: set.lines.clone(),
                                         engine: id.clone(),
                                         tab: tab.clone(),
                                         fen: proc.options.fen.clone(),
@@ -483,10 +488,9 @@ pub async fn get_best_moves(
                                     }
                                     .emit(&app)?;
                                     proc.last_depth = set.depth;
-                                    proc.last_best_moves = proc.best_moves.clone();
+                                    proc.last_best_moves = set.lines;
                                     proc.last_progress = progress as f32;
                                 }
-                                proc.best_moves.clear();
                             }
                         }
                         Err(e) => match e {
@@ -796,20 +800,23 @@ pub async fn analyze_game(
             };
             match parse_one(&line) {
                 UciMessage::Info(attrs) => {
-                    if let Ok(best_moves) =
-                        parse_uci_attrs(attrs, &proc.options.fen.parse()?, moves)
-                    {
-                        if let Some(set) = ingest_info_line(
-                            &mut proc.best_moves,
-                            proc.last_depth,
-                            proc.real_multipv,
-                            best_moves,
-                        ) {
-                            if set.publishable {
-                                current_analysis.best = proc.best_moves.clone();
-                                proc.last_depth = set.depth;
+                    match parse_uci_attrs(attrs, &proc.options.fen.parse()?, moves) {
+                        Ok(best_moves) => {
+                            if let Some(set) = ingest_info_line(
+                                &mut proc.best_moves,
+                                proc.last_depth,
+                                proc.real_multipv,
+                                best_moves,
+                            ) {
+                                if set.publishable {
+                                    current_analysis.best = set.lines;
+                                    proc.last_depth = set.depth;
+                                }
                             }
-                            proc.best_moves.clear();
+                        }
+                        Err(Error::NoMovesFound) => {}
+                        Err(e) => {
+                            warn!("Failed to parse info line: {}, error: {:?}", line, e);
                         }
                     }
                 }
@@ -1022,9 +1029,9 @@ mod tests {
         )
         .expect("exact score should complete MultiPV 1");
         assert!(set.publishable);
-        assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0].score.value, ScoreValue::Cp(34));
-        assert_ne!(collected[0].score.lower_bound, Some(true));
+        assert!(collected.is_empty());
+        assert_eq!(set.lines[0].score.value, ScoreValue::Cp(34));
+        assert_ne!(set.lines[0].score.lower_bound, Some(true));
     }
 
     #[test]
@@ -1069,9 +1076,10 @@ mod tests {
         )
         .expect("PV2 should complete after a bound on PV1");
         assert!(set.publishable);
-        assert_eq!(collected.len(), 2);
-        assert_eq!(collected[0].score.value, ScoreValue::Cp(20));
-        assert_eq!(collected[1].score.value, ScoreValue::Cp(5));
+        assert!(collected.is_empty());
+        assert_eq!(set.lines.len(), 2);
+        assert_eq!(set.lines[0].score.value, ScoreValue::Cp(20));
+        assert_eq!(set.lines[1].score.value, ScoreValue::Cp(5));
     }
 
     #[test]
@@ -1104,8 +1112,9 @@ mod tests {
             "info depth 7 multipv 2 score cp 5 nodes 100 pv d2d4",
         )
         .expect("mixed depths still complete the sequence");
+        assert!(collected.is_empty());
         assert!(!set.publishable);
-        assert_eq!(collected.len(), 2);
+        assert_eq!(set.lines.len(), 2);
     }
 
     #[test]
@@ -1118,8 +1127,47 @@ mod tests {
             "info depth 8 multipv 1 score cp 20 nodes 100 pv e2e4",
         )
         .expect("a shallower set still completes MultiPV 1");
+        assert!(collected.is_empty());
         assert!(!set.publishable);
         assert_eq!(set.depth, 8);
+    }
+
+    #[test]
+    fn parse_uci_attrs_rejects_pv_without_score() {
+        let attrs = match parse_one("info depth 8 multipv 1 nodes 100 pv e2e4") {
+            UciMessage::Info(attrs) => attrs,
+            other => panic!("expected info, got {other:?}"),
+        };
+        assert!(matches!(
+            parse_uci_attrs(attrs, &start_fen(), &[]),
+            Err(Error::NoMovesFound)
+        ));
+    }
+
+    #[test]
+    fn production_uci_loops_share_ingest_info_line() {
+        let source = include_str!("chess.rs");
+        let production = source
+            .split_once("mod tests {")
+            .map(|(prefix, _)| prefix)
+            .expect("test module should exist");
+
+        for function in ["pub async fn get_best_moves", "pub async fn analyze_game"] {
+            let start = production
+                .find(function)
+                .expect("production loop should exist");
+            let after_start = &production[start + function.len()..];
+            let end = ["pub async fn", "pub struct", "#[cfg(test)]"]
+                .iter()
+                .filter_map(|marker| after_start.find(marker))
+                .min()
+                .unwrap_or(after_start.len());
+            let body = &after_start[..end];
+            assert!(
+                body.contains("ingest_info_line("),
+                "{function} must use ingest_info_line"
+            );
+        }
     }
 
     #[test]
