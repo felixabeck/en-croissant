@@ -221,9 +221,12 @@ impl SearchIndex {
     pub fn write_to<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         match self.write_to_with_source(path, IndexSource::default())? {
             AtomicFileOutcome::DurableCommit => Ok(()),
-            AtomicFileOutcome::CommittedDurabilityUncertain(_) => Err(
-                Error::CommittedDurabilityUncertain(DurabilityStage::SearchIndexReplacement),
-            ),
+            AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
+                log::warn!("search index parent sync failed: {error}");
+                Err(Error::CommittedDurabilityUncertain(
+                    DurabilityStage::SearchIndexReplacement,
+                ))
+            }
         }
     }
 
@@ -518,7 +521,7 @@ pub(crate) fn legacy_sidecar_leaf(database_leaf: &OsStr) -> OsString {
 /// Promotes the pre-2.0 extension-replacing sidecar without ever overwriting
 /// an appended sidecar. Only a validated V6 archive whose complete recorded
 /// database provenance matches `db_path` is eligible. The new file is
-/// atomically published and synced by `atomic_replace`; only then is the
+/// atomically published and synced by `atomic_replace_at`; only then is the
 /// legacy name removed. If both names are present, the appended name wins and
 /// the legacy file is deliberately kept: it may belong to another database
 /// with the same stem.
@@ -609,9 +612,12 @@ pub(crate) fn promote_legacy_index_sidecar_at(
             remove_optional_regular_at(parent, legacy_leaf)?;
             Ok(true)
         }
-        AtomicFileOutcome::CommittedDurabilityUncertain(_) => Err(
-            Error::CommittedDurabilityUncertain(DurabilityStage::SearchIndexReplacement),
-        ),
+        AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
+            log::warn!("search index parent sync failed: {error}");
+            Err(Error::CommittedDurabilityUncertain(
+                DurabilityStage::SearchIndexReplacement,
+            ))
+        }
     }
 }
 

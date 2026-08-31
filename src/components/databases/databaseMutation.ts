@@ -21,7 +21,9 @@ export function invalidateDeletedDatabase(
     };
 }
 
-/** Native deletion is the commit point; renderer state changes only after it succeeds. */
+/** Native deletion is the commit point. Renderer state is cleared after success
+ * and after `applied-despite-error`, because that category means the primary
+ * was already destroyed even though the command rejected. */
 export async function deleteDatabaseAndInvalidate(
     deleted: DatabaseHandle,
     remove: (database: DatabaseHandle) => Promise<unknown>,

@@ -49,6 +49,20 @@ describe("runDestructiveWithRefresh", () => {
         expect(refresh).toHaveBeenCalledTimes(1);
     });
 
+    test("keeps the destructive rejection when refresh itself fails", async () => {
+        const error = new Error(
+            "Partially removed: 1 entries were deleted before failing: conflict",
+        );
+        await expect(
+            runDestructiveWithRefresh(
+                async () => Promise.reject(error),
+                async () => {
+                    throw new Error("relist failed");
+                },
+            ),
+        ).rejects.toBe(error);
+    });
+
     test("does not refresh after an ordinary rejection", async () => {
         const refresh = vi.fn();
         await expect(

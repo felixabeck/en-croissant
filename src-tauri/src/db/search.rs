@@ -228,6 +228,10 @@ async fn load_search_index(
         return Err(generation_error
             .unwrap_or_else(|| Error::Conflict("search index changed while loading".into())));
     };
+    // Generation's rename landed; the new sidecar is the only copy. Returning
+    // CommittedDurabilityUncertain here would fail a search whose index is now
+    // valid. Promotion still returns that error because it must not unlink the
+    // last durable (legacy) copy — d-20260831-23.
     cache_loaded_index(state, &database, expected_source, index)
 }
 

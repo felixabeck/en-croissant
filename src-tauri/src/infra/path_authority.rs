@@ -60,6 +60,9 @@ pub(crate) struct WorkspaceMutationTarget {
     pub(crate) is_dir: bool,
     path: PathBuf,
 }
+/// Retained no-follow parent descriptor for a database file. Callers must not
+/// reopen `leaf` by pathname for create, unlink, or mmap; use this parent with
+/// `openat` / `unlinkat` / `atomic_replace_at`.
 pub(crate) struct DatabaseFileTarget {
     pub(crate) parent: fs::File,
     pub(crate) leaf: OsString,

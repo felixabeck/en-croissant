@@ -16,7 +16,7 @@ use crate::{
     },
     error::Error,
     infra::{
-        fs::{remove_optional_regular_at, remove_regular_at, AtomicFileOutcome},
+        fs::{remove_optional_regular_at, AtomicFileOutcome},
         path_authority::{DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathOperation},
     },
     opening::get_opening_from_setup,
@@ -717,7 +717,8 @@ fn generate_search_index_locked(
     )?;
     match writer.write_to_at(&target.parent, &index_leaf, source)? {
         AtomicFileOutcome::DurableCommit => {}
-        AtomicFileOutcome::CommittedDurabilityUncertain(_) => {
+        AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
+            log::warn!("search index parent sync failed: {error}");
             return Err(Error::CommittedDurabilityUncertain(
                 crate::error::DurabilityStage::SearchIndexReplacement,
             ));
@@ -1010,15 +1011,17 @@ pub struct QueryOptions<SortT> {
     pub direction: SortDirection,
 }
 
+const MAX_PAGE_SIZE: i32 = 1000;
+
 fn pagination_limit_offset(
     page: Option<i32>,
     page_size: Option<i32>,
 ) -> Result<(Option<i64>, Option<i64>), Error> {
     if let Some(page_size) = page_size {
-        if !(1..=1000).contains(&page_size) {
-            return Err(Error::InvalidInput(
-                "page size must be between 1 and 1000".into(),
-            ));
+        if !(1..=MAX_PAGE_SIZE).contains(&page_size) {
+            return Err(Error::InvalidInput(format!(
+                "page size must be between 1 and {MAX_PAGE_SIZE}"
+            )));
         }
     }
 
@@ -1856,7 +1859,11 @@ fn unlink_database_files(
     {
         return Err(Error::Conflict("database changed before deletion".into()));
     }
-    remove_regular_at(&target.parent, &target.leaf)?;
+    // Same residual POSIX window as delete_puzzle_database: there is no
+    // compare-and-unlink. The inode check is the last userspace observation
+    // before unlinkat; remove_regular_at would re-stat without the identity.
+    rfs::unlinkat(&target.parent, &target.leaf, AtFlags::empty())
+        .map_err(|error| Error::Io(Box::new(error.into())))?;
     Ok(unlinked + 1)
 }
 
