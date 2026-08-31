@@ -7,8 +7,8 @@
 use crate::{
     error::Error,
     infra::path_authority::{
-        FileWorkspaceDescriptor, FileWorkspaceHandle, PathClass, PathOperation,
-        WorkspaceMutationTarget,
+        CommitDurability, FileWorkspaceDescriptor, FileWorkspaceHandle, PathClass, PathOperation,
+        WorkspaceMutationTarget, WorkspaceRemovalStatus,
     },
     pgn, AppState,
 };
@@ -621,8 +621,16 @@ pub fn trash_workspace_entry(
     entry: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let root = mutation_target(state.inner(), &workspace)?;
-    let source = mutation_target(state.inner(), &entry)?;
+    trash_entry(state.inner(), &workspace, &entry)
+}
+
+fn trash_entry(
+    state: &AppState,
+    workspace: &FileWorkspaceHandle,
+    entry: &FileWorkspaceHandle,
+) -> Result<(), Error> {
+    let root = mutation_target(state, workspace)?;
+    let source = mutation_target(state, entry)?;
     ensure_registered_descendant(&root, &source)?;
     let root_dir = root.directory()?;
     let trash = std::ffi::OsString::from(TRASH_DIRECTORY);
@@ -651,7 +659,7 @@ pub fn trash_workspace_entry(
     } else {
         paired_rename(&source, &bucket_dir, &source.leaf)?;
     }
-    rebind_after_move(state.inner(), &entry, &source, &target)
+    rebind_after_move(state, entry, &source, &target)
 }
 
 #[tauri::command]
@@ -661,8 +669,16 @@ pub fn restore_workspace_entry(
     entry: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let root = mutation_target(state.inner(), &workspace)?;
-    let source = mutation_target(state.inner(), &entry)?;
+    restore_entry(state.inner(), &workspace, &entry)
+}
+
+fn restore_entry(
+    state: &AppState,
+    workspace: &FileWorkspaceHandle,
+    entry: &FileWorkspaceHandle,
+) -> Result<(), Error> {
+    let root = mutation_target(state, workspace)?;
+    let source = mutation_target(state, entry)?;
     let trash_root = root.path().join(TRASH_DIRECTORY);
     source
         .path()
@@ -681,7 +697,7 @@ pub fn restore_workspace_entry(
     } else {
         paired_rename(&source, root.directory()?, &source.leaf)?;
     }
-    rebind_after_move(state.inner(), &entry, &source, &target)
+    rebind_after_move(state, entry, &source, &target)
 }
 
 #[tauri::command]
@@ -702,25 +718,88 @@ fn permanently_delete_entry(
     let root = mutation_target(state, workspace)?;
     let source = mutation_target(state, entry)?;
     ensure_registered_descendant(&root, &source)?;
-    let durability_error = match crate::infra::fs::remove_entry_at(
+    let removal_error = match crate::infra::fs::remove_entry_at(
         &source.parent,
         &source.leaf,
         source.identity,
         source.is_dir,
     ) {
         Ok(()) => None,
-        Err(Error::CommittedDurabilityUncertain(stage)) => Some(stage),
+        Err(error @ Error::CommittedDurabilityUncertain(_)) => Some(error),
+        Err(error @ Error::PartialRemoval { .. }) => Some(error),
         Err(error) => return Err(error),
     };
-    if !source.is_dir {
-        crate::infra::fs::remove_optional_regular_at(&source.parent, &sidecar_leaf(&source.leaf)?)?;
+    let sidecar_error = if source.is_dir {
+        None
+    } else {
+        sidecar_leaf(&source.leaf)
+            .and_then(|sidecar| {
+                crate::infra::fs::remove_optional_regular_at(&source.parent, &sidecar)
+            })
+            .err()
+    };
+    let removal_status = if matches!(removal_error, Some(Error::PartialRemoval { .. })) {
+        WorkspaceRemovalStatus::Partial
+    } else {
+        WorkspaceRemovalStatus::Complete
+    };
+    let registry_result = (|| {
+        authority(state)?
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+            .remove_workspace_entry(entry, removal_status)
+    })();
+
+    if let Some(error @ Error::PartialRemoval { .. }) = removal_error {
+        match registry_result {
+            Ok(CommitDurability::Durable) => {}
+            Ok(CommitDurability::DurabilityUncertain(stage)) => {
+                log::warn!("partial workspace removal registry durability uncertain: {stage}");
+            }
+            Err(registry_error) => {
+                log::warn!(
+                    "partial workspace removal registry reconciliation failed: {registry_error}"
+                );
+            }
+        }
+        return Err(error);
     }
-    authority(state)?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .remove_workspace_entry(entry)?;
-    if let Some(error) = durability_error {
-        return Err(Error::CommittedDurabilityUncertain(error));
+
+    let registry_durability = match registry_result {
+        Ok(durability) => durability,
+        Err(error) => {
+            log::warn!("workspace removal registry reconciliation failed: {error}");
+            if let Some(sidecar_error) = sidecar_error {
+                log::warn!("workspace sidecar cleanup also failed after removal: {sidecar_error}");
+            }
+            if let Some(Error::CommittedDurabilityUncertain(stage)) = removal_error {
+                log::warn!("workspace removal durability also uncertain: {stage}");
+            }
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::RegistryReplacement,
+            ));
+        }
+    };
+    if let Some(error) = sidecar_error {
+        log::warn!("workspace sidecar cleanup failed after removal: {error}");
+        if let CommitDurability::DurabilityUncertain(stage) = registry_durability {
+            log::warn!("workspace removal registry durability also uncertain: {stage}");
+        }
+        if let Some(Error::CommittedDurabilityUncertain(stage)) = removal_error {
+            log::warn!("workspace removal durability also uncertain: {stage}");
+        }
+        return Err(Error::CommittedDurabilityUncertain(
+            crate::error::DurabilityStage::WorkspaceRemoval,
+        ));
+    }
+    if let Some(Error::CommittedDurabilityUncertain(stage)) = removal_error {
+        if let CommitDurability::DurabilityUncertain(registry_stage) = registry_durability {
+            log::warn!("workspace removal registry durability also uncertain: {registry_stage}");
+        }
+        return Err(Error::CommittedDurabilityUncertain(stage));
+    }
+    if let CommitDurability::DurabilityUncertain(stage) = registry_durability {
+        return Err(Error::CommittedDurabilityUncertain(stage));
     }
     Ok(())
 }
@@ -729,7 +808,10 @@ fn permanently_delete_entry(
 mod tests {
     use super::*;
     use crate::infra::{
-        fs::{set_test_removal_injector, RemovalFault, RemovalFaultPoint},
+        fs::{
+            set_test_atomic_file_injector, set_test_removal_injector, AtomicFileFaultPoint,
+            AtomicWriterInjector, RemovalFault, RemovalFaultPoint,
+        },
         path_authority::PathAuthority,
     };
     use tempfile::TempDir;
@@ -786,6 +868,23 @@ mod tests {
         (child, entry)
     }
 
+    fn registered_child_file(
+        state: &AppState,
+        workspace: &FileWorkspaceHandle,
+        path: &Path,
+    ) -> FileWorkspaceHandle {
+        register_entry(
+            state,
+            workspace,
+            path,
+            path.file_stem()
+                .expect("file stem")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .expect("registered file")
+    }
+
     fn delete_entry_with_fault(
         state: &AppState,
         workspace: &FileWorkspaceHandle,
@@ -802,6 +901,9 @@ mod tests {
     fn committed_delete_removes_authority_record_when_parent_sync_fails() {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry) = registered_child_directory(&state, &workspace, "victim");
+        let descendant = child.join("descendant.pgn");
+        fs::write(&descendant, b"*").expect("descendant");
+        let descendant_entry = registered_child_file(&state, &workspace, &descendant);
 
         let error =
             delete_entry_with_fault(&state, &workspace, &entry, RemovalFaultPoint::ParentSync)
@@ -813,12 +915,20 @@ mod tests {
             mutation_target(&state, &entry),
             Err(Error::InvalidInput(message)) if message == "workspace entry is not persistent"
         ));
+        assert!(matches!(
+            mutation_target(&state, &descendant_entry),
+            Err(Error::InvalidInput(message)) if message == "workspace entry is not persistent"
+        ));
     }
 
     #[test]
     fn partial_delete_keeps_authority_record() {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry) = registered_child_directory(&state, &workspace, "victim");
+        let survivor = child.join("survivor.pgn");
+        fs::write(&survivor, b"*").expect("survivor");
+        let removed_entry = registered_child_file(&state, &workspace, &child.join("removed"));
+        let survivor_entry = registered_child_file(&state, &workspace, &survivor);
 
         let error = delete_entry_with_fault(
             &state,
@@ -831,6 +941,143 @@ mod tests {
         assert!(matches!(error, Error::PartialRemoval { .. }));
         assert!(child.exists(), "the top directory remains");
         mutation_target(&state, &entry).expect("authority record remains");
+        for (path, handle) in [
+            (child.join("removed"), removed_entry),
+            (survivor, survivor_entry),
+        ] {
+            if path.exists() {
+                mutation_target(&state, &handle).expect("surviving descendant remains registered");
+            } else {
+                assert!(matches!(
+                    mutation_target(&state, &handle),
+                    Err(Error::InvalidInput(message))
+                        if message == "workspace entry is not persistent"
+                ));
+            }
+        }
+    }
+
+    struct RegistryWriteFailure;
+
+    impl AtomicWriterInjector for RegistryWriteFailure {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == AtomicFileFaultPoint::Write {
+                Err(std::io::Error::other(
+                    r"/private/registry C:\private\registry: injected write failure",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn registry_failure_after_unlink_is_applied_despite_error_and_keeps_persisted_state() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry) = registered_child_directory(&state, &workspace, "victim");
+        set_test_atomic_file_injector(Some(Box::new(RegistryWriteFailure)));
+        let error = permanently_delete_entry(&state, &workspace, &entry)
+            .expect_err("registry failure after unlink must be applied-despite-error");
+        set_test_atomic_file_injector(None);
+
+        assert!(!child.exists());
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::RegistryReplacement)
+        ));
+        assert!(
+            mutation_target(&state, &entry).is_err(),
+            "deleted object is retained as unavailable"
+        );
+        assert!(authority(&state)
+            .expect("authority lock")
+            .as_mut()
+            .expect("authority")
+            .descriptors()
+            .iter()
+            .any(|descriptor| descriptor.id == *entry.path_ref()));
+        let serialized = serde_json::to_string(&error).expect("serialize registry failure");
+        assert_eq!(
+            serialized,
+            "\"Committed but durability uncertain: registry replacement\""
+        );
+        assert!(!serialized.contains("/private/registry"));
+        assert!(!serialized.contains(r"C:\private\registry"));
+    }
+
+    #[test]
+    fn sidecar_failure_after_unlink_still_removes_authority_record() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state, &workspace).expect("workspace root");
+        let file = root.join("victim.pgn");
+        fs::write(&file, b"*").expect("victim file");
+        fs::create_dir(root.join("victim.info")).expect("invalid sidecar directory");
+        let entry = registered_child_file(&state, &workspace, &file);
+
+        let error = permanently_delete_entry(&state, &workspace, &entry)
+            .expect_err("sidecar cleanup failure must be applied-despite-error");
+
+        assert!(!file.exists());
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::WorkspaceRemoval)
+        ));
+        assert!(matches!(
+            mutation_target(&state, &entry),
+            Err(Error::InvalidInput(message)) if message == "workspace entry is not persistent"
+        ));
+        assert_eq!(
+            serde_json::to_string(&error).expect("serialize sidecar failure"),
+            "\"Committed but durability uncertain: workspace removal\""
+        );
+    }
+
+    #[test]
+    fn partial_removal_wins_over_registry_reconciliation_failure() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry) = registered_child_directory(&state, &workspace, "victim");
+        let removed_entry = registered_child_file(&state, &workspace, &child.join("removed"));
+        set_test_atomic_file_injector(Some(Box::new(RegistryWriteFailure)));
+        let error = delete_entry_with_fault(
+            &state,
+            &workspace,
+            &entry,
+            RemovalFaultPoint::AfterEntryRemoved,
+        )
+        .expect_err("partial removal must remain the primary outcome");
+        set_test_atomic_file_injector(None);
+
+        assert!(matches!(error, Error::PartialRemoval { .. }));
+        mutation_target(&state, &entry).expect("top record remains after partial removal");
+        assert!(
+            mutation_target(&state, &removed_entry).is_err(),
+            "failed registry save retains removed descendant as unavailable"
+        );
+        assert!(authority(&state)
+            .expect("authority lock")
+            .as_mut()
+            .expect("authority")
+            .descriptors()
+            .iter()
+            .any(|descriptor| descriptor.id == *removed_entry.path_ref()));
+        let serialized = serde_json::to_string(&error).expect("serialize partial removal");
+        assert!(serialized.starts_with("\"Partially removed:"));
+        assert!(!serialized.contains("/private/registry"));
+        assert!(!serialized.contains(r"C:\private\registry"));
+    }
+
+    #[test]
+    fn trash_and_restore_directory_keep_descendant_records() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry) = registered_child_directory(&state, &workspace, "victim");
+        let descendant = child.join("descendant.pgn");
+        fs::write(&descendant, b"*").expect("descendant");
+        let descendant_entry = registered_child_file(&state, &workspace, &descendant);
+
+        trash_entry(&state, &workspace, &entry).expect("trash directory");
+        mutation_target(&state, &descendant_entry).expect("descendant survives trash rebase");
+        restore_entry(&state, &workspace, &entry).expect("restore directory");
+        mutation_target(&state, &descendant_entry).expect("descendant survives restore rebase");
     }
 
     #[test]

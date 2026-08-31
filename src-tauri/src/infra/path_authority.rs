@@ -553,6 +553,12 @@ pub enum CommitDurability {
     Durable,
     DurabilityUncertain(crate::error::DurabilityStage),
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceRemovalStatus {
+    Complete,
+    Partial,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
 pub struct PathCommit {
     pub id: PathRef,
@@ -2184,6 +2190,7 @@ impl PathAuthority {
             self.active_database_root.clone(),
             self.active_puzzle_root.clone(),
             Some(root.path_ref().clone()),
+            self.pending_artifacts.clone(),
             None,
         )?;
         Ok(())
@@ -2471,6 +2478,7 @@ impl PathAuthority {
             active,
             self.active_puzzle_root.clone(),
             self.active_engine_root.clone(),
+            self.pending_artifacts.clone(),
             None,
         )?;
         Ok(())
@@ -2483,6 +2491,7 @@ impl PathAuthority {
             self.active_database_root.clone(),
             Some(root.path_ref().clone()),
             self.active_engine_root.clone(),
+            self.pending_artifacts.clone(),
             None,
         )?;
         Ok(())
@@ -2697,7 +2706,15 @@ impl PathAuthority {
     }
 
     pub(crate) fn remove_database(&mut self, handle: &DatabaseHandle) -> Result<(), Error> {
-        self.remove_workspace_entry(&FileWorkspaceHandle::new(handle.path_ref().clone()))
+        match self.remove_workspace_entry(
+            &FileWorkspaceHandle::new(handle.path_ref().clone()),
+            WorkspaceRemovalStatus::Complete,
+        )? {
+            CommitDurability::Durable => Ok(()),
+            CommitDurability::DurabilityUncertain(stage) => {
+                Err(Error::CommittedDurabilityUncertain(stage))
+            }
+        }
     }
 
     fn database_root_path(&mut self, root: &DatabaseRootHandle) -> Result<PathBuf, Error> {
@@ -3374,15 +3391,57 @@ impl PathAuthority {
     pub(crate) fn remove_workspace_entry(
         &mut self,
         handle: &FileWorkspaceHandle,
-    ) -> Result<(), Error> {
+        status: WorkspaceRemovalStatus,
+    ) -> Result<CommitDurability, Error> {
+        let removed = self
+            .persistent
+            .get(&handle.path_ref().id)
+            .cloned()
+            .ok_or_else(|| Error::InvalidInput("workspace entry is not persistent".into()))?;
+        let removed_path = removed.stored.path.to_path()?;
         let mut candidate = self.persistent.clone();
-        if candidate.remove(&handle.path_ref().id).is_none() {
-            return Err(Error::InvalidInput(
-                "workspace entry is not persistent".into(),
-            ));
+        if status == WorkspaceRemovalStatus::Complete {
+            candidate.remove(&handle.path_ref().id);
         }
-        self.commit_candidate(candidate, None)?;
-        Ok(())
+        if removed.stored.target_is_dir {
+            candidate.retain(|id, entry| {
+                if id == &handle.path_ref().id {
+                    return status == WorkspaceRemovalStatus::Partial;
+                }
+                let Ok(path) = entry.stored.path.to_path() else {
+                    return true;
+                };
+                let is_descendant =
+                    path != removed_path && path.strip_prefix(&removed_path).is_ok();
+                if !is_descendant {
+                    return true;
+                }
+                if status == WorkspaceRemovalStatus::Complete {
+                    return false;
+                }
+                refresh_entry(entry);
+                entry.availability == PathAvailability::Available
+            });
+        }
+
+        let removed_ids: Vec<_> = self
+            .persistent
+            .keys()
+            .filter(|id| !candidate.contains_key(*id))
+            .cloned()
+            .collect();
+        let mut pending_artifacts = self.pending_artifacts.clone();
+        pending_artifacts.retain(|pending| !removed_ids.contains(&pending.root.id));
+        // An intent whose root was removed by this operation can never activate. This is scoped
+        // here rather than made a general commit invariant because other commits do not establish
+        // that a missing root was deliberately deleted.
+        //
+        // After a successful save, workspace records no longer outlive the objects they name. If
+        // saving fails, however, this prune is not adopted: in-memory state must not diverge from
+        // what was persisted, so the unavailable records remain until a later successful,
+        // explicit reconciliation. Residual accumulation is therefore limited to registry-save
+        // failures rather than ordinary workspace create-and-delete use.
+        self.commit_candidate_with_pending(candidate, pending_artifacts, None)
     }
 
     /// Rebind every persistent child below a moved directory in one registry replacement. This
@@ -3501,11 +3560,36 @@ impl PathAuthority {
         candidate: BTreeMap<String, Entry>,
         consumed_dialog: Option<&PathRef>,
     ) -> Result<CommitDurability, Error> {
+        self.commit_candidate_with_pending(
+            candidate,
+            self.pending_artifacts.clone(),
+            consumed_dialog,
+        )
+    }
+    fn commit_candidate_with_pending(
+        &mut self,
+        candidate: BTreeMap<String, Entry>,
+        pending_artifacts: Vec<PendingArtifact>,
+        consumed_dialog: Option<&PathRef>,
+    ) -> Result<CommitDurability, Error> {
+        let active_database_root = self
+            .active_database_root
+            .clone()
+            .filter(|id| candidate.contains_key(&id.id));
+        let active_puzzle_root = self
+            .active_puzzle_root
+            .clone()
+            .filter(|id| candidate.contains_key(&id.id));
+        let active_engine_root = self
+            .active_engine_root
+            .clone()
+            .filter(|id| candidate.contains_key(&id.id));
         let durability = self.commit_state(
             candidate,
-            self.active_database_root.clone(),
-            self.active_puzzle_root.clone(),
-            self.active_engine_root.clone(),
+            active_database_root,
+            active_puzzle_root,
+            active_engine_root,
+            pending_artifacts,
             consumed_dialog,
         )?;
         Ok(durability)
@@ -3516,6 +3600,7 @@ impl PathAuthority {
         active_database_root: Option<PathRef>,
         active_puzzle_root: Option<PathRef>,
         active_engine_root: Option<PathRef>,
+        pending_artifacts: Vec<PendingArtifact>,
         consumed_dialog: Option<&PathRef>,
     ) -> Result<CommitDurability, Error> {
         let durability = self.save_entries(
@@ -3523,12 +3608,13 @@ impl PathAuthority {
             &active_database_root,
             &active_puzzle_root,
             &active_engine_root,
-            &self.pending_artifacts,
+            &pending_artifacts,
         )?;
         self.persistent = candidate;
         self.active_database_root = active_database_root;
         self.active_puzzle_root = active_puzzle_root;
         self.active_engine_root = active_engine_root;
+        self.pending_artifacts = pending_artifacts;
         if let Some(dialog) = consumed_dialog {
             self.dialogs.remove(&dialog.id);
         }
@@ -4154,6 +4240,205 @@ mod tests {
             authority.resolve(moved_handle.path_ref(), PathOperation::ReadPgn, &[]),
             Err(Error::Conflict(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn complete_workspace_directory_removal_prunes_descendants_even_when_commit_is_uncertain() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let victim = workspace.join("victim");
+        fs::create_dir_all(victim.join("nested")).unwrap();
+        fs::write(victim.join("nested/game.pgn"), b"*").unwrap();
+        fs::write(workspace.join("sibling.pgn"), b"*").unwrap();
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let grant = authority
+            .grant_dialog_operations(
+                &workspace,
+                "workspace",
+                PathClass::BoundedDialogGrant,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let root = FileWorkspaceHandle::new(
+            authority
+                .promote_dialog(
+                    &grant,
+                    PathClass::PersistentCustomRoot,
+                    "workspace",
+                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                )
+                .unwrap()
+                .id,
+        );
+        let victim_handle = authority
+            .register_workspace_child(&root, &[OsString::from("victim")], "victim")
+            .unwrap();
+        let nested_handle = authority
+            .register_workspace_child(
+                &root,
+                &[OsString::from("victim"), OsString::from("nested")],
+                "nested",
+            )
+            .unwrap();
+        let game_handle = authority
+            .register_workspace_child(
+                &root,
+                &[
+                    OsString::from("victim"),
+                    OsString::from("nested"),
+                    OsString::from("game.pgn"),
+                ],
+                "game",
+            )
+            .unwrap();
+        let sibling_handle = authority
+            .register_workspace_child(&root, &[OsString::from("sibling.pgn")], "sibling")
+            .unwrap();
+        fs::remove_dir_all(&victim).unwrap();
+
+        struct ParentSync;
+        impl AtomicWriterInjector for ParentSync {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::ParentSync {
+                    Err(std::io::Error::other(
+                        "/private/registry: injected sync failure",
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        set_test_atomic_file_injector(Some(Box::new(ParentSync)));
+        let durability = authority
+            .remove_workspace_entry(&victim_handle, WorkspaceRemovalStatus::Complete)
+            .unwrap();
+        set_test_atomic_file_injector(None);
+
+        assert!(matches!(
+            durability,
+            CommitDurability::DurabilityUncertain(
+                crate::error::DurabilityStage::RegistryReplacement
+            )
+        ));
+        for removed in [&victim_handle, &nested_handle, &game_handle] {
+            assert!(!authority.persistent.contains_key(&removed.path_ref().id));
+        }
+        assert!(authority
+            .persistent
+            .contains_key(&sibling_handle.path_ref().id));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partial_workspace_directory_removal_keeps_survivors_and_prunes_missing_descendants() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let victim = workspace.join("victim");
+        fs::create_dir_all(&victim).unwrap();
+        fs::write(victim.join("removed.pgn"), b"*").unwrap();
+        fs::write(victim.join("survived.pgn"), b"*").unwrap();
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let grant = authority
+            .grant_dialog_operations(
+                &workspace,
+                "workspace",
+                PathClass::BoundedDialogGrant,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let root = FileWorkspaceHandle::new(
+            authority
+                .promote_dialog(
+                    &grant,
+                    PathClass::PersistentCustomRoot,
+                    "workspace",
+                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                )
+                .unwrap()
+                .id,
+        );
+        let victim_handle = authority
+            .register_workspace_child(&root, &[OsString::from("victim")], "victim")
+            .unwrap();
+        let removed_handle = authority
+            .register_workspace_child(
+                &root,
+                &[OsString::from("victim"), OsString::from("removed.pgn")],
+                "removed",
+            )
+            .unwrap();
+        let survived_handle = authority
+            .register_workspace_child(
+                &root,
+                &[OsString::from("victim"), OsString::from("survived.pgn")],
+                "survived",
+            )
+            .unwrap();
+        fs::remove_file(victim.join("removed.pgn")).unwrap();
+
+        authority
+            .remove_workspace_entry(&victim_handle, WorkspaceRemovalStatus::Partial)
+            .unwrap();
+
+        assert!(authority
+            .persistent
+            .contains_key(&victim_handle.path_ref().id));
+        assert!(!authority
+            .persistent
+            .contains_key(&removed_handle.path_ref().id));
+        assert!(authority
+            .persistent
+            .contains_key(&survived_handle.path_ref().id));
+    }
+
+    #[test]
+    fn candidate_commit_clears_removed_active_roots_and_their_pending_intents() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("root");
+        fs::create_dir(&root_path).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .migrate_legacy_os_path(
+                root_path.into_os_string(),
+                "root",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::DownloadFile],
+            )
+            .unwrap();
+        authority.active_database_root = Some(root.id.clone());
+        authority.active_puzzle_root = Some(root.id.clone());
+        authority.active_engine_root = Some(root.id.clone());
+        authority.pending_artifacts.push(PendingArtifact {
+            id: PathRef::fresh(),
+            root: root.id.clone(),
+            filename: NativePath::from_path(Path::new("artifact.pgn")),
+            display_name: "artifact".into(),
+            operations: vec![PathOperation::ReadPgn],
+            baseline: None,
+            root_identity: None,
+            payload_size: 0,
+            payload_sha256: String::new(),
+            payload_bound: false,
+            installed_identity: None,
+            installed_ctime_nanos: None,
+        });
+
+        authority
+            .remove_workspace_entry(
+                &FileWorkspaceHandle::new(root.id),
+                WorkspaceRemovalStatus::Complete,
+            )
+            .unwrap();
+
+        assert_eq!(authority.active_database_root, None);
+        assert_eq!(authority.active_puzzle_root, None);
+        assert_eq!(authority.active_engine_root, None);
+        assert!(authority.pending_artifacts.is_empty());
     }
 
     #[test]
