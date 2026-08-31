@@ -1582,7 +1582,7 @@ from disk (commit `2565ee3d`).
 
 ### The `_atomic_write` fix has not reached the two sibling copies of `findings.py`
 
-* **ID:** f-20260830-14 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-14 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `~/Projekte/chess-tactics-app/scripts/findings.py` and
   `~/Projekte/correction-app/scripts/findings.py`, the `finally` block of `_atomic_write`.
 * **Defect:** `f-20260829-14` was fixed in `en-croissant` only (commit `514cfb40`). Both siblings
@@ -1628,9 +1628,51 @@ from disk (commit `2565ee3d`).
   sibling may copy it, but it must not be added to `findings.py`.
 * **Found by:** the `gate-scripts` build run, 2026-08-30, while closing f-20260829-14.
 
+**Handled 2026-08-31** by the `gate-scripts` build run (findings.py-sharing slice), commits
+`7113c19e` and `485dc8af`. Less was owed than this entry asserts, and two of its measurements had
+gone stale in the day since it was filed.
+
+* **`correction-app` needed no port.** This entry records it at md5 `1c0ea94d` carrying the
+  defective block. It is now `b98574f7` and carries the *identical* fix, landed independently as
+  its own commit `0378e5251` and declared in its own parity test among 64 changed lines of
+  Korrigio-first divergences. Nothing was owed there and nothing was done there.
+* **`chess-tactics-app` still carries the defect, and the port is that repository's own work.**
+  Its copy is still md5 `edc21d38` with the `if committed: print else: raise` block, and its own
+  ledger has carried the port since 2026-08-30 as its `f-20260830-14` (area `dev-scripts`,
+  `Entry: inline`), filed from here with the exact hunk and the re-pin instruction.
+* **The port was deliberately not performed from here** — `d-20260831-08`. A drain holds that
+  checkout, verified by `flock` on its lock file rather than by the file's existence. Leaving an
+  uncommitted edit there would put a foreign dirty gate-input path in front of its own `$push`,
+  whose rule is to stop on exactly that; committing there would bypass its review and gates over
+  an entry already in its queue. This is not `d-20260830-11` repeated: that decision deferred
+  because the trees were moving and delivered a handoff prompt, whereas the entry now exists in
+  the upstream's own queue, which is the durable form.
+* **What was owed here, and is done:** the declaration in
+  `scripts/findings-parity-tests.py` said `sibling_told=False`, which was false — the upstream had
+  been told on 2026-08-30. It is corrected to `True` with the upstream's ledger id as the
+  evidence, and the flag is no longer decorative: a declaration with `port_pending=True` and
+  `sibling_told=False` now fails the gate, because a pending port the other repository has not
+  been told about is a fork nobody is tracking. Proved by reverting the flag and watching
+  `test_findings_diff_is_fully_declared` go red.
+* **Rejected:** repeating `d-20260830-21`'s shape here (repair or edit uncommitted in the sibling
+  and file a finding). That shape was measured this same run and it does not hold — see
+  `d-20260831-11`.
+
+This slice did not touch the other members of the `gate-scripts` cluster — `f-20260830-17`,
+`-23`, `-46`, `-54` and `-55` — which carry disjoint file sets and get their own runs.
+
+**Correction to the decision references above.** The annotation was written before
+`record-decision` allocated the ids, and its guesses are wrong. The decisions recorded by this run
+are: `d-20260831-09` sibling movement warns rather than blocking · `d-20260831-10` a probe that
+cannot run fails closed · `d-20260831-11` the gate stays out of CI and the upstream copy is not
+vendored · **`d-20260831-12` who performs the port into `chess-tactics-app`** (cited above as
+`d-20260831-08`) · **`d-20260831-13` a working-tree-only repair in a foreign repository is not a
+fix for a committed defect** (cited above as `d-20260831-11`) · `d-20260831-14` no fourth parity
+edge · `d-20260831-15` the declared-divergence framework stays.
+
 ### Nothing detects divergence between this repository's `findings.py` and the sibling copies
 
-* **ID:** f-20260830-15 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-15 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `scripts/findings.py`; the missing guard would live beside
   `scripts/findings-atomic-write-tests.py` and in `.github/workflows/test.yml`.
 * **Defect:** `~/.claude/references/findings-ledger-contract.md` requires `findings.py` to stay
@@ -1663,6 +1705,61 @@ from disk (commit `2565ee3d`).
 * **Related:** the pending port filed alongside this entry, and `d-20260830-11`, which declared the
   current divergence. Korrigio's implementation is the reference to read first.
 * **Found by:** the `gate-scripts` build run, 2026-08-30, while closing f-20260829-14.
+
+**Handled 2026-08-31** by the `gate-scripts` build run (findings.py-sharing slice), commits
+`7113c19e` and `485dc8af`.
+
+**Most of what this entry asks for already existed when it was picked up, and the entry did not
+know.** `scripts/findings-parity-tests.py` (commits `b2e7ed31`, `d6fd39f1`, 2026-08-30) already
+diffed this copy against the upstream's *committed* blob at a pinned ref and already failed in
+both directions the entry's "Constraint on any answer" requires: an undeclared hunk fails, and a
+declaration matching no hunk fails, so the list cannot rot into a permanent amnesty. It also fails
+on a changed-line-count drift, a delta-digest drift, a blank marker, a duplicate marker and an
+ambiguous hunk, and it refuses to skip silently — an absent sibling fails unless
+`--allow-missing-sibling` is passed, which is stricter than either peer (both `pytest.skip`). It
+is wired as `findings:parity:check` and named in `.claude/skills/push/SKILL.md:114`. It was never
+closed by the run that built it.
+
+**The entry's premise about the topology was also wrong**, which matters because its option list
+rested on it. There are three parity edges, not one missing one: En Croissant → `chess-tactics-app`
+pinned `4c83bf50c`; `correction-app` → `chess-tactics-app` pinned at the same commit; and
+`chess-tactics-app` → `correction-app` pinned `3e80b0735`. Every copy guards itself against one
+pinned peer. Nothing points at En Croissant, which is correct — a parity edge protects the
+repository that owns it.
+
+**What was genuinely missing, and is now fixed:** the pin is a fixed commit, and nothing observed
+upstream commits *after* it. The single event this gate exists to catch — the upstream moving while
+this copy stands still — produced no signal at all. Both peers do look; neither looks correctly,
+and both look invisibly.
+
+* **Correctly:** `git log <REF>..HEAD -- <path>` lists what `HEAD` reaches and the pin does not, so
+  a pin on a diverged branch yields an empty range and reads as current while the copies have
+  parted. Ancestry is now asked separately (`NOT-ANCESTOR`), the newest commit touching the path is
+  resolved from `HEAD` and compared by identity, and the mirror case — the pin being ahead of the
+  upstream's own history for the file — is reported as `PIN-AHEAD` rather than mislabelled `NEWER`.
+* **Visibly:** both peers use `warnings.warn`, which under a plain runner leaves exit 0 and one
+  line that scrolls past; inside an unattended drain nobody reads it. `main()` now prints the
+  offending commits and the remedy itself.
+* **Without changing the severity** — `d-20260831-09`. This half stays advisory, because
+  ChessRiddle made it blocking (`d-20260826-10`) and measured the cost on 2026-08-26: eight sound
+  commits stranded unpushed by a gate that repository could neither cause nor fix, after which
+  Felix qualified it in chat on 2026-08-27. The probe itself is nevertheless fail-closed
+  (`d-20260830-20`): a git failure raises rather than flattening into the empty "current" result.
+
+**Decided against, from the entry's own option list:** vendoring the upstream copy or publishing
+`findings.py` from one shared place (`d-20260831-10`); a fourth parity edge to `correction-app`
+(`d-20260831-12`); and wiring the gate into CI, where no upstream checkout exists
+(`d-20260831-10`).
+
+Thirteen tests now cover this file's probe and rule, each proved revert-sensitive by mutating the
+production line and confirming the named test goes red.
+
+**Correction to the decision references above.** The annotation was written before
+`record-decision` allocated the ids. `d-20260831-09` (severity stays advisory) is correct as
+cited. The others are not: vendoring and CI are **`d-20260831-11`** (cited as `d-20260831-10`), the
+fourth parity edge is **`d-20260831-14`** (cited as `d-20260831-12`), and the fail-closed probe is
+**`d-20260831-10`** — `d-20260830-20` is the earlier, general precedent it applies, not this run's
+own decision.
 
 ---
 
@@ -3567,6 +3664,42 @@ file became a bridge. Nothing generic caught the dangling reference — `check-s
 scans documentation for bridge-as-gate-source claims but not scripts, and extending it there would
 flag the bridge checker's own fixtures. Distinguishing a fixture from an assertion is the open
 question.
+
+**Third bullet, partially answered 2026-08-31** by the `gate-scripts` build run (findings.py-sharing
+slice). The other two bullets — `scripts/gate-receipt-tests.mjs` and
+`scripts/check-skill-bridges-tests.mjs` — are untouched and this entry stays open for them.
+
+`review-minimalism`'s reading of `scripts/findings-parity-tests.py` splits into two questions that
+this entry states as one, and they have different answers.
+
+* **The declared-divergence framework stays** — `d-20260831-13`.
+  `~/.claude/references/findings-ledger-contract.md:475-486` *mandates* a closed list of declared
+  divergences, each carrying its reason and whether the other repository has been told. Trimming to
+  a bare digest would put this repository out of contract, and it would lose the property the
+  mechanism exists for: a digest reports only *that* something moved, with no declaration to walk
+  and no justification attached, so it cannot express a second divergence and cannot stop the list
+  rotting into a permanent amnesty. The `sibling_told` field in particular is no longer
+  bookkeeping — as of `485dc8af` a `port_pending` declaration that has not been told fails the gate.
+* **`EXPECTED_CHANGED_LINES` genuinely is redundant, and is deliberately left in place for now.**
+  `review-minimalism` (97) is right that it adds no *detection*: the changed-line set is an input to
+  `_delta_digest`, so any change that moves the count also moves the digest. Its only unique
+  contribution is a readable cardinality in the failure message, which could be printed without
+  being pinned. It is not removed here because all three copies of this harness pin it deliberately,
+  each with a written rationale, and removing it in this one would make En Croissant the only
+  implementation of three without it — a convergence question across three repositories, decided
+  where they can be changed together, not unilaterally from the one that happened to be loaded.
+  This is a rule-4b area boundary, not an effort argument: the other two files are outside this
+  slice.
+
+Also rejected in that run and recorded here so it is not re-proposed: extracting a shared core
+across the three parity implementations (`review-minimalism`, 90). There is no shared package to
+publish it into, and the ledger contract deliberately makes `scripts/findings.py` the shared
+artefact while each project's parity test is its own — the harnesses legitimately differ, since
+each pins a different peer at a different ref with a different declaration set.
+
+**Correction to the decision reference above.** The decision recorded for this bullet is
+**`d-20260831-15`**, not `d-20260831-13`; the annotation was written before `record-decision`
+allocated the id.
 
 ---
 

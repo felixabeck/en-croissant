@@ -705,3 +705,150 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
   a doc comment saying exactly that, so the false claim the deleted comment made
   ("AuthorizedPath already does this for command inputs") is not replaced by a quieter one.
 * **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-09 — Should sibling movement past the parity pin fail the gate, or warn?
+
+* **Governs:** f-20260830-15
+* **Chosen:** warn, and make the warning visible. `main()` prints the offending commits and the
+  remedy itself; the exit code is unchanged.
+* **Rejected:** making it blocking, which was this run's own first plan draft and survived one
+  round of plan review before the precedent was found.
+* **Rejected:** copying the peers' `warnings.warn`, which under a plain runner leaves exit 0 and
+  one line that scrolls past — invisible inside an unattended drain, which is where this gate runs.
+* **Because:** ChessRiddle already made exactly this check blocking (`d-20260826-10`) and measured
+  the result on 2026-08-26 — the peer committed twice to `scripts/findings.py` while an unattended
+  drain was running, its gate went red on `develop` for work that repository could neither cause
+  nor fix, and eight sound commits were stranded unpushed. **Felix qualified the mechanism in chat
+  on 2026-08-27:** the pin-touches-findings half stays blocking, this half warns, and an
+  outstanding port belongs in the findings queue. That is a decision by Felix on precisely this
+  question, so the severity was never open. What *was* wrong is the channel, and that is what
+  changed. En Croissant's drain has the same unattended shape, so it would have imported the same
+  cost.
+* **What this does not settle:** an advisory line can be ignored indefinitely. That is accepted,
+  and it is why the printed remedy names the findings queue.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-10 — Is a probe that cannot run allowed to report "the pin is current"?
+
+* **Governs:** f-20260830-15
+* **Chosen:** no. A `git` failure or `OSError` inside the staleness probe raises `ProbeFailure`
+  and makes `findings:parity:check` exit 1 with a message saying the pin was NOT checked.
+* **Rejected:** returning the empty list, which is how the probe spells "checked, and current".
+* **Rejected:** letting it propagate, which reaches the operator as a raw traceback instead of a
+  labelled gate failure.
+* **Because:** `d-20260830-20` already settled the general form — "could not check" must never be
+  spelled the same way as "checked and fine". This is the same shape one layer down. It does not
+  conflict with the advisory decision recorded alongside it: sibling *movement* stays advisory,
+  and only a broken *probe* is fatal. The probe is reached only after `_read_committed_sibling`
+  has already proved git usable and the ref readable, so a failure there is anomalous rather than
+  expected, and the existing "sibling present but unusable" path already exits 1.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-11 — Does `findings:parity:check` belong in CI, and should the upstream copy be vendored?
+
+* **Governs:** f-20260830-15
+* **Chosen:** neither. The gate stays local-only and mandatory in `$push`.
+* **Rejected:** a CI step passing `--allow-missing-sibling`. No upstream checkout exists on a
+  runner, so the step would print SKIP and prove nothing — the vacuous-gate shape this repository
+  already hit when two `ui:boundary:check` rules were diff-scoped and were therefore dead on every
+  clean checkout, CI included.
+* **Rejected:** vendoring the upstream blob so CI can recompute the delta. It buys a real CI
+  signal, at the price of a second ~4 400-line artefact in this repository whose staleness against
+  the pin nothing checks except the local gate that already exists — a second thing to keep
+  current, guarding the first.
+* **Rejected:** publishing `findings.py` from one shared repository or released artefact and
+  vendoring it everywhere. This is the only option that removes the divergence class outright
+  rather than detecting it, and it is not rejected on merit — it is a three-repository change that
+  a single-repository slice cannot make. It stays the better answer if the class recurs.
+* **Because:** the gate's question is "does this copy still match the upstream's committed copy",
+  and that question is only answerable where the upstream tree exists. `scripts/check-gate-routing.mjs`
+  already forces every package script to be routed through the push skill or the test workflow, so
+  a local-only gate cannot be quietly dropped.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-12 — Who performs the `_atomic_write` port into `chess-tactics-app`?
+
+* **Governs:** f-20260830-14
+* **Chosen:** that repository does, from its own ledger. En Croissant's obligation is discharged
+  by the entry already filed there on 2026-08-30 (its `f-20260830-14`, area `dev-scripts`) plus an
+  honest `sibling_told=True` in this repository's declaration.
+* **Rejected:** editing `chess-tactics-app/scripts/findings.py` and leaving the change uncommitted,
+  which is `d-20260830-21`'s shape. A drain holds that checkout — verified by `flock` on its lock
+  file, not by the file's existence, since the file persists after release. An uncommitted edit
+  would put a foreign dirty gate-input path in front of that repository's own `$push`, whose rule
+  is to stop on exactly that, so the "harmless" option would have stopped its drain.
+* **Rejected:** committing the port there. It bypasses that repository's review and gates, over an
+  entry already sitting in its own queue.
+* **Because:** `d-20260830-11` deferred the port because the trees were moving and delivered a
+  handoff prompt; the entry now exists in the upstream's own queue, which is the durable form of
+  the same answer. Porting from here would additionally require re-pinning `SIBLING_REF` and
+  deleting the declaration in the same breath, since the parity test fails on a declaration that
+  matches no hunk — three repositories' state changed from a run that can gate none of them.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-13 — A working-tree-only repair in a foreign repository is not a fix for a committed defect
+
+* **Governs:** -
+* **Chosen:** when a foreign repository's tooling is broken *in a commit*, repair the working tree
+  only as far as the current task instrumentally needs, file a finding in that repository saying
+  the defect is committed and the repair is waiting uncommitted, and report it to Felix in the
+  chat. Do not treat the uncommitted repair as the resolution.
+* **Rejected:** repeating `d-20260830-21` as if it had worked. That decision repaired
+  `correction-app/scripts/findings.py` on 2026-08-30 and deliberately left the repair uncommitted
+  so that repository's own review would see it.
+* **Because:** measured 2026-08-31, the repair was gone and the defect was back — three Python 2
+  `except` clauses committed in `4fc4803ac`, so `scripts/findings.py` had not parsed there and its
+  entire findings CLI was dead. **An uncommitted repair does not survive; it is discarded by the
+  next checkout and nothing records that it is owed.** `d-20260830-21`'s reasoning about not
+  smuggling unreviewed changes into someone else's history is still right — what was wrong was
+  treating the uncommitted repair as a resolution rather than as scaffolding, and filing the
+  finding into En Croissant instead of into the repository that has to commit it.
+* **Applied here:** the three clauses were repaired again in that working tree, purely so the CLI
+  could run long enough to file, and two findings were filed into its own ledger — the parity-probe
+  defect this run was reporting, and the breakage itself, which names the waiting repair and says
+  to commit it there.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-14 — Does En Croissant need a fourth parity edge, directly to `correction-app`?
+
+* **Governs:** f-20260830-15
+* **Chosen:** no. This repository pins `chess-tactics-app` and that is its only edge.
+* **Rejected:** a second declaration set pinned against `correction-app`.
+* **Because:** the graph has three edges — En Croissant → `chess-tactics-app` (`4c83bf50c`),
+  `correction-app` → `chess-tactics-app` (the same commit), and `chess-tactics-app` →
+  `correction-app` (`3e80b0735`). En Croissant and `correction-app` pin the *same* upstream commit,
+  so their mutual delta is exactly the union of their two declaration sets, and each already
+  carries and gates its own. A fourth edge would add a pin to re-walk on every upstream move and
+  could report nothing the existing edges do not.
+* **What this does not settle:** a fourth edge would catch a peer that stops running its own gate.
+  That failure is better fixed where it occurs.
+* **Correction to the record:** an earlier draft of this run's plan asserted `chess-tactics-app`
+  carries no parity test and the topology is a star. Both are false — it carries
+  `backend/tests/test_findings_upstream_parity.py`, pinning `correction-app`. Recorded because the
+  false version briefly survived a round of plan review.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-15 — Is the declared-divergence framework over-built for one declared divergence?
+
+* **Governs:** f-20260830-55
+* **Chosen:** the framework stays. `EXPECTED_CHANGED_LINES`, which is the genuinely redundant part,
+  is left in place and its removal referred back to `f-20260830-55` as a three-repository question.
+* **Rejected:** trimming `scripts/findings-parity-tests.py` to the pinned digest alone, as
+  `review-minimalism` proposed at confidence 96.
+* **Because:** `~/.claude/references/findings-ledger-contract.md:475-486` mandates a closed list of
+  declared divergences carrying each one's reason and whether the other repository has been told, so
+  a digest-only version would put this repository out of contract. The digest also reports only
+  *that* something moved — no declaration to walk, no justification attached — which cannot express
+  a second divergence and cannot stop the list rotting into a permanent amnesty, the two properties
+  the mechanism exists for. `sibling_told` is no longer decorative either: an untold pending port
+  now fails the gate.
+* **On the redundant half, which the lens is right about:** the changed-line count adds no
+  detection, since it is an input to the digest. It is not removed because all three copies of this
+  harness pin it deliberately with a written rationale, and removing it here alone would make this
+  the only implementation of three without it. That is a convergence question to settle where all
+  three can change together — a rule-4b area boundary, not an effort argument.
+* **Also rejected:** extracting a shared core across the three parity harnesses
+  (`review-minimalism`, 90). There is no shared package to publish it into, and the contract makes
+  `scripts/findings.py` the shared artefact while each project's harness is legitimately its own,
+  pinning a different peer at a different ref with a different declaration set.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
