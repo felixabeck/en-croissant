@@ -18,13 +18,15 @@ function FileInfo({
   const { t } = useTranslation();
   const [tab, setCurrentTab] = useAtom(currentTabAtom);
   const tabFile = getTabFile(tab);
-  const tabIdRef = useRef(tab.value);
-  tabIdRef.current = tab.value;
+  const tabIdRef = useRef(tab?.value);
+  tabIdRef.current = tab?.value;
 
-  if (!tabFile) return null;
+  if (!tab || !tabFile) return null;
+  const activeTab = tab;
+  const activeFile = tabFile;
   async function reload() {
-    const tabId = tab.value;
-    const handle = tabFile.handle;
+    const tabId = activeTab.value;
+    const handle = activeFile.handle;
     try {
       const numGames = await tauri.countPgnGames(handle);
       if (tabIdRef.current !== tabId) return;

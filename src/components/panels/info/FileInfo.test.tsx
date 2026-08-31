@@ -134,7 +134,7 @@ test("reload updater leaves a non-file tab unchanged", async () => {
 
 test("renders nothing when the tab has no file", async () => {
   const { getTabFile } = await import("@/utils/tabs");
-  vi.mocked(getTabFile).mockReturnValueOnce(null);
+  vi.mocked(getTabFile).mockReturnValueOnce(undefined);
   const FileInfo = (await import("./FileInfo")).default;
   await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
   expect(container.querySelector("button")).toBeNull();

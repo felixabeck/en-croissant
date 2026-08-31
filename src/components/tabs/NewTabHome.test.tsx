@@ -18,7 +18,7 @@ const fixtures = vi.hoisted(() => ({
   recentFiles: [] as Array<{
     name: string;
     handle: { id: { id: string }; kind: "fileWorkspace" };
-    type: "game";
+    type: "game" | "repertoire";
     lastOpened: number;
   }>,
   setRecentFiles: vi.fn(),

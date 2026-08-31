@@ -162,12 +162,12 @@ export type RemoteEngine = z.output<typeof remoteEngineSchema>;
 export const engineSchema = z.union([localEngineSchema, remoteEngineSchema]);
 export type Engine = z.output<typeof engineSchema>;
 
-export function stopEngine(engine: LocalEngine, tab: string): Promise<void> {
-    return tauri.stopEngine(engine.id, tab);
+export async function stopEngine(engine: LocalEngine, tab: string): Promise<void> {
+    await tauri.stopEngine(engine.id, tab);
 }
 
-export function killEngine(engine: LocalEngine, tab: string): Promise<void> {
-    return tauri.killEngine(engine.id, tab);
+export async function killEngine(engine: LocalEngine, tab: string): Promise<void> {
+    await tauri.killEngine(engine.id, tab);
 }
 
 export function getBestMoves(
