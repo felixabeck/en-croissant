@@ -2000,6 +2000,8 @@ fn opening_book_ext(name: &str) -> Option<&str> {
         Some("pgn")
     } else if lower.ends_with(".bin") {
         Some("bin")
+    } else if lower.ends_with(".zip") {
+        Some("zip")
     } else {
         None
     }
@@ -3017,6 +3019,37 @@ mod tests {
     }
 
     #[test]
+    fn zipped_epd_opening_book_is_applied_through_outer_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("book.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+        zip.start_file("book.epd", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - bm e4;\n")
+            .unwrap();
+        zip.finish().unwrap();
+
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let book = authority
+            .register_opening_book(&zip_path, "book.zip")
+            .unwrap();
+        let descriptor = authority.opening_book_descriptor(&book).unwrap();
+
+        let result = apply_opening_book_descriptor(
+            human_config(),
+            descriptor,
+            40,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.config.initial_fen.as_deref(),
+            Some("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+        );
+    }
+
+    #[test]
     fn opening_book_rejects_malformed_epd_operations_and_extra_fen_fields() {
         let valid = b"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - bm e4;\n";
         assert!(select_random_epd_entry(BufReader::new(Cursor::new(valid))).is_ok());
@@ -3054,7 +3087,7 @@ mod tests {
             ("book.EPD", Some("epd")),
             ("book.pgn", Some("pgn")),
             ("book.BIN", Some("bin")),
-            ("book.zip", None),
+            ("book.zip", Some("zip")),
         ] {
             assert_eq!(opening_book_ext(name), expected);
         }
