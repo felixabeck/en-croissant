@@ -1908,7 +1908,7 @@ own decision.
 
 ### The Tauri boundary checker has verified blind spots, and `native.ts` is exempt from every rule
 
-* **ID:** f-20260830-17 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-17 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `scripts/check-tauri-command-boundary.mjs:9-13` (the regexes), `:40` (the
   `src/platform/native.ts` exemption), `src/platform/native.ts`.
 * **Defect:** the gate is green today and there are no `from`-form violations, but it recognises
@@ -1931,6 +1931,15 @@ own decision.
   the module graph; and what contract `native.ts` should be held to instead of a blanket exemption.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Blind spots confirmed by
   running the checker's own regexes against each construct.
+
+**Handled 2026-08-31.** `scripts/check-tauri-command-boundary.mjs` no longer skips `native.ts`. It matches syntactic import forms (`from`, `export from`, side-effect `import`, `import()`, `require()`, `vi.mock`) of `@tauri-apps/(?:api|plugin-)` and of `bindings/generated` (except `vi.mock` of generated). `native.ts` is held to an exact `{ specifier, exported, local }` allowlist of today's re-exports plus an independent denylist (`@tauri-apps/api`, `api/event`, `plugin-fs`/`http`/`shell`/`updater`, `api/core` `invoke`); `export *` / `export * as` are forbidden. `tauri.ts` remains the generated-command/event facade and may not import `@tauri-apps`. `listWorkingTreeFiles` in `scripts/working-tree-files.mjs` is the shared git enumerator; `check-ui-boundaries.mjs` uses it too.
+
+Suite: `scripts/check-tauri-command-boundary.test.mjs` (47 cases), including skip-restoration (listen re-export), denylist-independence (injected allowlist), `invoke as convertFileSrc`, untracked `leak.ts` CLI, and both git-failure branches. `src/state/keybinds.test.ts` mocks `@/platform/native` instead of `@tauri-apps/plugin-os`.
+
+* **Commits:** `a2e6774f`
+* **Rejected:** module-graph parser; denylist-only native contract; flagging `onResized`; flagging `vi.mock("@/bindings/generated")`; copying the git walker instead of extracting it.
+* **Decisions:** d-20260831-28 native allowlist · d-20260831-29 regex forms · d-20260831-30 window methods · d-20260831-31 walker extract · d-20260831-32 generated mocks.
+* **Left open:** f-20260830-23, -46, -54 (other three checkers onto the helper), -55.
 
 ---
 
