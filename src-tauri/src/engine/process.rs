@@ -37,6 +37,10 @@ const MAX_LOG_LINES: usize = 2_000;
 const MAX_LOG_BYTES: usize = 512 * 1024;
 const MAX_ENGINE_LINE_BYTES: usize = 64 * 1024;
 const MAX_ENGINE_STDERR_BYTES: usize = 512 * 1024;
+/// After the child is reaped the stderr pipe is at EOF. The drain task gets
+/// this long to observe it; a stuck reader is then aborted so `terminate`
+/// cannot stall on a logging task.
+const STDERR_REAP_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Engine transcript entries include explicit truncation metadata when bounded
 /// retention has discarded older output.
@@ -193,6 +197,18 @@ async fn read_bounded_engine_line<R: AsyncBufRead + Unpin>(
     }
 }
 
+async fn drain_engine_stderr<R: AsyncBufRead + Unpin>(mut reader: R) {
+    let mut total = 0usize;
+    while let Ok(Some(line)) = read_bounded_engine_line(&mut reader).await {
+        total = total.saturating_add(line.len());
+        if total > MAX_ENGINE_STDERR_BYTES {
+            error!("Engine stderr truncated after {MAX_ENGINE_STDERR_BYTES} bytes");
+            break;
+        }
+        error!("Engine stderr: {line}");
+    }
+}
+
 #[async_trait]
 impl UciIo for ChildUciIo {
     async fn write_line(&mut self, line: &str) -> Result<(), Error> {
@@ -261,6 +277,9 @@ struct EngineRuntime {
     next_request: u64,
     deadlines: EngineDeadlines,
     logs: BoundedLogs,
+    /// Drain task for this runtime's child stderr. Taken and joined in
+    /// `terminate`; aborted in `Drop` if the runtime is discarded first.
+    stderr_reader: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Cloneable client handle for the single-owner engine task. No caller holds a
@@ -537,6 +556,7 @@ impl EngineRuntime {
             next_request: 0,
             deadlines,
             logs: BoundedLogs::default(),
+            stderr_reader: None,
         }
     }
 
@@ -585,21 +605,10 @@ impl EngineRuntime {
             .map_err(|_| Error::EngineTimeout("spawning engine".into()))??;
         let stdin = child.stdin.take().ok_or(Error::NoStdin)?;
         let stdout = child.stdout.take().ok_or(Error::NoStdout)?;
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(async move {
-                let mut stderr_reader = BufReader::new(stderr);
-                let mut total = 0usize;
-                while let Ok(Some(line)) = read_bounded_engine_line(&mut stderr_reader).await {
-                    total = total.saturating_add(line.len());
-                    if total > MAX_ENGINE_STDERR_BYTES {
-                        error!("Engine stderr truncated after {MAX_ENGINE_STDERR_BYTES} bytes");
-                        break;
-                    }
-                    error!("Engine stderr: {line}");
-                }
-            });
-        }
-        Ok(Self::new(
+        let stderr_reader = child.stderr.take().map(|stderr| {
+            tokio::spawn(async move { drain_engine_stderr(BufReader::new(stderr)).await })
+        });
+        let mut runtime = Self::new(
             Box::new(ChildUciIo {
                 stdin,
                 reader: BufReader::new(stdout),
@@ -607,7 +616,9 @@ impl EngineRuntime {
                 _executable: executable,
             }),
             deadlines,
-        ))
+        );
+        runtime.stderr_reader = stderr_reader;
+        Ok(runtime)
     }
 
     pub async fn init_uci(&mut self) -> Result<(), Error> {
@@ -710,8 +721,22 @@ impl EngineRuntime {
     pub async fn terminate(&mut self) -> Result<(), Error> {
         self.state = EngineState::Terminating;
         let result = self.io.terminate(self.deadlines.quit).await;
+        self.reap_stderr_reader().await;
         self.state = EngineState::Idle;
         result
+    }
+
+    async fn reap_stderr_reader(&mut self) {
+        let Some(mut handle) = self.stderr_reader.take() else {
+            return;
+        };
+        match timeout(STDERR_REAP_TIMEOUT, &mut handle).await {
+            Ok(_) => {}
+            Err(_) => {
+                handle.abort();
+                let _ = handle.await;
+            }
+        }
     }
 
     async fn send(&mut self, command: &str) -> Result<(), Error> {
@@ -749,6 +774,14 @@ impl EngineRuntime {
             if line.trim() == expected {
                 return Ok(());
             }
+        }
+    }
+}
+
+impl Drop for EngineRuntime {
+    fn drop(&mut self) {
+        if let Some(handle) = self.stderr_reader.take() {
+            handle.abort();
         }
     }
 }
@@ -1179,7 +1212,7 @@ mod tests {
         collections::VecDeque,
         io,
         sync::{
-            atomic::{AtomicUsize, Ordering as AtomicOrdering},
+            atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering},
             Arc,
         },
     };
@@ -1668,6 +1701,124 @@ mod tests {
 
         assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
         assert!(actor.task.lock().await.is_none());
+    }
+
+    fn fake_io() -> FakeIo {
+        FakeIo {
+            writes: Arc::new(Mutex::new(Vec::new())),
+            lines: VecDeque::new(),
+            terminate_calls: Arc::new(AtomicUsize::new(0)),
+            fail_write: false,
+            fail_stop: false,
+            read_delay: None,
+            terminate_delay: None,
+        }
+    }
+
+    fn pending_stderr_reader(finished: Arc<AtomicBool>) -> tokio::task::JoinHandle<()> {
+        pending_stderr_reader_started(finished, None)
+    }
+
+    fn pending_stderr_reader_started(
+        finished: Arc<AtomicBool>,
+        started: Option<oneshot::Sender<()>>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            struct Flag(Arc<AtomicBool>);
+            impl Drop for Flag {
+                fn drop(&mut self) {
+                    self.0.store(true, AtomicOrdering::SeqCst);
+                }
+            }
+            let _flag = Flag(finished);
+            if let Some(started) = started {
+                let _ = started.send(());
+            }
+            std::future::pending::<()>().await;
+        })
+    }
+
+    #[tokio::test]
+    async fn terminate_joins_a_finished_stderr_reader() {
+        let handle = tokio::spawn(async {});
+        let mut runtime = EngineRuntime::new(Box::new(fake_io()), EngineDeadlines::default());
+        runtime.stderr_reader = Some(handle);
+        tokio::time::timeout(Duration::from_millis(50), runtime.terminate())
+            .await
+            .expect("joining a finished stderr reader must not wait out the reap timeout")
+            .unwrap();
+        assert!(runtime.stderr_reader.is_none());
+    }
+
+    #[tokio::test]
+    async fn terminate_aborts_a_stuck_stderr_reader() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let mut runtime = EngineRuntime::new(Box::new(fake_io()), EngineDeadlines::default());
+        runtime.stderr_reader = Some(pending_stderr_reader(finished.clone()));
+        tokio::time::timeout(
+            STDERR_REAP_TIMEOUT + Duration::from_millis(100),
+            runtime.terminate(),
+        )
+        .await
+        .expect("terminate must abort a stuck stderr reader")
+        .unwrap();
+        assert!(runtime.stderr_reader.is_none());
+        assert!(
+            finished.load(AtomicOrdering::SeqCst),
+            "stderr reader must reach a terminal state on terminate"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_the_runtime_aborts_the_stderr_reader() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = oneshot::channel();
+        {
+            let mut runtime = EngineRuntime::new(Box::new(fake_io()), EngineDeadlines::default());
+            runtime.stderr_reader = Some(pending_stderr_reader_started(
+                finished.clone(),
+                Some(started_tx),
+            ));
+            started_rx.await.unwrap();
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        while !finished.load(AtomicOrdering::SeqCst) {
+            if tokio::time::Instant::now() > deadline {
+                panic!("stderr reader must be aborted when the runtime is dropped");
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_owns_the_stderr_reader_until_terminate() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("uci-stderr.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho boot >&2\nwhile IFS= read -r line; do case \"$line\" in quit) exit 0;; esac; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = crate::infra::path_authority::EngineExecutable::test_fixture(
+            std::fs::File::open(&script).unwrap(),
+            directory.path().to_path_buf(),
+            vec![],
+        );
+        let mut runtime = EngineRuntime::spawn(executable, EngineDeadlines::default())
+            .await
+            .unwrap();
+        assert!(
+            runtime.stderr_reader.is_some(),
+            "spawn must keep the stderr drain JoinHandle"
+        );
+        tokio::time::timeout(Duration::from_secs(2), runtime.terminate())
+            .await
+            .expect("terminate must join the stderr drain after the child exits")
+            .unwrap();
+        assert!(runtime.stderr_reader.is_none());
     }
 
     #[tokio::test]
