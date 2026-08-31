@@ -4276,3 +4276,29 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
   missing owner.
 * **Found by:** `$push` high-review lenses `n3-adjacent` (confidence 90) and
   `n5-adversarial` (confidence 98) over `685825c0..HEAD`, 2026-08-31.
+
+---
+
+## 2026-08-31 — filed through the inbox spool
+
+### addAnalysis reads previous ply best[0] without a length guard
+
+* **ID:** f-20260831-21 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/state/store/tree.ts:765-769`, inside `addAnalysis`. The same function already
+  guards `analysis[i - 1].best.length > 0` at `:790` before using that ply's PV for variations.
+* **Defect:** the current-ply branch requires `analysis[i].best.length > 0`, then immediately
+  reads `analysis[i - 1].best[0]` and `analysis[i - 2].best[0]` with no length check. An empty
+  previous `MoveAnalysis.best` (no publishable MultiPV set for that ply) throws at runtime
+  while annotating a later ply that did get lines.
+* **Why it matters:** after `10192873`, bound-only UCI output no longer becomes a fake
+  evaluation, so `analyze_game` can legitimately return `best: []` for a ply. The renderer
+  assumption that every previous index has `best[0]` is then a crash rather than a skipped
+  annotation. `src/utils/tests/store.test.ts` only drives two non-empty analyses.
+* **Related:** f-20260831-10 (handled) made empty `best` reachable; this is the consumer that
+  was not updated. Root `-` because the missing guard predates the bound-score skip.
+* **Fix shape:** treat a missing previous/previous-previous `best[0]` as null scores and empty
+  `prevMoves`, matching the `:790` length guard. Add a store test with an empty middle or
+  previous analysis.
+* **Found by:** `$push` high-review lens `review-error-handling` (confidence 94) over
+  `8307bacc..HEAD`, 2026-08-31. Deferred: this run's loaded context is the UCI aggregation
+  loops in `src-tauri/src/chess.rs`, not the renderer tree store.
