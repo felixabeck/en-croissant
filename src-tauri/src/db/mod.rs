@@ -988,6 +988,30 @@ pub struct QueryOptions<SortT> {
     pub direction: SortDirection,
 }
 
+fn pagination_limit_offset(
+    page: Option<i32>,
+    page_size: Option<i32>,
+) -> Result<(Option<i64>, Option<i64>), Error> {
+    if let Some(page_size) = page_size {
+        if !(1..=1000).contains(&page_size) {
+            return Err(Error::InvalidInput(
+                "page size must be between 1 and 1000".into(),
+            ));
+        }
+    }
+
+    if let Some(page) = page {
+        if page < 1 {
+            return Err(Error::InvalidInput("page must be at least 1".into()));
+        }
+    }
+
+    let limit = page_size.map(i64::from);
+    let offset = page.map(|page| (i64::from(page) - 1) * page_size.map(i64::from).unwrap_or(10));
+
+    Ok((limit, offset))
+}
+
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq, Hash, Type)]
 pub struct GameQuery {
     #[specta(optional)]
@@ -1081,12 +1105,13 @@ pub async fn get_games(
         count_query = count_query.filter(games::event_id.eq(tournament_id));
     }
 
-    if let Some(limit) = query_options.page_size {
-        sql_query = sql_query.limit(limit as i64);
+    let (limit, offset) = pagination_limit_offset(query_options.page, query_options.page_size)?;
+    if let Some(limit) = limit {
+        sql_query = sql_query.limit(limit);
     }
 
-    if let Some(page) = query_options.page {
-        sql_query = sql_query.offset(((page - 1) * query_options.page_size.unwrap_or(10)) as i64);
+    if let Some(offset) = offset {
+        sql_query = sql_query.offset(offset);
     }
 
     match query.sides {
@@ -1391,12 +1416,13 @@ pub async fn get_players(
         count = Some(count_query.count().get_result(db)?);
     }
 
-    if let Some(limit) = query.options.page_size {
-        sql_query = sql_query.limit(limit as i64);
+    let (limit, offset) = pagination_limit_offset(query.options.page, query.options.page_size)?;
+    if let Some(limit) = limit {
+        sql_query = sql_query.limit(limit);
     }
 
-    if let Some(page) = query.options.page {
-        sql_query = sql_query.offset(((page - 1) * query.options.page_size.unwrap_or(10)) as i64);
+    if let Some(offset) = offset {
+        sql_query = sql_query.offset(offset);
     }
 
     sql_query = match query.options.sort {
@@ -1463,12 +1489,13 @@ pub async fn get_tournaments(
         count = Some(count_query.count().get_result(db)?);
     }
 
-    if let Some(limit) = query.options.page_size {
-        sql_query = sql_query.limit(limit as i64);
+    let (limit, offset) = pagination_limit_offset(query.options.page, query.options.page_size)?;
+    if let Some(limit) = limit {
+        sql_query = sql_query.limit(limit);
     }
 
-    if let Some(page) = query.options.page {
-        sql_query = sql_query.offset(((page - 1) * query.options.page_size.unwrap_or(10)) as i64);
+    if let Some(offset) = offset {
+        sql_query = sql_query.offset(offset);
     }
 
     sql_query = match query.options.sort {
@@ -2270,6 +2297,85 @@ pub async fn preload_reference_db(
 mod tests {
     use super::*;
     use pgn_reader::BufferedReader;
+
+    #[test]
+    fn pagination_limit_offset_validates_and_uses_i64_arithmetic() {
+        struct Case {
+            page: Option<i32>,
+            page_size: Option<i32>,
+            expected: Result<(Option<i64>, Option<i64>), ()>,
+        }
+
+        let cases = [
+            Case {
+                page: None,
+                page_size: Some(-1),
+                expected: Err(()),
+            },
+            Case {
+                page: Some(0),
+                page_size: None,
+                expected: Err(()),
+            },
+            Case {
+                page: Some(-1),
+                page_size: None,
+                expected: Err(()),
+            },
+            Case {
+                page: Some(2_000_000_000),
+                page_size: Some(2),
+                expected: Ok((Some(2), Some(3_999_999_998))),
+            },
+            Case {
+                page: None,
+                page_size: Some(1001),
+                expected: Err(()),
+            },
+            Case {
+                page: Some(3),
+                page_size: Some(50),
+                expected: Ok((Some(50), Some(100))),
+            },
+            Case {
+                page: None,
+                page_size: None,
+                expected: Ok((None, None)),
+            },
+        ];
+
+        for case in cases {
+            let actual = pagination_limit_offset(case.page, case.page_size);
+            match case.expected {
+                Ok(expected) => assert_eq!(actual.unwrap(), expected),
+                Err(()) => assert!(matches!(actual, Err(Error::InvalidInput(_)))),
+            }
+        }
+    }
+
+    #[test]
+    fn pagination_limit_offset_is_used_by_all_query_commands() {
+        let source = include_str!("mod.rs");
+
+        for function_name in ["get_games", "get_players", "get_tournaments"] {
+            let signature = format!("pub async fn {function_name}(");
+            let start = source.find(&signature).unwrap();
+            let remainder = &source[start..];
+            let end = remainder
+                .find("\n#[tauri::command]")
+                .unwrap_or(remainder.len());
+            let function = &remainder[..end];
+
+            assert!(
+                function.contains("pagination_limit_offset"),
+                "{function_name} must validate pagination through pagination_limit_offset"
+            );
+            assert!(
+                !function.contains("limit as i64"),
+                "{function_name} must not cast an unvalidated limit"
+            );
+        }
+    }
 
     #[test]
     fn home_row() {
