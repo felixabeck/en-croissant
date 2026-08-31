@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-vi.mock("@tauri-apps/plugin-os", () => ({ platform: () => "linux" }));
+vi.mock("@/platform/native", () => ({ platform: () => "linux" }));
 import { createKeybindStorage } from "./keybinds";
 
 const defaults = {

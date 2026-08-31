@@ -1,16 +1,12 @@
 import { readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
-const untrackedResult = spawnSync(
-  "git",
-  ["ls-files", "--others", "--exclude-standard", "--", "src"],
-  {
-    encoding: "utf8",
-  },
-);
-const trackedResult = spawnSync("git", ["ls-files", "--", "src"], { encoding: "utf8" });
-if (untrackedResult.status !== 0 || trackedResult.status !== 0) {
-  process.exit(untrackedResult.status ?? trackedResult.status ?? 1);
+let listedFiles;
+try {
+  listedFiles = listWorkingTreeFiles();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
 }
 
 const violations = [];
@@ -49,9 +45,7 @@ function readWorkingTreeFile(file) {
 // scan below reads the working tree, so an uncommitted deletion has no content to inspect.
 // The read helper above tolerates that one legitimate absence while keeping every other
 // filesystem failure loud.
-const sourceFiles = new Set(
-  [...trackedResult.stdout.split("\n"), ...untrackedResult.stdout.split("\n")].filter(Boolean),
-);
+const sourceFiles = new Set(listedFiles);
 
 // Whole tree, not the diff. These two rules used to inspect only lines added in
 // `git diff -- src` plus untracked files, which made them silently vacuous wherever the
