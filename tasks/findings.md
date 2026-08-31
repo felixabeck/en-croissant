@@ -3713,7 +3713,7 @@ regressions — plus the proof that the wiring invokes them.
 
 ### The engine stderr reader is a detached task with no owner, no cancellation and no terminal state
 
-* **ID:** f-20260830-53 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260830-53 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/engine/process.rs`, in `EngineRuntime::spawn` — the
   `tokio::spawn` that reads the child's stderr.
 * **Defect:** the task's `JoinHandle` is dropped at the spawn site. It has no owner, no
@@ -3730,6 +3730,11 @@ regressions — plus the proof that the wiring invokes them.
   against the actor's own lifecycle rather than bolted onto a shutdown change. One lens is enough
   for it (`review-engine-protocol`).
 * **Found by:** the `n2-conventions` push-review lens, 2026-08-30 (confidence 96).
+
+* **Handled:** `EngineRuntime` now owns the stderr drain `JoinHandle`. `spawn` stores it; `terminate` joins it after the child is reaped (abort after `STDERR_REAP_TIMEOUT` if stuck); `Drop` aborts if the runtime is discarded first. `Stop` does not cancel stderr. Tests: finished join, stuck abort, drop abort, and a real-child spawn that keeps the handle until terminate.
+* **Commits:** `7ea86d35`
+* **Rejected:** leaving the drain detached until pipe EOF (the previous behaviour); cancelling stderr on `Stop` (the child is still alive); pulling f-20260831-10/11/12/19 into this slice (different file sets / a design question on 11).
+* **Lens:** `review-engine-protocol` on Codex `gpt-5.6-sol`/`medium` — `VERDICT: APPROVED`.
 
 ---
 
