@@ -3567,3 +3567,346 @@ file became a bridge. Nothing generic caught the dangling reference — `check-s
 scans documentation for bridge-as-gate-source claims but not scripts, and extending it there would
 flag the bridge checker's own fixtures. Distinguishing a fixture from an assertion is the open
 question.
+
+---
+
+## 2026-08-31 — filed through the inbox spool
+
+### The renderer chooses the operation class that decides whether a download must be signed
+
+* **ID:** f-20260831-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs`, `validate_artifact_integrity` (the `required` computation) and
+  `OpClass::from_id`; reached from the `download_file` command, whose `id: String` comes straight
+  from the renderer.
+* **Defect:** `OpClass::from_id` classifies by string prefix — `lichess_`, `engine_`, `db_`,
+  `puzzle_db_` — and `validate_artifact_integrity` makes signature and digest verification
+  mandatory only for `Engine`, `Db` and `PuzzleDb`. The `id` is renderer-supplied, so prefixing a
+  download with `lichess_` makes `integrity: None` acceptable and the transfer proceeds with no
+  Minisign signature and no SHA-256 comparison. The destination is still capability-gated, but the
+  renderer legitimately holds `DownloadFile` on the database and puzzle roots, so the bytes land
+  where a signed artifact would have.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` states that renderer state is not
+  authoritative for downloads. Here the untrusted side chooses the *security class* of the
+  operation — the one input that decides whether the signature check runs at all. The whole signed
+  manifest apparatus (`docs/signed-download-manifests.md`, the pinned Minisign key) is bypassed by
+  changing a string prefix. `OpClass` also drives `max_size` and `payload_format`, so the same
+  string picks the size cap and the extraction path.
+* **Not exploitable by a third party today**, and that is the honest framing: the renderer only
+  sends well-formed ids, so this is a broken trust boundary rather than a live hole. It becomes one
+  the moment any renderer path takes an id from data instead of a literal.
+* **Why it is `build`:** the fix is a design question, not a mechanical one. The natural answer is
+  to derive the class from the destination capability — the `PathRef` already knows whether it is a
+  database, puzzle or engine root — and to stop trusting the id for anything security-relevant. That
+  touches every caller of `download_file`, the generated bindings, and the Lichess path that
+  deliberately has no integrity metadata. It needs its own plan.
+* **Found by:** the `review-tauri-security` lens (confidence 99) over the cumulative diff of the
+  `native-fs` cluster, 2026-08-31. Verified directly against `OpClass::from_id` and the `required`
+  computation.
+
+### `persist_workspace_child` discards the durability of the commit that registers a workspace entry
+
+* **ID:** f-20260831-02 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority.rs`, `persist_workspace_child` — its
+  `self.commit_candidate(candidate, None)?;` drops the returned `CommitDurability`; reached from
+  `register_workspace_child` and `register_workspace_child_expected`, and through them from
+  `file_workspace.rs`'s create/list paths.
+* **Defect:** the registry write can come back `CommitDurability::DurabilityUncertain` — the
+  replacement happened but its parent directory sync failed — and the function still returns a
+  successful `FileWorkspaceHandle`. The renderer receives a handle for an entry whose authority
+  record may not survive a crash, and nothing tells it so.
+* **Relation:** this is the same defect class the `native-fs` cluster fixed in
+  `remove_workspace_entry` on 2026-08-31 (commit `ad03e196`, finding `f-20260830-07`), in a sibling
+  function of the same file. It was deliberately not fixed there because it is not the same
+  question.
+* **Why it is `build` and not a mechanical port:** removal is destructive, so "the record may not
+  be durable" clearly has to reach the caller. Registration is not: nothing was destroyed, the
+  object is still there, and a later list re-registers it. Failing the call may well be worse than
+  succeeding — the user would see a create fail although the file exists. So the open question is
+  what the caller should *do*, not how to propagate. Answering it also decides the return type of
+  two public authority methods and their `file_workspace.rs` callers.
+* **Found by:** the `review-error-handling` lens (confidence 95) over the cumulative diff of the
+  `native-fs` cluster, 2026-08-31.
+
+### A failed registry save discards the subtree prune, so the deleted entry's records survive
+
+* **ID:** f-20260831-03 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority.rs`, `commit_state` — it returns before assigning
+  the candidate when `save_entries` fails — reached from `remove_workspace_entry` and from
+  `permanently_delete_entry` in `src-tauri/src/file_workspace.rs`.
+* **Defect:** when a permanent delete succeeds on disk but the registry write fails, the pruned
+  candidate is never adopted. The descendant records, the cleared active root and the dropped
+  pending intent all survive in memory and on disk, and are re-serialised by every later commit —
+  the exact stale-registry accumulation `f-20260830-07` was filed for, surviving on this one exit
+  path. The caller correctly reports `CommittedDurabilityUncertain`, so the user is told; the
+  registry is simply never repaired.
+* **This is a recorded residual, not an oversight.** The `native-fs` run of 2026-08-31 chose it
+  deliberately and wrote the reason at the site: in-memory state must not diverge from what was
+  persisted, and the obvious repair — dropping records at load time whose object no longer
+  resolves — is unsafe, because a capability on an unmounted volume does not resolve either. That
+  is why `refresh_persistent` marks unavailable rather than removing. The accumulation is therefore
+  bounded by registry-save failures rather than by ordinary create-and-delete use.
+* **What is actually open:** whether anything should reconcile afterwards, and what. Candidates: a
+  retry of the same candidate; a reconciliation pass at the next successful commit; or an explicit,
+  user-visible repair action. Each has a different failure mode and none is obviously right, which
+  is why this is `build` rather than `inline`.
+* **Found by:** the `review-root-cause` lens (confidence 99) over the cumulative diff of the
+  `native-fs` cluster, 2026-08-31. It reported the documented residual as a blocker; the residual
+  stands, and this entry is where it now lives instead of only in a code comment.
+
+### The engine manifest document is unsigned, and can only be signed once the fork serves its own
+
+* **ID:** f-20260831-04 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/utils/engines.ts` (`defaultEngineManifestSchema`, `useDefaultEngines`), the
+  `https://www.encroissant.org/engines` endpoint, and `docs/signed-download-manifests.md`.
+* **Defect:** the manifest document carries no signature. Its per-entry `signature` authenticates
+  only `` `${downloadLink}\n${sha256}` ``, so `path`, `name`, `version`, `os`, `bmi2` and
+  `imageUrl` are unauthenticated while sitting beside two fields that make the entry look signed.
+  Anyone controlling or MITM-ing that origin chooses the path component an executable is registered
+  from, and every other displayed field.
+* **What already stops the worst of it:** `register_installed_engine` accepts only
+  `Component::Normal`, `validate_components` rejects `.`, `..`, separators and NUL, and since
+  2026-08-31 the client schema rejects the same shapes before a download starts (commit
+  `1c307330`). Containment holds; authentication does not.
+* **Blocked on a sequencing decision that is already recorded.** `d-20260830-15` (Felix,
+  2026-08-30) defers the fork's self-hosted engine manifest and download page to a later run, and
+  this fork does not control `www.encroissant.org` — so it cannot make that server emit a document
+  signature. **This finding becomes actionable at the moment the fork serves its own manifest, and
+  should be worked as part of that change rather than before it.**
+* **The machinery already exists:** `minisign-verify` is a dependency, the release public key is
+  pinned in `src-tauri/src/fs.rs`, and `validate_artifact_integrity` already verifies a Minisign
+  signature over an exact payload. What is missing is a signed document, a canonical serialisation
+  to sign, and a verification call before the entries are trusted.
+* **Inherited from upstream unchanged** — this is not a defect the 2026-08-09 audit introduced.
+* **Found by:** Claude review of the 2026-08-13 audit diff (as `f-20260830-27`), and re-raised by
+  the `review-root-cause` lens at confidence 96 over the `native-fs` cluster diff, 2026-08-31, which
+  correctly objected that the client-side constraint hardens a symptom without authenticating the
+  state that produced it.
+
+### An inline `;` comment after a move opens a brace comment, merging the next game into the current one
+
+* **ID:** f-20260831-05 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/pgn.rs`, the game-boundary scanner: the `;` handling recognises a
+  rest-of-line comment only when `;` is the first character of the line.
+* **Defect:** PGN allows `;` to start a comment anywhere on a line, running to the end of it. The
+  scanner only treats a line-initial `;` that way, so in `1. e4 ; { ignored` the `{` is read as the
+  start of a brace comment. Everything after it — including the next game's `[Event "..."]` header —
+  is swallowed until a later `}` or a header that happens to resynchronise the scanner.
+* **Why it matters:** two games silently become one. The byte-offset index built from these
+  boundaries then points at the wrong game for every entry after the merge, so counts, paging and
+  the "read game N" path are all wrong for that file — and nothing errors. `.claude/rules/pgn-scanning.md`
+  makes boundary detection the invariant this file exists to protect.
+* **Fix shape:** treat `;` as a comment start wherever it appears outside a brace comment and
+  outside a quoted string, and skip to end of line. The test to write first is the exact input
+  above, asserting two games rather than one.
+* **Entry `lens`:** the change itself is small and local, but it is a scanner boundary rule, so it
+  gets `review-pgn-index` over the diff before it lands.
+* **Found by:** the `review-pgn-index` lens (confidence 97) over the cumulative diff of the
+  `native-fs` cluster, 2026-08-31. Pre-existing; that cluster touched `pgn.rs` only for an error
+  payload.
+
+### The PGN pipeline materialises whole corpora: a 64 MiB scan cap, and three corpus-sized buffers
+
+* **ID:** f-20260831-06 · **Status:** open · **Area:** pgn-import · **Root:** whole-corpus-materialisation · **Entry:** build · **Blocked:** none
+* **Where:** four sites, one cause.
+  * `src-tauri/src/pgn.rs` — the streaming scanner refuses any file above 64 MiB before it scans.
+  * `src-tauri/src/db/mod.rs` — search-index generation loads every game and move blob into one
+    `Vec`, and the writer then clones and serialises the complete index.
+  * `src-tauri/src/db/search_index.rs` — opening the memory-mapped index deserialises the entire
+    `SearchArchive` merely to read `source`.
+  * `src-tauri/src/db/mod.rs` — database export buffers the complete PGN in a `BufWriter<Vec<u8>>`
+    before the atomic write.
+* **Defect:** a routine PGN database is hundreds of megabytes. The first site refuses to scan one
+  at all, so it cannot be counted, paged, edited or read. The other three succeed only by holding
+  one or more corpus-sized allocations, and the third defeats the point of the mmap design by
+  building a second full in-memory copy on open.
+* **Why it matters:** this is the size class the application is for. `.claude/rules/pgn-scanning.md`
+  names whole-file materialisation of large PGNs as the thing the byte-offset index exists to
+  avoid, and three of these four sites do it anyway.
+* **Related:** `f-20260830-37` (`blocking-work-not-offloaded`) covers the *thread* these run on;
+  this finding is about the *memory* they hold. Fixing either does not fix the other, but they will
+  likely be worked together, since streaming a record at a time changes both.
+* **Why it is `build`:** the answer is a streaming design for four different pipelines — scan,
+  index build, index open, export — with a shared question about what the on-disk index format has
+  to look like to be readable incrementally. That is a plan, not a patch. The 64 MiB cap is the one
+  piece that may be liftable on its own, and even that needs the scanner proven on a large file
+  first.
+* **Found by:** the `review-pgn-index` lens (confidence 100, 100, 99, 100 on the four sites) over
+  the cumulative diff of the `native-fs` cluster, 2026-08-31. All four pre-existing.
+
+### A multi-file PGN import commits each file in its own transaction, so a mid-import failure leaves games behind
+
+* **ID:** f-20260831-07 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs`, the import path that iterates source files and opens a
+  transaction per file.
+* **Defect:** importing three PGNs and failing on the third leaves the games from the first two
+  committed while the command returns an error. The user is told the import failed and the database
+  nevertheless contains part of it, with no record of how much.
+* **Why it matters:** the renderer's error handling treats a failed import as "nothing happened" —
+  the same false-negative shape that `d-20260830-05` introduced the `applied-despite-error`
+  category for on the filesystem side. Here there is no equivalent signal at all, and a retry
+  duplicates whatever already landed.
+* **Why it is `build`:** there are two defensible answers and they differ in cost. One transaction
+  across all files makes the operation atomic but holds a write transaction for the whole import,
+  which for a corpus-sized import is exactly the memory and lock-duration problem
+  `whole-corpus-materialisation` describes. Per-file transactions plus a reported partial outcome
+  keeps the current shape but needs a new error carrying how many files landed, and a renderer that
+  acts on it. Choosing needs the import's size profile, not just its code.
+* **Found by:** the `review-pgn-index` lens (confidence 100) over the cumulative diff of the
+  `native-fs` cluster, 2026-08-31. Pre-existing.
+
+### Deleting a database removes its primary file first, so a later failure leaves it unusable and unretryable
+
+* **ID:** f-20260831-08 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs`, the database-deletion command: it unlinks the primary
+  database file before its index sidecars.
+* **Defect:** if removing a later file fails, the command returns an ordinary `Io` error. The UI
+  reports that the action failed and offers a retry — but the retry cannot succeed, because
+  capability resolution needs the primary file that is already gone. The database is left partly
+  deleted, unusable, and unremovable through the interface.
+* **Why it matters:** it is the same class the `native-fs` cluster fixed for workspace deletion on
+  2026-08-31 — a destructive operation that partly applied and reported as if nothing had happened.
+  There the answer was `Error::CommittedDurabilityUncertain` mapping to the
+  `applied-despite-error` category so the renderer relists (`d-20260830-05`). This path has no such
+  signal.
+* **Fix shape, and why it is `build`:** ordering the unlinks so the primary file goes last makes
+  the operation retryable, and is probably right on its own; but the failure still needs a truthful
+  outcome, which means deciding whether this reuses `applied-despite-error` or gets its own
+  category, and what the renderer does with a half-deleted database. That is a contract question
+  across the boundary.
+* **Found by:** the `review-error-handling` lens (confidence 94) over the cumulative diff of the
+  `native-fs` cluster, 2026-08-31. Pre-existing.
+
+### Engine results are bound to a tab and a position but not to the process that produced them
+
+* **ID:** f-20260831-09 · **Status:** open · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** build · **Blocked:** none
+* **Where:** three sites on one axis.
+  * `src/components/boards/EvalListener.tsx` — the result fingerprint covers tab, FEN, moves and
+    settings, but not the executable handle or a process generation.
+  * `src-tauri/src/chess.rs` — `stop_engine` snapshots the current actor without its generation.
+  * `src-tauri/src/engine/process.rs` — `terminate_tab` snapshots the actor set without preventing
+    a later registration.
+* **Defect:** each site assumes "the engine for this tab" is a stable identity. It is not.
+  Replacing an engine binary while keeping its id lets a queued result from the old process arrive
+  for the same tab, FEN, moves and settings and be accepted as the new engine's. A position change
+  that issues a stop while a replacement is starting can have the stop resolve against the *new*
+  search and drain its result. Closing a tab while `getBestMoves` is spawning can return from
+  `killEngines` before `replace_handle` publishes the new actor, leaving an infinite search running
+  for a tab that no longer exists.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` requires an identity and a
+  stale-result guard on every asynchronous operation, and names commit `4e8d10b0` — a guard that
+  compared `payload.moves.join(",")` and silently matched across different move lists — as the
+  incident behind it. This is the same defect one level up: the discriminator is real but does not
+  include the producer.
+* **Why it is `build`:** all three need the same missing thing — a monotonic generation minted when
+  an actor is registered, carried on every result and honoured by stop and terminate — and it has
+  to cross the IPC boundary, so it touches the event payloads and the generated bindings. Fixing
+  one site without the generation just moves the race.
+* **Found by:** the `review-engine-protocol` lens (confidence 96, 94, 99) over the cumulative diff
+  of the `native-fs` cluster, 2026-08-31. All three pre-existing.
+
+### `analyze_game` accepts `lowerbound`/`upperbound` scores as final, while the interactive path rejects them
+
+* **ID:** f-20260831-10 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/chess.rs`, the report path (`analyze_game`) writing into
+  `current_analysis.best`; the interactive path a few hundred lines earlier already rejects bound
+  scores.
+* **Defect:** UCI `score cp N lowerbound` / `upperbound` means the engine has not finished
+  narrowing the window — the value is a bound, not an evaluation. The interactive analysis path
+  discards those lines. The report path does not, so an engine that emits a bound score followed by
+  the expected MultiPV lines at the same depth has the bound entered as the annotated evaluation of
+  that move.
+* **Why it matters:** two structurally identical loops disagree about the same protocol detail, and
+  the one that disagrees is the one whose output is written into a game as a durable annotation.
+  The user sees an evaluation that no engine ever asserted.
+* **Fix shape:** apply the interactive path's existing rejection in the report loop. The two loops
+  are close enough that the real fix is to route both through one aggregation helper — see the
+  `4e8d10b0` lineage in `.claude/rules/engine-lifecycle.md`, and universal rule 11 on the second
+  near-identical copy.
+* **Found by:** the `review-engine-protocol` lens (confidence 99) over the cumulative diff of the
+  `native-fs` cluster, 2026-08-31, and independently during that cluster's plan review. Pre-existing.
+
+### Removing a local engine deletes renderer state without terminating its process
+
+* **ID:** f-20260831-11 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/engines/EnginesPage.tsx`, the engine-removal handler; the supervisor
+  it does not call is `stopEngine`/`killEngine` in `src/utils/engines.ts` and
+  `src-tauri/src/engine/process.rs`.
+* **Defect:** removing a local engine removes it from the persisted renderer list and nothing else.
+  If an infinite search is running when the user removes it, the listener unmounts while the
+  supervised child keeps running — until the tab is closed or the application exits.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` requires every spawn to name the
+  exit paths it is cleaned up on, and lists "resource swap" and "tab close" among them; engine
+  removal is a resource swap with no cleanup at all. Issue #723 and commit `e5422566` are the
+  recorded incidents for engine children outliving the application, and this is the same class
+  reached by a different route.
+* **Related:** the same capability record can also be removed underneath a running engine by a
+  workspace delete — that is the removal side of the same missing ownership, and is why this is
+  filed as `build` rather than as a one-line handler change. The question is who owns terminating
+  an engine when its identity disappears, not where to add a call.
+* **Found by:** the `review-engine-protocol` lens (confidence 96 and 99 in two separate rounds)
+  during the `native-fs` cluster's plan review and final review, 2026-08-31. Pre-existing.
+
+### Two engine-settings paths identify engines by display name, and duplicate MultiPV settings are accepted
+
+* **ID:** f-20260831-12 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/components/panels/analysis/EngineSettingsForm.tsx` — the runtime lookups behind
+  Sync Settings and Advanced Settings; and `src-tauri/src/chess.rs` — the settings-to-UCI
+  translation that accepts a repeated `MultiPV`.
+* **Defect (name lookup):** both settings paths find the engine by its display name rather than its
+  id. Two engines sharing a name — which nothing prevents, and which happens naturally with two
+  builds of the same engine — make both actions target the first one even when the second is
+  selected. The user edits an engine they did not choose.
+* **Defect (duplicate MultiPV):** a settings list containing `MultiPV` twice, say 2 then 4, derives
+  the expected line count from the first value while sending both `setoption` commands, so the
+  engine ends up configured at 4 and the aggregator discards lines 3 and 4. The count the renderer
+  waits for and the count the engine produces disagree silently.
+* **Why it matters:** the first is an identity bug in exactly the place this codebase otherwise
+  uses opaque handles — `EngineHandle` exists so that names are not identities. The second is the
+  cached-option-state class `.claude/rules/engine-lifecycle.md` names: a setting tracked apart from
+  what the engine was actually told.
+* **Fix shape:** look engines up by id in both settings paths; reject or last-wins a duplicated
+  option name at one place in the translation, and derive the expected count from the value
+  actually sent.
+* **Found by:** the `review-engine-protocol` lens (confidence 95 and 92) over the cumulative diff
+  of the `native-fs` cluster, 2026-08-31. Both pre-existing.
+
+### The default-engine list keys installed state by the mutable, non-unique engine name
+
+* **ID:** f-20260831-13 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/components/engines/AddEngine.tsx`, where a manifest entry is marked as already
+  installed by comparing against the installed engines' `name`.
+* **Defect:** `name` is neither unique nor immutable. Installing one engine, or renaming an
+  installed engine to match another manifest entry's name, marks that distinct entry as installed —
+  so it cannot be added, although it has a different `path` and a different binary.
+* **Why it matters:** it is the same identity mistake as the engine-settings lookups, in the one
+  screen where the consequence is that a user simply cannot install an engine and is given no
+  reason.
+* **Fix shape:** compare on something that identifies the artifact — the manifest `path`, or the
+  download URL — rather than on the display name.
+* **Found by:** the `review-engine-protocol` lens (confidence 98) during the `native-fs` cluster's
+  plan review, 2026-08-31. Pre-existing.
+
+### Account linking reports success when the credential registry write may not have survived
+
+* **ID:** f-20260831-14 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/credentials.rs`, `AtomicRegistryPersistence` — a parent-directory sync
+  failure becomes `Ok(RegistryCommit::CommittedDurabilityUncertain)`; its production callers
+  discard that status.
+* **Defect:** the rename happened but its durability is unconfirmed, and the account-linking path
+  returns success anyway. After a crash the registry entry can be gone while the keyring secret it
+  named remains — an orphaned secret and an account the user believes is linked.
+* **Why it matters:** keeping the new in-memory state is deliberate and correct — the comment at
+  the site explains that compensating can destroy the only committed copy — but "we kept it" is not
+  the same as "it is durable", and the caller currently cannot tell the difference. This is the
+  same defect class the `native-fs` cluster fixed for `remove_workspace_entry` on 2026-08-31
+  (`f-20260830-07`, commit `ad03e196`), in a different subsystem.
+* **Related:** `f-20260830-34` — Lichess tokens currently go to an in-process mock store because
+  the `keyring` crate has no backend compiled in. Whoever works that will be in this file anyway,
+  and the two answers interact: what "the secret survived" means depends on which store it is.
+* **Why it is `build`:** the open question is what the user should be told and what the app should
+  do next, not how to propagate a flag. Failing the link outright is wrong — the credential may
+  well be there. Succeeding silently is what happens now. A third option is to succeed and schedule
+  a re-verification at next start. That is a product decision about a real user's account.
+* **Found by:** the `review-error-handling` lens (confidence 96) over the cumulative diff of the
+  `native-fs` cluster, 2026-08-31. Pre-existing; that cluster touched `credentials.rs` only to log
+  the previously discarded cause.
