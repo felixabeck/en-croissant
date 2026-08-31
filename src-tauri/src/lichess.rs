@@ -380,6 +380,65 @@ mod tests {
     }
 
     #[test]
+    fn public_lichess_url_covers_fixed_endpoints_and_rejects_invalid_payloads() {
+        let (cloud, _) = public_lichess_url(PublicLichessRequest::CloudEval {
+            fen: "8/8/8/8/8/8/8/K6k w - - 0 1".into(),
+            multi_pv: 1,
+        })
+        .unwrap();
+        assert_eq!(cloud.host_str(), Some("lichess.org"));
+        assert_eq!(cloud.path(), "/api/cloud-eval");
+
+        let (game, require_json) = public_lichess_url(PublicLichessRequest::Game {
+            game_id: "abcdefgh".into(),
+        })
+        .unwrap();
+        assert_eq!(game.path(), "/game/export/abcdefgh");
+        assert!(!require_json);
+
+        let (tablebase, _) = public_lichess_url(PublicLichessRequest::Tablebase {
+            fen: "8/8/8/8/8/8/8/K6k w - - 0 1".into(),
+        })
+        .unwrap();
+        assert_eq!(tablebase.host_str(), Some("tablebase.lichess.org"));
+
+        let (fide_id, _) = public_lichess_url(PublicLichessRequest::Fide {
+            query: "150301310".into(),
+        })
+        .unwrap();
+        assert_eq!(fide_id.path(), "/api/fide/player/150301310");
+        let (fide_name, _) = public_lichess_url(PublicLichessRequest::Fide {
+            query: "Carlsen".into(),
+        })
+        .unwrap();
+        assert_eq!(fide_name.path(), "/api/fide/player");
+
+        assert!(public_lichess_url(PublicLichessRequest::CloudEval {
+            fen: String::new(),
+            multi_pv: 1,
+        })
+        .is_err());
+        assert!(public_lichess_url(PublicLichessRequest::Game {
+            game_id: "short".into(),
+        })
+        .is_err());
+        assert!(
+            public_lichess_url(PublicLichessRequest::Tablebase { fen: String::new() }).is_err()
+        );
+        assert!(public_lichess_url(PublicLichessRequest::Fide {
+            query: String::new(),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn exact_url_rejects_non_https_and_userinfo() {
+        assert!(exact_url("http://lichess.org", "/api/account", None).is_err());
+        assert!(exact_url("https://user:pass@lichess.org", "/api/account", None).is_err());
+        assert!(exact_url("https://lichess.org/#frag", "/api/account", None).is_err());
+    }
+
+    #[test]
     fn exact_url_pins_tablebase_host() {
         let url = exact_url(
             "https://tablebase.lichess.org",
