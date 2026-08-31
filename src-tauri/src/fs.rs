@@ -22,6 +22,9 @@ use crate::AppState;
 
 const MAX_ACTIVE_DOWNLOADS: usize = 32;
 const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(60 * 60);
+const MAX_ARCHIVE_PATH_BYTES: usize = 1024;
+#[cfg(unix)]
+const MAX_ARCHIVE_PATH_COMPONENTS: usize = crate::infra::fs::MAX_REMOVE_TREE_DEPTH - 1;
 const ARTIFACT_MANIFEST_PUBLIC_KEY: &str =
     "RWSF3PMxhuaQf7613UytN4bdF7FQyBymLJVDIG3OE8xNa+0fcs6KE6/J";
 
@@ -961,7 +964,7 @@ pub async fn download_engine_archive(
         .map_err(|_| Error::InvalidInput("download job ID must be a UUID".into()))?;
     validate_artifact_integrity(&id, &url, Some(&integrity))?;
     let lease = state.download_registry.begin(&job_id)?;
-    let staging = tempfile::tempdir().map_err(|error| Error::Io(Box::new(error)))?;
+    let staging = private_tempdir()?;
     let extracted = staging.path().join("extracted");
     let resolved = state
         .pgn_path_authority
@@ -1049,14 +1052,53 @@ pub async fn cancel_download(id: String, state: tauri::State<'_, AppState>) -> R
     Ok(state.download_registry.cancel(&id))
 }
 
+fn create_private_dir_all(path: &Path) -> Result<(), Error> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        // The effective mode is the requested mode intersected with the process umask.
+        builder.mode(0o700);
+    }
+    builder.create(path)?;
+    Ok(())
+}
+
+fn private_tempdir() -> Result<tempfile::TempDir, Error> {
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder
+        .tempdir()
+        .map_err(|error| Error::Io(Box::new(error)))
+}
+
+fn private_tempdir_in(prefix: &str, parent: &Path) -> Result<tempfile::TempDir, Error> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(prefix);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder
+        .tempdir_in(parent)
+        .map_err(|error| Error::Io(Box::new(error)))
+}
+
 fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
-    if path.is_empty() || path.len() > 1024 {
+    if path.is_empty() || path.len() > MAX_ARCHIVE_PATH_BYTES {
         return Err(Error::InvalidInput("Invalid path length".into()));
     }
     let p = Path::new(path);
     if p.is_absolute() {
         return Err(Error::InvalidInput("Absolute path in archive".into()));
     }
+    let mut normal_components = 0usize;
     for component in p.components() {
         match component {
             std::path::Component::Prefix(_) => {
@@ -1069,6 +1111,7 @@ fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
                 return Err(Error::InvalidInput("Parent dir in path".into()))
             }
             std::path::Component::Normal(n) => {
+                normal_components += 1;
                 let s = n.to_string_lossy();
                 if s.contains('\0') {
                     return Err(Error::InvalidInput("Null byte in path".into()));
@@ -1076,6 +1119,14 @@ fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
             }
             std::path::Component::CurDir => {}
         }
+    }
+    #[cfg(unix)]
+    if normal_components > MAX_ARCHIVE_PATH_COMPONENTS {
+        // Experimentally, reinstall cleanup accepts one fewer archive component than
+        // `MAX_REMOVE_TREE_DEPTH`: the installed staging root occupies removal depth zero.
+        return Err(Error::ResourceLimit(
+            "Archive path has too many components".into(),
+        ));
     }
     Ok(p.to_path_buf())
 }
@@ -1086,11 +1137,8 @@ fn extract_zip(
     limits: ArchiveLimits,
 ) -> Result<(), Error> {
     let target_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(target_dir)?;
-    let temp_dir = tempfile::Builder::new()
-        .prefix(".zip")
-        .tempdir_in(target_dir)
-        .map_err(|e| Error::Io(Box::new(e)))?;
+    create_private_dir_all(target_dir)?;
+    let temp_dir = private_tempdir_in(".zip", target_dir)?;
 
     let mut archive = zip::ZipArchive::new(file).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
@@ -1120,10 +1168,10 @@ fn extract_zip(
 
         let outpath = temp_dir.path().join(&validated_path);
         if (*file.name()).ends_with('/') {
-            std::fs::create_dir_all(&outpath)?;
+            create_private_dir_all(&outpath)?;
         } else {
             if let Some(p) = outpath.parent() {
-                std::fs::create_dir_all(p)?;
+                create_private_dir_all(p)?;
             }
             let mut outfile = private_output_file(&outpath)?;
             bounded_copy(
@@ -1146,11 +1194,8 @@ fn extract_tar(
     limits: ArchiveLimits,
 ) -> Result<(), Error> {
     let target_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(target_dir)?;
-    let temp_dir = tempfile::Builder::new()
-        .prefix(".tar")
-        .tempdir_in(target_dir)
-        .map_err(|e| Error::Io(Box::new(e)))?;
+    create_private_dir_all(target_dir)?;
+    let temp_dir = private_tempdir_in(".tar", target_dir)?;
 
     let mut archive = tar::Archive::new(file);
     let mut entry_count = 0;
@@ -1185,10 +1230,10 @@ fn extract_tar(
 
         let outpath = temp_dir.path().join(&validated_path);
         if entry_type.is_dir() {
-            std::fs::create_dir_all(&outpath)?;
+            create_private_dir_all(&outpath)?;
         } else {
             if let Some(p) = outpath.parent() {
-                std::fs::create_dir_all(p)?;
+                create_private_dir_all(p)?;
             }
             let mut outfile = private_output_file(&outpath)?;
             bounded_copy(
@@ -1207,7 +1252,7 @@ fn extract_tar(
 
 fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) -> Result<(), Error> {
     let target_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(target_dir)?;
+    create_private_dir_all(target_dir)?;
 
     match atomic_replace(target_path, |target_file| {
         let mut decoder = flate2::read::GzDecoder::new(file);
@@ -1659,6 +1704,198 @@ mod tests {
             PathBuf::from(&maximum)
         );
         assert!(validate_archive_path(&"a".repeat(1025)).is_err());
+    }
+
+    #[cfg(unix)]
+    struct UmaskGuard(libc::mode_t);
+
+    #[cfg(unix)]
+    impl UmaskGuard {
+        fn zero() -> Self {
+            // SAFETY: this test holds `UMASK_TEST_LOCK` for the guard's whole lifetime.
+            Self(unsafe { libc::umask(0) })
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for UmaskGuard {
+        fn drop(&mut self) {
+            // SAFETY: restoring the value returned by `umask` while the lock is still held.
+            unsafe {
+                libc::umask(self.0);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    static UMASK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(unix)]
+    fn assert_mode_700(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            path.metadata().unwrap().permissions().mode() & 0o777,
+            0o700,
+            "unexpected mode for {}",
+            path.display()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_directory_creation_sites_are_private_with_zero_umask() {
+        let _lock = UMASK_TEST_LOCK.lock().unwrap();
+        let _umask = UmaskGuard::zero();
+        let root = tempdir().unwrap();
+
+        let outer_staging = private_tempdir().unwrap();
+        assert_mode_700(outer_staging.path());
+
+        let zip_archive = root.path().join("archive.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.add_directory("explicit/", options).unwrap();
+        zip.start_file("implicit/file", options).unwrap();
+        zip.write_all(b"zip").unwrap();
+        zip.finish().unwrap();
+        let zip_target = root.path().join("zip-target").join("installed");
+        extract_zip(
+            std::fs::File::open(zip_archive).unwrap(),
+            &zip_target,
+            OpClass::Engine.limits(),
+        )
+        .unwrap();
+        assert_mode_700(zip_target.parent().unwrap());
+        assert_mode_700(&zip_target);
+        assert_mode_700(&zip_target.join("explicit"));
+        assert_mode_700(&zip_target.join("implicit"));
+
+        let tar_archive = root.path().join("archive.tar");
+        let mut tar = tar::Builder::new(std::fs::File::create(&tar_archive).unwrap());
+        let mut directory_header = tar::Header::new_gnu();
+        directory_header.set_entry_type(tar::EntryType::Directory);
+        directory_header.set_mode(0o777);
+        directory_header.set_size(0);
+        directory_header.set_cksum();
+        tar.append_data(&mut directory_header, "explicit", std::io::empty())
+            .unwrap();
+        let mut file_header = tar::Header::new_gnu();
+        file_header.set_mode(0o666);
+        file_header.set_size(3);
+        file_header.set_cksum();
+        tar.append_data(&mut file_header, "implicit/file", b"tar".as_slice())
+            .unwrap();
+        tar.finish().unwrap();
+        drop(tar);
+        let tar_target = root.path().join("tar-target").join("installed");
+        extract_tar(
+            std::fs::File::open(tar_archive).unwrap(),
+            &tar_target,
+            OpClass::Engine.limits(),
+        )
+        .unwrap();
+        assert_mode_700(tar_target.parent().unwrap());
+        assert_mode_700(&tar_target);
+        assert_mode_700(&tar_target.join("explicit"));
+        assert_mode_700(&tar_target.join("implicit"));
+
+        let gzip_archive = root.path().join("archive.gz");
+        let mut encoder = flate2::write::GzEncoder::new(
+            std::fs::File::create(&gzip_archive).unwrap(),
+            flate2::Compression::default(),
+        );
+        encoder.write_all(b"gzip").unwrap();
+        encoder.finish().unwrap();
+        let gzip_target = root.path().join("gzip-target").join("installed");
+        extract_gz(
+            std::fs::File::open(gzip_archive).unwrap(),
+            &gzip_target,
+            OpClass::Engine.limits(),
+        )
+        .unwrap();
+        assert_mode_700(gzip_target.parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_path_policy_matches_the_measured_removal_boundary() {
+        let accepted = std::iter::repeat_n("a", MAX_ARCHIVE_PATH_COMPONENTS)
+            .collect::<Vec<_>>()
+            .join("/");
+        let rejected = std::iter::repeat_n("a", crate::infra::fs::MAX_REMOVE_TREE_DEPTH)
+            .collect::<Vec<_>>()
+            .join("/");
+
+        assert!(validate_archive_path(&accepted).is_ok());
+        assert!(matches!(
+            validate_archive_path(&rejected),
+            Err(Error::ResourceLimit(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn near_cap_zip_installs_and_reinstalls_cleanly() {
+        let root = tempdir().unwrap();
+        let archive_path = root.path().join("near-cap.zip");
+        let entry = std::iter::repeat_n("a", MAX_ARCHIVE_PATH_COMPONENTS)
+            .collect::<Vec<_>>()
+            .join("/");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
+        zip.start_file(entry, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"content").unwrap();
+        zip.finish().unwrap();
+        let target = root.path().join("installed");
+
+        extract_zip(
+            std::fs::File::open(&archive_path).unwrap(),
+            &target,
+            OpClass::Engine.limits(),
+        )
+        .unwrap();
+        extract_zip(
+            std::fs::File::open(&archive_path).unwrap(),
+            &target,
+            OpClass::Engine.limits(),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn over_cap_cleanup_failure_serializes_only_its_closed_label() {
+        let root = tempdir().unwrap();
+        let target = root.path().join("installed");
+        let entry =
+            std::iter::repeat_n("a", crate::infra::fs::MAX_REMOVE_TREE_DEPTH).collect::<PathBuf>();
+
+        for source_name in ["first", "second"] {
+            let source = root.path().join(source_name);
+            let output = source.join(&entry);
+            std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+            std::fs::write(output, b"content").unwrap();
+            let result = crate::infra::fs::atomic_install_dir(&source, &target);
+            if source_name == "first" {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err();
+                assert!(matches!(
+                    error,
+                    Error::CommittedDurabilityUncertain(
+                        crate::error::DurabilityStage::OldDirectoryCleanup
+                    )
+                ));
+                let serialized = serde_json::to_string(&error).unwrap();
+                assert_eq!(
+                    serialized,
+                    "\"Committed but durability uncertain: old directory cleanup\""
+                );
+                assert!(!serialized.contains(&root.path().display().to_string()));
+                assert!(!serialized.contains("directory cleanup exceeded"));
+            }
+        }
     }
 
     #[test]

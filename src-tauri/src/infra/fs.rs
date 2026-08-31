@@ -90,7 +90,7 @@ mod unix {
     }
 
     /// Directory levels `remove_tree_at` will descend before refusing.
-    pub(super) const MAX_REMOVE_TREE_DEPTH: usize = 64;
+    pub(crate) const MAX_REMOVE_TREE_DEPTH: usize = 64;
     /// `RawDir` buffer per open level. The worst-case stack contribution is this value times
     /// `MAX_REMOVE_TREE_DEPTH` (512 KiB), against a Tokio worker's 2 MiB stack.
     const REMOVE_TREE_DIR_BUFFER_BYTES: usize = 8192;
@@ -763,6 +763,8 @@ mod unix {
     }
 }
 
+#[cfg(unix)]
+pub(crate) use unix::MAX_REMOVE_TREE_DEPTH;
 #[cfg(all(test, unix))]
 pub(crate) use unix::{set_test_removal_injector, RemovalFault, RemovalFaultPoint};
 
