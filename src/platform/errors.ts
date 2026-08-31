@@ -75,7 +75,10 @@ export function normalizeError(error: unknown): AppError {
 
 export function errorUnlessCancelled(error: unknown): AppError | null {
     const normalized = normalizeError(error);
-    return normalized.category === "cancelled" ? null : normalized;
+    // Pinned IPC Display of `Error::Cancellation` (`d-20260830-05`). Do not use
+    // the substring taxonomy: "connection aborted" is a real failure
+    // (`f-20260830-28`).
+    return normalized.message === "Cancellation" ? null : normalized;
 }
 
 export async function runDestructiveWithRefresh<T>(

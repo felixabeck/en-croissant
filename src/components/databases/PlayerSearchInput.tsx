@@ -1,7 +1,9 @@
 import { tauri } from "@/platform/tauri";
+import { notifyUnlessCancelled } from "@/components/common/notifyError";
 import { Autocomplete } from "@mantine/core";
 import { IconSearch } from "@tabler/icons-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { type DatabaseHandle, type Player } from "@/bindings";
 import { query_players } from "@/utils/db";
 
@@ -18,6 +20,7 @@ export function PlayerSearchInput({
   rightSection?: ReactNode;
   setValue: (val: number | undefined) => void;
 }) {
+  const { t } = useTranslation();
   const [tempValue, setTempValue] = useState("");
   const [data, setData] = useState<Player[]>([]);
   const playerLookupVersion = useRef(0);
@@ -38,8 +41,10 @@ export function PlayerSearchInput({
           setTempValue(player.name);
         }
       })
-      .catch(() => {});
-  }, [file, value]);
+      .catch((cause) => {
+        notifyUnlessCancelled(t("Common.Error"), cause);
+      });
+  }, [file, t, value]);
 
   async function handleChange(val: string) {
     playerLookupVersion.current++;

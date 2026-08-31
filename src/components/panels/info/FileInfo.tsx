@@ -1,9 +1,9 @@
 import { tauri } from "@/platform/tauri";
-import { errorUnlessCancelled } from "@/platform/errors";
+import { notifyUnlessCancelled } from "@/components/common/notifyError";
 import { Code, Divider, Group, Text, Tooltip } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
 import { IconReload } from "@tabler/icons-react";
 import { useAtom } from "jotai";
+import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { currentTabAtom } from "@/state/atoms";
 import { IconAction } from "@/components/common/IconAction";
@@ -18,12 +18,18 @@ function FileInfo({
   const { t } = useTranslation();
   const [tab, setCurrentTab] = useAtom(currentTabAtom);
   const tabFile = getTabFile(tab);
+  const tabIdRef = useRef(tab.value);
+  tabIdRef.current = tab.value;
 
   if (!tabFile) return null;
   async function reload() {
+    const tabId = tab.value;
+    const handle = tabFile.handle;
     try {
-      const v = await tauri.countPgnGames(tabFile.handle);
+      const numGames = await tauri.countPgnGames(handle);
+      if (tabIdRef.current !== tabId) return;
       setCurrentTab((prev) => {
+        if (prev.value !== tabId) return prev;
         if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
           return prev;
         }
@@ -33,21 +39,14 @@ function FileInfo({
             ...prev.gameOrigin,
             file: {
               ...prev.gameOrigin.file,
-              numGames: v,
+              numGames,
             },
           },
         };
       });
       setGames(new Map());
     } catch (cause) {
-      const visible = errorUnlessCancelled(cause);
-      if (visible) {
-        notifications.show({
-          color: "red",
-          title: t("Common.Error"),
-          message: visible.message,
-        });
-      }
+      notifyUnlessCancelled(t("Common.Error"), cause);
     }
   }
 

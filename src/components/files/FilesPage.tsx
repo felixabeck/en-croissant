@@ -1,7 +1,7 @@
 import { tauri } from "@/platform/tauri";
-import { errorUnlessCancelled, runDestructiveWithRefresh } from "@/platform/errors";
+import { runDestructiveWithRefresh } from "@/platform/errors";
+import { notifyUnlessCancelled } from "@/components/common/notifyError";
 import { Button, Center, Group, Paper, Select, Stack, Text, TextInput, Title } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -57,14 +57,7 @@ export default function FilesPage() {
       setWorkspace(result.handle);
       setWorkspaceDisplayName(result.displayName);
     } catch (cause) {
-      const visible = errorUnlessCancelled(cause);
-      if (visible) {
-        notifications.show({
-          color: "red",
-          title: t("Common.Error"),
-          message: visible.message,
-        });
-      }
+      notifyUnlessCancelled(t("Common.Error"), cause);
     } finally {
       pendingRef.current = false;
       setPicking(false);

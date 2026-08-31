@@ -27,7 +27,6 @@ import {
   IconVolume,
 } from "@tabler/icons-react";
 import { useLoaderData } from "@tanstack/react-router";
-import { notifications } from "@mantine/notifications";
 import { useAtom } from "jotai";
 import { RESET } from "jotai/utils";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -62,7 +61,7 @@ import {
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 import { analytics } from "@/platform/analytics";
-import { errorUnlessCancelled } from "@/platform/errors";
+import { notifyUnlessCancelled } from "@/components/common/notifyError";
 import { IconAction } from "../common/IconAction";
 import BoardSelect from "./BoardSelect";
 import ColorControl from "./ColorControl";
@@ -141,10 +140,7 @@ export default function Page() {
   const [, setPuzzleWorkspaceGeneration] = useAtom(puzzleWorkspaceGenerationAtom);
   const showDirectoryError = useCallback(
     (error: unknown) => {
-      const visible = errorUnlessCancelled(error);
-      if (visible) {
-        notifications.show({ color: "red", title: t("Common.Error"), message: visible.message });
-      }
+      notifyUnlessCancelled(t("Common.Error"), error);
     },
     [t],
   );

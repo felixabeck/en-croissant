@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 }));
 const currentTabAtom = {};
 const currentTab = {
+  value: "tab-a",
   gameOrigin: {
     kind: "file" as const,
     gameNumber: 0,
@@ -123,8 +124,10 @@ test("reload updater leaves a non-file tab unchanged", async () => {
   mocks.countPgnGames.mockResolvedValueOnce(9);
   await clickReload();
   const updater = mocks.setCurrentTab.mock.calls[0][0] as (prev: unknown) => unknown;
-  const playTab = { gameOrigin: { kind: "play" } };
+  const playTab = { value: "tab-a", gameOrigin: { kind: "play" } };
   expect(updater(playTab)).toBe(playTab);
+  const otherTab = { ...currentTab, value: "tab-b" };
+  expect(updater(otherTab)).toBe(otherTab);
   const next = updater(currentTab) as typeof currentTab;
   expect(next.gameOrigin.file.numGames).toBe(9);
 });

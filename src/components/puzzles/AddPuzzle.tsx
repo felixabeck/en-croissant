@@ -8,7 +8,8 @@ import useSWRImmutable from "swr/immutable";
 import { type PuzzleDatabaseInfo } from "@/bindings";
 import { getDefaultPuzzleDatabases, type DownloadablePuzzleDatabase } from "@/utils/db";
 import { formatBytes, formatNumber } from "@/utils/format";
-import { errorUnlessCancelled, normalizeError } from "@/platform/errors";
+import { normalizeError } from "@/platform/errors";
+import { notifyUnlessCancelled } from "@/components/common/notifyError";
 import { choosePuzzleDatabase, getPuzzleDatabases } from "@/utils/puzzles";
 import ProgressButton from "../common/ProgressButton";
 import AppModal from "../common/AppModal";
@@ -38,10 +39,7 @@ function AddPuzzle({
       setPuzzleDbs(await getPuzzleDatabases());
       setOpened(false);
     } catch (error) {
-      const visible = errorUnlessCancelled(error);
-      if (visible) {
-        notifications.show({ color: "red", title: t("Common.Error"), message: visible.message });
-      }
+      notifyUnlessCancelled(t("Common.Error"), error);
     }
   }
 

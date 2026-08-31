@@ -39,6 +39,11 @@ describe("normalizeError", () => {
         expect(errorUnlessCancelled(new Error("permission denied"))).toMatchObject({
             category: "permission",
         });
+        expect(errorUnlessCancelled(new Error("connection aborted"))).toMatchObject({
+            category: "cancelled",
+            message: "connection aborted",
+        });
+        expect(errorUnlessCancelled(new Error("operation timeout"))).not.toBeNull();
     });
 });
 

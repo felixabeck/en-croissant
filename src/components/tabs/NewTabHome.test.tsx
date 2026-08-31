@@ -22,6 +22,11 @@ const fixtures = vi.hoisted(() => ({
     lastOpened: number;
   }>,
   setRecentFiles: vi.fn(),
+  setTabs: vi.fn((update) => {
+    if (typeof update === "function") {
+      return update([{ value: "new-tab", name: "Home", type: "new" }]);
+    }
+  }),
   dueStats: { due: 0, unseen: 0 },
 }));
 
@@ -46,14 +51,7 @@ vi.mock("jotai", () => ({
       return [fixtures.recentFiles, fixtures.setRecentFiles];
     }
     if (atom === fixtures.atoms.tabs) {
-      return [
-        [{ value: "new-tab", name: "Home", type: "new" }],
-        vi.fn((update) => {
-          if (typeof update === "function") {
-            update([{ value: "new-tab", name: "Home", type: "new" }]);
-          }
-        }),
-      ];
+      return [[{ value: "new-tab", name: "Home", type: "new" }], fixtures.setTabs];
     }
     if (atom === fixtures.atoms.deckFamily) {
       return [{ positions: [] }, vi.fn()];
@@ -191,6 +189,29 @@ test("notifies when opening a recent file is denied without creating a tab", asy
   expect(fixtures.createTab).not.toHaveBeenCalled();
 });
 
+test("notifies when counting games for a recent file is denied without creating a tab", async () => {
+  const NewTabHome = (await import("./NewTabHome")).default;
+
+  await act(async () => {
+    root.render(<NewTabHome id="new-tab" />);
+  });
+  fixtures.countPgnGames.mockRejectedValueOnce(new Error("permission denied"));
+  const recentFile = [...container.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("stale"),
+  )!;
+  await act(async () => {
+    recentFile.click();
+    await Promise.resolve();
+  });
+
+  expect(fixtures.notify).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: "permission denied",
+  });
+  expect(fixtures.createTab).not.toHaveBeenCalled();
+});
+
 test("keeps recent-file cancellation silent without creating a tab", async () => {
   const NewTabHome = (await import("./NewTabHome")).default;
   fixtures.readGames.mockRejectedValueOnce(new Error("Cancellation"));
@@ -247,6 +268,40 @@ test("home cards start play, analysis, puzzles, import, and repertoire", async (
       (card as HTMLElement).click();
     });
   }
+  const playUpdate = fixtures.setTabs.mock.calls[0][0] as (
+    prev: Array<{ value: string; name: string; type: string }>,
+  ) => Array<{ value: string; name: string; type: string }>;
+  expect(playUpdate([{ value: "new-tab", name: "Home", type: "new" }])[0].type).toBe("play");
+  const analysisUpdate = fixtures.setTabs.mock.calls[1][0] as (
+    prev: Array<{ value: string; name: string; type: string }>,
+  ) => Array<{ value: string; name: string; type: string }>;
+  expect(analysisUpdate([{ value: "new-tab", name: "Home", type: "new" }])[0].type).toBe(
+    "analysis",
+  );
+});
+
+test("keeps a recent file after a transient count failure", async () => {
+  fixtures.countPgnGames.mockRejectedValueOnce(new Error("permission denied"));
+  const NewTabHome = (await import("./NewTabHome")).default;
+  await act(async () => {
+    root.render(<NewTabHome id="new-tab" />);
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(fixtures.setRecentFiles).not.toHaveBeenCalled();
+});
+
+test("drops a recent file that is gone", async () => {
+  fixtures.countPgnGames.mockRejectedValueOnce(new Error("file not found"));
+  const NewTabHome = (await import("./NewTabHome")).default;
+  await act(async () => {
+    root.render(<NewTabHome id="new-tab" />);
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(fixtures.setRecentFiles).toHaveBeenCalledWith([]);
 });
 
 test("opens a recent file into a new analysis tab", async () => {

@@ -1,5 +1,6 @@
 import { tauri } from "@/platform/tauri";
-import { errorUnlessCancelled } from "@/platform/errors";
+import { normalizeError } from "@/platform/errors";
+import { notifyUnlessCancelled } from "@/components/common/notifyError";
 import {
   Badge,
   Box,
@@ -14,7 +15,6 @@ import {
   UnstyledButton,
 } from "@mantine/core";
 import { useAtom, useSetAtom, useStore } from "jotai";
-import { notifications } from "@mantine/notifications";
 import { useCallback, useEffect, useState } from "react";
 import {
   activeTabAtom,
@@ -131,8 +131,8 @@ export default function NewTabHome({ id }: { id: string }) {
           try {
             await tauri.countPgnGames(file.handle);
             return file;
-          } catch {
-            return null;
+          } catch (cause) {
+            return normalizeError(cause).category === "not-found" ? null : file;
           }
         }),
       );
@@ -150,12 +150,10 @@ export default function NewTabHome({ id }: { id: string }) {
   const openRecentFile = useCallback(
     async (file: RecentFile) => {
       try {
-        const [pgnResult, countResult] = await Promise.all([
+        const [pgn, numGames] = await Promise.all([
           tauri.readGames(file.handle, 0, 0),
           tauri.countPgnGames(file.handle),
         ]);
-        const pgn = pgnResult;
-        const numGames = countResult;
         const tabId = await createTab({
           tab: {
             name: file.name,
@@ -187,14 +185,7 @@ export default function NewTabHome({ id }: { id: string }) {
         });
         navigate({ to: "/" });
       } catch (cause) {
-        const visible = errorUnlessCancelled(cause);
-        if (visible) {
-          notifications.show({
-            color: "red",
-            title: t("Common.Error"),
-            message: visible.message,
-          });
-        }
+        notifyUnlessCancelled(t("Common.Error"), cause);
       }
     },
     [setTabs, setActiveTab, store, navigate, t],
