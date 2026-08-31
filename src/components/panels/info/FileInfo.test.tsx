@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   countPgnGames: vi.fn(),
+  formatNumber: vi.fn((value: number) => String(value)),
   notify: vi.fn(),
   setCurrentTab: vi.fn(),
   setGames: vi.fn(),
@@ -27,8 +28,9 @@ const currentTab = {
 
 vi.mock("@/platform/tauri", () => ({ tauri: { countPgnGames: mocks.countPgnGames } }));
 vi.mock("@/state/atoms", () => ({ currentTabAtom }));
+let activeTab: typeof currentTab | undefined = currentTab;
 vi.mock("jotai", () => ({
-  useAtom: () => [currentTab, mocks.setCurrentTab],
+  useAtom: () => [activeTab, mocks.setCurrentTab],
 }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@mantine/core", () => {
@@ -60,9 +62,9 @@ vi.mock("@/components/common/IconAction", () => ({
     </button>
   ),
 }));
-vi.mock("@/utils/format", () => ({ formatNumber: (value: number) => String(value) }));
+vi.mock("@/utils/format", () => ({ formatNumber: mocks.formatNumber }));
 vi.mock("@/utils/tabs", () => ({
-  getTabFile: vi.fn((tab: typeof currentTab) => tab.gameOrigin.file),
+  getTabFile: vi.fn((tab?: typeof currentTab) => tab?.gameOrigin.file),
 }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -81,6 +83,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  activeTab = currentTab;
   currentTab.value = "tab-a";
   currentTab.gameOrigin.file.numGames = 3;
   await act(async () => root.unmount());
@@ -150,6 +153,20 @@ test("reload ignores a count that finished after the tab changed", async () => {
   await pending;
   expect(mocks.setCurrentTab).not.toHaveBeenCalled();
   expect(mocks.setGames).not.toHaveBeenCalled();
+});
+
+test("renders a zero game count when the file has none recorded", async () => {
+  currentTab.gameOrigin.file.numGames = undefined as unknown as number;
+  const FileInfo = (await import("./FileInfo")).default;
+  await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
+  expect(mocks.formatNumber).toHaveBeenCalledWith(0);
+});
+
+test("renders nothing when no tab is selected", async () => {
+  activeTab = undefined;
+  const FileInfo = (await import("./FileInfo")).default;
+  await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
+  expect(container.querySelector("button")).toBeNull();
 });
 
 test("renders nothing when the tab has no file", async () => {
