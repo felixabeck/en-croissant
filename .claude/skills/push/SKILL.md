@@ -46,6 +46,7 @@ pnpm mutation:guard:check
 Affected by `src-tauri/**` or root Rust/Tauri configuration:
 
 ```bash
+pnpm rust:surface:check
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo check --manifest-path src-tauri/Cargo.toml --all-targets
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

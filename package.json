@@ -26,6 +26,7 @@
     "hooks:check": "bash -n .claude/hooks/*.sh && pnpm dlx shellcheck@4.1.0 .claude/hooks/*.sh && pnpm hooks:payload:test",
     "hooks:payload:test": "node --test scripts/hook-block-env-files-tests.mjs",
     "tauri:boundary:check": "node scripts/check-tauri-command-boundary.mjs",
+    "rust:surface:check": "node scripts/check-rust-release-surface.mjs",
     "ui:boundary:check": "node scripts/check-ui-boundaries.mjs",
     "ui:boundary:report:test": "node --test scripts/check-ui-boundaries-tests.mjs",
     "format": "oxfmt",

@@ -57,6 +57,9 @@ jobs:
       - name: Enforce the Tauri command boundary
         run: pnpm tauri:boundary:check
 
+      - name: Enforce the Rust release surface
+        run: pnpm rust:surface:check
+
       - name: Enforce the UI component boundary
         run: pnpm ui:boundary:check
 
