@@ -883,20 +883,25 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
 
 * **Governs:** f-20260829-02
 * **Chosen:** it needs a **second, independent assertion** — `assertNoClippedContent()` in
-  `e2e/fixtures.ts` — which walks every element, keeps those whose `scrollWidth` exceeds their
-  `clientWidth`, and discards the ones that have a scrollable ancestor before a clipping one. The
-  existing assertion is kept unchanged; the two check different properties and neither implies the
-  other.
+  `e2e/fixtures.ts` — implementing the classification already run: walk every element and mark it
+  `LOST-at-viewport` (its box overflows the viewport), `CLIPPED-by-ancestor` (an ancestor with
+  `overflow: hidden|clip` clips its box or its overflowing content), or exempt when a scrollable
+  ancestor (`overflow-x: auto|scroll`) appears before a clipping one. `scrollWidth > clientWidth` on
+  the element itself is not sufficient: a box that fits its own content can still be clipped by an
+  ancestor, and that is the failure this finding is about. The existing assertion is kept unchanged;
+  the two check different properties and neither implies the other.
 * **Rejected:** tightening the existing assertion's threshold or widening it from
-  `documentElement.scrollWidth` to a per-element sweep in place. Rejected because it would silently
-  change what the three specs that already call it are asserting, and because the existing check is
-  still correct for its own question.
-* **Because:** measured on this tree at 320px/200%, `document.documentElement.scrollWidth` reports
-  320 while real content sits at `x = 353` and, on `/accounts`, at `x = 63` under the sidebar. Two
-  independent mechanisms defeat it: left-side overflow never contributes to `scrollWidth` at all, and
-  an ancestor with `overflow: hidden` absorbs the rest before it can propagate. A threshold cannot
-  repair a measurement of the wrong quantity. The replacement classification was run against this
-  tree and reports 83 clipped elements on `/settings`, 27 after the Appearance tab is opened, and 2
-  on `/accounts`, so it demonstrably goes red on the defect the suite was meant to catch.
+  `Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)` (`e2e/fixtures.ts:221-223`)
+  to a per-element sweep in place. Rejected because it would silently change what the three specs
+  that already call it are asserting, and because the existing check is still correct for its own
+  question.
+* **Because:** measured on this tree at 320px/200%, that `Math.max` of document and body
+  `scrollWidth` reports 320 while real content sits at `x = 353` and, on `/accounts`, at `x = 63`
+  under the sidebar. Two independent mechanisms defeat it: left-side overflow never contributes to
+  `scrollWidth` at all, and an ancestor with `overflow: hidden` absorbs the rest before it can
+  propagate. A threshold cannot repair a measurement of the wrong quantity. The replacement
+  classification was run against this tree and reports 83 clipped elements on `/settings`, 27 after
+  the Appearance tab is opened, and 2 on `/accounts`, so it demonstrably goes red on the defect the
+  suite was meant to catch.
 * **Decided by:** build run 1ed74d8d (drain), 2026-08-31, on the `frontend-ui` cluster sliced to
   f-20260829-02 · **Superseded-by:** -

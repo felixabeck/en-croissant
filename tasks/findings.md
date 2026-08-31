@@ -223,11 +223,14 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 * **ID:** f-20260829-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** felix-decision
 * **Where:** `e2e/async-errors.spec.ts-snapshots/*`, `e2e/settings-responsive.spec.ts-snapshots/*`,
-  and the components they render.
+  `e2e/security-consent.spec.ts-snapshots/*`, and the components they render. Those are the four
+  committed snapshots from the three 320px / 200% Playwright projects.
 * **Defect:** headings and account text are clipped at 320px with a 200% app font scale. The
-  committed screenshots record the clipped state, and `assertNoHorizontalOverflow` passes only
-  because the content is clipped inside its container rather than widening the document — so the
-  suite is green on a defect it was meant to catch.
+  committed screenshots record the clipped state. `assertNoHorizontalOverflow` stays green because
+  it compares `Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)` to the
+  viewport (`e2e/fixtures.ts:221-223`), which does not see content clipped by an ancestor or
+  overflowing to the left — so the suite is green on a defect it was meant to catch. The 2026-08-31
+  investigation below names the mechanisms.
 * **Carried from:** `FRONTEND_AUDIT_PLAN.md`, "Final exact-tree verification (2026-08-13)", where
   it is explicitly listed as *not* evidence of a correct layout. Filed here so it lives in the
   queue rather than only in a plan document.
@@ -248,18 +251,18 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   elements before any interaction and **27** after activating the Appearance tab; `/accounts` has
   **2**. `document.documentElement.scrollWidth` is **320** in all three states while real content
   sits at `x = 353`.
-* **The instrument is blinder than the finding states, and this is a sharpening of it, not a
-  correction.** The entry says `assertNoHorizontalOverflow` passes "because the content is clipped
-  inside its container". Measured, two further mechanisms defeat it independently: overflow to the
+* **The instrument is blinder than a container-clipping story, and this is a sharpening of it, not
+  a correction.** Two further mechanisms defeat `scrollWidth` independently: overflow to the
   *left* (`x = 63` on `/accounts`, under the sidebar) never contributes to `scrollWidth` at all, and
   an ancestor with `overflow: hidden` absorbs the rest before it can reach `documentElement`. So the
   assertion cannot be repaired by tightening its threshold — it measures the wrong quantity.
 * **Root cause 1 — the app font scale scales the chrome and the spacing, not just the text.**
-  `src/App.tsx:146` sets `document.documentElement.style.fontSize = "200%"`, so the root em becomes
-  32px and *every* rem length in the app doubles, including Mantine's spacing tokens. On a 320px
-  viewport: the `3rem` navbar (`src/routes/__root.tsx:323`) takes 96px, leaving 224px; `Stack px="md"`
-  (`SettingsPage.tsx:826`) takes 32px on each side; `Card p="lg"` (`:827`) takes 40px on each side.
-  224 - 64 - 80 = **76px of usable content width**, which is what the 83 clipped elements are clipped
+  `src/App.tsx:146` sets `document.documentElement.style.fontSize` to the `fontSize` atom as a
+  percent (`200` in this matrix), so the root em becomes 32px and *every* rem length in the app
+  doubles, including Mantine's spacing tokens. On a 320px viewport: the `3rem` navbar
+  (`src/routes/__root.tsx:323`) takes 96px, leaving 224px; `Stack px="md"` (`SettingsPage.tsx:827`)
+  takes 32px on each side; `Card p="lg"` (`:829`) takes 40px on each side.
+  224 - 64 - 80 = **80px of usable content width**, which is what the 83 clipped elements are clipped
   into. The viewport is the one quantity that does not scale.
 * **Root cause 2 — the responsive breakpoints cannot see the scale.** `SettingsPage.tsx:127` uses
   `useMediaQuery("(max-width: 50rem)")` and `SettingsPage.module.css:60` uses the same threshold.
@@ -268,22 +271,24 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   but nothing in the codebase can express "the effective content width is now ten root-em", which is
   the condition that actually matters.
 * **Root cause 3 — the custom title bar reserves 84% of its width for three buttons.**
-  `src/components/TopBar.module.css:20` gives `.windowControls` `flex: 0 0 auto` while
-  `:26-27` sizes each control `2.8125rem` wide. At 200% that is 3 x 90px = 270px of a 320px bar, so
-  `.menuArea` (`flex: 0 1 auto`, `min-width: 0`) collapses to 50px and clips File/View/Help with no
-  scroll affordance. This is the stray "cht" fragment in the `async-errors` snapshot: German
-  "Ansicht", clipped to its tail.
+  `src/components/TopBar.module.css:21-22` gives `.windowControls` `flex: 0 0 auto` while
+  `.icon` at `:26` and `.close` at `:38` each size a control `2.8125rem` wide. At 200% that is
+  3 x 90px = 270px of a 320px bar, so `.menuArea` (`flex: 0 1 auto`, `min-width: 0`, `:12-14`)
+  collapses to 50px and clips File/View/Help with no scroll affordance. This is the stray "cht"
+  fragment in the `async-errors` snapshot: German "Ansicht", clipped to its tail.
 * **Root cause 4 — long unbreakable words overflow their box with no wrapping opt-in.** On
-  `/accounts` the heading "No accounts connected" measures 290px inside a 144px `Center`
-  (`mantine-Center-root`, `scrollW=217 clientW=144`), and the German "Datenbanken" behaves the same
-  way on `/databases`. These are the only two clipped elements on `/accounts`, so this cause is
-  cheap to close on its own.
+  `/accounts` the heading "No accounts connected" (`src/components/home/EmptyAccounts.tsx:9`
+  `Center`, `:14` `Title`, copy at `src/translation/en-US.json:501`) measures 290px inside a 144px
+  `Center` (`mantine-Center-root`, `scrollW=217 clientW=144`). The German "Datenbanken" on
+  `/databases` is the same class of overflow (sidebar `SideBar.Databases` / the databases page
+  title). These are the only two clipped elements on `/accounts`, so this cause is cheap to close
+  on its own.
 * **Fix specification, in dependency order.** (1) Add `assertNoClippedContent()` to `e2e/fixtures.ts`
   implementing exactly the classification above, and call it beside `assertNoHorizontalOverflow` in
   the three 320px specs; keep the old assertion, which is still a valid check for a different thing.
   (2) In the compact branch, stop spending scaled rem on horizontal padding — the navbar rail, the
   settings `Stack px` and the `Card p` are the three places that matter, and together they are the
-  76px. (3) Give `.windowControls` a shrink allowance or move the menu into a scrollable strip.
+  80px. (3) Give `.windowControls` a shrink allowance or move the menu into a scrollable strip.
   (4) Add `overflow-wrap: break-word` where the two headings are rendered, and `min-width: 0` on the
   `Center`/`Stack` chain that holds them.
 * **What "correct" means here was settled by this run and is not an open question** — see
