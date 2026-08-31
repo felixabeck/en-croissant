@@ -9,7 +9,7 @@ import { type PuzzleDatabaseInfo } from "@/bindings";
 import { getDefaultPuzzleDatabases, type DownloadablePuzzleDatabase } from "@/utils/db";
 import { formatBytes, formatNumber } from "@/utils/format";
 import { normalizeError } from "@/platform/errors";
-import { notifyUnlessCancelled } from "@/components/common/notifyError";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { choosePuzzleDatabase, getPuzzleDatabases } from "@/utils/puzzles";
 import ProgressButton from "../common/ProgressButton";
 import AppModal from "../common/AppModal";

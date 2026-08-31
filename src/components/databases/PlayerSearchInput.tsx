@@ -1,5 +1,5 @@
 import { tauri } from "@/platform/tauri";
-import { notifyUnlessCancelled } from "@/components/common/notifyError";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Autocomplete } from "@mantine/core";
 import { IconSearch } from "@tabler/icons-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";

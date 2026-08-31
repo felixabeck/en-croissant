@@ -61,7 +61,7 @@ import {
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 import { analytics } from "@/platform/analytics";
-import { notifyUnlessCancelled } from "@/components/common/notifyError";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { IconAction } from "../common/IconAction";
 import BoardSelect from "./BoardSelect";
 import ColorControl from "./ColorControl";

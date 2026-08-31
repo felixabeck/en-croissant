@@ -1,6 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { runDestructiveWithRefresh } from "@/platform/errors";
-import { notifyUnlessCancelled } from "@/components/common/notifyError";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Button, Center, Group, Paper, Select, Stack, Text, TextInput, Title } from "@mantine/core";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";

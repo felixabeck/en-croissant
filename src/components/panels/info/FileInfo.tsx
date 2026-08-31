@@ -1,5 +1,5 @@
 import { tauri } from "@/platform/tauri";
-import { notifyUnlessCancelled } from "@/components/common/notifyError";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Code, Divider, Group, Text, Tooltip } from "@mantine/core";
 import { IconReload } from "@tabler/icons-react";
 import { useAtom } from "jotai";

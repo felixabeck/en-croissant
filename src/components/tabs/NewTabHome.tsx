@@ -1,6 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { normalizeError } from "@/platform/errors";
-import { notifyUnlessCancelled } from "@/components/common/notifyError";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import {
   Badge,
   Box,
