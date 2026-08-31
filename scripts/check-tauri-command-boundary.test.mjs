@@ -245,16 +245,47 @@ describe("working-tree enumeration and reads", () => {
   test("skips only an ENOENT working-tree source", () => {
     const readFile = (path) => {
       if (path.endsWith("missing.ts")) throw Object.assign(new Error("gone"), { code: "ENOENT" });
+      if (path.endsWith("native.ts")) return NATIVE_SOURCE;
       if (path.endsWith("main.json")) return '{"permissions":[]}';
       return '{"app":{"security":{"csp":"default-src self"}}}';
     };
     expect(
       runTauriBoundaryCheck({
         workspaceRoot: "/fixture",
-        listFiles: () => ["src/missing.ts"],
+        listFiles: () => ["src/missing.ts", "src/platform/native.ts"],
         readFile,
       }),
-    ).toEqual(["src/missing.ts"]);
+    ).toEqual(["src/missing.ts", "src/platform/native.ts"]);
+  });
+
+  test("rejects a missing native facade even when the listed path is ENOENT", () => {
+    expect(() =>
+      runTauriBoundaryCheck({
+        workspaceRoot: "/fixture",
+        listFiles: () => ["src/platform/native.ts"],
+        readFile: (path) => {
+          if (path.endsWith("native.ts")) {
+            throw Object.assign(new Error("gone"), { code: "ENOENT" });
+          }
+          if (path.endsWith("main.json")) return '{"permissions":[]}';
+          return '{"app":{"security":{"csp":"default-src self"}}}';
+        },
+      }),
+    ).toThrow(/native facade is missing/);
+  });
+
+  test("names the file when capability JSON cannot be parsed", () => {
+    expect(() =>
+      runTauriBoundaryCheck({
+        workspaceRoot: "/fixture",
+        listFiles: () => ["src/platform/native.ts"],
+        readFile: (path) => {
+          if (path.endsWith("native.ts")) return NATIVE_SOURCE;
+          if (path.endsWith("main.json")) return "{";
+          return '{"app":{"security":{"csp":"default-src self"}}}';
+        },
+      }),
+    ).toThrow(/capabilities\/main\.json/);
   });
 
   test("rethrows a non-ENOENT working-tree read failure", () => {
@@ -271,15 +302,12 @@ describe("working-tree enumeration and reads", () => {
   });
 });
 
-function createCliWorkspace({ untrackedLeak = false }) {
+function createCliWorkspace({ nativeSource, untrackedSource } = {}) {
   const root = mkdtempSync(join(tmpdir(), "tauri-boundary-"));
   temporaryRoots.push(root);
   mkdirSync(join(root, "src/platform"), { recursive: true });
   mkdirSync(join(root, "src-tauri/capabilities"), { recursive: true });
-  writeFileSync(
-    join(root, "src/platform/native.ts"),
-    untrackedLeak ? NATIVE_SOURCE : 'export { listen } from "@tauri-apps/api/event";\n',
-  );
+  writeFileSync(join(root, "src/platform/native.ts"), nativeSource);
   writeFileSync(join(root, "src-tauri/capabilities/main.json"), '{"permissions":[]}\n');
   writeFileSync(
     join(root, "src-tauri/tauri.conf.json"),
@@ -289,8 +317,8 @@ function createCliWorkspace({ untrackedLeak = false }) {
   expect(
     spawnSync("git", ["add", "src/platform/native.ts", "src-tauri"], { cwd: root }).status,
   ).toBe(0);
-  if (untrackedLeak) {
-    writeFileSync(join(root, "src/leak.ts"), 'import { readFile } from "@tauri-apps/plugin-fs";\n');
+  if (untrackedSource) {
+    writeFileSync(join(root, "src/leak.ts"), untrackedSource);
   }
   return root;
 }
@@ -298,7 +326,9 @@ function createCliWorkspace({ untrackedLeak = false }) {
 describe("CLI", () => {
   test("rejects a denylisted native re-export through the real CLI", () => {
     const result = spawnSync(process.execPath, [CHECKER], {
-      cwd: createCliWorkspace({ untrackedLeak: false }),
+      cwd: createCliWorkspace({
+        nativeSource: 'export { listen } from "@tauri-apps/api/event";\n',
+      }),
       encoding: "utf8",
     });
     expect(result.status).not.toBe(0);
@@ -307,7 +337,10 @@ describe("CLI", () => {
 
   test("scans untracked source files through the real CLI", () => {
     const result = spawnSync(process.execPath, [CHECKER], {
-      cwd: createCliWorkspace({ untrackedLeak: true }),
+      cwd: createCliWorkspace({
+        nativeSource: NATIVE_SOURCE,
+        untrackedSource: 'import { readFile } from "@tauri-apps/plugin-fs";\n',
+      }),
       encoding: "utf8",
     });
     expect(result.status).not.toBe(0);

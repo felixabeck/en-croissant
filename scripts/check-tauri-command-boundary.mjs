@@ -3,6 +3,10 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
+// Exact required re-export set for platform/native.ts, not an optional permit
+// list. `exported` is the name in the specifier module; `local` is the name
+// this file re-exports (`export { exported as local } from`). There is no
+// local binding.
 export const NATIVE_EXPORT_ALLOWLIST = Object.freeze(
   [
     ["@tauri-apps/api/app", "getTauriVersion", "getTauriVersion"],
@@ -243,6 +247,16 @@ export function inspectCsp(csp) {
     : [];
 }
 
+function readJsonFile(readFile, path) {
+  const source = readFile(path);
+  try {
+    return JSON.parse(source);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot parse ${path}: ${detail}`);
+  }
+}
+
 export function runTauriBoundaryCheck({
   workspaceRoot = process.cwd(),
   listFiles = (root) => listWorkingTreeFiles({ workspaceRoot: root }),
@@ -250,6 +264,7 @@ export function runTauriBoundaryCheck({
 } = {}) {
   const violations = [];
   const paths = listFiles(workspaceRoot);
+  let nativeInspected = false;
   for (const listedPath of paths) {
     if (!/^src\/.*\.[jt]sx?$/.test(listedPath)) continue;
     let source;
@@ -260,15 +275,19 @@ export function runTauriBoundaryCheck({
       throw error;
     }
     const sourcePath = listedPath.replace(/^src\//, "");
+    if (sourcePath === "platform/native.ts") nativeInspected = true;
     for (const message of inspectSource(sourcePath, source)) {
       violations.push(`${listedPath}: ${message}`);
     }
   }
+  if (!nativeInspected) {
+    violations.push("src/platform/native.ts: native facade is missing");
+  }
 
   const capabilityPath = resolve(workspaceRoot, "src-tauri/capabilities/main.json");
   const configPath = resolve(workspaceRoot, "src-tauri/tauri.conf.json");
-  const capability = JSON.parse(readFile(capabilityPath));
-  const securityConfig = JSON.parse(readFile(configPath));
+  const capability = readJsonFile(readFile, capabilityPath);
+  const securityConfig = readJsonFile(readFile, configPath);
   violations.push(...inspectCapability(capability));
   violations.push(...inspectCsp(securityConfig?.app?.security?.csp));
 
