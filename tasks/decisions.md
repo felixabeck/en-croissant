@@ -961,3 +961,48 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
 * **Rejected:** a new renderer category; `PartialRemoval` when only sidecars were removed (that would clear a still-live database from the UI); pathname `remove_file` after resolve; unlinking a colliding `foo.ecsi` that belongs to another database named `foo`.
 * **Because:** `applied-despite-error` already matches the two Rust literals; a sidecar is regenerable while the primary exists; fd-relative unlink is the existing puzzle/workspace pattern; promotion already refuses to unlink a colliding legacy name.
 * **Decided by:** Grok, autonomously under `full auto` · **Superseded-by:** -
+
+### d-20260831-25 — Adopt unused useOperation as FilesPage's first consumer, or delete it?
+
+* **Governs:** f-20260830-18, f-20260830-12
+* **Chosen:** delete `src/platform/operation.ts` and its tests. Native folder dialogs do not
+  honour `AbortSignal`, and `run()` rethrows, so adopting the hook would still leave an
+  unhandled rejection. The skip-cancelled-then-notify copies become `errorUnlessCancelled`.
+* **Rejected:** adopting `useOperation` on `chooseWorkspace`. It cannot cancel
+  `blocking_pick_folder` and rethrows into React's ignored click promise.
+* **Rejected:** keeping the unused hook to hold the `tauri-ipc-platform` 70% line floor.
+  The floor is recovered by covering live `FileInfo` / `NewTabHome` catch paths;
+  `coverage-areas.json` is left unchanged so `scopeSignature` does not move.
+* **Because:** two review-minimalism lenses (plan round 1) independently refused a hook
+  with zero production imports. `d-20260829-03` already rejected keeping dead code for a
+  ratchet. The Display string `"Cancellation"` is pinned on both sides like
+  `d-20260830-05`.
+* **Decided by:** Grok, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-26 — Where does a cancelled or failed workspace folder picker surface?
+
+* **Governs:** f-20260830-12
+* **Chosen:** silent on `cancelled` (`Error::Cancellation` Display `"Cancellation"`);
+  Mantine `notifications.show` with the redacted `errorUnlessCancelled` message otherwise.
+  Duplicate in-flight picks are ignored via `pendingRef` plus `picking` state so the button
+  disables.
+* **Rejected:** inline `actionError` on FilesPage. That node renders only inside
+  `{workspace && (`, so a first-time choose failure would be invisible.
+* **Rejected:** swallowing real errors. `d-20260830-05` made destructive failures visible;
+  a picker failure is the same visibility question with a different answer only for cancel.
+* **Because:** SettingsPage and AddPuzzle already skip cancelled then notify. FilesPage is
+  the third copy, extracted to `errorUnlessCancelled`.
+* **Decided by:** Grok, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260831-27 — After deleting a coverage-area file, is the path removed from coverage-areas.json?
+
+* **Governs:** f-20260830-18
+* **Chosen:** leave the stale path in `coverage-areas.json`. The deleted file disappears
+  from LCOV; `d-20260830-08` shrink handles the ratchet; the area floor is recovered by
+  covering remaining live code.
+* **Rejected:** dropping the path from the area list. That changes `scopeSignature` and
+  `assertBaseline` refuses unless the baseline is rewritten, which is denied.
+* **Because:** plan-review (confidence 100) showed `scripts/coverage-report.mjs:193-205`
+  compares the path list byte-for-byte. A missing LCOV record is a shrink, not a scope
+  change.
+* **Decided by:** Grok, autonomously under `full auto` while Felix was away · **Superseded-by:** -

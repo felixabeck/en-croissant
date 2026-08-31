@@ -1627,7 +1627,7 @@ from disk (commit `2565ee3d`).
 
 ### A cancelled or failed workspace folder picker produces an unhandled rejection and no user feedback
 
-* **ID:** f-20260830-12 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-12 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/components/files/FilesPage.tsx:48-52` (`chooseWorkspace`), wired to a `Button`'s
   `onClick` further down the same component.
 * **Defect:** `await tauri.issueFileWorkspace()` is not guarded. React's `onClick` does not consume
@@ -1649,6 +1649,12 @@ from disk (commit `2565ee3d`).
   whoever takes this should read that decision first rather than re-deriving it.
 * **Found by:** the `review-error-handling` lens (95 confidence) over the cumulative diff of the
   `remove-tree-unhardened` cluster, 2026-08-30. Pre-existing; not introduced by that diff.
+
+**Handled 2026-08-31.** `chooseWorkspace` catches, `errorUnlessCancelled` silences `Cancellation`, and real failures notify. Duplicate picks are ignored (`pendingRef` + `picking`). Display `"Cancellation"` is pinned in `error.rs`. Picker JoinError panics map to `InvalidInput`, not cancel.
+
+* **Commits:** `17973bd7` (FilesPage + helper), `6024fcb5` (unwrap), `320f535e` (delete useOperation).
+* **Rejected:** `useOperation` on the picker (`d-20260831-25`); inline `actionError` (`d-20260831-26`).
+* **Left open:** AddDatabase / DatabasesPage export / AccountCard, filed separately.
 
 ### The permanent-delete confirmation flow has no e2e coverage, only jsdom with the modal mocked
 
@@ -1932,7 +1938,7 @@ own decision.
 
 ### Two dead paths left behind by the facade migration: `operation.ts` has no consumer, `unwrap.tsx` is unreachable
 
-* **ID:** f-20260830-18 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-18 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/platform/operation.ts`, `src/utils/unwrap.tsx`, and its call sites
   `src/utils/engines.ts:149,155,167`, `src/components/databases/PlayerCard.tsx`,
   `src/components/databases/PlayerSearchInput.tsx`, `src/components/panels/info/FileInfo.tsx`,
@@ -1979,6 +1985,11 @@ own decision.
   and names `unwrap.tsx` alongside it. **Whoever takes this must decide adopt-vs-delete first;**
   the tests are not an argument for keeping it.
 * Defect 2 (`unwrap.tsx` unreachable) is untouched by that commit and remains exactly as filed.
+
+**Handled 2026-08-31.** `unwrap.tsx` deleted; every production call was a no-op after the Result facade. `useOperation` deleted (zero consumers). `coverage-areas.json` still lists the stale paths so `scopeSignature` does not change (`d-20260831-27`).
+
+* **Commits:** `6024fcb5` (unwrap), `320f535e` (operation.ts).
+* **Rejected:** adopting `useOperation` as FilesPage's first consumer; deleting coverage-area paths to "clean up" the config.
 
 ---
 
