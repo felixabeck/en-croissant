@@ -876,6 +876,33 @@ pub(crate) async fn install_staged_pgn_artifact(
     Ok(artifact)
 }
 
+fn lichess_games_url(player: &str, since_ms: Option<i64>) -> Result<(reqwest::Url, String), Error> {
+    let player = crate::lichess::lichess_user_segment(player)?.to_owned();
+    if since_ms.is_some_and(|since_ms| since_ms < 0) {
+        return Err(Error::InvalidInput(
+            "invalid Lichess export timestamp".into(),
+        ));
+    }
+    let mut url = reqwest::Url::parse("https://lichess.org/api/games/user/")
+        .map_err(|_| Error::OAuthFailure("invalid Lichess endpoint".into()))?;
+    url.path_segments_mut()
+        .map_err(|_| Error::OAuthFailure("invalid Lichess endpoint".into()))?
+        .push(&player);
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair(
+            "perfType",
+            "ultraBullet,bullet,blitz,rapid,classical,correspondence",
+        );
+        query.append_pair("rated", "true");
+        query.append_pair("sort", "dateAsc");
+        if let Some(since_ms) = since_ms {
+            query.append_pair("since", &since_ms.to_string());
+        }
+    }
+    Ok((url, player))
+}
+
 /// Authenticated Lichess export. The opaque handle is resolved in the native credential store;
 /// neither its bearer token nor a native destination path crosses IPC.
 #[tauri::command]
@@ -892,33 +919,12 @@ pub async fn download_lichess_games(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
+    let (url, player) = lichess_games_url(&player, since_ms)?;
     let token = state
         .credentials
         .token_async(handle)
         .await?
         .ok_or_else(|| Error::OAuthFailure("authenticated Lichess account unavailable".into()))?;
-    let mut url = reqwest::Url::parse("https://lichess.org/api/games/user/")
-        .map_err(|_| Error::OAuthFailure("invalid Lichess endpoint".into()))?;
-    url.path_segments_mut()
-        .map_err(|_| Error::OAuthFailure("invalid Lichess endpoint".into()))?
-        .push(&player);
-    {
-        let mut query = url.query_pairs_mut();
-        query.append_pair(
-            "perfType",
-            "ultraBullet,bullet,blitz,rapid,classical,correspondence",
-        );
-        query.append_pair("rated", "true");
-        query.append_pair("sort", "dateAsc");
-        if let Some(since_ms) = since_ms {
-            if since_ms < 0 {
-                return Err(Error::InvalidInput(
-                    "invalid Lichess export timestamp".into(),
-                ));
-            }
-            query.append_pair("since", &since_ms.to_string());
-        }
-    }
     download_to_destination(
         &format!("lichess_{player}"),
         url.as_str(),
@@ -1431,6 +1437,14 @@ mod tests {
             vec![],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn download_lichess_games_rejects_traversal_player_before_push() {
+        assert!(matches!(
+            lichess_games_url("../account", None),
+            Err(Error::InvalidInput(_))
+        ));
     }
 
     #[test]

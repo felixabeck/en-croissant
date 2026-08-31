@@ -8,7 +8,6 @@ use crate::{credentials::LichessAccountHandle, error::Error, AppState};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::time::Duration;
 
 const ACCOUNT_URL: &str = "https://lichess.org/api/account";
 const EXPLORER_URL: &str = "https://explorer.lichess.org";
@@ -44,39 +43,40 @@ impl LichessExplorerEndpoint {
     }
 }
 
-fn client() -> Result<reqwest::Client, Error> {
-    crate::infra::net::safe_http_client(
-        Duration::from_secs(10),
-        Duration::from_secs(30),
-        Duration::from_secs(30),
-    )
-    .map_err(|source| Error::Reqwest(Box::new(source)))
-}
-
 fn exact_url(base: &str, path: &str, query: Option<&str>) -> Result<Url, Error> {
-    let mut url =
+    let intended =
         Url::parse(base).map_err(|_| Error::InvalidInput("invalid Lichess endpoint".into()))?;
+    let mut url = intended.clone();
     url.set_path(path);
     url.set_query(query.filter(|query| !query.is_empty()));
     if url.scheme() != "https"
-        || url.host_str()
-            != Some(if base == ACCOUNT_URL {
-                "lichess.org"
-            } else {
-                "explorer.lichess.org"
-            })
         || url.username() != ""
         || url.password().is_some()
         || url.fragment().is_some()
+        || url.host_str() != intended.host_str()
+        || url.port_or_known_default() != intended.port_or_known_default()
     {
         return Err(Error::InvalidInput("invalid Lichess endpoint".into()));
     }
     Ok(url)
 }
 
+pub(crate) fn lichess_user_segment(username: &str) -> Result<&str, Error> {
+    let username = username.trim();
+    if !(2..=30).contains(&username.len())
+        || !username
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(Error::InvalidInput("invalid Lichess username".into()));
+    }
+    Ok(username)
+}
+
 async fn authenticated_json(
     handle: &LichessAccountHandle,
     state: &AppState,
+    client: &reqwest::Client,
     url: Url,
 ) -> Result<String, Error> {
     let token = state
@@ -84,7 +84,7 @@ async fn authenticated_json(
         .token_async(handle.clone())
         .await?
         .ok_or_else(|| Error::InvalidInput("Lichess account is unavailable".into()))?;
-    let response = client()?.get(url).bearer_auth(token).send().await?;
+    let response = client.get(url).bearer_auth(token).send().await?;
     if !response.status().is_success() {
         return Err(Error::OAuthFailure("Lichess request was rejected".into()));
     }
@@ -109,8 +109,12 @@ async fn authenticated_json(
         .map_err(|_| Error::InvalidInput("Lichess returned invalid UTF-8".into()))
 }
 
-async fn public_json(url: Url, require_json: bool) -> Result<String, Error> {
-    let response = client()?.get(url).send().await?;
+async fn public_json(
+    client: &reqwest::Client,
+    url: Url,
+    require_json: bool,
+) -> Result<String, Error> {
+    let response = client.get(url).send().await?;
     if !response.status().is_success() {
         return Err(Error::InvalidInput("Lichess request was rejected".into()));
     }
@@ -132,6 +136,10 @@ async fn public_json(url: Url, require_json: bool) -> Result<String, Error> {
         .map_err(|_| Error::InvalidInput("Lichess returned invalid UTF-8".into()))
 }
 
+fn shared_json_http_client(state: &AppState) -> std::sync::Arc<reqwest::Client> {
+    state.json_http_client.clone()
+}
+
 fn encode_query_pair(key: &str, value: &str) -> String {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     serializer.append_pair(key, value);
@@ -140,76 +148,77 @@ fn encode_query_pair(key: &str, value: &str) -> String {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn get_public_lichess_json(request: PublicLichessRequest) -> Result<String, Error> {
+pub async fn get_public_lichess_json(
+    request: PublicLichessRequest,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, Error> {
+    let (url, require_json) = public_lichess_url(request)?;
+    let client = shared_json_http_client(&state);
+    public_json(&client, url, require_json).await
+}
+
+fn public_lichess_url(request: PublicLichessRequest) -> Result<(Url, bool), Error> {
     let is_game = matches!(request, PublicLichessRequest::Game { .. });
-    let (base, path, query) = match request {
+    let url = match request {
         PublicLichessRequest::Account { username } => {
-            if username.is_empty() || username.len() > 80 {
-                return Err(Error::InvalidInput("invalid Lichess username".into()));
-            }
-            ("https://lichess.org", format!("/api/user/{username}"), None)
+            let username = lichess_user_segment(&username)?;
+            exact_url(
+                "https://lichess.org",
+                &format!("/api/user/{username}"),
+                None,
+            )?
         }
         PublicLichessRequest::CloudEval { fen, multi_pv } => {
             if fen.is_empty() || fen.len() > 512 || multi_pv == 0 || multi_pv > 10 {
                 return Err(Error::InvalidInput("invalid Lichess cloud request".into()));
             }
-            (
+            exact_url(
                 "https://lichess.org",
-                "/api/cloud-eval".into(),
+                "/api/cloud-eval",
                 Some(format!(
                     "{}&multiPv={multi_pv}",
                     encode_query_pair("fen", &fen)
-                )),
-            )
+                ))
+                .as_deref(),
+            )?
         }
         PublicLichessRequest::Game { game_id } => {
             let id = game_id.chars().take(8).collect::<String>();
             if id.len() != 8 || !id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
                 return Err(Error::InvalidInput("invalid Lichess game ID".into()));
             }
-            ("https://lichess.org", format!("/game/export/{id}"), None)
+            exact_url("https://lichess.org", &format!("/game/export/{id}"), None)?
         }
         PublicLichessRequest::Tablebase { fen } => {
             if fen.is_empty() || fen.len() > 512 {
                 return Err(Error::InvalidInput("invalid tablebase FEN".into()));
             }
-            (
+            exact_url(
                 "https://tablebase.lichess.org",
-                "/standard".into(),
-                Some(encode_query_pair("fen", &fen)),
-            )
+                "/standard",
+                Some(encode_query_pair("fen", &fen)).as_deref(),
+            )?
         }
         PublicLichessRequest::Fide { query } => {
             if query.is_empty() || query.len() > 100 {
                 return Err(Error::InvalidInput("invalid FIDE query".into()));
             }
             if query.bytes().all(|byte| byte.is_ascii_digit()) {
-                (
+                exact_url(
                     "https://lichess.org",
-                    format!("/api/fide/player/{query}"),
+                    &format!("/api/fide/player/{query}"),
                     None,
-                )
+                )?
             } else {
-                (
+                exact_url(
                     "https://lichess.org",
-                    "/api/fide/player".into(),
-                    Some(encode_query_pair("q", &query)),
-                )
+                    "/api/fide/player",
+                    Some(encode_query_pair("q", &query)).as_deref(),
+                )?
             }
         }
     };
-    let mut url =
-        Url::parse(base).map_err(|_| Error::InvalidInput("invalid Lichess endpoint".into()))?;
-    url.set_path(&path);
-    url.set_query(query.as_deref());
-    if url.scheme() != "https"
-        || url.username() != ""
-        || url.password().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(Error::InvalidInput("invalid Lichess endpoint".into()));
-    }
-    public_json(url, !is_game).await
+    Ok((url, !is_game))
 }
 
 fn normalized_explorer_query(query: &str) -> Result<String, Error> {
@@ -238,7 +247,7 @@ pub async fn get_authenticated_lichess_account(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, Error> {
     let url = exact_url(ACCOUNT_URL, "/api/account", None)?;
-    let body = authenticated_json(&handle, &state, url).await?;
+    let body = authenticated_json(&handle, &state, &state.json_http_client, url).await?;
     let value: serde_json::Value = serde_json::from_str(&body)
         .map_err(|_| Error::InvalidInput("Lichess returned invalid JSON".into()))?;
     if value
@@ -287,7 +296,7 @@ pub async fn get_authenticated_lichess_explorer(
     // accepting a renderer-provided host/path/fragment.
     let encoded = normalized_explorer_query(&query)?;
     let url = exact_url(EXPLORER_URL, endpoint.path(), Some(&encoded))?;
-    authenticated_json(&handle, &state, url).await
+    authenticated_json(&handle, &state, &state.json_http_client, url).await
 }
 
 #[cfg(test)]
@@ -295,8 +304,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lichess_client_uses_the_shared_native_transport_policy() {
-        assert!(client().is_ok());
+    fn json_and_oauth_requests_reuse_the_app_state_client() {
+        let state = AppState::default();
+        let public_client = shared_json_http_client(&state);
+        let services = crate::oauth::ProdOAuthServices::new(state.json_http_client.clone());
+        assert!(std::sync::Arc::ptr_eq(
+            &public_client,
+            &state.json_http_client
+        ));
+        assert!(services.shares_http_client(&state.json_http_client));
     }
 
     #[test]
@@ -319,6 +335,55 @@ mod tests {
             assert_eq!(url.path(), endpoint.path());
             assert_eq!(url.query(), Some("fen=a%20b&player=x%26y"));
         }
+    }
+
+    #[test]
+    fn public_account_url_preserves_one_validated_username_segment() {
+        let (url, require_json) = public_lichess_url(PublicLichessRequest::Account {
+            username: "  Valid_user-2  ".into(),
+        })
+        .unwrap();
+        assert_eq!(url.as_str(), "https://lichess.org/api/user/Valid_user-2");
+        assert!(require_json);
+    }
+
+    #[test]
+    fn public_account_url_rejects_traversal_and_invalid_usernames() {
+        for username in [
+            "../account",
+            "/account",
+            "a/b",
+            "%2e%2e",
+            ".",
+            "..",
+            "%",
+            "",
+            "a",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "üser",
+        ] {
+            assert!(
+                public_lichess_url(PublicLichessRequest::Account {
+                    username: username.into(),
+                })
+                .is_err(),
+                "{username}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_url_pins_tablebase_host() {
+        let url = exact_url(
+            "https://tablebase.lichess.org",
+            "/standard",
+            Some("fen=8%2F8%2F8%2F8%2F8%2F8%2F8%2FK6k"),
+        )
+        .unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("tablebase.lichess.org"));
+        assert_eq!(url.port_or_known_default(), Some(443));
+        assert_eq!(url.path(), "/standard");
     }
 
     #[test]

@@ -39,25 +39,13 @@ const LISTENER_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const JOB_TTL: Duration = Duration::from_secs(15 * 60);
 const LICHESS_ACCOUNT_URL: &str = "https://lichess.org/api/account";
 const LICHESS_TOKEN_URL: &str = "https://lichess.org/api/token";
-const PROVIDER_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_VERIFY_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_OAUTH_RESPONSE_BYTES: usize = 64 * 1024;
 
-fn provider_http_client() -> Result<reqwest::Client, Error> {
-    crate::infra::net::safe_http_client(
-        PROVIDER_CONNECT_TIMEOUT,
-        PROVIDER_REQUEST_TIMEOUT,
-        PROVIDER_REQUEST_TIMEOUT,
-    )
-    .map_err(|source| Error::Reqwest(Box::new(source)))
-}
-
 async fn safe_oauth_http_client(
+    client: &reqwest::Client,
     request: HttpRequest,
 ) -> Result<HttpResponse, oauth2::reqwest::Error<reqwest::Error>> {
-    let client =
-        provider_http_client().map_err(|error| oauth2::reqwest::Error::Other(error.to_string()))?;
     let method = reqwest::Method::from_bytes(request.method.as_str().as_bytes())
         .map_err(|error| oauth2::reqwest::Error::Other(error.to_string()))?;
     let mut builder = client
@@ -306,7 +294,20 @@ pub trait OAuthServices: Send + Sync + 'static {
     ) -> Result<ListenerHandle, Error>;
 }
 
-pub struct ProdOAuthServices;
+pub struct ProdOAuthServices {
+    http_client: Arc<reqwest::Client>,
+}
+
+impl ProdOAuthServices {
+    pub(crate) fn new(http_client: Arc<reqwest::Client>) -> Self {
+        Self { http_client }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_http_client(&self, client: &Arc<reqwest::Client>) -> bool {
+        Arc::ptr_eq(&self.http_client, client)
+    }
+}
 
 impl OAuthServices for ProdOAuthServices {
     async fn exchange_code(
@@ -318,7 +319,7 @@ impl OAuthServices for ProdOAuthServices {
         let token_response = client
             .exchange_code(code)
             .set_pkce_verifier(verifier)
-            .request_async(safe_oauth_http_client)
+            .request_async(|request| safe_oauth_http_client(&self.http_client, request))
             .await
             .map_err(|source| {
                 error!("OAuth token exchange failed: {source}");
@@ -332,7 +333,8 @@ impl OAuthServices for ProdOAuthServices {
         struct Account {
             username: String,
         }
-        let response = provider_http_client()?
+        let response = self
+            .http_client
             .get(LICHESS_ACCOUNT_URL)
             .bearer_auth(access_token)
             .send()
@@ -363,7 +365,8 @@ impl OAuthServices for ProdOAuthServices {
     }
 
     async fn revoke_token(&self, access_token: &str) -> Result<(), Error> {
-        let response = provider_http_client()?
+        let response = self
+            .http_client
             .delete(LICHESS_TOKEN_URL)
             .bearer_auth(access_token)
             .send()
@@ -441,6 +444,7 @@ pub async fn authenticate(
 ) -> Result<AuthenticationJob, Error> {
     let lifecycle = state.auth.clone();
     let credentials = state.credentials.clone();
+    let http_client = state.json_http_client.clone();
     let job = lifecycle.create_job();
     let job_id = job.id.clone();
     let opener = app.clone();
@@ -466,7 +470,7 @@ pub async fn authenticate(
                 Ok(())
             },
             auth_internal_config(app.config()),
-            ProdOAuthServices,
+            ProdOAuthServices::new(http_client),
         )
         .await;
         let status = match result {
@@ -533,7 +537,8 @@ pub async fn remove_lichess_account(
     handle: LichessAccountHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<LichessAccountRemoval, Error> {
-    remove_lichess_account_internal(handle, state.credentials.clone(), &ProdOAuthServices).await
+    let services = ProdOAuthServices::new(state.json_http_client.clone());
+    remove_lichess_account_internal(handle, state.credentials.clone(), &services).await
 }
 
 async fn remove_lichess_account_internal<S: OAuthServices>(
@@ -564,13 +569,8 @@ pub async fn migrate_legacy_lichess_token(
     token: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<LichessAccountStoreResult, Error> {
-    migrate_legacy_token_internal(
-        username,
-        token,
-        state.credentials.clone(),
-        &ProdOAuthServices,
-    )
-    .await
+    let services = ProdOAuthServices::new(state.json_http_client.clone());
+    migrate_legacy_token_internal(username, token, state.credentials.clone(), &services).await
 }
 
 async fn migrate_legacy_token_internal<S: OAuthServices>(
@@ -878,8 +878,10 @@ mod tests {
     }
 
     #[test]
-    fn provider_client_uses_the_shared_native_transport_policy() {
-        assert!(provider_http_client().is_ok());
+    fn production_services_clone_the_app_state_http_client() {
+        let state = AppState::default();
+        let services = ProdOAuthServices::new(state.json_http_client.clone());
+        assert!(services.shares_http_client(&state.json_http_client));
     }
 
     #[test]

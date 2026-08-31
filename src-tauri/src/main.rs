@@ -403,6 +403,8 @@ pub struct AppState {
     puzzle_cache: Arc<tokio::sync::Mutex<crate::puzzle::PuzzleCache>>,
     #[derivative(Default(value = "Arc::new(crate::infra::net::ProdTransport::default())"))]
     pub http_transport: Arc<dyn crate::infra::net::DownloadTransport>,
+    #[derivative(Default(value = "Arc::new(crate::infra::net::native_json_http_client())"))]
+    pub(crate) json_http_client: Arc<reqwest::Client>,
     #[derivative(Default(value = "Arc::new(crate::fs::DownloadRegistry::default())"))]
     pub download_registry: Arc<crate::fs::DownloadRegistry>,
 }

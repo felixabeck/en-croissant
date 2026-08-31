@@ -56,6 +56,17 @@ pub fn safe_http_client(
         .build()
 }
 
+/// Process-lifetime client for bounded JSON and OAuth provider requests.
+pub fn native_json_http_client() -> reqwest::Client {
+    // These fixed builder arguments contain no runtime input, so startup construction is infallible.
+    safe_http_client(
+        Duration::from_secs(10),
+        Duration::from_secs(30),
+        Duration::from_secs(30),
+    )
+    .unwrap()
+}
+
 pub fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
