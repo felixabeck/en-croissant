@@ -21,8 +21,9 @@ pub struct AtomicInstalledFile {
     pub ctime_nanos: i128,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AtomicFileFaultPoint {
+pub(crate) enum AtomicFileFaultPoint {
     ParentOpen,
     TempfileCreate,
     Write,
@@ -35,19 +36,35 @@ pub enum AtomicFileFaultPoint {
     Cleanup,
 }
 
-pub trait AtomicWriterInjector: Send + Sync {
+#[cfg(test)]
+pub(crate) trait AtomicWriterInjector {
     fn inject(&self, _: AtomicFileFaultPoint) -> std::io::Result<()> {
         Ok(())
     }
 }
-pub struct DefaultInjector;
-impl AtomicWriterInjector for DefaultInjector {}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_ATOMIC_FILE_INJECTOR: std::cell::RefCell<Option<Box<dyn AtomicWriterInjector>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_atomic_file_injector(injector: Option<Box<dyn AtomicWriterInjector>>) {
+    TEST_ATOMIC_FILE_INJECTOR.with(|current| *current.borrow_mut() = injector);
+}
 
 fn io(err: std::io::Error) -> Error {
     Error::Io(Box::new(err))
 }
-fn inject<I: AtomicWriterInjector>(injector: &I, point: AtomicFileFaultPoint) -> Result<(), Error> {
-    injector.inject(point).map_err(io)
+#[cfg(test)]
+fn inject_atomic_file(point: AtomicFileFaultPoint) -> Result<(), Error> {
+    TEST_ATOMIC_FILE_INJECTOR.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map_or(Ok(()), |injector| injector.inject(point).map_err(io))
+    })
 }
 
 #[cfg(unix)]
@@ -211,15 +228,15 @@ mod unix {
     pub(super) fn set_test_temp_names(names: Vec<std::ffi::OsString>) {
         *test_temp_names().lock().expect("test temp names") = names;
     }
-    fn cleanup<I: AtomicWriterInjector>(
-        dir: &File,
-        temp: &OsStr,
-        injector: &I,
-        primary: Error,
-    ) -> Error {
-        let injected = injector.inject(AtomicFileFaultPoint::Cleanup).err();
-        let unlink = fs::unlinkat(dir, temp, AtFlags::empty()).err();
-        match injected.or_else(|| unlink.map(Into::into)) {
+    fn cleanup(dir: &File, temp: &OsStr, primary: Error) -> Error {
+        #[cfg(test)]
+        let injected = inject_atomic_file(AtomicFileFaultPoint::Cleanup).err();
+        #[cfg(not(test))]
+        let injected: Option<Error> = None;
+        let unlink = fs::unlinkat(dir, temp, AtFlags::empty())
+            .err()
+            .map(|error| io(error.into()));
+        match injected.or(unlink) {
             None => primary,
             Some(cleanup) => {
                 log::error!(
@@ -233,18 +250,17 @@ mod unix {
         }
     }
 
-    pub(super) fn replace<F, I, P>(
+    pub(super) fn replace<F, P>(
         target: &Path,
-        injector: &I,
         precommit: P,
         write_fn: F,
     ) -> Result<Installed, Error>
     where
         F: FnOnce(&mut File) -> Result<(), Error>,
-        I: AtomicWriterInjector,
         P: FnOnce() -> Result<(), Error>,
     {
-        inject(injector, AtomicFileFaultPoint::ParentOpen)?;
+        #[cfg(test)]
+        inject_atomic_file(AtomicFileFaultPoint::ParentOpen)?;
         let dir = open_parent(target)?;
         let dir_identity = dir.metadata().map_err(io)?;
         let logical_parent = parent(target).to_path_buf();
@@ -252,7 +268,6 @@ mod unix {
         replace_at(
             dir,
             target_name,
-            injector,
             move || {
                 let current = open_dir_no_follow(&logical_parent)?;
                 let metadata = current.metadata().map_err(io)?;
@@ -267,16 +282,14 @@ mod unix {
         )
     }
 
-    pub(super) fn replace_at<F, I, P>(
+    pub(super) fn replace_at<F, P>(
         dir: File,
         target_name: std::ffi::OsString,
-        injector: &I,
         precommit: P,
         write_fn: F,
     ) -> Result<Installed, Error>
     where
         F: FnOnce(&mut File) -> Result<(), Error>,
-        I: AtomicWriterInjector,
         P: FnOnce() -> Result<(), Error>,
     {
         let target_name = target_name.as_os_str();
@@ -290,7 +303,8 @@ mod unix {
             None => None,
         };
 
-        inject(injector, AtomicFileFaultPoint::TempfileCreate)?;
+        #[cfg(test)]
+        inject_atomic_file(AtomicFileFaultPoint::TempfileCreate)?;
         let (temp_name, fd) = (0..16)
             .find_map(|_| {
                 let candidate = temp_name();
@@ -316,36 +330,47 @@ mod unix {
                 )
             })?;
         let mut temp = File::from(fd);
-        let fail = |error| cleanup(&dir, &temp_name, injector, error);
+        let fail = |error| cleanup(&dir, &temp_name, error);
 
-        if let Err(error) =
-            inject(injector, AtomicFileFaultPoint::Write).and_then(|_| write_fn(&mut temp))
-        {
+        #[cfg(test)]
+        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::Write) {
             return Err(fail(error));
         }
-        if let Err(error) =
-            inject(injector, AtomicFileFaultPoint::Flush).and_then(|_| temp.flush().map_err(io))
-        {
+        if let Err(error) = write_fn(&mut temp) {
             return Err(fail(error));
         }
-        if let Err(error) = inject(injector, AtomicFileFaultPoint::FileSync)
-            .and_then(|_| temp.sync_all().map_err(io))
-        {
+        #[cfg(test)]
+        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::Flush) {
+            return Err(fail(error));
+        }
+        if let Err(error) = temp.flush().map_err(io) {
+            return Err(fail(error));
+        }
+        #[cfg(test)]
+        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::FileSync) {
+            return Err(fail(error));
+        }
+        if let Err(error) = temp.sync_all().map_err(io) {
             return Err(fail(error));
         }
         // The temporary inode stays 0600 until content and metadata are complete.
         let final_mode = original
             .as_ref()
             .map_or(0o600, |stat| stat.st_mode & 0o7777);
-        if let Err(error) = inject(injector, AtomicFileFaultPoint::PermissionCopy).and_then(|_| {
+        #[cfg(test)]
+        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::PermissionCopy) {
+            return Err(fail(error));
+        }
+        if let Err(error) =
             fs::fchmod(&temp, Mode::from_raw_mode(final_mode)).map_err(|e| io(e.into()))
-        }) {
+        {
             return Err(fail(error));
         }
         if let Err(error) = temp.sync_all().map_err(io) {
             return Err(fail(error));
         }
-        if let Err(error) = inject(injector, AtomicFileFaultPoint::PreCommitRevalidate) {
+        #[cfg(test)]
+        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::PreCommitRevalidate) {
             return Err(fail(error));
         }
         match (original.as_ref(), target_stat(&dir, target_name)?) {
@@ -377,7 +402,11 @@ mod unix {
             }
             .map_err(|e| io(e.into()))
         };
-        if let Err(error) = inject(injector, AtomicFileFaultPoint::Rename).and_then(|_| commit()) {
+        #[cfg(test)]
+        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::Rename) {
+            return Err(fail(error));
+        }
+        if let Err(error) = commit() {
             return Err(fail(error));
         }
         let metadata = temp.metadata().map_err(io)?;
@@ -385,9 +414,13 @@ mod unix {
         let installed_ctime_nanos =
             i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec());
         drop(temp);
-        if let Err(error) = injector.inject(AtomicFileFaultPoint::ParentSync) {
+        #[cfg(test)]
+        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::ParentSync) {
+            let Error::Io(error) = error else {
+                unreachable!("atomic file injectors only produce I/O errors")
+            };
             return Ok(Installed {
-                outcome: AtomicFileOutcome::CommittedDurabilityUncertain(error),
+                outcome: AtomicFileOutcome::CommittedDurabilityUncertain(*error),
                 identity: installed_identity,
                 ctime_nanos: installed_ctime_nanos,
             });
@@ -574,13 +607,9 @@ mod unix {
         }
     }
 
-    pub(super) fn install_dir<I>(source: &Path, target: &Path, injector: &I) -> Result<(), Error>
-    where
-        I: AtomicDirInjector,
-    {
-        injector
-            .inject(AtomicDirFaultPoint::SyncEntry)
-            .map_err(io)?;
+    pub(super) fn install_dir(source: &Path, target: &Path) -> Result<(), Error> {
+        #[cfg(test)]
+        inject_atomic_dir(AtomicDirFaultPoint::SyncEntry)?;
         let parent_dir = open_parent(target)?;
         let source_parent = open_parent(source)?;
         let parent_meta = parent_dir.metadata().map_err(io)?;
@@ -622,9 +651,8 @@ mod unix {
             }
             None => None,
         };
-        injector
-            .inject(AtomicDirFaultPoint::PreCommit)
-            .map_err(io)?;
+        #[cfg(test)]
+        inject_atomic_dir(AtomicDirFaultPoint::PreCommit)?;
         let current_parent = open_parent(target)?.metadata().map_err(io)?;
         if current_parent.dev() != parent_meta.dev() || current_parent.ino() != parent_meta.ino() {
             return Err(Error::Conflict(
@@ -660,12 +688,10 @@ mod unix {
                 ))
             }
         }
-        injector
-            .inject(AtomicDirFaultPoint::BackupRename)
-            .map_err(io)?;
-        injector
-            .inject(AtomicDirFaultPoint::InstallRename)
-            .map_err(io)?;
+        #[cfg(test)]
+        inject_atomic_dir(AtomicDirFaultPoint::BackupRename)?;
+        #[cfg(test)]
+        inject_atomic_dir(AtomicDirFaultPoint::InstallRename)?;
         if original.is_some() {
             fs::renameat_with(
                 &parent_dir,
@@ -685,31 +711,39 @@ mod unix {
             )
             .map_err(|e| io(e.into()))?;
         }
-        if let Err(error) = injector
-            .inject(AtomicDirFaultPoint::ParentSync)
-            .and_then(|_| parent_dir.sync_all())
-        {
+        #[cfg(test)]
+        if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::ParentSync) {
+            log::warn!("directory installation parent sync failed: {error}");
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::DirectoryInstall,
+            ));
+        }
+        if let Err(error) = parent_dir.sync_all() {
             log::warn!("directory installation parent sync failed: {error}");
             return Err(Error::CommittedDurabilityUncertain(
                 crate::error::DurabilityStage::DirectoryInstall,
             ));
         }
         if let Some(original) = original.as_ref() {
-            if let Err(error) = injector
-                .inject(AtomicDirFaultPoint::BackupCleanup)
-                .and_then(|_| {
-                    let mut removed_entries = 0;
-                    remove_tree_at(
-                        &parent_dir,
-                        source_name,
-                        (original.st_dev, original.st_ino),
-                        0,
-                        parent_meta.dev(),
-                        &mut removed_entries,
-                    )
-                    .map_err(|e| std::io::Error::other(e.to_string()))
-                })
-            {
+            #[cfg(test)]
+            if let Err(error) = inject_atomic_dir(AtomicDirFaultPoint::BackupCleanup) {
+                log::error!(
+                    "directory installed but old tree cleanup at {} failed: {error}",
+                    source.display()
+                );
+                return Err(Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::OldDirectoryCleanup,
+                ));
+            }
+            let mut removed_entries = 0;
+            if let Err(error) = remove_tree_at(
+                &parent_dir,
+                source_name,
+                (original.st_dev, original.st_ino),
+                0,
+                parent_meta.dev(),
+                &mut removed_entries,
+            ) {
                 log::error!(
                     "directory installed but old tree cleanup at {} failed: {error}",
                     source.display()
@@ -732,48 +766,34 @@ mod unix {
 #[cfg(all(test, unix))]
 pub(crate) use unix::{set_test_removal_injector, RemovalFault, RemovalFaultPoint};
 
-pub fn atomic_replace_with_precommit<F, I, P>(
+pub fn atomic_replace_with_precommit<F, P>(
     target: &Path,
-    injector: &I,
     precommit: P,
     write_fn: F,
 ) -> Result<AtomicFileOutcome, Error>
 where
     F: FnOnce(&mut File) -> Result<(), Error>,
-    I: AtomicWriterInjector,
     P: FnOnce() -> Result<(), Error>,
 {
     #[cfg(unix)]
     {
-        unix::replace(target, injector, precommit, write_fn).map(|installed| installed.outcome)
+        unix::replace(target, precommit, write_fn).map(|installed| installed.outcome)
     }
     #[cfg(not(unix))]
     {
-        let _ = (target, injector, precommit, write_fn);
+        let _ = (target, precommit, write_fn);
         Err(Error::Conflict("atomic replacement is unsupported on this platform: parent-directory durability cannot be proven".into()))
     }
-}
-pub fn atomic_replace_with_injector<F, I>(
-    target: &Path,
-    injector: &I,
-    write_fn: F,
-) -> Result<AtomicFileOutcome, Error>
-where
-    F: FnOnce(&mut File) -> Result<(), Error>,
-    I: AtomicWriterInjector,
-{
-    atomic_replace_with_precommit(target, injector, || Ok(()), write_fn)
 }
 pub fn atomic_replace<F>(target: &Path, write_fn: F) -> Result<AtomicFileOutcome, Error>
 where
     F: FnOnce(&mut File) -> Result<(), Error>,
 {
-    atomic_replace_with_injector(target, &DefaultInjector, write_fn)
+    atomic_replace_with_precommit(target, || Ok(()), write_fn)
 }
 
 /// Replaces one leaf below an already-authority-validated directory descriptor. No mutable
 /// parent pathname is reopened between capability resolution and the final `renameat`.
-#[allow(dead_code)]
 pub fn atomic_replace_at<F>(
     parent: &File,
     leaf: &OsStr,
@@ -793,7 +813,6 @@ where
         unix::replace_at(
             parent.try_clone()?,
             leaf.to_os_string(),
-            &DefaultInjector,
             || Ok(()),
             write_fn,
         )
@@ -1102,7 +1121,6 @@ where
         unix::replace_at(
             parent.try_clone()?,
             leaf.to_os_string(),
-            &DefaultInjector,
             precommit,
             write_fn,
         )
@@ -1119,7 +1137,6 @@ where
 
 /// Same fd-relative commit, with the inode identity captured from the still-open temporary FD
 /// after `renameat` and before any pathname lookup can occur.
-#[allow(dead_code)]
 pub fn atomic_replace_at_identified<F>(
     parent: &File,
     leaf: &OsStr,
@@ -1139,7 +1156,6 @@ where
         unix::replace_at(
             parent.try_clone()?,
             leaf.to_os_string(),
-            &DefaultInjector,
             || Ok(()),
             write_fn,
         )
@@ -1179,7 +1195,6 @@ where
         unix::replace_at(
             parent.try_clone()?,
             leaf.to_os_string(),
-            &DefaultInjector,
             precommit,
             write_fn,
         )
@@ -1198,8 +1213,9 @@ where
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AtomicDirFaultPoint {
+pub(crate) enum AtomicDirFaultPoint {
     SyncEntry,
     PreCommit,
     BackupRename,
@@ -1207,40 +1223,54 @@ pub enum AtomicDirFaultPoint {
     ParentSync,
     BackupCleanup,
 }
-pub trait AtomicDirInjector: Send + Sync {
+#[cfg(test)]
+pub(crate) trait AtomicDirInjector {
     fn inject(&self, _: AtomicDirFaultPoint) -> std::io::Result<()> {
         Ok(())
     }
 }
-pub struct DefaultDirInjector;
-impl AtomicDirInjector for DefaultDirInjector {}
 
-pub fn atomic_install_dir_with_injector<I>(
-    temp_path: &Path,
-    target_path: &Path,
-    injector: &I,
-) -> Result<(), Error>
-where
-    I: AtomicDirInjector,
-{
+#[cfg(test)]
+std::thread_local! {
+    static TEST_ATOMIC_DIR_INJECTOR: std::cell::RefCell<Option<Box<dyn AtomicDirInjector>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_atomic_dir_injector(injector: Option<Box<dyn AtomicDirInjector>>) {
+    TEST_ATOMIC_DIR_INJECTOR.with(|current| *current.borrow_mut() = injector);
+}
+
+#[cfg(test)]
+fn inject_atomic_dir(point: AtomicDirFaultPoint) -> Result<(), Error> {
+    TEST_ATOMIC_DIR_INJECTOR.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map_or(Ok(()), |injector| injector.inject(point).map_err(io))
+    })
+}
+
+pub fn atomic_install_dir(temp_path: &Path, target_path: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     {
-        unix::install_dir(temp_path, target_path, injector)
+        unix::install_dir(temp_path, target_path)
     }
     #[cfg(not(unix))]
     {
-        let _ = (temp_path, target_path, injector);
+        let _ = (temp_path, target_path);
         Err(Error::Conflict("atomic directory installation is unsupported on this platform: fd-relative no-follow and durable parent sync cannot be proven".into()))
     }
-}
-pub fn atomic_install_dir(temp_path: &Path, target_path: &Path) -> Result<(), Error> {
-    atomic_install_dir_with_injector(temp_path, target_path, &DefaultDirInjector)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{io::Write, path::PathBuf, sync::Mutex};
+    use std::{
+        io::Write,
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
 
     #[cfg(unix)]
     fn inode(path: &std::path::Path) -> (u64, u64) {
@@ -1650,7 +1680,7 @@ mod tests {
     struct Fault(
         Option<AtomicFileFaultPoint>,
         Option<AtomicFileFaultPoint>,
-        Mutex<Vec<AtomicFileFaultPoint>>,
+        Arc<Mutex<Vec<AtomicFileFaultPoint>>>,
     );
     impl AtomicWriterInjector for Fault {
         fn inject(&self, p: AtomicFileFaultPoint) -> std::io::Result<()> {
@@ -1822,15 +1852,40 @@ mod tests {
         (root, source, target)
     }
 
+    fn run_atomic_file_fault<F>(
+        target: &Path,
+        injector: Box<dyn AtomicWriterInjector>,
+        write_fn: F,
+    ) -> Result<AtomicFileOutcome, Error>
+    where
+        F: FnOnce(&mut File) -> Result<(), Error>,
+    {
+        set_test_atomic_file_injector(Some(injector));
+        let result = atomic_replace(target, write_fn);
+        set_test_atomic_file_injector(None);
+        result
+    }
+
+    fn run_atomic_dir_fault(
+        source: &Path,
+        target: &Path,
+        injector: Box<dyn AtomicDirInjector>,
+    ) -> Result<(), Error> {
+        set_test_atomic_dir_injector(Some(injector));
+        let result = atomic_install_dir(source, target);
+        set_test_atomic_dir_injector(None);
+        result
+    }
+
     #[test]
     fn fresh_target_is_private_then_durable() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("new");
-        let outcome = atomic_replace_with_injector(
+        let outcome = run_atomic_file_fault(
             &target,
-            &PrivateTemp {
+            Box::new(PrivateTemp {
                 parent: dir.path().to_path_buf(),
-            },
+            }),
             |f| f.write_all(b"new").map_err(io),
         )
         .expect("replace");
@@ -1955,9 +2010,9 @@ mod tests {
             complete: complete.clone(),
             observed_at_rename: observed.clone(),
         };
+        set_test_atomic_file_injector(Some(Box::new(injector)));
         atomic_replace_with_precommit(
             &target,
-            &injector,
             || {
                 complete.store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok(())
@@ -1965,6 +2020,7 @@ mod tests {
             |file| file.write_all(b"new").map_err(io),
         )
         .expect("replace");
+        set_test_atomic_file_injector(None);
         assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(std::fs::read(&target).expect("target"), b"new");
         let rejected = dir.path().join("rejected");
@@ -1972,7 +2028,6 @@ mod tests {
         assert!(matches!(
             atomic_replace_with_precommit(
                 &rejected,
-                &DefaultInjector,
                 || Err(Error::Conflict("caller validation failed".into())),
                 |file| file.write_all(b"new").map_err(io)
             ),
@@ -1995,8 +2050,8 @@ mod tests {
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
             let target = dir.path().join("new");
-            let fault = Fault(Some(point), None, Mutex::new(Vec::new()));
-            assert!(atomic_replace_with_injector(&target, &fault, |f| f
+            let fault = Fault(Some(point), None, Arc::new(Mutex::new(Vec::new())));
+            assert!(run_atomic_file_fault(&target, Box::new(fault), |f| f
                 .write_all(b"new")
                 .map_err(io))
             .is_err());
@@ -2011,22 +2066,24 @@ mod tests {
         let sync_fault = Fault(
             Some(AtomicFileFaultPoint::ParentSync),
             None,
-            Mutex::new(Vec::new()),
+            Arc::new(Mutex::new(Vec::new())),
         );
         assert!(matches!(
-            atomic_replace_with_injector(&target, &sync_fault, |f| f.write_all(b"new").map_err(io)),
+            run_atomic_file_fault(&target, Box::new(sync_fault), |f| f
+                .write_all(b"new")
+                .map_err(io)),
             Ok(AtomicFileOutcome::CommittedDurabilityUncertain(_))
         ));
         assert_eq!(std::fs::read(&target).expect("read"), b"new");
         let second = dir.path().join("second");
+        let cleanup_points = Arc::new(Mutex::new(Vec::new()));
         let cleanup_fault = Fault(
             Some(AtomicFileFaultPoint::Write),
             Some(AtomicFileFaultPoint::Cleanup),
-            Mutex::new(Vec::new()),
+            cleanup_points.clone(),
         );
-        assert!(atomic_replace_with_injector(&second, &cleanup_fault, |_| Ok(())).is_err());
-        assert!(cleanup_fault
-            .2
+        assert!(run_atomic_file_fault(&second, Box::new(cleanup_fault), |_| Ok(())).is_err());
+        assert!(cleanup_points
             .lock()
             .expect("lock")
             .contains(&AtomicFileFaultPoint::Cleanup));
@@ -2035,7 +2092,7 @@ mod tests {
         let real_cleanup_fault = BreakCleanup {
             parent: dir.path().to_path_buf(),
         };
-        match atomic_replace_with_injector(&third, &real_cleanup_fault, |_| Ok(())) {
+        match run_atomic_file_fault(&third, Box::new(real_cleanup_fault), |_| Ok(())) {
             Err(error @ Error::OperationAndCleanup { .. }) => {
                 let Error::OperationAndCleanup { primary, cleanup } = &error else {
                     unreachable!();
@@ -2068,7 +2125,7 @@ mod tests {
                 action,
             };
             assert!(matches!(
-                atomic_replace_with_injector(&target, &injector, |f| f
+                run_atomic_file_fault(&target, Box::new(injector), |f| f
                     .write_all(b"new")
                     .map_err(io)),
                 Err(Error::Conflict(_))
@@ -2095,7 +2152,9 @@ mod tests {
             action: "parent",
         };
         assert!(matches!(
-            atomic_replace_with_injector(&target, &injector, |f| f.write_all(b"new").map_err(io)),
+            run_atomic_file_fault(&target, Box::new(injector), |f| f
+                .write_all(b"new")
+                .map_err(io)),
             Err(Error::Conflict(_))
         ));
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2106,7 +2165,7 @@ mod tests {
             parent: dir.path().to_path_buf(),
             action: "create",
         };
-        assert!(atomic_replace_with_injector(&target, &injector, |f| f
+        assert!(run_atomic_file_fault(&target, Box::new(injector), |f| f
             .write_all(b"new")
             .map_err(io))
         .is_err());
@@ -2149,7 +2208,7 @@ mod tests {
         ] {
             let (_root, source, target) = directory_fixture();
             let injector = DirFault { point };
-            assert!(atomic_install_dir_with_injector(&source, &target, &injector).is_err());
+            assert!(run_atomic_dir_fault(&source, &target, Box::new(injector)).is_err());
             assert_eq!(std::fs::read(target.join("old")).expect("old"), b"old");
         }
         let (_root, source, target) = directory_fixture();
@@ -2157,7 +2216,7 @@ mod tests {
             point: AtomicDirFaultPoint::ParentSync,
         };
         assert!(matches!(
-            atomic_install_dir_with_injector(&source, &target, &injector),
+            run_atomic_dir_fault(&source, &target, Box::new(injector)),
             Err(Error::CommittedDurabilityUncertain(_))
         ));
         assert_eq!(std::fs::read(target.join("new")).expect("new"), b"new");
@@ -2168,37 +2227,37 @@ mod tests {
         std::fs::create_dir(&source).expect("source");
         std::fs::write(source.join("new"), b"new").expect("new");
         assert!(matches!(
-            atomic_install_dir_with_injector(
+            run_atomic_dir_fault(
                 &source,
                 &target,
-                &DirTargetMutation {
+                Box::new(DirTargetMutation {
                     target: target.clone(),
                     existing: false
-                }
+                })
             ),
             Err(Error::Conflict(_))
         ));
         assert!(target.is_dir());
         let (_root, source, target) = directory_fixture();
         assert!(matches!(
-            atomic_install_dir_with_injector(
+            run_atomic_dir_fault(
                 &source,
                 &target,
-                &DirTargetMutation {
+                Box::new(DirTargetMutation {
                     target: target.clone(),
                     existing: true
-                }
+                })
             ),
             Err(Error::Conflict(_))
         ));
 
         let (_root, source, target) = directory_fixture();
-        assert!(atomic_install_dir_with_injector(
+        assert!(run_atomic_dir_fault(
             &source,
             &target,
-            &SourceSwap {
+            Box::new(SourceSwap {
                 source: source.clone()
-            }
+            })
         )
         .is_err());
         #[cfg(unix)]
@@ -2211,7 +2270,7 @@ mod tests {
             point: AtomicDirFaultPoint::BackupCleanup,
         };
         assert!(matches!(
-            atomic_install_dir_with_injector(&source, &target, &injector),
+            run_atomic_dir_fault(&source, &target, Box::new(injector)),
             Err(Error::CommittedDurabilityUncertain(_))
         ));
         assert_eq!(std::fs::read(target.join("new")).expect("new"), b"new");

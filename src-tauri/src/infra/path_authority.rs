@@ -7,8 +7,6 @@
 
 #![allow(dead_code)] // Foundation API; command consumers are migrated separately.
 
-#[cfg(test)]
-use crate::infra::fs::{atomic_replace_with_injector, AtomicWriterInjector};
 use crate::{
     error::Error,
     infra::fs::{atomic_replace, AtomicFileOutcome, AtomicInstalledFile},
@@ -3563,41 +3561,6 @@ impl PathAuthority {
             }
         }
     }
-    #[cfg(test)]
-    fn save_with_injector<I: AtomicWriterInjector>(
-        &self,
-        injector: &I,
-    ) -> Result<CommitDurability, Error> {
-        self.save_entries_with(
-            &self.persistent,
-            &self.active_database_root,
-            &self.active_puzzle_root,
-            &self.active_engine_root,
-            &self.pending_artifacts,
-            |target, write| atomic_replace_with_injector(target, injector, write),
-        )
-    }
-    #[cfg(test)]
-    fn commit_candidate_with_injector<I: AtomicWriterInjector>(
-        &mut self,
-        candidate: BTreeMap<String, Entry>,
-        consumed_dialog: Option<&PathRef>,
-        injector: &I,
-    ) -> Result<CommitDurability, Error> {
-        let durability = self.save_entries_with(
-            &candidate,
-            &self.active_database_root,
-            &self.active_puzzle_root,
-            &self.active_engine_root,
-            &self.pending_artifacts,
-            |target, write| atomic_replace_with_injector(target, injector, write),
-        )?;
-        self.persistent = candidate;
-        if let Some(dialog) = consumed_dialog {
-            self.dialogs.remove(&dialog.id);
-        }
-        Ok(durability)
-    }
 }
 fn validate_persisted_shape(entry: &StoredEntry) -> Result<(), Error> {
     if !matches!(
@@ -3899,7 +3862,9 @@ fn resolve_windows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infra::fs::AtomicFileFaultPoint;
+    use crate::infra::fs::{
+        set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
+    };
     use std::{
         os::unix::ffi::OsStringExt,
         sync::atomic::{AtomicU64, Ordering},
@@ -4801,7 +4766,9 @@ mod tests {
                 }
             }
         }
-        assert!(a.save_with_injector(&Fail).is_err());
+        set_test_atomic_file_injector(Some(Box::new(Fail)));
+        assert!(a.save().is_err());
+        set_test_atomic_file_injector(None);
         assert_eq!(fs::read(&reg).unwrap(), before);
         struct Uncertain;
         impl AtomicWriterInjector for Uncertain {
@@ -4815,9 +4782,9 @@ mod tests {
                 }
             }
         }
-        let durability = a
-            .save_with_injector(&Uncertain)
-            .expect("uncertain registry commit");
+        set_test_atomic_file_injector(Some(Box::new(Uncertain)));
+        let durability = a.save().expect("uncertain registry commit");
+        set_test_atomic_file_injector(None);
         assert_eq!(
             serde_json::to_string(&durability).expect("serialize durability"),
             r#"{"DurabilityUncertain":"RegistryReplacement"}"#
@@ -4885,11 +4852,12 @@ mod tests {
                 }
             }
         }
+        set_test_atomic_file_injector(Some(Box::new(ParentSync)));
         assert!(matches!(
-            a.commit_candidate_with_injector(candidate, Some(&dialog), &ParentSync)
-                .unwrap(),
+            a.commit_candidate(candidate, Some(&dialog)).unwrap(),
             CommitDurability::DurabilityUncertain(_)
         ));
+        set_test_atomic_file_injector(None);
         assert!(a.persistent.contains_key(&id.id));
         assert!(!a.dialogs.contains_key(&dialog.id));
         assert!(a.resolve(&dialog, PathOperation::ReadPgn, &[]).is_err());

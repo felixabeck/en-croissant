@@ -1049,10 +1049,6 @@ pub async fn cancel_download(id: String, state: tauri::State<'_, AppState>) -> R
     Ok(state.download_registry.cancel(&id))
 }
 
-fn atomic_install_dir(temp_path: &Path, target_path: &Path) -> Result<(), Error> {
-    crate::infra::fs::atomic_install_dir(temp_path, target_path)
-}
-
 fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
     if path.is_empty() || path.len() > 1024 {
         return Err(Error::InvalidInput("Invalid path length".into()));
@@ -1140,7 +1136,7 @@ fn extract_zip(
         }
     }
 
-    atomic_install_dir(temp_dir.path(), target_path)?;
+    crate::infra::fs::atomic_install_dir(temp_dir.path(), target_path)?;
     Ok(())
 }
 
@@ -1205,7 +1201,7 @@ fn extract_tar(
         }
     }
 
-    atomic_install_dir(temp_dir.path(), target_path)?;
+    crate::infra::fs::atomic_install_dir(temp_dir.path(), target_path)?;
     Ok(())
 }
 
