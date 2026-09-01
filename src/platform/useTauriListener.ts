@@ -7,18 +7,14 @@ type ListenerErrorHandler = (error: AppError) => void;
 
 export type TauriListenerOptions = {
     /** Called only while the owner is mounted; late cancellation is intentionally silent. */
-    onError?: ListenerErrorHandler;
+    onError: ListenerErrorHandler;
 };
-
-function reportRegistrationFailure(error: AppError) {
-    console.error("Tauri listener registration failed", error);
-}
 
 /** Registers exactly one listener and safely disposes registrations which resolve after unmount. */
 export function useTauriListener<T>(
     subscribe: Subscribe<T>,
-    callback: (event: T) => void,
-    options: TauriListenerOptions = {},
+    callback: (event: T, signal: AbortSignal) => void | Promise<void>,
+    options: TauriListenerOptions,
 ) {
     const callbackRef = useRef(callback);
     const onErrorRef = useRef(options.onError);
@@ -26,24 +22,28 @@ export function useTauriListener<T>(
     onErrorRef.current = options.onError;
 
     useEffect(() => {
-        let disposed = false;
+        const controller = new AbortController();
+        const { signal } = controller;
         let unlisten: Unlisten | undefined;
         void subscribe((event) => {
-            if (!disposed) callbackRef.current(event);
+            if (signal.aborted) return;
+            void (async () => {
+                try {
+                    await callbackRef.current(event, signal);
+                } catch (error: unknown) {
+                    if (!signal.aborted) onErrorRef.current(normalizeError(error));
+                }
+            })();
         })
             .then((registered) => {
-                if (disposed) registered();
+                if (signal.aborted) registered();
                 else unlisten = registered;
             })
             .catch((error: unknown) => {
-                if (disposed) return;
-                const normalized = normalizeError(error);
-                const onError = onErrorRef.current;
-                if (onError) onError(normalized);
-                else reportRegistrationFailure(normalized);
+                if (!signal.aborted) onErrorRef.current(normalizeError(error));
             });
         return () => {
-            disposed = true;
+            controller.abort();
             unlisten?.();
         };
     }, [subscribe]);

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type ProgressEvent, type ProgressItem } from "@/bindings";
+import { notifyListenerError } from "@/components/files/notifyError";
 import { tauri, tauriSubscriptions } from "@/platform/tauri";
 import { useTauriListener } from "@/platform/useTauriListener";
 
@@ -55,16 +56,20 @@ export function useProgress(id: string) {
         [],
     );
 
-    useTauriListener(subscribeProgress, ({ payload }) => {
-        if (payload.id === id) {
-            if (payload.cleared) {
-                minimumGeneration.current = payload.generation;
-                setItem(null);
-                return;
+    useTauriListener(
+        subscribeProgress,
+        ({ payload }) => {
+            if (payload.id === id) {
+                if (payload.cleared) {
+                    minimumGeneration.current = payload.generation;
+                    setItem(null);
+                    return;
+                }
+                setItem((current) => newestProgress(current, payload, minimumGeneration.current));
             }
-            setItem((current) => newestProgress(current, payload, minimumGeneration.current));
-        }
-    });
+        },
+        { onError: notifyListenerError },
+    );
 
     const clear = useCallback(async () => {
         const generation = await tauri.clearProgress(id);

@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useSetAtom } from "jotai";
 import { type ConvertProgress } from "@/bindings";
+import { notifyListenerError } from "@/components/files/notifyError";
 import { tauriSubscriptions } from "@/platform/tauri";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { databaseConversionStateAtom } from "@/state/atoms";
@@ -24,13 +25,17 @@ export function useConversionProgress() {
         [],
     );
 
-    useTauriListener(subscribe, ({ payload }) => {
-        setConversionState((previous) => ({
-            ...previous,
-            inProgress: true,
-            totalGames: payload.imported_games,
-            elapsedSeconds: payload.elapsed_ms / 1000,
-            sourceFileName: payload.source_file_name ?? previous.sourceFileName,
-        }));
-    });
+    useTauriListener(
+        subscribe,
+        ({ payload }) => {
+            setConversionState((previous) => ({
+                ...previous,
+                inProgress: true,
+                totalGames: payload.imported_games,
+                elapsedSeconds: payload.elapsed_ms / 1000,
+                sourceFileName: payload.source_file_name ?? previous.sourceFileName,
+            }));
+        },
+        { onError: notifyListenerError },
+    );
 }

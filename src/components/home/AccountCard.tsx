@@ -16,6 +16,7 @@ import { useTranslation } from "react-i18next";
 import { notifications } from "@mantine/notifications";
 import type { DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
+import { notifyListenerError } from "@/components/files/notifyError";
 import { databaseConversionStateAtom, downloadDestinationAtom } from "@/state/atoms";
 import { downloadChessCom } from "@/utils/chess.com/api";
 import { getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
@@ -168,17 +169,23 @@ export function AccountCard({
       tauriSubscriptions.progress(listener),
     [],
   );
-  useTauriListener(subscribeProgress, async (e) => {
-    if (e.payload.id === `${type}_${title}`) {
-      setProgress(e.payload.progress);
-      if (e.payload.finished) {
-        setLoading(false);
-        setDatabases(await getDatabases());
-      } else {
-        setLoading(true);
+  useTauriListener(
+    subscribeProgress,
+    async (e, signal) => {
+      if (e.payload.id === `${type}_${title}`) {
+        setProgress(e.payload.progress);
+        if (e.payload.finished) {
+          setLoading(false);
+          const databases = await getDatabases();
+          if (signal.aborted) return;
+          setDatabases(databases);
+        } else {
+          setLoading(true);
+        }
       }
-    }
-  });
+    },
+    { onError: notifyListenerError },
+  );
 
   const downloadedGames = database?.type === "success" ? database.game_count : 0;
   const effectiveTotal = Math.max(total, downloadedGames);

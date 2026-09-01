@@ -1,9 +1,12 @@
 import { notifications } from "@mantine/notifications";
 import { afterEach, expect, test, vi } from "vitest";
-import { notifyUnlessCancelled } from "./notifyError";
+import { notifyListenerError, notifyUnlessCancelled } from "./notifyError";
 
 vi.mock("@mantine/notifications", () => ({
     notifications: { show: vi.fn() },
+}));
+vi.mock("@/i18n", () => ({
+    default: { t: vi.fn(() => "Common.Error") },
 }));
 
 afterEach(() => {
@@ -31,4 +34,18 @@ test("does not treat abort-like diagnostics as picker cancellation", () => {
         title: "Common.Error",
         message: "connection aborted",
     });
+});
+
+test("notifies a real listener failure with the common error title", () => {
+    notifyListenerError(new Error("listener unavailable"));
+    expect(notifications.show).toHaveBeenCalledWith({
+        color: "red",
+        title: "Common.Error",
+        message: "listener unavailable",
+    });
+});
+
+test("keeps a pinned listener Cancellation silent", () => {
+    notifyListenerError(new Error("Cancellation"));
+    expect(notifications.show).not.toHaveBeenCalled();
 });

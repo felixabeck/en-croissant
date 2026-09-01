@@ -33,6 +33,7 @@ import { useStore } from "zustand";
 import type { Outcome } from "@/bindings";
 import { type EngineLog, type GameConfig, type GameResult, type PlayerConfig } from "@/bindings";
 import type { ChessgroundRef } from "@/chessground/Chessground";
+import { notifyListenerError } from "@/components/files/notifyError";
 import {
   activeTabAtom,
   flipBoardAfterMoveAtom,
@@ -657,60 +658,72 @@ function BoardGame() {
       tauriSubscriptions.gameMove(listener),
     [],
   );
-  useTauriListener(subscribeGameMove, ({ payload }) => {
-    if (
-      gameState !== "playing" ||
-      payload.gameId !== gameId ||
-      !acceptAuthoritativeRevision(payload)
-    )
-      return;
+  useTauriListener(
+    subscribeGameMove,
+    ({ payload }) => {
+      if (
+        gameState !== "playing" ||
+        payload.gameId !== gameId ||
+        !acceptAuthoritativeRevision(payload)
+      )
+        return;
 
-    pendingMovesRef.current = mapBackendMoves(payload.moves);
-    pendingTimesRef.current = {
-      white: payload.whiteTime !== null ? Number(payload.whiteTime) : null,
-      black: payload.blackTime !== null ? Number(payload.blackTime) : null,
-    };
-    queuedUpdateGenerationRef.current = sessionGenerationRef.current;
-    queuedUpdateSessionRef.current = payload.session;
-    scheduleUpdate();
-  });
+      pendingMovesRef.current = mapBackendMoves(payload.moves);
+      pendingTimesRef.current = {
+        white: payload.whiteTime !== null ? Number(payload.whiteTime) : null,
+        black: payload.blackTime !== null ? Number(payload.blackTime) : null,
+      };
+      queuedUpdateGenerationRef.current = sessionGenerationRef.current;
+      queuedUpdateSessionRef.current = payload.session;
+      scheduleUpdate();
+    },
+    { onError: notifyListenerError },
+  );
 
   const subscribeClockUpdate = useCallback(
     (listener: Parameters<typeof tauriSubscriptions.clockUpdate>[0]) =>
       tauriSubscriptions.clockUpdate(listener),
     [],
   );
-  useTauriListener(subscribeClockUpdate, ({ payload }) => {
-    if (
-      gameState !== "playing" ||
-      payload.gameId !== gameId ||
-      !acceptAuthoritativeRevision(payload)
-    )
-      return;
-    setWhiteTime(payload.whiteTime !== null ? Number(payload.whiteTime) : null);
-    setBlackTime(payload.blackTime !== null ? Number(payload.blackTime) : null);
-  });
+  useTauriListener(
+    subscribeClockUpdate,
+    ({ payload }) => {
+      if (
+        gameState !== "playing" ||
+        payload.gameId !== gameId ||
+        !acceptAuthoritativeRevision(payload)
+      )
+        return;
+      setWhiteTime(payload.whiteTime !== null ? Number(payload.whiteTime) : null);
+      setBlackTime(payload.blackTime !== null ? Number(payload.blackTime) : null);
+    },
+    { onError: notifyListenerError },
+  );
 
   const subscribeGameOver = useCallback(
     (listener: Parameters<typeof tauriSubscriptions.gameOver>[0]) =>
       tauriSubscriptions.gameOver(listener),
     [],
   );
-  useTauriListener(subscribeGameOver, ({ payload }) => {
-    if (
-      gameState !== "playing" ||
-      payload.gameId !== gameId ||
-      !acceptAuthoritativeRevision(payload)
-    )
-      return;
+  useTauriListener(
+    subscribeGameOver,
+    ({ payload }) => {
+      if (
+        gameState !== "playing" ||
+        payload.gameId !== gameId ||
+        !acceptAuthoritativeRevision(payload)
+      )
+        return;
 
-    clearQueuedGameUpdates();
+      clearQueuedGameUpdates();
 
-    syncTreeWithMovesRef.current(mapBackendMoves(payload.moves));
+      syncTreeWithMovesRef.current(mapBackendMoves(payload.moves));
 
-    setGameState("gameOver");
-    setResult(gameResultToOutcome(payload.result));
-  });
+      setGameState("gameOver");
+      setResult(gameResultToOutcome(payload.result));
+    },
+    { onError: notifyListenerError },
+  );
 
   useEffect(() => {
     return () => {

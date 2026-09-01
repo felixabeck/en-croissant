@@ -16,6 +16,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import type { DatabaseInfo as PlainDatabaseInfo, PlayerGameInfo } from "@/bindings";
+import { notifyListenerError } from "@/components/files/notifyError";
 import { sessionsAtom } from "@/state/atoms";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { activeDatabaseViewStore } from "@/state/store/database";
@@ -125,7 +126,9 @@ function Databases() {
       tauriSubscriptions.databaseProgress(listener),
     [],
   );
-  useTauriListener(subscribeDatabaseProgress, (e) => setProgress(e.payload.progress));
+  useTauriListener(subscribeDatabaseProgress, (e) => setProgress(e.payload.progress), {
+    onError: notifyListenerError,
+  });
 
   return (
     <>

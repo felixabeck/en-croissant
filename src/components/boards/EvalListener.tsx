@@ -8,6 +8,7 @@ import { match } from "ts-pattern";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { type BestMovesPayload, type EngineOptions, type GoMode } from "@/bindings";
+import { notifyListenerError } from "@/components/files/notifyError";
 import {
   activeTabAtom,
   currentThreatAtom,
@@ -203,7 +204,7 @@ function EngineListener({
       tauriSubscriptions.bestMoves(listener),
     [],
   );
-  useTauriListener(subscribeBestMoves, onBestMoves);
+  useTauriListener(subscribeBestMoves, onBestMoves, { onError: notifyListenerError });
 
   const getBestMoves = useMemo(
     () =>
