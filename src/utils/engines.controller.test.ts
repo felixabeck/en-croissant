@@ -3,12 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 const native = vi.hoisted(() => ({
     stopEngine: vi.fn(),
     killEngine: vi.fn(),
+    retireEngine: vi.fn(),
     getBestMoves: vi.fn(),
 }));
 
 vi.mock("@/platform/tauri", () => ({ tauri: native }));
 
-import { getBestMoves, killEngine, stopEngine } from "./engines";
+import { getBestMoves, killEngine, retireEngine, stopEngine } from "./engines";
 
 const engine = {
     type: "local" as const,
@@ -29,6 +30,14 @@ describe("engine IPC controllers", () => {
 
         expect(native.stopEngine).toHaveBeenCalledWith("engine-1", "tab-1");
         expect(native.killEngine).toHaveBeenCalledWith("engine-1", "tab-1");
+    });
+
+    it("retires every process owned by the immutable engine id", async () => {
+        native.retireEngine.mockResolvedValue(undefined);
+
+        await expect(retireEngine(engine)).resolves.toBeUndefined();
+
+        expect(native.retireEngine).toHaveBeenCalledWith("engine-1");
     });
 
     it("returns native analysis results and preserves native failures", async () => {

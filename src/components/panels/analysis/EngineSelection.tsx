@@ -3,13 +3,15 @@ import { IconCloud, IconCpu } from "@tabler/icons-react";
 import { Link } from "@tanstack/react-router";
 import { useAtom, useAtomValue } from "jotai";
 import { memo } from "react";
-import { Trans } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import LocalImage from "@/components/common/LocalImage";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { activeTabAtom, enginesAtom } from "@/state/atoms";
 import { type Engine, stopEngine } from "@/utils/engines";
 
-function EngineBox({ engine, toggleEnabled }: { engine: Engine; toggleEnabled: () => void }) {
+function EngineBox({ engine, toggleLoaded }: { engine: Engine; toggleLoaded: () => void }) {
   const activeTab = useAtomValue(activeTabAtom);
+  const { t } = useTranslation();
 
   return (
     <Paper
@@ -17,11 +19,16 @@ function EngineBox({ engine, toggleEnabled }: { engine: Engine; toggleEnabled: (
       p="sm"
       w="100%"
       h="3rem"
-      onClick={() => {
+      onClick={async () => {
         if (engine.loaded && engine.type === "local") {
-          stopEngine(engine, activeTab!);
+          try {
+            await stopEngine(engine, activeTab!);
+          } catch (error) {
+            notifyUnlessCancelled(t("Common.Error"), error);
+            return;
+          }
         }
-        toggleEnabled();
+        toggleLoaded();
       }}
       style={{ cursor: "pointer" }}
     >
@@ -68,7 +75,7 @@ function EngineSelection() {
             <EngineBox
               key={engine.id}
               engine={engine}
-              toggleEnabled={() => {
+              toggleLoaded={() => {
                 setEngines(async (prev) =>
                   (await prev).map((e) => (e.id === engine.id ? { ...e, loaded: !e.loaded } : e)),
                 );

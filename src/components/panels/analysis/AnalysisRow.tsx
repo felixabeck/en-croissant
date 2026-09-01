@@ -20,7 +20,8 @@ import { formatScore } from "@/utils/score";
 import ScoreBubble from "./ScoreBubble";
 
 function AnalysisRow({
-  engine,
+  engineId,
+  engineName,
   score,
   moves,
   halfMoves,
@@ -28,7 +29,8 @@ function AnalysisRow({
   fen,
   orientation,
 }: {
-  engine: string;
+  engineId: string;
+  engineName: string;
   score: Score;
   moves: string[];
   halfMoves: number;
@@ -41,7 +43,7 @@ function AnalysisRow({
 
   const allMoves = moves;
   const visibleMoves = open ? allMoves : allMoves.slice(0, 12);
-  const engineOutput = [engine, formatScore(score.value), allMoves.join(" ")]
+  const engineOutput = [engineName, formatScore(score.value), allMoves.join(" ")]
     .filter(Boolean)
     .join(" ");
 
@@ -70,7 +72,7 @@ function AnalysisRow({
 
   useEffect(() => reset(), [open, reset]);
 
-  const [evalDisplay, setEvalDisplay] = useAtom(scoreTypeFamily(engine));
+  const [evalDisplay, setEvalDisplay] = useAtom(scoreTypeFamily(engineId));
 
   return (
     <>

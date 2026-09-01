@@ -40,12 +40,14 @@ import useSWRImmutable from "swr/immutable";
 import { match, P } from "ts-pattern";
 import { Route } from "@/routes/engines";
 import { IconAction } from "@/components/common/IconAction";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { enginesAtom } from "@/state/atoms";
 import {
   type Engine,
   engineSchema,
   type LocalEngine,
   engineOptionValue,
+  retireEngine,
   requiredEngineSettings,
 } from "@/utils/engines";
 import { capabilityKey } from "@/utils/pathCapabilities";
@@ -606,7 +608,12 @@ function EngineSettings({
           description={t("Engines.Remove.Message")}
           opened={deleteModal}
           onClose={toggleDeleteModal}
-          onConfirm={() => {
+          onConfirm={async () => {
+            try {
+              await retireEngine(engine);
+            } catch (error) {
+              notifyUnlessCancelled(t("Common.Error"), error);
+            }
             setEngines(async (prev) => (await prev).filter((e) => e.id !== engine.id));
             setSelected(null);
             toggleDeleteModal();

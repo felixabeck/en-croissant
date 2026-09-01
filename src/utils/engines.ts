@@ -62,11 +62,15 @@ export function engineOptionValue(option: EngineOption): string | undefined {
         : option.resources.map((resource) => resource.displayName).join(":");
 }
 
-const persistedEngineSettingsSchema = engineSettingsSchema.transform((settings) =>
-    settings.filter(
+const persistedEngineSettingsSchema = engineSettingsSchema.transform((settings) => {
+    const collapsed = new Map<string, EngineOption>();
+    for (const option of settings) {
+        collapsed.set(option.name, option);
+    }
+    return [...collapsed.values()].filter(
         (option) => option.type === "resource" || !isEngineResourceOptionName(option.name),
-    ),
-);
+    );
+});
 
 const engineImageHandleSchema: z.ZodType<EngineImageHandle> = z.object({
     id: z.object({ id: z.string().min(1) }),
@@ -168,6 +172,10 @@ export async function stopEngine(engine: LocalEngine, tab: string): Promise<void
 
 export async function killEngine(engine: LocalEngine, tab: string): Promise<void> {
     await tauri.killEngine(engine.id, tab);
+}
+
+export async function retireEngine(engine: LocalEngine): Promise<void> {
+    await tauri.retireEngine(engine.id);
 }
 
 export function getBestMoves(

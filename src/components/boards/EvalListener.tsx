@@ -3,12 +3,13 @@ import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import equal from "fast-deep-equal";
 import { useAtom, useAtomValue } from "jotai";
-import { startTransition, useCallback, useContext, useMemo, useRef } from "react";
+import { startTransition, useCallback, useContext, useEffect, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import { type BestMovesPayload, type EngineOptions, type GoMode } from "@/bindings";
-import { notifyListenerError } from "@/components/files/notifyError";
+import { notifyListenerError, notifyUnlessCancelled } from "@/components/files/notifyError";
 import {
   activeTabAtom,
   currentThreatAtom,
@@ -119,6 +120,7 @@ function EngineListener({
   moves: string[];
   threat: boolean;
 }) {
+  const { t } = useTranslation();
   const store = useContext(TreeStateContext)!;
   const setScore = useStore(store, (s) => s.setScore);
   const activeTab = useAtomValue(activeTabAtom);
@@ -141,6 +143,13 @@ function EngineListener({
     engine: engine.id,
   });
   const generation = useRef(0);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const requestFingerprint = `${activeTab}\u0000${searchingFen}\u0000${searchingMoves.join("\u0000")}\u0000${settingsFingerprint}`;
   const currentFingerprint = useRef(requestFingerprint);
   currentFingerprint.current = requestFingerprint;
@@ -226,51 +235,51 @@ function EngineListener({
       const stillCurrent = () =>
         generation.current === currentGeneration &&
         currentFingerprint.current === requestFingerprint;
-      if (settings.enabled) {
+      const runSearch = async () => {
         // A local engine has one native search slot per tab.  Cancelling it on
         // every identity change gives FEN/settings/go-mode changes a real
         // cancellation boundary instead of merely hiding stale UI results.
-        if (engine.type === "local") void stopEngine(engine, activeTab!);
-        if (isGameOver) {
-          if (engine.type === "local") {
-            stopEngine(engine, activeTab!);
+        if (engine.type === "local") {
+          try {
+            await stopEngine(engine, activeTab!);
+          } catch (error) {
+            notifyUnlessCancelled(t("Common.Error"), error);
+            return;
           }
-        } else {
-          const options =
-            settings.settings?.map((s) =>
-              s.type === "resource" ? s : { ...s, value: s.value.toString() },
-            ) ?? [];
-          void getBestMoves(activeTab!, settings.go, {
+        }
+        if (!mounted.current || !stillCurrent() || !settings.enabled || isGameOver) return;
+
+        const options =
+          settings.settings?.map((s) =>
+            s.type === "resource" ? s : { ...s, value: s.value.toString() },
+          ) ?? [];
+        try {
+          const result = await getBestMoves(activeTab!, settings.go, {
             moves: searchingMoves,
             fen: searchingFen,
             extraOptions: options,
-          })
-            .then((moves) => {
-              if (
-                stillCurrent() &&
-                moves &&
-                moves[1].length > 0 &&
-                moves[1].every((line) => line && line.score && Array.isArray(line.uciMoves))
-              ) {
-                const [progress, bestMoves] = moves;
-                setEngineVariation((prev) => {
-                  const newMap = new Map(prev);
-                  newMap.set(`${searchingFen}:${searchingMoves.join(",")}`, bestMoves);
-                  return newMap;
-                });
-                setProgress(progress);
-              }
-            })
-            .catch(() => {
-              // Engine errors are surfaced by their operation/UI path; stale
-              // failures must never clear or overwrite newer analysis.
+          });
+          if (
+            mounted.current &&
+            stillCurrent() &&
+            result &&
+            result[1].length > 0 &&
+            result[1].every((line) => line && line.score && Array.isArray(line.uciMoves))
+          ) {
+            const [progress, bestMoves] = result;
+            setEngineVariation((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(`${searchingFen}:${searchingMoves.join(",")}`, bestMoves);
+              return newMap;
             });
+            setProgress(progress);
+          }
+        } catch {
+          // Engine errors are surfaced by their operation/UI path; stale
+          // failures must never clear or overwrite newer analysis.
         }
-      } else {
-        if (engine.type === "local") {
-          stopEngine(engine, activeTab!);
-        }
-      }
+      };
+      runSearch().catch((error) => notifyUnlessCancelled(t("Common.Error"), error));
     },
     50,
     [
@@ -285,6 +294,7 @@ function EngineListener({
       setEngineVariation,
       engine,
       requestFingerprint,
+      t,
     ],
   );
   return null;

@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import type { GoMode } from "@/bindings";
 import GoModeInput from "@/components/common/GoModeInput";
 import { IconAction } from "@/components/common/IconAction";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { activeTabAtom, enginesAtom } from "@/state/atoms";
 import { type Engine, type EngineSettings, killEngine } from "@/utils/engines";
 import CoresSlider from "./CoresSlider";
@@ -41,9 +42,9 @@ function EngineSettingsForm({
 }: EngineSettingsProps) {
   const { t } = useTranslation();
 
-  const multipv = settings.settings.find((o) => o.name === "MultiPV");
-  const threads = settings.settings.find((o) => o.name === "Threads");
-  const hash = settings.settings.find((o) => o.name === "Hash");
+  const multipv = settings.settings.findLast((o) => o.name === "MultiPV");
+  const threads = settings.settings.findLast((o) => o.name === "Threads");
+  const hash = settings.settings.findLast((o) => o.name === "Hash");
   const activeTab = useAtomValue(activeTabAtom);
 
   const setGoMode = useCallback(
@@ -133,24 +134,28 @@ function EngineSettingsForm({
       )}
       {!minimal && (
         <Group>
-          <SyncSettings settings={settings} engine={engine.name} setSettings={setSettings} />
+          <SyncSettings settings={settings} engineId={engine.id} setSettings={setSettings} />
           <Group gap={0}>
             {engine.type === "local" && (
               <IconAction
                 label={t("Board.Analysis.KillEngine")}
                 variant="default"
-                onClick={() => {
-                  killEngine(engine, activeTab!);
-                  setSettings((prev) => ({
-                    ...prev,
-                    enabled: false,
-                  }));
+                onClick={async () => {
+                  try {
+                    await killEngine(engine, activeTab!);
+                    setSettings((prev) => ({
+                      ...prev,
+                      enabled: false,
+                    }));
+                  } catch (error) {
+                    notifyUnlessCancelled(t("Common.Error"), error);
+                  }
                 }}
               >
                 <IconPlayerStopFilled size="1rem" />
               </IconAction>
             )}
-            <AdvancedSettings engineName={engine.name} />
+            <AdvancedSettings engineId={engine.id} />
           </Group>
         </Group>
       )}
@@ -159,11 +164,11 @@ function EngineSettingsForm({
 }
 
 function SyncSettings({
-  engine,
+  engineId,
   settings,
   setSettings,
 }: {
-  engine: string;
+  engineId: string;
   settings: Settings;
   setSettings: (fn: (prev: Settings) => Settings) => void;
 }) {
@@ -171,8 +176,8 @@ function SyncSettings({
 
   const engines = useAtomValue(enginesAtom);
   const engineDefault = useMemo(
-    () => (engines ?? []).find((o) => o.name === engine)!,
-    [engines, engine],
+    () => (engines ?? []).find((o) => o.id === engineId),
+    [engines, engineId],
   );
 
   return (
@@ -181,6 +186,7 @@ function SyncSettings({
       checked={settings.synced}
       onChange={(e) => {
         if (e.currentTarget.checked) {
+          if (!engineDefault) return;
           setSettings((prev) => ({
             ...prev,
             go: engineDefault.go || prev.go,
@@ -198,7 +204,7 @@ function SyncSettings({
   );
 }
 
-function AdvancedSettings({ engineName }: { engineName: string }) {
+function AdvancedSettings({ engineId }: { engineId: string }) {
   const { t } = useTranslation();
 
   const navigate = useNavigate();
@@ -208,14 +214,14 @@ function AdvancedSettings({ engineName }: { engineName: string }) {
     <IconAction
       label={t("Engines.Settings.AdvancedSettings")}
       variant="default"
-      onClick={() =>
+      onClick={() => {
+        const selected = (engines ?? []).findIndex((engine) => engine.id === engineId);
+        if (selected < 0) return;
         navigate({
           to: "/engines",
-          search: {
-            selected: (engines ?? []).findIndex((o) => o.name === engineName),
-          },
-        })
-      }
+          search: { selected },
+        });
+      }}
     >
       <IconSettings size="1rem" />
     </IconAction>

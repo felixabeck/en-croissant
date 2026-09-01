@@ -138,5 +138,35 @@ describe("engine persistence", () => {
             type: "resource",
             resources: [{ displayName: "tables" }],
         });
+
+        const lastLegacyValue = engineSchema.parse({
+            ...base,
+            settings: [
+                current.settings![0],
+                { type: "string", name: "SyzygyPath", value: "/private/tables" },
+            ],
+        });
+        expect(lastLegacyValue.settings).toEqual([]);
+    });
+
+    it("collapses duplicate persisted options by name with the last value winning", () => {
+        const parsed = engineSchema.parse({
+            type: "local",
+            id: "engine-1",
+            name: "Stockfish",
+            version: "17",
+            filename: "stockfish",
+            handle: { id: { id: "capability-1" }, kind: "engine" },
+            settings: [
+                { type: "string", name: "MultiPV", value: "2" },
+                { type: "string", name: "Threads", value: "8" },
+                { type: "string", name: "MultiPV", value: "4" },
+            ],
+        });
+
+        expect(parsed.settings).toEqual([
+            { type: "string", name: "MultiPV", value: "4" },
+            { type: "string", name: "Threads", value: "8" },
+        ]);
     });
 });
