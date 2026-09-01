@@ -15,8 +15,14 @@ async function put(root, path, contents) {
   await writeFile(absolute, contents);
 }
 
+function gitInit(root) {
+  const result = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+}
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "tool-version-parity-"));
+  gitInit(root);
   const nightly = "nightly-" + "2025-06-01";
   await put(root, "scripts/rust-coverage.mjs", `const toolchain = "${nightly}";\n`);
   await put(

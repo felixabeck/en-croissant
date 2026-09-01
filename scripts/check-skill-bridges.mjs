@@ -1,8 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
-export const CODEX_ONLY = new Set();
-export const CLAUDE_ONLY = new Set();
 export const BRIDGE_LINE_CAP = 30;
 
 const IGNORED_DIRECTORIES = new Set([
@@ -62,6 +61,15 @@ function reverseBridgeInstruction(text, skillName) {
   ).test(text);
 }
 
+function pointsAtCanonical(text, canonicalPath) {
+  for (const line of text.split(/\r?\n/u)) {
+    if (!line.includes(canonicalPath)) continue;
+    if (/\bdo not\b|\bdon't\b|\bnever\b/iu.test(line)) continue;
+    if (/(?:read|follow)/iu.test(line) || /(?:first|canonical)/iu.test(line)) return true;
+  }
+  return false;
+}
+
 function isGateSourceClaim(line, path) {
   return (
     line.includes(path) &&
@@ -70,33 +78,28 @@ function isGateSourceClaim(line, path) {
   );
 }
 
-async function repositoryFiles(root, current = root) {
-  const files = [];
-  const entries = await readdir(current, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory() && IGNORED_DIRECTORIES.has(entry.name)) continue;
-    const path = resolve(current, entry.name);
-    const relativePath = path.slice(root.length + 1);
+function listRepositoryFiles(repoRoot) {
+  return listWorkingTreeFiles({ workspaceRoot: repoRoot, pathspec: "." }).filter((relativePath) => {
+    const first = relativePath.split("/")[0];
+    if (IGNORED_DIRECTORIES.has(first)) return false;
     // Frozen plans are historical records and may quote the stale claim that motivated a change.
-    if (entry.isDirectory() && relativePath === "tasks/plans") continue;
-    if (entry.isDirectory()) files.push(...(await repositoryFiles(root, path)));
-    else if (entry.isFile()) files.push(path);
-  }
-  return files;
+    return relativePath !== "tasks/plans" && !relativePath.startsWith("tasks/plans/");
+  });
 }
 
-async function findGateSourceClaims(repoRoot, pairedSkills) {
+async function findGateSourceClaims(repoRoot, pairedSkills, relativePaths) {
   const findings = [];
-  for (const path of await repositoryFiles(repoRoot)) {
+  for (const relativePath of relativePaths) {
+    const path = resolve(repoRoot, relativePath);
     let contents;
     try {
       contents = await readFile(path);
     } catch (error) {
-      findings.push(`${path.slice(repoRoot.length + 1)} could not be read: ${error.message}`);
+      if (error?.code === "ENOENT") continue;
+      findings.push(`${relativePath} could not be read: ${error.message}`);
       continue;
     }
     if (contents.includes(0)) continue;
-    const relativePath = path.slice(repoRoot.length + 1);
     for (const [index, line] of contents.toString("utf8").split(/\r?\n/u).entries()) {
       for (const skillName of pairedSkills) {
         const pathMarker = bridgePath(skillName);
@@ -109,10 +112,7 @@ async function findGateSourceClaims(repoRoot, pairedSkills) {
   return findings;
 }
 
-export async function checkSkillBridges(
-  repoRoot,
-  { codexOnly = CODEX_ONLY, claudeOnly = CLAUDE_ONLY } = {},
-) {
+export async function checkSkillBridges(repoRoot, { listFiles = listRepositoryFiles } = {}) {
   const findings = [];
   const agentsRoot = resolve(repoRoot, ".agents", "skills");
   const claudeRoot = resolve(repoRoot, ".claude", "skills");
@@ -126,35 +126,20 @@ export async function checkSkillBridges(
 
   const agentSet = new Set(agentNames);
   const claudeSet = new Set(claudeNames);
-  for (const skillName of codexOnly) {
-    if (!agentSet.has(skillName)) {
-      findings.push(`Codex-only allowlist entry ${skillName} has no .agents skill`);
-    } else if (claudeSet.has(skillName)) {
-      findings.push(`Codex-only allowlist entry ${skillName} has a canonical counterpart`);
-    }
-  }
-  for (const skillName of claudeOnly) {
-    if (!claudeSet.has(skillName)) {
-      findings.push(`Claude-only allowlist entry ${skillName} has no .claude skill`);
-    } else if (agentSet.has(skillName)) {
-      findings.push(`Claude-only allowlist entry ${skillName} has a Codex bridge`);
-    }
-  }
 
   const allNames = [...new Set([...agentNames, ...claudeNames])].sort();
   const pairedSkills = [];
   for (const skillName of allNames) {
     const hasAgent = agentSet.has(skillName);
     const hasClaude = claudeSet.has(skillName);
-    if (!hasAgent && !claudeOnly.has(skillName)) {
+    if (!hasAgent) {
       findings.push(`${canonicalPath(skillName)} has no Codex bridge`);
       continue;
     }
-    if (!hasClaude && !codexOnly.has(skillName)) {
+    if (!hasClaude) {
       findings.push(`${bridgePath(skillName)} has no canonical Claude skill`);
       continue;
     }
-    if (!hasAgent || !hasClaude) continue;
     pairedSkills.push(skillName);
 
     const [agentText, claudeText] = await Promise.all([
@@ -162,7 +147,7 @@ export async function checkSkillBridges(
       readFile(resolve(claudeRoot, skillName, "SKILL.md"), "utf8"),
     ]);
     const pointer = canonicalPath(skillName);
-    if (!agentText.includes(pointer)) {
+    if (!pointsAtCanonical(agentText, pointer)) {
       findings.push(`${bridgePath(skillName)} does not point at ${pointer}`);
     }
     const lines = lineCount(agentText);
@@ -178,7 +163,7 @@ export async function checkSkillBridges(
     }
   }
 
-  findings.push(...(await findGateSourceClaims(repoRoot, pairedSkills)));
+  findings.push(...(await findGateSourceClaims(repoRoot, pairedSkills, listFiles(repoRoot))));
   return findings;
 }
 

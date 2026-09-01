@@ -28,8 +28,14 @@ function bridge(name) {
   return `---\nname: ${name}\n---\n\n# ${name} (Codex bridge)\n\nRead \`${pointer}\` first.\n`;
 }
 
+function gitInit(root) {
+  const result = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+}
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "skill-bridges-"));
+  gitInit(root);
   for (const name of ["push", "verify-ui"]) {
     await write(root, skillPath(".claude", name), canonical(name));
     await write(root, skillPath(".agents", name), bridge(name));
@@ -52,6 +58,17 @@ test("requires every skill to have a counterpart", async () => {
 test("requires a bridge to name its canonical skill", async () => {
   const root = await fixture();
   await write(root, skillPath(".agents", "push"), canonical("push"));
+  assert.match((await checkSkillBridges(root)).join("\n"), /does not point at/u);
+});
+
+test("rejects a bridge that only mentions the canonical path in a negation", async () => {
+  const root = await fixture();
+  const pointer = [".claude", "skills", "push", "SKILL.md"].join("/");
+  await write(
+    root,
+    skillPath(".agents", "push"),
+    `---\nname: push\n---\n\nDo not read \`${pointer}\`.\nThen copy these divergent instructions.\n`,
+  );
   assert.match((await checkSkillBridges(root)).join("\n"), /does not point at/u);
 });
 

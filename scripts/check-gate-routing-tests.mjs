@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -11,8 +12,14 @@ async function write(root, relativePath, contents) {
   await writeFile(path, contents);
 }
 
+function gitInit(root) {
+  const result = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+}
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "gate-routing-"));
+  gitInit(root);
   await write(
     root,
     "package.json",

@@ -44,7 +44,7 @@ const GIT_ENVIRONMENT_KEYS = [
   "GIT_COMMON_DIR",
 ];
 
-const REQUIRED_TOOLS = Object.freeze({
+export const REQUIRED_TOOLS = Object.freeze({
   "backend-test": ["rustc", "cargo"],
   "backend-coverage": ["rustc", "cargo", "nightly", "cargo-llvm-cov", "node", "pnpm"],
   "frontend-coverage": ["node", "pnpm"],
@@ -73,32 +73,35 @@ function capture(command, argumentsList, cwd) {
   return output || undefined;
 }
 
+export const TOOL_PROBES = Object.freeze({
+  rustc: (repoRoot) => capture("rustc", ["--version"], repoRoot),
+  cargo: (repoRoot) => capture("cargo", ["--version"], repoRoot),
+  nightly: (repoRoot) => {
+    const version = capture(
+      "rustup",
+      ["run", RUST_COVERAGE_TOOLCHAIN, "rustc", "--version"],
+      repoRoot,
+    );
+    return version ? `${RUST_COVERAGE_TOOLCHAIN}\n${version}` : undefined;
+  },
+  "cargo-llvm-cov": (repoRoot) => capture("cargo", ["llvm-cov", "--version"], repoRoot),
+  node: (repoRoot) => capture("node", ["--version"], repoRoot),
+  pnpm: (repoRoot) => capture("pnpm", ["--version"], repoRoot),
+  "playwright-image": () => {
+    try {
+      return playwrightImage();
+    } catch {
+      return undefined;
+    }
+  },
+});
+
 function toolchainFingerprint(gate, repoRoot) {
-  const probes = {
-    rustc: () => capture("rustc", ["--version"], repoRoot),
-    cargo: () => capture("cargo", ["--version"], repoRoot),
-    nightly: () => {
-      const version = capture(
-        "rustup",
-        ["run", RUST_COVERAGE_TOOLCHAIN, "rustc", "--version"],
-        repoRoot,
-      );
-      return version ? `${RUST_COVERAGE_TOOLCHAIN}\n${version}` : undefined;
-    },
-    "cargo-llvm-cov": () => capture("cargo", ["llvm-cov", "--version"], repoRoot),
-    node: () => capture("node", ["--version"], repoRoot),
-    pnpm: () => capture("pnpm", ["--version"], repoRoot),
-    "playwright-image": () => {
-      try {
-        return playwrightImage();
-      } catch {
-        return undefined;
-      }
-    },
-  };
   const fingerprint = {};
   for (const name of REQUIRED_TOOLS[gate]) {
-    const value = probes[name]();
+    const probe = TOOL_PROBES[name];
+    if (!probe) return undefined;
+    const value = probe(repoRoot);
     if (!value) return undefined;
     fingerprint[name] = value;
   }

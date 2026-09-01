@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { executeAction, GATES } from "./gate-receipt.mjs";
+import { executeAction, GATES, REQUIRED_TOOLS, TOOL_PROBES } from "./gate-receipt.mjs";
 
 const EXPECTED_GATES = {
   "backend-test": "cargo test --manifest-path src-tauri/Cargo.toml --all-targets",
@@ -70,6 +70,43 @@ async function record(root, options = {}) {
 
 test("registry maps all six gates to their exact command strings", () => {
   assert.deepEqual(GATES, EXPECTED_GATES);
+});
+
+test("every gate fingerprints a pinned tool set, and every listed tool has a probe", () => {
+  assert.deepEqual(Object.keys(REQUIRED_TOOLS).sort(), Object.keys(GATES).sort());
+  assert.deepEqual(REQUIRED_TOOLS, {
+    "backend-test": ["rustc", "cargo"],
+    "backend-coverage": ["rustc", "cargo", "nightly", "cargo-llvm-cov", "node", "pnpm"],
+    "frontend-coverage": ["node", "pnpm"],
+    "frontend-build": ["node", "pnpm"],
+    "e2e-container": ["node", "pnpm", "playwright-image"],
+    "tauri-build": ["rustc", "cargo", "node", "pnpm"],
+  });
+  for (const tools of Object.values(REQUIRED_TOOLS)) {
+    for (const tool of tools) {
+      assert.equal(typeof TOOL_PROBES[tool], "function", `missing probe for ${tool}`);
+    }
+  }
+});
+
+test("frontend-build records a real node and pnpm fingerprint", async () => {
+  const { root } = await fixture();
+  assert.equal(
+    await executeAction({
+      action: "run",
+      gate: "frontend-build",
+      repoRoot: root,
+      command: nodeCommand("process.exit(0)"),
+      output: silentOutput(),
+    }),
+    0,
+  );
+  const receipt = JSON.parse(
+    await readFile(join(root, ".gate-receipts", "frontend-build.json"), "utf8"),
+  );
+  assert.deepEqual(Object.keys(receipt.toolchain).sort(), ["node", "pnpm"]);
+  assert.match(receipt.toolchain.node, /^v/u);
+  assert.match(receipt.toolchain.pnpm, /^\d/u);
 });
 
 test("1. hit on a clean, unchanged tree", async () => {

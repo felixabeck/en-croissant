@@ -1,5 +1,7 @@
-import { readFile, readdir } from "node:fs/promises";
-import { relative, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { globToRegExp } from "./coverage-scope.mjs";
+import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 const TEST_FILE_GLOBS = ["scripts/*-tests.mjs", "scripts/*.test.mjs"];
 
@@ -55,29 +57,6 @@ export const PARITY_FAMILIES = [
   },
 ];
 
-function globRegex(glob) {
-  let source = "";
-  for (let index = 0; index < glob.length; index += 1) {
-    const character = glob[index];
-    if (character === "*") source += "[^/]*";
-    else if (character === "?") source += "[^/]";
-    else source += character.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  }
-  return new RegExp(`^${source}$`, "u");
-}
-
-async function filesBelow(directory) {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const paths = await Promise.all(
-    entries.map(async (entry) => {
-      const path = resolve(directory, entry.name);
-      if (entry.isDirectory()) return filesBelow(path);
-      return entry.isFile() ? [path] : [];
-    }),
-  );
-  return paths.flat();
-}
-
 function lineNumber(text, offset) {
   return text.slice(0, offset).split("\n").length;
 }
@@ -86,11 +65,17 @@ function siteLabel(site) {
   return `${site.path}:${site.line}`;
 }
 
-export async function discoverToolVersions(repoRoot, families = PARITY_FAMILIES) {
+export async function discoverToolVersions(
+  repoRoot,
+  families = PARITY_FAMILIES,
+  { listFiles } = {},
+) {
   const root = resolve(repoRoot);
-  const files = (await filesBelow(root)).map((path) => ({
-    absolute: path,
-    relative: relative(root, path).replaceAll("\\", "/"),
+  const files = (
+    listFiles ?? (() => listWorkingTreeFiles({ workspaceRoot: root, pathspec: "." }))
+  )().map((relative) => ({
+    absolute: resolve(root, relative),
+    relative,
   }));
   const contents = new Map();
   const results = [];
@@ -98,8 +83,8 @@ export async function discoverToolVersions(repoRoot, families = PARITY_FAMILIES)
   for (const family of families) {
     const sites = [];
     for (const declaration of family.declarations) {
-      const includes = declaration.globs.map(globRegex);
-      const excludes = (declaration.exclude ?? []).map(globRegex);
+      const includes = declaration.globs.map(globToRegExp);
+      const excludes = (declaration.exclude ?? []).map(globToRegExp);
       for (const file of files) {
         if (!includes.some((matcher) => matcher.test(file.relative))) continue;
         if (excludes.some((matcher) => matcher.test(file.relative))) continue;
@@ -122,9 +107,9 @@ export async function discoverToolVersions(repoRoot, families = PARITY_FAMILIES)
   return results;
 }
 
-export async function checkToolVersionParity(repoRoot, families = PARITY_FAMILIES) {
+export async function checkToolVersionParity(repoRoot, families = PARITY_FAMILIES, options = {}) {
   const findings = [];
-  for (const family of await discoverToolVersions(repoRoot, families)) {
+  for (const family of await discoverToolVersions(repoRoot, families, options)) {
     if (family.sites.length < family.minimumSites) {
       const globs = family.declarations.flatMap((declaration) => declaration.globs).join(", ");
       findings.push(

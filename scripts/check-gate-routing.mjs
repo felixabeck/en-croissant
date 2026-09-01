@@ -1,7 +1,7 @@
-import { execFileSync } from "node:child_process";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { globToRegExp, matches } from "./coverage-scope.mjs";
+import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 const PUSH_SKILL = ".claude/skills/push/SKILL.md";
 const PACKAGE_JSON = "package.json";
@@ -180,17 +180,22 @@ function validateGateCommands(pushSkill, scripts, repoRoot) {
   return { directGateCommands, findings, routed };
 }
 
-async function scriptFiles(repoRoot) {
-  const entries = await readdir(resolve(repoRoot, "scripts"), { withFileTypes: true });
-  return Promise.all(
-    entries
-      .filter((entry) => entry.isFile())
-      .map(async (entry) => {
-        const path = `scripts/${entry.name}`;
-        const metadata = await stat(resolve(repoRoot, path));
-        return { executable: (metadata.mode & 0o111) !== 0, path };
-      }),
-  );
+async function scriptFiles(repoRoot, listFiles) {
+  const files = [];
+  for (const path of listFiles(repoRoot, "scripts")) {
+    if (!path.startsWith("scripts/")) continue;
+    const absolute = resolve(repoRoot, path);
+    let metadata;
+    try {
+      metadata = await stat(absolute);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    if (!metadata.isFile()) continue;
+    files.push({ executable: (metadata.mode & 0o111) !== 0, path });
+  }
+  return files;
 }
 
 function shellWords(command) {
@@ -211,19 +216,20 @@ function invokesScript(command, path) {
   return false;
 }
 
-function trackedPaths(repoRoot) {
-  return execFileSync("git", ["ls-files"], { cwd: repoRoot, encoding: "utf8" })
-    .split(/\r?\n/u)
-    .filter(Boolean);
+function defaultListFiles(repoRoot, pathspec = ".") {
+  return listWorkingTreeFiles({ workspaceRoot: repoRoot, pathspec });
 }
 
-export async function checkGateRouting(repoRoot, { tracked = undefined } = {}) {
+export async function checkGateRouting(
+  repoRoot,
+  { tracked = undefined, listFiles = defaultListFiles } = {},
+) {
   const [packageText, pushSkill, workflow, viteConfig, files] = await Promise.all([
     readFile(resolve(repoRoot, PACKAGE_JSON), "utf8"),
     readFile(resolve(repoRoot, PUSH_SKILL), "utf8"),
     readFile(resolve(repoRoot, TEST_WORKFLOW), "utf8"),
     readFile(resolve(repoRoot, VITE_CONFIG), "utf8"),
-    scriptFiles(repoRoot),
+    scriptFiles(repoRoot, listFiles),
   ]);
   const scripts = JSON.parse(packageText).scripts ?? {};
   const { directGateCommands, findings, routed } = validateGateCommands(
@@ -273,7 +279,7 @@ export async function checkGateRouting(repoRoot, { tracked = undefined } = {}) {
     }
   }
 
-  const repositoryPaths = tracked ?? trackedPaths(repoRoot);
+  const repositoryPaths = tracked ?? listFiles(repoRoot);
   for (const pattern of reviewPathGlobPatterns(pushSkill)) {
     const matcher = globToRegExp(pattern);
     if (!repositoryPaths.some((path) => matcher.test(path))) {
