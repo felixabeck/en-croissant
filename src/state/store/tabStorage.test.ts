@@ -6,6 +6,7 @@ import {
     isBoundedTreeForStorage,
     migrateTreeForStorage,
     parseLegacyTreeJson,
+    persistStorageWriteError,
     TabStorageRepository,
 } from "./tabStorage";
 
@@ -474,6 +475,28 @@ test("rewrite and deferred flush retain recoverable state when storage temporari
     expect(storage.read("flush-failure")).not.toBeNull();
 });
 
+test.each([42, null, undefined])(
+    "wraps a non-Error storage failure with its original cause: %s",
+    (cause) => {
+        const reported = persistStorageWriteError(cause);
+
+        expect(reported.message).toBe(
+            "Could not save this game. Session storage rejected the write.",
+        );
+        expect(reported.cause).toBe(cause);
+    },
+);
+
+test("recognizes a plain quota-shaped failure and retains its cause", () => {
+    const cause = { name: "QuotaExceededError" };
+
+    expect(persistStorageWriteError(cause)).toMatchObject({
+        message:
+            "Could not open the game: the browser's session storage is full. Close some open tabs and try again.",
+        cause,
+    });
+});
+
 test("live debounce reports a non-quota write failure without the session-full message", () => {
     const securityError = new DOMException("denied", "SecurityError");
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
@@ -485,7 +508,7 @@ test("live debounce reports a non-quota write failure without the session-full m
 
     const reported = persistError.reportPersistError.mock.calls[0][0] as Error;
     expect(reported.message).not.toContain("session storage is full");
-    expect(reported === securityError || reported.cause === securityError).toBe(true);
+    expect(reported).toBe(securityError);
     setItem.mockRestore();
 });
 

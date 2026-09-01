@@ -19,6 +19,7 @@ export function deserializeStorageValue<T>(stored: string): T | null {
 
 /** Compressed first; pretty JSON is the legacy fallback. */
 export function decodeCompressedOrJson(stored: string): unknown | null {
+    if (typeof stored !== "string") throw new TypeError("Stored value must be a string.");
     const compressed = deserializeStorageValue<unknown>(stored);
     if (compressed !== null) return compressed;
     try {

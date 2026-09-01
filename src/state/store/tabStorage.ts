@@ -196,13 +196,17 @@ export function createTabStorageQuotaError(cause: unknown): Error {
 }
 
 export function persistStorageWriteError(cause: unknown): Error {
-    const name =
-        typeof cause === "object" && cause !== null && "name" in cause
-            ? String((cause as { name: unknown }).name)
-            : "";
-    if (name === "QuotaExceededError") return createTabStorageQuotaError(cause);
-    if (cause instanceof Error) return cause;
-    return new Error(cause instanceof DOMException ? cause.message : String(cause), { cause });
+    if (
+        typeof cause === "object" &&
+        cause !== null &&
+        "name" in cause &&
+        String((cause as { name: unknown }).name) === "QuotaExceededError"
+    ) {
+        return createTabStorageQuotaError(cause);
+    }
+    // jsdom's DOMException is not an Error; the browser one is, so the first arm covers WebKit.
+    if (cause instanceof Error || cause instanceof DOMException) return cause;
+    return new Error("Could not save this game. Session storage rejected the write.", { cause });
 }
 
 export function parseLegacyTreeJson(value: string): unknown | null {
@@ -215,7 +219,6 @@ export function parseLegacyTreeJson(value: string): unknown | null {
 
 export function decodeLegacyOrCompressed(value: string): StoredTree | null {
     const decoded = decodeCompressedOrJson(value);
-    if (decoded === null) return null;
     const envelope = z
         .object({ version: z.number().int().nonnegative(), state: z.unknown() })
         .safeParse(decoded);

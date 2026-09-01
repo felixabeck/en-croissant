@@ -205,9 +205,55 @@ test("does not rewrite an already matching compressed envelope", () => {
     setItem.mockRestore();
 });
 
+test.each(["tabs", "activeTab"] as const)(
+    "preserves the leftover %s key when cleanup cannot rewrite a matching envelope",
+    (leftoverKey) => {
+        sessionStorage.clear();
+        const valid = { ...legacyTab, value: crypto.randomUUID() };
+        const workspace = { version: 1, tabs: [valid], activeTab: valid.value } as const;
+        const payload = serializeStorageValue(workspace);
+        sessionStorage.setItem(WORKSPACE_STORAGE_KEY, payload);
+        sessionStorage.setItem(leftoverKey, JSON.stringify("leftover"));
+        const writeError = new DOMException("denied", "SecurityError");
+        const originalSetItem = Storage.prototype.setItem;
+        const setItem = vi
+            .spyOn(Storage.prototype, "setItem")
+            .mockImplementation(function (this: Storage, key, value) {
+                if (key === WORKSPACE_STORAGE_KEY) throw writeError;
+                return originalSetItem.call(this, key, value);
+            });
+
+        expect(workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace())).toEqual(
+            workspace,
+        );
+        expect(sessionStorage.getItem(leftoverKey)).not.toBeNull();
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(payload);
+        expect(persistError.reportPersistError).toHaveBeenCalledWith(writeError);
+        setItem.mockRestore();
+    },
+);
+
+test("cleans leftover legacy keys while leaving a matching envelope unchanged", () => {
+    sessionStorage.clear();
+    const valid = { ...legacyTab, value: crypto.randomUUID() };
+    const workspace = { version: 1, tabs: [valid], activeTab: valid.value } as const;
+    const payload = serializeStorageValue(workspace);
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, payload);
+    sessionStorage.setItem("tabs", JSON.stringify([valid]));
+    sessionStorage.setItem("activeTab", JSON.stringify(valid.value));
+
+    expect(workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace())).toEqual(
+        workspace,
+    );
+    expect(sessionStorage.getItem("tabs")).toBeNull();
+    expect(sessionStorage.getItem("activeTab")).toBeNull();
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(payload);
+});
+
 test("corrupt workspace storage recovers to a valid single-tab envelope", () => {
     sessionStorage.clear();
     sessionStorage.setItem("workspace", "{broken");
+    const clone = vi.spyOn(tabStorage, "clone");
     const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
 
     expect(workspace.tabs).toHaveLength(1);
@@ -215,6 +261,7 @@ test("corrupt workspace storage recovers to a valid single-tab envelope", () => 
     expect(readStoredWorkspace()).toMatchObject({
         version: 1,
     });
+    expect(clone).not.toHaveBeenCalled();
 });
 
 test("scrubs corrupt legacy tab entries without discarding valid neighbouring tabs", () => {
@@ -292,6 +339,7 @@ test("duplicate UUID migration retains the original tree and creates a copied tr
 
 test("bounds and scrubs malformed workspace shapes without throwing", () => {
     sessionStorage.clear();
+    const clone = vi.spyOn(tabStorage, "clone");
     for (const raw of [
         null,
         [],
@@ -319,6 +367,7 @@ test("bounds and scrubs malformed workspace shapes without throwing", () => {
     const bounded = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
     expect(bounded.tabs).toHaveLength(1);
     expect(bounded.activeTab).toBe(bounded.tabs[0].value);
+    expect(clone).not.toHaveBeenCalled();
 });
 
 test("does not flush a workspace that needs no tab-ID migration", () => {
@@ -390,31 +439,111 @@ test("setItem preserves tab IDs so a failed getItem migration can retry", () => 
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
 });
 
+test("setItem reports storage write failures", () => {
+    sessionStorage.clear();
+    const writeError = new DOMException("denied", "SecurityError");
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+        throw writeError;
+    });
+
+    workspaceStorage().setItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(writeError);
+    setItem.mockRestore();
+});
+
+test("setItem repairs an invalid workspace value to the default shape", () => {
+    sessionStorage.clear();
+
+    workspaceStorage().setItem(WORKSPACE_STORAGE_KEY, "invalid" as never);
+
+    const stored = readStoredWorkspace() as ReturnType<typeof defaultWorkspace>;
+    expect(stored.tabs).toHaveLength(1);
+    expect(stored.tabs[0]).toMatchObject({ name: "Tab.NewTab", type: "new" });
+    expect(stored.activeTab).toBe(stored.tabs[0].value);
+});
+
+test("setItem repairs an empty workspace with one generated active tab", () => {
+    sessionStorage.clear();
+
+    workspaceStorage().setItem(WORKSPACE_STORAGE_KEY, {
+        version: 1,
+        tabs: [],
+        activeTab: null,
+    });
+
+    const stored = readStoredWorkspace() as ReturnType<typeof defaultWorkspace>;
+    expect(stored.tabs).toHaveLength(1);
+    expect(stored.tabs[0].value).toMatch(/^[0-9a-f]{8}-/i);
+    expect(stored.activeTab).toBe(stored.tabs[0].value);
+});
+
+test("setItem falls back from a mismatched active tab to the first tab", () => {
+    sessionStorage.clear();
+    const first = { ...legacyTab, value: crypto.randomUUID() };
+    const second = { ...legacyTab, name: "Second", value: crypto.randomUUID() };
+
+    workspaceStorage().setItem(WORKSPACE_STORAGE_KEY, {
+        version: 1,
+        tabs: [first, second],
+        activeTab: crypto.randomUUID(),
+    });
+
+    const stored = readStoredWorkspace() as ReturnType<typeof defaultWorkspace>;
+    expect(stored.tabs).toEqual([first, second]);
+    expect(stored.activeTab).toBe(stored.tabs[0].value);
+});
+
 test("rolls back staged clones when clone flush fails and leaves legacy trees", () => {
     sessionStorage.clear();
-    sessionStorage.setItem("tabs", JSON.stringify([legacyTab]));
-    sessionStorage.setItem("activeTab", JSON.stringify(legacyTab.value));
+    const secondLegacyTab = { ...legacyTab, name: "Second", value: "43" } as const;
+    sessionStorage.setItem("tabs", JSON.stringify([legacyTab, secondLegacyTab]));
+    sessionStorage.setItem("activeTab", JSON.stringify(secondLegacyTab.value));
     sessionStorage.setItem(
         legacyTab.value,
         serializeStorageValue({ version: 0, state: defaultTree() }),
     );
+    sessionStorage.setItem(
+        secondLegacyTab.value,
+        serializeStorageValue({ version: 0, state: defaultTree() }),
+    );
+    const cloneWriteError = new DOMException("quota", "QuotaExceededError");
+    const cloneIds: string[] = [];
     const originalSetItem = Storage.prototype.setItem;
     const setItem = vi
         .spyOn(Storage.prototype, "setItem")
         .mockImplementation(function (this: Storage, key, value) {
-            if (key !== legacyTab.value && key !== "tabs" && key !== "activeTab") {
-                throw new DOMException("quota", "QuotaExceededError");
+            if (
+                key !== WORKSPACE_STORAGE_KEY &&
+                key !== legacyTab.value &&
+                key !== secondLegacyTab.value &&
+                key !== "tabs" &&
+                key !== "activeTab"
+            ) {
+                cloneIds.push(key);
+                if (cloneIds.length === 2) throw cloneWriteError;
             }
             return originalSetItem.call(this, key, value);
         });
 
     try {
         const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
-        expect(workspace.tabs).toEqual([legacyTab]);
+        expect(workspace.tabs).toEqual([legacyTab, secondLegacyTab]);
+        expect(workspace.activeTab).toBe(secondLegacyTab.value);
         expect(tabStorage.read(legacyTab.value)).not.toBeNull();
+        expect(tabStorage.read(secondLegacyTab.value)).not.toBeNull();
+        expect(cloneIds).toHaveLength(2);
+        expect(cloneIds.every((id) => sessionStorage.getItem(id) === null)).toBe(true);
         expect(sessionStorage.getItem("tabs")).not.toBeNull();
+        expect(sessionStorage.getItem("activeTab")).not.toBeNull();
         expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
-        expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+        expect(persistError.reportPersistError).toHaveBeenCalledWith(
+            expect.objectContaining({
+                message:
+                    "Could not open the game: the browser's session storage is full. Close some open tabs and try again.",
+                cause: cloneWriteError,
+            }),
+        );
     } finally {
         setItem.mockRestore();
     }
