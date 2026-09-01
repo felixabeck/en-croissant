@@ -31,13 +31,9 @@ import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
 import type { Outcome } from "@/bindings";
-import { type EngineLog, type GameConfig, type GameResult, type PlayerConfig } from "@/bindings";
+import { type EngineLog, type GameConfig, type GameResult } from "@/bindings";
 import type { ChessgroundRef } from "@/chessground/Chessground";
-import {
-  notifyListenerError,
-  notifyUnlessCancelled,
-  runUnlessCancelled,
-} from "@/components/files/notifyError";
+import { notifyListenerError, runUnlessCancelled } from "@/components/files/notifyError";
 import {
   activeTabAtom,
   flipBoardAfterMoveAtom,
@@ -74,6 +70,7 @@ import {
   SingleFlightGuard,
 } from "./gameSession";
 import { OpponentForm, type OpponentSettings } from "./OpponentForm";
+import { toPlayerConfig } from "./playerConfig";
 
 function gameResultToOutcome(result: GameResult): Outcome {
   if (result.type === "whiteWins") return "1-0";
@@ -82,44 +79,6 @@ function gameResultToOutcome(result: GameResult): Outcome {
 }
 
 type BackendMove = { uci: string; clock: number | null };
-
-export function toPlayerConfig(settings: OpponentSettings): PlayerConfig {
-  if (settings.type === "human") {
-    return {
-      type: "human",
-      name: settings.name ?? "Player",
-    };
-  }
-  if (!settings.engine || settings.engine.type !== "local") {
-    throw new Error("A local engine must be selected for an engine player");
-  }
-  return {
-    type: "engine",
-    name: settings.engine.name ?? "Engine",
-    engineId: settings.engine.id,
-    handle: settings.engine.handle,
-    options: (settings.engineSettings ?? settings.engine.settings ?? [])
-      .filter((setting) => setting.name !== "MultiPV")
-      .map((setting) =>
-        setting.type === "resource" ? setting : { ...setting, value: setting.value.toString() },
-      ),
-    go: settings.timeControl ? null : settings.go,
-  };
-}
-
-export async function fetchGameEngineLogs(
-  gameId: string,
-  expectedSession: bigint,
-  color: "white" | "black",
-  errorTitle: string,
-): Promise<EngineLog[] | undefined> {
-  try {
-    return await tauri.getGameEngineLogs(gameId, expectedSession, color);
-  } catch (error) {
-    notifyUnlessCancelled(errorTitle, error);
-    return undefined;
-  }
-}
 
 function mapBackendMoves(moves: { uci: string; clock: bigint | null }[]): BackendMove[] {
   return moves.map((m) => ({
@@ -285,7 +244,9 @@ function BoardGame() {
     } else if (players.black.type === "human" && players.white.type === "engine") {
       color = "white";
     }
-    const logs = await fetchGameEngineLogs(gameId, expectedSession, color, t("Common.Error"));
+    const logs = await runUnlessCancelled(t("Common.Error"), () =>
+      tauri.getGameEngineLogs(gameId, expectedSession, color),
+    );
     if (!logs) return;
     if (
       generation === sessionGenerationRef.current &&
