@@ -20,6 +20,8 @@ type Props = {
   };
   disabled?: boolean;
   redoable?: boolean;
+  /** When false, a succeeded progress job is not treated as the completed action. Default true. */
+  completeOnProgressSuccess?: boolean;
   inProgress: boolean;
   setInProgress: (inProgress: boolean) => void;
 };
@@ -33,20 +35,21 @@ function ProgressButton({
   labels,
   disabled,
   redoable,
+  completeOnProgressSuccess = true,
   inProgress,
   setInProgress,
 }: Props) {
   const { t } = useTranslation();
   const { progress, finished, isActive, clear, item } = useProgress(id);
-  const completed = initInstalled || item?.state === "succeeded";
+  const completed = initInstalled || (completeOnProgressSuccess && item?.state === "succeeded");
 
   const showProgress = isActive || inProgress;
 
   useEffect(() => {
-    if (finished) {
+    if (completeOnProgressSuccess && finished) {
       setInProgress(false);
     }
-  }, [finished, setInProgress]);
+  }, [completeOnProgressSuccess, finished, setInProgress]);
 
   const handleCancel = useCallback(async () => {
     if (onCancel) {

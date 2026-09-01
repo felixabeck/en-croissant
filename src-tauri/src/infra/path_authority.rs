@@ -6145,7 +6145,18 @@ mod tests {
         let engine_again = authority
             .register_engine_file(&engine, "engine")
             .expect("lookup of adopted engine");
+        let image_again = authority
+            .register_engine_image(&image, "image")
+            .expect("lookup of adopted image");
+        let book_again = authority
+            .register_opening_book(&book, "book")
+            .expect("lookup of adopted book");
         assert_eq!(engine_handle, engine_again);
+        assert_eq!(image_handle, image_again);
+        assert_eq!(book_handle, book_again);
+        authority
+            .engine_resource(&resource_handle)
+            .expect("adopted resource still resolves");
         assert_ne!(engine_handle.id, image_handle.id);
         assert_ne!(engine_handle.id, book_handle.id);
         assert_ne!(engine_handle.id, resource_handle.id);

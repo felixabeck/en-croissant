@@ -83,6 +83,81 @@ test("a failed download does not mark the engine as installed", async () => {
   expect(button?.disabled).toBe(false);
 });
 
+test("cancelled progress does not mark the action completed", async () => {
+  progress.item = { ...progress.item, state: "cancelled" };
+  const ProgressButton = (await import("./ProgressButton")).default;
+  await act(async () => {
+    root.render(
+      <ProgressButton
+        id="engine_0"
+        initInstalled={false}
+        onClick={() => undefined}
+        labels={{
+          completed: "Installed",
+          action: "Install",
+          inProgress: "Downloading",
+          finalizing: "Extracting",
+        }}
+        inProgress={false}
+        setInProgress={() => undefined}
+      />,
+    );
+  });
+  const button = host.querySelector("button");
+  expect(button?.textContent).toContain("Install");
+  expect(button?.disabled).toBe(false);
+});
+
+test("initInstalled marks the action completed even if progress failed", async () => {
+  const ProgressButton = (await import("./ProgressButton")).default;
+  await act(async () => {
+    root.render(
+      <ProgressButton
+        id="engine_0"
+        initInstalled
+        onClick={() => undefined}
+        labels={{
+          completed: "Installed",
+          action: "Install",
+          inProgress: "Downloading",
+          finalizing: "Extracting",
+        }}
+        inProgress={false}
+        setInProgress={() => undefined}
+      />,
+    );
+  });
+  const button = host.querySelector("button");
+  expect(button?.textContent).toContain("Installed");
+  expect(button?.disabled).toBe(true);
+});
+
+test("completeOnProgressSuccess false ignores a succeeded download job", async () => {
+  progress.item = { ...progress.item, state: "succeeded" };
+  const ProgressButton = (await import("./ProgressButton")).default;
+  await act(async () => {
+    root.render(
+      <ProgressButton
+        id="engine_0"
+        initInstalled={false}
+        completeOnProgressSuccess={false}
+        onClick={() => undefined}
+        labels={{
+          completed: "Installed",
+          action: "Install",
+          inProgress: "Downloading",
+          finalizing: "Extracting",
+        }}
+        inProgress={false}
+        setInProgress={() => undefined}
+      />,
+    );
+  });
+  const button = host.querySelector("button");
+  expect(button?.textContent).toContain("Install");
+  expect(button?.disabled).toBe(false);
+});
+
 test("a succeeded download marks the action completed", async () => {
   progress.item = { ...progress.item, state: "succeeded" };
   const ProgressButton = (await import("./ProgressButton")).default;

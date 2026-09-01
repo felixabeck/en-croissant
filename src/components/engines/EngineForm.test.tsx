@@ -145,3 +145,79 @@ test("notifies a real binary picker failure without attaching a handle", async (
     expect.objectContaining({ message: "permission denied" }),
   );
 });
+
+test("keeps the adopted binary handle when configuration fails", async () => {
+  const handle = { id: { id: "engine-capability" }, kind: "engine" as const };
+  mocks.issueEngineBinary.mockResolvedValue(handle);
+  mocks.getEngineConfig.mockRejectedValue(new Error("uciok timeout"));
+  const form = {
+    values: { filename: "", imageHandle: undefined },
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: () => () => undefined,
+  };
+  const EngineForm = (await import("./EngineForm")).default;
+
+  await act(async () => {
+    root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />);
+  });
+  await act(async () => {
+    host.querySelector("button")?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(form.setFieldValue).toHaveBeenCalledWith("handle", handle);
+  expect(form.setFieldValue).not.toHaveBeenCalledWith("filename", expect.anything());
+  expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ message: "uciok timeout" }));
+});
+
+test("does not attach an image handle when the image picker is cancelled", async () => {
+  mocks.issueEngineImage.mockRejectedValue(new Error("Cancellation"));
+  const form = {
+    values: { filename: "", imageHandle: undefined },
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: () => () => undefined,
+  };
+  const EngineForm = (await import("./EngineForm")).default;
+
+  await act(async () => {
+    root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />);
+  });
+  await act(async () => {
+    host.querySelectorAll("button")[1]?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(mocks.issueEngineImage).toHaveBeenCalledOnce();
+  expect(form.setFieldValue).not.toHaveBeenCalled();
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("notifies a real image picker failure without attaching a handle", async () => {
+  mocks.issueEngineImage.mockRejectedValue(new Error("permission denied"));
+  const form = {
+    values: { filename: "", imageHandle: undefined },
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: () => () => undefined,
+  };
+  const EngineForm = (await import("./EngineForm")).default;
+
+  await act(async () => {
+    root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />);
+  });
+  await act(async () => {
+    host.querySelectorAll("button")[1]?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(form.setFieldValue).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({ message: "permission denied" }),
+  );
+});

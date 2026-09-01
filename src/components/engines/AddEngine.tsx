@@ -26,7 +26,7 @@ import {
   type DefaultEngine,
   type RemoteEngine,
   installDefaultEngine,
-  isManifestEngineInstalled,
+  manifestEngineInstallCard,
   useDefaultEngines,
 } from "@/utils/engines";
 import { usePlatform } from "@/utils/files";
@@ -94,14 +94,17 @@ function AddEngine({
           )}
           <ScrollArea.Autosize mah={720} offsetScrollbars>
             <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="sm">
-              {defaultEngines?.map((engine, i) => (
-                <EngineCard
-                  engine={engine}
-                  engineId={i}
-                  key={engine.downloadLink ?? engine.path}
-                  initInstalled={isManifestEngineInstalled(engines, engine)}
-                />
-              ))}
+              {defaultEngines?.map((engine) => {
+                const card = manifestEngineInstallCard(engines, engine);
+                return (
+                  <EngineCard
+                    engine={engine}
+                    key={card.progressId ?? engine.path}
+                    progressId={card.progressId}
+                    initInstalled={card.initInstalled}
+                  />
+                );
+              })}
               {error && (
                 <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="red">
                   {t("Engines.Add.ErrorFetch")}
@@ -202,36 +205,36 @@ function CloudCard({ engine }: { engine: RemoteEngine }) {
 
 function EngineCard({
   engine,
-  engineId,
+  progressId,
   initInstalled,
 }: {
   engine: DefaultEngine;
-  engineId: number;
+  progressId: string | null;
   initInstalled: boolean;
 }) {
   const { t } = useTranslation();
 
   const [inProgress, setInProgress] = useState<boolean>(false);
+  const [installedThisSession, setInstalledThisSession] = useState(false);
   const [, setEngines] = useAtom(enginesAtom);
-  const downloadEngine = useCallback(
-    async (id: number) => {
-      const progressId = `engine_${id}`;
-      setInProgress(true);
+  const downloadEngine = useCallback(async () => {
+    if (!progressId) return;
+    setInProgress(true);
+    try {
+      const installed = await installDefaultEngine(engine, progressId);
+      setEngines(async (prev) => [...(await prev), installed]);
+      setInstalledThisSession(true);
+    } catch (error) {
+      notifyUnlessCancelled(t("Common.Error"), error);
       try {
-        const installed = await installDefaultEngine(engine, progressId);
-        setEngines(async (prev) => [...(await prev), installed]);
-      } catch (error) {
-        notifyUnlessCancelled(t("Common.Error"), error);
-        setInProgress(false);
-        try {
-          await tauri.clearProgress(progressId);
-        } catch {
-          // ProgressButton does not treat failed/cancelled as installed.
-        }
+        await tauri.clearProgress(progressId);
+      } catch {
+        // Installed state comes from the engine list, not from download success.
       }
-    },
-    [engine, setEngines, t],
-  );
+    } finally {
+      setInProgress(false);
+    }
+  }, [engine, progressId, setEngines, t]);
 
   return (
     <Paper withBorder radius="md" p={0} key={engine.name}>
@@ -256,22 +259,24 @@ function EngineCard({
             <IconDatabase size="1rem" />
             <Text size="xs">{formatBytes(engine.downloadSize ?? 0)}</Text>
           </Group>
-          <ProgressButton
-            id={`engine_${engineId}`}
-            initInstalled={initInstalled}
-            labels={{
-              completed: t("Common.Installed"),
-              action: t("Common.Install"),
-              inProgress: t("Common.Downloading"),
-              finalizing: t("Common.Extracting"),
-            }}
-            onClick={() => {
-              if (!engine.downloadLink) return;
-              void downloadEngine(engineId);
-            }}
-            inProgress={inProgress}
-            setInProgress={setInProgress}
-          />
+          {progressId && (
+            <ProgressButton
+              id={progressId}
+              initInstalled={initInstalled || installedThisSession}
+              completeOnProgressSuccess={false}
+              labels={{
+                completed: t("Common.Installed"),
+                action: t("Common.Install"),
+                inProgress: t("Common.Downloading"),
+                finalizing: t("Common.Extracting"),
+              }}
+              onClick={() => {
+                void downloadEngine();
+              }}
+              inProgress={inProgress}
+              setInProgress={setInProgress}
+            />
+          )}
         </Box>
       </Group>
     </Paper>

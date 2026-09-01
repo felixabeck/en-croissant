@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
     defaultEngineManifestSchema,
+    defaultEngineProgressId,
     engineSchema,
+    isEngineResourcePathOptionName,
     isManifestEngineInstalled,
+    manifestEngineInstallCard,
+    parsePersistedEngineJson,
     type LocalEngine,
 } from "./engines";
 
@@ -88,6 +92,29 @@ describe("default-engine installed identity", () => {
             }),
         ).toBe(false);
     });
+
+    it("keys progress and installed state by download URL, not name or array index", () => {
+        const renamed = { ...stockfish, name: "My Fish" };
+        const card = manifestEngineInstallCard([renamed], {
+            downloadLink: stockfish.downloadLink,
+        });
+        expect(card).toEqual({
+            progressId: defaultEngineProgressId(stockfish.downloadLink!),
+            initInstalled: true,
+        });
+        expect(card.progressId).not.toBe("engine_0");
+        expect(
+            manifestEngineInstallCard([stockfish], {
+                downloadLink: "https://www.encroissant.org/engines/stockfish-dev.zip",
+            }).initInstalled,
+        ).toBe(false);
+    });
+
+    it("treats NalimovPath as a resource path option like SyzygyPath", () => {
+        expect(isEngineResourcePathOptionName("NalimovPath")).toBe(true);
+        expect(isEngineResourcePathOptionName("SyzygyPath")).toBe(true);
+        expect(isEngineResourcePathOptionName("MultiPV")).toBe(false);
+    });
 });
 
 describe("engine persistence", () => {
@@ -101,6 +128,35 @@ describe("engine persistence", () => {
                 filename: "stockfish",
                 handle: { id: { id: "capability-1" }, kind: "engine" },
             }).success,
+        ).toBe(true);
+    });
+
+    it("rejects a handle that is not an opaque capability object", () => {
+        expect(
+            engineSchema.safeParse({
+                type: "local",
+                id: "engine-1",
+                name: "Stockfish",
+                version: "17",
+                filename: "stockfish",
+                handle: "/usr/bin/stockfish",
+            }).success,
+        ).toBe(false);
+    });
+
+    it("parsePersistedEngineJson rejects invalid JSON instead of throwing", () => {
+        expect(parsePersistedEngineJson("{")).toEqual({ success: false });
+        expect(
+            parsePersistedEngineJson(
+                JSON.stringify({
+                    type: "local",
+                    id: "engine-1",
+                    name: "Stockfish",
+                    version: "17",
+                    filename: "stockfish",
+                    handle: { id: { id: "capability-1" }, kind: "engine" },
+                }),
+            ).success,
         ).toBe(true);
     });
 

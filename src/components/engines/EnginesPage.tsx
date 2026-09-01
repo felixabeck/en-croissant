@@ -43,8 +43,10 @@ import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { enginesAtom } from "@/state/atoms";
 import {
+  isEngineResourceFileOptionName,
+  isEngineResourcePathOptionName,
+  parsePersistedEngineJson,
   type Engine,
-  engineSchema,
   type LocalEngine,
   engineOptionValue,
   retireEngine,
@@ -489,7 +491,7 @@ function EngineSettings({
                   );
                 })
                 .with({ type: "string", value: P.select() }, (v: any) => {
-                  if (v.name.toLowerCase() === "syzygypath") {
+                  if (isEngineResourcePathOptionName(v.name)) {
                     return (
                       <Group key={v.name} align="end" wrap="nowrap">
                         <TextInput
@@ -517,7 +519,7 @@ function EngineSettings({
                       </Group>
                     );
                   }
-                  if (v.name.toLowerCase().includes("file")) {
+                  if (isEngineResourceFileOptionName(v.name)) {
                     return (
                       <Button
                         key={v.name}
@@ -663,6 +665,12 @@ function JSONModal({
 
   const [value, setValue] = useState(JSON.stringify(engine, null, 2));
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (opened) {
+      setValue(JSON.stringify(engine, null, 2));
+      setError(null);
+    }
+  }, [opened, engine]);
   return (
     <AppModal
       opened={opened}
@@ -682,13 +690,13 @@ function JSONModal({
       <Space h="md" />
       <Button
         onClick={() => {
-          const parseRes = engineSchema.safeParse(JSON.parse(value));
+          const parseRes = parsePersistedEngineJson(value);
           if (parseRes.success) {
             setEngine(parseRes.data);
             setError(null);
             toggleOpened();
           } else {
-            setError("Invalid Configuration"); // TODO: show better error message
+            setError("Invalid Configuration");
           }
         }}
       >

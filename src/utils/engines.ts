@@ -53,9 +53,16 @@ const engineSettingsSchema: z.ZodType<EngineOption[]> = z.array(
 
 export type EngineSettings = z.infer<typeof engineSettingsSchema>;
 
+export function isEngineResourcePathOptionName(name: string): boolean {
+    return name.toLocaleLowerCase().includes("path");
+}
+
+export function isEngineResourceFileOptionName(name: string): boolean {
+    return name.toLocaleLowerCase().includes("file");
+}
+
 export function isEngineResourceOptionName(name: string): boolean {
-    const normalized = name.toLocaleLowerCase();
-    return normalized.includes("path") || normalized.includes("file");
+    return isEngineResourcePathOptionName(name) || isEngineResourceFileOptionName(name);
 }
 
 export function engineOptionValue(option: EngineOption): string | undefined {
@@ -79,12 +86,17 @@ const engineImageHandleSchema: z.ZodType<EngineImageHandle> = z.object({
     kind: z.literal("engineImage"),
 });
 
+const engineHandleSchema: z.ZodType<EngineHandle> = z.object({
+    id: z.object({ id: z.string().min(1) }),
+    kind: z.literal("engine"),
+});
+
 const localEngineSchema = z.object({
     type: z.literal("local"),
     id: z.string().default(() => crypto.randomUUID()),
     name: z.string(),
     version: z.string(),
-    handle: z.custom<EngineHandle>(),
+    handle: engineHandleSchema,
     filename: z.string().min(1),
     imageHandle: engineImageHandleSchema.nullish(),
     elo: z.number().nullish(),
@@ -104,6 +116,24 @@ export function isManifestEngineInstalled(
 ): boolean {
     const link = manifest.downloadLink;
     return Boolean(link) && installed.some((engine) => engine.downloadLink === link);
+}
+
+export function defaultEngineProgressId(downloadLink: string): string {
+    return `engine:${downloadLink}`;
+}
+
+export function manifestEngineInstallCard(
+    installed: readonly LocalEngine[],
+    manifest: { downloadLink?: string | null },
+): { progressId: string | null; initInstalled: boolean } {
+    const link = manifest.downloadLink;
+    if (!link) {
+        return { progressId: null, initInstalled: false };
+    }
+    return {
+        progressId: defaultEngineProgressId(link),
+        initInstalled: isManifestEngineInstalled(installed, { downloadLink: link }),
+    };
 }
 
 export async function registerInstalledEngineHandle(
@@ -187,6 +217,16 @@ export type RemoteEngine = z.output<typeof remoteEngineSchema>;
 
 export const engineSchema = z.union([localEngineSchema, remoteEngineSchema]);
 export type Engine = z.output<typeof engineSchema>;
+
+export function parsePersistedEngineJson(value: string) {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(value);
+    } catch {
+        return { success: false as const };
+    }
+    return engineSchema.safeParse(parsed);
+}
 
 export async function stopEngine(engine: LocalEngine, tab: string): Promise<void> {
     await tauri.stopEngine(engine.id, tab);

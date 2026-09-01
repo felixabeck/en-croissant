@@ -20,6 +20,7 @@ export default function EngineForm({
   const { t } = useTranslation();
 
   const config = useRef<{ name: string; options: UciOptionConfig[] } | null>(null);
+  const pickerGeneration = useRef(0);
   const settings = config.current?.options
     .filter((o) => requiredEngineSettings.includes(o.value.name))
     .filter((o) => o.type !== "button")
@@ -41,10 +42,13 @@ export default function EngineForm({
         filename={form.values.filename}
         withAsterisk
         onClick={() => {
+          const generation = ++pickerGeneration.current;
           void runUnlessCancelled(t("Common.Error"), async () => {
             const handle = await tauri.issueEngineBinary();
-            config.current = await tauri.getEngineConfig(handle);
+            if (generation !== pickerGeneration.current) return handle;
             form.setFieldValue("handle", handle);
+            config.current = await tauri.getEngineConfig(handle);
+            if (generation !== pickerGeneration.current) return handle;
             form.setFieldValue("filename", config.current.name || "Engine");
             form.setFieldValue("name", config.current.name);
             return handle;
@@ -73,8 +77,10 @@ export default function EngineForm({
           component="button"
           type="button"
           onClick={() => {
+            const generation = ++pickerGeneration.current;
             void runUnlessCancelled(t("Common.Error"), async () => {
               const imageHandle = await tauri.issueEngineImage();
+              if (generation !== pickerGeneration.current) return imageHandle;
               form.setFieldValue("imageHandle", imageHandle);
               return imageHandle;
             });
