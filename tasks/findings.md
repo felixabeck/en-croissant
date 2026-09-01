@@ -4330,3 +4330,15 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 * **Why it matters:** the gate stops *new* modules; it does not stop a new `std::fs::write` in `main.rs` except via the per-file count (same-count substitution on one line still passes). Emptying the allowlist is what makes the convention true.
 * **Fix shape:** route each remaining production site through PathAuthority / descriptor `*_at` forms, then shrink the allowlist and counts to empty. Related: f-20260830-23 (the gate; Root `-`, so named here rather than shared). Do not reopen clippy.toml (`d-20260901-02`).
 * **Found by:** Grok, drain session d0b4541b, while closing f-20260830-23, 2026-09-01.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### Engine registration callers drop CommittedDurabilityUncertain without recovering the adopted handle
+
+* **ID:** f-20260901-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/engines/EngineForm.tsx`, `src/components/engines/EnginesPage.tsx`, `src/components/engines/AddEngine.tsx`, `src/components/boards/BoardGame.tsx`
+* **Defect:** after `dd2c0f58`, engine binary/resource/image/opening-book registration adopts the registry record then returns `CommittedDurabilityUncertain` when parent sync fails. File and database create paths recover that category (`runAppliedMutationWithRefresh` / `runWithAppliedRecovery`). Engine callers treat it as a hard failure and lose the adopted handle, leaving a UUID-named image unattached.
+* **Related:** f-20260831-02 (handled). Root `-` so named here rather than shared. Found during cumulative review of the native-fs download/registry slice.
+* **Entry `lens`:** apply the existing `applied-despite-error` helpers; one `review-error-handling` pass.
