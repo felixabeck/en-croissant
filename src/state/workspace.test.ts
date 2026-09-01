@@ -1,6 +1,6 @@
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { defaultTree } from "@/utils/treeReducer";
-import { serializeStorageValue } from "./store/debouncedStorage";
+import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import { tabStorage } from "./store/tabStorage";
 import {
     createWorkspaceStorage,
@@ -9,6 +9,9 @@ import {
     scrubInvalidLegacyTreeKeys,
     WORKSPACE_STORAGE_KEY,
 } from "./workspace";
+
+const native = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock("@/platform/native", () => native);
 
 const legacyTab = {
     name: "Legacy",
@@ -20,6 +23,16 @@ const legacyTab = {
 function workspaceStorage() {
     return createWorkspaceStorage(sessionStorage);
 }
+
+function readStoredWorkspace() {
+    const raw = sessionStorage.getItem(WORKSPACE_STORAGE_KEY)!;
+    return deserializeStorageValue<unknown>(raw) ?? JSON.parse(raw);
+}
+
+afterEach(() => {
+    native.warn.mockClear();
+    vi.restoreAllMocks();
+});
 
 test("default workspace is a complete, current envelope with one active new tab", () => {
     sessionStorage.clear();
@@ -88,6 +101,104 @@ test("migrates separate legacy keys, repairs IDs, and keeps tree state", () => {
     expect(sessionStorage.getItem("activeTab")).toBeNull();
     expect(sessionStorage.getItem("42")).toBeNull();
     expect(workspace.tabs.every((tab) => sessionStorage.getItem(tab.value) !== null)).toBe(true);
+    expect(readStoredWorkspace()).toEqual(workspace);
+});
+
+test("rolls back staged clones and preserves legacy storage when the envelope write fails", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem("tabs", JSON.stringify([legacyTab]));
+    sessionStorage.setItem("activeTab", JSON.stringify(legacyTab.value));
+    const legacyTree = serializeStorageValue({ version: 0, state: defaultTree() });
+    sessionStorage.setItem(legacyTab.value, legacyTree);
+    const stagedCloneIds: string[] = [];
+    const originalSetItem = Storage.prototype.setItem;
+    const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (key, value) {
+            if (key === WORKSPACE_STORAGE_KEY) {
+                throw new DOMException("quota", "QuotaExceededError");
+            }
+            if (key !== legacyTab.value && key !== "tabs" && key !== "activeTab") {
+                stagedCloneIds.push(key);
+            }
+            return originalSetItem.call(this, key, value);
+        });
+
+    try {
+        const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+
+        expect(workspace.tabs).toEqual([legacyTab]);
+        expect(workspace.activeTab).toBe(legacyTab.value);
+        expect(sessionStorage.getItem("tabs")).not.toBeNull();
+        expect(sessionStorage.getItem("activeTab")).not.toBeNull();
+        expect(tabStorage.read(legacyTab.value)?.state).toMatchObject({ root: defaultTree().root });
+        expect(stagedCloneIds).toHaveLength(1);
+        expect(sessionStorage.getItem(stagedCloneIds[0]!)).toBeNull();
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+    } finally {
+        setItem.mockRestore();
+    }
+});
+
+test("successfully retries migration after a failed envelope write", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem("tabs", JSON.stringify([legacyTab]));
+    sessionStorage.setItem("activeTab", JSON.stringify(legacyTab.value));
+    sessionStorage.setItem(
+        legacyTab.value,
+        serializeStorageValue({ version: 0, state: defaultTree() }),
+    );
+    const originalSetItem = Storage.prototype.setItem;
+    const failedWrite = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (key, value) {
+            if (key === WORKSPACE_STORAGE_KEY) {
+                throw new DOMException("quota", "QuotaExceededError");
+            }
+            return originalSetItem.call(this, key, value);
+        });
+    workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    failedWrite.mockRestore();
+
+    const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+
+    expect(workspace.tabs[0].value).not.toBe(legacyTab.value);
+    expect(tabStorage.read(workspace.tabs[0].value)).not.toBeNull();
+    expect(sessionStorage.getItem(legacyTab.value)).toBeNull();
+    expect(sessionStorage.getItem("tabs")).toBeNull();
+    expect(sessionStorage.getItem("activeTab")).toBeNull();
+    expect(readStoredWorkspace()).toEqual(workspace);
+});
+
+test("rewrites a pretty-printed JSON envelope in compressed form", () => {
+    sessionStorage.clear();
+    const valid = { ...legacyTab, value: crypto.randomUUID() };
+    const workspace = { version: 1, tabs: [valid], activeTab: valid.value } as const;
+    const prettyJson = JSON.stringify(workspace, null, 2);
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, prettyJson);
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+    const result = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+
+    expect(result).toEqual(workspace);
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(serializeStorageValue(result));
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).not.toBe(prettyJson);
+    expect(setItem).toHaveBeenCalledWith(WORKSPACE_STORAGE_KEY, serializeStorageValue(result));
+    setItem.mockRestore();
+});
+
+test("does not rewrite an already matching compressed envelope", () => {
+    sessionStorage.clear();
+    const valid = { ...legacyTab, value: crypto.randomUUID() };
+    const workspace = { version: 1, tabs: [valid], activeTab: valid.value } as const;
+    sessionStorage.setItem(WORKSPACE_STORAGE_KEY, serializeStorageValue(workspace));
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+    expect(workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace())).toEqual(
+        workspace,
+    );
+    expect(setItem).not.toHaveBeenCalled();
+    setItem.mockRestore();
 });
 
 test("corrupt workspace storage recovers to a valid single-tab envelope", () => {
@@ -97,7 +208,7 @@ test("corrupt workspace storage recovers to a valid single-tab envelope", () => 
 
     expect(workspace.tabs).toHaveLength(1);
     expect(workspace.activeTab).toBe(workspace.tabs[0].value);
-    expect(JSON.parse(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)!)).toMatchObject({
+    expect(readStoredWorkspace()).toMatchObject({
         version: 1,
     });
 });
@@ -123,7 +234,7 @@ test("scrubs corrupt legacy tab entries without discarding valid neighbouring ta
     expect(workspace.tabs).toEqual([validTab]);
     expect(workspace.activeTab).toBe(validTab.value);
     expect(sessionStorage.getItem("orphan-tree")).toBeNull();
-    expect(JSON.parse(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)!)).toEqual({
+    expect(readStoredWorkspace()).toEqual({
         version: 1,
         tabs: [validTab],
         activeTab: validTab.value,
@@ -267,7 +378,7 @@ test("setItem repairs IDs and removeItem removes only its requested envelope", (
         tabs: [legacyTab],
         activeTab: legacyTab.value,
     });
-    const stored = JSON.parse(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)!);
+    const stored = readStoredWorkspace() as { tabs: Array<{ value: string }>; activeTab: string };
     expect(stored.tabs[0].value).toMatch(/^[0-9a-f]{8}-/i);
     expect(stored.activeTab).toBe(stored.tabs[0].value);
 

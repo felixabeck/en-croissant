@@ -1,5 +1,6 @@
 import type { SyncStorage, SyncStringStorage } from "jotai/vanilla/utils/atomWithStorage";
 import { z } from "zod";
+import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import { tabStorage } from "./store/tabStorage";
 import { newWorkspaceId, tabSchema, type Tab } from "./workspaceTypes";
 
@@ -39,13 +40,29 @@ export function defaultWorkspace(): Workspace {
     return { version: WORKSPACE_VERSION, tabs: [first], activeTab: first.value };
 }
 
-function repairWorkspace(input: unknown): Workspace {
+type WorkspaceRepairPlan = {
+    workspace: Workspace;
+    unrepairedWorkspace: Workspace;
+    cloneTargets: Array<{ sourceId: string; targetId: string }>;
+    oldIdsToRemove: Set<string>;
+};
+
+function planWorkspaceRepair(input: unknown): WorkspaceRepairPlan {
     const inputResult = workspaceInputSchema.safeParse(input);
-    if (!inputResult.success) return defaultWorkspace();
+    if (!inputResult.success) {
+        const workspace = defaultWorkspace();
+        return {
+            workspace,
+            unrepairedWorkspace: workspace,
+            cloneTargets: [],
+            oldIdsToRemove: new Set(),
+        };
+    }
     const parsed = inputResult.data;
     const candidates = parsed.tabs;
     const ids = new Set<string>();
     const oldIdsToRemove = new Set<string>();
+    const cloneTargets: WorkspaceRepairPlan["cloneTargets"] = [];
     const tabs = candidates.map((tab) => {
         if (uuidSchema.safeParse(tab.value).success && !ids.has(tab.value)) {
             ids.add(tab.value);
@@ -53,25 +70,31 @@ function repairWorkspace(input: unknown): Workspace {
         }
 
         const migratedId = newWorkspaceId(ids);
-        // Tree state is keyed by tab ID. Copy first so a failed storage write never
-        // destroys a recoverable legacy tree; only uniquely-owned old IDs are removed.
-        tabStorage.clone(tab.value, migratedId);
+        cloneTargets.push({ sourceId: tab.value, targetId: migratedId });
         if (!ids.has(tab.value)) oldIdsToRemove.add(tab.value);
         ids.add(migratedId);
         return { ...tab, value: migratedId };
     });
 
-    // ID migration is startup work, not an edit: commit copied trees before removing
-    // their legacy keys so a restart cannot lose a tab between the two operations.
-    if (oldIdsToRemove.size > 0) tabStorage.flush();
-    for (const id of oldIdsToRemove) tabStorage.remove(id);
     if (tabs.length === 0) tabs.push(newTab(ids));
-
     const legacyActive = parsed.activeTab;
     const activeTab = tabs.some((tab) => tab.value === legacyActive)
         ? legacyActive
         : tabs[0]!.value;
-    return { version: WORKSPACE_VERSION, tabs, activeTab };
+    const unrepairedTabs = candidates.length > 0 ? candidates : tabs;
+    const unrepairedActiveTab = unrepairedTabs.some((tab) => tab.value === legacyActive)
+        ? legacyActive
+        : unrepairedTabs[0]!.value;
+    return {
+        workspace: { version: WORKSPACE_VERSION, tabs, activeTab },
+        unrepairedWorkspace: {
+            version: WORKSPACE_VERSION,
+            tabs: unrepairedTabs,
+            activeTab: unrepairedActiveTab,
+        },
+        cloneTargets,
+        oldIdsToRemove,
+    };
 }
 
 export function scrubInvalidLegacyTreeKeys(input: unknown, retainedTabs: readonly Tab[]) {
@@ -85,8 +108,11 @@ export function scrubInvalidLegacyTreeKeys(input: unknown, retainedTabs: readonl
 
 export function readWorkspaceJson(storage: SyncStringStorage, key: string): unknown | null {
     const raw = storage.getItem(key);
+    if (raw === null) return null;
+    const decoded = deserializeStorageValue<unknown>(raw);
+    if (decoded !== null) return decoded;
     try {
-        return JSON.parse(raw ?? "null") as unknown;
+        return JSON.parse(raw) as unknown;
     } catch {
         return null;
     }
@@ -100,6 +126,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createWorkspaceStorage(storage: SyncStringStorage): SyncStorage<Workspace> {
     return {
         getItem(key, _initialValue) {
+            const storedWorkspace = storage.getItem(key);
             const current = readWorkspaceJson(storage, key);
             const legacy =
                 current ??
@@ -107,16 +134,41 @@ export function createWorkspaceStorage(storage: SyncStringStorage): SyncStorage<
                     tabs: readWorkspaceJson(storage, "tabs"),
                     activeTab: readWorkspaceJson(storage, "activeTab"),
                 } as const);
-            const workspace = repairWorkspace(legacy);
-            const result = workspace;
-            scrubInvalidLegacyTreeKeys(legacy, result.tabs);
-            storage.setItem(key, JSON.stringify(result));
+            const plan = planWorkspaceRepair(legacy);
+            const stagedCloneIds = plan.cloneTargets.map(({ targetId }) => targetId);
+            for (const { sourceId, targetId } of plan.cloneTargets) {
+                tabStorage.clone(sourceId, targetId);
+            }
+            if (stagedCloneIds.length > 0) {
+                const failedIds = new Set(tabStorage.flush());
+                if (stagedCloneIds.some((id) => failedIds.has(id))) {
+                    for (const id of stagedCloneIds) tabStorage.remove(id);
+                    return plan.unrepairedWorkspace;
+                }
+            }
+
+            const payload = serializeStorageValue(plan.workspace);
+            const cleanupPending =
+                plan.cloneTargets.length > 0 ||
+                storage.getItem("tabs") !== null ||
+                storage.getItem("activeTab") !== null;
+            if (storedWorkspace !== payload || cleanupPending) {
+                try {
+                    storage.setItem(key, payload);
+                } catch {
+                    for (const id of stagedCloneIds) tabStorage.remove(id);
+                    return plan.unrepairedWorkspace;
+                }
+            }
+
+            scrubInvalidLegacyTreeKeys(legacy, plan.workspace.tabs);
+            for (const id of plan.oldIdsToRemove) tabStorage.remove(id);
             storage.removeItem("tabs");
             storage.removeItem("activeTab");
-            return result;
+            return plan.workspace;
         },
         setItem(key, value) {
-            storage.setItem(key, JSON.stringify(repairWorkspace(value)));
+            storage.setItem(key, serializeStorageValue(planWorkspaceRepair(value).workspace));
         },
         removeItem(key) {
             storage.removeItem(key);
