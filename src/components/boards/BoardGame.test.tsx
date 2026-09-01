@@ -10,7 +10,7 @@ vi.mock("@/platform/tauri", () => ({
   tauri: { getGameEngineLogs: mocks.getGameEngineLogs },
   tauriSubscriptions: {},
 }));
-vi.mock("@tauri-apps/plugin-os", () => ({
+vi.mock("@/platform/native", () => ({
   platform: () => "linux",
 }));
 vi.mock("@/components/files/notifyError", () => ({
