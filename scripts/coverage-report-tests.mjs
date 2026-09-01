@@ -20,6 +20,11 @@ import {
   matches,
   normalisePath,
 } from "./coverage-scope.mjs";
+import {
+  formatExportCrashMessage,
+  llvmCovExportArgs,
+  probeCrashingSources,
+} from "./rust-branch-coverage.mjs";
 
 const config = {
   version: 1,
@@ -330,10 +335,64 @@ test("writes a baseline with exact integer totals", async () => {
   assert.doesNotThrow(() => assertBaseline(areas, baseline));
 });
 
+test("scopeSignature normalises exclude through excludePatterns", () => {
+  const source = {
+    id: "backend",
+    root: "src-tauri/src",
+    include: ["src-tauri/src/**/*.rs"],
+    exclude: ["src-tauri/src/db/schema.rs", { pattern: "src-tauri/src/**/mod.rs" }],
+  };
+  const signature = scopeSignature({
+    sources: [source],
+    areas: [{ id: "infra", source: "backend", paths: ["src-tauri/src/infra/**"] }],
+  });
+  assert.deepEqual(signature.sources[0].exclude, [...excludePatterns(source)].sort());
+});
+
+test("bulk llvm-cov export and the crash probe share one argument builder", () => {
+  const profilePath = "/tmp/src-tauri.profdata";
+  const executable = "/tmp/en_croissant-deadbeef";
+  const sources = ["/repo/src-tauri/src/chess.rs", "/repo/src-tauri/src/game.rs"];
+  const bulk = llvmCovExportArgs(profilePath, executable, sources);
+  const probe = llvmCovExportArgs(profilePath, executable, [sources[0]]);
+  assert.deepEqual(bulk.slice(0, 5), [
+    "export",
+    "-format=lcov",
+    `-instr-profile=${profilePath}`,
+    executable,
+    "-sources",
+  ]);
+  assert.deepEqual(bulk.slice(0, 5), probe.slice(0, 5));
+  assert.deepEqual(bulk.slice(5), sources);
+  assert.deepEqual(probe.slice(5), [sources[0]]);
+});
+
+test("signal diagnostic names the crashing source without a retracted cause", () => {
+  const attempt = (_command, argumentsList) => {
+    const source = argumentsList.at(-1);
+    return source === "src-tauri/src/db/schema.rs"
+      ? { signal: "SIGSEGV", status: null }
+      : { signal: null, status: 0 };
+  };
+  const sources = ["src-tauri/src/chess.rs", "src-tauri/src/db/schema.rs"];
+  const offenders = probeCrashingSources(
+    attempt,
+    "llvm-cov",
+    "/tmp/src-tauri.profdata",
+    "/tmp/en_croissant-deadbeef",
+    sources,
+  );
+  assert.deepEqual(offenders, ["src-tauri/src/db/schema.rs"]);
+  const message = formatExportCrashMessage(offenders, (source) => source);
+  assert.match(message, /src-tauri\/src\/db\/schema\.rs/);
+  assert.match(message, /llvm\/llvm-project#119558/);
+  assert.doesNotMatch(message, /no coverage records/);
+});
+
 test("matches exclude entries as globs, not as exact paths", () => {
-  // The Rust coverage gate used to compare these as literal paths, so a glob
-  // entry silently excluded nothing and its file reached llvm-cov's -sources,
-  // where a file with no coverage records segfaults the exporter.
+  // Both coverage-report.mjs and rust-branch-coverage.mjs honour these as globs
+  // through coverage-scope.mjs. A literal-path comparison would silently exclude
+  // nothing, and the file would reach llvm-cov -sources.
   const source = { exclude: [{ pattern: "src-tauri/src/**/mod.rs" }] };
   assert.equal(excluded("src-tauri/src/infra/mod.rs", source), true);
   assert.equal(excluded("src-tauri/src/db/mod.rs", source), true);

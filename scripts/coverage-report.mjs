@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { excluded, matches, normalisePath } from "./coverage-scope.mjs";
+import { excluded, excludePatterns, matches, normalisePath } from "./coverage-scope.mjs";
 
 const METRICS = ["lines", "functions", "branches"];
 
@@ -178,9 +178,7 @@ export function scopeSignature(config) {
       id: source.id,
       root: source.root,
       include: [...source.include].sort(),
-      exclude: source.exclude
-        .map((entry) => (typeof entry === "string" ? entry : entry.pattern))
-        .sort(),
+      exclude: [...excludePatterns(source)].sort(),
     })),
     areas: config.areas.map((area) => ({
       id: area.id,
