@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { BRIDGE_LINE_CAP, checkSkillBridges } from "./check-skill-bridges.mjs";
+import { gitInit } from "./test-git-init.mjs";
 
 const checkerPath = fileURLToPath(new URL("./check-skill-bridges.mjs", import.meta.url));
 
@@ -26,11 +27,6 @@ function canonical(name) {
 function bridge(name) {
   const pointer = [".claude", "skills", name, "SKILL.md"].join("/");
   return `---\nname: ${name}\n---\n\n# ${name} (Codex bridge)\n\nRead \`${pointer}\` first.\n`;
-}
-
-function gitInit(root) {
-  const result = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
 }
 
 async function fixture() {
@@ -70,6 +66,37 @@ test("rejects a bridge that only mentions the canonical path in a negation", asy
     `---\nname: push\n---\n\nDo not read \`${pointer}\`.\nThen copy these divergent instructions.\n`,
   );
   assert.match((await checkSkillBridges(root)).join("\n"), /does not point at/u);
+});
+
+test("rejects a bridge that mentions the path only as something not to read", async () => {
+  const root = await fixture();
+  const pointer = [".claude", "skills", "push", "SKILL.md"].join("/");
+  await write(
+    root,
+    skillPath(".agents", "push"),
+    `---\nname: push\n---\n\nThe canonical path \`${pointer}\` is not to be read.\n`,
+  );
+  assert.match((await checkSkillBridges(root)).join("\n"), /does not point at/u);
+});
+
+test("does not treat a suffixed path as a canonical pointer", async () => {
+  const root = await fixture();
+  const pointer = [".claude", "skills", "push", "SKILL.md"].join("/");
+  await write(
+    root,
+    skillPath(".agents", "push"),
+    `---\nname: push\n---\n\nRead \`${pointer}.bak\` first.\n`,
+  );
+  assert.match((await checkSkillBridges(root)).join("\n"), /does not point at/u);
+});
+
+test("ignores nested ignored directories, not only the repo root", async () => {
+  const root = await fixture();
+  const prefix = "The gates live in ";
+  const marker = ".agents/skills/push/SKILL.md";
+  const suffix = " as the single source of truth.";
+  await write(root, "src/node_modules/evil.md", `${prefix}${marker}${suffix}\n`);
+  assert.deepEqual(await checkSkillBridges(root), []);
 });
 
 test("keeps bridges below the line cap", async () => {

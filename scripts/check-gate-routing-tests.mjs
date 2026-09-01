@@ -1,20 +1,15 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { chmod, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { checkGateRouting } from "./check-gate-routing.mjs";
+import { gitInit } from "./test-git-init.mjs";
 
 async function write(root, relativePath, contents) {
   const path = join(root, relativePath);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, contents);
-}
-
-function gitInit(root) {
-  const result = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
 }
 
 async function fixture() {
@@ -48,17 +43,17 @@ async function fixture() {
   return root;
 }
 
-const tracked = ["scripts/check-example.mjs"];
+const paths = ["scripts/check-example.mjs"];
 
 test("accepts routed tests, nested scripts, allowed tools, and live sensitive globs", async () => {
   const root = await fixture();
-  assert.deepEqual(await checkGateRouting(root, { tracked }), []);
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
 });
 
 test("rejects an unrouted node:test file", async () => {
   const root = await fixture();
   await write(root, "scripts/orphan-tests.mjs", "\n");
-  assert.match((await checkGateRouting(root, { tracked })).join("\n"), /orphan-tests/u);
+  assert.match((await checkGateRouting(root, { paths })).join("\n"), /orphan-tests/u);
 });
 
 test("recognises every repository test shape and executable checkers regardless of name", async () => {
@@ -73,7 +68,7 @@ test("recognises every repository test shape and executable checkers regardless 
   await write(root, "scripts/validate-example.mjs", "#!/usr/bin/env node\n");
   await chmod(join(root, "scripts/validate-example.mjs"), 0o755);
 
-  const problems = (await checkGateRouting(root, { tracked })).join("\n");
+  const problems = (await checkGateRouting(root, { paths })).join("\n");
   assert.match(problems, /python-tests\.py/u);
   assert.match(problems, /python_test\.py/u);
   assert.match(problems, /shell-tests\.sh/u);
@@ -83,7 +78,7 @@ test("recognises every repository test shape and executable checkers regardless 
 test("rejects a checker without a package script", async () => {
   const root = await fixture();
   await write(root, "scripts/check-orphan.mjs", "\n");
-  assert.match((await checkGateRouting(root, { tracked })).join("\n"), /checker file/u);
+  assert.match((await checkGateRouting(root, { paths })).join("\n"), /checker file/u);
 });
 
 test("requires a checker path to be an actual command invocation", async () => {
@@ -94,13 +89,13 @@ test("requires a checker path to be an actual command invocation", async () => {
   await writeFile(packagePath, JSON.stringify(packageJson));
 
   assert.match(
-    (await checkGateRouting(root, { tracked })).join("\n"),
+    (await checkGateRouting(root, { paths })).join("\n"),
     /checker file scripts\/check-example\.mjs/u,
   );
 
   packageJson.scripts["all:check"] = "scripts/check-example.mjs && pnpm nested:check";
   await writeFile(packagePath, JSON.stringify(packageJson));
-  assert.deepEqual(await checkGateRouting(root, { tracked }), []);
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
 });
 
 test("rejects a missing package script named by a fenced gate command", async () => {
@@ -110,7 +105,7 @@ test("rejects a missing package script named by a fenced gate command", async ()
     path,
     `${await readFile(path, "utf8")}\n\`\`\`bash\npnpm does:not:exist\n\`\`\`\n`,
   );
-  assert.match((await checkGateRouting(root, { tracked })).join("\n"), /does:not:exist/u);
+  assert.match((await checkGateRouting(root, { paths })).join("\n"), /does:not:exist/u);
 });
 
 test("rejects a missing package script reached through a nested pnpm command", async () => {
@@ -119,7 +114,7 @@ test("rejects a missing package script reached through a nested pnpm command", a
   const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
   packageJson.scripts["nested:check"] = "pnpm missing:nested";
   await writeFile(packagePath, JSON.stringify(packageJson));
-  assert.match((await checkGateRouting(root, { tracked })).join("\n"), /missing:nested/u);
+  assert.match((await checkGateRouting(root, { paths })).join("\n"), /missing:nested/u);
 });
 
 test("rejects a check or test package script absent from push and CI routing", async () => {
@@ -128,18 +123,27 @@ test("rejects a check or test package script absent from push and CI routing", a
   const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
   packageJson.scripts["orphan:check"] = "node scripts/orphan.mjs";
   await writeFile(packagePath, JSON.stringify(packageJson));
-  assert.match((await checkGateRouting(root, { tracked })).join("\n"), /orphan:check/u);
+  assert.match((await checkGateRouting(root, { paths })).join("\n"), /orphan:check/u);
 });
 
 test("accepts a .test.mjs file included by Vitest", async () => {
   const root = await fixture();
   await write(root, "scripts/unit.test.mjs", "\n");
-  assert.deepEqual(await checkGateRouting(root, { tracked }), []);
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
 });
 
 test("rejects a sensitive-path glob with no tracked match", async () => {
   const root = await fixture();
-  assert.match((await checkGateRouting(root, { tracked: [] })).join("\n"), /matches no tracked/u);
+  assert.match((await checkGateRouting(root, { paths: [] })).join("\n"), /matches no file/u);
+});
+
+test("sensitive-path globs see untracked files through the shared walker", async () => {
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(skillPath, skill.replace("scripts/**", "untracked-only/**"));
+  await write(root, "untracked-only/secret.rs", "\n");
+  assert.doesNotMatch((await checkGateRouting(root)).join("\n"), /untracked-only/u);
 });
 
 test("treats pnpm subcommands and flags as invocations, not script names", async () => {
@@ -152,7 +156,7 @@ test("treats pnpm subcommands and flags as invocations, not script names", async
   packageJson.scripts["all:check"] =
     "node scripts/check-example.mjs && pnpm nested:check && pnpm dlx shellcheck@4.1.0 x.sh && pnpm -s nested:check";
   await writeFile(packagePath, JSON.stringify(packageJson));
-  const problems = (await checkGateRouting(root, { tracked })).join("\n");
+  const problems = (await checkGateRouting(root, { paths })).join("\n");
   assert.doesNotMatch(problems, /\bdlx\b/u);
   assert.doesNotMatch(problems, /"-s"|\s-s\b/u);
 });
@@ -171,14 +175,14 @@ test("the review path-glob collector validates every path block, not just one", 
       "A mandatory additive lens covers:\n\n```text\nscripts/**\n```\n\n## 4. Finish",
     ),
   );
-  assert.deepEqual(await checkGateRouting(root, { tracked }), []);
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
 
   const withDeadGlob = (await readFile(skillPath, "utf8")).replace(
     "```text\nscripts/**\n```\n\n## 4. Finish",
     "```text\nnever/matches/**\n```\n\n## 4. Finish",
   );
   await writeFile(skillPath, withDeadGlob);
-  assert.match((await checkGateRouting(root, { tracked })).join("\n"), /never\/matches/u);
+  assert.match((await checkGateRouting(root, { paths })).join("\n"), /never\/matches/u);
 });
 
 test("uses the shared coverage glob semantics for review path matching", async () => {
@@ -187,5 +191,5 @@ test("uses the shared coverage glob semantics for review path matching", async (
   const skill = await readFile(skillPath, "utf8");
   await writeFile(skillPath, skill.replace("scripts/**", "**/check-*.mjs"));
 
-  assert.deepEqual(await checkGateRouting(root, { tracked }), []);
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
 });

@@ -1,24 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { excluded, excludePatterns, matches, normalisePath } from "./coverage-scope.mjs";
+import { filesBelow } from "./files-below.mjs";
 
 const METRICS = ["lines", "functions", "branches"];
 
 function emptyMetrics() {
   return Object.fromEntries(METRICS.map((metric) => [metric, { covered: 0, total: 0 }]));
-}
-
-async function filesBelow(directory, root) {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const files = await Promise.all(
-    entries.map(async (entry) => {
-      const fullPath = resolve(directory, entry.name);
-      if (entry.isDirectory()) return filesBelow(fullPath, root);
-      return entry.isFile() ? [normalisePath(fullPath, root)] : [];
-    }),
-  );
-  return files.flat(Infinity);
 }
 
 export function parseLcov(lcov) {
@@ -127,7 +116,9 @@ function addMetrics(total, addition) {
 export async function buildCoverageReport({ config, lcov, root }) {
   const productionFiles = new Map();
   for (const source of config.sources) {
-    const files = await filesBelow(resolve(root, source.root), root);
+    const files = (await filesBelow(resolve(root, source.root))).map((path) =>
+      normalisePath(path, root),
+    );
     for (const file of files) {
       if (matches(file, source.include) && !excluded(file, source))
         productionFiles.set(file, source.id);

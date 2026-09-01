@@ -61,11 +61,17 @@ function reverseBridgeInstruction(text, skillName) {
   ).test(text);
 }
 
+function pathOccurs(line, canonicalPath) {
+  return new RegExp(`(^|[^A-Za-z0-9._-])${escapeRegex(canonicalPath)}(?![A-Za-z0-9._-])`, "u").test(
+    line,
+  );
+}
+
 function pointsAtCanonical(text, canonicalPath) {
   for (const line of text.split(/\r?\n/u)) {
-    if (!line.includes(canonicalPath)) continue;
-    if (/\bdo not\b|\bdon't\b|\bnever\b/iu.test(line)) continue;
-    if (/(?:read|follow)/iu.test(line) || /(?:first|canonical)/iu.test(line)) return true;
+    if (!pathOccurs(line, canonicalPath)) continue;
+    if (/\bnot\b|\bdo not\b|\bdon't\b|\bnever\b/iu.test(line)) continue;
+    if (/\b(?:read|follow)\b/iu.test(line)) return true;
   }
   return false;
 }
@@ -80,8 +86,7 @@ function isGateSourceClaim(line, path) {
 
 function listRepositoryFiles(repoRoot) {
   return listWorkingTreeFiles({ workspaceRoot: repoRoot, pathspec: "." }).filter((relativePath) => {
-    const first = relativePath.split("/")[0];
-    if (IGNORED_DIRECTORIES.has(first)) return false;
+    if (relativePath.split("/").some((part) => IGNORED_DIRECTORIES.has(part))) return false;
     // Frozen plans are historical records and may quote the stale claim that motivated a change.
     return relativePath !== "tasks/plans" && !relativePath.startsWith("tasks/plans/");
   });

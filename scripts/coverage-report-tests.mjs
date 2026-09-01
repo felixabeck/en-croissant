@@ -21,6 +21,7 @@ import {
   normalisePath,
 } from "./coverage-scope.mjs";
 import {
+  exportLcovOrDiagnose,
   formatExportCrashMessage,
   llvmCovExportArgs,
   probeCrashingSources,
@@ -346,7 +347,10 @@ test("scopeSignature normalises exclude through excludePatterns", () => {
     sources: [source],
     areas: [{ id: "infra", source: "backend", paths: ["src-tauri/src/infra/**"] }],
   });
-  assert.deepEqual(signature.sources[0].exclude, [...excludePatterns(source)].sort());
+  assert.deepEqual(signature.sources[0].exclude, [
+    "src-tauri/src/**/mod.rs",
+    "src-tauri/src/db/schema.rs",
+  ]);
 });
 
 test("bulk llvm-cov export and the crash probe share one argument builder", () => {
@@ -365,6 +369,26 @@ test("bulk llvm-cov export and the crash probe share one argument builder", () =
   assert.deepEqual(bulk.slice(0, 5), probe.slice(0, 5));
   assert.deepEqual(bulk.slice(5), sources);
   assert.deepEqual(probe.slice(5), [sources[0]]);
+});
+
+test("bulk export diagnoses crashes with the shared argv", () => {
+  const profilePath = "/tmp/src-tauri.profdata";
+  const executable = "/tmp/en_croissant-deadbeef";
+  const sources = ["src-tauri/src/chess.rs", "src-tauri/src/db/schema.rs"];
+  const calls = [];
+  const attempt = (_command, argumentsList) => {
+    calls.push(argumentsList);
+    const exportedSources = argumentsList.slice(argumentsList.indexOf("-sources") + 1);
+    if (exportedSources.includes("src-tauri/src/db/schema.rs")) {
+      return { signal: "SIGSEGV", status: null };
+    }
+    return { signal: null, status: 0, stdout: "SF:ok\n" };
+  };
+  assert.throws(
+    () => exportLcovOrDiagnose(attempt, "llvm-cov", profilePath, executable, sources),
+    /src-tauri\/src\/db\/schema\.rs/,
+  );
+  assert.deepEqual(calls[0], llvmCovExportArgs(profilePath, executable, sources));
 });
 
 test("signal diagnostic names the crashing source without a retracted cause", () => {

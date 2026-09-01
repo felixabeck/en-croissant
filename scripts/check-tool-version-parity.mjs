@@ -65,15 +65,17 @@ function siteLabel(site) {
   return `${site.path}:${site.line}`;
 }
 
+function defaultListFiles(repoRoot) {
+  return listWorkingTreeFiles({ workspaceRoot: repoRoot, pathspec: "." });
+}
+
 export async function discoverToolVersions(
   repoRoot,
   families = PARITY_FAMILIES,
-  { listFiles } = {},
+  { listFiles = defaultListFiles } = {},
 ) {
   const root = resolve(repoRoot);
-  const files = (
-    listFiles ?? (() => listWorkingTreeFiles({ workspaceRoot: root, pathspec: "." }))
-  )().map((relative) => ({
+  const files = listFiles(root).map((relative) => ({
     absolute: resolve(root, relative),
     relative,
   }));
@@ -89,7 +91,14 @@ export async function discoverToolVersions(
         if (!includes.some((matcher) => matcher.test(file.relative))) continue;
         if (excludes.some((matcher) => matcher.test(file.relative))) continue;
         if (!contents.has(file.absolute)) {
-          contents.set(file.absolute, await readFile(file.absolute, "utf8"));
+          let text;
+          try {
+            text = await readFile(file.absolute, "utf8");
+          } catch (error) {
+            if (error?.code === "ENOENT") continue;
+            throw error;
+          }
+          contents.set(file.absolute, text);
         }
         const text = contents.get(file.absolute);
         for (const match of text.matchAll(declaration.pattern)) {

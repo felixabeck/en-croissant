@@ -180,9 +180,9 @@ function validateGateCommands(pushSkill, scripts, repoRoot) {
   return { directGateCommands, findings, routed };
 }
 
-async function scriptFiles(repoRoot, listFiles) {
+async function scriptFiles(repoRoot, listedPaths) {
   const files = [];
-  for (const path of listFiles(repoRoot, "scripts")) {
+  for (const path of listedPaths) {
     if (!path.startsWith("scripts/")) continue;
     const absolute = resolve(repoRoot, path);
     let metadata;
@@ -222,14 +222,15 @@ function defaultListFiles(repoRoot, pathspec = ".") {
 
 export async function checkGateRouting(
   repoRoot,
-  { tracked = undefined, listFiles = defaultListFiles } = {},
+  { paths = undefined, listFiles = defaultListFiles } = {},
 ) {
+  const listed = listFiles(repoRoot);
   const [packageText, pushSkill, workflow, viteConfig, files] = await Promise.all([
     readFile(resolve(repoRoot, PACKAGE_JSON), "utf8"),
     readFile(resolve(repoRoot, PUSH_SKILL), "utf8"),
     readFile(resolve(repoRoot, TEST_WORKFLOW), "utf8"),
     readFile(resolve(repoRoot, VITE_CONFIG), "utf8"),
-    scriptFiles(repoRoot, listFiles),
+    scriptFiles(repoRoot, listed),
   ]);
   const scripts = JSON.parse(packageText).scripts ?? {};
   const { directGateCommands, findings, routed } = validateGateCommands(
@@ -279,11 +280,11 @@ export async function checkGateRouting(
     }
   }
 
-  const repositoryPaths = tracked ?? listFiles(repoRoot);
+  const repositoryPaths = paths ?? listed;
   for (const pattern of reviewPathGlobPatterns(pushSkill)) {
     const matcher = globToRegExp(pattern);
     if (!repositoryPaths.some((path) => matcher.test(path))) {
-      findings.push(`sensitive-path glob ${pattern} matches no tracked file`);
+      findings.push(`sensitive-path glob ${pattern} matches no file`);
     }
   }
 

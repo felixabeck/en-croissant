@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -105,8 +105,37 @@ test("frontend-build records a real node and pnpm fingerprint", async () => {
     await readFile(join(root, ".gate-receipts", "frontend-build.json"), "utf8"),
   );
   assert.deepEqual(Object.keys(receipt.toolchain).sort(), ["node", "pnpm"]);
-  assert.match(receipt.toolchain.node, /^v/u);
-  assert.match(receipt.toolchain.pnpm, /^\d/u);
+  assert.equal(
+    receipt.toolchain.node,
+    execFileSync("node", ["--version"], { encoding: "utf8" }).trim(),
+  );
+  assert.equal(
+    receipt.toolchain.pnpm,
+    execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim(),
+  );
+});
+
+test("a repo git cannot observe refuses the receipt as unobservable, not as a tree change", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gate-receipt-nongit-"));
+  const messages = [];
+  assert.equal(
+    await executeAction({
+      action: "run",
+      gate: "frontend-build",
+      repoRoot: root,
+      fingerprintToolchain: fakeToolchain(),
+      command: nodeCommand("process.exit(0)"),
+      output: {
+        error(message) {
+          messages.push(message);
+        },
+        log() {},
+      },
+    }),
+    3,
+  );
+  assert.match(messages.join("\n"), /could not observe the tree/u);
+  assert.doesNotMatch(messages.join("\n"), /tree changed during the gate/u);
 });
 
 test("1. hit on a clean, unchanged tree", async () => {

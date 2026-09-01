@@ -3,6 +3,7 @@ import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { excluded, normalisePath } from "./coverage-scope.mjs";
+import { filesBelow } from "./files-below.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,18 +41,6 @@ function run(command, argumentsList, options = {}) {
   return result.stdout ?? "";
 }
 
-async function filesBelow(directory, predicate) {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const files = await Promise.all(
-    entries.map(async (entry) => {
-      const path = resolve(directory, entry.name);
-      if (entry.isDirectory()) return filesBelow(path, predicate);
-      return entry.isFile() && predicate(path) ? [path] : [];
-    }),
-  );
-  return files.flat();
-}
-
 /** One argv for both the bulk export and the per-source crash probe. */
 export function llvmCovExportArgs(profilePath, executable, sources) {
   return [
@@ -78,6 +67,31 @@ export function formatExportCrashMessage(offenders, toRelativePath) {
     "This is the --branch coverage crash in upstream llvm/llvm-project#119558.",
     "Declare them in backend-coverage-areas.json exclude, with a reason.",
   ].join("\n");
+}
+
+export function exportLcovOrDiagnose(
+  runAttempt,
+  llvmCov,
+  profilePath,
+  executable,
+  sources,
+  { toRelativePath = (source) => source } = {},
+) {
+  const exported = runAttempt(llvmCov, llvmCovExportArgs(profilePath, executable, sources));
+  if (exported.signal) {
+    const offenders = probeCrashingSources(runAttempt, llvmCov, profilePath, executable, sources);
+    if (offenders.length > 0) {
+      throw new Error(formatExportCrashMessage(offenders, toRelativePath));
+    }
+  }
+  if (exported.status !== 0) {
+    if (exported.stderr) process.stderr.write(exported.stderr);
+    if (exported.error) throw exported.error;
+    throw new Error(
+      `${llvmCov} died with ${exported.signal ?? `status ${exported.status}`} while exporting LCOV`,
+    );
+  }
+  return exported.stdout ?? "";
 }
 
 async function main() {
@@ -142,28 +156,12 @@ async function main() {
     .sort();
   if (sources.length === 0) throw new Error("Rust coverage found no sources to export");
 
-  const exportArguments = llvmCovExportArgs(profilePath, executable, sources);
-  const exported = attempt(llvmCov, exportArguments);
-
   // Name the sources that actually crash instead of failing with a bare "exited with
   // status null": re-probing each one costs well under a second and runs only on this
   // path. It reports what crashed, without assuming why.
-  if (exported.signal) {
-    const offenders = probeCrashingSources(attempt, llvmCov, profilePath, executable, sources);
-    if (offenders.length > 0)
-      throw new Error(
-        formatExportCrashMessage(offenders, (source) => normalisePath(source, projectRoot)),
-      );
-  }
-  if (exported.status !== 0) {
-    if (exported.stderr) process.stderr.write(exported.stderr);
-    if (exported.error) throw exported.error;
-    throw new Error(
-      `${llvmCov} died with ${exported.signal ?? `status ${exported.status}`} while exporting LCOV`,
-    );
-  }
-
-  const lcov = exported.stdout ?? "";
+  const lcov = exportLcovOrDiagnose(attempt, llvmCov, profilePath, executable, sources, {
+    toRelativePath: (source) => normalisePath(source, projectRoot),
+  });
   const sourceCount = lcov.match(/^SF:/gm)?.length ?? 0;
   if (sourceCount === 0) throw new Error("Rust branch coverage export was empty");
   await writeFile(outputPath, `${lcov.trimEnd()}\n`);

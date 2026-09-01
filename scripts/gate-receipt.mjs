@@ -66,10 +66,7 @@ function capture(command, argumentsList, cwd) {
     env: gitEnvironment(),
   });
   if (result.error || result.status !== 0) return undefined;
-  const output = [result.stdout, result.stderr]
-    .filter((part) => part?.trim())
-    .map((part) => part.trim())
-    .join("\n");
+  const output = result.stdout?.trim();
   return output || undefined;
 }
 
@@ -284,14 +281,11 @@ function runGate({ gate, repoRoot, now, fingerprintToolchain, command, output })
   // detect a tracked file rewritten and restored when the filesystem records a new mtime.
   // Residual window: a mutation and revert entirely between the two samples, within one mtime
   // granularity tick, can remain undetected.
-  if (
-    !before ||
-    !after ||
-    !metadataBefore ||
-    !metadataAfter ||
-    before.tree !== after.tree ||
-    metadataBefore !== metadataAfter
-  ) {
+  if (!before || !after || !metadataBefore || !metadataAfter) {
+    output.error(`gate receipt refused: ${gate} — could not observe the tree`);
+    return EXIT_PROOF_NOT_ESTABLISHED;
+  }
+  if (before.tree !== after.tree || metadataBefore !== metadataAfter) {
     output.error(`gate receipt refused: ${gate} — tree changed during the gate`);
     return EXIT_PROOF_NOT_ESTABLISHED;
   }

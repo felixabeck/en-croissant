@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { checkToolVersionParity, discoverToolVersions } from "./check-tool-version-parity.mjs";
+import { gitInit } from "./test-git-init.mjs";
 
 const checkerPath = fileURLToPath(new URL("./check-tool-version-parity.mjs", import.meta.url));
 
@@ -13,11 +14,6 @@ async function put(root, path, contents) {
   const absolute = join(root, path);
   await mkdir(join(absolute, ".."), { recursive: true });
   await writeFile(absolute, contents);
-}
-
-function gitInit(root) {
-  const result = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
 }
 
 async function fixture() {
@@ -132,5 +128,12 @@ test("keeps the nightly authority when the constant moves to a shared module", a
   assert.match(
     findings,
     /authority scripts\/toolchain-versions.mjs:1 declares "nightly-2025-06-02"/u,
+  );
+});
+
+test("a vanished listed file is skipped rather than crashing the checker", async () => {
+  const root = await fixture();
+  await assert.doesNotReject(() =>
+    discoverToolVersions(root, undefined, { listFiles: () => ["missing-file.rs"] }),
   );
 });
