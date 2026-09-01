@@ -28,7 +28,7 @@ const PGN_DRAW_PATTERN = /1\/2-1\/2/g;
 const PREFIX_SECRET_PATTERN = /(bearer\s+|token[=:]\s*|password[=:]\s*)[^\s,;]+/gi;
 const JSON_SECRET_PATTERN = /(["'](?:password|token)["']\s*:\s*["'])[^"']+/gi;
 const PATH_PATTERN =
-    /(?:[A-Za-z]:(?:\\|\/)+[^\s'"]+|\\\\[^\s'"]+|~\/[^\s'"]+|\/(?:[^\s'"\\]+\/)+[^\s'"]*|\/[^\s'"]+\.[A-Za-z0-9]{1,8}\b)/g;
+    /(?:(?<![A-Za-z])[A-Za-z]:(?:\\|\/)+(?:(?:[^'"\n]*?[\\/])+)?[^'"\s\n]+|\\\\(?:[^'"\n]*?\\)+[^'"\s\n]+|~\/(?:[^/\s'"]+\/)*[^/\s'"]+|(?<![.:/\w])\/(?:[^/\s'"]+\/)+[^/\s'"]*|(?<![.:/\w])\/[^/\s'"]+\.[A-Za-z0-9]{1,24}\b)/g;
 
 function isAppError(value: unknown): value is AppError {
     if (typeof value !== "object" || value === null) return false;
@@ -43,7 +43,7 @@ function isAppError(value: unknown): value is AppError {
 function errorSource(error: unknown): string {
     if (error instanceof Error) return error.message;
     if (typeof error === "string") return error;
-    return safelyStringify(error) || "Unexpected error";
+    return safelyStringify(error);
 }
 
 function redactSecrets(value: string): string {

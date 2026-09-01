@@ -49,6 +49,21 @@ describe("normalizeError", () => {
         const rootFile = normalizeError(new Error("failed at /secret.pgn"));
         expect(rootFile.message).toBe("failed at [path]");
 
+        const spacedWindows = normalizeError(new Error("failed at C:\\Program Files\\secret.pgn"));
+        expect(spacedWindows.message).toBe("failed at [path]");
+        expect(spacedWindows.message).not.toContain("Program Files");
+
+        const longExt = normalizeError(new Error("failed at /secret.credentials"));
+        expect(longExt.message).toBe("failed at [path]");
+
+        const httpsUrl = normalizeError(
+            new Error("network failure at https://example.com/api/foo"),
+        );
+        expect(httpsUrl.message).toBe("network failure at https://example.com/api/foo");
+        expect(httpsUrl.category).toBe("network");
+        const httpUrl = normalizeError(new Error("fetch failed at http://example.com/foo"));
+        expect(httpUrl.message).toBe("fetch failed at http://example.com/foo");
+
         const fen = normalizeError(new Error(`Invalid FEN: ${START_FEN}`));
         expect(fen.message).toBe(`Invalid FEN: ${START_FEN}`);
 
@@ -153,6 +168,8 @@ describe("normalizeError", () => {
             category: "unexpected",
             message: "Engine timeout: waiting for readyok",
         });
+        expect(normalizeError("Game not found: timeout").category).toBe("not-found");
+        expect(normalizeError("Invalid input: abort").category).toBe("validation");
     });
 
     test("returns an already-normalised AppError and TauriCommandError details", () => {

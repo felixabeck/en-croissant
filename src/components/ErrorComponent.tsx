@@ -7,6 +7,9 @@ export default function ErrorComponent({ error }: { error: unknown }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const normalized = normalizeError(error);
+  const showDiagnostic = Boolean(
+    normalized.diagnostic && normalized.diagnostic !== normalized.message,
+  );
 
   return (
     <Stack p="md">
@@ -14,12 +17,10 @@ export default function ErrorComponent({ error }: { error: unknown }) {
       <Text>
         <b>{t("Error.Unexpected")}:</b> {normalized.message}
       </Text>
-      {normalized.diagnostic && normalized.diagnostic !== normalized.message && (
-        <Code>{normalized.diagnostic}</Code>
-      )}
+      {showDiagnostic && <Code>{normalized.diagnostic}</Code>}
       <Group>
-        {normalized.diagnostic && normalized.diagnostic !== normalized.message && (
-          <CopyButton value={normalized.diagnostic}>
+        {showDiagnostic && (
+          <CopyButton value={normalized.diagnostic ?? ""}>
             {({ copied, copy }) => (
               <Button color={copied ? "teal" : undefined} onClick={copy}>
                 {copied ? t("Common.Copied") : t("Error.CopyStackTrace")}

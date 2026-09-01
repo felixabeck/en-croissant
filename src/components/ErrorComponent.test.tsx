@@ -43,6 +43,26 @@ test("does not present a duplicate diagnostic", async () => {
   expect(host.textContent).toContain("Menu.View.Reload");
 });
 
+test("hides a diagnostic that only repeats the message", async () => {
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  await act(async () =>
+    root.render(
+      <ErrorComponent
+        error={{
+          category: "unexpected",
+          message: "boom",
+          diagnostic: "boom",
+        }}
+      />,
+    ),
+  );
+  expect(host.querySelector("code")).toBeNull();
+  expect(host.textContent).not.toContain("Error.CopyStackTrace");
+  expect(host.textContent).toContain("boom");
+});
+
 test("renders an extra diagnostic when it differs from the message", async () => {
   host = document.createElement("div");
   document.body.append(host);
