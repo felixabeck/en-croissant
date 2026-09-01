@@ -4183,7 +4183,7 @@ Handled in `b9250a36`, `7d834f82`. Settings and advanced navigation look up by `
 
 ### The default-engine list keys installed state by the mutable, non-unique engine name
 
-* **ID:** f-20260831-13 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260831-13 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/components/engines/AddEngine.tsx`, where a manifest entry is marked as already
   installed by comparing against the installed engines' `name`.
 * **Defect:** `name` is neither unique nor immutable. Installing one engine, or renaming an
@@ -4196,6 +4196,13 @@ Handled in `b9250a36`, `7d834f82`. Settings and advanced navigation look up by `
   download URL — rather than on the display name.
 * **Found by:** the `review-engine-protocol` lens (confidence 98) during the `native-fs` cluster's
   plan review, 2026-08-31. Pre-existing.
+
+* **Handled:** Default-engine cards compare `downloadLink`, not display name (`isManifestEngineInstalled`). A renamed install stays marked installed; a same-named distinct download stays installable. Proof: `src/utils/engines.test.ts`.
+* **Commits:** (this run)
+* **Rejected:** name or filename last-component matching (`d-20260901-23`).
+* **Governed-by:** d-20260901-21, d-20260901-23
+
+* **Commits:** `8952f592`
 
 ### Account linking reports success when the credential registry write may not have survived
 
@@ -4370,11 +4377,19 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 
 ### Engine registration callers drop CommittedDurabilityUncertain without recovering the adopted handle
 
-* **ID:** f-20260901-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260901-02 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/engines/EngineForm.tsx`, `src/components/engines/EnginesPage.tsx`, `src/components/engines/AddEngine.tsx`, `src/components/boards/BoardGame.tsx`
 * **Defect:** after `dd2c0f58`, engine binary/resource/image/opening-book registration adopts the registry record then returns `CommittedDurabilityUncertain` when parent sync fails. File and database create paths recover that category (`runAppliedMutationWithRefresh` / `runWithAppliedRecovery`). Engine callers treat it as a hard failure and lose the adopted handle, leaving a UUID-named image unattached.
 * **Related:** f-20260831-02 (handled). Root `-` so named here rather than shared. Found during cumulative review of the native-fs download/registry slice.
 * **Entry `lens`:** apply the existing `applied-despite-error` helpers; one `review-error-handling` pass.
+
+* **Handled:** Engine file/image/book/resource registration returns the adopted handle after an uncertain parent sync (`keep_adopted_handle`). `registerInstalledEngineHandle` recovers via `runWithAppliedRecovery`. Picker clicks use `runUnlessCancelled`. ProgressButton treats only `succeeded` as completed; AddEngine clears progress on install failure. Proof: `engine_path_commit_wrappers_return_handle_on_uncertain_without_rollback`, `engines.controller.test.ts`, `EngineForm.test.tsx`, `ProgressButton.test.tsx`.
+* **Commits:** (this run)
+* **Rejected:** Err plus a renderer list; a new Specta result type; treating any `finished` progress as installed (`d-20260901-22`, `d-20260901-24`).
+* **Lens:** `review-error-handling` on Codex `gpt-5.6-sol`/medium, VERDICT REVISE then fixed: failed download no longer shows Installed; durability log now names the adopted handle.
+* **Governed-by:** d-20260901-21, d-20260901-22, d-20260901-24
+
+* **Commits:** `8952f592`
 
 ---
 
