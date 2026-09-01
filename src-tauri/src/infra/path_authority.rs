@@ -2798,9 +2798,11 @@ impl PathAuthority {
     }
 
     pub(crate) fn remove_database(&mut self, handle: &DatabaseHandle) -> Result<(), Error> {
+        let mut dropped_engine_executables = Vec::new();
         require_durable(self.remove_workspace_entry(
             &FileWorkspaceHandle::new(handle.path_ref().clone()),
             WorkspaceRemovalStatus::Complete,
+            &mut dropped_engine_executables,
         )?)
     }
 
@@ -3530,6 +3532,7 @@ impl PathAuthority {
         &mut self,
         handle: &FileWorkspaceHandle,
         status: WorkspaceRemovalStatus,
+        dropped_engine_executables: &mut Vec<PathRef>,
     ) -> Result<CommitDurability, Error> {
         let removed = self
             .persistent
@@ -3568,6 +3571,20 @@ impl PathAuthority {
             .filter(|id| !candidate.contains_key(*id))
             .cloned()
             .collect();
+        dropped_engine_executables.extend(removed_ids.iter().filter_map(|id| {
+            let entry = self.persistent.get(id)?;
+            entry
+                .stored
+                .operations
+                .iter()
+                .any(|operation| {
+                    matches!(
+                        operation,
+                        PathOperation::EngineExecute | PathOperation::EngineConfigure
+                    )
+                })
+                .then(|| PathRef { id: id.clone() })
+        }));
         let mut pending_artifacts = self.pending_artifacts.clone();
         pending_artifacts.retain(|pending| !removed_ids.contains(&pending.root.id));
         // An intent whose root was removed by this operation can never activate. This is scoped
@@ -4484,6 +4501,8 @@ mod tests {
         let victim = workspace.join("victim");
         fs::create_dir_all(victim.join("nested")).unwrap();
         fs::write(victim.join("nested/game.pgn"), b"*").unwrap();
+        let executable = victim.join("nested/engine");
+        fs::write(&executable, b"engine").unwrap();
         fs::write(workspace.join("sibling.pgn"), b"*").unwrap();
         let registry = dir.path().join("registry.json");
         let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
@@ -4544,6 +4563,9 @@ mod tests {
         let sibling_handle = authority
             .register_workspace_child(&root, &[OsString::from("sibling.pgn")], "sibling")
             .unwrap();
+        let engine_handle = authority
+            .register_engine_file(&executable, "engine")
+            .unwrap();
         fs::remove_dir_all(&victim).unwrap();
 
         authority.active_database_root = Some(victim_handle.path_ref().clone());
@@ -4577,8 +4599,13 @@ mod tests {
             }
         }
         set_test_atomic_file_injector(Some(Box::new(ParentSync)));
+        let mut dropped_engine_executables = Vec::new();
         let durability = authority
-            .remove_workspace_entry(&victim_handle, WorkspaceRemovalStatus::Complete)
+            .remove_workspace_entry(
+                &victim_handle,
+                WorkspaceRemovalStatus::Complete,
+                &mut dropped_engine_executables,
+            )
             .unwrap();
         set_test_atomic_file_injector(None);
 
@@ -4588,6 +4615,7 @@ mod tests {
                 crate::error::DurabilityStage::RegistryReplacement
             )
         ));
+        assert_eq!(dropped_engine_executables, vec![engine_handle.id]);
         for removed in [&victim_handle, &nested_handle, &game_handle] {
             assert!(!authority.persistent.contains_key(&removed.path_ref().id));
         }
@@ -4617,6 +4645,10 @@ mod tests {
         fs::create_dir_all(&victim).unwrap();
         fs::write(victim.join("removed.pgn"), b"*").unwrap();
         fs::write(victim.join("survived.pgn"), b"*").unwrap();
+        let removed_engine = victim.join("removed-engine");
+        let survived_engine = victim.join("survived-engine");
+        fs::write(&removed_engine, b"engine").unwrap();
+        fs::write(&survived_engine, b"engine").unwrap();
         let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
         let grant = authority
             .grant_dialog_operations(
@@ -4656,10 +4688,22 @@ mod tests {
                 "survived",
             )
             .unwrap();
+        let removed_engine_handle = authority
+            .register_engine_file(&removed_engine, "removed engine")
+            .unwrap();
+        let survived_engine_handle = authority
+            .register_engine_file(&survived_engine, "survived engine")
+            .unwrap();
         fs::remove_file(victim.join("removed.pgn")).unwrap();
+        fs::remove_file(removed_engine).unwrap();
 
+        let mut dropped_engine_executables = Vec::new();
         authority
-            .remove_workspace_entry(&victim_handle, WorkspaceRemovalStatus::Partial)
+            .remove_workspace_entry(
+                &victim_handle,
+                WorkspaceRemovalStatus::Partial,
+                &mut dropped_engine_executables,
+            )
             .unwrap();
 
         assert!(authority
@@ -4671,6 +4715,10 @@ mod tests {
         assert!(authority
             .persistent
             .contains_key(&survived_handle.path_ref().id));
+        assert_eq!(dropped_engine_executables, vec![removed_engine_handle.id]);
+        assert!(authority
+            .persistent
+            .contains_key(&survived_engine_handle.id.id));
     }
 
     #[test]
@@ -4705,10 +4753,12 @@ mod tests {
             installed_ctime_nanos: None,
         });
 
+        let mut dropped_engine_executables = Vec::new();
         authority
             .remove_workspace_entry(
                 &FileWorkspaceHandle::new(root.id),
                 WorkspaceRemovalStatus::Complete,
+                &mut dropped_engine_executables,
             )
             .unwrap();
 
@@ -6476,6 +6526,11 @@ mod tests {
                 "removed",
             )
             .unwrap();
+        let executable = removed_path.join("engine");
+        fs::write(&executable, b"engine").unwrap();
+        let engine_handle = authority
+            .register_engine_file(&executable, "engine")
+            .unwrap();
         let staged = dir.path().join("staged");
         fs::write(&staged, b"payload").unwrap();
         let stale_pending = authority
@@ -6493,10 +6548,16 @@ mod tests {
         authority.save().unwrap();
 
         set_test_atomic_file_injector(Some(Box::new(AlwaysIo)));
+        let mut dropped_engine_executables = Vec::new();
         assert!(authority
-            .remove_workspace_entry(&removed, WorkspaceRemovalStatus::Complete)
+            .remove_workspace_entry(
+                &removed,
+                WorkspaceRemovalStatus::Complete,
+                &mut dropped_engine_executables,
+            )
             .is_err());
         set_test_atomic_file_injector(None);
+        assert_eq!(dropped_engine_executables, vec![engine_handle.id]);
         assert!(authority.persistent.contains_key(&removed.path_ref().id));
         assert!(authority
             .pending_artifacts

@@ -8,7 +8,7 @@ use crate::{
     error::Error,
     infra::path_authority::{
         CommitDurability, FileWorkspaceDescriptor, FileWorkspaceHandle, PathClass, PathOperation,
-        WorkspaceMutationTarget, WorkspaceRemovalStatus,
+        PathRef, WorkspaceMutationTarget, WorkspaceRemovalStatus,
     },
     pgn, AppState,
 };
@@ -716,15 +716,15 @@ fn restore_entry(
 
 #[tauri::command]
 #[specta::specta]
-pub fn permanently_delete_workspace_entry(
+pub async fn permanently_delete_workspace_entry(
     workspace: FileWorkspaceHandle,
     entry: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    permanently_delete_entry(state.inner(), &workspace, &entry)
+    permanently_delete_entry(state.inner(), &workspace, &entry).await
 }
 
-fn permanently_delete_entry(
+async fn permanently_delete_entry(
     state: &AppState,
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
@@ -757,12 +757,20 @@ fn permanently_delete_entry(
     } else {
         WorkspaceRemovalStatus::Complete
     };
+    let mut dropped_engine_executables = Vec::<PathRef>::new();
     let registry_result = (|| {
         authority(state)?
             .as_mut()
             .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-            .remove_workspace_entry(entry, removal_status)
+            .remove_workspace_entry(entry, removal_status, &mut dropped_engine_executables)
     })();
+    if let Err(error) = state
+        .engine_supervisor
+        .retire_executables(dropped_engine_executables)
+        .await
+    {
+        log::warn!("workspace removal engine retirement failed: {error}");
+    }
 
     if let Some(error @ Error::PartialRemoval { .. }) = removal_error {
         match registry_result {
@@ -821,6 +829,7 @@ fn permanently_delete_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::EngineKey;
     use crate::infra::{
         fs::{
             set_test_atomic_file_injector, set_test_removal_injector, AtomicFileFaultPoint,
@@ -921,20 +930,44 @@ mod tests {
         .expect("registered file")
     }
 
-    fn delete_entry_with_fault(
+    fn registered_engine_file(state: &AppState, path: &Path) -> PathRef {
+        authority(state)
+            .expect("authority lock")
+            .as_mut()
+            .expect("authority")
+            .register_engine_file(path, "engine")
+            .expect("registered engine")
+            .id
+    }
+
+    async fn supervise_test_engine(
+        state: &AppState,
+        key: &EngineKey,
+        engine_id: &str,
+        executable: PathRef,
+    ) {
+        let (actor, _) = crate::engine::EngineActor::recording_test_actor(&[]);
+        state
+            .engine_supervisor
+            .replace_handle(key.clone(), actor, engine_id.into(), executable)
+            .await
+            .expect("registered supervised engine");
+    }
+
+    async fn delete_entry_with_fault(
         state: &AppState,
         workspace: &FileWorkspaceHandle,
         entry: &FileWorkspaceHandle,
         point: RemovalFaultPoint,
     ) -> Result<(), Error> {
         set_test_removal_injector(Some(Box::new(RemovalFault(point))));
-        let result = permanently_delete_entry(state, workspace, entry);
+        let result = permanently_delete_entry(state, workspace, entry).await;
         set_test_removal_injector(None);
         result
     }
 
-    #[test]
-    fn committed_delete_removes_authority_record_when_parent_sync_fails() {
+    #[tokio::test]
+    async fn committed_delete_removes_authority_record_when_parent_sync_fails() {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry) = registered_child_directory(&state, &workspace, "victim");
         let descendant = child.join("descendant.pgn");
@@ -943,6 +976,7 @@ mod tests {
 
         let error =
             delete_entry_with_fault(&state, &workspace, &entry, RemovalFaultPoint::ParentSync)
+                .await
                 .expect_err("parent sync failure must preserve commit status");
 
         assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
@@ -957,8 +991,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn partial_delete_keeps_authority_record() {
+    #[tokio::test]
+    async fn partial_delete_keeps_authority_record() {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry) = registered_child_directory(&state, &workspace, "victim");
         let survivor = child.join("survivor.pgn");
@@ -972,6 +1006,7 @@ mod tests {
             &entry,
             RemovalFaultPoint::AfterEntryRemoved,
         )
+        .await
         .expect_err("post-removal failure must be reported");
 
         assert!(matches!(error, Error::PartialRemoval { .. }));
@@ -1007,12 +1042,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn registry_failure_after_unlink_is_applied_despite_error_and_keeps_persisted_state() {
+    #[tokio::test]
+    async fn registry_failure_after_unlink_is_applied_despite_error_and_keeps_persisted_state() {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry) = registered_child_directory(&state, &workspace, "victim");
         set_test_atomic_file_injector(Some(Box::new(RegistryWriteFailure)));
         let error = permanently_delete_entry(&state, &workspace, &entry)
+            .await
             .expect_err("registry failure after unlink must be applied-despite-error");
         set_test_atomic_file_injector(None);
 
@@ -1041,8 +1077,8 @@ mod tests {
         assert!(!serialized.contains(r"C:\private\registry"));
     }
 
-    #[test]
-    fn sidecar_failure_after_unlink_still_removes_authority_record() {
+    #[tokio::test]
+    async fn sidecar_failure_after_unlink_still_removes_authority_record() {
         let (_directory, state, workspace) = workspace_state();
         let root = workspace_root(&state, &workspace).expect("workspace root");
         let file = root.join("victim.pgn");
@@ -1051,6 +1087,7 @@ mod tests {
         let entry = registered_child_file(&state, &workspace, &file);
 
         let error = permanently_delete_entry(&state, &workspace, &entry)
+            .await
             .expect_err("sidecar cleanup failure must be applied-despite-error");
 
         assert!(!file.exists());
@@ -1068,8 +1105,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn partial_removal_wins_over_registry_reconciliation_failure() {
+    #[tokio::test]
+    async fn partial_removal_wins_over_registry_reconciliation_failure() {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry) = registered_child_directory(&state, &workspace, "victim");
         let removed_entry = registered_child_file(&state, &workspace, &child.join("removed"));
@@ -1080,6 +1117,7 @@ mod tests {
             &entry,
             RemovalFaultPoint::AfterEntryRemoved,
         )
+        .await
         .expect_err("partial removal must remain the primary outcome");
         set_test_atomic_file_injector(None);
 
@@ -1100,6 +1138,92 @@ mod tests {
         assert!(serialized.starts_with("\"Partially removed:"));
         assert!(!serialized.contains("/private/registry"));
         assert!(!serialized.contains(r"C:\private\registry"));
+    }
+
+    #[tokio::test]
+    async fn permanent_directory_delete_retires_only_its_engine_executable() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry) = registered_child_directory(&state, &workspace, "victim");
+        let executable_path = child.join("engine");
+        fs::write(&executable_path, b"engine").expect("engine executable");
+        let executable = registered_engine_file(&state, &executable_path);
+        let key = EngineKey::new("tab".into(), "operation".into()).expect("engine key");
+        supervise_test_engine(&state, &key, "application-engine", executable.clone()).await;
+
+        permanently_delete_entry(&state, &workspace, &entry)
+            .await
+            .expect("permanent delete");
+
+        assert!(state.engine_supervisor.get_exact(&key).is_none());
+        let (retired_actor, _) = crate::engine::EngineActor::recording_test_actor(&[]);
+        assert!(matches!(
+            state
+                .engine_supervisor
+                .replace_handle(
+                    EngineKey::new("tab".into(), "retired path".into()).expect("engine key"),
+                    retired_actor,
+                    "different-application-engine".into(),
+                    executable,
+                )
+                .await,
+            Err(Error::Conflict(message)) if message == "engine executable is retired"
+        ));
+
+        let replacement_key =
+            EngineKey::new("tab".into(), "replacement path".into()).expect("engine key");
+        supervise_test_engine(
+            &state,
+            &replacement_key,
+            "application-engine",
+            PathRef {
+                id: "replacement-executable".into(),
+            },
+        )
+        .await;
+        assert!(state
+            .engine_supervisor
+            .get_exact(&replacement_key)
+            .is_some());
+        state.engine_supervisor.terminate_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn trash_directory_does_not_retire_its_engine_executable() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry) = registered_child_directory(&state, &workspace, "victim");
+        let executable_path = child.join("engine");
+        fs::write(&executable_path, b"engine").expect("engine executable");
+        let executable = registered_engine_file(&state, &executable_path);
+        let key = EngineKey::new("tab".into(), "operation".into()).expect("engine key");
+        supervise_test_engine(&state, &key, "application-engine", executable).await;
+
+        trash_entry(&state, &workspace, &entry).expect("trash directory");
+
+        assert!(state.engine_supervisor.get_exact(&key).is_some());
+        state.engine_supervisor.terminate_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn registry_failure_after_unlink_still_retires_engine_executable() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry) = registered_child_directory(&state, &workspace, "victim");
+        let executable_path = child.join("engine");
+        fs::write(&executable_path, b"engine").expect("engine executable");
+        let executable = registered_engine_file(&state, &executable_path);
+        let key = EngineKey::new("tab".into(), "operation".into()).expect("engine key");
+        supervise_test_engine(&state, &key, "application-engine", executable).await;
+        set_test_atomic_file_injector(Some(Box::new(RegistryWriteFailure)));
+
+        let result = permanently_delete_entry(&state, &workspace, &entry).await;
+        set_test_atomic_file_injector(None);
+
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::RegistryReplacement
+            ))
+        ));
+        assert!(state.engine_supervisor.get_exact(&key).is_none());
     }
 
     #[test]
