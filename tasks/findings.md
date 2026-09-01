@@ -4603,3 +4603,231 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 * **Related:** f-20260901-10 (handled). That finding changed logs() to return errors; it did not introduce this leak. Pre-existing enclosing log capture. Root `-`.
 * **Found by:** `review-tauri-security` over the f-20260901-06 cumulative diff, 2026-09-01. Confidence 98. Pre-existing.
 * **Lens:** `review-tauri-security`
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### 22 frontend test files charge a component-graph import to the 5000 ms test timeout
+
+* **ID:** f-20260901-19 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+
+`src/components/boards/BoardGame.test.tsx` reddened master CI three times on 2026-09-01 (runs
+33517593225, 33522388348, 33522556421) with `Test timed out in 5000ms`, because
+`await import("./BoardGame")` sat inside the test body and charged the transform and evaluation of
+a 1127-line component graph to a single test's budget. That instance was fixed by extracting the
+two pure helpers under test (`d-20260901-36`).
+
+The pattern remains in 22 other files. Each performs a dynamic `await import(...)` inside a test
+body or an async `beforeEach`, so the imported module's cost lands inside a timed region:
+`testTimeout` (5000 ms) for a test body, `hookTimeout` (10000 ms) for a hook. Neither is configured
+anywhere — `vite.config.ts` sets only environment, include, exclude, workers and coverage, and no
+per-test timeout argument exists in the repository.
+
+Most of the 22 import a React component and so carry a real graph; three do not and are listed here
+only for completeness of the pattern, not because they are slow: `src/utils/session.test.ts` and
+`src/utils/lichess/authentication.test.ts` import utility modules, and `src/components/About.test.tsx`
+imports `@/translation/en-US.json` (that file already imports `AboutModal` statically).
+
+None of these files needs the dynamic form. `vi.mock` is hoisted above imports, so a static
+top-level import behaves identically. The five files that genuinely require a dynamic import — they
+call `vi.resetModules()` and re-evaluate module-init state — are `src/index.test.tsx`,
+`src/i18n.test.ts`, `src/components/home/Accounts.test.tsx`, `src/state/workspace.test.ts` and
+`src/state/store/tabStorage.test.ts`, plus `PromotionModal.test.tsx` (import inside a hoisted
+`vi.mock` factory) and `src/chessground/Chessground.test.tsx` (non-hoisted `window.matchMedia` setup
+must run first). Those seven stay as they are.
+
+The remaining files, all category "stylistic": `src/utils/session.test.ts`,
+`src/utils/lichess/authentication.test.ts`, `EvalListener.test.tsx`, `ProgressButton.test.tsx`,
+`AccountCards.test.tsx`, `PersonalCardPanels/selectors.test.tsx`, `SideInput.test.tsx`,
+`FilesPage.test.tsx`, `DirectoryTree.test.tsx`, `ConfirmChangesModal.test.tsx`,
+`NewTabHome.test.tsx` (13 sites), `EnginesPage.test.tsx`, `AddEngine.test.tsx`,
+`EngineForm.test.tsx` (6 sites), `ReportModal.test.tsx`, `EngineSettingsForm.test.tsx`,
+`EngineSelection.test.tsx`, `AnalysisRow.test.tsx`, `LogsPanel.test.tsx`, `FileInfo.test.tsx`,
+`AddPuzzle.test.tsx`, `About.test.tsx`.
+
+**Not urgent, and the measurement says so.** In CI run 33517964230, BoardGame was 4802 ms and the
+next-slowest whole file was 1100 ms (`AnalysisRow.test.tsx`), then 1068 ms
+(`ConfirmChangesModal.test.tsx`), 886 ms (`EnginesPage.test.tsx`), 770 ms (`FilesPage.test.tsx`).
+So there is roughly 4x headroom. The fix is mechanical — replace the in-test `await import(...)`
+with a static top-level import, keeping the existing `vi.mock` block — and moves the cost into
+vitest's untimed collection phase (`@vitest/runner` `index.js:1781-1834`; `testTimeout` is applied
+only at `:1137-1143`). Doing it once removes the whole class rather than waiting for the next file
+to cross 5000 ms on a slow runner.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### The frontend coverage baselines have drifted far enough to stop constraining most areas
+
+* **ID:** f-20260901-20 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+
+`coverage-baselines.json` records what the frontend measured when it was last written; the ratchet
+in `scripts/coverage-report.mjs` then rejects any lower covered count or ratio. Tests added since
+have raised the real measurement well above the recorded numbers, so in most areas the ratchet now
+permits a large silent regression before it fires.
+
+Measured on atlas 2026-09-01 with a full `pnpm test:coverage`, covered lines, current versus
+recorded baseline:
+
+| Area | Current | Baseline | Slack |
+| --- | ---: | ---: | ---: |
+| puzzles-engines | 382 | 60 | 322 |
+| boards-game-analysis | 484 | 249 | 235 |
+| accounts-remote | 326 | 185 | 141 |
+| tabs-routing | 281 | 148 | 133 |
+| shared-shell-ui | 124 | 36 | 88 |
+| databases-files | 268 | 211 | 57 |
+| state-persistence | 743 | 689 | 54 |
+| tauri-ipc-platform | 210 | 156 | 54 |
+| application-bootstrap | 72 | 39 | 33 |
+| settings | 73 | 73 | 0 |
+
+`puzzles-engines` would have to lose 84 % of its covered lines before the gate noticed. Only
+`settings` is actually tight.
+
+**Why this is worth a deliberate decision rather than a reflexive re-record.** The `docs/coverage.md`
+rule — never rewrite a baseline to clear a red gate — is about *regressions*. Re-recording upward
+after coverage has genuinely improved is the opposite operation and is what keeps the ratchet
+meaningful. But it must be done from the reference environment, not from a developer machine: the
+frontend baseline was last re-recorded from CI under `d-20260829-02` precisely because atlas and the
+runner disagreed. `.claude/settings.json` denies the `coverage:baseline:*` command forms, so this
+needs an explicit, reasoned exception, and the numbers must come from a CI run rather than from
+here.
+
+**Second-order cost, already paid once.** Two independent reviewers blocked the extraction in
+`d-20260901-36` by projecting a red ratchet from the baseline file, on the assumption that the
+recorded numbers describe the current tree. They do not, and the change passed with 474 covered
+lines against a 249 baseline. A baseline that is 235 lines stale is not just a weak gate; it
+actively misleads anyone reasoning about coverage impact without running the suite.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### Game-start failures are shown to the user as raw untranslated error messages
+
+* **ID:** f-20260901-21 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** lens · **Blocked:** none
+
+`BoardGame.tsx`'s `startGame` catch does `setCommandError(err instanceof Error ? err.message : "Unable
+to start the game.")`, and that string is rendered verbatim in a `role="alert"` block further down the
+same component. Every message reaching that alert is therefore English-only and never passes through
+i18next, in a UI that ships 16 locales.
+
+Two distinct sources feed it:
+
+* Any backend error from the game-start command, whose message is a Rust `#[error]` string. This has
+  always reached the alert.
+* The renderer's own guard, `A local engine must be selected for an engine player`, thrown by
+  `toPlayerConfig` (moved to `src/components/boards/playerConfig.ts` under `d-20260901-36`). Until
+  the control-flow repair in that same change this throw escaped `run()` entirely — it was raised
+  while the `GameConfig` was being built, above the `try` — so it reached no alert at all and instead
+  left `pendingCommand` stuck at `"start"`. Now that the `try` covers the config construction, the
+  message does reach the alert, untranslated.
+
+`pnpm i18n:jsx` does not catch either: `scripts/check-untranslated-jsx.mjs` scans `*.tsx` only, and
+even there it recognises `ask` and `message` sinks rather than a `Text` child bound to state. So the
+checker's silence is not evidence.
+
+The fix is a small design question, which is why this is `lens` and not `inline`: the honest options
+are a typed error carrying a translation key that the caller resolves, or a caller-side mapping from
+error identity to a key, with a translated fallback for anything unrecognised. Whichever is chosen
+has to cover the backend messages too, or it fixes one string and leaves the surface as it was.
+Run `review-error-handling` over the diff — the risk is losing the underlying cause while making the
+message presentable.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### BoardGame's native game session has no terminal state, so completed games poison abort and close
+
+* **ID:** f-20260901-22 · **Status:** open · **Area:** frontend-state · **Root:** boardgame-session-lifecycle · **Entry:** build · **Blocked:** none
+
+Found by the `$push` review of `d-20260901-36` (a Codex lens over the enclosing code, confidence 99
+on each item). None was introduced by that change; all are pre-existing in `src/components/boards/BoardGame.tsx`
+and `gameSession.ts`. They are filed rather than fixed inline because they share one root — the
+renderer keeps a session id after the backend has finished with it, and there is no represented
+"terminal" state — and choosing that representation is a design question, not an implementation
+detail (universal rule 4b's design-question exception).
+
+1. **A finished session is still stored and still aborted.** After completion, resignation or abort,
+   `gameIdRef`/`backendSessionRef` keep their values, so New Game and unmount call `tauri.abortGame`
+   on a session the backend has already removed. The rejection is discarded, producing routine
+   unhandled `GameNotFound` errors; when the abort was meant to tear down a *replaced* session, a
+   failure there can leave the old session alive.
+2. **`abortExactTabGame` assumes non-null means abortable** (`gameSession.ts:77-87`). `BoardsPage`
+   propagates the backend rejection before `closeWorkspaceTab`, so a tab holding a completed game
+   cannot be closed. Its test covers the success and the missing-session cases only, never the
+   finished-session case.
+3. **`startGame` ignores a terminal `state.status`.** An initial position that is already checkmate
+   or stalemate can emit `GameOver` before `startGame`'s response is processed, while the listeners
+   still reject it as setup. The following poll sees the same revision and rejects it too, leaving
+   the UI in `playing` forever.
+4. **One revision cursor serves two payload shapes.** Full `GameMove` snapshots and partial
+   `ClockUpdate` payloads share `latestRevisionRef`, so a clock update delivered first advances the
+   cursor and the lower-revision move is discarded — a lost move in human-vs-human play. The tests
+   exercise scalar ordering only, never two payload shapes against one cursor.
+
+`.claude/rules/async-resource-invariants.md` is the governing rule: every async operation needs an
+identity, a stale-result guard, **a terminal state**, an error path and a cleanup. Items 1-3 are all
+the missing terminal state; item 4 is a stale-result guard that discriminates on the wrong thing.
+Run `review-engine-protocol` and `review-persisted-state` over whatever repair is planned.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### Late command results in BoardGame overwrite newer state, and two async paths have no rejection handler
+
+* **ID:** f-20260901-23 · **Status:** open · **Area:** frontend-state · **Root:** boardgame-session-lifecycle · **Entry:** lens · **Blocked:** none
+
+Also from the `$push` review of `d-20260901-36`, same lens, all pre-existing in
+`src/components/boards/BoardGame.tsx`. Separated from `f-20260901-22` because these are guard bugs
+with an obvious shape rather than a missing state representation — the repair is mechanical once
+someone decides to make it.
+
+1. **`catch`/`finally` blocks do not check the session generation, while the success paths do.** The
+   abort, resign, takeback and move handlers all verify `sessionGenerationRef.current === generation`
+   before applying a result, but their `catch` and `finally` blocks do not. A late failure from a
+   superseded command therefore overwrites the current `commandError` and clears a *newer* command's
+   `pendingCommand`. (confidence 97)
+2. **Two fire-and-forget `tauri.getGameState` queries have no rejection handler.** Session
+   invalidation makes those rejections routine rather than exceptional, so they surface as unhandled
+   promise rejections. (confidence 99)
+3. **The engine-log fetch is guarded by session, generation and game id, but not by the requested
+   colour.** Switching the engine-log colour while two requests overlap lets a late `white` response
+   overwrite the selected `black` logs. A stale failure also still notifies after a handoff.
+   (confidence 99)
+
+Item 3 sits at the call site the `d-20260901-36` change touched: it now reads
+`runUnlessCancelled(t("Common.Error"), () => tauri.getGameEngineLogs(gameId, expectedSession, color))`
+followed by a three-way guard that omits `color`. The guard, not the fetch, is what needs the extra
+discriminator — `.claude/rules/async-resource-invariants.md` requires an identity per async
+operation, and colour is part of this one's identity.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### The EngineOption value normalisation is written out three times
+
+* **ID:** f-20260901-24 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+
+The same mapping — pass a `resource` option through untouched, stringify the value of every other
+option — appears in three places:
+
+* `src/components/boards/playerConfig.ts` (`toPlayerConfig`, moved there by `d-20260901-36`), which
+  additionally filters out `MultiPV` because a game engine plays one move;
+* `src/components/panels/analysis/ReportModal.tsx` around line 98;
+* `src/components/boards/EvalListener.tsx` around line 252.
+
+Universal rule 11 puts the extraction at the second copy, and this is the third. The shape that fits
+all three is one shared `EngineOption[]` normaliser with the game-specific `MultiPV` filter applied
+by the caller afterwards, rather than folded into the shared unit.
+
+Filed rather than fixed during `d-20260901-36` because two of the three sites are in
+`src/components/panels/analysis/**` and `EvalListener.tsx`, which that change never read — universal
+rule 4b routes a finding outside the loaded file set to its own run, so it gets its own cut instead
+of an appended one. `review-engine-protocol` owns both of those paths and should run over the repair.
