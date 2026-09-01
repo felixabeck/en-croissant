@@ -351,45 +351,49 @@ function BoardGame() {
     const run = async () => {
       setPendingCommand("start");
       setCommandError(null);
-      const playerSettings = getPlayers();
-      setPlayers(playerSettings);
-
-      const boardOrientation =
-        playerSettings.black.type === "human" && playerSettings.white.type === "engine"
-          ? "black"
-          : "white";
-
-      // The backend event payload carries only an id. A monotonically unique id per
-      // start makes delayed events from a prior session unambiguously discardable.
-      const newGameId = `${activeTab}-game-${generation}`;
-      setGameId(newGameId);
-
-      const initialMoves = getTreeMoves();
-
-      const config: GameConfig = {
-        white: toPlayerConfig(playerSettings.white),
-        black: toPlayerConfig(playerSettings.black),
-        whiteTimeControl: playerSettings.white.timeControl
-          ? {
-              initialTime: playerSettings.white.timeControl.seconds,
-              increment: playerSettings.white.timeControl.increment ?? 0,
-            }
-          : null,
-        blackTimeControl: playerSettings.black.timeControl
-          ? {
-              initialTime: playerSettings.black.timeControl.seconds,
-              increment: playerSettings.black.timeControl.increment ?? 0,
-            }
-          : null,
-        initialFen: root.fen === INITIAL_FEN ? null : root.fen,
-        initialMoves,
-        openingBook:
-          openingBookEnabled && openingBookHandle
-            ? { book: openingBookHandle, maxPly: Math.max(1, openingBookMaxPly) }
-            : null,
-      } as GameConfig;
-
+      // The try opens before the config is built, not at the first await: toPlayerConfig throws
+      // for an engine player with no local engine selected. Outside the try that throw escaped
+      // run(), so the finally never cleared pendingCommand and the button stayed disabled with
+      // no error shown.
       try {
+        const playerSettings = getPlayers();
+        setPlayers(playerSettings);
+
+        const boardOrientation =
+          playerSettings.black.type === "human" && playerSettings.white.type === "engine"
+            ? "black"
+            : "white";
+
+        // The backend event payload carries only an id. A monotonically unique id per
+        // start makes delayed events from a prior session unambiguously discardable.
+        const newGameId = `${activeTab}-game-${generation}`;
+        setGameId(newGameId);
+
+        const initialMoves = getTreeMoves();
+
+        const config: GameConfig = {
+          white: toPlayerConfig(playerSettings.white),
+          black: toPlayerConfig(playerSettings.black),
+          whiteTimeControl: playerSettings.white.timeControl
+            ? {
+                initialTime: playerSettings.white.timeControl.seconds,
+                increment: playerSettings.white.timeControl.increment ?? 0,
+              }
+            : null,
+          blackTimeControl: playerSettings.black.timeControl
+            ? {
+                initialTime: playerSettings.black.timeControl.seconds,
+                increment: playerSettings.black.timeControl.increment ?? 0,
+              }
+            : null,
+          initialFen: root.fen === INITIAL_FEN ? null : root.fen,
+          initialMoves,
+          openingBook:
+            openingBookEnabled && openingBookHandle
+              ? { book: openingBookHandle, maxPly: Math.max(1, openingBookMaxPly) }
+              : null,
+        } as GameConfig;
+
         const state = await tauri.startGame(newGameId, config);
         if (
           sessionGenerationRef.current !== generation ||
