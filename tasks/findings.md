@@ -4445,21 +4445,25 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 
 ### Workspace delete of an engine binary does not retire its supervised process
 
-* **ID:** f-20260901-06 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260901-06 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/file_workspace.rs` trash/permanent-delete; `src-tauri/src/infra/fs.rs` recursive unlink; the supervisor it does not call is `EngineSupervisor::retire_engine` in `src-tauri/src/engine/process.rs`.
 * **Defect:** deleting a workspace directory unlinks descendant engine binaries with no supervisor lookup. A UCI child whose executable lived in that tree keeps running (open fd) until tab close or app exit.
 * **Why it matters:** `f-20260831-11` (handled) added `retire_engine` for renderer identity removal. Workspace delete is the other identity-disappearance path named in that finding and was left out because it lives in the native-fs file set (`d-20260901-17`).
 * **Related:** f-20260831-11 (handled). Root `-` because the missing caller is a different file set, not the same unowned spawn.
 * **Found by:** locate probe during the `engine-uci` cluster pinned at f-20260831-11, 2026-09-01.
 
+Handled 2026-09-01. Permanent workspace delete reports dropped EngineExecute/Configure PathRefs even on registry-save Err, tombstones those PathRefs, and `retire_executables` terminates matching actors. Application ids are not `retire_engine`d so a replacement PathRef can still publish. Trash only rebinds. Commits `dc6b7841`, `fd90e3b2`. Rejected: renderer FilesPage scan; `retire_engine(E)` on unlink (`d-20260901-29`).
+
 ### Game-manager engines have no application id, so engine removal cannot terminate them
 
-* **ID:** f-20260901-07 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260901-07 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/game.rs` `PlayerConfig::Engine` (`name` + `handle`) and `GameController.white_engine` / `black_engine`.
 * **Defect:** a game against a local engine holds an `EngineActor` outside `EngineSupervisor`. Removing that engine from EnginesPage retires the supervisor id but leaves the game child running. There is no application id on the session to match.
 * **Why it matters:** matching by `EngineHandle` would kill a duplicate config that still exists. Adding an id is a game-start Specta contract change. Related handled `f-20260830-51` recorded that game engines outlive app exit; this is the removal-path sibling (`d-20260901-20`).
 * **Related:** f-20260831-11 (handled), f-20260830-51 (handled). Root `-`.
 * **Found by:** `review-engine-protocol` during plan review of the f-20260831-11 cluster, 2026-09-01.
+
+Handled 2026-09-01. `PlayerConfig::Engine` requires `engine_id`. Game actors register through `EngineSupervisor` after spawn and before UCI init, keyed `game:{id}:{session}:{side}` / application id so `retire_engine` reaps that game without matching by handle or by the word "white". Cleanup is `terminate_exact`. Commits `9c115083`, `fd90e3b2`. Rejected: second GameManager kill path; handle matching (`d-20260901-20`, `d-20260901-30`).
 
 ### Report analysis progress is emitted under a UUID id that ReportPanel never subscribes to
 
@@ -4481,13 +4485,15 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 
 ### get_engine_logs returns success with an empty vector when the actor channel fails
 
-* **ID:** f-20260901-10 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260901-10 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/engine/process.rs` `logs()`; `src-tauri/src/chess.rs` `get_engine_logs`.
 * **Defect:** a disconnected actor yields `Ok(vec![])`, so `LogsPanel` renders empty logs instead of an error.
 * **Why it matters:** a failed stop is not a stop; a failed log query is not "the engine said nothing". Pre-existing; not part of the retire/reap diff.
 * **Related:** f-20260831-19 (handled) is renderer stop/kill rejections. Root `-`.
 * **Fix shape:** return the channel error; renderer `notifyUnlessCancelled`.
 * **Found by:** `review-error-handling` over the f-20260831-11 cumulative diff, 2026-09-01. Confidence 98.
+
+Handled 2026-09-01. `logs()` returns `Result` without `unwrap_or_default`. Absent process is still `Ok([])`. Channel failure is `EngineDisconnected` through chess and game commands. LogsPanel and BoardGame notify once (`errorRetryCount: 0`). Commit `77a232f4`. Rejected: empty success (`d-20260901-32`).
 
 ---
 
@@ -4524,13 +4530,15 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 
 ### get_engine_config spawns an EngineActor outside EngineSupervisor
 
-* **ID:** f-20260901-14 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260901-14 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
 
 * **Where:** `src-tauri/src/chess.rs` `get_engine_config`.
 * **Defect:** probing a newly picked or installed binary spawns an `EngineActor` that `EngineSupervisor` never sees. If the user closes the application while that probe is awaiting `uciok`, `shutdown_backend` cannot reap it; tao then `process::exit`, so `kill_on_drop`/`Drop` never run and the child can outlive the application.
 * **Why it matters:** EngineForm now stores the adopted handle before this probe, so the probe is on the success path of picker and default-engine install rather than only after a later form submit.
 * **Related:** f-20260830-51 (handled; app-exit termination). Root `-` because this is a missing supervisor registration, not the same unowned-spawn as the stderr drain. Named here rather than shared.
 * **Found by:** `review-engine-protocol` over the f-20260901-02 push range, 2026-09-01. Confidence 98. Pre-existing enclosing flow from `97c29add`.
+
+Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess` spawn, `replace_handle`, then await `uciok`. Config probes use `("engine-config", uuid)`. Drop guard terminates a cancelled registration. Commit `77a232f4`. Rejected: register after `spawn_initialized`; key by binary path (`d-20260901-31`).
 
 ### Database and puzzle install cards still key progress by manifest array index
 
