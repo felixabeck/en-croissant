@@ -2,6 +2,8 @@ import { Box, Button, Group, Image, Menu, Text, useComputedColorScheme } from "@
 import { getCurrentWebviewWindow } from "@/platform/native";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { runWindowAction, watchMaximized, type MenuGroup } from "@/routes/-appMenu";
 import { IconAction } from "./common/IconAction";
 import classes from "./TopBar.module.css";
 
@@ -64,21 +66,13 @@ function IconX() {
   );
 }
 
-type MenuItemAction = {
-  kind?: never;
-  label: string;
-  shortcut?: string;
-  action?: () => void;
-};
-
-type MenuAction = MenuItemAction | { kind: "separator" };
-
-type MenuGroup = {
-  label: string;
-  options: MenuAction[];
-};
-
-function TopBar({ menuActions }: { menuActions: MenuGroup[] }) {
+function TopBar({
+  menuActions,
+  showWindowControls = true,
+}: {
+  menuActions: MenuGroup[];
+  showWindowControls?: boolean;
+}) {
   const { t } = useTranslation();
   // Mantine's own scheme, not the OS preference. `useColorScheme` from @mantine/hooks
   // reads prefers-color-scheme and ignores the in-app Theme setting entirely, so a dark
@@ -88,21 +82,13 @@ function TopBar({ menuActions }: { menuActions: MenuGroup[] }) {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
-    const checkMaximized = async () => {
-      const maximized = await appWindow.isMaximized();
-      setIsMaximized(maximized);
-    };
-
-    checkMaximized();
-
-    const unlisten = appWindow.onResized(() => {
-      checkMaximized();
+    return watchMaximized({
+      isMaximized: () => appWindow.isMaximized(),
+      onResized: (handler) => appWindow.onResized(handler),
+      setMaximized: setIsMaximized,
+      notify: (error) => notifyUnlessCancelled(t("Common.Error"), error),
     });
-
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, []);
+  }, [t]);
 
   return (
     <Group gap={0} className={classes.root}>
@@ -171,31 +157,48 @@ function TopBar({ menuActions }: { menuActions: MenuGroup[] }) {
         </Group>
       </Box>
       <Box className={classes.dragRegion} data-tauri-drag-region />
-      <Box className={classes.windowControls}>
-        <Group gap={0}>
-          <IconAction
-            label={t("Window.Minimize")}
-            onClick={() => void appWindow.minimize()}
-            className={classes.icon}
-          >
-            <IconMinimize />
-          </IconAction>
-          <IconAction
-            label={t(isMaximized ? "Window.Restore" : "Window.Maximize")}
-            onClick={() => void appWindow.toggleMaximize()}
-            className={classes.icon}
-          >
-            {isMaximized ? <IconMaximize /> : <IconSquare />}
-          </IconAction>
-          <IconAction
-            label={t("Window.Close")}
-            onClick={() => void appWindow.close()}
-            className={classes.close}
-          >
-            <IconX />
-          </IconAction>
-        </Group>
-      </Box>
+      {showWindowControls && (
+        <Box className={classes.windowControls}>
+          <Group gap={0}>
+            <IconAction
+              label={t("Window.Minimize")}
+              onClick={() =>
+                void runWindowAction(
+                  () => appWindow.minimize(),
+                  (error) => notifyUnlessCancelled(t("Common.Error"), error),
+                )
+              }
+              className={classes.icon}
+            >
+              <IconMinimize />
+            </IconAction>
+            <IconAction
+              label={t(isMaximized ? "Window.Restore" : "Window.Maximize")}
+              onClick={() =>
+                void runWindowAction(
+                  () => appWindow.toggleMaximize(),
+                  (error) => notifyUnlessCancelled(t("Common.Error"), error),
+                )
+              }
+              className={classes.icon}
+            >
+              {isMaximized ? <IconMaximize /> : <IconSquare />}
+            </IconAction>
+            <IconAction
+              label={t("Window.Close")}
+              onClick={() =>
+                void runWindowAction(
+                  () => appWindow.close(),
+                  (error) => notifyUnlessCancelled(t("Common.Error"), error),
+                )
+              }
+              className={classes.close}
+            >
+              <IconX />
+            </IconAction>
+          </Group>
+        </Box>
+      )}
     </Group>
   );
 }
