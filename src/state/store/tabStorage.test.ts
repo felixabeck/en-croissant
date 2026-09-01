@@ -450,6 +450,13 @@ test("storage adapter delegates all operations and seed reports invalid/quota wr
         cause: expect.any(DOMException),
     });
     setItem.mockRestore();
+
+    const securityError = new DOMException("denied", "SecurityError");
+    const securitySetItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+        throw securityError;
+    });
+    expect(() => storage.seed("security", defaultTree())).toThrow(securityError);
+    securitySetItem.mockRestore();
 });
 
 test("rewrite and deferred flush retain recoverable state when storage temporarily rejects writes", () => {
@@ -495,6 +502,11 @@ test("recognizes a plain quota-shaped failure and retains its cause", () => {
             "Could not open the game: the browser's session storage is full. Close some open tabs and try again.",
         cause,
     });
+});
+
+test("returns a non-quota Error as-is", () => {
+    const cause = new Error("disk went away");
+    expect(persistStorageWriteError(cause)).toBe(cause);
 });
 
 test("live debounce reports a non-quota write failure without the session-full message", () => {
@@ -544,6 +556,22 @@ test("lifecycle flush failures warn and retain pending state without notifying",
     expect(storage.pendingCount()).toBe(1);
     expect(native.warn).toHaveBeenCalledWith(expect.stringContaining("persist tree storage"));
     expect(persistError.reportPersistError).not.toHaveBeenCalled();
+    setItem.mockRestore();
+});
+
+test("notified flush reports the first write failure once when several keys fail", () => {
+    storage.write("first", { version: 0, state: defaultTree() });
+    storage.write("second", { version: 0, state: defaultTree() });
+    const firstError = new DOMException("denied", "SecurityError");
+    const secondError = new DOMException("quota", "QuotaExceededError");
+    const errors = [firstError, secondError];
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw errors.shift() ?? secondError;
+    });
+
+    expect(storage.flush({ notify: true })).toEqual(["first", "second"]);
+    expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(firstError);
     setItem.mockRestore();
 });
 

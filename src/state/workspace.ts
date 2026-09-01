@@ -103,9 +103,7 @@ export function scrubInvalidLegacyTreeKeys(input: unknown, retainedTabs: readonl
 }
 
 export function readStoredWorkspaceValue(storage: SyncStringStorage, key: string): unknown | null {
-    const raw = storage.getItem(key);
-    if (raw === null) return null;
-    return decodeCompressedOrJson(raw);
+    return decodeCompressedOrJson(storage.getItem(key));
 }
 
 function workspaceFromValue(value: unknown): Workspace {

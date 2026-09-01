@@ -57,6 +57,6 @@ test("decodeCompressedOrJson reads compressed values and pretty JSON", () => {
     expect(decodeCompressedOrJson("{")).toBeNull();
 });
 
-test("decodeCompressedOrJson rejects values outside its string contract", () => {
-    expect(() => decodeCompressedOrJson(null as unknown as string)).toThrow(TypeError);
+test("decodeCompressedOrJson returns null for a missing stored value", () => {
+    expect(decodeCompressedOrJson(null)).toBeNull();
 });

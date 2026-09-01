@@ -282,7 +282,7 @@ export class TabStorageRepository {
         try {
             sessionStorage.setItem(tabId, serializeStorageValue(value));
         } catch (error) {
-            throw createTabStorageQuotaError(error);
+            throw persistStorageWriteError(error);
         }
     }
 
@@ -303,6 +303,7 @@ export class TabStorageRepository {
             this.flushTimeout = null;
         }
         const failedTabIds: string[] = [];
+        let notifyError: unknown;
         for (const [tabId, value] of this.pending) {
             try {
                 sessionStorage.setItem(tabId, serializeStorageValue(value));
@@ -310,8 +311,11 @@ export class TabStorageRepository {
             } catch (error) {
                 failedTabIds.push(tabId);
                 void warn(`Could not persist tree storage ${tabId}: ${String(error)}`);
-                if (notify) reportPersistError(persistStorageWriteError(error));
+                if (notifyError === undefined) notifyError = error;
             }
+        }
+        if (notify && notifyError !== undefined) {
+            reportPersistError(persistStorageWriteError(notifyError));
         }
         return failedTabIds;
     }
