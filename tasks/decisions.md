@@ -1168,3 +1168,35 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
 * **Rejected:** keeping TopBar on Linux whenever decorations are native; hiding the Title Bar setting on Linux; switching to `setAsWindowMenu` as a first fix.
 * **Because:** measured 2026-09-01 on tuxedo-atlas against the release binary in `kwin_wayland --virtual`. After `native-bar=true` the page lost in-page File/View/Help and window controls, and AT-SPI showed `application:en-croissant` → `menu bar` → File (New Tab, Open File, Exit), View, Help (…, About) plus native Minimize/Maximize/Close. About is reachable. The 2026-08-30 correction already forbade acting on the fix shape before this check.
 * **Decided by:** Grok, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260901-13 — How should a failed Tauri listener registration reach the user?
+
+* **Governs:** f-20260830-30
+* **Chosen:** required `onError` at every `useTauriListener` site, implemented by `notifyListenerError` (`notifyUnlessCancelled(i18n.t("Common.Error"), error)`). Callbacks are `(event, AbortSignal) => void | Promise<void>`; AccountCard guards `setDatabases` with the signal.
+* **Rejected:** a console.error fallback (invisible in a packaged build); importing Mantine into `src/platform/`; a post-await disposed check in the hook as the only stale-write guard.
+* **Because:** the facade must stay UI-agnostic, TypeScript catches a missed site, and only the callback can skip its own parent setState after `await`.
+* **Decided by:** drain 9158e343-6014-4227-9376-7ed251b78003 · **Superseded-by:** -
+
+### d-20260901-14 — How should a full sessionStorage quota on tree flush reach the user?
+
+* **Governs:** f-20260831-16
+* **Chosen:** live debounce calls `reportPersistError` with the same Error `seed()` throws; quit (`beforeunload`/`pagehide`) flushes best-effort, never throws, never notifies; per-key try continues after a failure.
+* **Rejected:** throwing from unload (not user-visible; `pagehide` cannot prompt); a browser "are you sure" dialog; a next-startup durable failure marker (quota may refuse even a tiny key).
+* **Because:** the 300 ms debounce is the in-session surface, and one full tab must not block flushing the others.
+* **Decided by:** drain 9158e343-6014-4227-9376-7ed251b78003 · **Superseded-by:** -
+
+### d-20260901-15 — When may workspace ID migration delete legacy tree keys?
+
+* **Governs:** f-20260831-17
+* **Chosen:** clone and flush new ids, then persist a compressed envelope; only then delete legacy keys. On clone-flush or envelope failure, roll clones back, keep old keys, notify, return the unrepaired workspace. Live `setItem` schema-validates and does not remap ids.
+* **Rejected:** deleting old keys inside `repairWorkspace` before the envelope write; remapping ids on every `setItem` (that wrote empty UUID tabs after a failed getItem).
+* **Because:** the envelope is the source of truth; a live write that invents ids without cloning orphans the recoverable tree.
+* **Decided by:** drain 9158e343-6014-4227-9376-7ed251b78003 · **Superseded-by:** -
+
+### d-20260901-16 — How should the engine list be persisted against quota?
+
+* **Governs:** f-20260831-18
+* **Chosen:** `serializeStorageValue` / `decodeCompressedOrJson` with pretty-JSON fallback; await `setItem`; catch quota and `reportPersistError` with `Engines.SaveError`; do not rethrow into Jotai. No max-engines cap.
+* **Rejected:** a third engines-specific encoding; compressing every `createZodStorage` preference atom; a hydration max that would wipe a large engine list.
+* **Because:** enginesStorage is the only `createAsyncZodStorage` caller, the tree serializer already exists, and a numeric cap without a product number is more destructive than notify-on-quota.
+* **Decided by:** drain 9158e343-6014-4227-9376-7ed251b78003 · **Superseded-by:** -

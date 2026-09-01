@@ -2443,7 +2443,7 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
 
 ### Every listener registration failure in the renderer is invisible, and one subscriber writes parent state after unmount
 
-* **ID:** f-20260830-30 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-30 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/platform/useTauriListener.ts:13-15,20,31-33,38-44`; all eight call sites
   `BoardGame.tsx:660,683,699`, `EvalListener.tsx:206`, `Databases.tsx:128`, `AccountCard.tsx:155`,
   `useConversionProgress.ts:27`, `useProgress.ts:58`.
@@ -2465,6 +2465,10 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
   and change the callback slot to accept and await a promise, re-checking `disposed` after it.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30, verified by inspecting all
   eight call sites.
+
+* **Handled:** `useTauriListener` requires `onError`, awaits async callbacks, and passes an `AbortSignal`. Every production site uses `notifyListenerError`. AccountCard checks `signal.aborted` before `setDatabases`. Proof: `tsgo --noEmit` plus `useTauriListener.test.tsx`, `notifyError.test.ts`, `AccountCard.test.tsx`.
+* **Commits:** `8d754b0e`, remediations in `ddea3a56`.
+* **Rejected:** importing Mantine into `src/platform/`; relying on a post-await disposed check in the hook alone.
 
 ---
 
@@ -4243,7 +4247,7 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 
 ### Tab-tree flush failures are only logged, so a full sessionStorage quota drops pending edits on quit
 
-* **ID:** f-20260831-16 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260831-16 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/state/store/tabStorage.ts` `flush()` (`:282-294`).
 * **Defect:** each pending tree write is inside `try/catch` that only `warn`s. If sessionStorage is full when `beforeunload`/`pagehide` flushes, the debounce is dropped and the next load restores the last successful write with no user-facing error. `.claude/rules/persisted-state.md` requires a handled, comprehensible quota failure — the live `serializeStorageValue` path already has one; flush does not.
 * **Why it matters:** quitting with a large game open is the realistic quota case (`d250925f`). The user thinks the last moves were saved.
@@ -4251,23 +4255,35 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 * **Found by:** `review-persisted-state` over the `f-20260830-12` cumulative diff, 2026-08-31, confidence 99. Pre-existing, different area from the picker work.
 * **Lens:** `review-persisted-state`
 
+* **Handled:** `flush()` returns failed tab ids, keeps the per-key try, and notifies on the live debounce path with the same quota Error as `seed()`. `beforeunload`/`pagehide` never throw and never notify. Proof: `tabStorage.test.ts`, `persistError.test.ts`.
+* **Commits:** `e4ccd864`, remediations in `ddea3a56`.
+* **Rejected:** throwing from unload; a `beforeunload` confirm dialog; a durable next-startup flush-failed marker.
+
 ### Workspace ID migration removes legacy tree keys before the new envelope is durably written
 
-* **ID:** f-20260831-17 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-17 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/state/workspace.ts` `repairWorkspace` (`:64-67`) then `createWorkspaceStorage.getItem` (`:110-115`).
 * **Defect:** copied trees are flushed and uniquely-owned legacy tab IDs are `remove`d, and only afterwards is the migrated workspace envelope `setItem`ed. If that envelope write fails (quota, private-mode, abort), the next startup still sees the old tab metadata (old IDs) whose trees are already gone, and reconstructs empty tabs.
 * **Why it matters:** a one-time migration plus a full quota is a silent loss of every open game tree, not a recoverable hydrate failure.
 * **Fix shape:** persist the new envelope (or fail closed) before deleting legacy tree keys; if the envelope write fails, leave the old keys in place. The comment at `:64-66` already states the intent — the envelope write is outside `repairWorkspace` and so does not honour it.
 * **Found by:** `review-persisted-state` over the `f-20260830-12` cumulative diff, 2026-08-31, confidence 96. Pre-existing. Related: the tabStorage flush finding filed in the same review (Root `-`).
 
+* **Handled:** ID migration clones, flushes, then writes a compressed envelope before deleting legacy tree keys. Envelope or clone-flush failure rolls clones back, leaves old keys, notifies, and returns the unrepaired workspace. Live `setItem` no longer remaps IDs. Proof: `workspace.test.ts` including envelope-write failure, clone-flush failure, and setItem preserving legacy ids.
+* **Commits:** `a85a7474`, remediations in `ddea3a56`.
+* **Rejected:** deleting old keys inside `repairWorkspace` before the envelope is durable; remapping ids on live `setItem`.
+
 ### Engine list persistence is uncompressed, unbounded, and its async setItem is uncaught
 
-* **ID:** f-20260831-18 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-18 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/state/atoms.ts` `enginesStorage` (`:172-188`) feeding `enginesAtom` via `atomWithStorage` / `createAsyncZodStorage`.
 * **Defect:** engine state is written to localStorage key `engines` as uncompressed JSON. `setItem` is async and neither awaited nor caught, so a quota `QuotaExceededError` becomes an unhandled rejection and the edit disappears on reload. Tree state already compresses and raises a user-facing quota error (`src/state/store/debouncedStorage.ts`); this adapter does not.
 * **Why it matters:** a handful of engines with option maps is usually small, but the contract is the same quota as every other origin-scoped key, and an unhandled rejection is the failure `persisted-state.md` names.
 * **Fix shape:** route writes through `serializeStorageValue` (or the same quota-handled helper the tree uses), catch `setItem`, and tell the user when the engine list could not be saved. Do not invent a second storage encoding.
 * **Found by:** `review-persisted-state` over the `f-20260830-12` cumulative diff, 2026-08-31, confidence 96. Pre-existing. The same lens also claimed a missing migration from `engines/engines.json`; that path is not in this tree, so it is not part of this finding.
+
+* **Handled:** `createAsyncZodStorage` awaits `serializeStorageValue` writes and reads compressed-or-JSON. `enginesStorage.setItem` catches quota, reports `Engines.SaveError`, and resolves. Proof: `utils.test.ts`, `enginesStorage.test.ts`, `pnpm i18n:check`.
+* **Commits:** `2effbf97`.
+* **Rejected:** a third engines-specific encoding; compressing every `createZodStorage` preference atom; a max-engines cap that would wipe a large list on hydrate (product number; notify-on-quota is the bound that exists).
 
 ### stopEngine and killEngine rejections are discarded at the call site
 
