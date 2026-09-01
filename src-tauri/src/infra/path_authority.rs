@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use specta::Type;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ffi::{OsStr, OsString},
     fs,
     io::{Read, Write},
@@ -569,6 +569,15 @@ pub struct PathDescriptor {
 pub enum CommitDurability {
     Durable,
     DurabilityUncertain(crate::error::DurabilityStage),
+}
+
+fn require_durable(durability: CommitDurability) -> Result<(), Error> {
+    match durability {
+        CommitDurability::Durable => Ok(()),
+        CommitDurability::DurabilityUncertain(stage) => {
+            Err(Error::CommittedDurabilityUncertain(stage))
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1517,6 +1526,7 @@ pub struct PathAuthority {
     active_puzzle_root: Option<PathRef>,
     active_engine_root: Option<PathRef>,
     pending_artifacts: Vec<PendingArtifact>,
+    pending_unpersisted_removals: BTreeSet<String>,
 }
 impl PathAuthority {
     /// Turns a native save-dialog choice into one persistent, exact PGN destination. The renderer
@@ -1583,13 +1593,18 @@ impl PathAuthority {
                 display_name.clone(),
                 vec![PathOperation::ReadPgn, PathOperation::WritePgn],
             )?;
+            require_durable(commit.durability)?;
             Ok(FileWorkspaceDescriptor {
                 handle: FileWorkspaceHandle::new(commit.id),
                 display_name,
                 availability: PathAvailability::Available,
             })
         })();
-        if result.is_err() && created {
+        if result
+            .as_ref()
+            .is_err_and(|error| !matches!(error, Error::CommittedDurabilityUncertain(_)))
+            && created
+        {
             let _ = fs::remove_file(path);
         }
         result
@@ -1640,7 +1655,7 @@ impl PathAuthority {
                 availability: PathAvailability::Available,
             },
         );
-        self.commit_candidate(candidate, None)?;
+        require_durable(self.commit_candidate(candidate, None)?)?;
         Ok(id)
     }
     pub fn open(registry_path: PathBuf, app_roots: Vec<AppOwnedRoot>) -> Result<Self, Error> {
@@ -1764,6 +1779,7 @@ impl PathAuthority {
             active_puzzle_root,
             active_engine_root,
             pending_artifacts,
+            pending_unpersisted_removals: BTreeSet::new(),
         };
         authority.recover_pending_artifacts()?;
         Ok(authority)
@@ -2202,7 +2218,7 @@ impl PathAuthority {
             &FileWorkspaceHandle::new(root.path_ref().clone()),
             PathOperation::EngineInstall,
         )?;
-        self.commit_state(
+        let durability = self.commit_state(
             self.persistent.clone(),
             self.active_database_root.clone(),
             self.active_puzzle_root.clone(),
@@ -2210,6 +2226,9 @@ impl PathAuthority {
             self.pending_artifacts.clone(),
             None,
         )?;
+        if let CommitDurability::DurabilityUncertain(stage) = durability {
+            log::warn!("active engine root committed with uncertain durability: {stage}");
+        }
         Ok(())
     }
 
@@ -2226,10 +2245,9 @@ impl PathAuthority {
             PathOperation::EngineInstall,
             PathOperation::EngineBinaryInspect,
         ];
-        Ok(EngineHandle::new(
-            self.get_or_create_persistent_file(path, display_name, operations)?
-                .id,
-        ))
+        let commit = self.get_or_create_persistent_file(path, display_name, operations)?;
+        require_durable(commit.durability)?;
+        Ok(EngineHandle::new(commit.id))
     }
 
     /// Persists a picker-selected UCI resource with only resource-read
@@ -2252,6 +2270,7 @@ impl PathAuthority {
             display_name.clone(),
             vec![PathOperation::EngineResourceRead],
         )?;
+        require_durable(commit.durability)?;
         Ok(EngineResourceHandle::new(commit.id, kind, display_name))
     }
 
@@ -2309,10 +2328,10 @@ impl PathAuthority {
         path: &Path,
         display_name: impl Into<String>,
     ) -> Result<EngineImageHandle, Error> {
-        Ok(EngineImageHandle::new(
-            self.get_or_create_persistent_file(path, display_name, vec![PathOperation::ImageRead])?
-                .id,
-        ))
+        let commit =
+            self.get_or_create_persistent_file(path, display_name, vec![PathOperation::ImageRead])?;
+        require_durable(commit.durability)?;
+        Ok(EngineImageHandle::new(commit.id))
     }
 
     /// Reads bounded bytes from an exact, revalidated image capability. Native
@@ -2348,14 +2367,13 @@ impl PathAuthority {
         path: &Path,
         display_name: impl Into<String>,
     ) -> Result<OpeningBookHandle, Error> {
-        Ok(OpeningBookHandle::new(
-            self.get_or_create_persistent_file(
-                path,
-                display_name,
-                vec![PathOperation::OpeningBookRead],
-            )?
-            .id,
-        ))
+        let commit = self.get_or_create_persistent_file(
+            path,
+            display_name,
+            vec![PathOperation::OpeningBookRead],
+        )?;
+        require_durable(commit.durability)?;
+        Ok(OpeningBookHandle::new(commit.id))
     }
 
     /// Resolves an exact opening-book descriptor without exposing a native path.
@@ -2490,7 +2508,7 @@ impl PathAuthority {
     ) -> Result<(), Error> {
         let _ = self.database_root_path(root)?;
         let active = Some(root.path_ref().clone());
-        self.commit_state(
+        let durability = self.commit_state(
             self.persistent.clone(),
             active,
             self.active_puzzle_root.clone(),
@@ -2498,12 +2516,15 @@ impl PathAuthority {
             self.pending_artifacts.clone(),
             None,
         )?;
+        if let CommitDurability::DurabilityUncertain(stage) = durability {
+            log::warn!("active database root committed with uncertain durability: {stage}");
+        }
         Ok(())
     }
 
     pub(crate) fn set_active_puzzle_root(&mut self, root: &PuzzleRootHandle) -> Result<(), Error> {
         let _ = self.puzzle_root_path(root)?;
-        self.commit_state(
+        let durability = self.commit_state(
             self.persistent.clone(),
             self.active_database_root.clone(),
             Some(root.path_ref().clone()),
@@ -2511,6 +2532,9 @@ impl PathAuthority {
             self.pending_artifacts.clone(),
             None,
         )?;
+        if let CommitDurability::DurabilityUncertain(stage) = durability {
+            log::warn!("active puzzle root committed with uncertain durability: {stage}");
+        }
         Ok(())
     }
 
@@ -2568,13 +2592,13 @@ impl PathAuthority {
             &[filename.to_os_string()],
         )?;
         let path = self.puzzle_root_path(root)?.join(filename);
-        Ok(self
-            .get_or_create_persistent_file(
-                &path,
-                filename.to_string_lossy(),
-                vec![PathOperation::PuzzleRead, PathOperation::PuzzleDelete],
-            )?
-            .id)
+        let commit = self.get_or_create_persistent_file(
+            &path,
+            filename.to_string_lossy(),
+            vec![PathOperation::PuzzleRead, PathOperation::PuzzleDelete],
+        )?;
+        require_durable(commit.durability)?;
+        Ok(commit.id)
     }
 
     /// Returns database children known below a root and reconciles newly
@@ -2658,7 +2682,7 @@ impl PathAuthority {
                 availability: PathAvailability::Available,
             },
         );
-        self.commit_candidate(candidate, None)?;
+        require_durable(self.commit_candidate(candidate, None)?)?;
         Ok(DatabaseHandle::new(id))
     }
 
@@ -2691,6 +2715,7 @@ impl PathAuthority {
         }
         match self.register_database_child(root, filename, filename.to_string_lossy()) {
             Ok(handle) => Ok(handle),
+            Err(error @ Error::CommittedDurabilityUncertain(_)) => Err(error),
             Err(error) => {
                 // Do not leave an unmanaged artifact if registration fails.
                 let _ = fs::remove_file(&path);
@@ -2753,15 +2778,10 @@ impl PathAuthority {
     }
 
     pub(crate) fn remove_database(&mut self, handle: &DatabaseHandle) -> Result<(), Error> {
-        match self.remove_workspace_entry(
+        require_durable(self.remove_workspace_entry(
             &FileWorkspaceHandle::new(handle.path_ref().clone()),
             WorkspaceRemovalStatus::Complete,
-        )? {
-            CommitDurability::Durable => Ok(()),
-            CommitDurability::DurabilityUncertain(stage) => {
-                Err(Error::CommittedDurabilityUncertain(stage))
-            }
-        }
+        )?)
     }
 
     fn database_root_path(&mut self, root: &DatabaseRootHandle) -> Result<PathBuf, Error> {
@@ -3033,7 +3053,7 @@ impl PathAuthority {
                 availability: PathAvailability::Available,
             },
         );
-        self.commit_candidate(candidate, None)?;
+        require_durable(self.commit_candidate(candidate, None)?)?;
         Ok(FileWorkspaceHandle::new(id))
     }
 
@@ -3099,7 +3119,7 @@ impl PathAuthority {
                 availability: PathAvailability::Available,
             },
         );
-        self.commit_candidate(candidate, None)?;
+        require_durable(self.commit_candidate(candidate, None)?)?;
         Ok(FileWorkspaceHandle::new(id))
     }
 
@@ -3170,15 +3190,17 @@ impl PathAuthority {
         };
         let mut next_pending = self.pending_artifacts.clone();
         next_pending.push(pending.clone());
-        let durability = self.save_entries(
-            &self.persistent,
-            &self.active_database_root,
-            &self.active_puzzle_root,
-            &self.active_engine_root,
-            &next_pending,
+        let durability = self.commit_registry(
+            self.persistent.clone(),
+            self.active_database_root.clone(),
+            self.active_puzzle_root.clone(),
+            self.active_engine_root.clone(),
+            next_pending,
+            None,
+            false,
         )?;
         match durability {
-            CommitDurability::Durable => self.pending_artifacts = next_pending,
+            CommitDurability::Durable => {}
             CommitDurability::DurabilityUncertain(_) => {
                 // The stage the commit reports is the registry write; what the caller must not do
                 // is act on the reservation, so name that instead.
@@ -3283,15 +3305,15 @@ impl PathAuthority {
             .filter(|pending| pending.id != reservation.id)
             .cloned()
             .collect();
-        let durability = self.save_entries(
-            &candidate,
-            &self.active_database_root,
-            &self.active_puzzle_root,
-            &self.active_engine_root,
-            &next_pending,
+        let durability = self.commit_registry(
+            candidate,
+            self.active_database_root.clone(),
+            self.active_puzzle_root.clone(),
+            self.active_engine_root.clone(),
+            next_pending,
+            None,
+            true,
         )?;
-        self.persistent = candidate;
-        self.pending_artifacts = next_pending;
         Ok(ArtifactPublication {
             handle: FileWorkspaceHandle::new(reservation.id.clone()),
             durability,
@@ -3328,17 +3350,16 @@ impl PathAuthority {
             b: installed_identity.1,
         });
         item.installed_ctime_nanos = Some(installed_ctime_nanos);
-        match self.save_entries(
-            &self.persistent,
-            &self.active_database_root,
-            &self.active_puzzle_root,
-            &self.active_engine_root,
-            &next,
+        match self.commit_registry(
+            self.persistent.clone(),
+            self.active_database_root.clone(),
+            self.active_puzzle_root.clone(),
+            self.active_engine_root.clone(),
+            next,
+            None,
+            true,
         )? {
-            CommitDurability::Durable => {
-                self.pending_artifacts = next;
-                Ok(())
-            }
+            CommitDurability::Durable => Ok(()),
             CommitDurability::DurabilityUncertain(_) => Err(Error::CommittedDurabilityUncertain(
                 crate::error::DurabilityStage::ArchiveCommitMarker,
             )),
@@ -3355,17 +3376,19 @@ impl PathAuthority {
         if next_pending.len() == self.pending_artifacts.len() {
             return;
         }
-        if self
-            .save_entries(
-                &self.persistent,
-                &self.active_database_root,
-                &self.active_puzzle_root,
-                &self.active_engine_root,
-                &next_pending,
-            )
-            .is_ok()
-        {
-            self.pending_artifacts = next_pending;
+        if let Err(error) = self.commit_registry(
+            self.persistent.clone(),
+            self.active_database_root.clone(),
+            self.active_puzzle_root.clone(),
+            self.active_engine_root.clone(),
+            next_pending,
+            None,
+            true,
+        ) {
+            log::warn!(
+                "failed to abandon download artifact reservation {}: {error}",
+                reservation.id.id
+            );
         }
     }
 
@@ -3385,7 +3408,7 @@ impl PathAuthority {
         entry.stored.path = NativePath::from_path(path);
         entry.stored.display_name = display_name.into();
         entry.availability = PathAvailability::Available;
-        self.commit_candidate(candidate, None)?;
+        require_durable(self.commit_candidate(candidate, None)?)?;
         Ok(())
     }
 
@@ -3526,7 +3549,13 @@ impl PathAuthority {
         // what was persisted, so the unavailable records remain until a later successful,
         // explicit reconciliation. Residual accumulation is therefore limited to registry-save
         // failures rather than ordinary workspace create-and-delete use.
-        self.commit_candidate_with_pending(candidate, pending_artifacts, None)
+        match self.commit_candidate_with_pending(candidate, pending_artifacts, None) {
+            Ok(durability) => Ok(durability),
+            Err(error) => {
+                self.pending_unpersisted_removals.extend(removed_ids);
+                Err(error)
+            }
+        }
     }
 
     /// Rebind every persistent child below a moved directory in one registry replacement. This
@@ -3554,7 +3583,7 @@ impl PathAuthority {
             changed = true;
         }
         if changed {
-            self.commit_candidate(candidate, None)?;
+            require_durable(self.commit_candidate(candidate, None)?)?;
         }
         Ok(())
     }
@@ -3614,13 +3643,15 @@ impl PathAuthority {
         }
         Ok(())
     }
-    fn save(&self) -> Result<CommitDurability, Error> {
-        self.save_entries(
-            &self.persistent,
-            &self.active_database_root,
-            &self.active_puzzle_root,
-            &self.active_engine_root,
-            &self.pending_artifacts,
+    fn save(&mut self) -> Result<CommitDurability, Error> {
+        self.commit_registry(
+            self.persistent.clone(),
+            self.active_database_root.clone(),
+            self.active_puzzle_root.clone(),
+            self.active_engine_root.clone(),
+            self.pending_artifacts.clone(),
+            None,
+            true,
         )
     }
     fn save_entries(
@@ -3688,6 +3719,42 @@ impl PathAuthority {
         pending_artifacts: Vec<PendingArtifact>,
         consumed_dialog: Option<&PathRef>,
     ) -> Result<CommitDurability, Error> {
+        self.commit_registry(
+            candidate,
+            active_database_root,
+            active_puzzle_root,
+            active_engine_root,
+            pending_artifacts,
+            consumed_dialog,
+            true,
+        )
+    }
+    #[allow(clippy::too_many_arguments)] // one registry snapshot plus adopt_uncertain
+    fn commit_registry(
+        &mut self,
+        mut candidate: BTreeMap<String, Entry>,
+        mut active_database_root: Option<PathRef>,
+        mut active_puzzle_root: Option<PathRef>,
+        mut active_engine_root: Option<PathRef>,
+        mut pending_artifacts: Vec<PendingArtifact>,
+        consumed_dialog: Option<&PathRef>,
+        adopt_uncertain: bool,
+    ) -> Result<CommitDurability, Error> {
+        candidate.retain(|id, _| !self.pending_unpersisted_removals.contains(id));
+        pending_artifacts
+            .retain(|pending| !self.pending_unpersisted_removals.contains(&pending.root.id));
+        active_database_root = active_database_root.filter(|root| {
+            !self.pending_unpersisted_removals.contains(&root.id)
+                && candidate.contains_key(&root.id)
+        });
+        active_puzzle_root = active_puzzle_root.filter(|root| {
+            !self.pending_unpersisted_removals.contains(&root.id)
+                && candidate.contains_key(&root.id)
+        });
+        active_engine_root = active_engine_root.filter(|root| {
+            !self.pending_unpersisted_removals.contains(&root.id)
+                && candidate.contains_key(&root.id)
+        });
         let durability = self.save_entries(
             &candidate,
             &active_database_root,
@@ -3695,13 +3762,16 @@ impl PathAuthority {
             &active_engine_root,
             &pending_artifacts,
         )?;
-        self.persistent = candidate;
-        self.active_database_root = active_database_root;
-        self.active_puzzle_root = active_puzzle_root;
-        self.active_engine_root = active_engine_root;
-        self.pending_artifacts = pending_artifacts;
-        if let Some(dialog) = consumed_dialog {
-            self.dialogs.remove(&dialog.id);
+        if matches!(durability, CommitDurability::Durable) || adopt_uncertain {
+            self.persistent = candidate;
+            self.active_database_root = active_database_root;
+            self.active_puzzle_root = active_puzzle_root;
+            self.active_engine_root = active_engine_root;
+            self.pending_artifacts = pending_artifacts;
+            self.pending_unpersisted_removals.clear();
+            if let Some(dialog) = consumed_dialog {
+                self.dialogs.remove(&dialog.id);
+            }
         }
         Ok(durability)
     }
@@ -3712,10 +3782,10 @@ impl PathAuthority {
         active_puzzle_root: &Option<PathRef>,
         active_engine_root: &Option<PathRef>,
         pending_artifacts: &[PendingArtifact],
-        replace: F,
+        mut replace: F,
     ) -> Result<CommitDurability, Error>
     where
-        F: FnOnce(
+        F: FnMut(
             &Path,
             Box<dyn FnOnce(&mut fs::File) -> Result<(), Error>>,
         ) -> Result<AtomicFileOutcome, Error>,
@@ -3734,10 +3804,17 @@ impl PathAuthority {
             pending_artifacts: pending_artifacts.to_vec(),
         })
         .map_err(|e| Error::InvalidInput(e.to_string()))?;
-        let outcome = replace(
-            &self.registry_path,
-            Box::new(move |f| f.write_all(&bytes).map_err(Error::from)),
-        )?;
+        let mut attempt = || {
+            let bytes = bytes.clone();
+            replace(
+                &self.registry_path,
+                Box::new(move |f| f.write_all(&bytes).map_err(Error::from)),
+            )
+        };
+        let outcome = match attempt() {
+            Err(Error::Io(_)) => attempt()?,
+            result => result?,
+        };
         let stage = crate::infra::fs::map_atomic_file_outcome(
             outcome,
             crate::error::DurabilityStage::RegistryReplacement,
@@ -5858,5 +5935,553 @@ mod tests {
             .resolve(handle.path_ref(), PathOperation::EngineBinaryInspect, &[])
             .unwrap();
         assert!(file_reader.into_read_file().is_err());
+    }
+
+    struct AlwaysParentSync;
+
+    impl AtomicWriterInjector for AlwaysParentSync {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == AtomicFileFaultPoint::ParentSync {
+                Err(std::io::Error::other("uncertain"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn writable_root(
+        dir: &tempfile::TempDir,
+        operations: Vec<PathOperation>,
+    ) -> (PathAuthority, PathRef) {
+        let root = dir.path().join("root");
+        fs::create_dir(&root).unwrap();
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let grant = authority
+            .grant_dialog_operations(
+                &root,
+                "root",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let root = authority
+            .promote_dialog(&grant, PathClass::PersistentCustomRoot, "root", operations)
+            .unwrap()
+            .id;
+        (authority, root)
+    }
+
+    #[test]
+    fn persist_workspace_parent_sync_surfaces_uncertain_and_keeps_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut authority, root) =
+            writable_root(&dir, vec![PathOperation::ReadPgn, PathOperation::WritePgn]);
+        fs::write(dir.path().join("root/game.pgn"), b"*").unwrap();
+        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        let error = authority
+            .register_workspace_child(
+                &FileWorkspaceHandle::new(root),
+                &[OsString::from("game.pgn")],
+                "game",
+            )
+            .expect_err("uncertain persistence must be surfaced");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
+        assert!(authority
+            .persistent
+            .values()
+            .any(|entry| entry.stored.display_name == "game"));
+    }
+
+    #[test]
+    fn create_database_child_parent_sync_does_not_roll_back_completed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("databases");
+        fs::create_dir(&root_path).unwrap();
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let root = authority
+            .get_or_create_database_root(&root_path, "databases")
+            .unwrap();
+        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        let error = authority
+            .create_database_child(&root, OsStr::new("created.db3"))
+            .expect_err("uncertain registry durability must be surfaced");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
+        assert!(root_path.join("created.db3").exists());
+        assert_eq!(
+            authority
+                .list_database_children(&root)
+                .unwrap()
+                .iter()
+                .filter(|item| item.filename == "created.db3")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn register_downloaded_pgn_parent_sync_keeps_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("downloads");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("games.pgn"), b"*").unwrap();
+        let app = AppOwnedRoot::new("downloads", root_path, vec![PathOperation::DownloadFile]);
+        let root = app.id.clone();
+        let mut authority =
+            PathAuthority::open(dir.path().join("registry.json"), vec![app]).unwrap();
+        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        let error = authority
+            .register_downloaded_pgn(&root, OsStr::new("games.pgn"))
+            .expect_err("uncertain registry durability must be surfaced");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
+        assert!(authority
+            .persistent
+            .values()
+            .any(|entry| entry.stored.display_name == "games.pgn"));
+    }
+
+    #[test]
+    fn register_download_artifact_parent_sync_keeps_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("downloads");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("artifact.pgn"), b"*").unwrap();
+        let app = AppOwnedRoot::new("downloads", root_path, vec![PathOperation::DownloadFile]);
+        let root = app.id.clone();
+        let mut authority =
+            PathAuthority::open(dir.path().join("registry.json"), vec![app]).unwrap();
+        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        let error = authority
+            .register_download_artifact(
+                &root,
+                OsString::from("artifact.pgn"),
+                "artifact.pgn",
+                vec![PathOperation::ReadPgn],
+            )
+            .expect_err("uncertain registry durability must be surfaced");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
+        assert!(authority
+            .persistent
+            .values()
+            .any(|entry| entry.stored.display_name == "artifact.pgn"));
+    }
+
+    #[test]
+    fn engine_path_commit_wrappers_surface_uncertain_without_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let engine = dir.path().join("engine");
+        let image = dir.path().join("image.png");
+        let book = dir.path().join("book.bin");
+        let resource = dir.path().join("resource.nnue");
+        for path in [&engine, &image, &book, &resource] {
+            fs::write(path, b"data").unwrap();
+        }
+        let grant = authority
+            .grant_dialog(
+                &resource,
+                "resource",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        assert!(matches!(
+            authority.register_engine_file(&engine, "engine"),
+            Err(Error::CommittedDurabilityUncertain(_))
+        ));
+        assert!(matches!(
+            authority.register_engine_image(&image, "image"),
+            Err(Error::CommittedDurabilityUncertain(_))
+        ));
+        assert!(matches!(
+            authority.register_opening_book(&book, "book"),
+            Err(Error::CommittedDurabilityUncertain(_))
+        ));
+        assert!(matches!(
+            authority.promote_engine_resource(&grant, EngineResourceHandleKind::File, "resource"),
+            Err(Error::CommittedDurabilityUncertain(_))
+        ));
+        set_test_atomic_file_injector(None);
+        for path in [&engine, &image, &book, &resource] {
+            assert!(authority
+                .persistent
+                .values()
+                .any(|entry| { entry.stored.path.to_path().ok().as_ref() == Some(path) }));
+        }
+    }
+
+    #[test]
+    fn set_active_roots_parent_sync_returns_ok_and_keeps_handles_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let database_path = dir.path().join("databases");
+        let puzzle_path = dir.path().join("puzzles");
+        let engine_path = dir.path().join("engines");
+        for path in [&database_path, &puzzle_path, &engine_path] {
+            fs::create_dir(path).unwrap();
+        }
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let database = authority
+            .get_or_create_database_root(&database_path, "databases")
+            .unwrap();
+        let puzzle = authority
+            .get_or_create_puzzle_root(&puzzle_path, "puzzles")
+            .unwrap();
+        let engine = authority
+            .get_or_create_engine_root(&engine_path, "engines")
+            .unwrap();
+        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        authority.set_active_database_root(&database).unwrap();
+        authority.set_active_puzzle_root(&puzzle).unwrap();
+        authority.set_active_engine_root(&engine).unwrap();
+        set_test_atomic_file_injector(None);
+        assert_eq!(authority.active_database_root().unwrap(), Some(database));
+        assert_eq!(
+            authority
+                .active_puzzle_root()
+                .unwrap()
+                .map(|descriptor| descriptor.root),
+            Some(puzzle)
+        );
+        assert_eq!(authority.active_engine_root().unwrap(), Some(engine));
+    }
+
+    #[test]
+    fn rebind_workspace_parent_sync_keeps_new_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut authority, root) =
+            writable_root(&dir, vec![PathOperation::ReadPgn, PathOperation::WritePgn]);
+        let old = dir.path().join("root/old.pgn");
+        let new = dir.path().join("root/new.pgn");
+        fs::write(&old, b"*").unwrap();
+        let handle = authority
+            .register_workspace_child(
+                &FileWorkspaceHandle::new(root),
+                &[OsString::from("old.pgn")],
+                "old",
+            )
+            .unwrap();
+        fs::rename(&old, &new).unwrap();
+        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        let error = authority
+            .rebind_workspace_entry(&handle, &new, "new")
+            .expect_err("uncertain registry durability must be surfaced");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
+        assert_eq!(
+            authority
+                .workspace_entry_path(&handle, PathOperation::ReadPgn)
+                .unwrap(),
+            new
+        );
+    }
+
+    #[test]
+    fn rebase_workspace_parent_sync_keeps_rebased_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut authority, root) =
+            writable_root(&dir, vec![PathOperation::ReadPgn, PathOperation::WritePgn]);
+        let old = dir.path().join("root/old");
+        let new = dir.path().join("root/new");
+        fs::create_dir(&old).unwrap();
+        let handle = authority
+            .register_workspace_child(
+                &FileWorkspaceHandle::new(root),
+                &[OsString::from("old")],
+                "old",
+            )
+            .unwrap();
+        fs::rename(&old, &new).unwrap();
+        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        let error = authority
+            .rebase_workspace_entries(&old, &new)
+            .expect_err("uncertain registry durability must be surfaced");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
+        assert_eq!(
+            authority
+                .workspace_entry_path(&handle, PathOperation::ReadPgn)
+                .unwrap(),
+            new
+        );
+    }
+
+    #[test]
+    fn abandon_download_artifact_adopts_uncertain_but_not_failed_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("downloads");
+        fs::create_dir(&root_path).unwrap();
+        let staged = dir.path().join("staged");
+        fs::write(&staged, b"payload").unwrap();
+        let app = AppOwnedRoot::new("downloads", root_path, vec![PathOperation::DownloadFile]);
+        let root = app.id.clone();
+        let mut authority =
+            PathAuthority::open(dir.path().join("registry.json"), vec![app]).unwrap();
+        let first = authority
+            .reserve_download_artifact(
+                &root,
+                OsString::from("first"),
+                &staged,
+                "first",
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        authority.abandon_download_artifact(&first);
+        set_test_atomic_file_injector(None);
+        assert!(authority.pending_artifacts.is_empty());
+
+        let second = authority
+            .reserve_download_artifact(
+                &root,
+                OsString::from("second"),
+                &staged,
+                "second",
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        set_test_atomic_file_injector(Some(Box::new(AlwaysIo)));
+        authority.abandon_download_artifact(&second);
+        set_test_atomic_file_injector(None);
+        assert!(authority
+            .pending_artifacts
+            .iter()
+            .any(|pending| pending.id == second.id));
+    }
+
+    struct AlwaysIo;
+
+    impl AtomicWriterInjector for AlwaysIo {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == AtomicFileFaultPoint::Write {
+                Err(std::io::Error::other("write failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn registry_write_retries_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let attempts = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = attempts.clone();
+        let durability = authority
+            .save_entries_with(
+                &authority.persistent,
+                &None,
+                &None,
+                &None,
+                &[],
+                move |_target, write| {
+                    observed.set(observed.get() + 1);
+                    if observed.get() == 1 {
+                        return Err(Error::Io(Box::new(std::io::Error::other("retry"))));
+                    }
+                    let mut sink = tempfile::tempfile().unwrap();
+                    write(&mut sink)?;
+                    Ok(AtomicFileOutcome::DurableCommit)
+                },
+            )
+            .unwrap();
+        assert!(matches!(durability, CommitDurability::Durable));
+        assert_eq!(attempts.get(), 2);
+    }
+
+    #[test]
+    fn parent_sync_is_not_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let attempts = std::cell::Cell::new(0);
+        let durability = authority
+            .save_entries_with(
+                &authority.persistent,
+                &None,
+                &None,
+                &None,
+                &[],
+                |_target, _write| {
+                    attempts.set(attempts.get() + 1);
+                    Ok(AtomicFileOutcome::CommittedDurabilityUncertain(
+                        std::io::Error::other("parent sync"),
+                    ))
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            durability,
+            CommitDurability::DurabilityUncertain(_)
+        ));
+        assert_eq!(attempts.get(), 1);
+    }
+
+    #[test]
+    fn post_rename_metadata_failure_is_uncertain_not_retried_io() {
+        struct MetadataFailure(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        impl AtomicWriterInjector for MetadataFailure {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::PostRenameMetadata {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Err(std::io::Error::other("metadata failed"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        set_test_atomic_file_injector(Some(Box::new(MetadataFailure(attempts.clone()))));
+        let durability = authority.save().unwrap();
+        set_test_atomic_file_injector(None);
+        assert!(matches!(
+            durability,
+            CommitDurability::DurabilityUncertain(_)
+        ));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn registry_conflict_is_not_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let authority = authority(&dir, Arc::new(TestClock::new(0)));
+        for error in [
+            Error::Conflict("conflict".into()),
+            Error::OperationAndCleanup {
+                primary: "conflict".into(),
+                cleanup: "cleanup".into(),
+            },
+        ] {
+            let attempts = std::cell::Cell::new(0);
+            let result = authority.save_entries_with(
+                &authority.persistent,
+                &None,
+                &None,
+                &None,
+                &[],
+                |_target, _write| {
+                    attempts.set(attempts.get() + 1);
+                    Err(match &error {
+                        Error::Conflict(message) => Error::Conflict(message.clone()),
+                        Error::OperationAndCleanup { primary, cleanup } => {
+                            Error::OperationAndCleanup {
+                                primary: primary.clone(),
+                                cleanup: cleanup.clone(),
+                            }
+                        }
+                        _ => unreachable!(),
+                    })
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(attempts.get(), 1);
+        }
+    }
+
+    #[test]
+    fn unresolved_record_survives_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.pgn");
+        fs::write(&file, b"*").unwrap();
+        let registry = dir.path().join("registry.json");
+        let id = {
+            let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+            authority
+                .migrate_legacy_os_path(
+                    file.clone().into_os_string(),
+                    "file",
+                    PathClass::PersistentFile,
+                    vec![PathOperation::ReadPgn],
+                )
+                .unwrap()
+                .id
+        };
+        fs::remove_file(file).unwrap();
+        let authority = PathAuthority::open(registry, vec![]).unwrap();
+        assert_eq!(
+            authority.persistent.get(&id.id).unwrap().availability,
+            PathAvailability::Unavailable
+        );
+    }
+
+    #[test]
+    fn pending_prune_stripped_on_later_artifact_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut authority, root) = writable_root(
+            &dir,
+            vec![
+                PathOperation::ReadPgn,
+                PathOperation::WritePgn,
+                PathOperation::DownloadFile,
+            ],
+        );
+        let removed_path = dir.path().join("root/removed");
+        fs::create_dir(&removed_path).unwrap();
+        let removed = authority
+            .register_workspace_child(
+                &FileWorkspaceHandle::new(root.clone()),
+                &[OsString::from("removed")],
+                "removed",
+            )
+            .unwrap();
+        let staged = dir.path().join("staged");
+        fs::write(&staged, b"payload").unwrap();
+        let stale_pending = authority
+            .reserve_download_artifact(
+                removed.path_ref(),
+                OsString::from("stale.pgn"),
+                &staged,
+                "stale.pgn",
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        authority.active_database_root = Some(removed.path_ref().clone());
+        authority.active_puzzle_root = Some(removed.path_ref().clone());
+        authority.active_engine_root = Some(removed.path_ref().clone());
+        authority.save().unwrap();
+
+        set_test_atomic_file_injector(Some(Box::new(AlwaysIo)));
+        assert!(authority
+            .remove_workspace_entry(&removed, WorkspaceRemovalStatus::Complete)
+            .is_err());
+        set_test_atomic_file_injector(None);
+        assert!(authority.persistent.contains_key(&removed.path_ref().id));
+        assert!(authority
+            .pending_artifacts
+            .iter()
+            .any(|pending| pending.id == stale_pending.id));
+
+        authority
+            .reserve_download_artifact(
+                &root,
+                OsString::from("sibling.pgn"),
+                &staged,
+                "sibling.pgn",
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        assert!(!authority.persistent.contains_key(&removed.path_ref().id));
+        assert!(!authority
+            .pending_artifacts
+            .iter()
+            .any(|pending| pending.root == *removed.path_ref()));
+        assert_eq!(authority.active_database_root, None);
+        assert_eq!(authority.active_puzzle_root, None);
+        assert_eq!(authority.active_engine_root, None);
+
+        let reloaded = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert!(!reloaded.persistent.contains_key(&removed.path_ref().id));
+        assert!(!reloaded
+            .pending_artifacts
+            .iter()
+            .any(|pending| pending.root == *removed.path_ref()));
     }
 }

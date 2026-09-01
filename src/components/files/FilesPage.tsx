@@ -1,5 +1,5 @@
 import { tauri } from "@/platform/tauri";
-import { runDestructiveWithRefresh } from "@/platform/errors";
+import { runAppliedMutationWithRefresh, runDestructiveWithRefresh } from "@/platform/errors";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { Button, Center, Group, Paper, Select, Stack, Text, TextInput, Title } from "@mantine/core";
 import { useAtom } from "jotai";
@@ -91,9 +91,11 @@ export default function FilesPage() {
     setActionError("");
     setSelected(entry);
     try {
-      await tauri.moveWorkspaceEntry(workspace!, entry.handle, destination);
+      await runAppliedMutationWithRefresh(
+        () => tauri.moveWorkspaceEntry(workspace!, entry.handle, destination),
+        mutate,
+      );
       setMoveTarget(null);
-      await mutate();
     } catch {
       setActionError(operationFailed);
     } finally {
@@ -105,18 +107,19 @@ export default function FilesPage() {
     if (!workspace || !parent || !name.trim()) return;
     setActionError("");
     try {
-      if (action === fileAction.file)
-        await tauri.createWorkspaceFile(workspace, parent, name, { type: "game", tags: [] }, "*");
-      if (action === fileAction.folder)
-        await tauri.createWorkspaceDirectory(workspace, parent, name);
-      if (action === fileAction.rename && selected?.type === "file")
-        await tauri.renameWorkspaceFile(workspace, selected.handle, name, {
-          type: selected.metadata.type,
-          tags: selected.metadata.tags,
-        });
+      await runAppliedMutationWithRefresh(async () => {
+        if (action === fileAction.file)
+          await tauri.createWorkspaceFile(workspace, parent, name, { type: "game", tags: [] }, "*");
+        if (action === fileAction.folder)
+          await tauri.createWorkspaceDirectory(workspace, parent, name);
+        if (action === fileAction.rename && selected?.type === "file")
+          await tauri.renameWorkspaceFile(workspace, selected.handle, name, {
+            type: selected.metadata.type,
+            tags: selected.metadata.tags,
+          });
+      }, mutate);
       setAction(null);
       setName("");
-      await mutate();
     } catch {
       setActionError(operationFailed);
     }
@@ -298,11 +301,15 @@ export default function FilesPage() {
           opened
           onClose={() => setDeleteTarget(null)}
           onConfirm={async () => {
-            await tauri.trashWorkspaceEntry(workspace!, deleteTarget.handle);
-            setTrashed(deleteTarget);
-            setSelected(null);
-            setDeleteTarget(null);
-            await mutate();
+            await runDestructiveWithRefresh(
+              () => tauri.trashWorkspaceEntry(workspace!, deleteTarget.handle),
+              async () => {
+                setTrashed(deleteTarget);
+                setSelected(null);
+                setDeleteTarget(null);
+                await mutate();
+              },
+            );
           }}
         />
       )}
@@ -317,9 +324,13 @@ export default function FilesPage() {
           opened
           onClose={() => setRestoreTarget(null)}
           onConfirm={async () => {
-            await tauri.restoreWorkspaceEntry(workspace!, restoreTarget.handle);
-            setTrashed(null);
-            await mutate();
+            await runDestructiveWithRefresh(
+              () => tauri.restoreWorkspaceEntry(workspace!, restoreTarget.handle),
+              async () => {
+                setTrashed(null);
+                await mutate();
+              },
+            );
           }}
         />
       )}

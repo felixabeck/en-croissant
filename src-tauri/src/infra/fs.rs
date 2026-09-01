@@ -47,6 +47,7 @@ pub(crate) enum AtomicFileFaultPoint {
     PermissionCopy,
     PreCommitRevalidate,
     Rename,
+    PostRenameMetadata,
     ParentSync,
     Cleanup,
 }
@@ -409,6 +410,7 @@ mod unix {
         if let Err(error) = precommit() {
             return Err(fail(error));
         }
+        let fallback_metadata = temp.metadata().map_err(io)?;
         let commit = || {
             if original.is_none() {
                 fs::renameat_with(&dir, &temp_name, &dir, target_name, RenameFlags::NOREPLACE)
@@ -424,7 +426,40 @@ mod unix {
         if let Err(error) = commit() {
             return Err(fail(error));
         }
-        let metadata = temp.metadata().map_err(io)?;
+        #[cfg(test)]
+        let metadata = match inject_atomic_file(AtomicFileFaultPoint::PostRenameMetadata) {
+            Ok(()) => temp.metadata(),
+            Err(Error::Io(error)) => Err(*error),
+            Err(_) => unreachable!("atomic file injectors only produce I/O errors"),
+        };
+        #[cfg(not(test))]
+        let metadata = temp.metadata();
+        let metadata = match metadata {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                let (installed_identity, installed_ctime_nanos) = fs::fstat(&temp)
+                    .map(|stat| {
+                        (
+                            (stat.st_dev, stat.st_ino),
+                            i128::from(stat.st_ctime) * 1_000_000_000
+                                + i128::from(stat.st_ctime_nsec),
+                        )
+                    })
+                    .unwrap_or_else(|_| {
+                        (
+                            (fallback_metadata.dev(), fallback_metadata.ino()),
+                            i128::from(fallback_metadata.ctime()) * 1_000_000_000
+                                + i128::from(fallback_metadata.ctime_nsec()),
+                        )
+                    });
+                drop(temp);
+                return Ok(Installed {
+                    outcome: AtomicFileOutcome::CommittedDurabilityUncertain(error),
+                    identity: installed_identity,
+                    ctime_nanos: installed_ctime_nanos,
+                });
+            }
+        };
         let installed_identity = (metadata.dev(), metadata.ino());
         let installed_ctime_nanos =
             i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec());

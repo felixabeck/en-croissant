@@ -17,14 +17,16 @@ import {
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { IconAlertCircle } from "@tabler/icons-react";
+import { notifications } from "@mantine/notifications";
 import { useSetAtom } from "jotai";
 import { type Dispatch, type SetStateAction, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { KeyedMutator } from "swr";
-import { type DatabaseInfo, type FileWorkspaceHandle } from "@/bindings";
+import { type DatabaseHandle, type DatabaseInfo, type FileWorkspaceHandle } from "@/bindings";
 import { databaseConversionStateAtom } from "@/state/atoms";
 import { getDatabases, type DownloadableDatabaseInfo, useDefaultDatabases } from "@/utils/db";
 import { capitalize, formatBytes, formatNumber } from "@/utils/format";
+import { normalizeError, runWithAppliedRecovery } from "@/platform/errors";
 import AppModal from "../common/AppModal";
 import FileInput from "../common/FileInput";
 import ProgressButton from "../common/ProgressButton";
@@ -34,6 +36,41 @@ interface AddDatabaseFormValues {
   description: string;
   files: FileWorkspaceHandle[];
   filename: string;
+}
+
+export async function convertLocalDatabase(
+  paths: FileWorkspaceHandle[],
+  title: string,
+  description: string | undefined,
+  onCreated: (handle: DatabaseHandle) => void,
+): Promise<DatabaseHandle> {
+  const root = await tauri.getDatabaseWorkspace();
+  const filename = `${crypto.randomUUID()}.db3`;
+  const dbPath = await runWithAppliedRecovery(
+    () => tauri.createWorkspaceDatabase(root, filename),
+    async () =>
+      (await tauri.listWorkspaceDatabases(root)).find(
+        (candidate) => candidate.filename === filename,
+      )?.handle,
+  );
+  onCreated(dbPath);
+  await tauri.convertPgn(paths, dbPath, null, title, description ?? null);
+  return dbPath;
+}
+
+export async function convertLocalDatabaseWithLoading(
+  paths: FileWorkspaceHandle[],
+  title: string,
+  description: string | undefined,
+  onCreated: (handle: DatabaseHandle) => void,
+  setLoading: Dispatch<SetStateAction<boolean>>,
+): Promise<DatabaseHandle> {
+  setLoading(true);
+  try {
+    return await convertLocalDatabase(paths, title, description, onCreated);
+  } finally {
+    setLoading(false);
+  }
 }
 
 function AddDatabase({
@@ -58,22 +95,31 @@ function AddDatabase({
 
   async function convertDB(paths: FileWorkspaceHandle[], title: string, description?: string) {
     if (paths.length === 0) return;
-    setLoading(true);
-    const root = await tauri.getDatabaseWorkspace();
-    const dbPath = await tauri.createWorkspaceDatabase(root, `${crypto.randomUUID()}.db3`);
-    const sourceFileName = "PGN";
-    setConversionState((prev) => ({
-      ...prev,
-      inProgress: true,
-      targetDatabasePath: dbPath,
-      targetDatabaseTitle: title,
-      sourceFileName,
-    }));
     try {
-      await tauri.convertPgn(paths, dbPath, null, title, description ?? null);
+      const sourceFileName = "PGN";
+      await convertLocalDatabaseWithLoading(
+        paths,
+        title,
+        description,
+        (dbPath) => {
+          setConversionState((prev) => ({
+            ...prev,
+            inProgress: true,
+            targetDatabasePath: dbPath,
+            targetDatabaseTitle: title,
+            sourceFileName,
+          }));
+        },
+        setLoading,
+      );
       await setDatabases(await getDatabases());
+    } catch (cause) {
+      notifications.show({
+        color: "red",
+        title: t("Common.Error"),
+        message: normalizeError(cause).message,
+      });
     } finally {
-      setLoading(false);
       setConversionState((prev) => ({
         ...prev,
         inProgress: false,

@@ -13,6 +13,7 @@ import {
 import { useAtom } from "jotai";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { notifications } from "@mantine/notifications";
 import type { DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import { databaseConversionStateAtom, downloadDestinationAtom } from "@/state/atoms";
@@ -21,6 +22,7 @@ import { getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
 import { capitalize } from "@/utils/format";
 import { downloadLichess } from "@/utils/lichess/api";
 import { useTauriListener } from "@/platform/useTauriListener";
+import { normalizeError, runWithAppliedRecovery } from "@/platform/errors";
 import LichessLogo from "./LichessLogo";
 
 interface AccountCardProps {
@@ -53,6 +55,27 @@ export function downloadProgressPercent(downloaded: number, total: number): numb
 function isPathRef(value: unknown): value is PathRef {
   return (
     typeof value === "object" && value !== null && "id" in value && typeof value.id === "string"
+  );
+}
+
+export async function ensureAccountDatabaseHandle(
+  existing: DatabaseHandle | undefined,
+  title: string,
+  type: "lichess" | "chesscom",
+): Promise<DatabaseHandle> {
+  if (existing) return existing;
+  const root = await tauri.getDatabaseWorkspace();
+  const filename = `${title}_${type}.db3`;
+  const registered = (await tauri.listWorkspaceDatabases(root)).find(
+    (candidate) => candidate.filename === filename,
+  );
+  if (registered) return registered.handle;
+  return runWithAppliedRecovery(
+    () => tauri.createWorkspaceDatabase(root, filename),
+    async () =>
+      (await tauri.listWorkspaceDatabases(root)).find(
+        (candidate) => candidate.filename === filename,
+      )?.handle,
   );
 }
 
@@ -107,14 +130,7 @@ export function AccountCard({
   const [, setConversionState] = useAtom(databaseConversionStateAtom);
 
   async function ensureDatabaseHandle(): Promise<DatabaseHandle> {
-    const existing = database?.file;
-    if (existing) return existing;
-    const root = await tauri.getDatabaseWorkspace();
-    const filename = `${title}_${type}.db3`;
-    const registered = (await tauri.listWorkspaceDatabases(root)).find(
-      (candidate) => candidate.filename === filename,
-    );
-    return registered?.handle ?? (await tauri.createWorkspaceDatabase(root, filename));
+    return ensureAccountDatabaseHandle(database?.file, title, type);
   }
 
   async function convert(
@@ -237,6 +253,12 @@ export function AccountCard({
                     const databaseHandle = await convert(artifact, lastGameDate);
                     await tauri.deleteEmptyGames(databaseHandle);
                   }
+                } catch (cause) {
+                  notifications.show({
+                    color: "red",
+                    title: t("Common.Error"),
+                    message: normalizeError(cause).message,
+                  });
                 } finally {
                   setLoading(false);
                   setConversionState((prev) => ({

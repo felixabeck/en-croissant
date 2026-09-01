@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   restoreWorkspaceEntry: vi.fn(),
   permanentlyDeleteWorkspaceEntry: vi.fn(),
   moveWorkspaceEntry: vi.fn(),
+  createWorkspaceFile: vi.fn(),
+  createWorkspaceDirectory: vi.fn(),
+  renameWorkspaceFile: vi.fn(),
   issueFileWorkspace: vi.fn(),
   setWorkspace: vi.fn(),
   setWorkspaceDisplayName: vi.fn(),
@@ -24,6 +27,9 @@ vi.mock("@/platform/tauri", () => ({
     restoreWorkspaceEntry: mocks.restoreWorkspaceEntry,
     permanentlyDeleteWorkspaceEntry: mocks.permanentlyDeleteWorkspaceEntry,
     moveWorkspaceEntry: mocks.moveWorkspaceEntry,
+    createWorkspaceFile: mocks.createWorkspaceFile,
+    createWorkspaceDirectory: mocks.createWorkspaceDirectory,
+    renameWorkspaceFile: mocks.renameWorkspaceFile,
     issueFileWorkspace: mocks.issueFileWorkspace,
   },
 }));
@@ -74,7 +80,17 @@ vi.mock("@mantine/core", () => ({
   Text: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
     <p {...props}>{children}</p>
   ),
-  TextInput: () => null,
+  TextInput: ({
+    label,
+    error,
+    ...props
+  }: React.InputHTMLAttributes<HTMLInputElement> & { label?: string; error?: string }) => (
+    <label>
+      {label}
+      <input aria-label={label} {...props} />
+      {error && <span role="alert">{error}</span>}
+    </label>
+  ),
   Title: ({ children }: { children: React.ReactNode }) => <h1>{children}</h1>,
 }));
 vi.mock("./DirectoryTree", () => ({
@@ -178,6 +194,9 @@ beforeEach(async () => {
   mocks.restoreWorkspaceEntry.mockResolvedValue(undefined);
   mocks.permanentlyDeleteWorkspaceEntry.mockResolvedValue(undefined);
   mocks.moveWorkspaceEntry.mockResolvedValue(undefined);
+  mocks.createWorkspaceFile.mockResolvedValue(undefined);
+  mocks.createWorkspaceDirectory.mockResolvedValue(undefined);
+  mocks.renameWorkspaceFile.mockResolvedValue(undefined);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -329,6 +348,61 @@ test("cancelled collection selection stays silent", async () => {
 
   expect(mocks.setWorkspace).not.toHaveBeenCalled();
   expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("applied-despite-error create refreshes and closes without operationFailed", async () => {
+  mocks.createWorkspaceFile.mockRejectedValueOnce(
+    new Error("Committed but durability uncertain: registry replacement"),
+  );
+  click("Create file");
+  await settle();
+  const input = container.querySelector("input")! as HTMLInputElement;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      input,
+      "created",
+    );
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => dialogButton("Confirm").click());
+
+  expect(mocks.createWorkspaceFile).toHaveBeenCalled();
+  expect(mocks.mutate).toHaveBeenCalledTimes(1);
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
+  expect(container.textContent).not.toContain(
+    "The file operation could not be completed. Please try again.",
+  );
+});
+
+test("applied-despite-error move refreshes and clears the move", async () => {
+  mocks.moveWorkspaceEntry.mockRejectedValueOnce(
+    new Error("Committed but durability uncertain: registry replacement"),
+  );
+  click("Drag to folder");
+  await settle();
+
+  expect(mocks.mutate).toHaveBeenCalledTimes(1);
+  expect(container.textContent).not.toContain(
+    "The file operation could not be completed. Please try again.",
+  );
+});
+
+test("trash and restore refresh after applied-despite-error", async () => {
+  mocks.trashWorkspaceEntry.mockRejectedValueOnce(
+    new Error("Committed but durability uncertain: registry replacement"),
+  );
+  click("Select sample file");
+  click("Trash");
+  await act(async () => button("Common.Delete").click());
+  expect(mocks.mutate).toHaveBeenCalledTimes(1);
+
+  mocks.mutate.mockClear();
+  mocks.restoreWorkspaceEntry.mockRejectedValueOnce(
+    new Error("Committed but durability uncertain: registry replacement"),
+  );
+  click("Undo");
+  await act(async () => button("Restore").click());
+  expect(mocks.mutate).toHaveBeenCalledTimes(1);
 });
 
 test("failed collection selection notifies without changing the workspace", async () => {

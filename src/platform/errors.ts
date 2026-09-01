@@ -101,3 +101,36 @@ export async function runDestructiveWithRefresh<T>(
         throw cause;
     }
 }
+
+export async function runAppliedMutationWithRefresh<T>(
+    run: () => Promise<T>,
+    refresh: () => unknown | Promise<unknown>,
+): Promise<T | undefined> {
+    try {
+        const result = await run();
+        await refresh();
+        return result;
+    } catch (cause) {
+        if (normalizeError(cause).category !== "applied-despite-error") throw cause;
+        try {
+            await refresh();
+        } catch {
+            // The refresh failure must not turn an already-applied mutation into operationFailed.
+        }
+        return undefined;
+    }
+}
+
+export async function runWithAppliedRecovery<T>(
+    run: () => Promise<T>,
+    recover: () => Promise<T | undefined>,
+): Promise<T> {
+    try {
+        return await run();
+    } catch (cause) {
+        if (normalizeError(cause).category !== "applied-despite-error") throw cause;
+        const recovered = await recover();
+        if (recovered !== undefined) return recovered;
+        throw cause;
+    }
+}

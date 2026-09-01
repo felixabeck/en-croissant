@@ -1,5 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
-import { errorUnlessCancelled, normalizeError, runDestructiveWithRefresh } from "./errors";
+import {
+    errorUnlessCancelled,
+    normalizeError,
+    runAppliedMutationWithRefresh,
+    runDestructiveWithRefresh,
+    runWithAppliedRecovery,
+} from "./errors";
 
 describe("normalizeError", () => {
     test("redacts bearer tokens and local paths", () => {
@@ -45,6 +51,58 @@ describe("normalizeError", () => {
         });
         expect(errorUnlessCancelled(new Error("operation timeout"))).not.toBeNull();
     });
+});
+
+describe("runAppliedMutationWithRefresh", () => {
+    test("refreshes and resolves an applied-despite-error mutation", async () => {
+        const refresh = vi.fn();
+        await expect(
+            runAppliedMutationWithRefresh(
+                async () =>
+                    Promise.reject(
+                        new Error("Committed but durability uncertain: registry replacement"),
+                    ),
+                refresh,
+            ),
+        ).resolves.toBeUndefined();
+        expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    test("does not refresh or swallow an ordinary rejection", async () => {
+        const refresh = vi.fn();
+        await expect(
+            runAppliedMutationWithRefresh(
+                async () => Promise.reject(new Error("native failed")),
+                refresh,
+            ),
+        ).rejects.toThrow("native failed");
+        expect(refresh).not.toHaveBeenCalled();
+    });
+
+    test("keeps an applied mutation resolved when its refresh fails", async () => {
+        await expect(
+            runAppliedMutationWithRefresh(
+                async () =>
+                    Promise.reject(
+                        new Error("Committed but durability uncertain: registry replacement"),
+                    ),
+                async () => Promise.reject(new Error("refresh failed")),
+            ),
+        ).resolves.toBeUndefined();
+    });
+});
+
+test("runWithAppliedRecovery returns the recovered committed object", async () => {
+    const recovered = { id: "recovered" };
+    await expect(
+        runWithAppliedRecovery(
+            async () =>
+                Promise.reject(
+                    new Error("Committed but durability uncertain: registry replacement"),
+                ),
+            async () => recovered,
+        ),
+    ).resolves.toBe(recovered);
 });
 
 describe("runDestructiveWithRefresh", () => {

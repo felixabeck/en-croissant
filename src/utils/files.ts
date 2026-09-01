@@ -1,6 +1,7 @@
 import { tauri } from "@/platform/tauri";
 import { Result } from "@badrap/result";
 import { platform } from "@/platform/native";
+import { runWithAppliedRecovery } from "@/platform/errors";
 import { defaultGame, makePgn } from "chessops/pgn";
 import { getDefaultStore } from "jotai";
 import useSWR from "swr";
@@ -114,26 +115,35 @@ export async function createFile({
     workspace: FileWorkspaceHandle;
     parent: FileWorkspaceHandle;
 }): Promise<Result<FileMetadata>> {
-    let entry;
     try {
-        entry = await tauri.createWorkspaceFile(
-            workspace,
-            parent,
-            filename,
-            { type: filetype, tags: [] },
-            pgn || makePgn(defaultGame()),
+        const expected = filename.toLowerCase();
+        const withoutPgn = expected.replace(/\.pgn$/i, "");
+        const entry = await runWithAppliedRecovery(
+            () =>
+                tauri.createWorkspaceFile(
+                    workspace,
+                    parent,
+                    filename,
+                    { type: filetype, tags: [] },
+                    pgn || makePgn(defaultGame()),
+                ),
+            async () =>
+                (await tauri.listFileWorkspace(parent)).find((candidate) => {
+                    const actual = candidate.name.toLowerCase();
+                    return actual === expected || actual === withoutPgn;
+                }),
         );
+        if (!entry.metadata || entry.gameCount === null)
+            return Result.err(Error("Native workspace returned incomplete file metadata"));
+        return Result.ok({
+            type: "file",
+            handle: entry.handle,
+            name: entry.name,
+            numGames: entry.gameCount,
+            metadata: { type: entry.metadata.type, tags: entry.metadata.tags },
+            lastModified: Number(entry.lastModified),
+        });
     } catch (error) {
         return Result.err(error instanceof Error ? error : Error(String(error)));
     }
-    if (!entry.metadata || entry.gameCount === null)
-        return Result.err(Error("Native workspace returned incomplete file metadata"));
-    return Result.ok({
-        type: "file",
-        handle: entry.handle,
-        name: entry.name,
-        numGames: entry.gameCount,
-        metadata: { type: entry.metadata.type, tags: entry.metadata.tags },
-        lastModified: Number(entry.lastModified),
-    });
 }

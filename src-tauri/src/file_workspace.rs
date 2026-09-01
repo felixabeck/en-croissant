@@ -536,6 +536,7 @@ pub fn create_workspace_directory(
         true,
     ) {
         Ok(handle) => handle,
+        Err(error @ Error::CommittedDurabilityUncertain(_)) => return Err(error),
         Err(error) => {
             match crate::infra::fs::remove_entry_at(parent_dir, &target_leaf, identity, true) {
                 Ok(()) => return Err(error),
@@ -1214,5 +1215,45 @@ mod tests {
             ),
             Some(crate::error::DurabilityStage::WorkspaceSidecarCreation)
         );
+    }
+
+    #[test]
+    fn create_workspace_directory_parent_sync_keeps_completed_directory() {
+        struct ParentSync;
+        impl AtomicWriterInjector for ParentSync {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::ParentSync {
+                    Err(std::io::Error::other("uncertain"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let (_directory, state, workspace) = workspace_state();
+        let root = mutation_target(&state, &workspace).expect("workspace target");
+        let name = std::ffi::OsString::from("created");
+        crate::infra::fs::create_dir_at(root.directory().expect("root directory"), &name)
+            .expect("created directory");
+        let identity = crate::infra::fs::entry_identity_at(
+            root.directory().expect("root directory"),
+            &name,
+            true,
+        )
+        .expect("created identity");
+        let target = root.path().join(&name);
+        set_test_atomic_file_injector(Some(Box::new(ParentSync)));
+        let error = register_created_entry(
+            &state,
+            &workspace,
+            &target,
+            "created".into(),
+            identity,
+            true,
+        )
+        .expect_err("uncertain registry durability must be surfaced");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
+        assert!(target.is_dir());
     }
 }
