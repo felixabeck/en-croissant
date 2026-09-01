@@ -1,4 +1,5 @@
 import { warn } from "@/platform/native";
+import { reportPersistError } from "@/state/persistError";
 import { z } from "zod";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { deserializeStorageValue, serializeStorageValue } from "./debouncedStorage";
@@ -187,6 +188,13 @@ function parseTree(value: unknown): StoredTree | null {
 
 type StoredTree = StorageValue<unknown>;
 
+export function createTabStorageQuotaError(cause: unknown): Error {
+    return new Error(
+        "Could not open the game: the browser's session storage is full. Close some open tabs and try again.",
+        { cause },
+    );
+}
+
 export function parseLegacyTreeJson(value: string): unknown | null {
     try {
         return JSON.parse(value) as unknown;
@@ -261,10 +269,7 @@ export class TabStorageRepository {
         try {
             sessionStorage.setItem(tabId, serializeStorageValue(value));
         } catch (error) {
-            throw new Error(
-                "Could not open the game: the browser's session storage is full. Close some open tabs and try again.",
-                { cause: error },
-            );
+            throw createTabStorageQuotaError(error);
         }
     }
 
@@ -279,19 +284,23 @@ export class TabStorageRepository {
         sessionStorage.removeItem(tabId);
     }
 
-    flush() {
+    flush({ notify = false }: { notify?: boolean } = {}): string[] {
         if (this.flushTimeout) {
             clearTimeout(this.flushTimeout);
             this.flushTimeout = null;
         }
+        const failedTabIds: string[] = [];
         for (const [tabId, value] of this.pending) {
             try {
                 sessionStorage.setItem(tabId, serializeStorageValue(value));
                 this.pending.delete(tabId);
             } catch (error) {
+                failedTabIds.push(tabId);
                 void warn(`Could not persist tree storage ${tabId}: ${String(error)}`);
+                if (notify) reportPersistError(createTabStorageQuotaError(error));
             }
         }
+        return failedTabIds;
     }
 
     pendingCount() {
@@ -303,7 +312,7 @@ export class TabStorageRepository {
         if (this.flushTimeout) clearTimeout(this.flushTimeout);
         this.flushTimeout = setTimeout(() => {
             this.flushTimeout = null;
-            this.flush();
+            this.flush({ notify: true });
         }, DEBOUNCE_MS);
     }
 

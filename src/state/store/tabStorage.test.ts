@@ -10,7 +10,9 @@ import {
 } from "./tabStorage";
 
 const native = vi.hoisted(() => ({ warn: vi.fn() }));
+const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("@/platform/native", () => native);
+vi.mock("@/state/persistError", () => persistError);
 
 let storage: TabStorageRepository;
 
@@ -19,6 +21,7 @@ beforeEach(() => {
     storage = new TabStorageRepository();
     vi.useFakeTimers();
     native.warn.mockClear();
+    persistError.reportPersistError.mockClear();
 });
 
 afterEach(() => vi.useRealTimers());
@@ -461,13 +464,65 @@ test("rewrite and deferred flush retain recoverable state when storage temporari
     setItem.mockImplementationOnce(() => {
         throw new DOMException("quota", "QuotaExceededError");
     });
-    storage.flush();
+    expect(storage.flush()).toEqual(["flush-failure"]);
     expect(storage.pendingCount()).toBe(1);
     expect(native.warn).toHaveBeenCalledWith(expect.stringContaining("persist tree storage"));
+    expect(persistError.reportPersistError).not.toHaveBeenCalled();
     setItem.mockRestore();
-    storage.flush();
+    expect(storage.flush()).toEqual([]);
     expect(storage.pendingCount()).toBe(0);
     expect(storage.read("flush-failure")).not.toBeNull();
+});
+
+test("live debounce reports quota failure with the seed error and retains pending state", () => {
+    const quotaError = new DOMException("quota", "QuotaExceededError");
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+        throw quotaError;
+    });
+
+    storage.write("live-failure", { version: 0, state: defaultTree() });
+    vi.advanceTimersByTime(300);
+
+    expect(storage.pendingCount()).toBe(1);
+    expect(persistError.reportPersistError).toHaveBeenCalledWith(
+        expect.objectContaining({
+            message:
+                "Could not open the game: the browser's session storage is full. Close some open tabs and try again.",
+            cause: quotaError,
+        }),
+    );
+    setItem.mockRestore();
+});
+
+test("lifecycle flush failures warn and retain pending state without notifying", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new DOMException("quota", "QuotaExceededError");
+    });
+    storage.write("quit-failure", { version: 0, state: defaultTree() });
+
+    expect(() => window.dispatchEvent(new Event("pagehide"))).not.toThrow();
+    expect(() => window.dispatchEvent(new Event("beforeunload"))).not.toThrow();
+
+    expect(storage.pendingCount()).toBe(1);
+    expect(native.warn).toHaveBeenCalledWith(expect.stringContaining("persist tree storage"));
+    expect(persistError.reportPersistError).not.toHaveBeenCalled();
+    setItem.mockRestore();
+});
+
+test("flush continues after one failed key and persists the remaining key", () => {
+    storage.write("first", { version: 0, state: defaultTree() });
+    storage.write("second", { version: 0, state: defaultTree() });
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+        throw new DOMException("quota", "QuotaExceededError");
+    });
+
+    expect(storage.flush()).toEqual(["first"]);
+
+    expect(storage.pendingCount()).toBe(1);
+    expect(storage.read("first")).not.toBeNull();
+    expect(sessionStorage.getItem("first")).toBeNull();
+    expect(sessionStorage.getItem("second")).not.toBeNull();
+    setItem.mockRestore();
 });
 
 test("scheduled lifecycle events flush once and a missing clone source stays absent", () => {
