@@ -1351,6 +1351,7 @@ impl EngineActor {
         ))
     }
 
+    #[cfg(test)]
     pub async fn spawn_initialized(
         executable: EngineExecutable,
         deadlines: EngineDeadlines,

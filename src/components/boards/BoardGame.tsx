@@ -33,7 +33,11 @@ import { useStore } from "zustand";
 import type { Outcome } from "@/bindings";
 import { type EngineLog, type GameConfig, type GameResult, type PlayerConfig } from "@/bindings";
 import type { ChessgroundRef } from "@/chessground/Chessground";
-import { notifyListenerError, runUnlessCancelled } from "@/components/files/notifyError";
+import {
+  notifyListenerError,
+  notifyUnlessCancelled,
+  runUnlessCancelled,
+} from "@/components/files/notifyError";
 import {
   activeTabAtom,
   flipBoardAfterMoveAtom,
@@ -78,6 +82,44 @@ function gameResultToOutcome(result: GameResult): Outcome {
 }
 
 type BackendMove = { uci: string; clock: number | null };
+
+export function toPlayerConfig(settings: OpponentSettings): PlayerConfig {
+  if (settings.type === "human") {
+    return {
+      type: "human",
+      name: settings.name ?? "Player",
+    };
+  }
+  if (!settings.engine || settings.engine.type !== "local") {
+    throw new Error("A local engine must be selected for an engine player");
+  }
+  return {
+    type: "engine",
+    name: settings.engine.name ?? "Engine",
+    engineId: settings.engine.id,
+    handle: settings.engine.handle,
+    options: (settings.engineSettings ?? settings.engine.settings ?? [])
+      .filter((setting) => setting.name !== "MultiPV")
+      .map((setting) =>
+        setting.type === "resource" ? setting : { ...setting, value: setting.value.toString() },
+      ),
+    go: settings.timeControl ? null : settings.go,
+  };
+}
+
+export async function fetchGameEngineLogs(
+  gameId: string,
+  expectedSession: bigint,
+  color: "white" | "black",
+  errorTitle: string,
+): Promise<EngineLog[] | undefined> {
+  try {
+    return await tauri.getGameEngineLogs(gameId, expectedSession, color);
+  } catch (error) {
+    notifyUnlessCancelled(errorTitle, error);
+    return undefined;
+  }
+}
 
 function mapBackendMoves(moves: { uci: string; clock: bigint | null }[]): BackendMove[] {
   return moves.map((m) => ({
@@ -243,7 +285,8 @@ function BoardGame() {
     } else if (players.black.type === "human" && players.white.type === "engine") {
       color = "white";
     }
-    const logs = await tauri.getGameEngineLogs(gameId, expectedSession, color);
+    const logs = await fetchGameEngineLogs(gameId, expectedSession, color, t("Common.Error"));
+    if (!logs) return;
     if (
       generation === sessionGenerationRef.current &&
       liveGameIdRef.current === gameId &&
@@ -251,7 +294,7 @@ function BoardGame() {
     ) {
       setEngineLogs(logs);
     }
-  }, [gameId, logsColor, hasEngine, players.white.type, players.black.type, backendSession]);
+  }, [gameId, logsColor, hasEngine, players.white.type, players.black.type, backendSession, t]);
 
   useEffect(() => {
     if (logsOpened) {
@@ -324,28 +367,6 @@ function BoardGame() {
     }
     return positionFromFen(node.fen);
   }, [root]);
-
-  function toPlayerConfig(settings: OpponentSettings): PlayerConfig {
-    if (settings.type === "human") {
-      return {
-        type: "human",
-        name: settings.name ?? "Player",
-      };
-    }
-    if (!settings.engine || settings.engine.type !== "local") {
-      throw new Error("A local engine must be selected for an engine player");
-    }
-    return {
-      type: "engine",
-      name: settings.engine?.name ?? "Engine",
-      handle: settings.engine.handle,
-      options: (settings.engineSettings ?? settings.engine?.settings ?? [])
-        .filter((s) => s.name !== "MultiPV")
-        .filter((s) => s.name !== "MultiPV")
-        .map((s) => (s.type === "resource" ? s : { ...s, value: s.value.toString() })),
-      go: settings.timeControl ? null : settings.go,
-    };
-  }
 
   function getTreeMoves(): string[] {
     const moves: string[] = [];

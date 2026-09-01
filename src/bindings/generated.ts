@@ -1111,7 +1111,7 @@ export type PathOperation = "readPgn" | "writePgn" | "databaseRead" | "databaseM
  */
 export type PathRef = { id: string }
 export type Player = { id: number; name: string | null; elo: number | null }
-export type PlayerConfig = { type: "human"; name: string } | { type: "engine"; name: string; handle: EngineHandle; options?: EngineOption[]; go: GoMode | null }
+export type PlayerConfig = { type: "human"; name: string } | { type: "engine"; name: string; engineId: string; handle: EngineHandle; options?: EngineOption[]; go: GoMode | null }
 export type PlayerGameInfo = { site_stats_data: SiteStatsData[] }
 export type PlayerQuery = { options: QueryOptions<PlayerSort>; name?: string | null; range?: [number, number] | null }
 export type PlayerSort = "id" | "name" | "elo"

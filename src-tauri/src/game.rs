@@ -28,8 +28,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     engine::{
-        parse_fen_to_position, resolve_engine_options, EngineActor, EngineDeadlines, EngineLog,
-        EngineOption, GoMode, PlayersTime, MAX_ENGINE_LIMIT,
+        parse_fen_to_position, resolve_engine_options, spawn_registered, EngineActor,
+        EngineDeadlines, EngineKey, EngineLog, EngineOption, EngineSupervisor, GoMode, PlayersTime,
+        MAX_ENGINE_LIMIT,
     },
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
@@ -48,6 +49,8 @@ pub enum PlayerConfig {
     },
     Engine {
         name: String,
+        #[serde(rename = "engineId")]
+        engine_id: String,
         handle: EngineHandle,
         #[serde(default)]
         options: Vec<EngineOption>,
@@ -249,13 +252,27 @@ struct GameController {
     status: GameStatus,
     terminal_event_emitted: bool,
     clock: Option<ClockState>,
-    white_engine: Option<Arc<EngineActor>>,
-    black_engine: Option<Arc<EngineActor>>,
+    white_engine: Option<RegisteredGameEngine>,
+    black_engine: Option<RegisteredGameEngine>,
     move_notify_tx: Option<tokio::sync::mpsc::Sender<()>>,
     engine_thinking: bool,
     active_engine_request: Option<ActiveEngineRequest>,
     polyglot_book: Option<CancellablePolyglotBook>,
     polyglot_max_ply: usize,
+}
+
+#[derive(Clone)]
+struct RegisteredGameEngine {
+    actor: Arc<EngineActor>,
+    key: EngineKey,
+    generation: u64,
+}
+
+struct GameEngineRegistration {
+    supervisor: Arc<EngineSupervisor>,
+    key: EngineKey,
+    engine_id: String,
+    executable_ref: crate::infra::path_authority::PathRef,
 }
 
 impl GameController {
@@ -800,6 +817,7 @@ struct LiveSession {
     controller: Arc<RwLock<GameController>>,
     shutdown: watch::Sender<bool>,
     join: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    engine_supervisor: Arc<EngineSupervisor>,
 }
 
 impl LiveSession {
@@ -828,7 +846,7 @@ impl LiveSession {
                     };
                     let primary =
                         Error::Conflict(format!("game loop did not exit within {join_budget:?}"));
-                    return match terminate_game_engines(engines).await {
+                    return match terminate_game_engines(&self.engine_supervisor, engines).await {
                         Ok(()) => Err(primary),
                         Err(cleanup) => Err(Error::OperationAndCleanup {
                             primary: primary.to_string(),
@@ -852,11 +870,18 @@ pub struct GameManager {
 }
 
 async fn spawn_configured_game_engine(
+    registration: GameEngineRegistration,
     executable: EngineExecutable,
     options: &[EngineOption],
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     chess960: bool,
-) -> Result<Arc<EngineActor>, Error> {
+) -> Result<RegisteredGameEngine, Error> {
+    let GameEngineRegistration {
+        supervisor,
+        key,
+        engine_id,
+        executable_ref,
+    } = registration;
     let mut resolved = {
         let mut authority = authority
             .lock()
@@ -877,34 +902,31 @@ async fn spawn_configured_game_engine(
         .iter_mut()
         .flat_map(|option| std::mem::take(&mut option.resources))
         .collect();
-    let engine = EngineActor::spawn_initialized(
+    let (supervised, ()) = spawn_registered(
+        supervisor,
+        key.clone(),
         executable.with_resource_leases(child_leases),
-        EngineDeadlines::default(),
+        engine_id,
+        executable_ref,
+        move |engine| async move {
+            engine.init_uci().await?;
+            for option in resolved {
+                if option.name != "UCI_Chess960" {
+                    engine.set_option(&option.name, &option.value).await?;
+                }
+            }
+            engine
+                .set_option("UCI_Chess960", if chess960 { "true" } else { "false" })
+                .await?;
+            engine.ensure_ready().await
+        },
     )
     .await?;
-    let setup = async {
-        for option in resolved {
-            if option.name != "UCI_Chess960" {
-                engine.set_option(&option.name, &option.value).await?;
-            }
-        }
-        engine
-            .set_option("UCI_Chess960", if chess960 { "true" } else { "false" })
-            .await?;
-        engine.ensure_ready().await
-    }
-    .await;
-
-    match setup {
-        Ok(()) => Ok(Arc::new(engine)),
-        Err(primary) => match engine.terminate().await {
-            Ok(()) => Err(primary),
-            Err(cleanup) => Err(Error::OperationAndCleanup {
-                primary: primary.to_string(),
-                cleanup: cleanup.to_string(),
-            }),
-        },
-    }
+    Ok(RegisteredGameEngine {
+        actor: supervised.actor,
+        key,
+        generation: supervised.generation,
+    })
 }
 
 fn resolve_game_engine_executable(
@@ -921,13 +943,14 @@ fn resolve_game_engine_executable(
 }
 
 async fn terminate_game_engines(
-    engines: impl IntoIterator<Item = Arc<EngineActor>>,
+    supervisor: &EngineSupervisor,
+    engines: impl IntoIterator<Item = RegisteredGameEngine>,
 ) -> Result<(), Error> {
-    let failures = futures_util::future::join_all(
-        engines
-            .into_iter()
-            .map(|engine| async move { engine.terminate().await }),
-    )
+    let failures = futures_util::future::join_all(engines.into_iter().map(|engine| async move {
+        supervisor
+            .terminate_exact(&engine.key, engine.generation)
+            .await
+    }))
     .await
     .into_iter()
     .filter_map(Result::err)
@@ -1014,6 +1037,7 @@ impl GameManager {
         config: GameConfig,
         app: AppHandle,
         authority: &std::sync::Mutex<Option<PathAuthority>>,
+        engine_supervisor: Arc<EngineSupervisor>,
     ) -> Result<GameState, Error> {
         self.ensure_accepting_starts()?;
         let lifecycle = self.lifecycle_slot(&game_id);
@@ -1043,12 +1067,21 @@ impl GameManager {
         controller.polyglot_max_ply = polyglot_max_ply;
 
         if let PlayerConfig::Engine {
-            handle, options, ..
+            engine_id,
+            handle,
+            options,
+            ..
         } = &config.white
         {
             let executable = resolve_game_engine_executable(authority, handle)?;
             controller.white_engine = Some(
                 spawn_configured_game_engine(
+                    GameEngineRegistration {
+                        supervisor: engine_supervisor.clone(),
+                        key: EngineKey::new(format!("game:{game_id}:{session}"), "white".into())?,
+                        engine_id: engine_id.clone(),
+                        executable_ref: handle.id.clone(),
+                    },
                     executable,
                     options,
                     authority,
@@ -1059,17 +1092,18 @@ impl GameManager {
         }
 
         if let PlayerConfig::Engine {
-            handle, options, ..
+            engine_id,
+            handle,
+            options,
+            ..
         } = &config.black
         {
             let executable = match resolve_game_engine_executable(authority, handle) {
                 Ok(executable) => executable,
                 Err(primary) => {
-                    let cleanup = if let Some(engine) = controller.white_engine.take() {
-                        engine.terminate().await
-                    } else {
-                        Ok(())
-                    };
+                    let cleanup =
+                        terminate_game_engines(&engine_supervisor, controller.white_engine.take())
+                            .await;
                     return match cleanup {
                         Ok(()) => Err(primary),
                         Err(cleanup) => Err(Error::OperationAndCleanup {
@@ -1080,6 +1114,12 @@ impl GameManager {
                 }
             };
             match spawn_configured_game_engine(
+                GameEngineRegistration {
+                    supervisor: engine_supervisor.clone(),
+                    key: EngineKey::new(format!("game:{game_id}:{session}"), "black".into())?,
+                    engine_id: engine_id.clone(),
+                    executable_ref: handle.id.clone(),
+                },
                 executable,
                 options,
                 authority,
@@ -1089,11 +1129,9 @@ impl GameManager {
             {
                 Ok(engine) => controller.black_engine = Some(engine),
                 Err(primary) => {
-                    let cleanup = if let Some(engine) = controller.white_engine.take() {
-                        engine.terminate().await
-                    } else {
-                        Ok(())
-                    };
+                    let cleanup =
+                        terminate_game_engines(&engine_supervisor, controller.white_engine.take())
+                            .await;
                     return match cleanup {
                         Ok(()) => Err(primary),
                         Err(cleanup) => Err(Error::OperationAndCleanup {
@@ -1118,6 +1156,7 @@ impl GameManager {
             controller: controller.clone(),
             shutdown: shutdown_tx,
             join: std::sync::Mutex::new(None),
+            engine_supervisor: engine_supervisor.clone(),
         });
 
         // Construct and validate the entire replacement before disturbing a
@@ -1129,9 +1168,27 @@ impl GameManager {
             let _ = self
                 .games
                 .remove_if(&game_id, |_, current| current.session == old_game.session);
-            old_game
+            if let Err(primary) = old_game
                 .shutdown_and_join(EngineDeadlines::default().quit)
-                .await?;
+                .await
+            {
+                let engines = {
+                    let controller = controller.read().await;
+                    controller
+                        .white_engine
+                        .iter()
+                        .chain(controller.black_engine.iter())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+                return match terminate_game_engines(&engine_supervisor, engines).await {
+                    Ok(()) => Err(primary),
+                    Err(cleanup) => Err(Error::OperationAndCleanup {
+                        primary: primary.to_string(),
+                        cleanup: cleanup.to_string(),
+                    }),
+                };
+            }
         }
         self.completed.lock().await.latest.insert(
             game_id.clone(),
@@ -1153,10 +1210,13 @@ impl GameManager {
                     .cloned()
                     .collect::<Vec<_>>()
             };
-            if let Err(cleanup) = terminate_game_engines(engines).await {
-                error!("game engines spawned during shutdown could not be terminated: {cleanup}");
-            }
-            return Err(error);
+            return match terminate_game_engines(&engine_supervisor, engines).await {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(Error::OperationAndCleanup {
+                    primary: error.to_string(),
+                    cleanup: cleanup.to_string(),
+                }),
+            };
         }
         self.games.insert(game_id.clone(), live.clone());
 
@@ -1434,7 +1494,7 @@ impl GameManager {
 
     /// Shuts every live session down and joins its loop, which is what actually
     /// reaps that session's engine children: the loop terminates them through
-    /// `terminate_game_engines` on its way out (see the tail of `run_game_loop`).
+    /// `terminate_game_engines` on its way out (see the tail of `game_loop`).
     /// Calling that here as well would normally be a second teardown path for
     /// the same children. The exception is a loop that exceeds `join_budget`:
     /// it is aborted and its engines are terminated directly before returning.
@@ -1541,7 +1601,7 @@ impl GameManager {
         };
 
         if let Some(engine_arc) = engine {
-            engine_arc.logs().await
+            engine_arc.actor.logs().await
         } else {
             Ok(Vec::new())
         }
@@ -2518,7 +2578,7 @@ async fn game_loop(
             .flatten()
             .collect::<Vec<_>>()
     };
-    if let Err(error) = terminate_game_engines(engines).await {
+    if let Err(error) = terminate_game_engines(&live.engine_supervisor, engines).await {
         error!("Game {game_id} engine cleanup failed: {error}");
     }
 
@@ -2629,9 +2689,19 @@ async fn request_engine_move(
 
         let turn = ctrl.position.turn();
         let (engine_arc, player_config) = if turn == Color::White {
-            (ctrl.white_engine.clone(), ctrl.config.white.clone())
+            (
+                ctrl.white_engine
+                    .as_ref()
+                    .map(|engine| engine.actor.clone()),
+                ctrl.config.white.clone(),
+            )
         } else {
-            (ctrl.black_engine.clone(), ctrl.config.black.clone())
+            (
+                ctrl.black_engine
+                    .as_ref()
+                    .map(|engine| engine.actor.clone()),
+                ctrl.config.black.clone(),
+            )
         };
 
         let engine = match engine_arc {
@@ -2756,7 +2826,13 @@ pub async fn start_game(
     info!("Starting game with ID {}", game_id);
     state
         .game_manager
-        .start_game(game_id, config, app, &state.pgn_path_authority)
+        .start_game(
+            game_id,
+            config,
+            app,
+            &state.pgn_path_authority,
+            state.engine_supervisor.clone(),
+        )
         .await
 }
 
@@ -2849,6 +2925,34 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    async fn register_test_game_engine(
+        supervisor: &Arc<EngineSupervisor>,
+        game_id: &str,
+        session: u64,
+        side: &str,
+        engine_id: &str,
+        executable_id: &str,
+    ) -> RegisteredGameEngine {
+        let key = EngineKey::new(format!("game:{game_id}:{session}"), side.into()).unwrap();
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        let supervised = supervisor
+            .replace_handle(
+                key.clone(),
+                actor,
+                engine_id.into(),
+                crate::infra::path_authority::PathRef {
+                    id: executable_id.into(),
+                },
+            )
+            .await
+            .unwrap();
+        RegisteredGameEngine {
+            actor: supervised.actor,
+            key,
+            generation: supervised.generation,
+        }
+    }
+
     struct CancelsAfterFirstRead {
         bytes: Cursor<Vec<u8>>,
         cancellation: CancellationToken,
@@ -2902,6 +3006,7 @@ mod tests {
     fn fake_engine_player() -> PlayerConfig {
         PlayerConfig::Engine {
             name: "Engine".into(),
+            engine_id: "test-engine-id".into(),
             handle: EngineHandle {
                 id: crate::infra::path_authority::PathRef {
                     id: "test-engine".into(),
@@ -2911,6 +3016,138 @@ mod tests {
             options: Vec::new(),
             go: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn game_engine_is_registered_while_uci_initialization_is_pending() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("pending-uci-engine.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in quit) exit 0;; esac; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = EngineExecutable::test_fixture(
+            std::fs::File::open(&script).unwrap(),
+            directory.path().to_path_buf(),
+            Vec::new(),
+        );
+        let authority = std::sync::Mutex::new(Some(
+            PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap(),
+        ));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("game:game-id:9".into(), "white".into()).unwrap();
+        let registration = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            async move {
+                spawn_configured_game_engine(
+                    GameEngineRegistration {
+                        supervisor,
+                        key,
+                        engine_id: "application-engine-id".into(),
+                        executable_ref: crate::infra::path_authority::PathRef {
+                            id: "pending-executable".into(),
+                        },
+                    },
+                    executable,
+                    &[],
+                    &authority,
+                    false,
+                )
+                .await
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while supervisor.get_exact(&key).is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        registration.abort();
+        let _ = registration.await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while supervisor.get_exact(&key).is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retiring_one_game_engine_id_keeps_the_other_even_for_the_same_handle() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let white =
+            register_test_game_engine(&supervisor, "game", 3, "white", "engine-a", "same-handle")
+                .await;
+        let black =
+            register_test_game_engine(&supervisor, "game", 3, "black", "engine-b", "same-handle")
+                .await;
+
+        supervisor.retire_engine("engine-a".into()).await.unwrap();
+
+        assert!(supervisor.get_exact(&white.key).is_none());
+        assert!(supervisor.get_exact(&black.key).is_some());
+        supervisor
+            .terminate_exact(&black.key, black.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn disconnected_registered_game_actor_returns_a_log_error() {
+        let manager = GameManager::new();
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("game:game:4".into(), "white".into()).unwrap();
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        actor.terminate().await.unwrap();
+        let supervised = supervisor
+            .replace_handle(
+                key.clone(),
+                actor,
+                "engine-a".into(),
+                crate::infra::path_authority::PathRef {
+                    id: "handle-a".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let registered = RegisteredGameEngine {
+            actor: supervised.actor,
+            key,
+            generation: supervised.generation,
+        };
+        let mut controller = GameController::new("game".into(), 4, human_config()).unwrap();
+        controller.white_engine = Some(registered.clone());
+        let controller = Arc::new(RwLock::new(controller));
+        let (shutdown, _) = watch::channel(false);
+        manager.games.insert(
+            "game".into(),
+            Arc::new(LiveSession {
+                session: 4,
+                controller,
+                shutdown,
+                join: std::sync::Mutex::new(None),
+                engine_supervisor: supervisor.clone(),
+            }),
+        );
+
+        assert!(matches!(
+            manager.get_engine_logs("game", 4, "white").await,
+            Err(Error::EngineDisconnected)
+        ));
+        supervisor
+            .terminate_exact(&registered.key, registered.generation)
+            .await
+            .unwrap();
+        assert!(supervisor.get_exact(&registered.key).is_none());
     }
 
     fn assert_terminal_move_publication_revisions(config: GameConfig) {
@@ -3411,6 +3648,7 @@ mod tests {
                 controller: controller.clone(),
                 shutdown,
                 join: std::sync::Mutex::new(None),
+                engine_supervisor: Arc::new(EngineSupervisor::default()),
             }),
         );
         manager.complete_exact("game", 1, &controller).await;
@@ -3435,6 +3673,7 @@ mod tests {
                 controller: replacement.clone(),
                 shutdown,
                 join: std::sync::Mutex::new(None),
+                engine_supervisor: Arc::new(EngineSupervisor::default()),
             }),
         );
         manager.complete_exact("game", 1, &controller).await;
@@ -3474,6 +3713,7 @@ mod tests {
                     controller,
                     shutdown,
                     join: std::sync::Mutex::new(Some(join)),
+                    engine_supervisor: Arc::new(EngineSupervisor::default()),
                 }),
             );
             joined_flags.push(joined);
@@ -3532,6 +3772,7 @@ mod tests {
                 controller,
                 shutdown,
                 join: std::sync::Mutex::new(Some(initial_join)),
+                engine_supervisor: Arc::new(EngineSupervisor::default()),
             }),
         );
 
@@ -3565,6 +3806,7 @@ mod tests {
                 controller,
                 shutdown: slipped_shutdown,
                 join: std::sync::Mutex::new(Some(slipped_join)),
+                engine_supervisor: Arc::new(EngineSupervisor::default()),
             }),
         );
 
@@ -3576,9 +3818,13 @@ mod tests {
     #[tokio::test]
     async fn caller_budget_abandons_a_game_loop_that_never_exits() {
         let manager = GameManager::new();
-        let controller = Arc::new(RwLock::new(
-            GameController::new("stuck".into(), 1, human_config()).unwrap(),
-        ));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let registered =
+            register_test_game_engine(&supervisor, "stuck", 1, "white", "engine-a", "handle-a")
+                .await;
+        let mut game_controller = GameController::new("stuck".into(), 1, human_config()).unwrap();
+        game_controller.white_engine = Some(registered.clone());
+        let controller = Arc::new(RwLock::new(game_controller));
         let (shutdown, _) = watch::channel(false);
         let join = tokio::spawn(std::future::pending::<()>());
         manager.games.insert(
@@ -3588,6 +3834,7 @@ mod tests {
                 controller,
                 shutdown,
                 join: std::sync::Mutex::new(Some(join)),
+                engine_supervisor: supervisor.clone(),
             }),
         );
 
@@ -3596,6 +3843,55 @@ mod tests {
         assert!(manager.shutdown_all(budget).await.is_err());
         assert!(started.elapsed() >= budget);
         assert!(manager.games.is_empty());
+        assert!(supervisor.get_exact(&registered.key).is_none());
+    }
+
+    #[tokio::test]
+    async fn shutdown_all_and_supervisor_termination_are_generation_safe_in_parallel() {
+        let manager = GameManager::new();
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let registered =
+            register_test_game_engine(&supervisor, "parallel", 1, "white", "engine-a", "handle-a")
+                .await;
+        let mut game_controller =
+            GameController::new("parallel".into(), 1, human_config()).unwrap();
+        game_controller.white_engine = Some(registered.clone());
+        let controller = Arc::new(RwLock::new(game_controller));
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
+        let join = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let registered = registered.clone();
+            async move {
+                while shutdown_rx.changed().await.is_ok() {
+                    if *shutdown_rx.borrow() {
+                        let _ = supervisor
+                            .terminate_exact(&registered.key, registered.generation)
+                            .await;
+                        break;
+                    }
+                }
+            }
+        });
+        manager.games.insert(
+            "parallel".into(),
+            Arc::new(LiveSession {
+                session: 1,
+                controller,
+                shutdown,
+                join: std::sync::Mutex::new(Some(join)),
+                engine_supervisor: supervisor.clone(),
+            }),
+        );
+
+        let (games, engines) = tokio::join!(
+            manager.shutdown_all(Duration::from_secs(1)),
+            supervisor.terminate_all()
+        );
+
+        games.unwrap();
+        engines.unwrap();
+        assert!(manager.games.is_empty());
+        assert!(supervisor.get_exact(&registered.key).is_none());
     }
 
     #[tokio::test]
