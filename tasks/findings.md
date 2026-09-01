@@ -3854,7 +3854,7 @@ allocated the id.
 
 ### The renderer chooses the operation class that decides whether a download must be signed
 
-* **ID:** f-20260831-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-01 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/fs.rs`, `validate_artifact_integrity` (the `required` computation) and
   `OpClass::from_id`; reached from the `download_file` command, whose `id: String` comes straight
   from the renderer.
@@ -3883,9 +3883,11 @@ allocated the id.
   `native-fs` cluster, 2026-08-31. Verified directly against `OpClass::from_id` and the `required`
   computation.
 
+* **Closed:** 2026-09-01, commit `016ec27a`. `OpClass` is derived from the destination PathRef's stored operations. A `lichess_` id plus a database destination plus `integrity: None` is rejected. Specta `download_file` signature unchanged. `from_id` deleted. Rejected: trusting the renderer id prefix; rejected: a Specta class enum.
+
 ### `persist_workspace_child` discards the durability of the commit that registers a workspace entry
 
-* **ID:** f-20260831-02 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-02 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority.rs`, `persist_workspace_child` — its
   `self.commit_candidate(candidate, None)?;` drops the returned `CommitDurability`; reached from
   `register_workspace_child` and `register_workspace_child_expected`, and through them from
@@ -3907,9 +3909,11 @@ allocated the id.
 * **Found by:** the `review-error-handling` lens (confidence 95) over the cumulative diff of the
   `native-fs` cluster, 2026-08-31.
 
+* **Closed:** 2026-09-01, commit `dd2c0f58`. Persist/register/rebind/rebase return `CommittedDurabilityUncertain` after adopting. Create callers do not roll back that variant. Renderer create/move refresh on `applied-despite-error`. Rejected: silent Ok; rejected: fail-and-rollback; rejected: a new Specta return type.
+
 ### A failed registry save discards the subtree prune, so the deleted entry's records survive
 
-* **ID:** f-20260831-03 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-03 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority.rs`, `commit_state` — it returns before assigning
   the candidate when `save_entries` fails — reached from `remove_workspace_entry` and from
   `permanently_delete_entry` in `src-tauri/src/file_workspace.rs`.
@@ -3933,9 +3937,11 @@ allocated the id.
   `native-fs` cluster, 2026-08-31. It reported the documented residual as a blocker; the residual
   stands, and this entry is where it now lives instead of only in a code comment.
 
+* **Closed:** 2026-09-01, commit `dd2c0f58`. `commit_registry` retries `Error::Io` once and queues failed prune ids so a later successful save does not resurrect them. Crash before the next successful save still reloads the stale registry (documented residual). Rejected: load-time drop; rejected: retrying DurabilityUncertain; rejected: a pre-unlink tombstone in this slice (`d-20260901-09`).
+
 ### The engine manifest document is unsigned, and can only be signed once the fork serves its own
 
-* **ID:** f-20260831-04 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-04 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** sequenced-d-20260830-15
 * **Where:** `src/utils/engines.ts` (`defaultEngineManifestSchema`, `useDefaultEngines`), the
   `https://www.encroissant.org/engines` endpoint, and `docs/signed-download-manifests.md`.
 * **Defect:** the manifest document carries no signature. Its per-entry `signature` authenticates
@@ -3961,6 +3967,8 @@ allocated the id.
   the `review-root-cause` lens at confidence 96 over the `native-fs` cluster diff, 2026-08-31, which
   correctly objected that the client-side constraint hardens a symptom without authenticating the
   state that produced it.
+
+* **Sequenced:** 2026-09-01. Not handled. `d-20260830-15` (Felix, 2026-08-30) defers the fork's own signed engine manifest. Blocked as `sequenced-d-20260830-15` so it leaves the native-fs pick until that work starts (`d-20260901-08`).
 
 ### An inline `;` comment after a move opens a brace comment, merging the next game into the current one
 
