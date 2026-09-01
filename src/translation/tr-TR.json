@@ -404,6 +404,7 @@
     "Engines.Logs.TruncatedA11y_other": "Günlük geçmişi kısaltıldı: {{count}} girdi atlandı",
     "Engines.Remove.Message": "Bu motoru En Croissant'tan kaldırmak istediğinize emin misiniz?",
     "Engines.Remove.Title": "Motor Kaldır",
+    "Engines.SaveError": "Motor listesi kaydedilemedi.",
     "Engines.Selection.None": "Yüklü motor yok. Önce <addEngineLink>bir motor ekleyin</addEngineLink>.",
     "Engines.Settings.AdvancedSettings": "Gelişmiş ayarlar",
     "Engines.Settings.EditJSON": "JSON olarak düzenle",

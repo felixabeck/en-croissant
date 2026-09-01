@@ -404,6 +404,7 @@
     "Engines.Logs.TruncatedA11y_other": "Protokollverlauf gekürzt: {{count}} Einträge ausgelassen",
     "Engines.Remove.Message": "Bist du sicher, dass du diese Engine aus En Croissant entfernen möchtest?",
     "Engines.Remove.Title": "Engine entfernen",
+    "Engines.SaveError": "Die Engineliste konnte nicht gespeichert werden.",
     "Engines.Selection.None": "Keine Engines installiert. Bitte <addEngineLink>füge zuerst eine Engine hinzu</addEngineLink>.",
     "Engines.Settings.AdvancedSettings": "Erweiterte Einstellungen",
     "Engines.Settings.EditJSON": "JSON bearbeiten",

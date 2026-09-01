@@ -414,6 +414,7 @@
     "Engines.Logs.TruncatedA11y_other": "Гісторыя журнала скарочана: прапушчана {{count}} запісаў",
     "Engines.Remove.Message": "Вы ўпэўнены, што хочаце выдаліць гэты рухавік з En Croissant?",
     "Engines.Remove.Title": "Выдаліць рухавік",
+    "Engines.SaveError": "Не ўдалося захаваць спіс рухавікоў.",
     "Engines.Selection.None": "Няма ўсталяваных рухавікоў. Спачатку <addEngineLink>дадайце рухавік</addEngineLink>.",
     "Engines.Settings.AdvancedSettings": "Пашыраныя налады",
     "Engines.Settings.EditJSON": "Рэдагаваць JSON",

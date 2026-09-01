@@ -404,6 +404,7 @@
     "Engines.Logs.TruncatedA11y_other": "Logghistorikken er avkortet: {{count}} oppføringer utelatt",
     "Engines.Remove.Message": "Er du sikker på at du vil fjerne denne computeren fra En Croissant?",
     "Engines.Remove.Title": "Fjern computer",
+    "Engines.SaveError": "Kunne ikke lagre motorlisten.",
     "Engines.Selection.None": "Ingen motorer installert. <addEngineLink>Legg til en motor</addEngineLink> først.",
     "Engines.Settings.AdvancedSettings": "Avanserte innstillinger",
     "Engines.Settings.EditJSON": "Rediger JSON",

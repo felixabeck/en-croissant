@@ -409,6 +409,7 @@
     "Engines.Logs.TruncatedA11y_other": "Historique tronqué : {{count}} entrées omises",
     "Engines.Remove.Message": "Êtes-vous sûr de vouloir supprimer le moteur ?",
     "Engines.Remove.Title": "Supprimer le moteur",
+    "Engines.SaveError": "La liste des moteurs n'a pas pu être enregistrée.",
     "Engines.Selection.None": "Aucun moteur n'est installé. Veuillez d'abord <addEngineLink>ajouter un moteur</addEngineLink>.",
     "Engines.Settings.AdvancedSettings": "Paramètres avancés",
     "Engines.Settings.EditJSON": "Editer JSON",

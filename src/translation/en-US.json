@@ -404,6 +404,7 @@
     "Engines.Logs.TruncatedA11y_other": "Log history truncated: {{count}} entries omitted",
     "Engines.Remove.Message": "Are you sure you want to remove this engine from En Croissant?",
     "Engines.Remove.Title": "Remove Engine",
+    "Engines.SaveError": "The engine list could not be saved.",
     "Engines.Selection.None": "No engines installed. Please <addEngineLink>Add an engine</addEngineLink> first.",
     "Engines.Settings.AdvancedSettings": "Advanced settings",
     "Engines.Settings.EditJSON": "Edit JSON",

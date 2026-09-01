@@ -414,6 +414,7 @@
     "Engines.Logs.TruncatedA11y_other": "Historia dziennika skrócona: pominięto {{count}} wpisów",
     "Engines.Remove.Message": "Czy na pewno chcesz usunąć ten silnik z En Croissant?",
     "Engines.Remove.Title": "Usuń silnik",
+    "Engines.SaveError": "Nie udało się zapisać listy silników.",
     "Engines.Selection.None": "Nie zainstalowano żadnych silników. Najpierw <addEngineLink>dodaj silnik</addEngineLink>.",
     "Engines.Settings.AdvancedSettings": "Zaawansowane ustawienia",
     "Engines.Settings.EditJSON": "Edytuj JSON",

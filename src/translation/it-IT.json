@@ -409,6 +409,7 @@
     "Engines.Logs.TruncatedA11y_other": "Cronologia del log troncata: {{count}} voci omesse",
     "Engines.Remove.Message": "Sei sicuro di voler rimuovere questo motore da En Croissant?",
     "Engines.Remove.Title": "Rimuovi motore",
+    "Engines.SaveError": "Impossibile salvare l'elenco dei motori.",
     "Engines.Selection.None": "Nessun motore installato. <addEngineLink>Aggiungi</addEngineLink> un motore.",
     "Engines.Settings.AdvancedSettings": "Impostazioni avanzate",
     "Engines.Settings.EditJSON": "Modifica JSON",

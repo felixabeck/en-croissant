@@ -12,6 +12,7 @@ import type {
 } from "jotai/vanilla/utils/atomWithStorage";
 import type { ReviewLog } from "ts-fsrs";
 import { z } from "zod";
+import i18n from "@/i18n";
 import type {
     BestMoves,
     DatabaseHandle,
@@ -44,6 +45,7 @@ import { sessionsSchema, type Session } from "../utils/session";
 import { createAsyncZodStorage, createPreferenceStorage, createZodStorage } from "./utils";
 import { createWorkspaceStorage, defaultWorkspace, type Workspace } from "./workspace";
 import { tabStorage } from "./store/tabStorage";
+import { reportPersistError } from "./persistError";
 
 const zodArray = <Input, Output>(itemSchema: z.ZodType<Output, z.ZodTypeDef, Input>) => {
     const catchValue = {} as never;
@@ -169,12 +171,16 @@ const enginesSchema = zodArray(engineSchema).transform((engines) => {
 
 // Engine metadata contains only opaque native handles and display data. Keeping the async
 // adapter preserves the existing atom update contract without granting a renderer directory.
-const enginesStorage: AsyncStringStorage = {
+export const enginesStorage: AsyncStringStorage = {
     async getItem(key) {
         return localStorage.getItem(key);
     },
     async setItem(key, value) {
-        localStorage.setItem(key, value);
+        try {
+            localStorage.setItem(key, value);
+        } catch (cause) {
+            reportPersistError(new Error(i18n.t("Engines.SaveError"), { cause }));
+        }
     },
     async removeItem(key) {
         localStorage.removeItem(key);

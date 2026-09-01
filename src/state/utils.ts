@@ -7,6 +7,7 @@ import type {
     SyncStringStorage,
 } from "jotai/vanilla/utils/atomWithStorage";
 import { z } from "zod";
+import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 
 export function createZodStorage<Value>(
     schema: z.ZodType<Value>,
@@ -82,10 +83,12 @@ export function createAsyncZodStorage<Input, Output>(
                 if (storedValue === null) {
                     return initialValue;
                 }
-                const rawValue = JSON.parse(storedValue);
+                const decodedValue = deserializeStorageValue<unknown>(storedValue);
+                const isLegacy = decodedValue === null;
+                const rawValue = isLegacy ? JSON.parse(storedValue) : decodedValue;
                 const res = schema.safeParse(rawValue);
                 if (res.success) {
-                    if (!equal(rawValue, res.data)) {
+                    if (isLegacy || !equal(rawValue, res.data)) {
                         await this.setItem(key, res.data);
                     }
                     return res.data;
@@ -99,7 +102,7 @@ export function createAsyncZodStorage<Input, Output>(
             }
         },
         async setItem(key, value) {
-            storage.setItem(key, JSON.stringify(value, null, 4));
+            await storage.setItem(key, serializeStorageValue(value));
         },
         async removeItem(key) {
             storage.removeItem(key);

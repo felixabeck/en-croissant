@@ -399,6 +399,7 @@
     "Engines.Logs.TruncatedA11y_other": "日誌歷程已截斷：略過 {{count}} 筆",
     "Engines.Remove.Message": "您確定要從 En Croissant 中移除此引擎嗎？",
     "Engines.Remove.Title": "移除引擎",
+    "Engines.SaveError": "無法儲存引擎列表。",
     "Engines.Selection.None": "未安装任何引擎，请先<addEngineLink>添加一个引擎</addEngineLink>！",
     "Engines.Settings.AdvancedSettings": "進階設定",
     "Engines.Settings.EditJSON": "編輯 JSON",

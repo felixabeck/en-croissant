@@ -414,6 +414,7 @@
     "Engines.Logs.TruncatedA11y_other": "Історію журналу скорочено: пропущено {{count}} записів",
     "Engines.Remove.Message": "Ви впевнені, що хочете видалити цей рушій із En Croissant?",
     "Engines.Remove.Title": "Видалити рушій",
+    "Engines.SaveError": "Не вдалося зберегти список рушіїв.",
     "Engines.Selection.None": "Немає встановлених рушіїв. Спочатку <addEngineLink>додайте рушій</addEngineLink>.",
     "Engines.Settings.AdvancedSettings": "Додаткові налаштування",
     "Engines.Settings.EditJSON": "Редагувати JSON",

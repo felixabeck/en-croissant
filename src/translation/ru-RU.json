@@ -414,6 +414,7 @@
     "Engines.Logs.TruncatedA11y_other": "История журнала сокращена: пропущено {{count}} записей",
     "Engines.Remove.Message": "Вы уверены, что хотите удалить этот движок из En Croissant?",
     "Engines.Remove.Title": "Удалить движок",
+    "Engines.SaveError": "Не удалось сохранить список движков.",
     "Engines.Selection.None": "Нет установленных движков. Сначала <addEngineLink>добавьте движок</addEngineLink>.",
     "Engines.Settings.AdvancedSettings": "Дополнительные настройки",
     "Engines.Settings.EditJSON": "Редактировать JSON",

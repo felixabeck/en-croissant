@@ -409,6 +409,7 @@
     "Engines.Logs.TruncatedA11y_other": "Histórico de registos truncado: {{count}} entradas omitidas",
     "Engines.Remove.Message": "Tem a certeza de que pretende remover este motor do En Croissant?",
     "Engines.Remove.Title": "Remover motor",
+    "Engines.SaveError": "Não foi possível guardar a lista de motores.",
     "Engines.Selection.None": "Não há motores instalados. Primeiro, <addEngineLink>adicione um motor</addEngineLink>.",
     "Engines.Settings.AdvancedSettings": "Definições avançadas",
     "Engines.Settings.EditJSON": "Editar JSON",
