@@ -13,6 +13,18 @@ export function notifyUnlessCancelled(title: string, error: unknown): void {
     }
 }
 
+export async function runUnlessCancelled<T>(
+    title: string,
+    run: () => Promise<T>,
+): Promise<T | undefined> {
+    try {
+        return await run();
+    } catch (error) {
+        notifyUnlessCancelled(title, error);
+        return undefined;
+    }
+}
+
 export function notifyListenerError(error: unknown): void {
     notifyUnlessCancelled(i18n.t("Common.Error"), error);
 }

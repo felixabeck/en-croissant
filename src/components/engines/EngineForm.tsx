@@ -4,6 +4,7 @@ import type { UseFormReturnType } from "@mantine/form";
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { type UciOptionConfig } from "@/bindings";
+import { runUnlessCancelled } from "@/components/files/notifyError";
 import { type LocalEngine, requiredEngineSettings } from "@/utils/engines";
 import FileInput from "../common/FileInput";
 
@@ -39,12 +40,15 @@ export default function EngineForm({
         description={t("Engines.Add.BinaryFile.Desc")}
         filename={form.values.filename}
         withAsterisk
-        onClick={async () => {
-          const handle = await tauri.issueEngineBinary();
-          config.current = await tauri.getEngineConfig(handle);
-          form.setFieldValue("handle", handle);
-          form.setFieldValue("filename", config.current.name || "Engine");
-          form.setFieldValue("name", config.current.name);
+        onClick={() => {
+          void runUnlessCancelled(t("Common.Error"), async () => {
+            const handle = await tauri.issueEngineBinary();
+            config.current = await tauri.getEngineConfig(handle);
+            form.setFieldValue("handle", handle);
+            form.setFieldValue("filename", config.current.name || "Engine");
+            form.setFieldValue("name", config.current.name);
+            return handle;
+          });
         }}
       />
 
@@ -68,9 +72,12 @@ export default function EngineForm({
         <Input
           component="button"
           type="button"
-          onClick={async () => {
-            const imageHandle = await tauri.issueEngineImage();
-            form.setFieldValue("imageHandle", imageHandle);
+          onClick={() => {
+            void runUnlessCancelled(t("Common.Error"), async () => {
+              const imageHandle = await tauri.issueEngineImage();
+              form.setFieldValue("imageHandle", imageHandle);
+              return imageHandle;
+            });
           }}
         >
           <Text lineClamp={1} c={form.values.imageHandle ? undefined : "dimmed"}>

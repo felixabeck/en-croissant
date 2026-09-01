@@ -1,6 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { runAppliedMutationWithRefresh, runDestructiveWithRefresh } from "@/platform/errors";
-import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { runUnlessCancelled } from "@/components/files/notifyError";
 import { Button, Center, Group, Paper, Select, Stack, Text, TextInput, Title } from "@mantine/core";
 import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
@@ -53,11 +53,10 @@ export default function FilesPage() {
     pendingRef.current = true;
     setPicking(true);
     try {
-      const result = await tauri.issueFileWorkspace();
+      const result = await runUnlessCancelled(t("Common.Error"), () => tauri.issueFileWorkspace());
+      if (!result) return;
       setWorkspace(result.handle);
       setWorkspaceDisplayName(result.displayName);
-    } catch (cause) {
-      notifyUnlessCancelled(t("Common.Error"), cause);
     } finally {
       pendingRef.current = false;
       setPicking(false);

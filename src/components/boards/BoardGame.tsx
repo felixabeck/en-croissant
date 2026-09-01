@@ -33,7 +33,7 @@ import { useStore } from "zustand";
 import type { Outcome } from "@/bindings";
 import { type EngineLog, type GameConfig, type GameResult, type PlayerConfig } from "@/bindings";
 import type { ChessgroundRef } from "@/chessground/Chessground";
-import { notifyListenerError } from "@/components/files/notifyError";
+import { notifyListenerError, runUnlessCancelled } from "@/components/files/notifyError";
 import {
   activeTabAtom,
   flipBoardAfterMoveAtom,
@@ -851,7 +851,8 @@ function BoardGame() {
   }, [abortLiveSession]);
 
   async function handleSelectOpeningBook() {
-    setOpeningBookHandle(await tauri.issueOpeningBook());
+    const handle = await runUnlessCancelled(t("Common.Error"), () => tauri.issueOpeningBook());
+    if (handle) setOpeningBookHandle(handle);
   }
 
   return (

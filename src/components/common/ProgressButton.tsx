@@ -37,8 +37,8 @@ function ProgressButton({
   setInProgress,
 }: Props) {
   const { t } = useTranslation();
-  const { progress, finished, isActive, clear } = useProgress(id);
-  const completed = initInstalled || finished;
+  const { progress, finished, isActive, clear, item } = useProgress(id);
+  const completed = initInstalled || item?.state === "succeeded";
 
   const showProgress = isActive || inProgress;
 
@@ -63,10 +63,12 @@ function ProgressButton({
   let label: string;
   if (completed) {
     label = labels.completed;
+  } else if (!showProgress) {
+    label = labels.action;
+  } else if (progress === 100) {
+    label = labels.finalizing ?? labels.inProgress;
   } else {
-    if (progress === 0 && !showProgress) label = labels.action;
-    else if (progress === 100) label = labels.finalizing ?? labels.inProgress;
-    else label = labels.inProgress;
+    label = labels.inProgress;
   }
 
   return (

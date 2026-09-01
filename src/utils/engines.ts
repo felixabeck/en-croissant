@@ -1,5 +1,6 @@
 import { tauri } from "@/platform/tauri";
 import { remoteHttp } from "@/platform/http";
+import { runWithAppliedRecovery } from "@/platform/errors";
 import type { Platform } from "@/platform/native";
 import useSWR from "swr";
 import { z } from "zod";
@@ -10,6 +11,7 @@ import {
     type EngineResourceHandle,
     type EngineOption,
     type EngineOptions,
+    type EngineRootHandle,
     type GoMode,
 } from "@/bindings";
 
@@ -95,6 +97,26 @@ const localEngineSchema = z.object({
 });
 
 export type LocalEngine = z.output<typeof localEngineSchema>;
+
+export function isManifestEngineInstalled(
+    installed: readonly LocalEngine[],
+    manifest: { downloadLink?: string | null },
+): boolean {
+    const link = manifest.downloadLink;
+    return Boolean(link) && installed.some((engine) => engine.downloadLink === link);
+}
+
+export async function registerInstalledEngineHandle(
+    root: EngineRootHandle,
+    relativePath: string,
+): Promise<EngineHandle> {
+    // A second register is get_or_create on the adopted path (a lookup), not a
+    // retry of the registry write. Picker commands cannot recover this way.
+    return runWithAppliedRecovery(
+        () => tauri.registerInstalledEngine(root, relativePath),
+        () => tauri.registerInstalledEngine(root, relativePath),
+    );
+}
 
 /** Server manifest entry used only during installation; it is never persisted as an engine. */
 export type DefaultEngine = Omit<LocalEngine, "handle" | "filename"> & {
@@ -206,5 +228,46 @@ export function useDefaultEngines(os: Platform | undefined, opened: boolean) {
         defaultEngines: data,
         error,
         isLoading,
+    };
+}
+
+export async function installDefaultEngine(
+    engine: DefaultEngine,
+    progressId: string,
+): Promise<LocalEngine> {
+    const url = engine.downloadLink;
+    if (!url) {
+        throw new Error("engine download link is required");
+    }
+    const root = await tauri.getEngineWorkspace();
+    const destination = await tauri.engineArchiveDestination(root);
+    const archiveName = url.slice(url.lastIndexOf("/") + 1);
+    await tauri.downloadEngineArchive(
+        progressId,
+        url,
+        destination,
+        archiveName,
+        crypto.randomUUID(),
+        {
+            sha256: engine.sha256,
+            signature: engine.signature,
+        },
+    );
+    const handle = await registerInstalledEngineHandle(root, engine.path);
+    const config = await tauri.getEngineConfig(handle);
+    return {
+        ...engine,
+        id: crypto.randomUUID(),
+        type: "local",
+        handle,
+        filename: engine.path.split("/").at(-1) || engine.name,
+        loaded: true,
+        settings: config.options
+            .filter((option) => requiredEngineSettings.includes(option.value.name))
+            .map((option) => ({
+                type: "string" as const,
+                name: option.value.name,
+                value: String("default" in option.value ? (option.value.default ?? "") : ""),
+            })),
     };
 }

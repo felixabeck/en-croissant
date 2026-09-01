@@ -18,13 +18,15 @@ import { IconAlertCircle, IconDatabase, IconTrophy } from "@tabler/icons-react";
 import { useAtom } from "jotai";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { enginesAtom } from "@/state/atoms";
 import AppModal from "../common/AppModal";
 import {
   type LocalEngine,
   type DefaultEngine,
   type RemoteEngine,
-  requiredEngineSettings,
+  installDefaultEngine,
+  isManifestEngineInstalled,
   useDefaultEngines,
 } from "@/utils/engines";
 import { usePlatform } from "@/utils/files";
@@ -96,8 +98,8 @@ function AddEngine({
                 <EngineCard
                   engine={engine}
                   engineId={i}
-                  key={i}
-                  initInstalled={engines.some((e) => e.name === engine.name)}
+                  key={engine.downloadLink ?? engine.path}
+                  initInstalled={isManifestEngineInstalled(engines, engine)}
                 />
               ))}
               {error && (
@@ -212,41 +214,23 @@ function EngineCard({
   const [inProgress, setInProgress] = useState<boolean>(false);
   const [, setEngines] = useAtom(enginesAtom);
   const downloadEngine = useCallback(
-    async (id: number, url: string) => {
+    async (id: number) => {
+      const progressId = `engine_${id}`;
       setInProgress(true);
-      const root = await tauri.getEngineWorkspace();
-      const destination = await tauri.engineArchiveDestination(root);
-      const archiveName = url.slice(url.lastIndexOf("/") + 1);
-      await tauri.downloadEngineArchive(
-        `engine_${id}`,
-        url,
-        destination,
-        archiveName,
-        crypto.randomUUID(),
-        { sha256: engine.sha256, signature: engine.signature },
-      );
-      const handle = await tauri.registerInstalledEngine(root, engine.path);
-      const config = await tauri.getEngineConfig(handle);
-      setEngines(async (prev) => [
-        ...(await prev),
-        {
-          ...engine,
-          id: crypto.randomUUID(),
-          type: "local",
-          handle,
-          filename: engine.path.split("/").at(-1) || engine.name,
-          loaded: true,
-          settings: config.options
-            .filter((o) => requiredEngineSettings.includes(o.value.name))
-            .map((o) => ({
-              type: "string" as const,
-              name: o.value.name,
-              value: String("default" in o.value ? (o.value.default ?? "") : ""),
-            })),
-        },
-      ]);
+      try {
+        const installed = await installDefaultEngine(engine, progressId);
+        setEngines(async (prev) => [...(await prev), installed]);
+      } catch (error) {
+        notifyUnlessCancelled(t("Common.Error"), error);
+        setInProgress(false);
+        try {
+          await tauri.clearProgress(progressId);
+        } catch {
+          // ProgressButton does not treat failed/cancelled as installed.
+        }
+      }
     },
-    [engine, setEngines],
+    [engine, setEngines, t],
   );
 
   return (
@@ -283,7 +267,7 @@ function EngineCard({
             }}
             onClick={() => {
               if (!engine.downloadLink) return;
-              downloadEngine(engineId, engine.downloadLink);
+              void downloadEngine(engineId);
             }}
             inProgress={inProgress}
             setInProgress={setInProgress}

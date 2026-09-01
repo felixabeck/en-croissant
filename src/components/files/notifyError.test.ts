@@ -1,6 +1,6 @@
 import { notifications } from "@mantine/notifications";
 import { afterEach, expect, test, vi } from "vitest";
-import { notifyListenerError, notifyUnlessCancelled } from "./notifyError";
+import { notifyListenerError, notifyUnlessCancelled, runUnlessCancelled } from "./notifyError";
 
 vi.mock("@mantine/notifications", () => ({
     notifications: { show: vi.fn() },
@@ -48,4 +48,27 @@ test("notifies a real listener failure with the common error title", () => {
 test("keeps a pinned listener Cancellation silent", () => {
     notifyListenerError(new Error("Cancellation"));
     expect(notifications.show).not.toHaveBeenCalled();
+});
+
+test("runUnlessCancelled returns the adopted value and stays silent on Cancellation", async () => {
+    await expect(runUnlessCancelled("Common.Error", async () => "handle")).resolves.toBe("handle");
+    await expect(
+        runUnlessCancelled("Common.Error", async () => {
+            throw new Error("Cancellation");
+        }),
+    ).resolves.toBeUndefined();
+    expect(notifications.show).not.toHaveBeenCalled();
+});
+
+test("runUnlessCancelled notifies a real failure and does not return a value", async () => {
+    await expect(
+        runUnlessCancelled("Common.Error", async () => {
+            throw new Error("permission denied");
+        }),
+    ).resolves.toBeUndefined();
+    expect(notifications.show).toHaveBeenCalledWith({
+        color: "red",
+        title: "Common.Error",
+        message: "permission denied",
+    });
 });

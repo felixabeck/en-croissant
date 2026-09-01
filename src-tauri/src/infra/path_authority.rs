@@ -580,6 +580,18 @@ fn require_durable(durability: CommitDurability) -> Result<(), Error> {
     }
 }
 
+/// Engine and opening-book registration has no renderer-visible list to recover
+/// from: picker paths never cross IPC, and copied images are UUID-named. Keep
+/// the adopted handle after an uncertain parent sync, matching
+/// `set_active_engine_root`. `require_durable` stays on create paths that have
+/// a list-and-recover caller.
+fn keep_adopted_handle<T: std::fmt::Debug>(durability: CommitDurability, value: T) -> T {
+    if let CommitDurability::DurabilityUncertain(stage) = durability {
+        log::warn!("registration committed with uncertain durability: {stage}; adopted {value:?}");
+    }
+    value
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WorkspaceRemovalStatus {
     Complete,
@@ -2246,8 +2258,10 @@ impl PathAuthority {
             PathOperation::EngineBinaryInspect,
         ];
         let commit = self.get_or_create_persistent_file(path, display_name, operations)?;
-        require_durable(commit.durability)?;
-        Ok(EngineHandle::new(commit.id))
+        Ok(keep_adopted_handle(
+            commit.durability,
+            EngineHandle::new(commit.id),
+        ))
     }
 
     /// Persists a picker-selected UCI resource with only resource-read
@@ -2270,8 +2284,10 @@ impl PathAuthority {
             display_name.clone(),
             vec![PathOperation::EngineResourceRead],
         )?;
-        require_durable(commit.durability)?;
-        Ok(EngineResourceHandle::new(commit.id, kind, display_name))
+        Ok(keep_adopted_handle(
+            commit.durability,
+            EngineResourceHandle::new(commit.id, kind, display_name),
+        ))
     }
 
     /// Resolves a UCI resource through no-follow traversal and returns a
@@ -2330,8 +2346,10 @@ impl PathAuthority {
     ) -> Result<EngineImageHandle, Error> {
         let commit =
             self.get_or_create_persistent_file(path, display_name, vec![PathOperation::ImageRead])?;
-        require_durable(commit.durability)?;
-        Ok(EngineImageHandle::new(commit.id))
+        Ok(keep_adopted_handle(
+            commit.durability,
+            EngineImageHandle::new(commit.id),
+        ))
     }
 
     /// Reads bounded bytes from an exact, revalidated image capability. Native
@@ -2372,8 +2390,10 @@ impl PathAuthority {
             display_name,
             vec![PathOperation::OpeningBookRead],
         )?;
-        require_durable(commit.durability)?;
-        Ok(OpeningBookHandle::new(commit.id))
+        Ok(keep_adopted_handle(
+            commit.durability,
+            OpeningBookHandle::new(commit.id),
+        ))
     }
 
     /// Resolves an exact opening-book descriptor without exposing a native path.
@@ -6082,7 +6102,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_path_commit_wrappers_surface_uncertain_without_rollback() {
+    fn engine_path_commit_wrappers_return_handle_on_uncertain_without_rollback() {
         let dir = tempfile::tempdir().unwrap();
         let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
         let engine = dir.path().join("engine");
@@ -6103,22 +6123,18 @@ mod tests {
             )
             .unwrap();
         set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
-        assert!(matches!(
-            authority.register_engine_file(&engine, "engine"),
-            Err(Error::CommittedDurabilityUncertain(_))
-        ));
-        assert!(matches!(
-            authority.register_engine_image(&image, "image"),
-            Err(Error::CommittedDurabilityUncertain(_))
-        ));
-        assert!(matches!(
-            authority.register_opening_book(&book, "book"),
-            Err(Error::CommittedDurabilityUncertain(_))
-        ));
-        assert!(matches!(
-            authority.promote_engine_resource(&grant, EngineResourceHandleKind::File, "resource"),
-            Err(Error::CommittedDurabilityUncertain(_))
-        ));
+        let engine_handle = authority
+            .register_engine_file(&engine, "engine")
+            .expect("adopted engine handle");
+        let image_handle = authority
+            .register_engine_image(&image, "image")
+            .expect("adopted image handle");
+        let book_handle = authority
+            .register_opening_book(&book, "book")
+            .expect("adopted book handle");
+        let resource_handle = authority
+            .promote_engine_resource(&grant, EngineResourceHandleKind::File, "resource")
+            .expect("adopted resource handle");
         set_test_atomic_file_injector(None);
         for path in [&engine, &image, &book, &resource] {
             assert!(authority
@@ -6126,6 +6142,13 @@ mod tests {
                 .values()
                 .any(|entry| { entry.stored.path.to_path().ok().as_ref() == Some(path) }));
         }
+        let engine_again = authority
+            .register_engine_file(&engine, "engine")
+            .expect("lookup of adopted engine");
+        assert_eq!(engine_handle, engine_again);
+        assert_ne!(engine_handle.id, image_handle.id);
+        assert_ne!(engine_handle.id, book_handle.id);
+        assert_ne!(engine_handle.id, resource_handle.id);
     }
 
     #[test]

@@ -40,7 +40,7 @@ import useSWRImmutable from "swr/immutable";
 import { match, P } from "ts-pattern";
 import { Route } from "@/routes/engines";
 import { IconAction } from "@/components/common/IconAction";
-import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { enginesAtom } from "@/state/atoms";
 import {
   type Engine,
@@ -337,10 +337,11 @@ function EngineSettings({
       }) || [];
 
   function changeImage() {
-    void tauri
-      .issueEngineImage()
-      .then((imageHandle) => setEngine({ ...engine, imageHandle }))
-      .catch(() => {});
+    void runUnlessCancelled(t("Common.Error"), async () => {
+      const imageHandle = await tauri.issueEngineImage();
+      setEngine({ ...engine, imageHandle });
+      return imageHandle;
+    });
   }
 
   function setSetting(
@@ -503,9 +504,12 @@ function EngineSettings({
                         <Button
                           variant="default"
                           leftSection={<IconFolder size="1rem" />}
-                          onClick={async () => {
-                            const resource = await tauri.issueEngineResource(true);
-                            setResourceSetting(v.name, resource, true);
+                          onClick={() => {
+                            void runUnlessCancelled(t("Common.Error"), async () => {
+                              const resource = await tauri.issueEngineResource(true);
+                              setResourceSetting(v.name, resource, true);
+                              return resource;
+                            });
                           }}
                         >
                           {t("Common.Open")}
@@ -519,9 +523,12 @@ function EngineSettings({
                         key={v.name}
                         variant="default"
                         leftSection={<IconFolder size="1rem" />}
-                        onClick={async () => {
-                          const resource = await tauri.issueEngineResource(false);
-                          setResourceSetting(v.name, resource, false);
+                        onClick={() => {
+                          void runUnlessCancelled(t("Common.Error"), async () => {
+                            const resource = await tauri.issueEngineResource(false);
+                            setResourceSetting(v.name, resource, false);
+                            return resource;
+                          });
                         }}
                       >
                         {v.name}

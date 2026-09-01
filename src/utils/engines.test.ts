@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { defaultEngineManifestSchema, engineSchema } from "./engines";
+import {
+    defaultEngineManifestSchema,
+    engineSchema,
+    isManifestEngineInstalled,
+    type LocalEngine,
+} from "./engines";
 
 const manifestEntry = {
     type: "local" as const,
@@ -46,6 +51,42 @@ describe("default engine manifest paths", () => {
                 parseManifestPath(path).success,
             ]),
         ).toStrictEqual(rejected.map(([path, reason]) => [`${path}: ${reason}`, false]));
+    });
+});
+
+describe("default-engine installed identity", () => {
+    const stockfish: LocalEngine = {
+        type: "local",
+        id: "installed-1",
+        name: "Stockfish",
+        version: "17",
+        filename: "stockfish",
+        handle: { id: { id: "capability-1" }, kind: "engine" },
+        downloadLink: "https://www.encroissant.org/engines/stockfish.zip",
+    };
+
+    it("does not treat a distinct download as installed just because the names match", () => {
+        expect(
+            isManifestEngineInstalled([stockfish], {
+                downloadLink: "https://www.encroissant.org/engines/stockfish-dev.zip",
+            }),
+        ).toBe(false);
+    });
+
+    it("treats a renamed engine as installed when the download URL still matches", () => {
+        expect(
+            isManifestEngineInstalled([{ ...stockfish, name: "My Fish" }], {
+                downloadLink: stockfish.downloadLink,
+            }),
+        ).toBe(true);
+    });
+
+    it("does not match a locally added engine that has no download URL", () => {
+        expect(
+            isManifestEngineInstalled([{ ...stockfish, downloadLink: undefined }], {
+                downloadLink: stockfish.downloadLink,
+            }),
+        ).toBe(false);
     });
 });
 
