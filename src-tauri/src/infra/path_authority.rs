@@ -2806,6 +2806,11 @@ impl PathAuthority {
         id: &PathRef,
     ) -> Result<Vec<PathOperation>, Error> {
         self.evict_dialogs();
+        if self.pending_unpersisted_removals.contains(&id.id) {
+            return Err(Error::InvalidInput(
+                "workspace entry is not persistent".into(),
+            ));
+        }
         self.persistent
             .get(&id.id)
             .map(|entry| entry.stored.operations.clone())
@@ -2824,6 +2829,11 @@ impl PathAuthority {
         components: &[OsString],
     ) -> Result<ResolvedPath, Error> {
         self.validate_components(components)?;
+        if self.pending_unpersisted_removals.contains(&id.id) {
+            return Err(Error::InvalidInput(
+                "workspace entry is not persistent".into(),
+            ));
+        }
         let entry = if let Some(entry) = self.persistent.get(&id.id).cloned() {
             entry
         } else {

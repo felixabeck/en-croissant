@@ -79,17 +79,27 @@ describe("runAppliedMutationWithRefresh", () => {
         expect(refresh).not.toHaveBeenCalled();
     });
 
-    test("keeps an applied mutation resolved when its refresh fails", async () => {
+    test("keeps the applied rejection when its refresh fails", async () => {
+        const error = new Error("Committed but durability uncertain: registry replacement");
         await expect(
             runAppliedMutationWithRefresh(
-                async () =>
-                    Promise.reject(
-                        new Error("Committed but durability uncertain: registry replacement"),
-                    ),
+                async () => Promise.reject(error),
                 async () => Promise.reject(new Error("refresh failed")),
             ),
-        ).resolves.toBeUndefined();
+        ).rejects.toBe(error);
     });
+});
+
+test("runWithAppliedRecovery keeps the applied rejection when recovery fails", async () => {
+    const error = new Error("Committed but durability uncertain: registry replacement");
+    await expect(
+        runWithAppliedRecovery(
+            async () => Promise.reject(error),
+            async () => {
+                throw new Error("list failed");
+            },
+        ),
+    ).rejects.toBe(error);
 });
 
 test("runWithAppliedRecovery returns the recovered committed object", async () => {

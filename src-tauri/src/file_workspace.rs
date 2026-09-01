@@ -518,8 +518,17 @@ pub fn create_workspace_directory(
     name: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkspaceEntry, Error> {
-    let root = mutation_target(state.inner(), &workspace)?;
-    let parent_target = mutation_target(state.inner(), &parent)?;
+    create_workspace_directory_inner(workspace, parent, name, state.inner())
+}
+
+fn create_workspace_directory_inner(
+    workspace: FileWorkspaceHandle,
+    parent: FileWorkspaceHandle,
+    name: String,
+    state: &AppState,
+) -> Result<WorkspaceEntry, Error> {
+    let root = mutation_target(state, &workspace)?;
+    let parent_target = mutation_target(state, &parent)?;
     ensure_registered_descendant(&root, &parent_target)?;
     let parent_dir = parent_target.directory()?;
     let name = validate_name(&name)?.to_string();
@@ -528,7 +537,7 @@ pub fn create_workspace_directory(
     crate::infra::fs::create_dir_at(parent_dir, &target_leaf)?;
     let identity = crate::infra::fs::entry_identity_at(parent_dir, &target_leaf, true)?;
     let handle = match register_created_entry(
-        state.inner(),
+        state,
         &workspace,
         &target,
         name.clone(),
@@ -1232,28 +1241,16 @@ mod tests {
 
         let (_directory, state, workspace) = workspace_state();
         let root = mutation_target(&state, &workspace).expect("workspace target");
-        let name = std::ffi::OsString::from("created");
-        crate::infra::fs::create_dir_at(root.directory().expect("root directory"), &name)
-            .expect("created directory");
-        let identity = crate::infra::fs::entry_identity_at(
-            root.directory().expect("root directory"),
-            &name,
-            true,
-        )
-        .expect("created identity");
-        let target = root.path().join(&name);
         set_test_atomic_file_injector(Some(Box::new(ParentSync)));
-        let error = register_created_entry(
-            &state,
-            &workspace,
-            &target,
+        let error = create_workspace_directory_inner(
+            workspace.clone(),
+            workspace,
             "created".into(),
-            identity,
-            true,
+            &state,
         )
         .expect_err("uncertain registry durability must be surfaced");
         set_test_atomic_file_injector(None);
         assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
-        assert!(target.is_dir());
+        assert!(root.path().join("created").is_dir());
     }
 }

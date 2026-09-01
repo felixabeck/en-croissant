@@ -115,7 +115,7 @@ export async function runAppliedMutationWithRefresh<T>(
         try {
             await refresh();
         } catch {
-            // The refresh failure must not turn an already-applied mutation into operationFailed.
+            throw cause;
         }
         return undefined;
     }
@@ -129,8 +129,12 @@ export async function runWithAppliedRecovery<T>(
         return await run();
     } catch (cause) {
         if (normalizeError(cause).category !== "applied-despite-error") throw cause;
-        const recovered = await recover();
-        if (recovered !== undefined) return recovered;
+        try {
+            const recovered = await recover();
+            if (recovered !== undefined) return recovered;
+        } catch {
+            throw cause;
+        }
         throw cause;
     }
 }
