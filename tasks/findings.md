@@ -4351,3 +4351,16 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 * **Defect:** after `dd2c0f58`, engine binary/resource/image/opening-book registration adopts the registry record then returns `CommittedDurabilityUncertain` when parent sync fails. File and database create paths recover that category (`runAppliedMutationWithRefresh` / `runWithAppliedRecovery`). Engine callers treat it as a hard failure and lose the adopted handle, leaving a UUID-named image unattached.
 * **Related:** f-20260831-02 (handled). Root `-` so named here rather than shared. Found during cumulative review of the native-fs download/registry slice.
 * **Entry `lens`:** apply the existing `applied-despite-error` helpers; one `review-error-handling` pass.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### RootLayout and TopBar still have no wiring test for menu and window-control handlers
+
+* **ID:** f-20260901-03 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/routes/__root.tsx` (`menuCallbacks` / `runMenu` / `useHotkeys`), `src/components/TopBar.tsx` (minimize/maximize/close click handlers).
+* **Defect:** f-20260830-47 extracted and tested the menu tree and the `runNativeMenuAction` / `runWindowAction` helpers. The product still wires those helpers in RootLayout and TopBar, and nothing mounts either component. Removing `runMenu` from a menu callback, or the `runWindowAction` wrapper from a window-control click, leaves every current test green. `createMenu` is now a thin `assembleNativeMenuResources` wrapper; the remaining untested surface is that wiring, not the sequential assembler.
+* **Why it matters:** an unhandled rejection on Help → Clear saved data, Open file, or a window-control click is the same class the extract was meant to close, and it would ship again without a red test.
+* **Fix shape:** extract the RootLayout callback object and the TopBar window-control handlers into the existing `-appMenu.ts` / `TopBar.window` test surface so each handler's returned promise is the helper's promise (same pending-until-settled proof as `openPgnFromMenu`). Do not jsdom-mount RootLayout — that was rejected in `tasks/plans/2026-09-01-native-menu-tree.md` because it would mock every native import and would not catch GTK. Related: f-20260830-47 (handled). Root `-`, so named here rather than shared.
+* **Found by:** cumulative review of the native-menu-tree slice (drain session 98e601ec), recovered after the 2026-09-01 04:00 shutdown. `review-tests` confidence 98/97.
