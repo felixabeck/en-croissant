@@ -4574,3 +4574,17 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 * **Where:** `scripts/findings.py` (`PRODUCT_IMPACT_RE`, `_park_brief_issues`, `cmd_decisions` listing), `scripts/findings-parity-tests.py` (`product-decision-gate-and-listing`).
 * **Defect:** After f-20260901-11 re-pinned to ChessRiddle `6f83b80d8`, this copy still lacks the shared `_BULLET` grammar, the `**Product impact:**` park gate, the product/Sentry listing split, and printing the precondition slug. Declared `port_pending` rather than adopted in that run because the impact gate would redden three existing parks (`f-20260829-02`, `f-20260829-04`, `f-20260830-06`) that have no such bullet.
 * **Fix:** Adopt those hunks, give each of the three parks a real product-impact sentence or unpark it as technical, then delete the `product-decision-gate-and-listing` declaration and re-measure the parity constants.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### UCI resource option values put native paths into renderer logs
+
+* **ID:** f-20260901-18 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs` log capture of `setoption` lines; `get_engine_logs` / `get_game_engine_logs`.
+* **Defect:** A renderer-supplied `EngineOption::Resource` is resolved to a backend-only path and then written as a raw UCI `setoption ... value <path>` line. On Windows that is the full native resource path. `get_engine_logs` returns it to the renderer.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` forbids moving raw backend diagnostics into the renderer. Native paths are the same class as capability contents.
+* **Related:** f-20260901-10 (handled). That finding changed logs() to return errors; it did not introduce this leak. Pre-existing enclosing log capture. Root `-`.
+* **Found by:** `review-tauri-security` over the f-20260901-06 cumulative diff, 2026-09-01. Confidence 98. Pre-existing.
+* **Lens:** `review-tauri-security`
