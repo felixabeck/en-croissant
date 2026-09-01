@@ -4539,3 +4539,17 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 * **Why it matters:** ProgressButton still treats `succeeded` as completed for these callers. A stale succeeded job disables the wrong card as Installed.
 * **Related:** f-20260831-13 (handled; engine cards now use `downloadLink`). Root `-` so named here. Different file set from the engine install slice.
 * **Found by:** numbered-1/2/4 review of the engine progress-id fix, 2026-09-01. Confidence 97.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### Two older checkers still walk the tree themselves
+
+* **ID:** f-20260901-16 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `scripts/check-untranslated-jsx.mjs:69`, `scripts/check-workflow-permissions.mjs:288`.
+* **Defect:** both still recurse with `readdir({ withFileTypes: true })` after f-20260830-54 routed skill-bridge, tool-parity, and gate-routing onto `listWorkingTreeFiles`. Skip, symlink, and untracked handling can drift again on these two checkers.
+* **Why it matters:** an ignored or untracked file that the shared walker would fail closed on is invisible to i18n JSX scanning and workflow-permission checks.
+* **Related:** f-20260830-54 (handled). Root `-`, so named here rather than shared.
+* **Fix shape:** enumerate through `listWorkingTreeFiles` with the pathspec each checker already walks (`src` and `.github/workflows`).
+* **Found by:** numbered-3 adjacent lens over the f-20260830-46/54/55 push range, 2026-09-01. Confidence 94.
