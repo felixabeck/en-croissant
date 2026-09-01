@@ -4380,3 +4380,26 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 * **Why it matters:** an unhandled rejection on Help → Clear saved data, Open file, or a window-control click is the same class the extract was meant to close, and it would ship again without a red test.
 * **Fix shape:** extract the RootLayout callback object and the TopBar window-control handlers into the existing `-appMenu.ts` / `TopBar.window` test surface so each handler's returned promise is the helper's promise (same pending-until-settled proof as `openPgnFromMenu`). Do not jsdom-mount RootLayout — that was rejected in `tasks/plans/2026-09-01-native-menu-tree.md` because it would mock every native import and would not catch GTK. Related: f-20260830-47 (handled). Root `-`, so named here rather than shared.
 * **Found by:** cumulative review of the native-menu-tree slice (drain session 98e601ec), recovered after the 2026-09-01 04:00 shutdown. `review-tests` confidence 98/97.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### ConvertProgress and DatabaseProgress broadcasts still lack a discriminator the renderer filters on
+
+* **ID:** f-20260901-04 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs` ConvertProgress emit; `src/hooks/useConversionProgress.ts:30`; `DatabaseProgress.id` at `src/bindings/generated.ts:1003` vs `src/components/home/Databases.tsx:129`.
+* **Defect:** `ConvertProgress` is globally emitted without an operation id, and `useConversionProgress` writes every event into one shared atom, so concurrent conversions mix counts and source names. `DatabaseProgress` carries an `id`, but `Databases.tsx` ignores it and `Promise.allSettled` of `getPlayersGameInfo` therefore drives one bar with interleaved percentages. Related: ipc-events.md incidents `daecd674` / `convert_progress`; this is the remaining discriminator gap, not the unregistered-event bug already handled. Root `-` because the two payloads already differ (one has a unused id, one has none).
+* **Why it matters:** `.claude/rules/ipc-events.md` — anything broadcast globally carries an id the receiver filters on. Concurrent imports or player-info queries present as a jumping or false-complete bar.
+* **Fix shape:** give ConvertProgress a real operation id and filter on it; filter DatabaseProgress on an id that uniquely identifies the in-flight `getPlayersGameInfo` (not a database-local player row id).
+* **Found by:** `review-ipc-contract` over the f-20260830-30 cluster cumulative diff, 2026-09-01. Pre-existing; different area from the listener/persist work.
+
+### createTab seeds the tree before the workspace envelope is durable
+
+* **ID:** f-20260901-05 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/utils/tabs.ts:64-81` (`tabStorage.seed` then `setTabs` / `setActiveTab`); `src/state/workspace.ts` `createWorkspaceStorage.setItem`.
+* **Defect:** an import can persist the game tree and then fail to persist the workspace envelope (quota). The next reload reconstructs tabs from the last durable envelope, so the new game is missing and the seeded tree key is an orphan. `setItem` now catches and notifies, but the two writes are still not one commit. Related: f-20260831-17 (startup migration order; Root `-`).
+* **Why it matters:** quitting or reloading after a large import is the same quota case as d250925f; the user thinks the game opened.
+* **Fix shape:** do not seed a tree whose tab is not yet in a durable envelope, or roll the seed back if the envelope write fails.
+* **Found by:** `review-persisted-state` over the f-20260830-30 cluster cumulative diff, 2026-09-01.
+* **Lens:** `review-persisted-state`
