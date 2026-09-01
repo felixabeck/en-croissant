@@ -137,8 +137,10 @@ session's context, and never only into a handoff message.
   value. Adding an area is a deliberate edit to that list.
 - The universal contract — field meanings, ranking, the decision discipline, the lock protocol — is
   `~/.claude/references/findings-ledger-contract.md`. A parity gate keeps `scripts/findings.py`
-  aligned across Felix's projects; this checkout has one declared, `port_pending` divergence for
-  `f-20260829-14`, and nothing project-specific may be added to it.
+  aligned across Felix's projects; this checkout has two declared, `port_pending` divergences
+  (`atomic-write-cleanup-preserves-primary-error` for `f-20260829-14`, and
+  `product-decision-gate-and-listing` left by `f-20260901-11`), and nothing project-specific may
+  be added to it.
 
 CI runs `python3 scripts/findings.py check` in `.github/workflows/test.yml`. Run it directly whenever
 a diff touches `tasks/`.

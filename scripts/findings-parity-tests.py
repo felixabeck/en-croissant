@@ -24,7 +24,7 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER = REPO_ROOT / "scripts" / "findings.py"
 SIBLING_REPO = REPO_ROOT.parent / "chess-tactics-app"
-SIBLING_REF = "4c83bf50c55bab8dc4a9babf5797f6cb019766e6"
+SIBLING_REF = "6f83b80d8772a2196538f94dbc7ff40b582c6988"
 ALLOW_MISSING_SIBLING = "--allow-missing-sibling"
 
 
@@ -54,14 +54,34 @@ DECLARED_DIVERGENCES = (
         sibling_told=True,
         port_pending=True,
     ),
+    DeclaredDivergence(
+        slug="product-decision-gate-and-listing",
+        markers=(
+            "_BULLET",
+            "PRODUCT_IMPACT_RE",
+            "_park_brief_issues",
+            "product decision(s) waiting on you",
+            "waits on: {f.blocked}",
+        ),
+        reason=(
+            "ChessRiddle is ahead: shared `_BULLET` grammar, the "
+            "`**Product impact:**` park gate, split product/Sentry listing, "
+            "and printing the precondition slug. Not adopted here in the "
+            "announce-toast port (f-20260901-11) because the impact gate "
+            "would redden three existing parks that have no such bullet. "
+            "Port pending."
+        ),
+        sibling_told=True,
+        port_pending=True,
+    ),
 )
 
 # Measured from the pinned sibling blob and this tree after walking the sole
 # declared hunk. Marker matching alone cannot protect an adjacent edit because
 # a zero-context unified diff absorbs it into the same hunk.
-EXPECTED_CHANGED_LINES = 20
+EXPECTED_CHANGED_LINES = 180
 EXPECTED_DELTA_DIGEST = (
-    "b105bb9c577e2e6b61d6a7532c754ccefbfa7b80bb2b2450714a6fc04acac2d4"
+    "f71e8fad2e58b28c14f81e689207d33f074f90430da6e6da8815e04176308858"
 )
 
 

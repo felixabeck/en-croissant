@@ -4494,11 +4494,13 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 ## 2026-09-01 — filed through the inbox spool
 
 ### Decision toasts fire on review, not only on a new park
-* **ID:** f-20260901-11 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260901-11 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 
 * **Where:** `scripts/findings.py` (`cmd_decisions`, `_announce_felix_blockers_unlocked`), `scripts/findings-parity-tests.py` (`SIBLING_REF`).
 * **Defect:** Bare `python3 scripts/findings.py decisions` posted a persistent desktop toast for every waiting Felix item. ChessRiddle `6f83b80d8` and Korrigio `30a44a75d` now toast only when the drain names newly parked ids, expire at 30 s, and drop the stamp when the blocker is cleared.
 * **Fix:** Adopt those announce hunks. Re-pin `SIBLING_REF` to ChessRiddle `6f83b80d8`. Keep the existing `atomic-write-cleanup-preserves-primary-error` declaration. Do not edit `scripts/findings.py` until this drain releases the consumer lock.
+
+**Handled 2026-09-01.** Bare `findings.py decisions` no longer toasts. Named ids (the drain park path) ping once at 30 s, then expire. Cleared ids drop their announcement stamp so a later re-park can fire. ChessRiddle sibling re-pinned to `6f83b80d8`. The remaining ChessRiddle-ahead delta (product-impact park gate, `_BULLET` grammar, product/Sentry listing split) is declared `product-decision-gate-and-listing` and is not this finding.
 
 ### register_installed_engine discards the no-follow descriptors and re-walks by pathname
 
@@ -4553,3 +4555,14 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 * **Related:** f-20260830-54 (handled). Root `-`, so named here rather than shared.
 * **Fix shape:** enumerate through `listWorkingTreeFiles` with the pathspec each checker already walks (`src` and `.github/workflows`).
 * **Found by:** numbered-3 adjacent lens over the f-20260830-46/54/55 push range, 2026-09-01. Confidence 94.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### ChessRiddle's product-impact park gate has not been adopted
+* **ID:** f-20260901-17 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+
+* **Where:** `scripts/findings.py` (`PRODUCT_IMPACT_RE`, `_park_brief_issues`, `cmd_decisions` listing), `scripts/findings-parity-tests.py` (`product-decision-gate-and-listing`).
+* **Defect:** After f-20260901-11 re-pinned to ChessRiddle `6f83b80d8`, this copy still lacks the shared `_BULLET` grammar, the `**Product impact:**` park gate, the product/Sentry listing split, and printing the precondition slug. Declared `port_pending` rather than adopted in that run because the impact gate would redden three existing parks (`f-20260829-02`, `f-20260829-04`, `f-20260830-06`) that have no such bullet.
+* **Fix:** Adopt those hunks, give each of the three parks a real product-impact sentence or unpark it as technical, then delete the `product-decision-gate-and-listing` declaration and re-measure the parity constants.

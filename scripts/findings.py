@@ -53,7 +53,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 
@@ -104,15 +104,17 @@ NOTIFIER = "notify"
 # Matches APPLICATIONS in `notify`, which keys the desktop entry off the title,
 # so a parked Felix-facing blocker looks like every other Claude notification.
 NOTIFY_APP = "Claude Code"
-# Passed straight to the DBus expire timeout, where 0 means "never expire".
-NOTIFY_DURATION_MS = 0
+# Matches Claude/Grok session toasts (`EXPIRE_MS = 30000`). 0 is DBus "never
+# expire" and is wrong here: a park ping is the same class as a finished turn.
+NOTIFY_DURATION_MS = 30000
 NOTIFY_TIMEOUT_S = 10
-# Lets the waiter outlast the notifier's full timeout plus the state write.
-NOTIFY_STATE_WRITE_GRACE_S = 1.0
+# Overlay copies on other screens keep `notify show` alive for the duration.
+# The subprocess timeout must outlast that wait, or a successful post is killed
+# and left unrecorded, so the next named `decisions` toasts again.
+NOTIFY_POST_TIMEOUT_S = (NOTIFY_DURATION_MS + 999) // 1000 + 2
+# Lets the waiter outlast the overlay-length post timeout plus the state write.
+NOTIFY_STATE_WRITE_GRACE_S = 5.0
 NOTIFY_TITLE_CHARS = 90
-# Re-ping after six hours: a long drain can leave a blocker waiting beyond one
-# work session, while a shorter window would turn repeated reads into desktop-toast noise.
-ANNOUNCE_REMINDER_S = 6 * 60 * 60
 LEDGER_LOCK_RETRY_WINDOW_SECONDS = 1.0
 LEDGER_LOCK_RETRY_INTERVAL_SECONDS = 0.05
 DRAIN_LOCK_READ_BYTES = 4096
@@ -3429,19 +3431,10 @@ def _read_announcement_state(state_path: Path) -> dict[str, object] | None:
     return state
 
 
-def _announcement_is_fresh(stamp: object, now: datetime) -> bool:
-    """Return whether a stored announcement stamp still suppresses a reminder."""
-    if not isinstance(stamp, str):
-        return False
-    try:
-        recorded = datetime.fromisoformat(stamp)
-    except ValueError:
-        return False
-    if recorded.tzinfo is None or recorded.utcoffset() is None:
-        return False
-    if recorded > now:
-        return False
-    return now - recorded <= timedelta(seconds=ANNOUNCE_REMINDER_S)
+def _current_waiting_ids(ledger: Path) -> set[str]:
+    """Return ids currently waiting on Felix, for announcement prune/re-read."""
+    findings, _problems, _vocabulary = parse(ledger)
+    return {finding.id for finding in _felix_waiting(findings)}
 
 
 def _persist_announcement_state(state_path: Path, announced: dict[str, object]) -> None:
@@ -3459,7 +3452,7 @@ def _persist_announcement_state(state_path: Path, announced: dict[str, object]) 
 
 
 def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None:
-    """Ping Felix for a current blocker when it is new or due for a reminder.
+    """Ping Felix for a newly parked blocker; listing the queue never toasts.
 
     **Deliberately not routed through the Claude notification hook.** That hook
     suppresses inside a 45-second quiet window, on the premise that a Felix who
@@ -3469,25 +3462,15 @@ def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None
     So this pings even while he is typing — which is why it is its own event
     class rather than a reuse of that policy.
 
+    A bare ``decisions`` is how he *reads* the queue, so it only prunes cleared
+    ids. The drain names the ids a cluster just parked; those are the only toast.
+    ``FINDINGS_NO_NOTIFY`` still prunes — it only skips the desktop post.
+
     Nothing here draws a notification; ``notify`` is the shared notifier used by
     the Claude hooks and Codex alike, and it is called unchanged. Its absence — a
     different machine, another developer's checkout — silently skips the
     announcement rather than failing the query.
-
-    The reminder window bounds repeat announcements because ``decisions`` is also
-    how he *reads* Felix-facing blockers: a short window would teach him to ignore
-    the ping for an item already on screen.
     """
-    if os.environ.get(NOTIFY_OFF_ENV):
-        return
-    notifier = shutil.which(NOTIFIER)
-    if notifier is None:
-        return
-
-    findings, _problems, _vocabulary = parse(ledger)
-    all_waiting = _felix_waiting(findings)
-    shown = [f for f in all_waiting if f.id in shown_ids]
-
     state_path = ledger.with_name(ANNOUNCED_STATE)
     try:
         announced = _read_announcement_state(state_path) or {}
@@ -3495,34 +3478,51 @@ def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None
         print(f"warning: {exc}; skipping announcement.", file=sys.stderr)
         return
 
+    try:
+        waiting_ids = _current_waiting_ids(ledger)
+    except (OSError, UnicodeError, LedgerError) as exc:
+        print(
+            f"warning: could not read waiting blockers for announcement prune "
+            f"({type(exc).__name__}: {exc}); skipping announcement.",
+            file=sys.stderr,
+        )
+        return
+
     # Prune against every current Felix-facing blocker, never against the
     # subset just shown — the drain shows only the ids one cluster parked, and
     # pruning to those would forget the others and re-announce them later.
-    # This snapshot is deliberately taken before notification. The state lock
-    # does not lock ledger writers, so a clear during delivery may remain
-    # recorded; the reminder window bounds that suppression instead of trying
-    # to detect the race with a second ledger read.
-    still_waiting = {f.id for f in all_waiting}
-    kept = {k: v for k, v in announced.items() if k in still_waiting}
-    now = datetime.now().astimezone()
-    fresh = [
-        f
-        for f in shown
-        if f.id not in announced or not _announcement_is_fresh(announced[f.id], now)
-    ]
-    if not fresh:
-        if kept != announced:
-            _persist_announcement_state(state_path, kept)
+    kept = {key: value for key, value in announced.items() if key in waiting_ids}
+    if kept != announced:
+        _persist_announcement_state(state_path, kept)
+
+    if os.environ.get(NOTIFY_OFF_ENV):
+        return
+    notifier = shutil.which(NOTIFIER)
+    if notifier is None:
         return
 
-    answerable = [f for f in fresh if classify_blocker(f.blocked) == BLOCKER_ANSWERABLE]
+    findings, _problems, _vocabulary = parse(ledger)
+    shown = [finding for finding in _felix_waiting(findings) if finding.id in shown_ids]
+    fresh = [finding for finding in shown if finding.id not in kept]
+    if not fresh:
+        return
+
+    answerable = [
+        finding
+        for finding in fresh
+        if classify_blocker(finding.blocked) == BLOCKER_ANSWERABLE
+    ]
     preconditions = [
-        f for f in fresh if classify_blocker(f.blocked) == BLOCKER_PRECONDITION
+        finding
+        for finding in fresh
+        if classify_blocker(finding.blocked) == BLOCKER_PRECONDITION
     ]
     if len(fresh) == 1:
         detail = f"{fresh[0].id} — {fresh[0].title[:NOTIFY_TITLE_CHARS]}"
     else:
-        detail = f"{len(fresh)} new Felix items: " + ", ".join(f.id for f in fresh)
+        detail = f"{len(fresh)} new Felix items: " + ", ".join(
+            finding.id for finding in fresh
+        )
     actions: list[str] = []
     if answerable:
         actions.append("Run /decide in a terminal to answer.")
@@ -3539,15 +3539,13 @@ def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None
                 f"{detail}\n" + "\n".join(actions),
                 "--sound",
                 "attention",
-                # 0 is the DBus "never expire" timeout. A parked blocker can sit
-                # for days, so it must not disappear the way a turn-ended ping does.
                 "--duration",
                 str(NOTIFY_DURATION_MS),
                 "--project",
                 REPO_ROOT.name,
             ],
             check=False,
-            timeout=NOTIFY_TIMEOUT_S,
+            timeout=NOTIFY_POST_TIMEOUT_S,
         ).returncode
     except (OSError, subprocess.SubprocessError) as exc:
         print(
@@ -3558,26 +3556,55 @@ def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None
         return
     if posted != 0:
         # Left unrecorded on purpose: a failed post (no session bus, headless)
-        # should be retried on the next look, not counted as delivered.
+        # should be retried on the next named look, not counted as delivered.
         return
 
+    try:
+        waiting_after = _current_waiting_ids(ledger)
+    except (OSError, UnicodeError, LedgerError) as exc:
+        print(
+            f"warning: could not re-read waiting blockers after announcing "
+            f"({type(exc).__name__}: {exc}); recording delivery anyway.",
+            file=sys.stderr,
+        )
+        waiting_after = waiting_ids
+    kept = {key: value for key, value in kept.items() if key in waiting_after}
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
-    # Timestamps rather than a bare set: a re-reminder for a blocker still
-    # uncleared hours later has to know how long it has been waiting.
-    kept.update({f.id: stamp for f in fresh})
+    kept.update({finding.id: stamp for finding in fresh if finding.id in waiting_after})
     # Non-fatal by design -- a failed state write must never stop `decisions`
     # from answering. The helper still names the failure because otherwise the
     # missing fire-once record surfaces only as repeated notifications.
     _persist_announcement_state(state_path, kept)
 
 
-def _announce_felix_blockers(shown: list[Finding], ledger: Path) -> None:
-    """Announce current Felix-facing blockers while holding the state lock."""
+def _forget_announced_ids_unlocked(ledger: Path, ids: set[str]) -> None:
+    """Drop stamps for ids that just left the waiting set, without a ledger parse."""
+    if not ids:
+        return
+    state_path = ledger.with_name(ANNOUNCED_STATE)
+    try:
+        announced = _read_announcement_state(state_path) or {}
+    except LedgerError as exc:
+        print(f"warning: {exc}; skipping announcement prune.", file=sys.stderr)
+        return
+    kept = {key: value for key, value in announced.items() if key not in ids}
+    if kept != announced:
+        _persist_announcement_state(state_path, kept)
+
+
+def _forget_announced_ids(ledger: Path, ids: set[str]) -> None:
+    """Forget announcement stamps while holding the state lock."""
+    if not ids:
+        return
+    _with_announcement_lock(ledger, lambda: _forget_announced_ids_unlocked(ledger, ids))
+
+
+def _with_announcement_lock(ledger: Path, body: Callable[[], None]) -> None:
     state_lock = ledger_lock_path(ledger.with_name(ANNOUNCED_STATE))
     try:
         acquired, waited_seconds = acquire_ledger_lock(
             state_lock,
-            wait_window_seconds=NOTIFY_TIMEOUT_S + NOTIFY_STATE_WRITE_GRACE_S,
+            wait_window_seconds=NOTIFY_POST_TIMEOUT_S + NOTIFY_STATE_WRITE_GRACE_S,
         )
     except (LedgerError, OSError) as exc:
         print(
@@ -3594,9 +3621,17 @@ def _announce_felix_blockers(shown: list[Finding], ledger: Path) -> None:
         )
         return
     try:
-        _announce_felix_blockers_unlocked({f.id for f in shown}, ledger)
+        body()
     finally:
         release_ledger_lock(state_lock)
+
+
+def _announce_felix_blockers(shown: list[Finding], ledger: Path) -> None:
+    """Announce current Felix-facing blockers while holding the state lock."""
+    _with_announcement_lock(
+        ledger,
+        lambda: _announce_felix_blockers_unlocked({f.id for f in shown}, ledger),
+    )
 
 
 def cmd_decisions(args: argparse.Namespace) -> int:
@@ -3631,6 +3666,7 @@ def cmd_decisions(args: argparse.Namespace) -> int:
     if not waiting and not preconditions:
         # The announcement read also prunes cleared ids. Run it before this
         # early return so an emptied queue can self-heal before a re-park.
+        # A bare review never toasts: shown_ids is empty.
         _announce_felix_blockers([], args.ledger)
         if not issues:
             print("No decisions are waiting on you.")
@@ -3691,7 +3727,12 @@ def cmd_decisions(args: argparse.Namespace) -> int:
         )
     if preconditions:
         print("To clear: make the listed precondition true; no answer is needed.")
-    _announce_felix_blockers(waiting + preconditions, args.ledger)
+    # Named ids are the drain park path and the only toast. A bare review still
+    # prunes cleared stamps so a later re-park can fire.
+    if args.ids:
+        _announce_felix_blockers(waiting + preconditions, args.ledger)
+    else:
+        _announce_felix_blockers([], args.ledger)
     return 0
 
 
@@ -3806,6 +3847,15 @@ def cmd_set_header(args: argparse.Namespace) -> int:
         return _with_final_newline(text, lines)
 
     _locked_ledger_mutation(args.ledger, build)
+    dropped: set[str] = set()
+    if args.status in {"handled", "rejected"}:
+        dropped.add(args.id)
+    if args.blocked is not None and classify_blocker(args.blocked) not in {
+        BLOCKER_ANSWERABLE,
+        BLOCKER_PRECONDITION,
+    }:
+        dropped.add(args.id)
+    _forget_announced_ids(args.ledger, dropped)
     print(f"updated header for {args.id}")
     return 0
 
@@ -4302,6 +4352,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         return _with_final_newline(text, result_lines)
 
     _locked_ledger_mutation(args.ledger, build)
+    _forget_announced_ids(args.ledger, set(applied))
     if claimed:
         release_spool(claim, spool, claimed)
     if applied:
