@@ -4411,3 +4411,53 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 * **Fix shape:** do not seed a tree whose tab is not yet in a durable envelope, or roll the seed back if the envelope write fails.
 * **Found by:** `review-persisted-state` over the f-20260830-30 cluster cumulative diff, 2026-09-01.
 * **Lens:** `review-persisted-state`
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### Workspace delete of an engine binary does not retire its supervised process
+
+* **ID:** f-20260901-06 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/file_workspace.rs` trash/permanent-delete; `src-tauri/src/infra/fs.rs` recursive unlink; the supervisor it does not call is `EngineSupervisor::retire_engine` in `src-tauri/src/engine/process.rs`.
+* **Defect:** deleting a workspace directory unlinks descendant engine binaries with no supervisor lookup. A UCI child whose executable lived in that tree keeps running (open fd) until tab close or app exit.
+* **Why it matters:** `f-20260831-11` (handled) added `retire_engine` for renderer identity removal. Workspace delete is the other identity-disappearance path named in that finding and was left out because it lives in the native-fs file set (`d-20260901-17`).
+* **Related:** f-20260831-11 (handled). Root `-` because the missing caller is a different file set, not the same unowned spawn.
+* **Found by:** locate probe during the `engine-uci` cluster pinned at f-20260831-11, 2026-09-01.
+
+### Game-manager engines have no application id, so engine removal cannot terminate them
+
+* **ID:** f-20260901-07 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/game.rs` `PlayerConfig::Engine` (`name` + `handle`) and `GameController.white_engine` / `black_engine`.
+* **Defect:** a game against a local engine holds an `EngineActor` outside `EngineSupervisor`. Removing that engine from EnginesPage retires the supervisor id but leaves the game child running. There is no application id on the session to match.
+* **Why it matters:** matching by `EngineHandle` would kill a duplicate config that still exists. Adding an id is a game-start Specta contract change. Related handled `f-20260830-51` recorded that game engines outlive app exit; this is the removal-path sibling (`d-20260901-20`).
+* **Related:** f-20260831-11 (handled), f-20260830-51 (handled). Root `-`.
+* **Found by:** `review-engine-protocol` during plan review of the f-20260831-11 cluster, 2026-09-01.
+
+### Report analysis progress is emitted under a UUID id that ReportPanel never subscribes to
+
+* **ID:** f-20260901-08 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/panels/analysis/ReportModal.tsx` builds `report_${tab}_${uuid}`; `src-tauri/src/chess.rs` `analyze_game` emits `ProgressEvent` under that id; `ReportPanel.tsx` subscribes and clears `report_${activeTab}`.
+* **Defect:** `useProgress` requires exact id equality, so the report progress bar never shows real progress and cancellation clears the wrong entry.
+* **Why it matters:** the same producer/consumer split as `search_progress` / `convert_progress` in `.claude/rules/ipc-events.md`. Pre-existing; surfaced while adding `engine_id` to `analyzeGame`.
+* **Related:** not the same defect as f-20260831-11. Root `-`.
+* **Found by:** `review-ipc-contract` over the f-20260831-11 cumulative diff, 2026-09-01. Confidence 99.
+
+### report-settings hydrates unvalidated JSON and an unguarded write can throw
+
+* **ID:** f-20260901-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/panels/analysis/ReportModal.tsx` `atomWithStorage("report-settings", …)` without `createPreferenceStorage`.
+* **Defect:** older or hostile JSON such as `{"engine":"id"}` hydrates without defaults, then rendering dereferences missing `goMode.t`. A full localStorage makes the unguarded write throw and blocks starting a report.
+* **Why it matters:** `.claude/rules/persisted-state.md` — every write/read goes through serialize/deserialize, and corrupt data must fall back. Pre-existing; ReportModal was opened to pass `engine.id`.
+* **Related:** f-20260831-18 (handled) is engine-list persistence, different key. Root `-`.
+* **Found by:** `review-persisted-state` over the f-20260831-11 cumulative diff, 2026-09-01. Confidence 98.
+
+### get_engine_logs returns success with an empty vector when the actor channel fails
+
+* **ID:** f-20260901-10 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs` `logs()`; `src-tauri/src/chess.rs` `get_engine_logs`.
+* **Defect:** a disconnected actor yields `Ok(vec![])`, so `LogsPanel` renders empty logs instead of an error.
+* **Why it matters:** a failed stop is not a stop; a failed log query is not "the engine said nothing". Pre-existing; not part of the retire/reap diff.
+* **Related:** f-20260831-19 (handled) is renderer stop/kill rejections. Root `-`.
+* **Fix shape:** return the channel error; renderer `notifyUnlessCancelled`.
+* **Found by:** `review-error-handling` over the f-20260831-11 cumulative diff, 2026-09-01. Confidence 98.
