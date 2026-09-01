@@ -4476,3 +4476,54 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 * **Related:** f-20260831-19 (handled) is renderer stop/kill rejections. Root `-`.
 * **Fix shape:** return the channel error; renderer `notifyUnlessCancelled`.
 * **Found by:** `review-error-handling` over the f-20260831-11 cumulative diff, 2026-09-01. Confidence 98.
+
+---
+
+## 2026-09-01 — filed through the inbox spool
+
+### Decision toasts fire on review, not only on a new park
+* **ID:** f-20260901-11 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+
+* **Where:** `scripts/findings.py` (`cmd_decisions`, `_announce_felix_blockers_unlocked`), `scripts/findings-parity-tests.py` (`SIBLING_REF`).
+* **Defect:** Bare `python3 scripts/findings.py decisions` posted a persistent desktop toast for every waiting Felix item. ChessRiddle `6f83b80d8` and Korrigio `30a44a75d` now toast only when the drain names newly parked ids, expire at 30 s, and drop the stamp when the blocker is cleared.
+* **Fix:** Adopt those announce hunks. Re-pin `SIBLING_REF` to ChessRiddle `6f83b80d8`. Keep the existing `atomic-write-cleanup-preserves-primary-error` declaration. Do not edit `scripts/findings.py` until this drain releases the consumer lock.
+
+### register_installed_engine discards the no-follow descriptors and re-walks by pathname
+
+* **ID:** f-20260901-12 · **Status:** open · **Area:** native-fs · **Root:** unbounded-native-reads · **Entry:** build · **Blocked:** none
+
+* **Where:** `src-tauri/src/infra/path_authority.rs` `register_installed_engine`, after `resolve` of the engine-root plus relative components.
+* **Defect:** the verified descriptors from the no-follow resolve are discarded. The function then reacquires the workspace root path, joins the renderer-supplied relative components, and registers by pathname. A file replaced at that path between the two walks is adopted with engine-execution authority. Registering from the already-opened descriptor is an architecture change in PathAuthority, not a one-line guard.
+* **Why it matters:** `installDefaultEngine` and `registerInstalledEngineHandle` now retry this path as a lookup after uncertain parent sync, so the window is on the default-engine install recovery this range just added.
+* **Related:** f-20260830-32 (handled class, image-read TOCTOU). Root `unbounded-native-reads` is the shared cause.
+* **Found by:** `review-tauri-security` over the f-20260831-13 / f-20260901-02 push range, 2026-09-01. Confidence 96. Pre-existing; not part of the keep_adopted_handle change.
+
+### Engine image and resource replacement never releases the previous capability
+
+* **ID:** f-20260901-13 · **Status:** open · **Area:** native-fs · **Root:** unbounded-path-registry · **Entry:** build · **Blocked:** none
+
+* **Where:** `src-tauri/src/infra/path_authority.rs` `promote_dialog`; renderer callers `EngineForm` image picker and `EnginesPage` resource/image replacement.
+* **Defect:** each replacement creates a fresh persistent capability. There is no release or reconciliation on the previous image/resource handle, so repeated selections accumulate registry entries and UUID-named copied images remain on disk.
+* **Why it matters:** `keep_adopted_handle` now returns Ok on uncertain parent sync, so more of those entries stay reachable instead of being dropped as Err. The missing owner/cleanup is the path-registry bound, not the durability mapping.
+* **Related:** f-20260830-35. Root `unbounded-path-registry`.
+* **Found by:** numbered-3 adjacent lens over the f-20260901-02 push range, 2026-09-01. Confidence 98. Pre-existing.
+
+### get_engine_config spawns an EngineActor outside EngineSupervisor
+
+* **ID:** f-20260901-14 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+
+* **Where:** `src-tauri/src/chess.rs` `get_engine_config`.
+* **Defect:** probing a newly picked or installed binary spawns an `EngineActor` that `EngineSupervisor` never sees. If the user closes the application while that probe is awaiting `uciok`, `shutdown_backend` cannot reap it; tao then `process::exit`, so `kill_on_drop`/`Drop` never run and the child can outlive the application.
+* **Why it matters:** EngineForm now stores the adopted handle before this probe, so the probe is on the success path of picker and default-engine install rather than only after a later form submit.
+* **Related:** f-20260830-51 (handled; app-exit termination). Root `-` because this is a missing supervisor registration, not the same unowned-spawn as the stderr drain. Named here rather than shared.
+* **Found by:** `review-engine-protocol` over the f-20260901-02 push range, 2026-09-01. Confidence 98. Pre-existing enclosing flow from `97c29add`.
+
+### Database and puzzle install cards still key progress by manifest array index
+
+* **ID:** f-20260901-15 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+
+* **Where:** `src/components/databases/AddDatabase.tsx` (`db_${databaseId}`), `src/components/puzzles/AddPuzzle.tsx` (`puzzle_db_${databaseId}`).
+* **Defect:** progress identity is the manifest array index. A refetch or reorder can attach another card's running or succeeded job, the same class the engine download cards just left.
+* **Why it matters:** ProgressButton still treats `succeeded` as completed for these callers. A stale succeeded job disables the wrong card as Installed.
+* **Related:** f-20260831-13 (handled; engine cards now use `downloadLink`). Root `-` so named here. Different file set from the engine install slice.
+* **Found by:** numbered-1/2/4 review of the engine progress-id fix, 2026-09-01. Confidence 97.
