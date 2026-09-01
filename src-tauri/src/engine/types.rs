@@ -46,6 +46,10 @@ pub struct EngineDeadlines {
     pub search: Duration,
     pub stop: Duration,
     pub quit: Duration,
+    /// Final reap budget after force-kill. If it expires, dropping the child
+    /// triggers `kill_on_drop`; an uninterruptible process may remain until
+    /// the operating system can reap it or the application exits.
+    pub kill_reap: Duration,
 }
 
 impl Default for EngineDeadlines {
@@ -57,6 +61,7 @@ impl Default for EngineDeadlines {
             search: Duration::from_secs(10 * 60),
             stop: Duration::from_secs(5),
             quit: Duration::from_secs(3),
+            kill_reap: Duration::from_secs(2),
         }
     }
 }

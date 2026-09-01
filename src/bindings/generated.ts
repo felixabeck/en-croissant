@@ -332,9 +332,9 @@ async getBestMoves(id: string, engine: EngineHandle, tab: string, goMode: GoMode
     else return { status: "error", error: e  as any };
 }
 },
-async analyzeGame(id: string, engine: EngineHandle, goMode: GoMode, options: AnalysisOptions, uciOptions: EngineOption[]) : Promise<Result<MoveAnalysis[], string>> {
+async analyzeGame(id: string, engine: EngineHandle, engineId: string, goMode: GoMode, options: AnalysisOptions, uciOptions: EngineOption[]) : Promise<Result<MoveAnalysis[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("analyze_game", { id, engine, goMode, options, uciOptions }) };
+    return { status: "ok", data: await TAURI_INVOKE("analyze_game", { id, engine, engineId, goMode, options, uciOptions }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -367,6 +367,14 @@ async killEngine(engine: string, tab: string) : Promise<Result<null, string>> {
 async killEngines(tab: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("kill_engines", { tab }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async retireEngine(engine: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("retire_engine", { engine }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

@@ -113,17 +113,43 @@ impl EngineProcess {
             }
         }
 
-        let multipv = options
-            .extra_options
+        if resolved.len() != options.extra_options.len() {
+            return Err(Error::Conflict(
+                "resolved engine options do not match requested options".into(),
+            ));
+        }
+        let mut first_seen = Vec::new();
+        let mut last_index = HashMap::new();
+        for (index, option) in options.extra_options.iter().enumerate() {
+            let name = option.name().to_string();
+            if !last_index.contains_key(&name) {
+                first_seen.push(name.clone());
+            }
+            last_index.insert(name, index);
+        }
+        let mut resolved_by_index: Vec<_> = resolved.into_iter().map(Some).collect();
+        let mut to_send: Vec<(String, String)> = Vec::with_capacity(first_seen.len());
+        let mut next_resource_leases = Vec::new();
+        for name in first_seen {
+            let Some(index) = last_index.get(&name).copied() else {
+                continue;
+            };
+            let Some(mut resolved) = resolved_by_index[index].take() else {
+                return Err(Error::Conflict(
+                    "resolved engine option was consumed more than once".into(),
+                ));
+            };
+            to_send.push((resolved.name, resolved.value));
+            next_resource_leases.append(&mut resolved.resources);
+        }
+
+        let multipv = to_send
             .iter()
-            .find(|x| x.name() == "MultiPV")
-            .map(|x| match x {
-                EngineOption::String { value, .. } => value
+            .find(|(name, _)| name == "MultiPV")
+            .map(|(_, value)| {
+                value
                     .parse::<u16>()
-                    .map_err(|_| Error::InvalidInput("MultiPV must be a positive integer".into())),
-                EngineOption::Resource { .. } => Err(Error::InvalidInput(
-                    "MultiPV must be a positive integer".into(),
-                )),
+                    .map_err(|_| Error::InvalidInput("MultiPV must be a positive integer".into()))
             })
             .transpose()?
             .unwrap_or(1);
@@ -133,12 +159,21 @@ impl EngineProcess {
 
         self.real_multipv = multipv.min(pos.legal_moves().len() as u16);
 
-        let mut next_resource_leases = Vec::new();
-        for (option, mut resolved) in options.extra_options.iter().zip(resolved) {
-            if !self.options.extra_options.contains(option) && option.name() != "UCI_Chess960" {
-                self.set_option(&resolved.name, &resolved.value).await?;
+        for (name, value) in &to_send {
+            let current = options
+                .extra_options
+                .iter()
+                .rev()
+                .find(|option| option.name() == name);
+            let previous = self
+                .options
+                .extra_options
+                .iter()
+                .rev()
+                .find(|option| option.name() == name);
+            if current != previous && name != "UCI_Chess960" {
+                self.set_option(name, value).await?;
             }
-            next_resource_leases.append(&mut resolved.resources);
         }
 
         if fen_changed || options.moves != self.options.moves {
@@ -346,6 +381,19 @@ pub async fn kill_engines(tab: String, state: tauri::State<'_, AppState>) -> Res
     state.engine_supervisor.terminate_tab(&tab).await
 }
 
+async fn retire_engine_with_supervisor(
+    engine: String,
+    supervisor: &crate::engine::EngineSupervisor,
+) -> Result<(), Error> {
+    supervisor.retire_engine(engine).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn retire_engine(engine: String, state: tauri::State<'_, AppState>) -> Result<(), Error> {
+    retire_engine_with_supervisor(engine, &state.engine_supervisor).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn kill_engine(
@@ -370,10 +418,7 @@ pub async fn stop_engine(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     let key = EngineKey::new(tab, engine)?;
-    if let Some(process) = state.engine_supervisor.get_exact(&key) {
-        process.actor.stop_current().await?;
-    }
-    Ok(())
+    state.engine_supervisor.stop_exact(&key).await
 }
 
 #[tauri::command]
@@ -425,7 +470,7 @@ pub async fn get_best_moves(
     let mut process = EngineProcess::new(executable.with_resource_leases(child_leases)).await?;
     let supervised = match state
         .engine_supervisor
-        .replace_handle(key.clone(), process.base.clone())
+        .replace_handle(key.clone(), process.base.clone(), id.clone())
         .await
     {
         Ok(supervised) => supervised,
@@ -555,6 +600,45 @@ pub struct AnalysisOptions {
     pub reversed: bool,
 }
 
+const REPORT_MULTIPV: u16 = 2;
+
+fn prepare_report_options(
+    uci_options: &[EngineOption],
+    inherited_values: &HashMap<String, String>,
+) -> (Vec<EngineOption>, HashMap<String, String>) {
+    let mut order = Vec::new();
+    let mut effective = HashMap::new();
+    for option in uci_options {
+        let name = option.name().to_string();
+        if !effective.contains_key(&name) {
+            order.push(name.clone());
+        }
+        effective.insert(name, option.clone());
+    }
+    let mut report_options = order
+        .into_iter()
+        .filter_map(|name| effective.remove(&name))
+        .collect::<Vec<_>>();
+    let report_multipv = REPORT_MULTIPV.to_string();
+    if let Some(option) = report_options
+        .iter_mut()
+        .find(|option| option.name() == "MultiPV")
+    {
+        *option = EngineOption::String {
+            name: "MultiPV".into(),
+            value: report_multipv.clone(),
+        };
+    } else {
+        report_options.push(EngineOption::String {
+            name: "MultiPV".into(),
+            value: report_multipv.clone(),
+        });
+    }
+    let mut report_inherited_values = inherited_values.clone();
+    report_inherited_values.insert("MultiPV".into(), report_multipv);
+    (report_options, report_inherited_values)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn cancel_analysis(id: String, state: tauri::State<'_, AppState>) -> Result<(), Error> {
@@ -569,9 +653,11 @@ pub async fn cancel_analysis(id: String, state: tauri::State<'_, AppState>) -> R
 
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn analyze_game(
     id: String,
     engine: EngineHandle,
+    engine_id: String,
     go_mode: GoMode,
     options: AnalysisOptions,
     uci_options: Vec<EngineOption>,
@@ -632,6 +718,8 @@ pub async fn analyze_game(
         .iter()
         .map(|option| (option.name.clone(), option.value.clone()))
         .collect();
+    let (report_options, inherited_values) =
+        prepare_report_options(&uci_options, &inherited_values);
     let child_leases = initial_resolved
         .iter_mut()
         .flat_map(|option| std::mem::take(&mut option.resources))
@@ -655,7 +743,7 @@ pub async fn analyze_game(
     };
     let supervised = match state
         .engine_supervisor
-        .replace_handle(analysis_key.clone(), proc.base.clone())
+        .replace_handle(analysis_key.clone(), proc.base.clone(), engine_id)
         .await
     {
         Ok(supervised) => supervised,
@@ -742,26 +830,10 @@ pub async fn analyze_game(
             fail_analysis_progress!(error);
         }
 
-        let mut extra_options = uci_options.clone();
-        if !extra_options.iter().any(|x| x.name() == "MultiPV") {
-            extra_options.push(EngineOption::String {
-                name: "MultiPV".to_string(),
-                value: "2".to_string(),
-            });
-        } else {
-            extra_options.iter_mut().for_each(|x| {
-                if x.name() == "MultiPV" {
-                    if let EngineOption::String { value, .. } = x {
-                        *value = "2".to_string();
-                    }
-                }
-            });
-        }
-
         let configured_options = EngineOptions {
             fen: options.fen.clone(),
             moves: moves.clone(),
-            extra_options,
+            extra_options: report_options.clone(),
         };
         let mut resolved = {
             let mut authority = state
@@ -981,6 +1053,121 @@ mod tests {
     use shakmaty::FromSetup;
 
     use super::*;
+
+    fn string_option(name: &str, value: &str) -> EngineOption {
+        EngineOption::String {
+            name: name.into(),
+            value: value.into(),
+        }
+    }
+
+    fn resolved_option(name: &str, value: &str) -> ResolvedEngineOption {
+        ResolvedEngineOption {
+            name: name.into(),
+            value: value.into(),
+            resources: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_options_collapses_duplicate_multipv_last_wins() {
+        let (actor, writes) = EngineActor::recording_test_actor(&["readyok"]);
+        let mut process = EngineProcess {
+            base: actor,
+            last_depth: 0,
+            best_moves: Vec::new(),
+            last_best_moves: Vec::new(),
+            last_progress: 0.0,
+            options: EngineOptions::default(),
+            resource_leases: Vec::new(),
+            go_mode: GoMode::Infinite,
+            running: false,
+            request_id: None,
+            real_multipv: 0,
+            start: Instant::now(),
+        };
+        let options = EngineOptions {
+            fen: start_fen().to_string(),
+            moves: Vec::new(),
+            extra_options: vec![string_option("MultiPV", "2"), string_option("MultiPV", "4")],
+        };
+
+        process
+            .set_options(
+                options,
+                vec![
+                    resolved_option("MultiPV", "2"),
+                    resolved_option("MultiPV", "4"),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let writes = writes.lock().await;
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|line| line.as_str() == "setoption name MultiPV value 4")
+                .count(),
+            1
+        );
+        assert!(!writes
+            .iter()
+            .any(|line| line == "setoption name MultiPV value 2"));
+        assert_eq!(process.real_multipv, 4);
+        drop(writes);
+        process.base.terminate().await.unwrap();
+    }
+
+    #[test]
+    fn report_option_prep_collapses_and_forces_multipv_on_both_sides() {
+        let originals = vec![string_option("MultiPV", "2"), string_option("MultiPV", "4")];
+        let inherited = HashMap::from([("MultiPV".into(), "4".into())]);
+
+        let (extras, inherited) = prepare_report_options(&originals, &inherited);
+
+        assert_eq!(
+            extras,
+            vec![string_option("MultiPV", &REPORT_MULTIPV.to_string())]
+        );
+        assert_eq!(inherited.get("MultiPV"), Some(&REPORT_MULTIPV.to_string()));
+    }
+
+    #[tokio::test]
+    async fn retire_engine_command_delegate_reaps_and_tombstones_owner() {
+        let supervisor = crate::engine::EngineSupervisor::default();
+        let key = EngineKey::new("tab".into(), "engine-id".into()).unwrap();
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        supervisor
+            .replace_handle(key.clone(), actor, "engine-id".into())
+            .await
+            .unwrap();
+
+        retire_engine_with_supervisor("engine-id".into(), &supervisor)
+            .await
+            .unwrap();
+
+        assert!(supervisor.get_exact(&key).is_none());
+        let (replacement, _) = EngineActor::recording_test_actor(&[]);
+        assert!(supervisor
+            .replace_handle(key, replacement, "engine-id".into())
+            .await
+            .is_err());
+
+        let source = include_str!("chess.rs");
+        let command = source
+            .split_once("pub async fn retire_engine(")
+            .map(|(_, suffix)| suffix)
+            .expect("retire_engine command must exist");
+        let body = command
+            .split_once("#[tauri::command]")
+            .map(|(body, _)| body)
+            .unwrap_or(command);
+        assert!(
+            body.contains("retire_engine_with_supervisor(engine, &state.engine_supervisor).await"),
+            "the Specta command must delegate to the tested supervisor retirement"
+        );
+    }
 
     fn pos(fen: &str) -> Chess {
         let fen: Fen = fen.parse().unwrap();

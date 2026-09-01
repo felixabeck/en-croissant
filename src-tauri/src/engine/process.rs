@@ -1,9 +1,9 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex as StdMutex,
     },
     time::Duration,
 };
@@ -37,6 +37,7 @@ const MAX_LOG_LINES: usize = 2_000;
 const MAX_LOG_BYTES: usize = 512 * 1024;
 const MAX_ENGINE_LINE_BYTES: usize = 64 * 1024;
 const MAX_ENGINE_STDERR_BYTES: usize = 512 * 1024;
+const MAX_RETIRED_ENGINE_IDS: usize = 4096;
 /// Join budget for the stderr drain after `io.terminate` returns. A stuck
 /// drain is then aborted so `terminate` cannot stall on a logging task.
 const STDERR_REAP_TIMEOUT: Duration = Duration::from_millis(200);
@@ -136,17 +137,127 @@ fn truncate_utf8(value: &mut String, max_bytes: usize) {
 pub trait UciIo: Send {
     async fn write_line(&mut self, line: &str) -> Result<(), Error>;
     async fn read_line(&mut self) -> Result<Option<String>, Error>;
-    async fn terminate(&mut self, quit_timeout: Duration) -> Result<(), Error>;
+    async fn terminate(
+        &mut self,
+        quit_timeout: Duration,
+        kill_reap_timeout: Duration,
+    ) -> Result<(), Error>;
+}
+
+#[cfg(test)]
+struct RecordingUciIo {
+    writes: Arc<Mutex<Vec<String>>>,
+    lines: VecDeque<Option<String>>,
+}
+
+#[cfg(test)]
+#[async_trait]
+impl UciIo for RecordingUciIo {
+    async fn write_line(&mut self, line: &str) -> Result<(), Error> {
+        self.writes.lock().await.push(line.into());
+        Ok(())
+    }
+
+    async fn read_line(&mut self) -> Result<Option<String>, Error> {
+        Ok(self.lines.pop_front().flatten())
+    }
+
+    async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 struct ChildUciIo {
-    stdin: ChildStdin,
+    control: Option<ProcessChildControl>,
     reader: BufReader<ChildStdout>,
-    child: Child,
     // Keep the validated descriptor open for the complete child lifetime.
     // Linux executes `/proc/self/fd/N`, so dropping it would invalidate the
     // sealed command target after process creation.
     _executable: EngineExecutable,
+}
+
+struct ProcessChildControl {
+    stdin: ChildStdin,
+    child: Child,
+}
+
+#[async_trait]
+trait ChildControl: Send {
+    async fn write_quit(&mut self) -> Result<(), Error>;
+    fn start_kill(&mut self) -> Result<(), Error>;
+    async fn wait(&mut self) -> Result<(), Error>;
+}
+
+#[async_trait]
+impl ChildControl for ProcessChildControl {
+    async fn write_quit(&mut self) -> Result<(), Error> {
+        self.stdin.write_all(b"quit\n").await?;
+        self.stdin.flush().await?;
+        Ok(())
+    }
+
+    fn start_kill(&mut self) -> Result<(), Error> {
+        self.child.start_kill().map_err(Into::into)
+    }
+
+    async fn wait(&mut self) -> Result<(), Error> {
+        self.child.wait().await?;
+        Ok(())
+    }
+}
+
+async fn terminate_child<C: ChildControl>(
+    mut child: C,
+    quit_timeout: Duration,
+    kill_reap_timeout: Duration,
+) -> Result<(), Error> {
+    let graceful_deadline = tokio::time::Instant::now() + quit_timeout;
+    let quit = tokio::time::timeout_at(graceful_deadline, child.write_quit())
+        .await
+        .map_err(|_| Error::EngineTimeout("writing quit to engine".into()))
+        .and_then(|result| result);
+    let graceful_wait = tokio::time::timeout_at(graceful_deadline, child.wait()).await;
+    if matches!(graceful_wait, Ok(Ok(()))) {
+        if let Err(error) = quit {
+            error!("engine quit write failed after child exited: {error}");
+        }
+        return Ok(());
+    }
+
+    let primary = match (quit, graceful_wait) {
+        (Err(error), _) => error,
+        (Ok(()), Ok(Err(error))) => error,
+        (Ok(()), Err(_)) => Error::EngineTimeout("waiting for engine exit".into()),
+        (Ok(()), Ok(Ok(()))) => return Ok(()),
+    };
+    let kill = child.start_kill().err();
+    let reap = timeout(kill_reap_timeout, child.wait()).await;
+    match (kill, reap) {
+        (kill, Ok(Ok(()))) => {
+            if let Some(kill) = kill {
+                error!("engine force-kill reported an error but child reaped: {kill}");
+            }
+            error!("engine graceful shutdown failed but child reaped: {primary}");
+            Ok(())
+        }
+        (Some(kill), Ok(Err(reap))) => Err(Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: format!("force-kill failed: {kill}; final reap failed: {reap}"),
+        }),
+        (None, Ok(Err(reap))) => Err(Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: format!("final reap failed: {reap}"),
+        }),
+        (Some(kill), Err(_)) => Err(Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: format!(
+                "force-kill failed: {kill}; final reap exceeded {kill_reap_timeout:?}"
+            ),
+        }),
+        (None, Err(_)) => Err(Error::EngineTimeout(format!(
+            "waiting for engine reap after force-kill exceeded {kill_reap_timeout:?}"
+        ))),
+    }
 }
 
 async fn read_bounded_engine_line<R: AsyncBufRead + Unpin>(
@@ -280,9 +391,10 @@ impl Drop for AbortJoinHandleOnDrop {
 #[async_trait]
 impl UciIo for ChildUciIo {
     async fn write_line(&mut self, line: &str) -> Result<(), Error> {
-        self.stdin.write_all(line.as_bytes()).await?;
-        self.stdin.write_all(b"\n").await?;
-        self.stdin.flush().await?;
+        let control = self.control.as_mut().ok_or(Error::EngineDisconnected)?;
+        control.stdin.write_all(line.as_bytes()).await?;
+        control.stdin.write_all(b"\n").await?;
+        control.stdin.flush().await?;
         Ok(())
     }
 
@@ -290,49 +402,13 @@ impl UciIo for ChildUciIo {
         read_bounded_engine_line(&mut self.reader).await
     }
 
-    async fn terminate(&mut self, quit_timeout: Duration) -> Result<(), Error> {
-        let quit = self.write_line("quit").await;
-        let waited = timeout(quit_timeout, self.child.wait()).await;
-        if matches!(waited, Ok(Ok(_))) {
-            if let Err(error) = quit {
-                // The process is conclusively reaped. A broken stdin cannot
-                // resurrect it, so lifecycle callers must be allowed to drop
-                // this actor rather than retaining a dead registry entry.
-                error!("engine quit write failed after child exited: {error}");
-            }
-            return Ok(());
-        }
-
-        // A failed graceful wait is never a reason to abandon the child. Try
-        // force-kill and then *always* await reaping, including if start_kill
-        // itself reports an error (the child may have exited concurrently).
-        let primary = match (quit, waited) {
-            (Err(quit), _) => quit,
-            (Ok(()), Ok(Err(wait))) => wait.into(),
-            (Ok(()), Err(_)) => Error::EngineTimeout("waiting for engine exit".into()),
-            (Ok(()), Ok(Ok(_))) => {
-                return Ok(());
-            }
-        };
-        let kill = self.child.start_kill().err();
-        let reap = self.child.wait().await.err();
-        match (kill, reap) {
-            (kill, None) => {
-                if let Some(kill) = kill {
-                    error!("engine force-kill reported an error but child reaped: {kill}");
-                }
-                error!("engine graceful shutdown failed but child reaped: {primary}");
-                Ok(())
-            }
-            (Some(kill), Some(reap)) => Err(Error::OperationAndCleanup {
-                primary: primary.to_string(),
-                cleanup: format!("force-kill failed: {kill}; final reap failed: {reap}"),
-            }),
-            (None, Some(reap)) => Err(Error::OperationAndCleanup {
-                primary: primary.to_string(),
-                cleanup: format!("final reap failed: {reap}"),
-            }),
-        }
+    async fn terminate(
+        &mut self,
+        quit_timeout: Duration,
+        kill_reap_timeout: Duration,
+    ) -> Result<(), Error> {
+        let control = self.control.take().ok_or(Error::EngineDisconnected)?;
+        terminate_child(control, quit_timeout, kill_reap_timeout).await
     }
 }
 
@@ -394,19 +470,42 @@ enum EngineCommand {
 #[derive(Clone)]
 pub struct SupervisedEngine {
     pub generation: u64,
+    pub engine_id: String,
     pub actor: Arc<EngineActor>,
     pub cancelled: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Owns the registry boundary for interactive engines.  Replacement removes
-/// exactly one opaque key, shuts down that actor, then publishes the new
-/// generation.  It deliberately has no prefix APIs.
+#[derive(Default)]
+struct RetiredEngineIds {
+    order: VecDeque<String>,
+    ids: HashSet<String>,
+}
+
+impl RetiredEngineIds {
+    fn insert(&mut self, engine_id: String) {
+        if !self.ids.insert(engine_id.clone()) {
+            return;
+        }
+        self.order.push_back(engine_id);
+        if self.order.len() > MAX_RETIRED_ENGINE_IDS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.ids.remove(&oldest);
+            }
+        }
+    }
+}
+
+/// Owns the registry boundary for interactive and report engines. Replacement
+/// removes exactly one opaque key, shuts down that actor, then publishes the
+/// new generation. Retirement reaps every actor owned by an application engine
+/// id and prevents that id from publishing again while its tombstone is kept.
 #[derive(Default)]
 pub struct EngineSupervisor {
     next_generation: AtomicU64,
     sealed: AtomicBool,
     actors: DashMap<EngineKey, SupervisedEngine>,
     registration: Mutex<()>,
+    retired: StdMutex<RetiredEngineIds>,
     // Every lifecycle transition for an exact key takes this lock before it
     // observes or mutates `actors`.  The map itself is concurrent, but it
     // cannot make remove → await shutdown → insert atomic.
@@ -419,6 +518,28 @@ impl EngineSupervisor {
             error!("engine spawned during shutdown could not be terminated cleanly: {error}");
         }
         Error::Conflict("application is shutting down".into())
+    }
+
+    async fn reject_retired_replacement(actor: &EngineActor) -> Error {
+        let primary = Error::Conflict("engine id is retired".into());
+        match actor.terminate().await {
+            Ok(()) => primary,
+            Err(cleanup) => Error::OperationAndCleanup {
+                primary: primary.to_string(),
+                cleanup: cleanup.to_string(),
+            },
+        }
+    }
+
+    fn with_retired<T>(&self, operation: impl FnOnce(&mut RetiredEngineIds) -> T) -> T {
+        match self.retired.lock() {
+            Ok(mut retired) => operation(&mut retired),
+            Err(poisoned) => operation(&mut poisoned.into_inner()),
+        }
+    }
+
+    fn is_retired(&self, engine_id: &str) -> bool {
+        self.with_retired(|retired| retired.ids.contains(engine_id))
     }
 
     fn lifecycle_slot(&self, key: &EngineKey) -> Arc<Mutex<()>> {
@@ -434,64 +555,40 @@ impl EngineSupervisor {
         key: EngineKey,
         actor: EngineActor,
     ) -> Result<SupervisedEngine, Error> {
-        let lifecycle = self.lifecycle_slot(&key);
-        let _transition = lifecycle.lock().await;
-        if self.sealed.load(Ordering::SeqCst) {
-            return Err(Self::reject_replacement_during_shutdown(&actor).await);
-        }
-        if let Some(previous) = self.actors.get(&key).map(|entry| entry.clone()) {
-            let previous_actor = previous.actor.clone();
-            // A replacement must observe the old search boundary before any
-            // new `position`/`go` is sent to its own process.
-            let stop = previous_actor.stop_current().await;
-            let terminate = previous_actor.terminate().await;
-            if terminate.is_ok() {
-                self.actors.remove(&key);
-            }
-            combine_shutdown_results(stop, terminate)?;
-        }
-        let registration = self.registration.lock().await;
-        if self.sealed.load(Ordering::SeqCst) {
-            drop(registration);
-            return Err(Self::reject_replacement_during_shutdown(&actor).await);
-        }
-        let generation = self
-            .next_generation
-            .fetch_add(1, Ordering::Relaxed)
-            .checked_add(1)
-            .ok_or_else(|| Error::ResourceLimit("engine generation exhausted".into()))?;
-        let entry = SupervisedEngine {
-            generation,
-            actor: Arc::new(actor),
-            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        };
-        self.actors.insert(key, entry.clone());
-        Ok(entry)
+        let engine_id = key.engine.clone();
+        self.replace_handle(key, Arc::new(actor), engine_id).await
     }
 
     pub async fn replace_handle(
         &self,
         key: EngineKey,
         actor: Arc<EngineActor>,
+        engine_id: String,
     ) -> Result<SupervisedEngine, Error> {
+        validate_uci_text("engine", &engine_id)?;
         let lifecycle = self.lifecycle_slot(&key);
         let _transition = lifecycle.lock().await;
         if self.sealed.load(Ordering::SeqCst) {
             return Err(Self::reject_replacement_during_shutdown(&actor).await);
         }
+        if self.is_retired(&engine_id) {
+            return Err(Self::reject_retired_replacement(&actor).await);
+        }
         if let Some(previous) = self.actors.get(&key).map(|entry| entry.clone()) {
             let previous_actor = previous.actor.clone();
             let stop = previous_actor.stop_current().await;
             let terminate = previous_actor.terminate().await;
-            if terminate.is_ok() {
-                self.actors.remove(&key);
-            }
+            self.actors.remove(&key);
             combine_shutdown_results(stop, terminate)?;
         }
         let registration = self.registration.lock().await;
         if self.sealed.load(Ordering::SeqCst) {
             drop(registration);
             return Err(Self::reject_replacement_during_shutdown(&actor).await);
+        }
+        if self.is_retired(&engine_id) {
+            drop(registration);
+            return Err(Self::reject_retired_replacement(&actor).await);
         }
         let generation = self
             .next_generation
@@ -500,6 +597,7 @@ impl EngineSupervisor {
             .ok_or_else(|| Error::ResourceLimit("engine generation exhausted".into()))?;
         let entry = SupervisedEngine {
             generation,
+            engine_id,
             actor,
             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
@@ -517,10 +615,30 @@ impl EngineSupervisor {
             return Ok(());
         }
         let result = current.actor.terminate().await;
-        if result.is_ok() {
-            self.actors.remove(key);
-        }
+        self.actors.remove(key);
         result
+    }
+
+    pub async fn stop_exact(&self, key: &EngineKey) -> Result<(), Error> {
+        let lifecycle = self.lifecycle_slot(key);
+        let _transition = lifecycle.lock().await;
+        let Some(current) = self.actors.get(key).map(|entry| entry.clone()) else {
+            return Ok(());
+        };
+        match current.actor.stop_current().await {
+            Ok(()) => Ok(()),
+            Err(primary) => {
+                let cleanup = current.actor.terminate().await;
+                self.actors.remove(key);
+                match cleanup {
+                    Ok(()) => Err(primary),
+                    Err(cleanup) => Err(Error::OperationAndCleanup {
+                        primary: primary.to_string(),
+                        cleanup: cleanup.to_string(),
+                    }),
+                }
+            }
+        }
     }
 
     pub fn get_exact(&self, key: &EngineKey) -> Option<SupervisedEngine> {
@@ -539,13 +657,31 @@ impl EngineSupervisor {
     }
 
     pub async fn terminate_tab(&self, tab: &str) -> Result<(), Error> {
-        let targets: Vec<_> = self
-            .actors
-            .iter()
-            .filter(|entry| entry.key().tab == tab)
-            .map(|entry| (entry.key().clone(), entry.value().generation))
-            .collect();
-        self.terminate_targets(targets).await
+        self.terminate_matching(|key, _| key.tab == tab).await
+    }
+
+    pub async fn retire_engine(&self, engine_id: String) -> Result<(), Error> {
+        validate_uci_text("engine", &engine_id)?;
+        self.with_retired(|retired| retired.insert(engine_id.clone()));
+        drop(self.registration.lock().await);
+        let mut failures = Vec::new();
+        loop {
+            match self
+                .terminate_matching(|key, engine| {
+                    key.engine == engine_id || engine.engine_id == engine_id
+                })
+                .await
+            {
+                Ok(()) => {}
+                Err(error) => failures.push(error.to_string()),
+            }
+            if !self.actors.iter().any(|entry| {
+                entry.key().engine == engine_id || entry.value().engine_id == engine_id
+            }) {
+                break;
+            }
+        }
+        aggregate_shutdown_failures(failures)
     }
 
     pub async fn terminate_all(&self) -> Result<(), Error> {
@@ -587,6 +723,19 @@ impl EngineSupervisor {
             })
             .collect();
         aggregate_shutdown_failures(failures)
+    }
+
+    async fn terminate_matching<P>(&self, predicate: P) -> Result<(), Error>
+    where
+        P: Fn(&EngineKey, &SupervisedEngine) -> bool,
+    {
+        let targets = self
+            .actors
+            .iter()
+            .filter(|entry| predicate(entry.key(), entry.value()))
+            .map(|entry| (entry.key().clone(), entry.value().generation))
+            .collect();
+        self.terminate_targets(targets).await
     }
 }
 
@@ -681,9 +830,8 @@ impl EngineRuntime {
         });
         let mut runtime = Self::new(
             Box::new(ChildUciIo {
-                stdin,
+                control: Some(ProcessChildControl { stdin, child }),
                 reader: BufReader::new(stdout),
-                child,
                 _executable: executable,
             }),
             deadlines,
@@ -791,7 +939,10 @@ impl EngineRuntime {
 
     pub async fn terminate(&mut self) -> Result<(), Error> {
         self.state = EngineState::Terminating;
-        let result = self.io.terminate(self.deadlines.quit).await;
+        let result = self
+            .io
+            .terminate(self.deadlines.quit, self.deadlines.kill_reap)
+            .await;
         self.reap_stderr_drain().await;
         self.state = EngineState::Idle;
         result
@@ -881,6 +1032,19 @@ impl EngineActor {
     #[cfg(test)]
     pub fn new(io: Box<dyn UciIo>, deadlines: EngineDeadlines) -> Self {
         Self::from_runtime(EngineRuntime::new(io, deadlines))
+    }
+
+    #[cfg(test)]
+    pub fn recording_test_actor(lines: &[&str]) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let io = RecordingUciIo {
+            writes: writes.clone(),
+            lines: lines.iter().map(|line| Some((*line).into())).collect(),
+        };
+        (
+            Arc::new(Self::new(Box::new(io), EngineDeadlines::default())),
+            writes,
+        )
     }
 
     fn from_runtime(runtime: EngineRuntime) -> Self {
@@ -1409,13 +1573,143 @@ mod tests {
             }
             Ok(self.lines.pop_front().flatten())
         }
-        async fn terminate(&mut self, _: Duration) -> Result<(), Error> {
+        async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
             if let Some(delay) = self.terminate_delay {
                 tokio::time::sleep(delay).await;
             }
             self.terminate_calls.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(())
         }
+    }
+
+    enum FakeWait {
+        Ready,
+        Pending,
+    }
+
+    struct FakeChildControl {
+        waits: VecDeque<FakeWait>,
+        quit_pending: bool,
+        kill_error: bool,
+        kill_calls: Arc<AtomicUsize>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for FakeChildControl {
+        fn drop(&mut self) {
+            self.dropped.store(true, AtomicOrdering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl ChildControl for FakeChildControl {
+        async fn write_quit(&mut self) -> Result<(), Error> {
+            if self.quit_pending {
+                std::future::pending().await
+            } else {
+                Ok(())
+            }
+        }
+
+        fn start_kill(&mut self) -> Result<(), Error> {
+            self.kill_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            if self.kill_error {
+                Err(io::Error::other("fake force-kill failed").into())
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn wait(&mut self) -> Result<(), Error> {
+            match self.waits.pop_front().unwrap_or(FakeWait::Pending) {
+                FakeWait::Ready => Ok(()),
+                FakeWait::Pending => std::future::pending().await,
+            }
+        }
+    }
+
+    fn child_control(
+        waits: impl IntoIterator<Item = FakeWait>,
+    ) -> (FakeChildControl, Arc<AtomicUsize>, Arc<AtomicBool>) {
+        let kill_calls = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicBool::new(false));
+        (
+            FakeChildControl {
+                waits: waits.into_iter().collect(),
+                quit_pending: false,
+                kill_error: false,
+                kill_calls: kill_calls.clone(),
+                dropped: dropped.clone(),
+            },
+            kill_calls,
+            dropped,
+        )
+    }
+
+    #[tokio::test]
+    async fn terminate_child_skips_force_kill_when_graceful_wait_succeeds() {
+        let (child, kill_calls, dropped) = child_control([FakeWait::Ready]);
+        terminate_child(child, Duration::from_millis(5), Duration::from_millis(5))
+            .await
+            .unwrap();
+        assert_eq!(kill_calls.load(AtomicOrdering::SeqCst), 0);
+        assert!(dropped.load(AtomicOrdering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn terminate_child_force_kills_then_reaps_after_graceful_timeout() {
+        let (child, kill_calls, _) = child_control([FakeWait::Pending, FakeWait::Ready]);
+        terminate_child(child, Duration::from_millis(5), Duration::from_millis(5))
+            .await
+            .unwrap();
+        assert_eq!(kill_calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn terminate_child_drops_child_after_force_kill_reap_timeout() {
+        let (child, _, dropped) = child_control([FakeWait::Pending, FakeWait::Pending]);
+        let result =
+            terminate_child(child, Duration::from_millis(5), Duration::from_millis(5)).await;
+        assert!(matches!(result, Err(Error::EngineTimeout(_))));
+        assert!(dropped.load(AtomicOrdering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn terminate_child_reports_kill_and_reap_failure_then_drops_child() {
+        let (mut child, _, dropped) = child_control([FakeWait::Pending, FakeWait::Pending]);
+        child.kill_error = true;
+        let result =
+            terminate_child(child, Duration::from_millis(5), Duration::from_millis(5)).await;
+        assert!(matches!(result, Err(Error::OperationAndCleanup { .. })));
+        assert!(dropped.load(AtomicOrdering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn terminate_child_bounds_a_stuck_quit_write() {
+        let (mut child, _, _) = child_control([FakeWait::Ready]);
+        child.quit_pending = true;
+        let _ = tokio::time::timeout(
+            Duration::from_millis(30),
+            terminate_child(child, Duration::from_millis(5), Duration::from_millis(5)),
+        )
+        .await
+        .expect("quit write must be bounded");
+    }
+
+    #[test]
+    fn production_child_termination_delegates_to_bounded_helper() {
+        let source = include_str!("process.rs");
+        let implementation = source
+            .split_once("impl UciIo for ChildUciIo")
+            .map(|(_, suffix)| suffix)
+            .expect("ChildUciIo implementation must exist")
+            .split_once("/// One-owner UCI actor")
+            .map(|(implementation, _)| implementation)
+            .expect("ChildUciIo implementation must precede EngineRuntime");
+        assert!(
+            implementation.contains("terminate_child(control, quit_timeout, kill_reap_timeout)"),
+            "ChildUciIo::terminate must use the bounded production helper"
+        );
     }
     fn actor(lines: &[&str]) -> FakeActor {
         actor_with(lines, false, None).0
@@ -1488,6 +1782,23 @@ mod tests {
             ),
             terminate_calls,
         )
+    }
+
+    struct TerminateErrorIo;
+
+    #[async_trait]
+    impl UciIo for TerminateErrorIo {
+        async fn write_line(&mut self, _: &str) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn read_line(&mut self) -> Result<Option<String>, Error> {
+            Ok(None)
+        }
+
+        async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+            Err(io::Error::other("fake terminate failed").into())
+        }
     }
     #[tokio::test]
     async fn replacement_waits_for_old_bestmove_before_go() {
@@ -1585,6 +1896,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminate_exact_removes_entry_when_termination_reports_an_error() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let actor = EngineActor::new(Box::new(TerminateErrorIo), EngineDeadlines::default());
+        let supervised = supervisor.replace(key.clone(), actor).await.unwrap();
+
+        assert!(supervisor
+            .terminate_exact(&key, supervised.generation)
+            .await
+            .is_err());
+        assert!(supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
     async fn terminate_all_reaps_every_registered_actor() {
         let supervisor = EngineSupervisor::default();
         let mut registered = Vec::new();
@@ -1608,6 +1933,137 @@ mod tests {
                 "a terminated actor must leave no registry entry behind"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn failed_stop_removes_entry_and_allows_replacement() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let ((old, _), terminated) = actor_with_stop_failure(&[]);
+        old.start_search(&GoMode::Depth(1)).await.unwrap();
+        supervisor.replace(key.clone(), old).await.unwrap();
+
+        assert!(supervisor.stop_exact(&key).await.is_err());
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&key).is_none());
+
+        let (replacement, _) = actor(&[]);
+        supervisor.replace(key.clone(), replacement).await.unwrap();
+        assert!(supervisor.get_exact(&key).is_some());
+        supervisor.terminate_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retire_engine_reaps_matching_owners_across_tabs_only() {
+        let supervisor = EngineSupervisor::default();
+        let mut retired = Vec::new();
+        for tab in ["first", "second"] {
+            let key = EngineKey::new(tab.into(), "owner".into()).unwrap();
+            let ((actor, _), terminated) = actor_with(&[], false, None);
+            supervisor.replace(key.clone(), actor).await.unwrap();
+            retired.push((key, terminated));
+        }
+        let survivor_key = EngineKey::new("first".into(), "other".into()).unwrap();
+        let ((survivor, _), survivor_terminated) = actor_with(&[], false, None);
+        supervisor
+            .replace(survivor_key.clone(), survivor)
+            .await
+            .unwrap();
+
+        supervisor.retire_engine("owner".into()).await.unwrap();
+
+        for (key, terminated) in retired {
+            assert!(supervisor.get_exact(&key).is_none());
+            assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        }
+        assert!(supervisor.get_exact(&survivor_key).is_some());
+        assert_eq!(survivor_terminated.load(AtomicOrdering::SeqCst), 0);
+        supervisor.terminate_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retire_engine_matches_analysis_owner_not_operation_key() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("analysis".into(), "operation".into()).unwrap();
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        supervisor
+            .replace_handle(key.clone(), Arc::new(actor), "engine-E".into())
+            .await
+            .unwrap();
+
+        supervisor.retire_engine("other".into()).await.unwrap();
+        assert!(supervisor.get_exact(&key).is_some());
+        supervisor.retire_engine("engine-E".into()).await.unwrap();
+        assert!(supervisor.get_exact(&key).is_none());
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retired_engine_id_refuses_static_and_registration_blocked_replacements() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        supervisor.retire_engine("retired".into()).await.unwrap();
+        let key = EngineKey::new("tab".into(), "retired".into()).unwrap();
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        assert!(matches!(
+            supervisor.replace(key.clone(), actor).await,
+            Err(Error::Conflict(message)) if message == "engine id is retired"
+        ));
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&key).is_none());
+
+        supervisor
+            .retire_engine("cleanup-fails".into())
+            .await
+            .unwrap();
+        let cleanup_key = EngineKey::new("tab".into(), "cleanup-fails".into()).unwrap();
+        let cleanup_actor =
+            EngineActor::new(Box::new(TerminateErrorIo), EngineDeadlines::default());
+        assert!(matches!(
+            supervisor.replace(cleanup_key, cleanup_actor).await,
+            Err(Error::OperationAndCleanup { .. })
+        ));
+
+        let registration = supervisor.registration.lock().await;
+        let race_key = EngineKey::new("tab".into(), "racing".into()).unwrap();
+        let race_lifecycle = supervisor.lifecycle_slot(&race_key);
+        let ((racing, _), racing_terminated) = actor_with(&[], false, None);
+        let replacement = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let race_key = race_key.clone();
+            async move { supervisor.replace(race_key, racing).await }
+        });
+        while race_lifecycle.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        let retirement = tokio::spawn({
+            let supervisor = supervisor.clone();
+            async move { supervisor.retire_engine("racing".into()).await }
+        });
+        while !supervisor.is_retired("racing") {
+            tokio::task::yield_now().await;
+        }
+        drop(registration);
+
+        retirement.await.unwrap().unwrap();
+        assert!(matches!(
+            replacement.await.unwrap(),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(racing_terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&race_key).is_none());
+    }
+
+    #[tokio::test]
+    async fn retired_engine_ids_evict_the_oldest_at_the_bound() {
+        let supervisor = EngineSupervisor::default();
+        for index in 0..=MAX_RETIRED_ENGINE_IDS {
+            supervisor
+                .retire_engine(format!("engine-{index}"))
+                .await
+                .unwrap();
+        }
+        assert!(!supervisor.is_retired("engine-0"));
+        assert!(supervisor.is_retired(&format!("engine-{MAX_RETIRED_ENGINE_IDS}")));
     }
 
     #[tokio::test]
@@ -1662,6 +2118,7 @@ mod tests {
             slipped_key.clone(),
             SupervisedEngine {
                 generation: 99,
+                engine_id: "slipped".into(),
                 actor: Arc::new(slipped),
                 cancelled: Arc::new(AtomicBool::new(false)),
             },
@@ -2013,6 +2470,35 @@ mod tests {
             .expect("terminate must join the stderr drain after the child exits")
             .unwrap();
         assert!(runtime.stderr_drain_task.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn real_child_ignoring_quit_is_force_killed_within_reap_budget() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("ignore-quit.sh");
+        std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = crate::infra::path_authority::EngineExecutable::test_fixture(
+            std::fs::File::open(&script).unwrap(),
+            directory.path().to_path_buf(),
+            vec![],
+        );
+        let deadlines = EngineDeadlines {
+            quit: Duration::from_millis(20),
+            kill_reap: Duration::from_millis(200),
+            ..EngineDeadlines::default()
+        };
+        let mut runtime = EngineRuntime::spawn(executable, deadlines).await.unwrap();
+        let started = std::time::Instant::now();
+
+        runtime.terminate().await.unwrap();
+
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "quit-ignoring child must not outlive quit + kill_reap + slack"
+        );
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@ import { TreeStateContext } from "@/components/common/TreeStateContext";
 import AppModal from "../../common/AppModal";
 import { enginesAtom, referenceDbAtom } from "@/state/atoms";
 import type { LocalEngine } from "@/utils/engines";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 
 const reportSettingsAtom = atomWithStorage("report-settings", {
   novelty: true,
@@ -102,6 +103,7 @@ function ReportModal({
       .analyzeGame(
         operationId,
         engine.handle,
+        engine.id,
         form.values.goMode,
         {
           annotateNovelties: form.values.novelty,
@@ -121,6 +123,7 @@ function ReportModal({
           });
         }
       })
+      .catch((error) => notifyUnlessCancelled(t("Common.Error"), error))
       .finally(() => {
         if (mounted.current && isCurrentOperation(operationId, rootFingerprint))
           setInProgress(false);
