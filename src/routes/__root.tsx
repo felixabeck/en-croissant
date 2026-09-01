@@ -19,11 +19,11 @@ import { keyMapAtom } from "@/state/keybinds";
 import { openFile, pickPgnFile } from "@/utils/files";
 import { createTab } from "@/utils/tabs";
 import {
+  assembleNativeMenuResources,
   buildAppMenuTree,
   clearSavedDataFromMenu,
   createNewTabFromMenu,
   installAppMenuSurface,
-  installRealAppMenu,
   menuWindowPlatform,
   openPgnFromMenu,
   openSettingsFromMenu,
@@ -33,63 +33,32 @@ import {
   type AppMenuCallbacks,
   type MenuGroup,
   type MenuHandle,
+  type NativeMenuResource,
 } from "./-appMenu";
 
-type Closable = { close: () => Promise<void> };
-
 async function createMenu(menuActions: MenuGroup[]): Promise<MenuHandle> {
-  const created: Closable[] = [];
-  try {
-    const items = await Promise.all(
-      menuActions.map(async (group) => {
-        const submenuItems = await Promise.all(
-          group.options.map(async (option) => {
-            if ("kind" in option) {
-              const separator = await PredefinedMenuItem.new({ item: "Separator" });
-              created.push(separator);
-              return separator;
-            }
-            if (option.item) {
-              const predefined = await PredefinedMenuItem.new({
-                text: option.label,
-                item: option.item,
-              });
-              created.push(predefined);
-              return predefined;
-            }
-            const item = await MenuItem.new({
-              id: option.id,
-              text: option.label,
-              accelerator: option.shortcut,
-              action: option.action,
-            });
-            created.push(item);
-            return item;
-          }),
-        );
-
-        const submenu = await Submenu.new({
-          text: group.label,
-          items: submenuItems,
-        });
-        created.push(submenu);
-        return submenu;
+  const menu = await assembleNativeMenuResources<NativeMenuResource>(menuActions, {
+    separator: () => PredefinedMenuItem.new({ item: "Separator" }),
+    predefined: (option) =>
+      PredefinedMenuItem.new({
+        text: option.label,
+        item: option.item,
       }),
-    );
-
-    return (await Menu.new({
-      items: items,
-    })) as unknown as MenuHandle;
-  } catch (error) {
-    for (const resource of created) {
-      try {
-        await resource.close();
-      } catch {
-        // Partial construction: close whatever already exists.
-      }
-    }
-    throw error;
-  }
+    submenu: (label, items) =>
+      Submenu.new({
+        text: label,
+        items: items as never,
+      }),
+    item: (option) =>
+      MenuItem.new({
+        id: option.id,
+        text: option.label,
+        accelerator: option.shortcut,
+        action: option.action,
+      }),
+    menu: (items) => Menu.new({ items: items as never }),
+  });
+  return menu as unknown as MenuHandle;
 }
 
 export const Route = createRootRouteWithContext<Record<string, never>>()({
@@ -232,7 +201,7 @@ function RootLayout() {
     const myGen = ++installGeneration.current;
     void installAppMenuSurface({
       groups: menuActions,
-      wantRealMenu: installRealAppMenu(isNative, windowPlatform),
+      wantRealMenu: wantNativeDecorations(isNative, windowPlatform),
       wantDecorations: wantNativeDecorations(isNative, windowPlatform),
       previousDecorationsApplied: decorationsAppliedRef.current,
       isCurrent: () => installGeneration.current === myGen,

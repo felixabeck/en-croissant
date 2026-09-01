@@ -66,3 +66,85 @@ test("watchMaximized ignores setState after stop and notifies once", async () =>
     expect(resizeHandler).toBeUndefined();
     stopFail();
 });
+
+test("watchMaximized applies the initial maximized state and later resize updates", async () => {
+    const seen: boolean[] = [];
+    let resizeHandler: (() => void) | undefined;
+    const stop = watchMaximized({
+        isMaximized: async () => seen.length === 0,
+        onResized: (handler) => {
+            resizeHandler = handler;
+            return () => {
+                resizeHandler = undefined;
+            };
+        },
+        setMaximized: (value) => {
+            seen.push(value);
+        },
+        notify: () => {
+            throw new Error("should not notify");
+        },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(seen).toEqual([true]);
+    resizeHandler?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(seen).toEqual([true, false]);
+    stop();
+});
+
+test("watchMaximized ignores a stale isMaximized result", async () => {
+    const first = deferred<boolean>();
+    const seen: boolean[] = [];
+    let resizeHandler: (() => void) | undefined;
+    let calls = 0;
+    const stop = watchMaximized({
+        isMaximized: () => {
+            calls += 1;
+            if (calls === 1) return first.promise;
+            return Promise.resolve(false);
+        },
+        onResized: (handler) => {
+            resizeHandler = handler;
+            return () => undefined;
+        },
+        setMaximized: (value) => {
+            seen.push(value);
+        },
+        notify: () => {
+            throw new Error("should not notify");
+        },
+    });
+    await Promise.resolve();
+    resizeHandler?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(seen).toEqual([false]);
+    first.resolve(true);
+    await first.promise;
+    await Promise.resolve();
+    expect(seen).toEqual([false]);
+    stop();
+});
+
+test("watchMaximized swallows a rejecting unlisten", async () => {
+    const notified: unknown[] = [];
+    const stop = watchMaximized({
+        isMaximized: async () => false,
+        onResized: () => async () => {
+            throw new Error("unlisten failed");
+        },
+        setMaximized: () => undefined,
+        notify: (error) => {
+            notified.push(error);
+        },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    stop();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(notified).toEqual([]);
+});

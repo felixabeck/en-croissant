@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from "vitest";
 import {
+    assembleNativeMenuResources,
     buildAppMenuTree,
     clearSavedDataFromMenu,
     createNewTabFromMenu,
     installAppMenuSurface,
-    installRealAppMenu,
     menuWindowPlatform,
     openPgnFromMenu,
     openSettingsFromMenu,
@@ -15,6 +15,7 @@ import {
     type AppMenuCallbacks,
     type MenuGroup,
     type MenuHandle,
+    type NativeMenuResource,
 } from "./-appMenu";
 
 afterEach(() => {
@@ -87,7 +88,14 @@ test("non-macOS tree has File/View/Help with Exit and About", () => {
     expect(option(groups, "Menu.File", "new_tab").shortcut).toBe("Ctrl+T");
     expect(option(groups, "Menu.File", "open_file").shortcut).toBe("Ctrl+O");
     expect(option(groups, "Menu.View", "toggle_fullscreen").shortcut).toBe("F11");
+    expect(option(groups, "Menu.File", "new_tab").action).toBe(actions.createNewTab);
+    expect(option(groups, "Menu.File", "open_file").action).toBe(actions.openNewFile);
     expect(option(groups, "Menu.File", "exit").action).toBe(actions.exit);
+    expect(option(groups, "Menu.View", "reload").action).toBe(actions.reload);
+    expect(option(groups, "Menu.View", "toggle_fullscreen").action).toBe(actions.toggleFullscreen);
+    expect(option(groups, "Menu.Help", "documentation").action).toBe(actions.documentation);
+    expect(option(groups, "Menu.Help", "clear_saved_data").action).toBe(actions.clearSavedData);
+    expect(option(groups, "Menu.Help", "logs").action).toBe(actions.openLogs);
     expect(option(groups, "Menu.Help", "about").action).toBe(actions.about);
     expect(groups.some((group) => group.options.some((item) => "item" in item && item.item))).toBe(
         false,
@@ -113,6 +121,14 @@ test("macOS tree has Application/Edit, no File Exit, no Help About", () => {
     expect(idsOf(groups, "Menu.File")).toEqual(["new_tab", "open_file"]);
     expect(idsOf(groups, "Menu.Help")).toEqual(["documentation", "clear_saved_data", "logs"]);
     expect(option(groups, "Menu.Application.Menu", "about").action).toBe(actions.about);
+    expect(option(groups, "Menu.Application.Menu", "settings").action).toBe(actions.openSettings);
+    expect(option(groups, "Menu.File", "new_tab").action).toBe(actions.createNewTab);
+    expect(option(groups, "Menu.File", "open_file").action).toBe(actions.openNewFile);
+    expect(option(groups, "Menu.View", "reload").action).toBe(actions.reload);
+    expect(option(groups, "Menu.View", "toggle_fullscreen").action).toBe(actions.toggleFullscreen);
+    expect(option(groups, "Menu.Help", "documentation").action).toBe(actions.documentation);
+    expect(option(groups, "Menu.Help", "clear_saved_data").action).toBe(actions.clearSavedData);
+    expect(option(groups, "Menu.Help", "logs").action).toBe(actions.openLogs);
     const hide = groups[0].options.find((item) => "item" in item && item.item === "Hide");
     const quit = groups[0].options.find((item) => "item" in item && item.item === "Quit");
     expect(hide).toBeDefined();
@@ -224,6 +240,19 @@ test("clearSavedDataFromMenu does not clear when ask is false", async () => {
         },
     });
     expect(cleared).toBe(false);
+});
+
+test("clearSavedDataFromMenu clears when ask is true", async () => {
+    let cleared = false;
+    await clearSavedDataFromMenu({
+        ask: async () => true,
+        confirmMessage: "sure?",
+        title: "clear",
+        clear: () => {
+            cleared = true;
+        },
+    });
+    expect(cleared).toBe(true);
 });
 
 test("runNativeMenuAction notifies string rejections and skips Cancellation", async () => {
@@ -374,6 +403,32 @@ test("setDecorations reject keeps previous decorationsApplied", async () => {
     expect(result.decorationsApplied).toBe(true);
 });
 
+test("stale after setAsAppMenu skips decorations and keeps previous state", async () => {
+    let current = true;
+    const decorated: boolean[] = [];
+    const result = await installAppMenuSurface({
+        groups: [],
+        wantRealMenu: true,
+        wantDecorations: true,
+        previousDecorationsApplied: false,
+        isCurrent: () => current,
+        createMenu: async () =>
+            fakeMenu("new", async () => {
+                current = false;
+                return null;
+            }),
+        setDecorations: async (on) => {
+            decorated.push(on);
+        },
+        closeMenu: async () => undefined,
+        notify: () => {
+            throw new Error("should not notify");
+        },
+    });
+    expect(result.decorationsApplied).toBe(false);
+    expect(decorated).toEqual([]);
+});
+
 test("stale after setDecorations does not report the new decorations as applied", async () => {
     let current = true;
     const result = await installAppMenuSurface({
@@ -470,10 +525,90 @@ test("surface helpers match the current linux/win32/macos coupling", () => {
     expect(menuWindowPlatform("linux")).toBe("linux");
     expect(menuWindowPlatform("darwin")).toBe("other");
     expect(wantNativeDecorations(true, "linux")).toBe(true);
-    expect(installRealAppMenu(true, "linux")).toBe(true);
+    expect(wantNativeDecorations(true, "win32")).toBe(true);
     expect(renderTopBar(true, "linux")).toBe(false);
     expect(renderTopBar(false, "linux")).toBe(true);
     expect(renderTopBar(true, "win32")).toBe(false);
     expect(renderTopBar(false, "other")).toBe(false);
     expect(wantNativeDecorations(false, "other")).toBe(true);
+});
+
+function fakeResource(label: string): NativeMenuResource & { label: string } {
+    return {
+        label,
+        close: async () => undefined,
+    };
+}
+
+test("assembleNativeMenuResources builds items sequentially and closes earlier resources on failure", async () => {
+    const first = deferred<NativeMenuResource & { label: string }>();
+    const order: string[] = [];
+    const closed: string[] = [];
+    const resource = (label: string): NativeMenuResource & { label: string } => ({
+        label,
+        close: async () => {
+            closed.push(label);
+        },
+    });
+    const pending = assembleNativeMenuResources(
+        [
+            {
+                label: "File",
+                options: [
+                    { id: "a", label: "A" },
+                    { id: "b", label: "B" },
+                ],
+            },
+        ],
+        {
+            separator: async () => resource("sep"),
+            predefined: async () => resource("pre"),
+            item: async (option) => {
+                order.push(option.id ?? "item");
+                if (option.id === "a") return first.promise;
+                throw new Error("b failed");
+            },
+            submenu: async () => resource("sub"),
+            menu: async () => resource("menu"),
+        },
+    );
+    await Promise.resolve();
+    expect(order).toEqual(["a"]);
+    first.resolve(resource("a"));
+    await expect(pending).rejects.toThrow("b failed");
+    expect(order).toEqual(["a", "b"]);
+    expect(closed).toEqual(["a"]);
+});
+
+test("assembleNativeMenuResources does not start the next group until the current submenu exists", async () => {
+    const submenu = deferred<NativeMenuResource>();
+    const order: string[] = [];
+    const pending = assembleNativeMenuResources(
+        [
+            { label: "File", options: [{ id: "a", label: "A" }] },
+            { label: "Help", options: [{ id: "b", label: "B" }] },
+        ],
+        {
+            separator: async () => fakeResource("sep"),
+            predefined: async () => fakeResource("pre"),
+            item: async (option) => {
+                order.push(`item:${option.id}`);
+                return fakeResource(option.id ?? "item");
+            },
+            submenu: async (label) => {
+                order.push(`sub:${label}`);
+                if (label === "File") return submenu.promise;
+                return fakeResource(label);
+            },
+            menu: async () => {
+                order.push("menu");
+                return fakeResource("menu");
+            },
+        },
+    );
+    await Promise.resolve();
+    expect(order).toEqual(["item:a", "sub:File"]);
+    submenu.resolve(fakeResource("File"));
+    await pending;
+    expect(order).toEqual(["item:a", "sub:File", "item:b", "sub:Help", "menu"]);
 });

@@ -46,10 +46,6 @@ export function wantNativeDecorations(isNative: boolean, windowPlatform: WindowP
     return isNative || windowPlatform === "other";
 }
 
-export function installRealAppMenu(isNative: boolean, windowPlatform: WindowPlatform): boolean {
-    return wantNativeDecorations(isNative, windowPlatform);
-}
-
 export function renderTopBar(isNative: boolean, windowPlatform: WindowPlatform): boolean {
     if (windowPlatform === "linux") return !isNative;
     if (windowPlatform === "win32") return !isNative;
@@ -241,18 +237,71 @@ export async function runWindowAction(
     op: () => Promise<unknown>,
     notify: (error: unknown) => void,
 ): Promise<void> {
-    try {
-        await op();
-    } catch (error) {
-        const visible = errorUnlessCancelled(error);
-        if (visible) notify(error);
-    }
+    await runNativeMenuAction(op, notify);
 }
 
 export type MenuHandle = {
     setAsAppMenu: () => Promise<MenuHandle | null>;
     close: () => Promise<void>;
 };
+
+export type NativeMenuResource = {
+    close: () => Promise<void>;
+};
+
+export type NativeMenuPredefinedOption = MenuItemAction & {
+    item: NonNullable<MenuItemAction["item"]>;
+};
+
+export type NativeMenuFactories<T extends NativeMenuResource> = {
+    separator: () => Promise<T>;
+    predefined: (option: NativeMenuPredefinedOption) => Promise<T>;
+    item: (option: MenuItemAction) => Promise<T>;
+    submenu: (label: string, items: T[]) => Promise<T>;
+    menu: (items: T[]) => Promise<T>;
+};
+
+async function closeCreated<T extends NativeMenuResource>(created: T[]): Promise<void> {
+    for (const resource of created) {
+        try {
+            await resource.close();
+        } catch {
+            // Partial construction: close whatever already exists.
+        }
+    }
+}
+
+export async function assembleNativeMenuResources<T extends NativeMenuResource>(
+    groups: MenuGroup[],
+    factories: NativeMenuFactories<T>,
+): Promise<T> {
+    const created: T[] = [];
+    try {
+        const submenus: T[] = [];
+        for (const group of groups) {
+            const items: T[] = [];
+            for (const option of group.options) {
+                const resource =
+                    "kind" in option
+                        ? await factories.separator()
+                        : option.item
+                          ? await factories.predefined(option as NativeMenuPredefinedOption)
+                          : await factories.item(option);
+                created.push(resource);
+                items.push(resource);
+            }
+            const submenu = await factories.submenu(group.label, items);
+            created.push(submenu);
+            submenus.push(submenu);
+        }
+        const menu = await factories.menu(submenus);
+        created.push(menu);
+        return menu;
+    } catch (error) {
+        await closeCreated(created);
+        throw error;
+    }
+}
 
 export type InstallAppMenuSurfaceArgs = {
     groups: MenuGroup[];
@@ -356,6 +405,16 @@ export function watchMaximized(options: {
     let notified = false;
     let unlisten: (() => void) | undefined;
 
+    const quietUnlisten = (fn: (() => void) | undefined) => {
+        if (!fn) return;
+        try {
+            void Promise.resolve(fn()).catch(() => undefined);
+        } catch {
+            // Unlisten is best-effort; a close rejection must not become an
+            // unhandled rejection after stop() or a failed isMaximized.
+        }
+    };
+
     const fail = (error: unknown) => {
         if (stopped) return;
         if (!notified) {
@@ -364,17 +423,20 @@ export function watchMaximized(options: {
             if (visible) options.notify(error);
         }
         stopped = true;
-        unlisten?.();
+        quietUnlisten(unlisten);
         unlisten = undefined;
     };
 
+    let checkSeq = 0;
     const check = async () => {
+        const seq = ++checkSeq;
         if (stopped) return;
         try {
             const maximized = await options.isMaximized();
-            if (stopped) return;
+            if (stopped || seq !== checkSeq) return;
             options.setMaximized(maximized);
         } catch (error) {
+            if (stopped || seq !== checkSeq) return;
             fail(error);
         }
     };
@@ -387,7 +449,7 @@ export function watchMaximized(options: {
     )
         .then((fn) => {
             if (stopped) {
-                fn();
+                quietUnlisten(fn);
                 return;
             }
             unlisten = fn;
@@ -398,7 +460,7 @@ export function watchMaximized(options: {
 
     return () => {
         stopped = true;
-        unlisten?.();
+        quietUnlisten(unlisten);
         unlisten = undefined;
     };
 }
