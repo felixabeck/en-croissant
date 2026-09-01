@@ -4831,3 +4831,56 @@ Filed rather than fixed during `d-20260901-36` because two of the three sites ar
 `src/components/panels/analysis/**` and `EvalListener.tsx`, which that change never read — universal
 rule 4b routes a finding outside the loaded file set to its own run, so it gets its own cut instead
 of an appended one. `review-engine-protocol` owns both of those paths and should run over the repair.
+
+---
+
+## 2026-09-02 — filed through the inbox spool
+
+### The findings CLI's documented entry point has no version floor here either, only an accident of formatting
+
+* **ID:** f-20260902-01 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** chessriddle-adopts-entrypoint-guard
+
+* **Where:** `scripts/findings.py` (the import block and the `except (OSError, UnicodeError)` /
+  `except (OSError, UnicodeError, LedgerError)` handler sites), and
+  `scripts/findings-parity-tests.py`, which pins the sibling at
+  `SIBLING_REF = 6f83b80d8772a2196538f94dbc7ff40b582c6988`.
+* **The defect.** `python3 scripts/findings.py …` is the documented route, and in any shell
+  without a repo interpreter on `PATH` that is the system Python — 3.12 on this machine. This
+  copy parses there today, but only because its `except` clauses happen to be parenthesized; no
+  contract, test or gate states the floor. In Korrigio the same file was taken 3.14-only by
+  `ruff format` at `target-version = "py314"`, which strips redundant parentheses into PEP 758
+  form. The documented route then died with a bare `SyntaxError` naming syntax rather than a
+  version, and that misdescribed failure produced **three false "the CLI is dead" findings in two
+  days** (`f-20260830-26`, `f-20260831-10`, `f-20260831-13` there), costing five agent runs.
+* **Why it is filed here and not only in the siblings.** The mechanism is copy-shaped: this repo
+  carries its own copy of `scripts/findings.py` and the failure follows the copy. It happens to be
+  furthest from the edge — this repo has no `pyproject.toml`, no ruff Python configuration and
+  therefore no formatter that would strip the parentheses — so the risk here arrives by
+  *adoption*, on the next reconciliation that pulls sibling hunks in, rather than on its own.
+* **The fix, once the precondition clears:** adopt the sibling's block verbatim — `import shlex`,
+  the `if sys.version_info < (3, 14):` guard as the FIRST statement after the imports (plain
+  3.8-compatible syntax, so it stays reachable below the floor), and the named
+  `_READ_ERRORS` / `_READ_ERRORS_LEDGER` tuples at their handler sites. Adopt it byte-for-byte:
+  the parity gate compares this file against the pinned sibling blob, so any local adaptation
+  buys nothing and keeps a declaration open permanently.
+* **Blocked on `chessriddle-adopts-entrypoint-guard`, and that is a real dependency, not caution.**
+  This repo's parity gate diffs against ChessRiddle. Adopting the guard **before** ChessRiddle
+  does means writing a fresh `port_pending=True` declaration here plus a re-measurement of
+  `EXPECTED_CHANGED_LINES` and the digest — growing the declared delta, which is the opposite of
+  what the change is for. After ChessRiddle adopts it (filed there 2026-09-02 from the Korrigio
+  drain, covering the version guard plus the `VACUOUS_IMPACT_RE` and validator ports in one run),
+  the same hunks arrive here as a plain reconciliation with **no** new declaration. Clear the
+  blocker when ChessRiddle's `scripts/findings.py` carries the guard at a commit this repo's
+  `SIBLING_REF` can advance to.
+* **Do not adopt the sibling's product-impact gate in the same step unless it is decided
+  separately.** `scripts/findings-parity-tests.py` already declares
+  `product-decision-gate-and-listing` as port-pending with a stated reason — the impact gate would
+  redden three existing parks here that carry no `**Product impact:**` bullet. That is an
+  independent decision and is not made by this entry.
+* **Proof:** with a clean `PATH`, `python3 scripts/findings.py check` on a pre-3.14 interpreter
+  exits non-zero with a message naming the floor and a paste-ready absolute command, and no
+  `SyntaxError`; `pnpm findings:parity:check` passes with no new declaration; and the sibling
+  ancestry probe reports the newly re-pinned `SIBLING_REF` as current.
+* **Found by:** the Korrigio drain session 3c88f139-fa92-485d-ac12-53595ee060da on 2026-09-02,
+  working Korrigio's `f-20260831-17`, whose title names this repo as the second port target. No
+  entry for it existed in this ledger. This repo's working tree was not touched.
