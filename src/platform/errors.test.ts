@@ -8,16 +8,74 @@ import {
 } from "./errors";
 
 describe("normalizeError", () => {
-    test("redacts bearer tokens and local paths", () => {
-        const error = normalizeError(new Error("Bearer abc123 at /home/felix/secret.pgn"));
-        expect(error.message).not.toContain("abc123");
-        expect(error.message).not.toContain("/home/felix");
+    const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+    test("redacts secrets without emitting a literal $1", () => {
+        const bearer = normalizeError(new Error("Authorization: Bearer sk-abc123 rejected"));
+        expect(bearer.message).toBe("Authorization: Bearer [redacted] rejected");
+        expect(bearer.message).not.toContain("$1");
+        expect(bearer.message).not.toContain("sk-abc123");
+
+        const token = normalizeError(new Error("token=xyz expired"));
+        expect(token.message).toBe("token=[redacted] expired");
+        expect(token.message).not.toContain("$1");
+
+        const password = normalizeError(new Error("password: hunter2 failed"));
+        expect(password.message).toBe("password: [redacted] failed");
+        expect(password.message).not.toContain("hunter2");
+
+        const jsonPassword = normalizeError('{"password":"hunter2"}');
+        expect(jsonPassword.message).toBe('{"password":"[redacted]"}');
+        const jsonToken = normalizeError('{"token":"abc"}');
+        expect(jsonToken.message).toBe('{"token":"[redacted]"}');
+    });
+
+    test("redacts filesystem paths and preserves chess notation", () => {
+        const unix = normalizeError(new Error("failed at /home/felix/secret.pgn"));
+        expect(unix.message).toBe("failed at [path]");
+
+        const windows = normalizeError(new Error("failed at C:\\Users\\felix\\secret.pgn"));
+        expect(windows.message).toBe("failed at [path]");
+
+        const windowsForward = normalizeError(new Error("failed at C:/Users/felix/secret.pgn"));
+        expect(windowsForward.message).toBe("failed at [path]");
+
+        const unc = normalizeError(new Error("failed at \\\\server\\share\\file.pgn"));
+        expect(unc.message).toBe("failed at [path]");
+
+        const home = normalizeError(new Error("failed at ~/secret.pgn"));
+        expect(home.message).toBe("failed at [path]");
+
+        const rootFile = normalizeError(new Error("failed at /secret.pgn"));
+        expect(rootFile.message).toBe("failed at [path]");
+
+        const fen = normalizeError(new Error(`Invalid FEN: ${START_FEN}`));
+        expect(fen.message).toBe(`Invalid FEN: ${START_FEN}`);
+
+        const draw = normalizeError(new Error("1/2-1/2 result malformed"));
+        expect(draw.message).toBe("1/2-1/2 result malformed");
+    });
+
+    test("classifies from the unredacted source", () => {
+        const error = normalizeError(new Error("open /home/user/missing.pgn"));
+        expect(error.category).toBe("not-found");
+        expect(error.message).toBe("open [path]");
+        expect(error.message).not.toContain("/home/user");
+    });
+
+    test("omits diagnostic", () => {
+        expect(normalizeError(new Error("native failed")).diagnostic).toBeUndefined();
     });
 
     test("handles circular non-error values", () => {
         const circular: { self?: unknown } = {};
         circular.self = circular;
         expect(normalizeError(circular).message).toContain("[circular]");
+    });
+
+    test("does not throw on empty values", () => {
+        expect(normalizeError(undefined).category).toBe("unexpected");
+        expect(normalizeError(() => undefined).category).toBe("unexpected");
     });
 
     // Each cause below is worded so that some *other* branch would claim it if
@@ -33,12 +91,53 @@ describe("normalizeError", () => {
         "Partially removed: 1 entries were deleted before failing: permission denied",
         "Committed but durability uncertain: invalid argument",
     ])("categorizes destructive changes that could not be fully reported", (message) => {
-        expect(normalizeError(new Error(message)).category).toBe("applied-despite-error");
+        const error = normalizeError(new Error(message));
+        expect(error.category).toBe("applied-despite-error");
+        expect(error.message).toBe(message);
     });
 
-    test("categorizes cancellation and keeps it silent", () => {
+    test("keeps I/O in a partial-removal cause", () => {
+        const error = normalizeError(
+            new Error("Partially removed: 1 entries were deleted before failing: I/O failure"),
+        );
+        expect(error.category).toBe("applied-despite-error");
+        expect(error.message).toBe(
+            "Partially removed: 1 entries were deleted before failing: I/O failure",
+        );
+    });
+
+    test.each([
+        ["Engine timeout: waiting for readyok", "unexpected"],
+        ["connection aborted", "network"],
+        ["network failure", "network"],
+        ["Cancellation", "cancelled"],
+        ["Analysis cancelled", "cancelled"],
+        ["Game not found: abc", "not-found"],
+        ["Missing reference database", "not-found"],
+        ["No moves found", "not-found"],
+        ["No opening found", "not-found"],
+        ["No puzzles", "not-found"],
+        ["Invalid input: bad tag", "validation"],
+        ["Invalid color: green", "validation"],
+        ["Conflict: path already exists", "validation"],
+        ["Resource limit: depth exceeded", "validation"],
+        ["Game not in progress", "validation"],
+        ["Not human's turn", "validation"],
+        ["Not engine's turn", "validation"],
+        ["Players aren't the same. They have played against each other", "validation"],
+        ["OAuth failure: denied", "permission"],
+        ["Credential operation failed", "permission"],
+        ["Credential operation requires recovery", "permission"],
+    ] as const)("maps owned Display %s to %s", (message, category) => {
+        expect(normalizeError(new Error(message)).category).toBe(category);
+        expect(normalizeError(message).category).toBe(category);
+        expect(normalizeError(message).message).toBe(message);
+    });
+
+    test("categorizes cancellation and keeps it silent for Error and string IPC", () => {
         expect(normalizeError(new Error("Cancellation")).category).toBe("cancelled");
         expect(errorUnlessCancelled(new Error("Cancellation"))).toBeNull();
+        expect(errorUnlessCancelled("Cancellation")).toBeNull();
     });
 
     test("keeps a real failure visible", () => {
@@ -46,10 +145,23 @@ describe("normalizeError", () => {
             category: "permission",
         });
         expect(errorUnlessCancelled(new Error("connection aborted"))).toMatchObject({
-            category: "cancelled",
+            category: "network",
             message: "connection aborted",
         });
         expect(errorUnlessCancelled(new Error("operation timeout"))).not.toBeNull();
+        expect(errorUnlessCancelled("Engine timeout: waiting for readyok")).toMatchObject({
+            category: "unexpected",
+            message: "Engine timeout: waiting for readyok",
+        });
+    });
+
+    test("returns an already-normalised AppError and TauriCommandError details", () => {
+        const existing = { category: "validation" as const, message: "Conflict: x" };
+        expect(normalizeError(existing)).toBe(existing);
+
+        const details = { category: "network" as const, message: "connection aborted" };
+        const wrapped = Object.assign(new Error(details.message), { details });
+        expect(normalizeError(wrapped)).toBe(details);
     });
 });
 

@@ -54,6 +54,7 @@ export const tauri: TauriCommands = new Proxy(commands, {
                 const result = await command(...args);
                 return isCommandResult(result) ? unwrapCommand(result) : result;
             } catch (error) {
+                if (error instanceof TauriCommandError) throw error;
                 throw new TauriCommandError(error);
             }
         };

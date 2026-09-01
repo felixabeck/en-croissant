@@ -14,9 +14,11 @@ export default function ErrorComponent({ error }: { error: unknown }) {
       <Text>
         <b>{t("Error.Unexpected")}:</b> {normalized.message}
       </Text>
-      {normalized.diagnostic && <Code>{normalized.diagnostic}</Code>}
+      {normalized.diagnostic && normalized.diagnostic !== normalized.message && (
+        <Code>{normalized.diagnostic}</Code>
+      )}
       <Group>
-        {normalized.diagnostic && (
+        {normalized.diagnostic && normalized.diagnostic !== normalized.message && (
           <CopyButton value={normalized.diagnostic}>
             {({ copied, copy }) => (
               <Button color={copied ? "teal" : undefined} onClick={copy}>

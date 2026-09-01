@@ -9,6 +9,7 @@ vi.mock("@/bindings/generated", () => ({
     events: {},
 }));
 
+import { normalizeError } from "./errors";
 import { TauriCommandError, tauri } from "./tauri";
 
 describe("tauri command facade", () => {
@@ -32,5 +33,19 @@ describe("tauri command facade", () => {
         const error = caught as TauriCommandError;
         expect(error.message).not.toContain("secret-value");
         expect(error.message).not.toContain("/home/user");
+        expect(error.message).not.toContain("$1");
+        expect(error.details).toBe(normalizeError(error));
+    });
+
+    test("rethrows an already-normalised TauriCommandError", async () => {
+        const inner = new TauriCommandError("Bearer secret-value at /home/user/private.pgn");
+        mocks.closeSplashscreen.mockRejectedValue(inner);
+        let caught: unknown;
+        try {
+            await tauri.closeSplashscreen();
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBe(inner);
     });
 });
