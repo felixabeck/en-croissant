@@ -1,7 +1,12 @@
 import type { SyncStorage, SyncStringStorage } from "jotai/vanilla/utils/atomWithStorage";
 import { z } from "zod";
-import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
-import { tabStorage } from "./store/tabStorage";
+import { decodeCompressedOrJson, serializeStorageValue } from "./store/debouncedStorage";
+import {
+    createTabStorageQuotaError,
+    persistStorageWriteError,
+    tabStorage,
+} from "./store/tabStorage";
+import { reportPersistError } from "./persistError";
 import { newWorkspaceId, tabSchema, type Tab } from "./workspaceTypes";
 
 export const WORKSPACE_STORAGE_KEY = "workspace";
@@ -106,16 +111,25 @@ export function scrubInvalidLegacyTreeKeys(input: unknown, retainedTabs: readonl
     }
 }
 
-export function readWorkspaceJson(storage: SyncStringStorage, key: string): unknown | null {
+export function readStoredWorkspaceValue(storage: SyncStringStorage, key: string): unknown | null {
     const raw = storage.getItem(key);
     if (raw === null) return null;
-    const decoded = deserializeStorageValue<unknown>(raw);
-    if (decoded !== null) return decoded;
-    try {
-        return JSON.parse(raw) as unknown;
-    } catch {
-        return null;
+    return decodeCompressedOrJson(raw);
+}
+
+function workspaceFromValue(value: unknown): Workspace {
+    const parsed = workspaceInputSchema.safeParse(value);
+    if (!parsed.success) return defaultWorkspace();
+    const tabs = parsed.data.tabs;
+    if (tabs.length === 0) {
+        const first = newTab(new Set());
+        return { version: WORKSPACE_VERSION, tabs: [first], activeTab: first.value };
     }
+    const legacyActive = parsed.data.activeTab;
+    const activeTab = tabs.some((tab) => tab.value === legacyActive)
+        ? legacyActive
+        : tabs[0]!.value;
+    return { version: WORKSPACE_VERSION, tabs, activeTab };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -127,12 +141,12 @@ export function createWorkspaceStorage(storage: SyncStringStorage): SyncStorage<
     return {
         getItem(key, _initialValue) {
             const storedWorkspace = storage.getItem(key);
-            const current = readWorkspaceJson(storage, key);
+            const current = readStoredWorkspaceValue(storage, key);
             const legacy =
                 current ??
                 ({
-                    tabs: readWorkspaceJson(storage, "tabs"),
-                    activeTab: readWorkspaceJson(storage, "activeTab"),
+                    tabs: readStoredWorkspaceValue(storage, "tabs"),
+                    activeTab: readStoredWorkspaceValue(storage, "activeTab"),
                 } as const);
             const plan = planWorkspaceRepair(legacy);
             const stagedCloneIds = plan.cloneTargets.map(({ targetId }) => targetId);
@@ -143,6 +157,7 @@ export function createWorkspaceStorage(storage: SyncStringStorage): SyncStorage<
                 const failedIds = new Set(tabStorage.flush());
                 if (stagedCloneIds.some((id) => failedIds.has(id))) {
                     for (const id of stagedCloneIds) tabStorage.remove(id);
+                    reportPersistError(createTabStorageQuotaError(new Error("clone flush failed")));
                     return plan.unrepairedWorkspace;
                 }
             }
@@ -155,8 +170,9 @@ export function createWorkspaceStorage(storage: SyncStringStorage): SyncStorage<
             if (storedWorkspace !== payload || cleanupPending) {
                 try {
                     storage.setItem(key, payload);
-                } catch {
+                } catch (error) {
                     for (const id of stagedCloneIds) tabStorage.remove(id);
+                    reportPersistError(persistStorageWriteError(error));
                     return plan.unrepairedWorkspace;
                 }
             }
@@ -168,7 +184,11 @@ export function createWorkspaceStorage(storage: SyncStringStorage): SyncStorage<
             return plan.workspace;
         },
         setItem(key, value) {
-            storage.setItem(key, serializeStorageValue(planWorkspaceRepair(value).workspace));
+            try {
+                storage.setItem(key, serializeStorageValue(workspaceFromValue(value)));
+            } catch (error) {
+                reportPersistError(persistStorageWriteError(error));
+            }
         },
         removeItem(key) {
             storage.removeItem(key);

@@ -2,7 +2,7 @@ import { warn } from "@/platform/native";
 import { reportPersistError } from "@/state/persistError";
 import { z } from "zod";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
-import { deserializeStorageValue, serializeStorageValue } from "./debouncedStorage";
+import { decodeCompressedOrJson, serializeStorageValue } from "./debouncedStorage";
 
 const TREE_STORAGE_VERSION = 1;
 const DEBOUNCE_MS = 300;
@@ -195,6 +195,16 @@ export function createTabStorageQuotaError(cause: unknown): Error {
     );
 }
 
+export function persistStorageWriteError(cause: unknown): Error {
+    const name =
+        typeof cause === "object" && cause !== null && "name" in cause
+            ? String((cause as { name: unknown }).name)
+            : "";
+    if (name === "QuotaExceededError") return createTabStorageQuotaError(cause);
+    if (cause instanceof Error) return cause;
+    return new Error(cause instanceof DOMException ? cause.message : String(cause), { cause });
+}
+
 export function parseLegacyTreeJson(value: string): unknown | null {
     try {
         return JSON.parse(value) as unknown;
@@ -204,8 +214,8 @@ export function parseLegacyTreeJson(value: string): unknown | null {
 }
 
 export function decodeLegacyOrCompressed(value: string): StoredTree | null {
-    const compressed = deserializeStorageValue<unknown>(value);
-    const decoded = compressed ?? parseLegacyTreeJson(value);
+    const decoded = decodeCompressedOrJson(value);
+    if (decoded === null) return null;
     const envelope = z
         .object({ version: z.number().int().nonnegative(), state: z.unknown() })
         .safeParse(decoded);
@@ -297,7 +307,7 @@ export class TabStorageRepository {
             } catch (error) {
                 failedTabIds.push(tabId);
                 void warn(`Could not persist tree storage ${tabId}: ${String(error)}`);
-                if (notify) reportPersistError(createTabStorageQuotaError(error));
+                if (notify) reportPersistError(persistStorageWriteError(error));
             }
         }
         return failedTabIds;

@@ -6,7 +6,7 @@ type Subscribe<T> = (listener: (event: T) => void) => Promise<Unlisten>;
 type ListenerErrorHandler = (error: AppError) => void;
 
 export type TauriListenerOptions = {
-    /** Called only while the owner is mounted; late cancellation is intentionally silent. */
+    /** Called only while the owner is mounted; errors after abort are silent. */
     onError: ListenerErrorHandler;
 };
 

@@ -474,6 +474,21 @@ test("rewrite and deferred flush retain recoverable state when storage temporari
     expect(storage.read("flush-failure")).not.toBeNull();
 });
 
+test("live debounce reports a non-quota write failure without the session-full message", () => {
+    const securityError = new DOMException("denied", "SecurityError");
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+        throw securityError;
+    });
+
+    storage.write("security-failure", { version: 0, state: defaultTree() });
+    vi.advanceTimersByTime(300);
+
+    const reported = persistError.reportPersistError.mock.calls[0][0] as Error;
+    expect(reported.message).not.toContain("session storage is full");
+    expect(reported === securityError || reported.cause === securityError).toBe(true);
+    setItem.mockRestore();
+});
+
 test("live debounce reports quota failure with the seed error and retains pending state", () => {
     const quotaError = new DOMException("quota", "QuotaExceededError");
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {

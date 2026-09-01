@@ -16,3 +16,14 @@ export function deserializeStorageValue<T>(stored: string): T | null {
         return null;
     }
 }
+
+/** Compressed first; pretty JSON is the legacy fallback. */
+export function decodeCompressedOrJson(stored: string): unknown | null {
+    const compressed = deserializeStorageValue<unknown>(stored);
+    if (compressed !== null) return compressed;
+    try {
+        return JSON.parse(stored) as unknown;
+    } catch {
+        return null;
+    }
+}

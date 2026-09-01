@@ -169,4 +169,19 @@ describe("useTauriListener", () => {
 
     expect(signal?.aborted).toBe(true);
   });
+
+  test("does not dispatch a late event after unmount", async () => {
+    let listener!: (value: string) => void;
+    const onEvent = vi.fn();
+    const subscribe = vi.fn(async (callback: (value: string) => void) => {
+      listener = callback;
+      return vi.fn();
+    });
+    await act(async () =>
+      root.render(<Probe subscribe={subscribe} onEvent={onEvent} onError={vi.fn()} />),
+    );
+    await act(async () => root.unmount());
+    await act(async () => listener("late"));
+    expect(onEvent).not.toHaveBeenCalled();
+  });
 });

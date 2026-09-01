@@ -1,5 +1,9 @@
 import { expect, test } from "vitest";
-import { deserializeStorageValue, serializeStorageValue } from "../../state/store/debouncedStorage";
+import {
+    decodeCompressedOrJson,
+    deserializeStorageValue,
+    serializeStorageValue,
+} from "../../state/store/debouncedStorage";
 
 test("serialize/deserialize round-trips a storage value losslessly", () => {
     const value = {
@@ -45,4 +49,10 @@ test("compressed payload is smaller than raw JSON for a large tree", () => {
 test("deserialize returns null for empty or corrupt input instead of throwing", () => {
     expect(deserializeStorageValue("")).toBeNull();
     expect(deserializeStorageValue("not-valid-lz-data")).toBeNull();
+});
+
+test("decodeCompressedOrJson reads compressed values and pretty JSON", () => {
+    expect(decodeCompressedOrJson(serializeStorageValue({ ok: true }))).toEqual({ ok: true });
+    expect(decodeCompressedOrJson(JSON.stringify({ ok: true }))).toEqual({ ok: true });
+    expect(decodeCompressedOrJson("{")).toBeNull();
 });

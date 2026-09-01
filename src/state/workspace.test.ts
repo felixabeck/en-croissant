@@ -5,13 +5,15 @@ import { tabStorage } from "./store/tabStorage";
 import {
     createWorkspaceStorage,
     defaultWorkspace,
-    readWorkspaceJson,
+    readStoredWorkspaceValue,
     scrubInvalidLegacyTreeKeys,
     WORKSPACE_STORAGE_KEY,
 } from "./workspace";
 
 const native = vi.hoisted(() => ({ warn: vi.fn() }));
+const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("@/platform/native", () => native);
+vi.mock("./persistError", () => persistError);
 
 const legacyTab = {
     name: "Legacy",
@@ -31,6 +33,7 @@ function readStoredWorkspace() {
 
 afterEach(() => {
     native.warn.mockClear();
+    persistError.reportPersistError.mockClear();
     vi.restoreAllMocks();
 });
 
@@ -114,7 +117,7 @@ test("rolls back staged clones and preserves legacy storage when the envelope wr
     const originalSetItem = Storage.prototype.setItem;
     const setItem = vi
         .spyOn(Storage.prototype, "setItem")
-        .mockImplementation(function (key, value) {
+        .mockImplementation(function (this: Storage, key, value) {
             if (key === WORKSPACE_STORAGE_KEY) {
                 throw new DOMException("quota", "QuotaExceededError");
             }
@@ -135,6 +138,7 @@ test("rolls back staged clones and preserves legacy storage when the envelope wr
         expect(stagedCloneIds).toHaveLength(1);
         expect(sessionStorage.getItem(stagedCloneIds[0]!)).toBeNull();
         expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+        expect(persistError.reportPersistError).toHaveBeenCalledOnce();
     } finally {
         setItem.mockRestore();
     }
@@ -151,7 +155,7 @@ test("successfully retries migration after a failed envelope write", () => {
     const originalSetItem = Storage.prototype.setItem;
     const failedWrite = vi
         .spyOn(Storage.prototype, "setItem")
-        .mockImplementation(function (key, value) {
+        .mockImplementation(function (this: Storage, key, value) {
             if (key === WORKSPACE_STORAGE_KEY) {
                 throw new DOMException("quota", "QuotaExceededError");
             }
@@ -335,9 +339,9 @@ test("workspace JSON parsing and legacy-tree scrubbing distinguish malformed val
     sessionStorage.clear();
     sessionStorage.setItem("valid", JSON.stringify({ ok: true }));
     sessionStorage.setItem("invalid", "{");
-    expect(readWorkspaceJson(sessionStorage, "missing")).toBeNull();
-    expect(readWorkspaceJson(sessionStorage, "valid")).toEqual({ ok: true });
-    expect(readWorkspaceJson(sessionStorage, "invalid")).toBeNull();
+    expect(readStoredWorkspaceValue(sessionStorage, "missing")).toBeNull();
+    expect(readStoredWorkspaceValue(sessionStorage, "valid")).toEqual({ ok: true });
+    expect(readStoredWorkspaceValue(sessionStorage, "invalid")).toBeNull();
 
     const retained = { ...legacyTab, value: crypto.randomUUID() };
     const orphan = "orphan";
@@ -370,7 +374,7 @@ test("workspace JSON parsing and legacy-tree scrubbing distinguish malformed val
     expect(() => scrubInvalidLegacyTreeKeys(nonRecordWithThrowingTabs, [retained])).not.toThrow();
 });
 
-test("setItem repairs IDs and removeItem removes only its requested envelope", () => {
+test("setItem preserves tab IDs so a failed getItem migration can retry", () => {
     sessionStorage.clear();
     const storage = workspaceStorage();
     storage.setItem(WORKSPACE_STORAGE_KEY, {
@@ -379,9 +383,39 @@ test("setItem repairs IDs and removeItem removes only its requested envelope", (
         activeTab: legacyTab.value,
     });
     const stored = readStoredWorkspace() as { tabs: Array<{ value: string }>; activeTab: string };
-    expect(stored.tabs[0].value).toMatch(/^[0-9a-f]{8}-/i);
-    expect(stored.activeTab).toBe(stored.tabs[0].value);
+    expect(stored.tabs[0].value).toBe(legacyTab.value);
+    expect(stored.activeTab).toBe(legacyTab.value);
 
     storage.removeItem(WORKSPACE_STORAGE_KEY);
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+});
+
+test("rolls back staged clones when clone flush fails and leaves legacy trees", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem("tabs", JSON.stringify([legacyTab]));
+    sessionStorage.setItem("activeTab", JSON.stringify(legacyTab.value));
+    sessionStorage.setItem(
+        legacyTab.value,
+        serializeStorageValue({ version: 0, state: defaultTree() }),
+    );
+    const originalSetItem = Storage.prototype.setItem;
+    const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+            if (key !== legacyTab.value && key !== "tabs" && key !== "activeTab") {
+                throw new DOMException("quota", "QuotaExceededError");
+            }
+            return originalSetItem.call(this, key, value);
+        });
+
+    try {
+        const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+        expect(workspace.tabs).toEqual([legacyTab]);
+        expect(tabStorage.read(legacyTab.value)).not.toBeNull();
+        expect(sessionStorage.getItem("tabs")).not.toBeNull();
+        expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
+        expect(persistError.reportPersistError).toHaveBeenCalledOnce();
+    } finally {
+        setItem.mockRestore();
+    }
 });

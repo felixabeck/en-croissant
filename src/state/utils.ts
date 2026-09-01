@@ -7,7 +7,11 @@ import type {
     SyncStringStorage,
 } from "jotai/vanilla/utils/atomWithStorage";
 import { z } from "zod";
-import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
+import {
+    decodeCompressedOrJson,
+    deserializeStorageValue,
+    serializeStorageValue,
+} from "./store/debouncedStorage";
 
 export function createZodStorage<Value>(
     schema: z.ZodType<Value>,
@@ -83,9 +87,11 @@ export function createAsyncZodStorage<Input, Output>(
                 if (storedValue === null) {
                     return initialValue;
                 }
-                const decodedValue = deserializeStorageValue<unknown>(storedValue);
-                const isLegacy = decodedValue === null;
-                const rawValue = isLegacy ? JSON.parse(storedValue) : decodedValue;
+                const rawValue = decodeCompressedOrJson(storedValue);
+                if (rawValue === null) {
+                    throw new Error("unreadable persisted value");
+                }
+                const isLegacy = deserializeStorageValue(storedValue) === null;
                 const res = schema.safeParse(rawValue);
                 if (res.success) {
                     if (isLegacy || !equal(rawValue, res.data)) {
