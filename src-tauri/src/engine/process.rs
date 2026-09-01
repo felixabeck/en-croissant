@@ -657,12 +657,28 @@ impl EngineSupervisor {
     }
 
     pub async fn terminate_tab(&self, tab: &str) -> Result<(), Error> {
-        self.terminate_matching(|key, _| key.tab == tab).await
+        // Same publication barrier as `terminate_all` / `retire_engine`: wait
+        // for in-flight `replace_handle` inserts before scanning, then drain
+        // until this tab has no actors.
+        drop(self.registration.lock().await);
+        let mut failures = Vec::new();
+        loop {
+            match self.terminate_matching(|key, _| key.tab == tab).await {
+                Ok(()) => {}
+                Err(error) => failures.push(error.to_string()),
+            }
+            if !self.actors.iter().any(|entry| entry.key().tab == tab) {
+                break;
+            }
+        }
+        aggregate_shutdown_failures(failures)
     }
 
     pub async fn retire_engine(&self, engine_id: String) -> Result<(), Error> {
         validate_uci_text("engine", &engine_id)?;
         self.with_retired(|retired| retired.insert(engine_id.clone()));
+        // Synchronize with the final publication check in `replace_handle`.
+        // Once this barrier is crossed, a retired id cannot be inserted.
         drop(self.registration.lock().await);
         let mut failures = Vec::new();
         loop {

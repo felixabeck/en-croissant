@@ -140,6 +140,20 @@ test("a delayed successful stop cannot start a search after unmount", async () =
   expect(mocks.getBestMoves).not.toHaveBeenCalled();
 });
 
+test("a successful stop starts a replacement search", async () => {
+  mocks.stopEngine.mockResolvedValue(undefined);
+  mocks.getBestMoves.mockResolvedValue([0, []]);
+
+  await render();
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(mocks.getBestMoves).toHaveBeenCalled();
+  await act(async () => root.unmount());
+});
+
 test("a delayed stop from a stale request cannot start a replacement search", async () => {
   const resolvers: Array<() => void> = [];
   mocks.stopEngine.mockImplementation(

@@ -157,3 +157,17 @@ test("a rejected kill leaves enabled state unchanged and notifies", async () => 
   expect(setSettings).not.toHaveBeenCalled();
   expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
 });
+
+test("a successful kill disables the engine", async () => {
+  mocks.killEngine.mockResolvedValue(undefined);
+  const setSettings = await render();
+
+  await act(async () => {
+    (host.querySelector('[aria-label="Board.Analysis.KillEngine"]') as HTMLButtonElement).click();
+    await Promise.resolve();
+  });
+
+  expect(setSettings).toHaveBeenCalled();
+  const update = setSettings.mock.calls[0][0] as (value: Settings) => Settings;
+  expect(update(settings).enabled).toBe(false);
+});

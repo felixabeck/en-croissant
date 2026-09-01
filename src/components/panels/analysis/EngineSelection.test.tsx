@@ -96,3 +96,16 @@ test("a rejected stop leaves the engine loaded and notifies", async () => {
   expect(mocks.setEngines).not.toHaveBeenCalled();
   expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
 });
+
+test("a successful stop flips loaded state", async () => {
+  mocks.stopEngine.mockResolvedValue(undefined);
+  const EngineSelection = (await import("./EngineSelection")).default;
+
+  await act(async () => root.render(<EngineSelection />));
+  await act(async () => {
+    host.querySelector("button")!.click();
+    await Promise.resolve();
+  });
+
+  expect(mocks.setEngines).toHaveBeenCalled();
+});

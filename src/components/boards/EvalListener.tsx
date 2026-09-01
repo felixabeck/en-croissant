@@ -274,9 +274,10 @@ function EngineListener({
             });
             setProgress(progress);
           }
-        } catch {
-          // Engine errors are surfaced by their operation/UI path; stale
-          // failures must never clear or overwrite newer analysis.
+        } catch (error) {
+          if (mounted.current && stillCurrent()) {
+            notifyUnlessCancelled(t("Common.Error"), error);
+          }
         }
       };
       runSearch().catch((error) => notifyUnlessCancelled(t("Common.Error"), error));

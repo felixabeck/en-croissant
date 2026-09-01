@@ -653,6 +653,8 @@ pub async fn cancel_analysis(id: String, state: tauri::State<'_, AppState>) -> R
 
 #[tauri::command]
 #[specta::specta]
+// Specta commands are a flat parameter list; grouping them would change the
+// generated invoke contract (`engineId` is a new required argument).
 #[allow(clippy::too_many_arguments)]
 pub async fn analyze_game(
     id: String,
@@ -836,16 +838,22 @@ pub async fn analyze_game(
             extra_options: report_options.clone(),
         };
         let mut resolved = {
-            let mut authority = state
-                .pgn_path_authority
-                .lock()
-                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-            resolve_engine_options(
-                authority
-                    .as_mut()
-                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?,
-                &configured_options.extra_options,
-            )?
+            let result = (|| {
+                let mut authority = state
+                    .pgn_path_authority
+                    .lock()
+                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+                resolve_engine_options(
+                    authority.as_mut().ok_or_else(|| {
+                        Error::Conflict("path authority is not initialized".into())
+                    })?,
+                    &configured_options.extra_options,
+                )
+            })();
+            match result {
+                Ok(resolved) => resolved,
+                Err(error) => fail_analysis_progress!(error),
+            }
         };
         for option in &mut resolved {
             if let Some(value) = inherited_values.get(&option.name) {
