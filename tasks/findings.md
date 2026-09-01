@@ -4134,7 +4134,7 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 
 ### Removing a local engine deletes renderer state without terminating its process
 
-* **ID:** f-20260831-11 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-11 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/components/engines/EnginesPage.tsx`, the engine-removal handler; the supervisor
   it does not call is `stopEngine`/`killEngine` in `src/utils/engines.ts` and
   `src-tauri/src/engine/process.rs`.
@@ -4153,9 +4153,11 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 * **Found by:** the `review-engine-protocol` lens (confidence 96 and 99 in two separate rounds)
   during the `native-fs` cluster's plan review and final review, 2026-08-31. Pre-existing.
 
+Handled in `b9250a36`, `7d834f82`, `dc458a78`. `EngineSupervisor::retire_engine` tombstones the application id, barriers on `registration`, and drains every actor whose key or `engine_id` matches, including report analysis (`analyze_game` now records `engine_id`). `EnginesPage` awaits `retireEngine` and always drops `enginesAtom`. Rejected: renderer-only kill loop; one-shot snapshot; matching games by handle (`d-20260901-17`, `d-20260901-20`). Workspace-delete of the binary and `GameManager` children are filed separately.
+
 ### Two engine-settings paths identify engines by display name, and duplicate MultiPV settings are accepted
 
-* **ID:** f-20260831-12 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260831-12 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/components/panels/analysis/EngineSettingsForm.tsx` — the runtime lookups behind
   Sync Settings and Advanced Settings; and `src-tauri/src/chess.rs` — the settings-to-UCI
   translation that accepts a repeated `MultiPV`.
@@ -4176,6 +4178,8 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
   actually sent.
 * **Found by:** the `review-engine-protocol` lens (confidence 95 and 92) over the cumulative diff
   of the `native-fs` cluster, 2026-08-31. Both pre-existing.
+
+Handled in `b9250a36`, `7d834f82`. Settings and advanced navigation look up by `engine.id`. `scoreTypeFamily` is keyed by id; copied output keeps the display name. `set_options` builds one last-wins `to_send` list and derives `real_multipv` from it. Persisted settings collapse the same way. `analyze_game` forces `REPORT_MULTIPV` on extras and inherited values (`d-20260901-19`). Rejected: reject-as-error; first-wins.
 
 ### The default-engine list keys installed state by the mutable, non-unique engine name
 
@@ -4287,12 +4291,14 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 
 ### stopEngine and killEngine rejections are discarded at the call site
 
-* **ID:** f-20260831-19 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260831-19 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/utils/engines.ts` `stopEngine` / `killEngine` (`:165-171`); callers `src/components/boards/EvalListener.tsx` (`void stopEngine`, `:232-270`), `src/components/panels/analysis/EngineSelection.tsx` (`:22`), `src/components/panels/analysis/EngineSettingsForm.tsx` (`killEngine`, `:143`).
 * **Defect:** the wrappers return the facade promise. Callers fire-and-forget, including with `void`, which does not catch. `stop_engine` can return timeout or disconnected errors, which become unhandled rejections while the UI still treats the engine as stopped.
 * **Why it matters:** `.claude/rules/engine-lifecycle.md` — a stop that failed is not a stop. The unwrap removal in `f-20260830-18` did not introduce this; it only made the wrappers pass the already-throwing facade through.
 * **Fix shape:** each caller catches with `errorUnlessCancelled` / `notifyUnlessCancelled` (or a dedicated engine-stop path) and does not mark the engine stopped until the command succeeds. Related: `f-20260831-11` (removing a local engine does not terminate its process) is a different defect, Root `-`.
 * **Found by:** `review-error-handling` over the `f-20260830-12` cumulative diff, 2026-08-31, confidence 97. Different area from the picker work.
+
+Handled in `7d834f82`, `dc458a78`. `EvalListener`, `EngineSelection`, and `EngineSettingsForm` await stop/kill, `notifyUnlessCancelled` on failure, and do not flip `loaded`/`enabled` until success. `stop_engine` reaps a dead actor so retry can spawn. Current `getBestMoves` failures notify. Success-path tests cover the flips.
 
 ---
 
@@ -4300,7 +4306,7 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 
 ### Final child reaping after force-kill is an unbounded `child.wait()`
 
-* **ID:** f-20260831-20 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-20 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/engine/process.rs`, `ChildUciIo::terminate` after `start_kill()` —
   `self.child.wait().await` with no timeout.
 * **Defect:** the graceful `quit` wait is bounded by `deadlines.quit`, but the force-kill path
@@ -4316,6 +4322,8 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
   missing owner.
 * **Found by:** `$push` high-review lenses `n3-adjacent` (confidence 90) and
   `n5-adversarial` (confidence 98) over `685825c0..HEAD`, 2026-08-31.
+
+Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit write, the graceful wait, and the post-kill wait (`EngineDeadlines.kill_reap`, default 2s). A timeout drops the `Child` so `kill_on_drop` can fire. No detached unbounded waiter (`d-20260901-18`). D-state residual is a zombie until app exit.
 
 ---
 
