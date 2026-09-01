@@ -3292,7 +3292,7 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 
 ### The two coverage scripts still duplicate their shared logic, and the new tests exercise the helpers rather than the exporter
 
-* **ID:** f-20260830-46 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-46 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `scripts/coverage-report.mjs:181` (`scopeSignature`), `scripts/coverage-scope.mjs:38`
   (`excludePatterns`), `scripts/rust-branch-coverage.mjs:131` (the diagnostic re-probe),
   `scripts/coverage-report-tests.mjs:333-336`.
@@ -3329,6 +3329,10 @@ records why the checker was built rather than the gap annotated onto `f-20260830
   over the cumulative diff of the `f-20260830-44` build, 2026-08-30. Deferred rather than fixed
   there: the commits under review (`5adc07bc`, `818e7900`) came from a different session working in
   this area at the same time, and this run's own area was fork identity.
+
+* **Handled:** `scopeSignature` now routes exclude through `excludePatterns`. `rust-branch-coverage.mjs` shares `llvmCovExportArgs` between the bulk export and the crash probe, with a main guard so tests can import it. Tests drive the shared builder and the signal diagnostic, and no longer attribute the llvm-cov crash to files with no coverage records.
+* **Commits:** `1c7cc79e`
+* **Rejected:** leaving a second inline exclude normalisation; duplicating the llvm-cov argv in the probe; a fixture-profdata end-to-end export (machine-dependent llvm-cov).
 
 ---
 
@@ -3766,7 +3770,7 @@ regressions — plus the proof that the wiring invokes them.
 
 ### The four new tooling checkers each carry their own directory walker
 
-* **ID:** f-20260830-54 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-54 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 
 `scripts/check-skill-bridges.mjs`, `scripts/check-tool-version-parity.mjs` and
 `scripts/check-gate-routing.mjs` each implement their own recursive repository walk, and each
@@ -3788,13 +3792,17 @@ uses. `review-minimalism` at 94 called it an unrequested escape hatch in a check
 that it is strict. Delete both unless a skill actually needs to exist on one side only — Korrigio
 needs that allowance for `local-ci` and `frontend-design`, this repository currently does not.
 
+* **Handled:** `check-skill-bridges.mjs`, `check-tool-version-parity.mjs`, and `check-gate-routing.mjs` now enumerate through `listWorkingTreeFiles` (`d-20260831-31`). Tool-parity globs go through `coverage-scope.mjs`. Empty `CODEX_ONLY`/`CLAUDE_ONLY` allowlists are deleted. Fixtures git-init so untracked files fail closed.
+* **Commits:** `87ec9c46`
+* **Rejected:** keeping per-checker `readdir` walkers; injectable empty one-side allowlists this repository does not need.
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### Three of the new checkers' suites assert less than their checker promises
 
-* **ID:** f-20260830-55 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-55 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 
 `review-tests` found three places where the tooling added on 2026-08-30 has a suite that would
 stay green while the checker stopped doing its job. The blockers it found alongside these were
@@ -3860,6 +3868,10 @@ each pins a different peer at a different ref with a different declaration set.
 **Correction to the decision reference above.** The decision recorded for this bullet is
 **`d-20260831-15`**, not `d-20260831-13`; the annotation was written before `record-decision`
 allocated the id.
+
+* **Handled:** Gate receipts export `REQUIRED_TOOLS` and `TOOL_PROBES`, pin the exact per-gate lists, and drive a real `frontend-build` fingerprint (`d-20260901-27`). A Codex bridge must positively point at its canonical skill; `Do not read` plus extra instructions under the line cap is now red (`d-20260901-28`). The declared-divergence framework and `EXPECTED_CHANGED_LINES` stay per `d-20260831-15`.
+* **Commits:** `87ec9c46`
+* **Rejected:** driving rustc/cargo/nightly/llvm-cov/playwright-image on every receipt test; substring `includes(pointer)` as the canonical pointer; trimming the parity harness to the digest alone.
 
 ---
 
