@@ -821,6 +821,19 @@ struct LiveSession {
 }
 
 impl LiveSession {
+    async fn terminate_registered_engines(&self) -> Result<(), Error> {
+        let engines = {
+            let controller = self.controller.read().await;
+            controller
+                .white_engine
+                .iter()
+                .chain(controller.black_engine.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        terminate_game_engines(&self.engine_supervisor, engines).await
+    }
+
     async fn shutdown_and_join(&self, join_budget: Duration) -> Result<(), Error> {
         self.controller.write().await.cancel_engine_request();
         let _ = self.shutdown.send(true);
@@ -830,23 +843,23 @@ impl LiveSession {
         };
         if let Some(mut join) = join {
             match tokio::time::timeout(join_budget, &mut join).await {
-                Ok(result) => result
-                    .map_err(|error| Error::Conflict(format!("game loop join failed: {error}")))?,
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let primary = Error::Conflict(format!("game loop join failed: {error}"));
+                    return match self.terminate_registered_engines().await {
+                        Ok(()) => Err(primary),
+                        Err(cleanup) => Err(Error::OperationAndCleanup {
+                            primary: primary.to_string(),
+                            cleanup: cleanup.to_string(),
+                        }),
+                    };
+                }
                 Err(_) => {
                     join.abort();
                     let _ = join.await;
-                    let engines = {
-                        let controller = self.controller.read().await;
-                        controller
-                            .white_engine
-                            .iter()
-                            .chain(controller.black_engine.iter())
-                            .cloned()
-                            .collect::<Vec<_>>()
-                    };
                     let primary =
                         Error::Conflict(format!("game loop did not exit within {join_budget:?}"));
-                    return match terminate_game_engines(&self.engine_supervisor, engines).await {
+                    return match self.terminate_registered_engines().await {
                         Ok(()) => Err(primary),
                         Err(cleanup) => Err(Error::OperationAndCleanup {
                             primary: primary.to_string(),
@@ -927,6 +940,18 @@ async fn spawn_configured_game_engine(
         key,
         generation: supervised.generation,
     })
+}
+
+fn game_side_engine_key(
+    game_id: &str,
+    session: u64,
+    side: &str,
+    engine_id: &str,
+) -> Result<EngineKey, Error> {
+    // Side lives in `tab` so `retire_engine` can match `key.engine` against the
+    // application id. Using `"white"`/`"black"` as the engine field would reap
+    // every white-side game if a user ever stored that string as an engine id.
+    EngineKey::new(format!("game:{game_id}:{session}:{side}"), engine_id.into())
 }
 
 fn resolve_game_engine_executable(
@@ -1078,7 +1103,7 @@ impl GameManager {
                 spawn_configured_game_engine(
                     GameEngineRegistration {
                         supervisor: engine_supervisor.clone(),
-                        key: EngineKey::new(format!("game:{game_id}:{session}"), "white".into())?,
+                        key: game_side_engine_key(&game_id, session, "white", engine_id)?,
                         engine_id: engine_id.clone(),
                         executable_ref: handle.id.clone(),
                     },
@@ -1116,7 +1141,7 @@ impl GameManager {
             match spawn_configured_game_engine(
                 GameEngineRegistration {
                     supervisor: engine_supervisor.clone(),
-                    key: EngineKey::new(format!("game:{game_id}:{session}"), "black".into())?,
+                    key: game_side_engine_key(&game_id, session, "black", engine_id)?,
                     engine_id: engine_id.clone(),
                     executable_ref: handle.id.clone(),
                 },
@@ -2497,7 +2522,8 @@ async fn game_loop(
                         emit_terminal_event(&mut ctrl, &app);
                         break;
                     }
-                    Some(Err(_join_error)) => {
+                    Some(Err(join_error)) => {
+                        error!("Engine task join failed: {join_error}");
                         let mut ctrl = controller.write().await;
                         ctrl.engine_thinking = false;
                         if ctrl.status == GameStatus::Playing {
@@ -2933,7 +2959,7 @@ mod tests {
         engine_id: &str,
         executable_id: &str,
     ) -> RegisteredGameEngine {
-        let key = EngineKey::new(format!("game:{game_id}:{session}"), side.into()).unwrap();
+        let key = game_side_engine_key(game_id, session, side, engine_id).unwrap();
         let (actor, _) = EngineActor::recording_test_actor(&[]);
         let supervised = supervisor
             .replace_handle(
@@ -3040,7 +3066,7 @@ mod tests {
             PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap(),
         ));
         let supervisor = Arc::new(EngineSupervisor::default());
-        let key = EngineKey::new("game:game-id:9".into(), "white".into()).unwrap();
+        let key = game_side_engine_key("game-id", 9, "white", "application-engine-id").unwrap();
         let registration = tokio::spawn({
             let supervisor = supervisor.clone();
             let key = key.clone();
@@ -3102,10 +3128,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retiring_an_engine_named_white_does_not_reap_white_side_games() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let white = register_test_game_engine(
+            &supervisor,
+            "game",
+            5,
+            "white",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "handle-a",
+        )
+        .await;
+        supervisor.retire_engine("white".into()).await.unwrap();
+        assert!(supervisor.get_exact(&white.key).is_some());
+        supervisor
+            .terminate_exact(&white.key, white.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn disconnected_registered_game_actor_returns_a_log_error() {
         let manager = GameManager::new();
         let supervisor = Arc::new(EngineSupervisor::default());
-        let key = EngineKey::new("game:game:4".into(), "white".into()).unwrap();
+        let key = game_side_engine_key("game", 4, "white", "engine-a").unwrap();
         let (actor, _) = EngineActor::recording_test_actor(&[]);
         actor.terminate().await.unwrap();
         let supervised = supervisor

@@ -38,7 +38,6 @@ const MAX_LOG_BYTES: usize = 512 * 1024;
 const MAX_ENGINE_LINE_BYTES: usize = 64 * 1024;
 const MAX_ENGINE_STDERR_BYTES: usize = 512 * 1024;
 const MAX_RETIRED_ENGINE_IDS: usize = 4096;
-#[cfg_attr(not(test), allow(dead_code))]
 const MAX_RETIRED_PATH_REFS: usize = 4096;
 /// Join budget for the stderr drain after `io.terminate` returns. A stuck
 /// drain is then aborted so `terminate` cannot stall on a logging task.
@@ -474,13 +473,11 @@ enum EngineCommand {
 pub struct SupervisedEngine {
     pub generation: u64,
     pub engine_id: String,
-    #[cfg_attr(not(test), allow(dead_code))]
     pub executable: PathRef,
     pub actor: Arc<EngineActor>,
     pub cancelled: Arc<std::sync::atomic::AtomicBool>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Default)]
 struct RetiredExecutables {
     order: VecDeque<PathRef>,
@@ -521,10 +518,11 @@ impl RetiredEngineIds {
     }
 }
 
-/// Owns the registry boundary for interactive and report engines. Replacement
-/// removes exactly one opaque key, shuts down that actor, then publishes the
-/// new generation. Retirement reaps every actor owned by an application engine
-/// id and prevents that id from publishing again while its tombstone is kept.
+/// Owns the registry boundary for interactive, report, config-probe, and game
+/// engines. Replacement removes exactly one opaque key, shuts down that actor,
+/// then publishes the new generation. `retire_engine` reaps every actor owned
+/// by an application engine id. `retire_executables` tombstones PathRefs and
+/// terminates matching actors without retiring the application id.
 #[derive(Default)]
 pub struct EngineSupervisor {
     next_generation: AtomicU64,
@@ -765,7 +763,6 @@ impl EngineSupervisor {
         aggregate_shutdown_failures(failures)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn retire_executables(&self, executables: Vec<PathRef>) -> Result<(), Error> {
         if executables.is_empty() {
             return Ok(());
