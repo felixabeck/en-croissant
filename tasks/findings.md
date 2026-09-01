@@ -3332,7 +3332,7 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 
 ### The native menu tree in `__root.tsx` has no test at all, in either platform variant
 
-* **ID:** f-20260830-47 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-47 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/routes/__root.tsx:141-320` — `appMenu`, the macOS Application menu, the non-macOS
   Help menu, and the `useMemo` dependency arrays that rebuild them.
 * **Defect:** nothing exercises menu construction. `src/index.test.tsx` mocks `App` entirely, and the
@@ -3355,6 +3355,9 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 * **Found by:** `review-tests` (97) over the cumulative diff of the `f-20260830-44` build,
   2026-08-30. Deferred rather than fixed there: extracting the menu derivation is a refactor of a
   file that run only edited to delete an entry from, and it wants its own plan.
+
+* **Handled:** extracted `buildAppMenuTree` and the shared `MenuGroup` types to `src/routes/-appMenu.ts`. Both platform variants are unit-tested (Exit/About on non-macOS; About/Quit on macOS). Menu install no longer uses SWR; `installAppMenuSurface` serializes runs, checks generation after every await, and notifies through `errorUnlessCancelled`. Menu/window-action rejections are caught. Commit `c69d7f8a`.
+* **Rejected:** mounting RootLayout in jsdom as the tree test; hiding Linux Title Bar; keeping TopBar alongside native GTK menus.
 
 ---
 
@@ -3408,7 +3411,7 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 
 ### Choosing the native title bar on Linux removes every menu, including the only route to Exit and About
 
-* **ID:** f-20260830-49 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-49 · **Status:** rejected · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/routes/__root.tsx:307-318` (the decoration/menu branch), `:328-333` (the header
   branch), `:343` (`{!isNative && ...}` around `TopBar`), `src/state/atoms.ts:340` (`nativeBarAtom`),
   `src/components/settings/SettingsPage.tsx:420-431` (the Title Bar selector).
@@ -3465,6 +3468,12 @@ records why the checker was built rather than the gap annotated onto `f-20260830
   before running that check** — this entry has already cost one false attribution by skipping it.
 * **Status left `open` deliberately**, because the check is cheap and the answer is genuinely
   unknown, not because the defect is established.
+
+* **Rejected as not a defect.** Measured 2026-09-01 on tuxedo-atlas: with Title Bar = Native, AT-SPI shows a GTK menu bar containing File (New Tab, Open File, Exit), View, Help, and About, plus native window controls. The page-level TopBar is correctly suppressed. About is reachable; the GPL-3 §5(a) notice is not trapped. The original filing attributed a Native setting to Felix that he did not have; the correction already asked for this check before any surface change.
+* **Evidence:** throwaway `kwin_wayland --virtual` + `tauri-driver` against `src-tauri/target/release/en-croissant`. After `localStorage.native-bar=true` and refresh, in-page File/View/Help and Close-window controls were gone; AT-SPI dump listed `menu item:About` under Help.
+* **Related commit:** `c69d7f8a` (menu extract and install-effect guards; no Linux-always-TopBar change).
+
+* **Why rejected:** GTK does render `setAsAppMenu` on Linux. Measured 2026-09-01 on tuxedo-atlas: Title Bar = Native installs a GTK menu bar with File, View, Help, and About, plus native window controls. The page-level TopBar is suppressed as designed. About is reachable. This is not a defect.
 
 ---
 
