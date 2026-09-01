@@ -1870,7 +1870,7 @@ own decision.
 
 ### The renderer's error redaction emits a literal `$1` and destroys FENs, SANs and PGN results
 
-* **ID:** f-20260830-16 · **Status:** open · **Area:** bindings-ipc · **Root:** platform-error-redaction · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-16 · **Status:** handled · **Area:** bindings-ipc · **Root:** platform-error-redaction · **Entry:** build · **Blocked:** none
 * **Where:** `src/platform/errors.ts:16-20` (`SECRET_PATTERN`, `PATH_PATTERN`, `redact`).
 * **Defect:** two independent bugs in one function, both reproduced by evaluating the shipped
   regexes directly against the shipped replacement strings.
@@ -1901,6 +1901,11 @@ own decision.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30 — the first read of
   `src/platform/` by a model outside the run that produced it. Reproduced by evaluating the
   regexes out of the file rather than by inspection.
+
+* **Handled 2026-09-01.** `redact` uses a callback for secrets (no literal `$1`), shields FEN boards and `1/2-1/2` before path scan, and only then redacts Windows/UNC/`~/`/Unix filesystem paths. Classification runs on the unredacted source; generated IPC strings are used as-is. Paths with spaces, long root-file extensions, and `http(s)://` URLs are covered. `diagnostic` is omitted.
+* **Commits:** `838b7104`, `34a8be0c`
+* **Rejected:** deleting `PATH_PATTERN`; classifying after redaction; putting the unredacted source in `diagnostic`.
+* **Decisions:** d-20260901-33 redaction vs chess notation.
 
 ---
 
@@ -2377,7 +2382,7 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
 
 ### The error taxonomy collapses distinct backend failures, and `diagnostic` is a byte-identical copy of the message it is meant to explain
 
-* **ID:** f-20260830-28 · **Status:** open · **Area:** frontend-ui · **Root:** platform-error-redaction · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-28 · **Status:** handled · **Area:** frontend-ui · **Root:** platform-error-redaction · **Entry:** build · **Blocked:** none
 * **Where:** `src/platform/errors.ts:57-73`, against the real literals in `src-tauri/src/error.rs:93,101,104,113`;
   rendered at `src/components/ErrorComponent.tsx:17-20`; bypassed at `src/routes/__root.tsx:100-104,115-120`.
 * **Defect 1 — substring matching mis-routes live variants.** Verified by running `normalizeError`
@@ -2408,13 +2413,18 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30, verified by executing
   `normalizeError` against the real Rust literals under vitest.
 
+* **Handled 2026-09-01.** Owned `#[error]` prefixes from `error.rs` are matched before generic English words. `Engine timeout:` is `unexpected`, `connection aborted` is `network`, Conflict/ResourceLimit/turn-state strings are `validation`, credential/OAuth failures are `permission`, missing-resource strings are `not-found`. No new `AppErrorCategory`. `ErrorComponent` no longer presents a byte-identical diagnostic.
+* **Commits:** `838b7104`, `34a8be0c`
+* **Rejected:** a Specta `Error` type (`f-20260830-08` / `d-20260830-05`); adding categories that ConfirmModal interpolates into missing locale keys (`f-20260830-11`).
+* **Decisions:** d-20260901-34 owned prefixes on existing categories.
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### The already-normalised error is thrown away and recomputed at seven sites, and a destructive-operation guard survives only by accident
 
-* **ID:** f-20260830-29 · **Status:** open · **Area:** frontend-ui · **Root:** platform-error-redaction · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-29 · **Status:** handled · **Area:** frontend-ui · **Root:** platform-error-redaction · **Entry:** build · **Blocked:** none
 * **Where:** `src/platform/tauri.ts:17-25` (`TauriCommandError.details`), and the seven consumers
   `SettingsPage.tsx:144`, `ConfirmModal.tsx:11`, `FilesPage.tsx:336`, `AddPuzzle.tsx:41,107`,
   `Puzzles.tsx:425`, `ErrorComponent.tsx:9`.
@@ -2436,6 +2446,11 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
   re-normalising; keep `normalizeError` for the genuinely unknown-shaped case.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. Idempotence of the two
   load-bearing literals was measured, not assumed.
+
+* **Handled 2026-09-01.** `normalizeError` returns an `AppError` unchanged and returns `TauriCommandError.details` when present. The command proxy rethrows an already-wrapped `TauriCommandError` instead of wrapping twice. Consumers keep calling `normalizeError`.
+* **Commits:** `838b7104`, `34a8be0c`
+* **Rejected:** rewriting the seven call sites to read `.details`.
+* **Decisions:** d-20260901-35 idempotent normalizeError and omitted diagnostic.
 
 ---
 
