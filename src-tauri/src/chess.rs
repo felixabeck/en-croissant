@@ -28,8 +28,9 @@ use vampirc_uci::{
 use crate::{
     db::{is_position_in_db, GameQuery, PositionQueryJs},
     engine::{
-        parse_fen_and_apply_moves, resolve_engine_options, EngineActor, EngineDeadlines, EngineKey,
-        EngineLog, EngineOption, EngineRequestId, GoMode, ResolvedEngineOption,
+        parse_fen_and_apply_moves, resolve_engine_options, spawn_registered, EngineActor,
+        EngineDeadlines, EngineKey, EngineLog, EngineOption, EngineRequestId, GoMode,
+        ResolvedEngineOption,
     },
     error::Error,
     infra::path_authority::{DatabaseHandle, EngineExecutable, EngineHandle, PathOperation},
@@ -68,23 +69,39 @@ fn resolve_engine_executable(
 }
 
 impl EngineProcess {
-    async fn new(executable: EngineExecutable) -> Result<Self, Error> {
-        let base =
-            Arc::new(EngineActor::spawn_initialized(executable, EngineDeadlines::default()).await?);
-        Ok(Self {
-            base,
-            last_depth: 0,
-            best_moves: Vec::new(),
-            last_best_moves: Vec::new(),
-            last_progress: 0.0,
-            options: EngineOptions::default(),
-            resource_leases: Vec::new(),
-            real_multipv: 0,
-            go_mode: GoMode::Infinite,
-            running: false,
-            request_id: None,
-            start: Instant::now(),
-        })
+    async fn new(
+        supervisor: Arc<crate::engine::EngineSupervisor>,
+        key: EngineKey,
+        executable: EngineExecutable,
+        engine_id: String,
+        executable_ref: crate::infra::path_authority::PathRef,
+    ) -> Result<(Self, crate::engine::SupervisedEngine), Error> {
+        let (supervised, ()) = spawn_registered(
+            supervisor,
+            key,
+            executable,
+            engine_id,
+            executable_ref,
+            |actor| async move { actor.init_uci().await },
+        )
+        .await?;
+        Ok((
+            Self {
+                base: supervised.actor.clone(),
+                last_depth: 0,
+                best_moves: Vec::new(),
+                last_best_moves: Vec::new(),
+                last_progress: 0.0,
+                options: EngineOptions::default(),
+                resource_leases: Vec::new(),
+                real_multipv: 0,
+                go_mode: GoMode::Infinite,
+                running: false,
+                request_id: None,
+                start: Instant::now(),
+            },
+            supervised,
+        ))
     }
 
     async fn set_option<T>(&mut self, name: &str, value: T) -> Result<(), Error>
@@ -202,13 +219,6 @@ impl EngineProcess {
         self.request_id = Some(self.base.start_search(mode).await?);
         self.running = true;
         self.start = Instant::now();
-        Ok(())
-    }
-
-    pub(crate) async fn kill(&mut self) -> Result<(), Error> {
-        self.base.terminate().await?;
-        self.running = false;
-        self.request_id = None;
         Ok(())
     }
 
@@ -429,8 +439,15 @@ pub async fn get_engine_logs(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<EngineLog>, Error> {
     let key = EngineKey::new(tab, engine)?;
-    if let Some(process) = state.engine_supervisor.get_exact(&key) {
-        Ok(process.actor.logs().await)
+    get_engine_logs_from_supervisor(&state.engine_supervisor, &key).await
+}
+
+async fn get_engine_logs_from_supervisor(
+    supervisor: &crate::engine::EngineSupervisor,
+    key: &EngineKey,
+) -> Result<Vec<EngineLog>, Error> {
+    if let Some(process) = supervisor.get_exact(key) {
+        process.actor.logs().await
     } else {
         Ok(Vec::new())
     }
@@ -447,6 +464,7 @@ pub async fn get_best_moves(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<(f32, Vec<BestMoves>)>, Error> {
+    let executable_ref = engine.id.clone();
     let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineExecute)?;
     let mut resolved = {
         let mut authority = state
@@ -467,24 +485,14 @@ pub async fn get_best_moves(
 
     let key = EngineKey::new(tab.clone(), id.clone())?;
 
-    let mut process = EngineProcess::new(executable.with_resource_leases(child_leases)).await?;
-    let supervised = match state
-        .engine_supervisor
-        .replace_handle(key.clone(), process.base.clone(), id.clone())
-        .await
-    {
-        Ok(supervised) => supervised,
-        Err(error) => {
-            let cleanup = process.kill().await;
-            return match cleanup {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(Error::OperationAndCleanup {
-                    primary: error.to_string(),
-                    cleanup: cleanup.to_string(),
-                }),
-            };
-        }
-    };
+    let (mut process, supervised) = EngineProcess::new(
+        state.engine_supervisor.clone(),
+        key.clone(),
+        executable.with_resource_leases(child_leases),
+        id.clone(),
+        executable_ref,
+    )
+    .await?;
 
     let lim = RateLimiter::direct(Quota::per_second(nonzero!(5u32)));
 
@@ -666,6 +674,7 @@ pub async fn analyze_game(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<Vec<MoveAnalysis>, Error> {
+    let executable_ref = engine.id.clone();
     let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineExecute)?;
     let analysis_key = EngineKey::new("analysis".into(), id.clone())?;
     let mut analysis: Vec<MoveAnalysis> = Vec::new();
@@ -730,7 +739,15 @@ pub async fn analyze_game(
     // Validate all position input and acquire the progress lease before a
     // child exists. Every path after this registration goes through the
     // cleanup-aware failure macro below.
-    let mut proc = match EngineProcess::new(executable.with_resource_leases(child_leases)).await {
+    let (mut proc, supervised) = match EngineProcess::new(
+        state.engine_supervisor.clone(),
+        analysis_key.clone(),
+        executable.with_resource_leases(child_leases),
+        engine_id,
+        executable_ref,
+    )
+    .await
+    {
         Ok(process) => process,
         Err(error) => {
             let _ = update_progress_with_state(
@@ -743,32 +760,6 @@ pub async fn analyze_game(
             return Err(error);
         }
     };
-    let supervised = match state
-        .engine_supervisor
-        .replace_handle(analysis_key.clone(), proc.base.clone(), engine_id)
-        .await
-    {
-        Ok(supervised) => supervised,
-        Err(primary) => {
-            let _ = update_progress_with_state(
-                &state.progress_state,
-                &app,
-                &progress_lease,
-                0.0,
-                ProgressState::Failed,
-            );
-            match proc.kill().await {
-                Ok(()) => return Err(primary),
-                Err(cleanup) => {
-                    return Err(Error::OperationAndCleanup {
-                        primary: primary.to_string(),
-                        cleanup: cleanup.to_string(),
-                    })
-                }
-            }
-        }
-    };
-
     macro_rules! fail_analysis_progress {
         ($error:expr) => {{
             let error = $error;
@@ -1147,7 +1138,14 @@ mod tests {
         let key = EngineKey::new("tab".into(), "engine-id".into()).unwrap();
         let (actor, _) = EngineActor::recording_test_actor(&[]);
         supervisor
-            .replace_handle(key.clone(), actor, "engine-id".into())
+            .replace_handle(
+                key.clone(),
+                actor,
+                "engine-id".into(),
+                crate::infra::path_authority::PathRef {
+                    id: "engine-path".into(),
+                },
+            )
             .await
             .unwrap();
 
@@ -1158,7 +1156,14 @@ mod tests {
         assert!(supervisor.get_exact(&key).is_none());
         let (replacement, _) = EngineActor::recording_test_actor(&[]);
         assert!(supervisor
-            .replace_handle(key, replacement, "engine-id".into())
+            .replace_handle(
+                key,
+                replacement,
+                "engine-id".into(),
+                crate::infra::path_authority::PathRef {
+                    id: "engine-path".into(),
+                },
+            )
             .await
             .is_err());
 
@@ -1175,6 +1180,75 @@ mod tests {
             body.contains("retire_engine_with_supervisor(engine, &state.engine_supervisor).await"),
             "the Specta command must delegate to the tested supervisor retirement"
         );
+    }
+
+    #[tokio::test]
+    async fn engine_logs_command_contract_distinguishes_absent_and_disconnected() {
+        let supervisor = crate::engine::EngineSupervisor::default();
+        let missing = EngineKey::new("tab".into(), "missing".into()).unwrap();
+        assert!(get_engine_logs_from_supervisor(&supervisor, &missing)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let (actor, _) = EngineActor::recording_test_actor(&[]);
+        let supervised = supervisor
+            .replace_handle(
+                key.clone(),
+                actor.clone(),
+                "engine".into(),
+                crate::infra::path_authority::PathRef {
+                    id: "engine-path".into(),
+                },
+            )
+            .await
+            .unwrap();
+        actor.terminate().await.unwrap();
+        assert!(matches!(
+            get_engine_logs_from_supervisor(&supervisor, &key).await,
+            Err(Error::EngineDisconnected)
+        ));
+        supervisor
+            .terminate_exact(&key, supervised.generation)
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn interactive_commands_register_through_engine_process_new() {
+        let source = include_str!("chess.rs");
+        for function in ["pub async fn get_best_moves", "pub async fn analyze_game"] {
+            let start = source.find(function).expect("command must exist");
+            let suffix = &source[start + function.len()..];
+            // Delimit before `mod tests` so later test-only `replace_handle`
+            // call sites are not part of the production command body.
+            let end = [
+                suffix.find("\nmod tests"),
+                suffix.find("\n#[tauri::command]"),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(suffix.len());
+            let body = &suffix[..end];
+            assert!(body.contains("EngineProcess::new("));
+            assert!(!body.contains("spawn_initialized"));
+            assert!(!body.contains(".replace_handle("));
+        }
+    }
+
+    #[test]
+    fn config_probe_uses_a_unique_supervised_key() {
+        let source = include_str!("chess.rs");
+        let body = source
+            .split_once("pub async fn get_engine_config(")
+            .map(|(_, body)| body)
+            .expect("get_engine_config must exist");
+        assert!(body.contains("Uuid::new_v4()"));
+        assert!(body.contains("EngineKey::new(\"engine-config\""));
+        assert!(body.contains("spawn_registered("));
+        assert!(body.contains("terminate_exact(&key, supervised.generation)"));
     }
 
     fn pos(fen: &str) -> Chess {
@@ -1437,59 +1511,62 @@ pub struct EngineConfig {
 
 const MAX_ENGINE_OPTIONS: usize = 512;
 
+async fn collect_engine_configuration(base: Arc<EngineActor>) -> Result<EngineConfig, Error> {
+    base.start_uci_configuration().await?;
+
+    // The per-line timeout in `next_configuration_line` only protects a
+    // silent process. A chatty process which never sends `uciok` must be
+    // bounded too, otherwise it can keep this command alive indefinitely.
+    tokio::time::timeout(EngineDeadlines::default().uciok, async {
+        let mut config = EngineConfig::default();
+        while let Some(line) = base.next_configuration_line().await? {
+            if let UciMessage::Id {
+                name: Some(name),
+                author: _,
+            } = parse_one(&line)
+            {
+                config.name = name;
+            }
+            if let UciMessage::Option(opt) = parse_one(&line) {
+                if config.options.len() == MAX_ENGINE_OPTIONS {
+                    return Err(Error::ResourceLimit(format!(
+                        "engine advertised more than {MAX_ENGINE_OPTIONS} options"
+                    )));
+                }
+                config.options.push(opt);
+            }
+            if let UciMessage::UciOk = parse_one(&line) {
+                return Ok(config);
+            }
+        }
+        Err(Error::EngineDisconnected)
+    })
+    .await
+    .map_err(|_| Error::EngineTimeout("collecting engine configuration".into()))?
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn get_engine_config(
     engine: EngineHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<EngineConfig, Error> {
+    let executable_ref = engine.id.clone();
     let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineConfigure)?;
-    let base = EngineActor::spawn(executable, EngineDeadlines::default()).await?;
-
-    let configuration = async {
-        base.start_uci_configuration().await?;
-
-        // The per-line timeout in `next_configuration_line` only protects a
-        // silent process. A chatty process which never sends `uciok` must be
-        // bounded too, otherwise it can keep this command alive indefinitely.
-        tokio::time::timeout(EngineDeadlines::default().uciok, async {
-            let mut config = EngineConfig::default();
-            while let Some(line) = base.next_configuration_line().await? {
-                if let UciMessage::Id {
-                    name: Some(name),
-                    author: _,
-                } = parse_one(&line)
-                {
-                    config.name = name;
-                }
-                if let UciMessage::Option(opt) = parse_one(&line) {
-                    if config.options.len() == MAX_ENGINE_OPTIONS {
-                        return Err(Error::ResourceLimit(format!(
-                            "engine advertised more than {MAX_ENGINE_OPTIONS} options"
-                        )));
-                    }
-                    config.options.push(opt);
-                }
-                if let UciMessage::UciOk = parse_one(&line) {
-                    return Ok(config);
-                }
-            }
-            Err(Error::EngineDisconnected)
-        })
-        .await
-        .map_err(|_| Error::EngineTimeout("collecting engine configuration".into()))?
-    }
-    .await;
-    // `terminate` reaps even an engine that ignores `quit`; a configuration
-    // probe must not leave a child behind on either success or parse failure.
-    let cleanup = base.terminate().await;
-    match (configuration, cleanup) {
-        (Ok(config), Ok(())) => Ok(config),
-        (Err(primary), Ok(())) => Err(primary),
-        (Ok(_), Err(cleanup)) => Err(cleanup),
-        (Err(primary), Err(cleanup)) => Err(Error::OperationAndCleanup {
-            primary: primary.to_string(),
-            cleanup: cleanup.to_string(),
-        }),
-    }
+    let probe_id = uuid::Uuid::new_v4().to_string();
+    let key = EngineKey::new("engine-config".into(), probe_id.clone())?;
+    let (supervised, config) = spawn_registered(
+        state.engine_supervisor.clone(),
+        key.clone(),
+        executable,
+        probe_id,
+        executable_ref,
+        collect_engine_configuration,
+    )
+    .await?;
+    state
+        .engine_supervisor
+        .terminate_exact(&key, supervised.generation)
+        .await?;
+    Ok(config)
 }

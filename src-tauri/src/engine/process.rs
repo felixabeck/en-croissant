@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use vampirc_uci::UciMessage;
 
 use crate::error::Error;
-use crate::infra::path_authority::EngineExecutable;
+use crate::infra::path_authority::{EngineExecutable, PathRef};
 
 use super::{
     normalize_uci_moves_for_fen,
@@ -38,6 +38,8 @@ const MAX_LOG_BYTES: usize = 512 * 1024;
 const MAX_ENGINE_LINE_BYTES: usize = 64 * 1024;
 const MAX_ENGINE_STDERR_BYTES: usize = 512 * 1024;
 const MAX_RETIRED_ENGINE_IDS: usize = 4096;
+#[cfg_attr(not(test), allow(dead_code))]
+const MAX_RETIRED_PATH_REFS: usize = 4096;
 /// Join budget for the stderr drain after `io.terminate` returns. A stuck
 /// drain is then aborted so `terminate` cannot stall on a logging task.
 const STDERR_REAP_TIMEOUT: Duration = Duration::from_millis(200);
@@ -437,6 +439,7 @@ pub struct EngineActor {
     // Keep its handle with every clone so lifecycle callers can await its
     // completion instead of detaching it after `Terminate`.
     task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    interrupt: CancellationToken,
 }
 
 enum EngineCommand {
@@ -471,8 +474,31 @@ enum EngineCommand {
 pub struct SupervisedEngine {
     pub generation: u64,
     pub engine_id: String,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub executable: PathRef,
     pub actor: Arc<EngineActor>,
     pub cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Default)]
+struct RetiredExecutables {
+    order: VecDeque<PathRef>,
+    ids: HashSet<PathRef>,
+}
+
+impl RetiredExecutables {
+    fn insert(&mut self, executable: PathRef) {
+        if !self.ids.insert(executable.clone()) {
+            return;
+        }
+        self.order.push_back(executable);
+        if self.order.len() > MAX_RETIRED_PATH_REFS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.ids.remove(&oldest);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -506,6 +532,7 @@ pub struct EngineSupervisor {
     actors: DashMap<EngineKey, SupervisedEngine>,
     registration: Mutex<()>,
     retired: StdMutex<RetiredEngineIds>,
+    retired_executables: StdMutex<RetiredExecutables>,
     // Every lifecycle transition for an exact key takes this lock before it
     // observes or mutates `actors`.  The map itself is concurrent, but it
     // cannot make remove → await shutdown → insert atomic.
@@ -531,6 +558,17 @@ impl EngineSupervisor {
         }
     }
 
+    async fn reject_retired_executable(actor: &EngineActor) -> Error {
+        let primary = Error::Conflict("engine executable is retired".into());
+        match actor.terminate().await {
+            Ok(()) => primary,
+            Err(cleanup) => Error::OperationAndCleanup {
+                primary: primary.to_string(),
+                cleanup: cleanup.to_string(),
+            },
+        }
+    }
+
     fn with_retired<T>(&self, operation: impl FnOnce(&mut RetiredEngineIds) -> T) -> T {
         match self.retired.lock() {
             Ok(mut retired) => operation(&mut retired),
@@ -540,6 +578,20 @@ impl EngineSupervisor {
 
     fn is_retired(&self, engine_id: &str) -> bool {
         self.with_retired(|retired| retired.ids.contains(engine_id))
+    }
+
+    fn with_retired_executables<T>(
+        &self,
+        operation: impl FnOnce(&mut RetiredExecutables) -> T,
+    ) -> T {
+        match self.retired_executables.lock() {
+            Ok(mut retired) => operation(&mut retired),
+            Err(poisoned) => operation(&mut poisoned.into_inner()),
+        }
+    }
+
+    fn is_retired_executable(&self, executable: &PathRef) -> bool {
+        self.with_retired_executables(|retired| retired.ids.contains(executable))
     }
 
     fn lifecycle_slot(&self, key: &EngineKey) -> Arc<Mutex<()>> {
@@ -556,7 +608,11 @@ impl EngineSupervisor {
         actor: EngineActor,
     ) -> Result<SupervisedEngine, Error> {
         let engine_id = key.engine.clone();
-        self.replace_handle(key, Arc::new(actor), engine_id).await
+        let executable = PathRef {
+            id: format!("test-{}", key.engine),
+        };
+        self.replace_handle(key, Arc::new(actor), engine_id, executable)
+            .await
     }
 
     pub async fn replace_handle(
@@ -564,6 +620,7 @@ impl EngineSupervisor {
         key: EngineKey,
         actor: Arc<EngineActor>,
         engine_id: String,
+        executable: PathRef,
     ) -> Result<SupervisedEngine, Error> {
         validate_uci_text("engine", &engine_id)?;
         let lifecycle = self.lifecycle_slot(&key);
@@ -573,6 +630,9 @@ impl EngineSupervisor {
         }
         if self.is_retired(&engine_id) {
             return Err(Self::reject_retired_replacement(&actor).await);
+        }
+        if self.is_retired_executable(&executable) {
+            return Err(Self::reject_retired_executable(&actor).await);
         }
         if let Some(previous) = self.actors.get(&key).map(|entry| entry.clone()) {
             let previous_actor = previous.actor.clone();
@@ -590,6 +650,10 @@ impl EngineSupervisor {
             drop(registration);
             return Err(Self::reject_retired_replacement(&actor).await);
         }
+        if self.is_retired_executable(&executable) {
+            drop(registration);
+            return Err(Self::reject_retired_executable(&actor).await);
+        }
         let generation = self
             .next_generation
             .fetch_add(1, Ordering::Relaxed)
@@ -598,6 +662,7 @@ impl EngineSupervisor {
         let entry = SupervisedEngine {
             generation,
             engine_id,
+            executable,
             actor,
             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
@@ -700,6 +765,39 @@ impl EngineSupervisor {
         aggregate_shutdown_failures(failures)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub async fn retire_executables(&self, executables: Vec<PathRef>) -> Result<(), Error> {
+        if executables.is_empty() {
+            return Ok(());
+        }
+        let executable_set: HashSet<_> = executables.iter().cloned().collect();
+        self.with_retired_executables(|retired| {
+            for executable in executables {
+                retired.insert(executable);
+            }
+        });
+        // Synchronize with the final publication check in `replace_handle`.
+        drop(self.registration.lock().await);
+        let mut failures = Vec::new();
+        loop {
+            match self
+                .terminate_matching(|_, engine| executable_set.contains(&engine.executable))
+                .await
+            {
+                Ok(()) => {}
+                Err(error) => failures.push(error.to_string()),
+            }
+            if !self
+                .actors
+                .iter()
+                .any(|entry| executable_set.contains(&entry.value().executable))
+            {
+                break;
+            }
+        }
+        aggregate_shutdown_failures(failures)
+    }
+
     pub async fn terminate_all(&self) -> Result<(), Error> {
         let mut failures = Vec::new();
         self.sealed.store(true, Ordering::SeqCst);
@@ -752,6 +850,132 @@ impl EngineSupervisor {
             .map(|entry| (entry.key().clone(), entry.value().generation))
             .collect();
         self.terminate_targets(targets).await
+    }
+}
+
+struct RegistrationGuard {
+    supervisor: Arc<EngineSupervisor>,
+    key: EngineKey,
+    generation: u64,
+    taken: bool,
+}
+
+#[cfg(test)]
+static REGISTRATION_CLEANUP_ERRORS: StdMutex<Vec<String>> = StdMutex::new(Vec::new());
+
+fn log_registration_cleanup_error(key: &EngineKey, error: &Error) {
+    let message = format!(
+        "cancelled engine registration could not be terminated cleanly for {}:{}: {error}",
+        key.tab, key.engine
+    );
+    #[cfg(test)]
+    match REGISTRATION_CLEANUP_ERRORS.lock() {
+        Ok(mut errors) => errors.push(message.clone()),
+        Err(poisoned) => poisoned.into_inner().push(message.clone()),
+    }
+    error!("{message}");
+}
+
+impl RegistrationGuard {
+    fn disarm(&mut self) {
+        self.taken = true;
+    }
+}
+
+impl Drop for RegistrationGuard {
+    fn drop(&mut self) {
+        if self.taken {
+            return;
+        }
+        let supervisor = self.supervisor.clone();
+        let key = self.key.clone();
+        let generation = self.generation;
+        tokio::spawn(async move {
+            if let Err(error) = supervisor.terminate_exact(&key, generation).await {
+                log_registration_cleanup_error(&key, &error);
+            }
+        });
+    }
+}
+
+/// Spawns and publishes an actor before any protocol initialization begins.
+/// The registration guard owns cancellation cleanup until initialization has
+/// either completed or synchronously removed the exact generation.
+pub(crate) async fn spawn_registered<T, F, Fut>(
+    supervisor: Arc<EngineSupervisor>,
+    key: EngineKey,
+    executable: EngineExecutable,
+    engine_id: String,
+    executable_ref: PathRef,
+    initialize: F,
+) -> Result<(SupervisedEngine, T), Error>
+where
+    F: FnOnce(Arc<EngineActor>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, Error>>,
+{
+    let actor = Arc::new(EngineActor::spawn(executable, EngineDeadlines::default()).await?);
+    initialize_registered_actor(
+        supervisor,
+        key,
+        actor,
+        engine_id,
+        executable_ref,
+        initialize,
+    )
+    .await
+}
+
+async fn initialize_registered_actor<T, F, Fut>(
+    supervisor: Arc<EngineSupervisor>,
+    key: EngineKey,
+    actor: Arc<EngineActor>,
+    engine_id: String,
+    executable_ref: PathRef,
+    initialize: F,
+) -> Result<(SupervisedEngine, T), Error>
+where
+    F: FnOnce(Arc<EngineActor>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, Error>>,
+{
+    let supervised = match supervisor
+        .replace_handle(key.clone(), actor.clone(), engine_id, executable_ref)
+        .await
+    {
+        Ok(supervised) => supervised,
+        Err(primary) => {
+            return match actor.terminate().await {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(Error::OperationAndCleanup {
+                    primary: primary.to_string(),
+                    cleanup: cleanup.to_string(),
+                }),
+            };
+        }
+    };
+    let mut guard = RegistrationGuard {
+        supervisor: supervisor.clone(),
+        key: key.clone(),
+        generation: supervised.generation,
+        taken: false,
+    };
+    match initialize(actor).await {
+        Ok(value) => {
+            guard.disarm();
+            Ok((supervised, value))
+        }
+        Err(primary) => {
+            let cleanup = supervisor
+                .terminate_exact(&key, supervised.generation)
+                .await;
+            guard.disarm();
+            match cleanup {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(Error::OperationAndCleanup {
+                    primary: primary.to_string(),
+                    cleanup: cleanup.to_string(),
+                }),
+            }
+        }
     }
 }
 
@@ -856,10 +1080,16 @@ impl EngineRuntime {
         Ok(runtime)
     }
 
-    pub async fn init_uci(&mut self) -> Result<(), Error> {
+    async fn init_uci_cancellable(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<(), Error> {
         self.send("uci").await?;
-        self.wait_for("uciok", self.deadlines.uciok).await?;
-        self.ensure_ready().await
+        self.wait_for_cancellable("uciok", self.deadlines.uciok, cancellation)
+            .await?;
+        self.send("isready").await?;
+        self.wait_for_cancellable("readyok", self.deadlines.readyok, cancellation)
+            .await
     }
 
     pub async fn ensure_ready(&mut self) -> Result<(), Error> {
@@ -871,10 +1101,16 @@ impl EngineRuntime {
         self.send("uci").await
     }
 
-    pub async fn next_configuration_line(&mut self) -> Result<Option<String>, Error> {
-        timeout(self.deadlines.uciok, self.read_line())
-            .await
-            .map_err(|_| Error::EngineTimeout("waiting for uciok".into()))?
+    async fn next_configuration_line_cancellable(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<String>, Error> {
+        tokio::select! {
+            _ = cancellation.cancelled() => Err(Error::EngineDisconnected),
+            result = timeout(self.deadlines.uciok, self.read_line()) => {
+                result.map_err(|_| Error::EngineTimeout("waiting for uciok".into()))?
+            }
+        }
     }
 
     pub async fn set_option(&mut self, name: &str, value: &str) -> Result<(), Error> {
@@ -1034,6 +1270,28 @@ impl EngineRuntime {
             }
         }
     }
+
+    async fn wait_for_cancellable(
+        &mut self,
+        expected: &str,
+        wait: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<(), Error> {
+        loop {
+            let line = tokio::select! {
+                _ = cancellation.cancelled() => return Err(Error::EngineDisconnected),
+                line = timeout(wait, self.read_line()) => {
+                    line.map_err(|_| Error::EngineTimeout(format!("waiting for {expected}")))?
+                }
+            };
+            let Some(line) = line? else {
+                return Err(Error::EngineDisconnected);
+            };
+            if line.trim() == expected {
+                return Ok(());
+            }
+        }
+    }
 }
 
 impl Drop for EngineRuntime {
@@ -1069,11 +1327,18 @@ impl EngineActor {
         // work. A flooded normal queue therefore cannot delay stop, kill or
         // log snapshots for a silent engine.
         let (control_tx, control_rx) = mpsc::channel(8);
-        let task = tokio::spawn(engine_actor_loop(runtime, rx, control_rx));
+        let interrupt = CancellationToken::new();
+        let task = tokio::spawn(engine_actor_loop(
+            runtime,
+            rx,
+            control_rx,
+            interrupt.clone(),
+        ));
         Self {
             tx,
             control_tx,
             task: Arc::new(Mutex::new(Some(task))),
+            interrupt,
         }
     }
 
@@ -1241,6 +1506,7 @@ impl EngineActor {
             .await?
     }
     pub async fn terminate(&self) -> Result<(), Error> {
+        self.interrupt.cancel();
         let (reply_tx, reply) = oneshot::channel();
         let termination = self
             .request_control(EngineCommand::Terminate(reply_tx), reply)
@@ -1268,11 +1534,10 @@ impl EngineActor {
         task.await
             .map_err(|error| Error::Conflict(format!("engine actor task failed: {error}")))
     }
-    pub async fn logs(&self) -> Vec<EngineLog> {
+    pub async fn logs(&self) -> Result<Vec<EngineLog>, Error> {
         let (reply_tx, reply) = oneshot::channel();
         self.request_control(EngineCommand::Logs(reply_tx), reply)
             .await
-            .unwrap_or_default()
     }
 }
 
@@ -1280,6 +1545,7 @@ async fn engine_actor_loop(
     mut runtime: EngineRuntime,
     mut rx: mpsc::Receiver<EngineCommand>,
     mut control_rx: mpsc::Receiver<EngineCommand>,
+    interrupt: CancellationToken,
 ) {
     let mut terminated = false;
     while let Some(command) = tokio::select! {
@@ -1289,13 +1555,17 @@ async fn engine_actor_loop(
     } {
         match command {
             EngineCommand::Init(reply) => {
-                let _ = reply.send(runtime.init_uci().await);
+                let _ = reply.send(runtime.init_uci_cancellable(&interrupt).await);
             }
             EngineCommand::ConfigureStart(reply) => {
                 let _ = reply.send(runtime.start_uci_configuration().await);
             }
             EngineCommand::ConfigureNext(reply) => {
-                let _ = reply.send(runtime.next_configuration_line().await);
+                let _ = reply.send(
+                    runtime
+                        .next_configuration_line_cancellable(&interrupt)
+                        .await,
+                );
             }
             EngineCommand::SetOption { name, value, reply } => {
                 let _ = reply.send(runtime.set_option(&name, &value).await);
@@ -1544,6 +1814,7 @@ mod tests {
         let engine_lines: Vec<String> = actor
             .logs()
             .await
+            .unwrap()
             .iter()
             .filter_map(|entry| match entry {
                 EngineLog::Engine(line) => Some(line.trim().to_owned()),
@@ -1800,7 +2071,28 @@ mod tests {
         )
     }
 
+    fn path_ref(id: &str) -> PathRef {
+        PathRef { id: id.into() }
+    }
+
     struct TerminateErrorIo;
+
+    struct PendingTerminateErrorIo;
+
+    #[async_trait]
+    impl UciIo for PendingTerminateErrorIo {
+        async fn write_line(&mut self, _: &str) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn read_line(&mut self) -> Result<Option<String>, Error> {
+            std::future::pending().await
+        }
+
+        async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+            Err(io::Error::other("fake cancelled terminate failed").into())
+        }
+    }
 
     #[async_trait]
     impl UciIo for TerminateErrorIo {
@@ -1815,6 +2107,84 @@ mod tests {
         async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
             Err(io::Error::other("fake terminate failed").into())
         }
+    }
+
+    #[tokio::test]
+    async fn initialization_and_termination_failure_are_combined_and_unpublished() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("engine-config".into(), "probe".into()).unwrap();
+        let actor = Arc::new(EngineActor::new(
+            Box::new(TerminateErrorIo),
+            EngineDeadlines::default(),
+        ));
+
+        let result = initialize_registered_actor(
+            supervisor.clone(),
+            key.clone(),
+            actor,
+            "probe".into(),
+            path_ref("probe-path"),
+            |actor| async move { actor.init_uci().await },
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::OperationAndCleanup { .. })));
+        assert!(supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_registration_logs_a_failed_reap() {
+        match REGISTRATION_CLEANUP_ERRORS.lock() {
+            Ok(mut errors) => errors.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("engine-config".into(), "cancelled-probe".into()).unwrap();
+        let actor = Arc::new(EngineActor::new(
+            Box::new(PendingTerminateErrorIo),
+            EngineDeadlines::default(),
+        ));
+        let initialization = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            async move {
+                initialize_registered_actor(
+                    supervisor,
+                    key,
+                    actor,
+                    "cancelled-probe".into(),
+                    path_ref("probe-path"),
+                    |actor| async move { actor.init_uci().await },
+                )
+                .await
+            }
+        });
+        while supervisor.get_exact(&key).is_none() {
+            tokio::task::yield_now().await;
+        }
+
+        initialization.abort();
+        let _ = initialization.await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let logged = match REGISTRATION_CLEANUP_ERRORS.lock() {
+                    Ok(errors) => errors
+                        .iter()
+                        .any(|message| message.contains("fake cancelled terminate failed")),
+                    Err(poisoned) => poisoned
+                        .into_inner()
+                        .iter()
+                        .any(|message| message.contains("fake cancelled terminate failed")),
+                };
+                if logged {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Drop cleanup failure must be logged");
+        assert!(supervisor.get_exact(&key).is_none());
     }
     #[tokio::test]
     async fn replacement_waits_for_old_bestmove_before_go() {
@@ -1835,6 +2205,135 @@ mod tests {
             actor.next_search_line(id).await,
             Err(Error::EngineDisconnected)
         ));
+    }
+
+    #[tokio::test]
+    async fn disconnected_logs_are_an_error() {
+        let (actor, _) = actor(&[]);
+        actor.terminate().await.unwrap();
+        assert!(matches!(actor.logs().await, Err(Error::EngineDisconnected)));
+    }
+
+    #[tokio::test]
+    async fn registered_initialization_is_visible_and_cancellation_removes_it() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let ((actor, _), _) =
+            actor_with(&["uciok", "readyok"], false, Some(Duration::from_secs(60)));
+        let initialization = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            async move {
+                initialize_registered_actor(
+                    supervisor,
+                    key,
+                    Arc::new(actor),
+                    "engine".into(),
+                    path_ref("engine-path"),
+                    |actor| async move { actor.init_uci().await },
+                )
+                .await
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while supervisor.get_exact(&key).is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actor must be registered while uciok is pending");
+
+        initialization.abort();
+        let _ = initialization.await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while supervisor.get_exact(&key).is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("registration guard must remove a cancelled initialization");
+    }
+
+    #[tokio::test]
+    async fn terminate_all_reaps_an_actor_awaiting_uciok() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("engine-config".into(), "probe".into()).unwrap();
+        let ((actor, _), terminated) =
+            actor_with(&["uciok", "readyok"], false, Some(Duration::from_secs(60)));
+        let initialization = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            async move {
+                initialize_registered_actor(
+                    supervisor,
+                    key,
+                    Arc::new(actor),
+                    "probe".into(),
+                    path_ref("shared-path"),
+                    |actor| async move { actor.init_uci().await },
+                )
+                .await
+            }
+        });
+        while supervisor.get_exact(&key).is_none() {
+            tokio::task::yield_now().await;
+        }
+
+        supervisor.terminate_all().await.unwrap();
+
+        assert!(supervisor.get_exact(&key).is_none());
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(initialization.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn two_probe_keys_can_share_one_executable_path_ref() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let shared_path = path_ref("shared-path");
+        let mut initializations = Vec::new();
+        let mut keys = Vec::new();
+        for probe in ["probe-1", "probe-2"] {
+            let key = EngineKey::new("engine-config".into(), probe.into()).unwrap();
+            let ((actor, _), _) =
+                actor_with(&["uciok", "readyok"], false, Some(Duration::from_secs(60)));
+            initializations.push(tokio::spawn({
+                let supervisor = supervisor.clone();
+                let key = key.clone();
+                let shared_path = shared_path.clone();
+                async move {
+                    initialize_registered_actor(
+                        supervisor,
+                        key,
+                        Arc::new(actor),
+                        probe.into(),
+                        shared_path,
+                        |actor| async move { actor.init_uci().await },
+                    )
+                    .await
+                }
+            }));
+            keys.push(key);
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while keys.iter().any(|key| supervisor.get_exact(key).is_none()) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both probes must publish independently");
+
+        for initialization in initializations {
+            initialization.abort();
+            let _ = initialization.await;
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while keys.iter().any(|key| supervisor.get_exact(key).is_some()) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -2003,7 +2502,14 @@ mod tests {
         let key = EngineKey::new("analysis".into(), "operation".into()).unwrap();
         let ((actor, _), terminated) = actor_with(&[], false, None);
         supervisor
-            .replace_handle(key.clone(), Arc::new(actor), "engine-E".into())
+            .replace_handle(
+                key.clone(),
+                Arc::new(actor),
+                "engine-E".into(),
+                PathRef {
+                    id: "engine-path".into(),
+                },
+            )
             .await
             .unwrap();
 
@@ -2083,6 +2589,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retired_executable_refuses_a_different_engine_id() {
+        let supervisor = EngineSupervisor::default();
+        let executable = path_ref("retired-path");
+        supervisor
+            .retire_executables(vec![executable.clone()])
+            .await
+            .unwrap();
+        let key = EngineKey::new("tab".into(), "new-operation".into()).unwrap();
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+
+        assert!(matches!(
+            supervisor
+                .replace_handle(key.clone(), Arc::new(actor), "different-id".into(), executable)
+                .await,
+            Err(Error::Conflict(message)) if message == "engine executable is retired"
+        ));
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn retired_executable_recheck_blocks_a_concurrent_publication() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let registration = supervisor.registration.lock().await;
+        let executable = path_ref("racing-path");
+        let key = EngineKey::new("tab".into(), "operation".into()).unwrap();
+        let lifecycle = supervisor.lifecycle_slot(&key);
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        let replacement = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let key = key.clone();
+            let executable = executable.clone();
+            async move {
+                supervisor
+                    .replace_handle(key, Arc::new(actor), "engine-id".into(), executable)
+                    .await
+            }
+        });
+        while lifecycle.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        let retirement = tokio::spawn({
+            let supervisor = supervisor.clone();
+            let executable = executable.clone();
+            async move { supervisor.retire_executables(vec![executable]).await }
+        });
+        while !supervisor.is_retired_executable(&executable) {
+            tokio::task::yield_now().await;
+        }
+        drop(registration);
+
+        retirement.await.unwrap().unwrap();
+        assert!(matches!(
+            replacement.await.unwrap(),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn retired_executables_evict_the_oldest_at_the_bound() {
+        let supervisor = EngineSupervisor::default();
+        for index in 0..=MAX_RETIRED_PATH_REFS {
+            supervisor
+                .retire_executables(vec![path_ref(&format!("path-{index}"))])
+                .await
+                .unwrap();
+        }
+        assert!(!supervisor.is_retired_executable(&path_ref("path-0")));
+        assert!(
+            supervisor.is_retired_executable(&path_ref(&format!("path-{MAX_RETIRED_PATH_REFS}")))
+        );
+
+        let oldest_key = EngineKey::new("tab".into(), "oldest".into()).unwrap();
+        let (oldest, _) = actor(&[]);
+        supervisor
+            .replace_handle(
+                oldest_key.clone(),
+                Arc::new(oldest),
+                "engine-id".into(),
+                path_ref("path-0"),
+            )
+            .await
+            .unwrap();
+        let newest_key = EngineKey::new("tab".into(), "newest".into()).unwrap();
+        let (newest, _) = actor(&[]);
+        assert!(supervisor
+            .replace_handle(
+                newest_key,
+                Arc::new(newest),
+                "other-engine-id".into(),
+                path_ref(&format!("path-{MAX_RETIRED_PATH_REFS}")),
+            )
+            .await
+            .is_err());
+        supervisor.terminate_all().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn terminate_all_terminates_registered_actors_concurrently() {
         let supervisor = EngineSupervisor::default();
         let per_actor_delay = Duration::from_millis(100);
@@ -2135,6 +2741,9 @@ mod tests {
             SupervisedEngine {
                 generation: 99,
                 engine_id: "slipped".into(),
+                executable: PathRef {
+                    id: "slipped-path".into(),
+                },
                 actor: Arc::new(slipped),
                 cancelled: Arc::new(AtomicBool::new(false)),
             },
@@ -2183,7 +2792,7 @@ mod tests {
             actor.next_search_line(id).await,
             Err(Error::ResourceLimit(_))
         ));
-        assert!(actor.logs().await.len() <= MAX_LOG_LINES);
+        assert!(actor.logs().await.unwrap().len() <= MAX_LOG_LINES);
     }
 
     #[tokio::test]
@@ -2529,7 +3138,8 @@ mod tests {
 
         tokio::time::timeout(Duration::from_millis(50), actor.logs())
             .await
-            .expect("logs must preempt stdout wait");
+            .expect("logs must preempt stdout wait")
+            .unwrap();
         assert_eq!(
             tokio::time::timeout(Duration::from_millis(50), waiting)
                 .await

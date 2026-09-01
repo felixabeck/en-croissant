@@ -389,7 +389,7 @@ pub struct AppState {
     #[derivative(Default(value = "std::sync::Mutex::new(None)"))]
     pub pgn_path_authority: std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
 
-    engine_supervisor: EngineSupervisor,
+    engine_supervisor: Arc<EngineSupervisor>,
     #[derivative(Default(value = "Arc::new(AuthLifecycle::default())"))]
     auth: Arc<AuthLifecycle>,
     #[derivative(Default(value = "Arc::new(crate::credentials::CredentialManager::default())"))]
@@ -1525,7 +1525,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         async move {
                             let state = app_handle.state::<AppState>();
                             shutdown_backend(
-                                &state.engine_supervisor,
+                                state.engine_supervisor.as_ref(),
                                 &state.game_manager,
                                 app_handle.try_state::<SoundServerLifecycle>().as_deref(),
                                 SHUTDOWN_BUDGET,

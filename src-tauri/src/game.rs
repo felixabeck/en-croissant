@@ -1541,7 +1541,7 @@ impl GameManager {
         };
 
         if let Some(engine_arc) = engine {
-            Ok(engine_arc.logs().await)
+            engine_arc.logs().await
         } else {
             Ok(Vec::new())
         }
