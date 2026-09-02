@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: ddef6bc63df38f2f0f4bb8227a53275f95b6711723cf7e5a7e5378815dd546b0
+# agent-kit-sha256: 382fbf82a81768bf2aa2c4dba0ec446eb952d9192be9919ed88df22fc0d00ec0
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -92,12 +92,16 @@ def _probe_git_toplevel() -> tuple[Path | None, str]:
     return Path(text), ""
 
 
-def _discover_ledger_header() -> tuple[str | None, Path | None]:
+def _discover_ledger_header() -> tuple[str | None, Path | None, Path | None]:
     """Locate a findings ledger header without using it for ledger paths.
 
     Cwd git toplevel first (read-only); else this script's ``parents[1]`` for
     HEADER LOOKUP ONLY, so ``--help`` preflights still fail closed on a too-old
     interpreter inside a checkout whose header names a floor.
+
+    An absent file is not a header. A file that exists but cannot be read is
+    a malformed header and fails closed (exit 2); it must not fall through to
+    a later candidate.
     """
     candidates: list[tuple[Path, Path]] = []
     cwd_root, _err = _probe_git_toplevel()
@@ -110,11 +114,16 @@ def _discover_ledger_header() -> tuple[str | None, Path | None]:
     for path, root in candidates:
         try:
             text = path.read_text(encoding="utf-8")
-        except _READ_ERRORS:
+        except FileNotFoundError:
             continue
+        except _READ_ERRORS as exc:
+            sys.stderr.write(
+                f"findings.py cannot read the ledger header at {path}: {exc}\n"
+            )
+            raise SystemExit(2) from exc
         if "**Area vocabulary:**" in text or "**Python floor:**" in text:
-            return text, root
-    return None, None
+            return text, root, path
+    return None, None, None
 
 
 _PYTHON_FLOOR_RE = re.compile(r"\*\*Python floor:\*\*\s*(?P<version>\S+)")
@@ -125,12 +134,15 @@ def _enforce_python_floor() -> None:
     """Exit 2 on a too-old interpreter when a ledger header names a floor.
 
     Prints Korrigio's exact remedy strings. Never writes. Repos without the
-    header lines run on any python3. Runs at startup, before argparse.
+    header lines run on any python3. A header that exists but cannot be read,
+    or a ``**Python floor:**`` value that is not MAJOR.MINOR, fails closed
+    (exit 2) — including for ``--help``. Runs at startup, before argparse.
     """
-    header, header_root = _discover_ledger_header()
+    header, header_root, header_path = _discover_ledger_header()
     if header is None:
         return
-    floor_match = _PYTHON_FLOOR_RE.search(header)
+    header_region = header.split("### ", 1)[0]
+    floor_match = _PYTHON_FLOOR_RE.search(header_region)
     if floor_match is None:
         return
     version_text = floor_match.group("version")
@@ -138,13 +150,17 @@ def _enforce_python_floor() -> None:
     try:
         floor = tuple(int(part) for part in parts[:2])
     except ValueError:
-        return
+        floor = ()
     if len(floor) < 2:
-        return
+        sys.stderr.write(
+            f"findings.py cannot parse **Python floor:** {version_text} in "
+            f"{header_path}\n"
+        )
+        raise SystemExit(2)
     if sys.version_info[:2] >= floor:
         return
     _script = Path(__file__).resolve()
-    interpreter_match = _PYTHON_INTERPRETER_RE.search(header)
+    interpreter_match = _PYTHON_INTERPRETER_RE.search(header_region)
     # The interpreter comes from the header only; nothing project-specific
     # (no `backend/.venv` default) is compiled in here.
     _venv_python: Path | None = None
@@ -1492,7 +1508,10 @@ def validate_plan_adopted_column(path: Path) -> list[str]:
 
     A missing file, or a table whose header row does not name the column, is
     not an error — today's ledgers have no such column. Unfenced tables only:
-    a fenced format example must not be validated as data.
+    a fenced format example must not be validated as data. Blank lines between
+    row groups under one header do not end the table; a new header row or a
+    non-table line does. A pipe row whose cell count differs from the header
+    is malformed (an interior ``|`` in a cell is the usual cause).
     """
     if not path.is_file():
         return []
@@ -1518,6 +1537,7 @@ def validate_plan_adopted_column(path: Path) -> list[str]:
             index += 1
             continue
         column = cells.index(PLAN_ADOPTED_COLUMN)
+        header_width = len(cells)
         sep_index = index + 1
         while sep_index < n_lines and not lines[sep_index].strip():
             sep_index += 1
@@ -1533,15 +1553,23 @@ def validate_plan_adopted_column(path: Path) -> list[str]:
             if fence_states[row_index] is not FenceState.OUTSIDE:
                 break
             row_line = lines[row_index]
-            if not row_line.strip() or "|" not in row_line:
+            if not row_line.strip():
+                row_index += 1
+                continue
+            if "|" not in row_line:
                 break
             row_cells = _split_markdown_row(row_line)
             if _is_table_separator(row_cells):
                 row_index += 1
                 continue
+            if PLAN_ADOPTED_COLUMN in row_cells:
+                break
             where = f"{path}:{row_index + 1}"
-            if column >= len(row_cells):
-                issues.append(f"{where}: missing {PLAN_ADOPTED_COLUMN} cell")
+            if len(row_cells) != header_width:
+                issues.append(
+                    f"{where}: row has {len(row_cells)} cells, "
+                    f"header has {header_width}"
+                )
             else:
                 cell = row_cells[column]
                 if not _plan_adopted_cell_ok(cell):
@@ -4491,6 +4519,21 @@ def _checked_header_value(header_field: str, value: str) -> str:
 
 def cmd_set_header(args: argparse.Namespace) -> int:
     """Update selected fields on one real finding header under the ledger lock."""
+    findings, _problems, _vocabulary = parse(args.ledger)
+    target = next((finding for finding in findings if finding.id == args.id), None)
+    if target is not None and target.blocked in ANSWERABLE_BLOCKERS:
+        blocked_change = (
+            args.blocked is not None and args.blocked not in ANSWERABLE_BLOCKERS
+        )
+        status_close = args.status in {"handled", "rejected"}
+        if blocked_change or status_close:
+            print(
+                f"cannot clear answerable blocker {target.blocked} with set-header; "
+                "answer it through /decide",
+                file=sys.stderr,
+            )
+            return 1
+
     changes = {
         "Status": args.status,
         "Blocked": args.blocked,
