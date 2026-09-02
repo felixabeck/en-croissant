@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 033390093dccf88a991c886d7bcf7a1d8f56b90b56437e11c7c727228f2676ce
+# agent-kit-sha256: e6401ba529988a780ccc30e76d54a1ab8bec3f0332c1b78389e7f412e6544b55
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -343,7 +343,20 @@ HEADER_RE = re.compile(
 )
 HEADER_MARKER = "**ID:**"
 ENTRY_MARKER = "### "
-VOCAB_RE = re.compile(r"\*\*Area vocabulary:\*\*(?P<body>.+?)(?:\n\n|\Z)", re.S)
+# Bold-label header keys in the form already used for Area vocabulary. Tooling
+# areas is optional; a missing line means no finding is tooling.
+_BOLD_LABEL_RE_TEMPLATE = r"\*\*{label}:\*\*(?P<body>.+?)(?:\n\n|\Z)"
+VOCAB_RE = re.compile(_BOLD_LABEL_RE_TEMPLATE.format(label=r"Area vocabulary"), re.S)
+TOOLING_AREAS_RE = re.compile(
+    _BOLD_LABEL_RE_TEMPLATE.format(label=r"Tooling areas"), re.S
+)
+PLAN_ADOPTED_COLUMN = "plan_adopted_per_round"
+PLAN_ADOPTED_NOT_RECORDED = "not-recorded"
+# Labelled counts `r1=6 r2=2 r3=0`: sequential rN from 1, non-negative ints.
+_PLAN_ADOPTED_TOKEN_RE = re.compile(r"^r([1-9]\d*)=(\d+)$")
+NEXT_OUTCOME_CLUSTER = "cluster"
+NEXT_OUTCOME_EMPTY = "empty"
+NEXT_OUTCOME_BLOCKED_ONLY = "blocked-only"
 # `*`, `-` and `+` are all list bullets in Markdown. Detection and rendering
 # must agree on the accepted bullet class or a gated entry can be reported as
 # having no Sentry short-ID.
@@ -907,13 +920,13 @@ def _read_decision_lines(
     return lines, _fence_mask(lines)
 
 
-def load_vocabulary(lines: list[str], fence_states: list[FenceState]) -> frozenset[str]:
-    """Read the closed area set from the ledger header.
+def _ledger_header_text(lines: list[str], fence_states: list[FenceState]) -> str:
+    """Unfenced ledger text before the first finding entry.
 
-    Bounded to the region before the first finding entry and outside fences, so a
-    stray occurrence in a finding body cannot define the accepted vocabulary. The
-    boundary is the first ``### ``, not the first ``## ``: the header legitimately
-    uses ``## `` subsections to document the contract.
+    The boundary is the first ``### ``, not the first ``## ``: the header
+    legitimately uses ``## `` subsections to document the contract. Shared by
+    every bold-label read so Area vocabulary and Tooling areas cannot drift onto
+    different regions.
     """
     header: list[str] = []
     for line, fence_state in zip(lines, fence_states, strict=True):
@@ -922,13 +935,54 @@ def load_vocabulary(lines: list[str], fence_states: list[FenceState]) -> frozens
         if line.startswith("### "):
             break
         header.append(line)
-    match = VOCAB_RE.search("\n".join(header) + "\n\n")
-    if not match:
+    return "\n".join(header) + "\n\n"
+
+
+def _backticks_after_bold_label(
+    header: str, pattern: re.Pattern[str]
+) -> frozenset[str] | None:
+    """Return the backtick-quoted tokens of one bold-label header line, if present."""
+    match = pattern.search(header)
+    if match is None:
+        return None
+    return frozenset(re.findall(r"`([^`]+)`", match.group("body")))
+
+
+def load_vocabulary(lines: list[str], fence_states: list[FenceState]) -> frozenset[str]:
+    """Read the closed area set from the ledger header.
+
+    Bounded to the region before the first finding entry and outside fences, so a
+    stray occurrence in a finding body cannot define the accepted vocabulary.
+    """
+    found = _backticks_after_bold_label(
+        _ledger_header_text(lines, fence_states), VOCAB_RE
+    )
+    if found is None:
         raise LedgerError(
             "ledger header has no '**Area vocabulary:**' line before the first finding "
             "entry — the closed area set lives in the ledger, not in this script"
         )
-    return frozenset(re.findall(r"`([^`]+)`", match.group("body")))
+    return found
+
+
+def load_tooling_areas(
+    lines: list[str], fence_states: list[FenceState]
+) -> frozenset[str]:
+    """Read ``**Tooling areas:**`` from the same header region as the vocabulary.
+
+    Optional: a ledger without the line treats every finding as not tooling.
+    """
+    found = _backticks_after_bold_label(
+        _ledger_header_text(lines, fence_states), TOOLING_AREAS_RE
+    )
+    return found if found is not None else frozenset()
+
+
+def load_tooling_areas_from_path(path: Path) -> frozenset[str]:
+    """Load tooling areas from a ledger path already proven readable by ``parse``."""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    return load_tooling_areas(lines, _fence_mask(lines))
 
 
 def parse(path: Path = LEDGER) -> tuple[list[Finding], list[str], frozenset[str]]:
@@ -1405,6 +1459,108 @@ def _warn_pending_inbox(inbox: Path) -> None:
         )
 
 
+def _split_markdown_row(line: str) -> list[str]:
+    """Split one pipe table row into stripped cells."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _is_table_separator(cells: list[str]) -> bool:
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+
+
+def _plan_adopted_cell_ok(cell: str) -> bool:
+    """True for ``not-recorded`` or sequential labelled counts ``r1=6 r2=2 r3=0``."""
+    if cell == PLAN_ADOPTED_NOT_RECORDED:
+        return True
+    parts = cell.split(" ")
+    if not parts or parts == [""]:
+        return False
+    for index, part in enumerate(parts, start=1):
+        match = _PLAN_ADOPTED_TOKEN_RE.fullmatch(part)
+        if match is None or int(match.group(1)) != index:
+            return False
+    return True
+
+
+def validate_plan_adopted_column(path: Path) -> list[str]:
+    """D6: well-formed ``plan_adopted_per_round`` cells, only when a header names it.
+
+    A missing file, or a table whose header row does not name the column, is
+    not an error — today's ledgers have no such column. Unfenced tables only:
+    a fenced format example must not be validated as data.
+    """
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except _READ_ERRORS as exc:
+        return [f"could not read {path}: {exc}"]
+    try:
+        lines = text.splitlines()
+        fence_states = _fence_mask(lines)
+    except LedgerError as exc:
+        return [f"{path}: {exc}"]
+
+    issues: list[str] = []
+    index = 0
+    n_lines = len(lines)
+    while index < n_lines:
+        if fence_states[index] is not FenceState.OUTSIDE or "|" not in lines[index]:
+            index += 1
+            continue
+        cells = _split_markdown_row(lines[index])
+        if PLAN_ADOPTED_COLUMN not in cells:
+            index += 1
+            continue
+        column = cells.index(PLAN_ADOPTED_COLUMN)
+        sep_index = index + 1
+        while sep_index < n_lines and not lines[sep_index].strip():
+            sep_index += 1
+        if (
+            sep_index >= n_lines
+            or fence_states[sep_index] is not FenceState.OUTSIDE
+            or not _is_table_separator(_split_markdown_row(lines[sep_index]))
+        ):
+            index += 1
+            continue
+        row_index = sep_index + 1
+        while row_index < n_lines:
+            if fence_states[row_index] is not FenceState.OUTSIDE:
+                break
+            row_line = lines[row_index]
+            if not row_line.strip() or "|" not in row_line:
+                break
+            row_cells = _split_markdown_row(row_line)
+            if _is_table_separator(row_cells):
+                row_index += 1
+                continue
+            where = f"{path}:{row_index + 1}"
+            if column >= len(row_cells):
+                issues.append(f"{where}: missing {PLAN_ADOPTED_COLUMN} cell")
+            else:
+                cell = row_cells[column]
+                if not _plan_adopted_cell_ok(cell):
+                    issues.append(
+                        f"{where}: {PLAN_ADOPTED_COLUMN} cell {cell!r} is not "
+                        "well-formed — expected 'r1=6 r2=2 r3=0' (labelled "
+                        f"counts) or '{PLAN_ADOPTED_NOT_RECORDED}'"
+                    )
+            row_index += 1
+        index = row_index
+    return issues
+
+
+def _print_json(payload: object) -> int:
+    """Write one complete JSON value to stdout. Returns 0 for ``return`` sites."""
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
@@ -1415,19 +1571,23 @@ def cmd_check(args: argparse.Namespace) -> int:
     decision_issues = malformed_decision_headings(args.decisions)
     decision_issues += malformed_superseded_trailers(args.decisions)
     decision_issues += duplicate_decision_ids(args.decisions)
-    if issues or decision_issues:
-        for issue in issues + decision_issues:
+    build_ledger = args.ledger.parent / "build-ledger.md"
+    build_issues = validate_plan_adopted_column(build_ledger)
+    if issues or decision_issues or build_issues:
+        for issue in issues + decision_issues + build_issues:
             print(f"FAIL {issue}", file=sys.stderr)
         where = ", ".join(
             str(path)
             for path, found in (
                 (args.ledger, issues),
                 (args.decisions, decision_issues),
+                (build_ledger, build_issues),
             )
             if found
         )
         print(
-            f"\n{len(issues) + len(decision_issues)} problem(s) in {where}",
+            f"\n{len(issues) + len(decision_issues) + len(build_issues)} "
+            f"problem(s) in {where}",
             file=sys.stderr,
         )
         return 1
@@ -1440,6 +1600,25 @@ def cmd_check(args: argparse.Namespace) -> int:
     )
     print(f"ok: {len(findings)} findings, {pickable} pickable, {blocked} blocked")
     return 0
+
+
+def _list_json_records(
+    rows: list[Finding], tooling_areas: frozenset[str]
+) -> list[dict[str, object]]:
+    """One JSON object per finding; field values are the Finding attributes."""
+    return [
+        {
+            "id": f.id,
+            "status": f.status,
+            "area": f.area,
+            "root": f.root,
+            "entry": f.entry,
+            "blocked": f.blocked,
+            "heading": f.title,
+            "tooling": f.area in tooling_areas,
+        }
+        for f in rows
+    ]
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -1455,6 +1634,10 @@ def cmd_list(args: argparse.Namespace) -> int:
         rows = [f for f in rows if f.area == args.area]
     if args.root:
         rows = [f for f in rows if f.root == args.root]
+    if args.json:
+        return _print_json(
+            _list_json_records(rows, load_tooling_areas_from_path(args.ledger))
+        )
     if not rows:
         print("(none)")
         return 0
@@ -1568,12 +1751,51 @@ def _print_related_decisions(members: list[Finding], decisions_path: Path) -> No
             render(d, f"\n      shares {', '.join(names)}{tail}")
 
 
+def _waiting_rows(findings: list[Finding]) -> list[tuple[str, str, str]]:
+    """Leftover blocked rows: (id, slug, title). Shared by text and JSON."""
+    return [
+        (f.id, f.blocked, f.title)
+        for f in findings
+        if f.status == "open" and classify_blocker(f.blocked) != BLOCKER_NONE
+    ]
+
+
+def _cluster_entry_and_ids(members: list[Finding]) -> tuple[str, list[str]]:
+    """CLUSTER entry= and IDS values, computed once for both renderings."""
+    entry = max(members, key=lambda f: ENTRY_RANK[f.entry]).entry
+    return entry, [f.id for f in members]
+
+
+def _next_json_payload(
+    *,
+    outcome: str,
+    cluster_key: tuple[str, str] | None,
+    entry: str | None,
+    ids: list[str],
+    waiting: list[tuple[str, str]],
+) -> dict[str, object]:
+    """D4 next object. ``cluster_key.value`` is the same string the text line prints."""
+    return {
+        "outcome": outcome,
+        "cluster_key": (
+            {"by": cluster_key[0], "value": cluster_key[1]}
+            if cluster_key is not None
+            else None
+        ),
+        "entry": entry,
+        "ids": ids,
+        "waiting": [{"id": fid, "on": slug} for fid, slug in waiting],
+    }
+
+
 def cmd_next(args: argparse.Namespace) -> int:
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
     if issues:
         print("refusing to pick from an invalid ledger; run `check`", file=sys.stderr)
         return 1
+
+    waiting_rows = _waiting_rows(findings)
 
     if args.pin:
         chosen = next((f for f in findings if f.id == args.pin), None)
@@ -1593,10 +1815,23 @@ def cmd_next(args: argparse.Namespace) -> int:
     else:
         clusters = rank(findings)
         if not clusters:
+            if args.json:
+                return _print_json(
+                    _next_json_payload(
+                        outcome=(
+                            NEXT_OUTCOME_BLOCKED_ONLY
+                            if waiting_rows
+                            else NEXT_OUTCOME_EMPTY
+                        ),
+                        cluster_key=None,
+                        entry=None,
+                        ids=[],
+                        waiting=[(fid, slug) for fid, slug, _title in waiting_rows],
+                    )
+                )
             print("QUEUE EMPTY")
-            for f in findings:
-                if f.status == "open" and classify_blocker(f.blocked) != BLOCKER_NONE:
-                    print(f"  blocked: {f.id} on {f.blocked} — {f.title}")
+            for fid, slug, title in waiting_rows:
+                print(f"  blocked: {fid} on {slug} — {title}")
             return 0
         key, members = clusters[0]
         kind, name = key
@@ -1606,10 +1841,20 @@ def cmd_next(args: argparse.Namespace) -> int:
             else f"only member of {kind} '{name}'"
         )
 
-    entry = max(members, key=lambda f: ENTRY_RANK[f.entry]).entry
+    entry, ids = _cluster_entry_and_ids(members)
+    if args.json:
+        return _print_json(
+            _next_json_payload(
+                outcome=NEXT_OUTCOME_CLUSTER,
+                cluster_key=key,
+                entry=entry,
+                ids=ids,
+                waiting=[],
+            )
+        )
     print(f"CLUSTER {key[1]}  entry={entry}")
     print(f"WHY     {reason}")
-    print(f"IDS     {' '.join(f.id for f in members)}")
+    print(f"IDS     {' '.join(ids)}")
     print()
     for f in members:
         print(f.summary())
@@ -4825,10 +5070,20 @@ def main(argv: list[str] | None = None) -> int:
     p_list.add_argument("--open", action="store_true", help="only status=open")
     p_list.add_argument("--area")
     p_list.add_argument("--root")
+    p_list.add_argument(
+        "--json",
+        action="store_true",
+        help="print a JSON array of findings on stdout; warnings stay on stderr",
+    )
     p_list.set_defaults(func=cmd_list)
 
     p_next = sub.add_parser("next", help="print the highest-ranked pickable cluster")
     p_next.add_argument("--pin", help="force this finding's cluster")
+    p_next.add_argument(
+        "--json",
+        action="store_true",
+        help="print a JSON object for the pick on stdout; warnings stay on stderr",
+    )
     p_next.set_defaults(func=cmd_next)
 
     p_rel = sub.add_parser("related", help="findings sharing an area or a file")
