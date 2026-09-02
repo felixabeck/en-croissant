@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: e6401ba529988a780ccc30e76d54a1ab8bec3f0332c1b78389e7f412e6544b55
+# agent-kit-sha256: ddef6bc63df38f2f0f4bb8227a53275f95b6711723cf7e5a7e5378815dd546b0
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -1561,6 +1561,11 @@ def _print_json(payload: object) -> int:
     return 0
 
 
+def _json_requested(args: argparse.Namespace) -> bool:
+    """True when ``--json`` was set. Direct callers may omit the attribute."""
+    return bool(getattr(args, "json", False))
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
@@ -1634,7 +1639,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         rows = [f for f in rows if f.area == args.area]
     if args.root:
         rows = [f for f in rows if f.root == args.root]
-    if args.json:
+    if _json_requested(args):
         return _print_json(
             _list_json_records(rows, load_tooling_areas_from_path(args.ledger))
         )
@@ -1815,7 +1820,7 @@ def cmd_next(args: argparse.Namespace) -> int:
     else:
         clusters = rank(findings)
         if not clusters:
-            if args.json:
+            if _json_requested(args):
                 return _print_json(
                     _next_json_payload(
                         outcome=(
@@ -1842,7 +1847,7 @@ def cmd_next(args: argparse.Namespace) -> int:
         )
 
     entry, ids = _cluster_entry_and_ids(members)
-    if args.json:
+    if _json_requested(args):
         return _print_json(
             _next_json_payload(
                 outcome=NEXT_OUTCOME_CLUSTER,
