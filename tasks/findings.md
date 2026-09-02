@@ -65,6 +65,8 @@ En Croissant's own.
 `db-search` · `deps` · `docs-agent-config` · `e2e-gate` · `engine-uci` · `frontend-state` ·
 `frontend-ui` · `gate-scripts` · `i18n` · `native-fs` · `oauth-credentials` · `pgn-import`
 
+**Tooling areas:** `ci-workflows` · `deps` · `docs-agent-config` · `gate-scripts`
+
 ---
 
 ---

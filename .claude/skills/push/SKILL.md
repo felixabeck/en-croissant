@@ -1,6 +1,7 @@
 ---
 name: push
 description: Validate, independently review, remediate, commit, and ordinarily push En Croissant changes to the current branch's configured upstream. Use only when Felix explicitly asks to push; push is not a release or deployment.
+disable-model-invocation: false
 ---
 
 # Push En Croissant
@@ -106,11 +107,14 @@ Changes to Specta commands/events/types, `src-tauri/src/main.rs`, or `src/bindin
 
 ### Findings ledger
 
-Affected by `tasks/**` or `scripts/findings.py`:
+`kit sync --check .` runs on every push: `scripts/findings.py` is the kit's vendored copy, and this
+line fails if those bytes have drifted from `~/Projekte/agent-kit`. The other two run when
+`tasks/**` or `scripts/findings.py` changed:
 
 ```bash
 python3 scripts/findings.py check
 pnpm findings:test
+kit sync --check .
 ```
 
 `check` validates the ledger: a malformed header or an area outside the closed vocabulary silently
@@ -147,7 +151,15 @@ pnpm tools:parity:check
 
 ## 3. Independent review and remediation
 
-Apply the shared policy's medium three-lens or high five-lens review over the effective pushed diff plus enclosing code. Run high review when any path below is touched:
+Run the review exactly as `~/.claude/references/push-review-policy.md` §§2–4 specify — named
+lenses over the effective pushed diff plus enclosing code; `review-correctness` and
+`review-root-cause` always on; the rest when their `description:` line applies. Every finding
+gets a `Fix` / `Defer` / `Skip(reason)` verdict. Out-of-area findings are `Defer`d autonomously
+to `tasks/findings.md` plus one handoff prompt (policy §4, universal rule 4b); never ask Felix
+which.
+
+A path below is a Sensitive-Path glob: a hit is `--role sensitive` for that lens (and for
+fixes); everything else is `--role normal`. The globs do not replace named-lens selection.
 
 ```text
 src-tauri/capabilities/**
@@ -192,7 +204,8 @@ docs/signed-download-manifests.md
 It does not replace `review-ipc-contract`: capability and CSP scope, `src-tauri/tauri.conf.json`,
 the Specta registry and generated bindings, and listener lifetimes remain owned by that lens.
 
-Triage every ≥80-confidence finding as `Fix` or `Skip(reason)`, repair every genuine long-term gain, inspect each repair diff, and rerun every gate invalidated by the repair. Security and filesystem refusal paths must be exercised, not merely read.
+Repair every `Fix`, inspect each repair diff, and rerun every gate invalidated by the repair.
+Security and filesystem refusal paths must be exercised, not merely read.
 
 En-Croissant runtime compatibility addition: the lens executor, its model rungs and the fallback switch are governed by `~/.claude/references/review-lens-contract.md`. Do not restate them here. If a runtime exposes none of the contract's model names, use independent typed reviewer agents with the smallest self-contained context and disclose that the review used the same model family as the author. Do not silently run the lenses inline while fan-out exists. AntiGravity reviews follow Felix's configured quota order: Gemini first, then Claude Opus at its second-highest reasoning level; never Sonnet or GPT there.
 

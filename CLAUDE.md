@@ -146,21 +146,16 @@ a diff touches `tasks/`.
 
 ## Multi-agent coordination
 
-This repository is worked on by Claude Code, Codex, and Grok. The following coordination rules apply
-to all three agents.
+Shared contract: `/home/felixb/Projekte/agent-kit/references/multi-agent-coordination.md`.
+This repository is worked on by Claude Code, Codex, and Grok.
 
-* Committer attribution: `GIT_COMMITTER_NAME` is the acting agent (`Claude Code`, `Codex`, or `Grok`).
-  The author remains Felix Beck. No co-author or AI trailer is added. Claude Code reads
-  `.claude/skills/push/SKILL.md` directly; Codex reaches it through `.agents/skills/push/SKILL.md`,
-  whose Codex delta names its own committer; and `.grok/rules/grok-croissant.md` points at the
-  canonical file.
+* Claude Code reads `.claude/skills/push/SKILL.md` directly; Codex reaches it through
+  `.agents/skills/push/SKILL.md`, whose Codex delta names its own committer; and
+  `.grok/rules/grok-croissant.md` points at the canonical file.
 * Gate scope is split, because the full set is slow enough that running it per commit is not
   practical. Per commit, run the narrowest affected checks from the mapping in
   `.claude/skills/push/SKILL.md`. Once per task, after the last commit, run the full affected set.
   Never commit on red.
-* Handoffs longer than a few lines are repo files at
-  `tasks/handoffs/YYYY-MM-DD-<slug>.md`, never pasted through Felix. The receiving agent gets the
-  file path.
 
 ## Verifying UI changes
 

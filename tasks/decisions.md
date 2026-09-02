@@ -13,6 +13,8 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
 
 **Technical calls only** — which mechanism, which default, which failure mode is preferable.
 
+The shared agent-kit decisions of the 2026-09-02 overhaul (`d-20260902-01` … `d-20260902-10`) live in `/home/felixb/Projekte/agent-kit/tasks/decisions.md`. This file does not copy them.
+
 ## Format
 
 ```
