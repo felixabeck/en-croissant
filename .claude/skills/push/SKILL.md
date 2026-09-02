@@ -107,7 +107,7 @@ Changes to Specta commands/events/types, `src-tauri/src/main.rs`, or `src/bindin
 
 ### Findings ledger
 
-`pnpm findings:kit:check` is local-only (`bash "$HOME/Projekte/agent-kit/bin/kit" sync --check .`;
+`pnpm findings:kit:check` runs `kit sync --check .` and is local-only (`bash "$HOME/Projekte/agent-kit/bin/kit" sync --check .`;
 CI has no kit). It runs on **every** push: `scripts/findings.py` is the kit's vendored copy, and
 this line fails if those bytes have drifted from `~/Projekte/agent-kit`.
 
