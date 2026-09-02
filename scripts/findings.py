@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# agent-kit-sha256: 033390093dccf88a991c886d7bcf7a1d8f56b90b56437e11c7c727228f2676ce
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -45,6 +46,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -57,15 +59,186 @@ from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-LEDGER = REPO_ROOT / "tasks" / "findings.md"
-DECISIONS = REPO_ROOT / "tasks" / "decisions.md"
+# Named so the formatter cannot rewrite them. `ruff format` at target-version py314
+# strips redundant parentheses from an explicit `except (A, B):` tuple literal, which
+# is what made the parenthesized form unkeepable here (`d-20260830-26`). A name is a
+# single expression with nothing to strip, so it survives the formatter AND parses on
+# pre-3.14 interpreters -- both halves are required for the version guard below.
+_READ_ERRORS = (OSError, UnicodeError)
+
+
+def _probe_git_toplevel() -> tuple[Path | None, str]:
+    """Read-only `git rev-parse --show-toplevel` of the current working directory.
+
+    Never writes. Never falls back to ``__file__`` or cwd. The stderr string is
+    what a verb prints inside ``REFUSING: not inside a git checkout (...)``.
+    """
+    git = shutil.which("git") or "/usr/bin/git"
+    try:
+        completed = subprocess.run(
+            [git, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return None, str(exc)
+    err = (completed.stderr or completed.stdout or "").strip()
+    if completed.returncode != 0:
+        return None, err or "git rev-parse --show-toplevel failed"
+    text = completed.stdout.strip()
+    if not text:
+        return None, err or "git rev-parse --show-toplevel returned empty"
+    return Path(text), ""
+
+
+def _discover_ledger_header() -> tuple[str | None, Path | None]:
+    """Locate a findings ledger header without using it for ledger paths.
+
+    Cwd git toplevel first (read-only); else this script's ``parents[1]`` for
+    HEADER LOOKUP ONLY, so ``--help`` preflights still fail closed on a too-old
+    interpreter inside a checkout whose header names a floor.
+    """
+    candidates: list[tuple[Path, Path]] = []
+    cwd_root, _err = _probe_git_toplevel()
+    if cwd_root is not None:
+        candidates.append((cwd_root / "tasks" / "findings.md", cwd_root))
+    script_root = Path(__file__).resolve().parents[1]
+    script_header = script_root / "tasks" / "findings.md"
+    if all(path != script_header for path, _root in candidates):
+        candidates.append((script_header, script_root))
+    for path, root in candidates:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except _READ_ERRORS:
+            continue
+        if "**Area vocabulary:**" in text or "**Python floor:**" in text:
+            return text, root
+    return None, None
+
+
+_PYTHON_FLOOR_RE = re.compile(r"\*\*Python floor:\*\*\s*(?P<version>\S+)")
+_PYTHON_INTERPRETER_RE = re.compile(r"\*\*Python interpreter:\*\*\s*(?P<path>\S+)")
+
+
+def _enforce_python_floor() -> None:
+    """Exit 2 on a too-old interpreter when a ledger header names a floor.
+
+    Prints Korrigio's exact remedy strings. Never writes. Repos without the
+    header lines run on any python3. Runs at startup, before argparse.
+    """
+    header, header_root = _discover_ledger_header()
+    if header is None:
+        return
+    floor_match = _PYTHON_FLOOR_RE.search(header)
+    if floor_match is None:
+        return
+    version_text = floor_match.group("version")
+    parts = version_text.split(".")
+    try:
+        floor = tuple(int(part) for part in parts[:2])
+    except ValueError:
+        return
+    if len(floor) < 2:
+        return
+    if sys.version_info[:2] >= floor:
+        return
+    _script = Path(__file__).resolve()
+    interpreter_match = _PYTHON_INTERPRETER_RE.search(header)
+    # The interpreter comes from the header only; nothing project-specific
+    # (no `backend/.venv` default) is compiled in here.
+    _venv_python: Path | None = None
+    if interpreter_match is not None:
+        named = Path(interpreter_match.group("path"))
+        _venv_python = named if named.is_absolute() else (header_root or Path()) / named
+    rerun_any = shlex.join([str(_script), *sys.argv[1:]])
+    if _venv_python is not None and _venv_python.exists():
+        _remedy = "Re-run it with the repository interpreter:\n  " + shlex.join(
+            [str(_venv_python), str(_script), *sys.argv[1:]]
+        )
+    elif _venv_python is not None:
+        _remedy = (
+            "No interpreter was found at %s.\n"
+            "Build it as the repository documents, "
+            "or re-run the command below with any Python %s+:\n"
+            "  %s" % (_venv_python, version_text, rerun_any)
+        )
+    else:
+        _remedy = "Re-run the command below with any Python %s+:\n  %s" % (
+            version_text,
+            rerun_any,
+        )
+    sys.stderr.write(
+        "findings.py requires Python %s+ and is running on Python %d.%d (%s).\n"
+        "This is this repository's requires-python floor, not a broken file.\n"
+        "%s\n"
+        % (
+            version_text,
+            sys.version_info[0],
+            sys.version_info[1],
+            sys.executable,
+            _remedy,
+        )
+    )
+    raise SystemExit(2)
+
+
+_enforce_python_floor()
+
+
+# Length is part of the cross-language protocol: `drain-findings.sh` truncates to
+# the same width. Changing it here alone renames the lock for one side only.
+DRAIN_LOCK_KEY_CHARS = 8
+
+
+def _lock_for_root(root: Path) -> Path:
+    """Consumer-lock path for one git toplevel, matching drain-lock-name.sh."""
+    key = hashlib.sha256(str(root).encode()).hexdigest()[:DRAIN_LOCK_KEY_CHARS]
+    return Path.home() / ".claude" / f"drain-lock-{root.name}-{key}"
+
+
+def _require_git_toplevel() -> Path:
+    """Verb-time root. Exit 3 outside a checkout; never fall back."""
+    root, err = _probe_git_toplevel()
+    if root is None:
+        print(f"REFUSING: not inside a git checkout ({err})", file=sys.stderr)
+        raise SystemExit(3)
+    return root
+
+
+_IMPORT_ROOT, _IMPORT_GIT_ERR = _probe_git_toplevel()
+# Import-time paths exist so tests that inspect the module constants, and
+# argparse defaults that production CLI calls omit, still resolve. Verbs
+# re-derive from the cwd's git toplevel at execution; they never use __file__.
+REPO_ROOT: Path | None = _IMPORT_ROOT
+LEDGER = (
+    REPO_ROOT / "tasks" / "findings.md"
+    if REPO_ROOT is not None
+    else Path("tasks") / "findings.md"
+)
+DECISIONS = (
+    REPO_ROOT / "tasks" / "decisions.md"
+    if REPO_ROOT is not None
+    else Path("tasks") / "decisions.md"
+)
 # Git-ignored spool for findings filed through `file`. Separate atomically
 # published files prevent two filing sessions from overwriting each other while
 # the entry waits for its merge.
-INBOX = REPO_ROOT / "tasks" / "findings-inbox"
-LEGACY_INBOX = REPO_ROOT / "tasks" / "findings-inbox.md"
-CLAIM = REPO_ROOT / "tasks" / "findings-inbox.claim"
+INBOX = (
+    REPO_ROOT / "tasks" / "findings-inbox"
+    if REPO_ROOT is not None
+    else Path("tasks") / "findings-inbox"
+)
+LEGACY_INBOX = (
+    REPO_ROOT / "tasks" / "findings-inbox.md"
+    if REPO_ROOT is not None
+    else Path("tasks") / "findings-inbox.md"
+)
+CLAIM = (
+    REPO_ROOT / "tasks" / "findings-inbox.claim"
+    if REPO_ROOT is not None
+    else Path("tasks") / "findings-inbox.claim"
+)
 # A filer publishes first and only then checks this lock. The environment override
 # keeps that branch testable without ever consulting the real drain lock.
 DRAIN_LOCK_ENV = "FINDINGS_DRAIN_LOCK"
@@ -79,19 +252,21 @@ DRAIN_LOCK_ENV = "FINDINGS_DRAIN_LOCK"
 # `drain-findings.sh` computes the same suffix and the two MUST agree —
 # `test_drain_lock_name_matches_the_drain_script` proves it rather than trusting
 # two implementations of one hash.
-# Length is part of the cross-language protocol: `drain-findings.sh` truncates to
-# the same width. Changing it here alone renames the lock for one side only.
-DRAIN_LOCK_KEY_CHARS = 8
-_REPO_KEY = hashlib.sha256(str(REPO_ROOT).encode()).hexdigest()[:DRAIN_LOCK_KEY_CHARS]
 DEFAULT_DRAIN_LOCK = (
-    Path.home() / ".claude" / f"drain-lock-{REPO_ROOT.name}-{_REPO_KEY}"
+    _lock_for_root(REPO_ROOT)
+    if REPO_ROOT is not None
+    else Path.home() / ".claude" / "drain-lock-unknown"
 )
 # Felix's answers to parked decisions. A separate spool from INBOX because the two
 # do opposite things: the inbox appends whole new entries, an answer *edits* an
 # existing one. Same unique-name plus exclusive-publish discipline (`ln` in
 # `/decide`, `os.link` here), same "drain applies it between clusters" timing,
 # so an answer given mid-run re-enters that run.
-ANSWERS = REPO_ROOT / "tasks" / "findings-answers"
+ANSWERS = (
+    REPO_ROOT / "tasks" / "findings-answers"
+    if REPO_ROOT is not None
+    else Path("tasks") / "findings-answers"
+)
 
 # Which Felix-facing blockers have already been announced. Git-ignored: it is
 # machine state about who has been told what, not part of the ledger's record.
@@ -201,20 +376,75 @@ def _body_is_sentry_origin(body: str) -> bool:
 # from the session that parked it. Without this, answering days later means
 # re-deriving an investigation that already happened — the same waste as
 # restarting a crashed cluster instead of resuming it.
+#
+# All four use the shared `_BULLET` grammar rather than a hand-written `[*-]`.
+# They carried their own copy until 2026-09-01, which silently rejected a
+# CommonMark `+ ` bullet -- and because every locked mutation validates the
+# whole ledger, one such entry would have refused every later write to it.
 DECISION_BRIEF_RE = re.compile(
-    r"^\s*[*-]\s+\*\*Decision:\*\*\s*(?P<question>\S.*)",
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Decision:\*\*[ \t]*(?P<question>\S.*)",
     re.MULTILINE,
 )
 RECOMMEND_RE = re.compile(
-    r"^\s*[*-]\s+\*\*Recommend:\*\*\s*(?P<choice>\S.*)",
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Recommend:\*\*[ \t]*(?P<choice>\S.*)",
     re.MULTILINE,
 )
 # The parking session's id, so `/decide` can mine the transcript that holds the
 # investigation instead of re-deriving it. Required by the contract and, until
 # now, by nothing that checked.
 SESSION_RE = re.compile(
-    r"^\s*[*-]\s+\*\*Session:\*\*\s*(?P<sid>\S.*)",
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Session:\*\*[ \t]*(?P<sid>\S.*)",
     re.MULTILINE,
+)
+# The gate that decides whether the question is Felix's at all: what does a user
+# of the app see, get, pay or get promised differently depending on the answer?
+# A technical question never parks, however consequential — the session holding
+# the investigation is the one positioned to apply the optimal-long-term rule.
+#
+# This is enforced rather than merely written down because the failure mode is
+# not a badly written park, it is a *well* written one. `f-20260824-21` parked a
+# choice between npx, a devDependency and a hand-written allowlist behind a
+# complete, well-argued brief; Felix: "This is purely technical stuff. I don't
+# understand what you're talking about. I just enter your recommendations."
+# Brief quality is not what makes a question his, so no amount of prose in the
+# contract catches this — only a bullet the parking session has to write and
+# cannot write honestly for a technical question.
+PRODUCT_IMPACT_RE = re.compile(
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Product impact:\*\*[ \t]*(?P<impact>\S.*)",
+    re.MULTILINE,
+)
+# A bullet that exists and says nothing satisfies the letter of the gate while
+# defeating its purpose, and the phrasings that do it are few and predictable:
+# a run that has just been told it must name a product impact, and has none,
+# writes exactly one of these. The validator cannot judge honesty and does not
+# try -- it refuses the grossly vacuous forms, which is the difference between
+# a gate an agent must think past and one it can type past.
+VACUOUS_IMPACT_RE = re.compile(
+    r"^(?:"
+    r"[\s.,()\[\]\-–—…;:!?*_`\"']*"  # punctuation-only, e.g. "." or "--" or "()"
+    r"|n/?a\b.*"
+    r"|none\b.*"
+    r"|nothing\b.*"
+    r"|unknown\b.*"
+    r"|tbd\b.*"
+    r"|(?:no|zero)\s+(?:user|product|customer|visible|direct)\b.*"
+    r"|no\s+impact\b.*"
+    r"|no\s+(?:users?|teachers?|customers?|one)\b.*"
+    r"|(?:purely|only|just)\s+(?:a\s+)?technical\b.*"
+    r"|technical\s+(?:only|choice|decision)\b.*"
+    r"|(?:this\s+)?(?:is\s+)?(?:a\s+)?technical\b.*"
+    # Anchored at the START of the bullet, deliberately, where the sibling
+    # matched them anywhere in it. Matching anywhere refuses a legitimate
+    # CONTRAST -- "(a) no user-visible change; (b) the teacher sees a warning"
+    # names a real product impact and is exactly the sentence this gate wants.
+    # Refusing it is the harmful direction: the failure message tells the author
+    # the question is technical and should be unparked, so an over-broad rule
+    # here pushes a genuine product question off Felix's list.
+    r"|(?:there\s+is\s+)?no\s+(?:user|product|customer)[- ]visible\b.*"
+    r"|nothing\s+(?:a\s+)?users?\s+(?:can\s+)?(?:see|observe|notice)\b.*"
+    r"|(?:this\s+(?:is|would\s+be)\s+)?invisible\s+to\s+(?:the\s+|every\s+|all\s+)?users?\b.*"
+    r")$",
+    re.IGNORECASE | re.DOTALL,
 )
 # Slugs naming the waits that depend on Felix. Answerable blockers carry a
 # question; other `felix-*` values name preconditions he must clear.
@@ -319,6 +549,18 @@ DECISION_ID_RE = re.compile(r"d-\d{8}-\d{2}")
 # so validation can reject it. Requiring a digit after `d-` excludes the format
 # template in the decisions ledger's own header.
 DECISION_MARKER_RE = re.compile(r"^ {0,3}#+\s*d-\d")
+# Clause 1 of `tasks/decisions.md` requires every recorded decision to preserve
+# the question, chosen option, rejected option, and reason. The ledger contains
+# both bare and bulleted forms, and both punctuation forms are established in
+# its existing entries.
+DECISION_CLAUSE_ONE_FIELDS = ("Question", "Chosen", "Rejected", "Reason")
+DECISION_FIELD_RE = {
+    field: re.compile(
+        rf"^[ \t]*(?:{_BULLET}[ \t]+)?\*\*{field}(?:\.|:)\*\*[ \t]*\S",
+        re.MULTILINE,
+    )
+    for field in DECISION_CLAUSE_ONE_FIELDS
+}
 GOVERNS_RE = re.compile(r"\*\*Governs:\*\*(?P<ids>.+)")
 SUPERSEDED_BY_RE = re.compile(
     r"\*\*Superseded-by:\*\*\s*(?P<quote>`)?"
@@ -326,8 +568,15 @@ SUPERSEDED_BY_RE = re.compile(
 )
 # Deliberately looser than the strict form above: it has to CATCH a near-miss
 # so validation can reject it. A trailer with an unparseable id must not vanish
-# from the ledger's validation output just because it is not a link.
-SUPERSEDED_BY_MARKER_RE = re.compile(r"\*\*Superseded-by:\*\*")
+# from the ledger's validation output just because it is not a link. The second
+# branch catches a case-insensitive supersed-ish by-marker and a decision id
+# inside one bold run, including a marker with the id inside the bold text.
+SUPERSEDED_BY_MARKER_RE = re.compile(
+    r"\*\*Superseded-by:\*\*"
+    r"|\*\*(?=[^*\n]*d-\d{8}-\d{2}[^*\n]*\*\*)"
+    r"[^*\n]*supersed(?:e|ed)?[- ]by\b[^*\n]*\*\*",
+    re.IGNORECASE,
+)
 # Deliberately looser than the strict form below: it has to CATCH a near-miss
 # so validation can reject it. Anchored at column 0 it would silently ignore an
 # indented bullet, and the link would simply not exist with nothing said.
@@ -401,7 +650,7 @@ def scan_paths(body: list[str], body_fenced: list[bool]) -> set[str]:
             if "/" not in token or FENCED_URL_RE.match(token):
                 continue
             candidate = Path(token)
-            if candidate.is_absolute():
+            if candidate.is_absolute() and REPO_ROOT is not None:
                 try:
                     token = candidate.resolve().relative_to(REPO_ROOT).as_posix()
                 except ValueError:
@@ -556,6 +805,9 @@ class LedgerError(Exception):
     pass
 
 
+_READ_ERRORS_LEDGER = (OSError, UnicodeError, LedgerError)
+
+
 class FenceState(Enum):
     OUTSIDE = auto()
     DELIMITER = auto()
@@ -613,6 +865,36 @@ def _fence_mask(lines: list[str]) -> list[FenceState]:
             "would be masked, so the ledger would validate while hiding findings"
         )
     return mask
+
+
+def _mask_inline_code_spans(line: str) -> str:
+    """Mask quoted marker text in complete inline code spans on one line.
+
+    Backtick runs delimit spans only when their opening and closing lengths match.
+    Process longer runs first so a double-backtick span containing single
+    backticks is masked as one quoted span rather than split into inner spans.
+    A span containing only a decision id stays visible because that id can be
+    part of an otherwise visible near-miss marker. Unclosed spans remain visible
+    to the caller and never consume a later line.
+    """
+    masked = line
+    run_lengths = sorted(
+        {len(match.group()) for match in re.finditer(r"`+", line)}, reverse=True
+    )
+    for run_length in run_lengths:
+        span = re.compile(
+            rf"(?<!`)`{{{run_length}}}(?!`)[^\n]*?"
+            rf"(?<!`)`{{{run_length}}}(?!`)"
+        )
+
+        def replace(match: re.Match[str], run_length: int = run_length) -> str:
+            content = match.group()[run_length:-run_length]
+            if re.fullmatch(r"\s*d-\d{8}-\d{2}\s*", content):
+                return match.group()
+            return " " * len(match.group())
+
+        masked = span.sub(replace, masked)
+    return masked
 
 
 def _read_decision_lines(
@@ -822,25 +1104,68 @@ def validate(
                 "stated reason why this is genuinely not a defect"
             )
         if f.status == "open" and f.blocked == FELIX_DECISION:
-            if not DECISION_BRIEF_RE.search(joined):
-                issues.append(
-                    f"{where}: blocked on {FELIX_DECISION} but carries no "
-                    "'**Decision:**' bullet — state the question, the options and what "
-                    "each costs, while the investigation that produced them is loaded"
-                )
-            elif not RECOMMEND_RE.search(joined):
-                issues.append(
-                    f"{where}: has a '**Decision:**' bullet but no '**Recommend:**' — "
-                    "park with a recommendation so answering is a confirmation, not "
-                    "an investigation"
-                )
-            elif not SESSION_RE.search(joined):
-                issues.append(
-                    f"{where}: has a '**Decision:**' brief but no '**Session:**' id — "
-                    "name the parking session so its transcript can be mined instead "
-                    "of the investigation being re-derived"
-                )
+            issues.extend(_park_brief_issues(where, joined))
 
+    return issues
+
+
+def _park_brief_issues(where: str, joined: str) -> list[str]:
+    """Check a `felix-decision` park's brief, reporting every missing part.
+
+    Two properties that were both wrong until 2026-09-01:
+
+    * **All missing markers are reported at once.** These were an ``elif``
+      chain, so a brief missing three of them surfaced one per attempt. That is
+      merely annoying for ``check``, but every locked ledger mutation validates
+      the whole file first, so each undisclosed omission kept refusing every
+      write to the ledger until someone guessed the next one.
+    * **The markers are searched inside the brief, not the whole entry.** The
+      contract places the brief last, running from ``**Decision:**`` to the end
+      of the entry. Searching the whole body let an unrelated or historical
+      ``**Product impact:**`` bullet somewhere above the question satisfy the
+      gate for a question that never had one -- which is exactly the bypass the
+      gate exists to close.
+    """
+    decision = DECISION_BRIEF_RE.search(joined)
+    if decision is None:
+        return [
+            f"{where}: blocked on {FELIX_DECISION} but carries no "
+            "'**Decision:**' bullet — state the question, the options and what "
+            "each costs, while the investigation that produced them is loaded"
+        ]
+
+    brief = joined[decision.start() :]
+    issues: list[str] = []
+    if not RECOMMEND_RE.search(brief):
+        issues.append(
+            f"{where}: has a '**Decision:**' bullet but no '**Recommend:**' in "
+            "the brief — park with a recommendation so answering is a "
+            "confirmation, not an investigation"
+        )
+    if not SESSION_RE.search(brief):
+        issues.append(
+            f"{where}: has a '**Decision:**' brief but no '**Session:**' id — "
+            "name the parking session so its transcript can be mined instead "
+            "of the investigation being re-derived"
+        )
+    impact = PRODUCT_IMPACT_RE.search(brief)
+    if impact is None:
+        issues.append(
+            f"{where}: has a '**Decision:**' brief but no "
+            "'**Product impact:**' — state what a user of the app sees, gets, "
+            "pays or is promised differently depending on the answer. If that "
+            "sentence cannot be written, the question is technical and does "
+            "not park: decide it, record it in tasks/decisions.md, and name "
+            "the decision in the completion message"
+        )
+    elif VACUOUS_IMPACT_RE.match(impact.group("impact").strip()):
+        issues.append(
+            f"{where}: its '**Product impact:**' says there is none "
+            f"({impact.group('impact').strip()!r}), which is the answer that "
+            "disqualifies the park rather than satisfying it. A question with "
+            "no product impact is technical: clear the blocker and decide it, "
+            "or give it a slug naming the precondition it actually waits on"
+        )
     return issues
 
 
@@ -958,9 +1283,11 @@ def malformed_superseded_trailers(decisions_path: Path) -> list[str]:
     for number, line in enumerate(lines, 1):
         if mask[number - 1] is not FenceState.OUTSIDE:
             continue
+        masked_line = _mask_inline_code_spans(line)
         if (
-            SUPERSEDED_BY_MARKER_RE.search(line)
-            and SUPERSEDED_BY_RE.search(line) is None
+            SUPERSEDED_BY_MARKER_RE.search(masked_line)
+            # Both searches must see the same real text; inline-code examples are not trailers.
+            and SUPERSEDED_BY_RE.search(masked_line) is None
         ):
             issues.append(
                 f"{decisions_path}:{number}: malformed Superseded-by trailer. "
@@ -1355,10 +1682,25 @@ def _unique_suffix() -> str:
 def _fsync_directory(directory: Path) -> None:
     """Make directory entries in ``directory`` durable."""
     directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    synced = False
     try:
         os.fsync(directory_fd)
+        synced = True
     finally:
-        os.close(directory_fd)
+        try:
+            os.close(directory_fd)
+        except OSError as exc:
+            # Never re-raise here. A ``raise`` inside ``finally`` replaces the
+            # fsync exception already in flight, so report the cleanup failure
+            # and let the durability error propagate.
+            detail = (
+                "after directory fsync" if synced else "after a failed directory fsync"
+            )
+            print(
+                f"WARN could not clean up directory file descriptor {directory_fd} "
+                f"{detail}: {exc}",
+                file=sys.stderr,
+            )
 
 
 def _atomic_write(path: Path, text: str, *, durable_directory: bool = False) -> None:
@@ -1400,7 +1742,9 @@ def _atomic_write(path: Path, text: str, *, durable_directory: bool = False) -> 
             # whose whole purpose is not losing findings, that is the wrong half to
             # keep. Report the orphaned temporary file instead, so both diagnostics
             # survive, and let the primary error propagate.
-            detail = "after atomic write" if committed else "after a failed atomic write"
+            detail = (
+                "after atomic write" if committed else "after a failed atomic write"
+            )
             print(
                 f"WARN could not clean up temporary file {tmp} {detail}: {exc}",
                 file=sys.stderr,
@@ -1411,11 +1755,28 @@ def _atomic_write(path: Path, text: str, *, durable_directory: bool = False) -> 
 def _candidate_scratch(candidate: str, near: Path) -> Iterator[Path]:
     """Expose candidate text through a unique scratch path for one parse."""
     scratch = near.with_name(f"{near.name}.candidate-{_unique_suffix()}")
+    candidate_succeeded = False
     try:
         scratch.write_text(candidate, encoding="utf-8")
         yield scratch
+        candidate_succeeded = True
     finally:
-        scratch.unlink(missing_ok=True)
+        try:
+            scratch.unlink(missing_ok=True)
+        except OSError as exc:
+            # Never re-raise here. A ``raise`` inside ``finally`` replaces the
+            # candidate error already in flight, so report the cleanup failure
+            # and let the parse or validation error propagate.
+            detail = (
+                "after candidate processing"
+                if candidate_succeeded
+                else "after a failed candidate processing"
+            )
+            print(
+                f"WARN could not clean up candidate scratch file {scratch} "
+                f"{detail}: {exc}",
+                file=sys.stderr,
+            )
 
 
 def publish_lock_path(spool: Path) -> Path:
@@ -1661,7 +2022,7 @@ def _adopt_orphan_parts(spool: Path, receipt_index: ReceiptIndex | None = None) 
         for part in orphan_parts:
             try:
                 entry = part.read_text(encoding="utf-8")
-            except (OSError, UnicodeError):
+            except _READ_ERRORS:
                 continue
             digests.add(hashlib.sha256(entry.encode("utf-8")).hexdigest())
         try:
@@ -1844,7 +2205,7 @@ def _normalise_sentry_origin_entry(entry: str, ledger: Path) -> str:
         ledger_text = ledger.read_text(encoding="utf-8")
         candidate = _entry_candidate_text(entry, ledger_text)
         findings, problems, _vocabulary = _parse_text(candidate, ledger)
-    except (OSError, UnicodeError, LedgerError):
+    except _READ_ERRORS_LEDGER:
         return entry
     if len(findings) != 1 or problems:
         return entry
@@ -1928,9 +2289,21 @@ def _read_and_validate_entry(
 
 
 def drain_lock_path() -> Path:
-    """Return the configured drain lock path."""
+    """Return the configured drain lock path.
+
+    The default hashes the cwd's git toplevel at call time so the same bytes
+    running from a kit path with cwd inside another checkout key that checkout,
+    not ``__file__``.
+    """
     configured = os.environ.get(DRAIN_LOCK_ENV)
-    return Path(configured) if configured else DEFAULT_DRAIN_LOCK
+    if configured:
+        return Path(configured)
+    root, _err = _probe_git_toplevel()
+    if root is not None:
+        return _lock_for_root(root)
+    if REPO_ROOT is not None:
+        return _lock_for_root(REPO_ROOT)
+    return DEFAULT_DRAIN_LOCK
 
 
 def cmd_drain_status(args: argparse.Namespace) -> int:
@@ -2770,7 +3143,7 @@ def _merge_receipt_digests(inbox: Path, legacy: Path) -> set[str]:
     for path in paths:
         try:
             text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
+        except _READ_ERRORS:
             continue
         entry_texts = _receipt_entry_texts(text) or [text]
         digests.update(
@@ -3542,7 +3915,7 @@ def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None
                 "--duration",
                 str(NOTIFY_DURATION_MS),
                 "--project",
-                REPO_ROOT.name,
+                REPO_ROOT.name if REPO_ROOT is not None else "unknown",
             ],
             check=False,
             timeout=NOTIFY_POST_TIMEOUT_S,
@@ -3672,9 +4045,24 @@ def cmd_decisions(args: argparse.Namespace) -> int:
             print("No decisions are waiting on you.")
         return 0
 
-    if waiting:
-        print(f"{len(waiting)} decision(s) waiting on you.\n")
-    for f in waiting:
+    # Product decisions and Sentry approvals are two different asks and were
+    # printed as one list under one count, which made the queue read as "18
+    # decisions waiting on you" when only a handful were product questions.
+    # Felix, 2026-09-01: "I only want decisions when they are really for me and
+    # change the product in an important way." Separating them costs nothing and
+    # stops the security gate inflating the number he judges the queue by.
+    product = [f for f in waiting if f.blocked == FELIX_DECISION]
+    approvals = [f for f in waiting if f.blocked == FELIX_SENTRY_ORIGIN]
+    if product:
+        print(f"{len(product)} product decision(s) waiting on you.\n")
+    for f in product + approvals:
+        if approvals and f is approvals[0]:
+            print(
+                f"{len(approvals)} Sentry approval(s) waiting on you — not product\n"
+                "decisions. The unattended intake reads externally-influenceable\n"
+                "input while holding authority, so a human confirms each defect it\n"
+                "files before it becomes work (d-20260825-19).\n"
+            )
         print(f"{f.id} — {f.title}")
         print(f"  area={f.area}  entry={f.entry}  ledger line {f.line}")
         if f.blocked == FELIX_SENTRY_ORIGIN:
@@ -3710,6 +4098,12 @@ def cmd_decisions(args: argparse.Namespace) -> int:
         print("WHAT MUST BECOME TRUE")
         for f in preconditions:
             print(f"{f.id} — {f.title}")
+            # The slug IS the precondition -- it is the only place the entry says
+            # what must become true. Printing the title and `Where` without it
+            # told Felix to "clear this precondition" while naming none of them:
+            # `felix-sentry-permission` read as an unexplained instruction to go
+            # fix something in a file path.
+            print(f"  waits on: {f.blocked}")
             where_lines = [
                 line
                 for line in _unfenced_body(f).splitlines()
@@ -3787,6 +4181,33 @@ def _decision_heading_locations(
     """Adapt decision headings to the shared pending-id allocator interface."""
     lines, matches = _decision_heading_matches(text, include_pending=include_pending)
     return lines, [(index, index, match) for index, match in matches]
+
+
+def _decision_clause_one_issues(entry: str) -> list[str]:
+    """Report clause-1 fields missing from decisions in one recording input."""
+    lines, headings = _decision_heading_matches(entry, include_pending=True)
+    fence_states = _fence_mask(lines)
+    issues: list[str] = []
+    for position, (heading_index, match) in enumerate(headings):
+        end = headings[position + 1][0] if position + 1 < len(headings) else len(lines)
+        body = chr(10).join(
+            line
+            for index, line in enumerate(
+                lines[heading_index + 1 : end], heading_index + 1
+            )
+            if fence_states[index] is FenceState.OUTSIDE
+        )
+        missing = [
+            field
+            for field in DECISION_CLAUSE_ONE_FIELDS
+            if DECISION_FIELD_RE[field].search(body) is None
+        ]
+        if missing:
+            issues.append(
+                f"### {match.group('id')} — {match.group('question')} is missing "
+                "clause 1 field(s): " + ", ".join(missing)
+            )
+    return issues
 
 
 def _read_mutation_input(path: Path) -> str:
@@ -3971,6 +4392,14 @@ def cmd_record_decision(args: argparse.Namespace) -> int:
     if not any(match.group("id") == PENDING_DECISION_ID for _, match in pending):
         raise LedgerError(
             f"{args.file} must contain at least one ### {PENDING_DECISION_ID} heading"
+        )
+    clause_one_issues = _decision_clause_one_issues(entry)
+    if clause_one_issues:
+        raise LedgerError(
+            f"{args.file} decision entries must include tasks/decisions.md clause 1 "
+            "fields (Question, Chosen, Rejected, Reason):"
+            + chr(10)
+            + chr(10).join(clause_one_issues)
         )
     allocated: list[str] = []
     date = f"{datetime.now().astimezone():%Y%m%d}"
@@ -4362,14 +4791,26 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
     return 1 if quarantined else 0
 
 
+def _bind_repo_root(root: Path) -> None:
+    """Point module-level ledger paths at a git toplevel. Verb-time only."""
+    global REPO_ROOT, LEDGER, DECISIONS, INBOX, LEGACY_INBOX, CLAIM, ANSWERS
+    global DEFAULT_DRAIN_LOCK
+    REPO_ROOT = root
+    LEDGER = root / "tasks" / "findings.md"
+    DECISIONS = root / "tasks" / "decisions.md"
+    INBOX = root / "tasks" / "findings-inbox"
+    LEGACY_INBOX = root / "tasks" / "findings-inbox.md"
+    CLAIM = root / "tasks" / "findings-inbox.claim"
+    ANSWERS = root / "tasks" / "findings-answers"
+    DEFAULT_DRAIN_LOCK = _lock_for_root(root)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Query and validate the findings ledger (tasks/findings.md)."
     )
-    parser.add_argument("--ledger", type=Path, default=LEDGER, help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--decisions", type=Path, default=DECISIONS, help=argparse.SUPPRESS
-    )
+    parser.add_argument("--ledger", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--decisions", type=Path, default=None, help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser(
@@ -4393,7 +4834,7 @@ def main(argv: list[str] | None = None) -> int:
     p_rel = sub.add_parser("related", help="findings sharing an area or a file")
     p_rel.add_argument("--area")
     p_rel.add_argument("--file", action="append", help="repeatable")
-    p_rel.add_argument("--inbox", type=Path, default=INBOX, help=argparse.SUPPRESS)
+    p_rel.add_argument("--inbox", type=Path, default=None, help=argparse.SUPPRESS)
     p_rel.set_defaults(func=cmd_related)
 
     p_file = sub.add_parser(
@@ -4402,7 +4843,7 @@ def main(argv: list[str] | None = None) -> int:
     p_file.add_argument(
         "entry", type=Path, help="path to one complete ### finding entry"
     )
-    p_file.add_argument("--inbox", type=Path, default=INBOX, help=argparse.SUPPRESS)
+    p_file.add_argument("--inbox", type=Path, default=None, help=argparse.SUPPRESS)
     p_file.add_argument(
         "--again",
         action="store_true",
@@ -4416,7 +4857,7 @@ def main(argv: list[str] | None = None) -> int:
     p_file.set_defaults(func=cmd_file)
 
     p_merge = sub.add_parser("merge-inbox", help="fold the inbox into the ledger")
-    p_merge.add_argument("--inbox", type=Path, default=INBOX, help=argparse.SUPPRESS)
+    p_merge.add_argument("--inbox", type=Path, default=None, help=argparse.SUPPRESS)
     p_merge.set_defaults(func=cmd_merge_inbox)
 
     p_dec = sub.add_parser(
@@ -4428,9 +4869,7 @@ def main(argv: list[str] | None = None) -> int:
     p_answers = sub.add_parser(
         "apply-answers", help="fold answered decisions in and unblock them"
     )
-    p_answers.add_argument(
-        "--answers", type=Path, default=ANSWERS, help=argparse.SUPPRESS
-    )
+    p_answers.add_argument("--answers", type=Path, default=None, help=argparse.SUPPRESS)
     p_answers.set_defaults(func=cmd_apply_answers)
 
     p_header = sub.add_parser(
@@ -4456,6 +4895,16 @@ def main(argv: list[str] | None = None) -> int:
     p_record.set_defaults(func=cmd_record_decision)
 
     args = parser.parse_args(argv)
+    root = _require_git_toplevel()
+    _bind_repo_root(root)
+    if args.ledger is None:
+        args.ledger = LEDGER
+    if args.decisions is None:
+        args.decisions = DECISIONS
+    if getattr(args, "inbox", None) is None and hasattr(args, "inbox"):
+        args.inbox = INBOX
+    if getattr(args, "answers", None) is None and hasattr(args, "answers"):
+        args.answers = ANSWERS
     if args.command == "set-header" and not any(
         value is not None
         for value in (args.status, args.blocked, args.root, args.entry)

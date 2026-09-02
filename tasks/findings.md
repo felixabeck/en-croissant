@@ -39,12 +39,27 @@ En Croissant's own.
   question — the interview is the point). Universal rule 6b's three tiers. **When uncertain, write
   `build`.** A cluster takes the highest tier of its members.
 * **Blocked** — `none`, or a slug naming what it waits on (`felix-decision`, `upstream-tauri`).
-  A blocked finding is excluded from the queue; it is not "next". `felix-decision` additionally
-  requires a `**Decision:**` brief ending the entry, containing both a `**Recommend:**` and a
-  `**Session:**` sub-bullet — `check` fails the park without all three.
-
-Felix answers through `/decide`, which publishes to `tasks/findings-answers/` and is applied by
-`findings.py apply-answers`. `python3 scripts/findings.py decisions` lists what is waiting on him.
+  A blocked finding is excluded from the queue; it is not "next".
+  **`felix-decision` additionally requires a `**Decision:**` brief ending the entry, which
+  must contain a `**Recommend:**`, a `**Session:**` and a `**Product impact:**` sub-bullet** —
+  `check` fails the park without all four.
+  **`Product impact` is the gate on whether the question is Felix's at all:** it names what a
+  user of En Croissant sees, gets, pays or is promised differently depending on the answer. A
+  technical question never parks, however consequential; if that sentence cannot be written
+  honestly, decide it, record it in `tasks/decisions.md` and name it in the completion message.
+  A *precondition* — waiting on a branch, an issue or a permission — is not a park either and
+  takes a slug naming what must become true. *Enforced since 2026-09-01: the rule existed in
+  prose that morning and an audit that afternoon found ten of thirteen open parks were not
+  product questions (`d-20260901-15`, `d-20260901-16`).* `Recommend` is required but need not come last; `Ruled out` and
+  `Could not determine` legitimately follow it. The brief is
+  the question, each option with its cost, what was ruled out and why, the recommendation and
+  the strongest case against it, and the parking session's `**Session:**` id so its transcript
+  can be mined. *Reason: the parking session is the only one that ever has the investigation
+  loaded. Three findings sat parked for two days carrying a flag and no question, each needing
+  its whole investigation re-derived before it could be answered.*
+  Felix answers through `/decide`, which publishes to `tasks/findings-answers/` and is applied
+  by `findings.py apply-answers` — the drain runs it between clusters, so an answer given
+  mid-run rejoins that run. `python3 scripts/findings.py decisions` lists what is waiting.
 
 **Area vocabulary:** `app-startup` · `bindings-ipc` · `chess-tree` · `ci-workflows` ·
 `db-search` · `deps` · `docs-agent-config` · `e2e-gate` · `engine-uci` · `frontend-state` ·
@@ -221,7 +236,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### 2. The 320px / 200% font-scale layout is broken and its screenshots record the breakage
 
-* **ID:** f-20260829-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** felix-decision
+* **ID:** f-20260829-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `e2e/async-errors.spec.ts-snapshots/*`, `e2e/settings-responsive.spec.ts-snapshots/*`,
   `e2e/security-consent.spec.ts-snapshots/*`, and the components they render. Those are the four
   committed snapshots from the three 320px / 200% Playwright projects.
@@ -331,6 +346,8 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
   * **Session:** 1ed74d8d-8302-41f3-9a68-c165accad91d — transcript
     `~/.claude/projects/*/1ed74d8d-8302-41f3-9a68-c165accad91d.jsonl`
 
+* **Un-parked 2026-09-02:** technical under rule 22e — a `**Product impact:**` sentence cannot be written honestly. The parked question is who may refresh Playwright snapshot evidence after a layout fix, not what an En Croissant user sees (that contract is `d-20260831-16` / `d-20260831-17`). Decided as the brief's Recommend (a); recorded as `d-20260902-01`.
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
@@ -353,7 +370,7 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
 
 ### 4. Backend coverage counts `#[cfg(test)]` modules against production ratios
 
-* **ID:** f-20260829-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** felix-decision
+* **ID:** f-20260829-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `scripts/rust-branch-coverage.mjs`, `backend-coverage-areas.json`.
 * **Defect:** the exporter measures `#[cfg(test)] mod tests` alongside production code, so a test's
   own untaken branches count against the area ratio — 89 of 4254 branch records today. Adding tests
@@ -455,6 +472,8 @@ Felix answers through `/decide`, which publishes to `tasks/findings-answers/` an
     that needs the scanner this run did not build.
   * **Session:** 3b1b6830-9591-40d2-a64b-50a8c928b0f1 — transcript
     `~/.claude/projects/*/3b1b6830-9591-40d2-a64b-50a8c928b0f1.jsonl`
+
+* **Un-parked 2026-09-02:** technical under rule 22e — a `**Product impact:**` sentence cannot be written honestly. Coverage floors and `#[cfg(test)]` filtering are not what a user of En Croissant sees, gets, or is promised. Decided as the brief's Recommend (a); recorded as `d-20260902-02`.
 
 ---
 
@@ -1417,6 +1436,7 @@ instrument.
     carries upstream's publisher. That is the fact the whole question turns on, and it is not
     derivable from the code.
   * **Session:** 291b4f09-b746-4078-bdc2-32760714373b — transcript `~/.claude/projects/*/291b4f09-b746-4078-bdc2-32760714373b.jsonl`; cross-compile log kept at `/tmp/build-291b4f09-b746-4078-bdc2-32760714373b/xcompile.log`
+  * **Product impact:** A macOS or Windows user of this fork either gets a working, shippable En Croissant (keep and port) or is told those platforms are unsupported and will not receive a build from this fork (declare Linux-only).
 
 ### Deleting a workspace directory leaves an authority record for every descendant behind
 
@@ -4584,11 +4604,13 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 ## 2026-09-01 — filed through the inbox spool
 
 ### ChessRiddle's product-impact park gate has not been adopted
-* **ID:** f-20260901-17 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260901-17 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 
 * **Where:** `scripts/findings.py` (`PRODUCT_IMPACT_RE`, `_park_brief_issues`, `cmd_decisions` listing), `scripts/findings-parity-tests.py` (`product-decision-gate-and-listing`).
 * **Defect:** After f-20260901-11 re-pinned to ChessRiddle `6f83b80d8`, this copy still lacks the shared `_BULLET` grammar, the `**Product impact:**` park gate, the product/Sentry listing split, and printing the precondition slug. Declared `port_pending` rather than adopted in that run because the impact gate would redden three existing parks (`f-20260829-02`, `f-20260829-04`, `f-20260830-06`) that have no such bullet.
 * **Fix:** Adopt those hunks, give each of the three parks a real product-impact sentence or unpark it as technical, then delete the `product-decision-gate-and-listing` declaration and re-measure the parity constants.
+
+* **Resolution 2026-09-02:** closed by phase 1b of the agent-setup overhaul. `scripts/findings.py` is now the vendored copy of `~/Projekte/agent-kit/scripts/findings.py` (written by `kit sync`, verified by `kit sync --check`), which carries the `_BULLET` grammar, the `**Product impact:**` park gate and the product/Sentry listing split; the three parks were triaged (`f-20260829-02` and `f-20260829-04` un-parked as technical — `d-20260902-01`, `d-20260902-02`; `f-20260830-06` gained its Product-impact sentence); `scripts/findings-parity-tests.py` and its `port_pending` declarations are deleted with the parity mesh.
 
 ---
 

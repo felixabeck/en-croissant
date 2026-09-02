@@ -136,11 +136,10 @@ session's context, and never only into a handoff message.
 - The area vocabulary is a **closed set**, listed in the ledger header; `check` rejects any other
   value. Adding an area is a deliberate edit to that list.
 - The universal contract — field meanings, ranking, the decision discipline, the lock protocol — is
-  `~/.claude/references/findings-ledger-contract.md`. A parity gate keeps `scripts/findings.py`
-  aligned across Felix's projects; this checkout has two declared, `port_pending` divergences
-  (`atomic-write-cleanup-preserves-primary-error` for `f-20260829-14`, and
-  `product-decision-gate-and-listing` left by `f-20260901-11`), and nothing project-specific may
-  be added to it.
+  `~/.claude/references/findings-ledger-contract.md`. `scripts/findings.py` is the vendored copy
+  of `~/Projekte/agent-kit/scripts/findings.py`, written by `kit sync` and verified byte-exact by
+  `kit sync --check` (since 2026-09-02; the former parity-test mesh is gone); nothing
+  project-specific may be added to it — project specifics live in the ledger header.
 
 CI runs `python3 scripts/findings.py check` in `.github/workflows/test.yml`. Run it directly whenever
 a diff touches `tasks/`.

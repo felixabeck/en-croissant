@@ -106,12 +106,11 @@ Changes to Specta commands/events/types, `src-tauri/src/main.rs`, or `src/bindin
 
 ### Findings ledger
 
-Affected by `tasks/**`, `scripts/findings.py`, or `scripts/findings-parity-tests.py`:
+Affected by `tasks/**` or `scripts/findings.py`:
 
 ```bash
 python3 scripts/findings.py check
 pnpm findings:test
-pnpm findings:parity:check
 ```
 
 `check` validates the ledger: a malformed header or an area outside the closed vocabulary silently
