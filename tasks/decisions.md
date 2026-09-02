@@ -13,19 +13,25 @@ chat, and by nothing else, and no session writes `(Felix, <date>)` against somet
 
 **Technical calls only** — which mechanism, which default, which failure mode is preferable.
 
-The shared agent-kit decisions of the 2026-09-02 overhaul (`d-20260902-01` … `d-20260902-10`) live in `/home/felixb/Projekte/agent-kit/tasks/decisions.md`. This file does not copy them.
+Decision ids are per repository. The kit's 2026-09-02 overhaul decisions are cited as
+`kit d-20260902-NN` and bind here too; they live in
+`/home/felixb/Projekte/agent-kit/tasks/decisions.md`. This file does not copy them.
 
 ## Format
 
 ```
 ### d-YYYYMMDD-nn — <the question, as a question>
 
+* **Question:** <the question again, as the clause-1 field `record-decision` validates>
 * **Governs:** f-20260829-01
 * **Chosen:** <what was decided>
 * **Rejected:** <the alternative, and it must be a real one>
-* **Because:** <the reason, in terms a later session can check against evidence>
+* **Reason:** <the reason, in terms a later session can check against evidence>
 * **Decided by:** <session/run> · **Superseded-by:** -
 ```
+
+Older entries keep their `**Because:**` form as records. New recordings use this clause-1
+shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 
 ---
 
@@ -766,7 +772,7 @@ The shared agent-kit decisions of the 2026-09-02 overhaul (`d-20260902-01` … `
   and that question is only answerable where the upstream tree exists. `scripts/check-gate-routing.mjs`
   already forces every package script to be routed through the push skill or the test workflow, so
   a local-only gate cannot be quietly dropped.
-* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** d-20260903-01
 
 ### d-20260831-12 — Who performs the `_atomic_write` port into `chess-tactics-app`?
 
@@ -1385,3 +1391,14 @@ The shared agent-kit decisions of the 2026-09-02 overhaul (`d-20260902-01` … `
 * **Rejected:** (b) — keep measuring test code. That leaves the gate reporting ~66 % line coverage for a backend that is at ~50 %, with floors certifying a number that includes the tests certifying it.
 * **Reason:** A coverage instrument is not what a user of En Croissant sees, gets, or is promised. Rule 4 picks the honest measurement: a gate that counts `#[cfg(test)]` modules is measuring the wrong thing, and adding a test can lower an area's ratio. `d-20260829-02` already names this finding and prescribes the re-record procedure; `d-20260829-03` already requires `scopeSignature` to carry the new field. `d-20260830-09` parked the work for that run because the baseline-writing commands sit on the deny list — that is a landing constraint for the implementing session, not a product question, and it is not reversed here.
 * **Decided by:** Grok, phase 1b of the 2026-09-02 agent-setup overhaul, under rule 22e (the Product-impact sentence cannot be written honestly) · **Superseded-by:** -
+
+## 2026-09-03 — recorded through the decisions lock
+
+### d-20260903-01 — Does `findings.py` stay a per-repo copy behind a local-only parity gate, or is it vendored from the kit?
+
+* **Question:** Does `findings.py` stay a per-repo copy behind a local-only parity gate, or is it vendored from the kit with `kit sync --check`?
+* **Governs:** f-20260830-15
+* **Chosen:** the kit vendoring with `kit sync --check`. `scripts/findings.py` is the kit's stamped copy; identity is proven byte-exact against `~/Projekte/agent-kit` by `pnpm findings:kit:check` (local-only; CI has no kit). The three-way ChessRiddle/correction-app/en-croissant parity mesh is gone.
+* **Rejected:** `d-20260831-11`'s "neither" — gate stays local-only, upstream copy is not vendored. Also rejected: putting `kit sync --check` in CI (no kit on a runner, vacuous SKIP) and keeping the parity-test mesh as a second identity proof.
+* **Reason:** New evidence `d-20260831-11` did not have: the shared repository it named as "the better answer if the class recurs" now exists (`~/Projekte/agent-kit`), and the three-way parity mesh was exactly the recurring class it predicted. Vendoring plus `kit sync --check` removes the divergence class instead of detecting it.
+* **Decided by:** Grok, 2026-09-02 en-croissant push-review fix leaf · **Superseded-by:** -

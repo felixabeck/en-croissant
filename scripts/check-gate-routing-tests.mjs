@@ -108,6 +108,23 @@ test("rejects a missing package script named by a fenced gate command", async ()
   assert.match((await checkGateRouting(root, { paths })).join("\n"), /does:not:exist/u);
 });
 
+test("rejects a fenced gate command that is none of the accepted forms", async () => {
+  // Pins the `unresolved gate command` branch: pnpm <script>, allowed cargo
+  // forms, and `python3 scripts/…` are accepted; anything else (including a
+  // raw `kit …` line) must fail. Deleting that branch keeps this suite green
+  // while `pnpm gates:routing:check` would accept an unroutable fence.
+  const root = await fixture();
+  const path = join(root, ".claude/skills/push/SKILL.md");
+  await writeFile(
+    path,
+    `${await readFile(path, "utf8")}\n\`\`\`bash\nkit sync --check .\n\`\`\`\n`,
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /unresolved gate command in .claude\/skills\/push\/SKILL.md: kit sync --check \./u,
+  );
+});
+
 test("rejects a missing package script reached through a nested pnpm command", async () => {
   const root = await fixture();
   const packagePath = join(root, "package.json");

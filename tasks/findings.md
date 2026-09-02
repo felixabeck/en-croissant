@@ -48,26 +48,26 @@ En Croissant's own.
   technical question never parks, however consequential; if that sentence cannot be written
   honestly, decide it, record it in `tasks/decisions.md` and name it in the completion message.
   A *precondition* — waiting on a branch, an issue or a permission — is not a park either and
-  takes a slug naming what must become true. *Enforced since 2026-09-01: the rule existed in
-  prose that morning and an audit that afternoon found ten of thirteen open parks were not
-  product questions (`d-20260901-15`, `d-20260901-16`).* `Recommend` is required but need not come last; `Ruled out` and
-  `Could not determine` legitimately follow it. The brief is
-  the question, each option with its cost, what was ruled out and why, the recommendation and
-  the strongest case against it, and the parking session's `**Session:**` id so its transcript
-  can be mined. *Reason: the parking session is the only one that ever has the investigation
-  loaded. Three findings sat parked for two days carrying a flag and no question, each needing
-  its whole investigation re-derived before it could be answered.*
+  takes a slug naming what must become true (`felix-*` when Felix must clear it). The
+  ChessRiddle incident that produced the four-marker gate is recorded in the kit contract
+  (`/home/felixb/Projekte/agent-kit/references/findings-ledger-contract.md`). `Recommend` is
+  required but need not come last; `Ruled out` and `Could not determine` legitimately follow
+  it. The brief is the question, each option with its cost, what was ruled out and why, the
+  recommendation and the strongest case against it, and the parking session's `**Session:**`
+  id so its transcript can be mined.
   Felix answers through `/decide`, which publishes to `tasks/findings-answers/` and is applied
   by `findings.py apply-answers` — the drain runs it between clusters, so an answer given
   mid-run rejoins that run. `python3 scripts/findings.py decisions` lists what is waiting.
+* **Tooling areas** — the subset of the area vocabulary that is not product work. Membership
+  means `python3 scripts/findings.py list --json` reports `tooling: true` for findings in
+  those areas, and the drain's closed-by-tooling summary counts them. The set must stay
+  non-product; adding one is a deliberate edit to the labelled token list below.
 
 **Area vocabulary:** `app-startup` · `bindings-ipc` · `chess-tree` · `ci-workflows` ·
 `db-search` · `deps` · `docs-agent-config` · `e2e-gate` · `engine-uci` · `frontend-state` ·
 `frontend-ui` · `gate-scripts` · `i18n` · `native-fs` · `oauth-credentials` · `pgn-import`
 
 **Tooling areas:** `ci-workflows` · `deps` · `docs-agent-config` · `gate-scripts`
-
----
 
 ---
 
@@ -238,7 +238,7 @@ En Croissant's own.
 
 ### 2. The 320px / 200% font-scale layout is broken and its screenshots record the breakage
 
-* **ID:** f-20260829-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260829-02 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** felix-snapshot-deny-lifted
 * **Where:** `e2e/async-errors.spec.ts-snapshots/*`, `e2e/settings-responsive.spec.ts-snapshots/*`,
   `e2e/security-consent.spec.ts-snapshots/*`, and the components they render. Those are the four
   committed snapshots from the three 320px / 200% Playwright projects.
@@ -350,6 +350,8 @@ En Croissant's own.
 
 * **Un-parked 2026-09-02:** technical under rule 22e — a `**Product impact:**` sentence cannot be written honestly. The parked question is who may refresh Playwright snapshot evidence after a layout fix, not what an En Croissant user sees (that contract is `d-20260831-16` / `d-20260831-17`). Decided as the brief's Recommend (a); recorded as `d-20260902-01`.
 
+* **Reclassified 2026-09-02:** this is a precondition, not a park. `Blocked: felix-snapshot-deny-lifted` names what must become true (the `.claude/settings.json` deny of snapshot-refresh spellings must lift) before the last landing step can run; rule 22e.
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
@@ -372,7 +374,7 @@ En Croissant's own.
 
 ### 4. Backend coverage counts `#[cfg(test)]` modules against production ratios
 
-* **ID:** f-20260829-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260829-04 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** felix-baseline-deny-lifted
 * **Where:** `scripts/rust-branch-coverage.mjs`, `backend-coverage-areas.json`.
 * **Defect:** the exporter measures `#[cfg(test)] mod tests` alongside production code, so a test's
   own untaken branches count against the area ratio — 89 of 4254 branch records today. Adding tests
@@ -476,6 +478,8 @@ En Croissant's own.
     `~/.claude/projects/*/3b1b6830-9591-40d2-a64b-50a8c928b0f1.jsonl`
 
 * **Un-parked 2026-09-02:** technical under rule 22e — a `**Product impact:**` sentence cannot be written honestly. Coverage floors and `#[cfg(test)]` filtering are not what a user of En Croissant sees, gets, or is promised. Decided as the brief's Recommend (a); recorded as `d-20260902-02`.
+
+* **Reclassified 2026-09-02:** this is a precondition, not a park. `Blocked: felix-baseline-deny-lifted` names what must become true (the `.claude/settings.json` deny of `coverage:baseline:*` must lift) before the last landing step can run; rule 22e.
 
 ---
 
@@ -1885,6 +1889,8 @@ cited. The others are not: vendoring and CI are **`d-20260831-11`** (cited as `d
 fourth parity edge is **`d-20260831-14`** (cited as `d-20260831-12`), and the fail-closed probe is
 **`d-20260831-10`** — `d-20260830-20` is the earlier, general precedent it applies, not this run's
 own decision.
+
+* **2026-09-02:** the living enforcement is now `kit sync --check` (kit-owned bytes). The three-way parity mesh (`scripts/findings-parity-tests.py` / `pnpm findings:parity:check`) is gone.
 
 ---
 
@@ -4862,7 +4868,7 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
 
 ### The findings CLI's documented entry point has no version floor here either, only an accident of formatting
 
-* **ID:** f-20260902-01 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** chessriddle-adopts-entrypoint-guard
+* **ID:** f-20260902-01 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
 
 * **Where:** `scripts/findings.py` (the import block and the `except (OSError, UnicodeError)` /
   `except (OSError, UnicodeError, LedgerError)` handler sites), and
@@ -4908,3 +4914,5 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
 * **Found by:** the Korrigio drain session 3c88f139-fa92-485d-ac12-53595ee060da on 2026-09-02,
   working Korrigio's `f-20260831-17`, whose title names this repo as the second port target. No
   entry for it existed in this ledger. This repo's working tree was not touched.
+
+**Handled 2026-09-02.** The kit copy vendored at `faf40ca3` already carries `_enforce_python_floor` (header-driven; a no-op here because this ledger has no `**Python floor:**` line) and `_READ_ERRORS` / `_READ_ERRORS_LEDGER`. The ChessRiddle parity mesh the blocker `chessriddle-adopts-entrypoint-guard` named — `scripts/findings-parity-tests.py`, `SIBLING_REF`, `pnpm findings:parity:check` — no longer exists. Identity is `kit sync --check`. Closing as handled; a later En-Croissant `**Python floor:**` header line would be a different finding.

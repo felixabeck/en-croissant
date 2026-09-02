@@ -45,6 +45,7 @@
     "mutation:runner:test": "node --test scripts/run-backend-mutation-tests.mjs",
     "mutation:guard:check": "node scripts/run-backend-mutation.mjs --check-guard",
     "findings:test": "python3 -B scripts/findings-atomic-write-tests.py",
+    "findings:kit:check": "bash \"$HOME/Projekte/agent-kit/bin/kit\" sync --check .",
     "mutation": "pnpm mutation:frontend && pnpm mutation:backend",
     "lint": "tsgo --noEmit && oxlint --deny-warnings",
     "lint:ci": "tsgo --noEmit && oxfmt --check && oxlint --deny-warnings --format=github && i18next-cli extract --ci && pnpm i18n:jsx && pnpm i18n:check",

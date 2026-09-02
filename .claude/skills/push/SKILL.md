@@ -107,14 +107,20 @@ Changes to Specta commands/events/types, `src-tauri/src/main.rs`, or `src/bindin
 
 ### Findings ledger
 
-`kit sync --check .` runs on every push: `scripts/findings.py` is the kit's vendored copy, and this
-line fails if those bytes have drifted from `~/Projekte/agent-kit`. The other two run when
-`tasks/**` or `scripts/findings.py` changed:
+`pnpm findings:kit:check` is local-only (`bash "$HOME/Projekte/agent-kit/bin/kit" sync --check .`;
+CI has no kit). It runs on **every** push: `scripts/findings.py` is the kit's vendored copy, and
+this line fails if those bytes have drifted from `~/Projekte/agent-kit`.
+
+```bash
+pnpm findings:kit:check
+```
+
+`python3 scripts/findings.py check` and `pnpm findings:test` run **only** when `tasks/**` or
+`scripts/findings.py` changed:
 
 ```bash
 python3 scripts/findings.py check
 pnpm findings:test
-kit sync --check .
 ```
 
 `check` validates the ledger: a malformed header or an area outside the closed vocabulary silently
