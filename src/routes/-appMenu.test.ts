@@ -282,7 +282,9 @@ test("bindAppMenuCallbacks returns runMenu's promise for each wired command", as
         },
         toggleFullscreen: async () => undefined,
         documentation: async () => undefined,
-        clearSavedData: async () => undefined,
+        clearSavedData: async () => {
+            throw new Error("clear failed");
+        },
         openLogs: async () => undefined,
         openLogsSuccessMessage: "logs-ok",
     });
@@ -300,11 +302,28 @@ test("bindAppMenuCallbacks returns runMenu's promise for each wired command", as
     expect(settled).toBe(true);
 
     await callbacks.openNewFile();
-    expect(seen).toEqual([expect.any(Error)]);
+    expect(seen).toEqual([expect.objectContaining({ message: "open failed" })]);
+
+    await callbacks.openSettings();
+    await callbacks.exit();
+    await callbacks.toggleFullscreen();
+    await callbacks.documentation();
+    await callbacks.clearSavedData();
+    expect(seen).toEqual([
+        expect.objectContaining({ message: "open failed" }),
+        expect.objectContaining({ message: "clear failed" }),
+    ]);
+
     callbacks.about();
     callbacks.reload();
     await callbacks.openLogs();
-    expect(seen).toEqual([expect.any(Error), "about", "reload", "logs-ok"]);
+    expect(seen).toEqual([
+        expect.objectContaining({ message: "open failed" }),
+        expect.objectContaining({ message: "clear failed" }),
+        "about",
+        "reload",
+        "logs-ok",
+    ]);
 });
 
 test("runNativeMenuAction notifies string rejections and skips Cancellation", async () => {

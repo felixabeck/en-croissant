@@ -283,13 +283,13 @@ export type WindowControlHandlers = {
 };
 
 export function bindWindowControls(
-    window: WindowControlOps,
+    appWindow: WindowControlOps,
     notify: (error: unknown) => void,
 ): WindowControlHandlers {
     return {
-        minimize: () => runWindowAction(() => window.minimize(), notify),
-        toggleMaximize: () => runWindowAction(() => window.toggleMaximize(), notify),
-        close: () => runWindowAction(() => window.close(), notify),
+        minimize: () => runWindowAction(() => appWindow.minimize(), notify),
+        toggleMaximize: () => runWindowAction(() => appWindow.toggleMaximize(), notify),
+        close: () => runWindowAction(() => appWindow.close(), notify),
     };
 }
 

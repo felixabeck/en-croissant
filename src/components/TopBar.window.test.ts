@@ -18,7 +18,9 @@ test("window-control handlers return runWindowAction's promise and notify reject
             toggleMaximize: async () => {
                 throw new Error("maximize failed");
             },
-            close: async () => undefined,
+            close: async () => {
+                throw new Error("close failed");
+            },
         },
         (error) => {
             seen.push(error);
@@ -38,6 +40,13 @@ test("window-control handlers return runWindowAction's promise and notify reject
 
     await expect(handlers.toggleMaximize()).resolves.toBeUndefined();
     expect(seen).toHaveLength(1);
+
+    await handlers.close();
+    expect(seen).toHaveLength(2);
+    expect(seen).toEqual([
+        expect.objectContaining({ message: "maximize failed" }),
+        expect.objectContaining({ message: "close failed" }),
+    ]);
 });
 
 test("runWindowAction notifies a rejected native call once", async () => {

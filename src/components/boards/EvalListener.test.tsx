@@ -87,6 +87,8 @@ vi.mock("@/components/common/TreeStateContext", async () => {
   return { TreeStateContext: React.createContext({}) };
 });
 
+import EvalListener from "./EvalListener";
+
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 let host: HTMLDivElement;
@@ -103,8 +105,6 @@ beforeEach(() => {
 afterEach(() => {
   host.remove();
 });
-
-import EvalListener from "./EvalListener";
 
 async function render() {
   await act(async () => root.render(<EvalListener />));

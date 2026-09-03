@@ -50,6 +50,7 @@ import {
   trackPuzzleTimeAtom,
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
+import { puzzleDatabaseExtension } from "@/utils/db";
 import { formatThemeLabel, formatTime } from "@/utils/format";
 import { capabilityKey } from "@/utils/pathCapabilities";
 import { normalizeError } from "@/platform/errors";
@@ -64,7 +65,6 @@ import { TreeStateContext } from "../common/TreeStateContext";
 import AddPuzzle from "./AddPuzzle";
 import PuzzleBoard from "./PuzzleBoard";
 
-const puzzleDatabaseExtension = ".db3";
 const puzzleRatingMarks = [600, 1700, 2800] as const;
 const unavailableValue = "-";
 const addOptionLabel = (label: string) => `+ ${label}`;

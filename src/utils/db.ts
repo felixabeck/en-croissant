@@ -110,6 +110,8 @@ export function defaultPuzzleDatabaseProgressId(downloadLink: string): string {
     return `puzzle_db:${downloadLink}`;
 }
 
+export const puzzleDatabaseExtension = ".db3";
+
 export function manifestDatabaseInstallCard(
     installed: readonly { type: string; title?: string }[],
     manifest: { downloadLink: string; title: string },
@@ -129,7 +131,7 @@ export function manifestPuzzleDatabaseInstallCard(
     return {
         progressId: defaultPuzzleDatabaseProgressId(manifest.downloadLink),
         initInstalled: installed.some(
-            (database) => database.title.replace(".db3", "") === manifest.title,
+            (database) => database.title.replace(puzzleDatabaseExtension, "") === manifest.title,
         ),
     };
 }
