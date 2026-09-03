@@ -137,26 +137,36 @@ afterEach(async () => {
   host.remove();
 });
 
-async function renderAddDatabase(databases: Array<{ type: "success"; title: string }> = []) {
+async function renderAddDatabase(
+  databases: Array<{ type: "success"; title: string }> = [],
+  {
+    setOpened = vi.fn(),
+    setDatabases = vi.fn(),
+  }: {
+    setOpened?: ReturnType<typeof vi.fn<(opened: boolean) => void>>;
+    setDatabases?: ReturnType<typeof vi.fn>;
+  } = {},
+) {
   await act(async () => {
     root.render(
       <AddDatabase
         databases={databases as never}
         opened
-        setOpened={() => undefined}
+        setOpened={setOpened}
         setLoading={() => undefined}
         disableLocalConversion={false}
-        setDatabases={vi.fn()}
+        setDatabases={setDatabases as never}
       />,
     );
   });
+  return { setOpened, setDatabases };
 }
 
 test("continues conversion with a handle recovered after an uncertain create", async () => {
-  const root = { id: { id: "database-root" }, kind: "databaseRoot" };
+  const workspaceRoot = { id: { id: "database-root" }, kind: "databaseRoot" };
   const handle = { id: { id: "database" }, kind: "database" };
   const source = { id: { id: "source" }, kind: "fileWorkspace" } as const;
-  mocks.getDatabaseWorkspace.mockResolvedValue(root);
+  mocks.getDatabaseWorkspace.mockResolvedValue(workspaceRoot);
   mocks.createWorkspaceDatabase.mockRejectedValue(
     new Error("Committed but durability uncertain: registry replacement"),
   );
@@ -187,6 +197,68 @@ test("wires installed state and progress id from the download URL", async () => 
   expect(mocks.progressButtonProps?.id).toBe(defaultDatabaseProgressId(manifestDb.downloadLink));
   expect(mocks.progressButtonProps?.id).not.toBe("db_0");
   expect(mocks.progressButtonProps?.initInstalled).toBe(true);
+});
+
+test("installs a downloaded database with the URL-keyed progress id", async () => {
+  mocks.defaultDatabases = [manifestDb];
+  const workspaceRoot = { id: { id: "database-root" }, kind: "databaseRoot" };
+  const destination = { id: { id: "destination" }, kind: "path" };
+  const databases = [{ type: "success", title: "Lichess" }];
+  mocks.getDatabaseWorkspace.mockResolvedValue(workspaceRoot);
+  mocks.databaseDownloadDestination.mockResolvedValue(destination);
+  mocks.downloadFile.mockResolvedValue(undefined);
+  mocks.getDatabases.mockResolvedValue(databases);
+  const { setDatabases } = await renderAddDatabase();
+
+  await act(async () => mocks.progressButtonProps!.onClick());
+
+  expect(mocks.downloadFile).toHaveBeenCalledWith(
+    defaultDatabaseProgressId(manifestDb.downloadLink),
+    manifestDb.downloadLink,
+    destination,
+    "Lichess.db3",
+    null,
+    "00000000-0000-4000-8000-000000000001",
+    { sha256: manifestDb.sha256, signature: manifestDb.signature },
+  );
+  expect(mocks.downloadFile.mock.calls[0]?.[0]).not.toBe("db_0");
+  expect(mocks.getDatabases).toHaveBeenCalledOnce();
+  expect(setDatabases).toHaveBeenCalledWith(databases);
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("keeps a cancelled database download destination silent", async () => {
+  mocks.defaultDatabases = [manifestDb];
+  mocks.getDatabaseWorkspace.mockResolvedValue({
+    id: { id: "database-root" },
+    kind: "databaseRoot",
+  });
+  mocks.databaseDownloadDestination.mockRejectedValue(new Error("Cancellation"));
+  const { setDatabases } = await renderAddDatabase();
+
+  await act(async () => mocks.progressButtonProps!.onClick());
+
+  expect(mocks.notify).not.toHaveBeenCalled();
+  expect(setDatabases).not.toHaveBeenCalled();
+});
+
+test("reports a failed database download destination without replacing the list", async () => {
+  mocks.defaultDatabases = [manifestDb];
+  mocks.getDatabaseWorkspace.mockResolvedValue({
+    id: { id: "database-root" },
+    kind: "databaseRoot",
+  });
+  mocks.databaseDownloadDestination.mockRejectedValue(new Error("permission denied"));
+  const { setDatabases } = await renderAddDatabase();
+
+  await act(async () => mocks.progressButtonProps!.onClick());
+
+  expect(mocks.notify).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: "permission denied",
+  });
+  expect(setDatabases).not.toHaveBeenCalled();
 });
 
 test("keeps the PGN picker silent on Cancellation and notifies a real failure", async () => {
@@ -220,4 +292,33 @@ test("commits a selected PGN workspace into the form", async () => {
   await act(async () => pick.click());
   expect(host.textContent).toContain("games.pgn");
   expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("keeps the modal open when local conversion fails", async () => {
+  const { setOpened } = await renderAddDatabase();
+  mocks.issuePgnWorkspace.mockResolvedValue({
+    handle: { id: { id: "pgn" }, kind: "fileWorkspace" },
+    displayName: "games.pgn",
+  });
+  mocks.getDatabaseWorkspace.mockResolvedValue({
+    id: { id: "database-root" },
+    kind: "databaseRoot",
+  });
+  mocks.createWorkspaceDatabase.mockRejectedValue(new Error("permission denied"));
+  const pick = [...host.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("pick-pgn"),
+  )!;
+  await act(async () => pick.click());
+
+  const convert = [...host.querySelectorAll("button")].find(
+    (button) => button.textContent === "Databases.Add.Convert",
+  )!;
+  await act(async () => convert.click());
+
+  expect(setOpened).not.toHaveBeenCalledWith(false);
+  expect(mocks.notify).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: "permission denied",
+  });
 });

@@ -155,12 +155,12 @@ export function AccountCard({
         filename,
         null,
       );
-      await tauri.setProgressState(progressLease, 100, "succeeded");
-      return databaseHandle;
     } catch (caught) {
-      await tauri.setProgressState(progressLease, 0, "failed");
+      await tauri.setProgressState(progressLease, 0, "failed").catch(() => undefined);
       throw caught;
     }
+    await tauri.setProgressState(progressLease, 100, "succeeded");
+    return databaseHandle;
   }
 
   const subscribeProgress = useCallback(

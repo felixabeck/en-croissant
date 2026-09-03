@@ -6,6 +6,13 @@ import { AccountCard } from "./AccountCard";
 const mocks = vi.hoisted(() => ({
   issueDownloadDestination: vi.fn(),
   getLatestGameTimestamp: vi.fn(),
+  getDatabaseWorkspace: vi.fn(),
+  listWorkspaceDatabases: vi.fn(),
+  createWorkspaceDatabase: vi.fn(),
+  startProgress: vi.fn(),
+  convertPgn: vi.fn(),
+  setProgressState: vi.fn(),
+  deleteEmptyGames: vi.fn(),
   notify: vi.fn(),
   downloadChessCom: vi.fn(),
   progress: vi.fn(),
@@ -15,6 +22,13 @@ vi.mock("@/platform/tauri", () => ({
   tauri: {
     issueDownloadDestination: mocks.issueDownloadDestination,
     getLatestGameTimestamp: mocks.getLatestGameTimestamp,
+    getDatabaseWorkspace: mocks.getDatabaseWorkspace,
+    listWorkspaceDatabases: mocks.listWorkspaceDatabases,
+    createWorkspaceDatabase: mocks.createWorkspaceDatabase,
+    startProgress: mocks.startProgress,
+    convertPgn: mocks.convertPgn,
+    setProgressState: mocks.setProgressState,
+    deleteEmptyGames: mocks.deleteEmptyGames,
   },
   tauriSubscriptions: { progress: mocks.progress },
 }));
@@ -133,5 +147,36 @@ test("failed game-download destination notifies and re-enables the button", asyn
     title: "Common.Error",
     message: "permission denied",
   });
+  expect(downloadButton().disabled).toBe(false);
+});
+
+test("convertPgn failure is not masked when marking the lease failed also rejects", async () => {
+  const destination = { id: "dest" };
+  const artifact = { id: { id: "pgn" }, kind: "fileWorkspace" as const };
+  const root = { id: { id: "database-root" }, kind: "databaseRoot" };
+  const handle = { id: { id: "database" }, kind: "database" };
+  const lease = { id: "chesscom_Felix", generation: 1n };
+  mocks.issueDownloadDestination.mockResolvedValue(destination);
+  mocks.downloadChessCom.mockResolvedValue(artifact);
+  mocks.getDatabaseWorkspace.mockResolvedValue(root);
+  mocks.listWorkspaceDatabases.mockResolvedValue([
+    { handle, filename: "Felix_chesscom.db3", availability: "available" },
+  ]);
+  mocks.startProgress.mockResolvedValue(lease);
+  mocks.convertPgn.mockRejectedValue(new Error("convert failed"));
+  mocks.setProgressState.mockRejectedValue(new Error("progress failed"));
+  await renderCard();
+  await act(async () => downloadButton().click());
+  expect(mocks.convertPgn).toHaveBeenCalled();
+  expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 0, "failed");
+  expect(mocks.deleteEmptyGames).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: "convert failed",
+  });
+  expect(mocks.notify).not.toHaveBeenCalledWith(
+    expect.objectContaining({ message: "progress failed" }),
+  );
   expect(downloadButton().disabled).toBe(false);
 });

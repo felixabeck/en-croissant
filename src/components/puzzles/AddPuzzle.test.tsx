@@ -83,6 +83,16 @@ vi.mock("../common/ProgressButton", () => ({
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
+const tacticsManifest = {
+  title: "Lichess",
+  description: "Tactics",
+  storageSize: 42,
+  puzzleCount: 3,
+  downloadLink: "https://example.test/tactics.db3",
+  sha256: "a".repeat(64),
+  signature: "signature",
+};
+
 let root: Root;
 let host: HTMLDivElement;
 
@@ -152,17 +162,7 @@ test("keeps the modal open silently when choosing a workspace is cancelled", asy
 });
 
 test("wires progress id from the download URL, not the manifest index", async () => {
-  mocks.defaultDatabases = [
-    {
-      title: "Lichess",
-      description: "Tactics",
-      storageSize: 42,
-      puzzleCount: 3,
-      downloadLink: "https://example.test/tactics.db3",
-      sha256: "a".repeat(64),
-      signature: "signature",
-    },
-  ];
+  mocks.defaultDatabases = [tacticsManifest];
   await render();
   expect(mocks.progressButtonProps?.id).toBe(
     defaultPuzzleDatabaseProgressId("https://example.test/tactics.db3"),
@@ -171,17 +171,7 @@ test("wires progress id from the download URL, not the manifest index", async ()
 });
 
 test("keeps a cancelled download destination silent", async () => {
-  mocks.defaultDatabases = [
-    {
-      title: "Lichess",
-      description: "Tactics",
-      storageSize: 42,
-      puzzleCount: 3,
-      downloadLink: "https://example.test/tactics.db3",
-      sha256: "a".repeat(64),
-      signature: "signature",
-    },
-  ];
+  mocks.defaultDatabases = [tacticsManifest];
   mocks.issueDownloadDestination.mockRejectedValue(new Error("Cancellation"));
   const actions = await render();
   await act(async () => host.querySelectorAll("button")[1].click());
@@ -190,39 +180,28 @@ test("keeps a cancelled download destination silent", async () => {
 });
 
 test("installs a downloaded database and refreshes the visible collection", async () => {
-  mocks.defaultDatabases = [
-    {
-      title: "Lichess",
-      description: "Tactics",
-      storageSize: 42,
-      puzzleCount: 3,
-      downloadLink: "https://example.test/tactics.db3",
-      sha256: "a".repeat(64),
-      signature: "signature",
-    },
-  ];
+  mocks.defaultDatabases = [tacticsManifest];
   mocks.issueDownloadDestination.mockResolvedValue({ id: { id: "destination" }, kind: "path" });
   mocks.downloadFile.mockResolvedValue(undefined);
   mocks.getPuzzleDatabases.mockResolvedValue([{ title: "Lichess.db3" }]);
   const actions = await render();
   await act(async () => host.querySelectorAll("button")[1].click());
   expect(mocks.downloadFile).toHaveBeenCalledOnce();
+  expect(mocks.downloadFile).toHaveBeenCalledWith(
+    defaultPuzzleDatabaseProgressId("https://example.test/tactics.db3"),
+    tacticsManifest.downloadLink,
+    { id: { id: "destination" }, kind: "path" },
+    "Lichess.db3",
+    null,
+    expect.any(String),
+    { sha256: tacticsManifest.sha256, signature: tacticsManifest.signature },
+  );
   expect(actions.setPuzzleDbs).toHaveBeenCalledWith([{ title: "Lichess.db3" }]);
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 
 test("reports a failed download without replacing the installed database list", async () => {
-  mocks.defaultDatabases = [
-    {
-      title: "Lichess",
-      description: "Tactics",
-      storageSize: 42,
-      puzzleCount: 3,
-      downloadLink: "https://example.test/tactics.db3",
-      sha256: "a".repeat(64),
-      signature: "signature",
-    },
-  ];
+  mocks.defaultDatabases = [tacticsManifest];
   mocks.issueDownloadDestination.mockRejectedValue(new Error("native failure"));
   const actions = await render();
   await act(async () => host.querySelectorAll("button")[1].click());

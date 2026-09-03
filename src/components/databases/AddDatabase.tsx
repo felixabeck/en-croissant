@@ -17,7 +17,6 @@ import {
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { IconAlertCircle } from "@tabler/icons-react";
-import { notifications } from "@mantine/notifications";
 import { useSetAtom } from "jotai";
 import { type Dispatch, type SetStateAction, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -31,7 +30,7 @@ import {
   useDefaultDatabases,
 } from "@/utils/db";
 import { capitalize, formatBytes, formatNumber } from "@/utils/format";
-import { normalizeError, runWithAppliedRecovery } from "@/platform/errors";
+import { runWithAppliedRecovery } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
 import AppModal from "../common/AppModal";
 import FileInput from "../common/FileInput";
@@ -119,12 +118,6 @@ function AddDatabase({
         setLoading,
       );
       await setDatabases(await getDatabases());
-    } catch (cause) {
-      notifications.show({
-        color: "red",
-        title: t("Common.Error"),
-        message: normalizeError(cause).message,
-      });
     } finally {
       setConversionState((prev) => ({
         ...prev,
@@ -201,8 +194,10 @@ function AddDatabase({
           <form
             onSubmit={form.onSubmit(async (values) => {
               if (disableLocalConversion) return;
-              await convertDB(values.files, values.title, values.description);
-              setOpened(false);
+              await runUnlessCancelled(t("Common.Error"), async () => {
+                await convertDB(values.files, values.title, values.description);
+                setOpened(false);
+              });
             })}
           >
             <TextInput label={t("Common.Name")} withAsterisk {...form.getInputProps("title")} />
