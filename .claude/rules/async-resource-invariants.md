@@ -57,6 +57,9 @@ Each clause has a repository incident behind it, catalogued in the review lenses
   normal completion, cancel, tab close, resource swap, application exit, error.
 * Return typed errors from commands and map them at the facade; fail the one item, not the process.
 * Bound anything that accumulates — logs, caches, registries — and say what the bound is.
+* No closure passed to `BLOCKING_GATEWAY` may, directly or transitively, call `BLOCKING_GATEWAY`
+  again. Acquiring several permits in sequence from an async body is fine; acquiring one inside
+  another is the deadlock.
 
 ## DO NOT
 
