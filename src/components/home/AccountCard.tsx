@@ -13,17 +13,16 @@ import {
 import { useAtom } from "jotai";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { notifications } from "@mantine/notifications";
 import type { DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
-import { notifyListenerError } from "@/components/files/notifyError";
+import { notifyListenerError, notifyUnlessCancelled } from "@/components/files/notifyError";
 import { databaseConversionStateAtom, downloadDestinationAtom } from "@/state/atoms";
 import { downloadChessCom } from "@/utils/chess.com/api";
 import { getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
 import { capitalize } from "@/utils/format";
 import { downloadLichess } from "@/utils/lichess/api";
 import { useTauriListener } from "@/platform/useTauriListener";
-import { normalizeError, runWithAppliedRecovery } from "@/platform/errors";
+import { runWithAppliedRecovery } from "@/platform/errors";
 import LichessLogo from "./LichessLogo";
 
 interface AccountCardProps {
@@ -261,11 +260,7 @@ export function AccountCard({
                     await tauri.deleteEmptyGames(databaseHandle);
                   }
                 } catch (cause) {
-                  notifications.show({
-                    color: "red",
-                    title: t("Common.Error"),
-                    message: normalizeError(cause).message,
-                  });
+                  notifyUnlessCancelled(t("Common.Error"), cause);
                 } finally {
                   setLoading(false);
                   setConversionState((prev) => ({

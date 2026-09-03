@@ -40,10 +40,15 @@ import {
 } from "@/utils/db";
 import { pickPgnFile } from "@/utils/files";
 import { formatBytes, formatNumber } from "@/utils/format";
+import { runUnlessCancelled } from "@/components/files/notifyError";
 import ConfirmModal from "../common/ConfirmModal";
 import GenericCard from "../common/GenericCard";
 import AddDatabase from "./AddDatabase";
-import { deleteDatabaseAndInvalidate, invalidateDeletedDatabase } from "./databaseMutation";
+import {
+  deleteDatabaseAndInvalidate,
+  invalidateDeletedDatabase,
+  runPgnExport,
+} from "./databaseMutation";
 import { PlayerSearchInput } from "./PlayerSearchInput";
 
 export default function DatabasesPage() {
@@ -464,32 +469,34 @@ export default function DatabasesPage() {
                       <Button
                         variant="default"
                         rightSection={<IconPlus size="1rem" />}
-                        onClick={async () => {
-                          const selected = await pickPgnFile();
-                          if (!selected) return;
-                          const files = [selected.handle];
-                          const sourceFileName = selected.name;
-                          setConversionState((prev) => ({
-                            ...prev,
-                            inProgress: true,
-                            targetDatabasePath: selectedDatabase.file,
-                            targetDatabaseTitle: selectedDatabase.title,
-                            sourceFileName,
-                          }));
-                          try {
-                            await tauri.convertPgn(files, selectedDatabase.file, null, "", null);
-                            await mutate();
-                          } finally {
+                        onClick={() => {
+                          void runUnlessCancelled(t("Common.Error"), async () => {
+                            const selected = await pickPgnFile();
+                            if (!selected) return;
+                            const files = [selected.handle];
+                            const sourceFileName = selected.name;
                             setConversionState((prev) => ({
                               ...prev,
-                              inProgress: false,
-                              totalGames: 0,
-                              elapsedSeconds: 0,
-                              targetDatabasePath: null,
-                              targetDatabaseTitle: null,
-                              sourceFileName: null,
+                              inProgress: true,
+                              targetDatabasePath: selectedDatabase.file,
+                              targetDatabaseTitle: selectedDatabase.title,
+                              sourceFileName,
                             }));
-                          }
+                            try {
+                              await tauri.convertPgn(files, selectedDatabase.file, null, "", null);
+                              await mutate();
+                            } finally {
+                              setConversionState((prev) => ({
+                                ...prev,
+                                inProgress: false,
+                                totalGames: 0,
+                                elapsedSeconds: 0,
+                                targetDatabasePath: null,
+                                targetDatabaseTitle: null,
+                                sourceFileName: null,
+                              }));
+                            }
+                          });
                         }}
                       >
                         {t("Databases.Settings.AddGames")}
@@ -498,14 +505,14 @@ export default function DatabasesPage() {
                         rightSection={<IconArrowRight size="1rem" />}
                         variant="default"
                         loading={exportLoading}
-                        onClick={async () => {
-                          setExportLoading(true);
-                          try {
-                            const destination = await tauri.issuePgnExportDestination();
-                            await tauri.exportToPgn(selectedDatabase.file, destination.handle);
-                          } finally {
-                            setExportLoading(false);
-                          }
+                        onClick={() => {
+                          void runPgnExport({
+                            issueDestination: () => tauri.issuePgnExportDestination(),
+                            exportToPgn: (file, handle) => tauri.exportToPgn(file, handle),
+                            file: selectedDatabase.file,
+                            notifyTitle: t("Common.Error"),
+                            setLoading: setExportLoading,
+                          });
                         }}
                       >
                         {t("Databases.Settings.ExportPGN")}

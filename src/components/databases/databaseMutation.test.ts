@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseHandle } from "@/bindings";
 import {
     deleteDatabaseAndInvalidate,
     invalidateDeletedDatabase,
+    runPgnExport,
     type DatabaseRemovalState,
 } from "./databaseMutation";
+
+const notify = vi.hoisted(() => vi.fn());
+vi.mock("@mantine/notifications", () => ({ notifications: { show: notify } }));
 
 const database = (id: string): DatabaseHandle => ({ id: { id }, kind: "database" });
 
@@ -82,5 +86,65 @@ describe("database deletion transaction", () => {
                 active: { ...state.active!, file: retained },
             }),
         ).toMatchObject({ selected: "keep-me", reference: retained });
+    });
+});
+
+describe("PGN export picker", () => {
+    const file = database("export-me");
+    const destination = { handle: { id: { id: "pgn-out" }, kind: "fileWorkspace" as const } };
+
+    beforeEach(() => {
+        notify.mockClear();
+    });
+
+    it("exports to the issued destination and always clears loading", async () => {
+        const setLoading = vi.fn();
+        const exportToPgn = vi.fn().mockResolvedValue(undefined);
+        await runPgnExport({
+            issueDestination: async () => destination,
+            exportToPgn,
+            file,
+            notifyTitle: "Common.Error",
+            setLoading,
+        });
+        expect(exportToPgn).toHaveBeenCalledWith(file, destination.handle);
+        expect(setLoading.mock.calls.map((call) => call[0])).toEqual([true, false]);
+        expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("stays silent on Cancellation and re-enables the button", async () => {
+        const setLoading = vi.fn();
+        const exportToPgn = vi.fn();
+        await runPgnExport({
+            issueDestination: async () => {
+                throw new Error("Cancellation");
+            },
+            exportToPgn,
+            file,
+            notifyTitle: "Common.Error",
+            setLoading,
+        });
+        expect(exportToPgn).not.toHaveBeenCalled();
+        expect(notify).not.toHaveBeenCalled();
+        expect(setLoading.mock.calls.map((call) => call[0])).toEqual([true, false]);
+    });
+
+    it("notifies a real picker failure and re-enables the button", async () => {
+        const setLoading = vi.fn();
+        await runPgnExport({
+            issueDestination: async () => {
+                throw new Error("permission denied");
+            },
+            exportToPgn: vi.fn(),
+            file,
+            notifyTitle: "Common.Error",
+            setLoading,
+        });
+        expect(notify).toHaveBeenCalledWith({
+            color: "red",
+            title: "Common.Error",
+            message: "permission denied",
+        });
+        expect(setLoading.mock.calls.map((call) => call[0])).toEqual([true, false]);
     });
 });

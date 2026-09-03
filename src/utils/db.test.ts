@@ -3,8 +3,12 @@ import type { DatabaseHandle } from "@/bindings";
 import {
     databaseHandleFromKey,
     databaseHandleKey,
+    defaultDatabaseProgressId,
+    defaultPuzzleDatabaseProgressId,
     getDefaultDatabases,
     getDefaultPuzzleDatabases,
+    manifestDatabaseInstallCard,
+    manifestPuzzleDatabaseInstallCard,
     sameDatabaseHandle,
     type ManagedDatabaseInfo,
 } from "./db";
@@ -79,6 +83,47 @@ describe("default puzzle database manifest", () => {
         mockPuzzleManifest([entryWithoutSignature]);
 
         await expect(getDefaultPuzzleDatabases()).rejects.toMatchObject({ kind: "schema" });
+    });
+});
+
+describe("manifest install-card identity", () => {
+    const link = "https://db.encroissant.org/example.db3";
+    const otherLink = "https://db.encroissant.org/other.db3";
+
+    it("keys game-database progress by download URL, not array index or title", () => {
+        const installed = [{ type: "success", title: "Lichess" }];
+        const card = manifestDatabaseInstallCard(installed, {
+            downloadLink: link,
+            title: "Lichess",
+        });
+        expect(card).toEqual({
+            progressId: defaultDatabaseProgressId(link),
+            initInstalled: true,
+        });
+        expect(card.progressId).not.toBe("db_0");
+        expect(card.progressId).toBe(`db:${link}`);
+        expect(
+            manifestDatabaseInstallCard(installed, { downloadLink: otherLink, title: "Other" })
+                .initInstalled,
+        ).toBe(false);
+    });
+
+    it("keys puzzle-database progress by download URL, not array index", () => {
+        const card = manifestPuzzleDatabaseInstallCard([{ title: "Lichess.db3" }], {
+            downloadLink: puzzleManifestEntry.downloadLink,
+            title: "Lichess puzzles",
+        });
+        expect(card.progressId).toBe(
+            defaultPuzzleDatabaseProgressId(puzzleManifestEntry.downloadLink),
+        );
+        expect(card.progressId).not.toBe("puzzle_db_0");
+        expect(card.initInstalled).toBe(false);
+        expect(
+            manifestPuzzleDatabaseInstallCard([{ title: "Lichess puzzles.db3" }], {
+                downloadLink: puzzleManifestEntry.downloadLink,
+                title: "Lichess puzzles",
+            }).initInstalled,
+        ).toBe(true);
     });
 });
 

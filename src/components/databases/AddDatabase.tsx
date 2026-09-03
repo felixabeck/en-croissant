@@ -24,9 +24,15 @@ import { useTranslation } from "react-i18next";
 import type { KeyedMutator } from "swr";
 import { type DatabaseHandle, type DatabaseInfo, type FileWorkspaceHandle } from "@/bindings";
 import { databaseConversionStateAtom } from "@/state/atoms";
-import { getDatabases, type DownloadableDatabaseInfo, useDefaultDatabases } from "@/utils/db";
+import {
+  getDatabases,
+  manifestDatabaseInstallCard,
+  type DownloadableDatabaseInfo,
+  useDefaultDatabases,
+} from "@/utils/db";
 import { capitalize, formatBytes, formatNumber } from "@/utils/format";
 import { normalizeError, runWithAppliedRecovery } from "@/platform/errors";
+import { runUnlessCancelled } from "@/components/files/notifyError";
 import AppModal from "../common/AppModal";
 import FileInput from "../common/FileInput";
 import ProgressButton from "../common/ProgressButton";
@@ -171,17 +177,18 @@ function AddDatabase({
           )}
           <ScrollArea.Autosize h={500} offsetScrollbars>
             <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="sm">
-              {defaultDatabases?.map((db, i) => (
-                <DatabaseCard
-                  database={db}
-                  databaseId={i}
-                  key={i}
-                  setDatabases={setDatabases}
-                  initInstalled={databases.some(
-                    (e) => e.type === "success" && e.title === db.title,
-                  )}
-                />
-              ))}
+              {defaultDatabases?.map((db) => {
+                const card = manifestDatabaseInstallCard(databases, db);
+                return (
+                  <DatabaseCard
+                    database={db}
+                    key={card.progressId}
+                    progressId={card.progressId}
+                    setDatabases={setDatabases}
+                    initInstalled={card.initInstalled}
+                  />
+                );
+              })}
               {error && (
                 <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="red">
                   {t("Databases.Add.ErrorFetch")}
@@ -205,22 +212,25 @@ function AddDatabase({
             <FileInput
               label={t("Common.PGNFile")}
               description={t("Databases.Add.ClickToSelectPGN")}
-              onClick={async () => {
-                const selected = await tauri.issuePgnWorkspace();
-                form.setFieldValue("files", [selected.handle]);
-                const firstFilename = selected.displayName;
-                if (firstFilename) {
-                  const displayName = firstFilename;
-                  form.setFieldValue("filename", displayName);
-                  if (!form.values.title) {
-                    form.setFieldValue(
-                      "title",
-                      capitalize(
-                        firstFilename.replaceAll(/[_-]/g, " ").replace(/\.pgn(\.(zst|bz2))?$/i, ""),
-                      ),
-                    );
+              onClick={() => {
+                void runUnlessCancelled(t("Common.Error"), async () => {
+                  const selected = await tauri.issuePgnWorkspace();
+                  form.setFieldValue("files", [selected.handle]);
+                  const firstFilename = selected.displayName;
+                  if (firstFilename) {
+                    form.setFieldValue("filename", firstFilename);
+                    if (!form.values.title) {
+                      form.setFieldValue(
+                        "title",
+                        capitalize(
+                          firstFilename
+                            .replaceAll(/[_-]/g, " ")
+                            .replace(/\.pgn(\.(zst|bz2))?$/i, ""),
+                        ),
+                      );
+                    }
                   }
-                }
+                });
               }}
               filename={form.values.filename ?? null}
               error={form.errors.files}
@@ -239,31 +249,37 @@ function AddDatabase({
 function DatabaseCard({
   setDatabases,
   database,
-  databaseId,
+  progressId,
   initInstalled,
 }: {
   setDatabases: KeyedMutator<DatabaseInfo[]>;
   database: DownloadableDatabaseInfo;
-  databaseId: number;
+  progressId: string;
   initInstalled: boolean;
 }) {
   const { t } = useTranslation();
   const [inProgress, setInProgress] = useState<boolean>(false);
 
-  async function downloadDatabase(id: number, url: string, name: string) {
+  async function downloadDatabase() {
     setInProgress(true);
-    const root = await tauri.getDatabaseWorkspace();
-    const destination = await tauri.databaseDownloadDestination(root);
-    await tauri.downloadFile(
-      `db_${id}`,
-      url,
-      destination,
-      `${name}.db3`,
-      null,
-      crypto.randomUUID(),
-      { sha256: database.sha256, signature: database.signature },
-    );
-    await setDatabases(await getDatabases());
+    try {
+      await runUnlessCancelled(t("Common.Error"), async () => {
+        const root = await tauri.getDatabaseWorkspace();
+        const destination = await tauri.databaseDownloadDestination(root);
+        await tauri.downloadFile(
+          progressId,
+          database.downloadLink,
+          destination,
+          `${database.title}.db3`,
+          null,
+          crypto.randomUUID(),
+          { sha256: database.sha256, signature: database.signature },
+        );
+        await setDatabases(await getDatabases());
+      });
+    } finally {
+      setInProgress(false);
+    }
   }
 
   return (
@@ -302,7 +318,7 @@ function DatabaseCard({
             </Stack>
           </Group>
           <ProgressButton
-            id={`db_${databaseId}`}
+            id={progressId}
             initInstalled={initInstalled}
             labels={{
               completed: t("Common.Installed"),
@@ -310,7 +326,9 @@ function DatabaseCard({
               inProgress: t("Common.Downloading"),
               finalizing: t("Common.Extracting"),
             }}
-            onClick={() => downloadDatabase(databaseId, database.downloadLink!, database.title!)}
+            onClick={() => {
+              void downloadDatabase();
+            }}
             inProgress={inProgress}
             setInProgress={setInProgress}
           />

@@ -1,15 +1,17 @@
 import { tauri } from "@/platform/tauri";
 import { Alert, Box, Button, Divider, Group, Paper, ScrollArea, Stack, Text } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
 import { IconAlertCircle } from "@tabler/icons-react";
 import { type Dispatch, type SetStateAction, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import { type PuzzleDatabaseInfo } from "@/bindings";
-import { getDefaultPuzzleDatabases, type DownloadablePuzzleDatabase } from "@/utils/db";
+import {
+  getDefaultPuzzleDatabases,
+  manifestPuzzleDatabaseInstallCard,
+  type DownloadablePuzzleDatabase,
+} from "@/utils/db";
 import { formatBytes, formatNumber } from "@/utils/format";
-import { normalizeError } from "@/platform/errors";
-import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { choosePuzzleDatabase, getPuzzleDatabases } from "@/utils/puzzles";
 import ProgressButton from "../common/ProgressButton";
 import AppModal from "../common/AppModal";
@@ -50,15 +52,18 @@ function AddPuzzle({
           <Button variant="default" onClick={() => void chooseLocalWorkspace()}>
             {t("Puzzle.ChooseLocalFolder")}
           </Button>
-          {dbs?.map((db, i) => (
-            <PuzzleDbCard
-              puzzleDb={db}
-              databaseId={i}
-              key={i}
-              setPuzzleDbs={setPuzzleDbs}
-              initInstalled={puzzleDbs.some((e) => e.title.replace(".db3", "") === db.title)}
-            />
-          ))}
+          {dbs?.map((db) => {
+            const card = manifestPuzzleDatabaseInstallCard(puzzleDbs, db);
+            return (
+              <PuzzleDbCard
+                puzzleDb={db}
+                key={card.progressId}
+                progressId={card.progressId}
+                setPuzzleDbs={setPuzzleDbs}
+                initInstalled={card.initInstalled}
+              />
+            );
+          })}
           {error && (
             <Alert icon={<IconAlertCircle size="1rem" />} title={t("Common.Error")} color="red">
               {t("Databases.Add.ErrorFetch")}
@@ -73,36 +78,32 @@ function AddPuzzle({
 function PuzzleDbCard({
   setPuzzleDbs,
   puzzleDb,
-  databaseId,
+  progressId,
   initInstalled,
 }: {
   setPuzzleDbs: Dispatch<SetStateAction<PuzzleDatabaseInfo[]>>;
   puzzleDb: DownloadablePuzzleDatabase;
-  databaseId: number;
+  progressId: string;
   initInstalled: boolean;
 }) {
   const { t } = useTranslation();
   const [inProgress, setInProgress] = useState<boolean>(false);
 
-  async function downloadDatabase(id: number, database: DownloadablePuzzleDatabase) {
+  async function downloadDatabase() {
     setInProgress(true);
     try {
-      const destination = await tauri.issuePuzzleDownloadDestination();
-      await tauri.downloadFile(
-        `puzzle_db_${id}`,
-        database.downloadLink,
-        destination,
-        `${database.title}.db3`,
-        null,
-        crypto.randomUUID(),
-        { sha256: database.sha256, signature: database.signature },
-      );
-      setPuzzleDbs(await getPuzzleDatabases());
-    } catch (error) {
-      notifications.show({
-        color: "red",
-        title: t("Common.Error"),
-        message: normalizeError(error).message,
+      await runUnlessCancelled(t("Common.Error"), async () => {
+        const destination = await tauri.issuePuzzleDownloadDestination();
+        await tauri.downloadFile(
+          progressId,
+          puzzleDb.downloadLink,
+          destination,
+          `${puzzleDb.title}.db3`,
+          null,
+          crypto.randomUUID(),
+          { sha256: puzzleDb.sha256, signature: puzzleDb.signature },
+        );
+        setPuzzleDbs(await getPuzzleDatabases());
       });
     } finally {
       setInProgress(false);
@@ -139,7 +140,7 @@ function PuzzleDbCard({
             </Stack>
           </Group>
           <ProgressButton
-            id={`puzzle_db_${databaseId}`}
+            id={progressId}
             initInstalled={initInstalled}
             labels={{
               completed: t("Common.Installed"),
@@ -148,7 +149,7 @@ function PuzzleDbCard({
               finalizing: t("Common.Extracting"),
             }}
             onClick={() => {
-              downloadDatabase(databaseId, puzzleDb);
+              void downloadDatabase();
             }}
             inProgress={inProgress}
             setInProgress={setInProgress}

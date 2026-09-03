@@ -102,6 +102,38 @@ export function databaseHandleFromKey(
     return databases.find((database) => databaseHandleKey(database.file) === key)?.file ?? null;
 }
 
+export function defaultDatabaseProgressId(downloadLink: string): string {
+    return `db:${downloadLink}`;
+}
+
+export function defaultPuzzleDatabaseProgressId(downloadLink: string): string {
+    return `puzzle_db:${downloadLink}`;
+}
+
+export function manifestDatabaseInstallCard(
+    installed: readonly { type: string; title?: string }[],
+    manifest: { downloadLink: string; title: string },
+): { progressId: string; initInstalled: boolean } {
+    return {
+        progressId: defaultDatabaseProgressId(manifest.downloadLink),
+        initInstalled: installed.some(
+            (database) => database.type === "success" && database.title === manifest.title,
+        ),
+    };
+}
+
+export function manifestPuzzleDatabaseInstallCard(
+    installed: readonly Pick<PuzzleDatabaseInfo, "title">[],
+    manifest: { downloadLink: string; title: string },
+): { progressId: string; initInstalled: boolean } {
+    return {
+        progressId: defaultPuzzleDatabaseProgressId(manifest.downloadLink),
+        initInstalled: installed.some(
+            (database) => database.title.replace(".db3", "") === manifest.title,
+        ),
+    };
+}
+
 export type Sides = "WhiteBlack" | "BlackWhite" | "Any";
 
 export interface CompleteGame {

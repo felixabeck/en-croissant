@@ -1,6 +1,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { defaultPuzzleDatabaseProgressId } from "@/utils/db";
+import AddPuzzle from "./AddPuzzle";
 
 const mocks = vi.hoisted(() => ({
   choosePuzzleDatabase: vi.fn(),
@@ -9,6 +11,11 @@ const mocks = vi.hoisted(() => ({
   defaultDatabases: undefined as unknown,
   issueDownloadDestination: vi.fn(),
   downloadFile: vi.fn(),
+  progressButtonProps: null as null | {
+    id: string;
+    initInstalled: boolean;
+    onClick: () => void;
+  },
 }));
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -33,7 +40,13 @@ vi.mock("@/platform/tauri", () => ({
     downloadFile: mocks.downloadFile,
   },
 }));
-vi.mock("@/utils/db", () => ({ getDefaultPuzzleDatabases: vi.fn() }));
+vi.mock("@/utils/db", async () => {
+  const actual = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
+  return {
+    ...actual,
+    getDefaultPuzzleDatabases: vi.fn(),
+  };
+});
 vi.mock("@/utils/format", () => ({
   formatBytes: (value: number) => `${value} B`,
   formatNumber: String,
@@ -53,7 +66,19 @@ vi.mock("../common/AppModal", () => ({
   default: ({ children, opened }: any) => (opened ? <div>{children}</div> : null),
 }));
 vi.mock("../common/ProgressButton", () => ({
-  default: ({ onClick, labels }: any) => <button onClick={onClick}>{labels.action}</button>,
+  default: (props: {
+    id: string;
+    initInstalled: boolean;
+    onClick: () => void;
+    labels: { action: string };
+  }) => {
+    mocks.progressButtonProps = props;
+    return (
+      <button type="button" onClick={props.onClick}>
+        {props.labels.action}
+      </button>
+    );
+  },
 }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -64,6 +89,7 @@ let host: HTMLDivElement;
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.defaultDatabases = undefined;
+  mocks.progressButtonProps = null;
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -75,7 +101,6 @@ afterEach(() => {
 });
 
 async function render() {
-  const AddPuzzle = (await import("./AddPuzzle")).default;
   const setOpened = vi.fn();
   const setPuzzleDbs = vi.fn();
   const onWorkspaceChanged = vi.fn();
@@ -123,6 +148,44 @@ test("keeps the modal open silently when choosing a workspace is cancelled", asy
   const actions = await render();
   await act(async () => host.querySelector("button")!.click());
   expect(actions.setOpened).not.toHaveBeenCalled();
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("wires progress id from the download URL, not the manifest index", async () => {
+  mocks.defaultDatabases = [
+    {
+      title: "Lichess",
+      description: "Tactics",
+      storageSize: 42,
+      puzzleCount: 3,
+      downloadLink: "https://example.test/tactics.db3",
+      sha256: "a".repeat(64),
+      signature: "signature",
+    },
+  ];
+  await render();
+  expect(mocks.progressButtonProps?.id).toBe(
+    defaultPuzzleDatabaseProgressId("https://example.test/tactics.db3"),
+  );
+  expect(mocks.progressButtonProps?.id).not.toBe("puzzle_db_0");
+});
+
+test("keeps a cancelled download destination silent", async () => {
+  mocks.defaultDatabases = [
+    {
+      title: "Lichess",
+      description: "Tactics",
+      storageSize: 42,
+      puzzleCount: 3,
+      downloadLink: "https://example.test/tactics.db3",
+      sha256: "a".repeat(64),
+      signature: "signature",
+    },
+  ];
+  mocks.issueDownloadDestination.mockRejectedValue(new Error("Cancellation"));
+  const actions = await render();
+  await act(async () => host.querySelectorAll("button")[1].click());
+  expect(actions.setPuzzleDbs).not.toHaveBeenCalled();
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 

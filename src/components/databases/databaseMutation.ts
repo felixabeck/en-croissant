@@ -1,7 +1,8 @@
-import type { DatabaseHandle } from "@/bindings";
+import type { DatabaseHandle, FileWorkspaceHandle } from "@/bindings";
 import type { SuccessDatabaseInfo } from "@/utils/db";
 import { databaseHandleKey, sameDatabaseHandle } from "@/utils/db";
 import { runDestructiveWithRefresh } from "@/platform/errors";
+import { runUnlessCancelled } from "@/components/files/notifyError";
 
 export type DatabaseRemovalState = {
     selected: string | null;
@@ -33,4 +34,22 @@ export async function deleteDatabaseAndInvalidate(
         () => remove(deleted),
         () => invalidate(deleted),
     );
+}
+
+export async function runPgnExport(args: {
+    issueDestination: () => Promise<{ handle: FileWorkspaceHandle }>;
+    exportToPgn: (file: DatabaseHandle, handle: FileWorkspaceHandle) => Promise<unknown>;
+    file: DatabaseHandle;
+    notifyTitle: string;
+    setLoading: (loading: boolean) => void;
+}): Promise<void> {
+    args.setLoading(true);
+    try {
+        await runUnlessCancelled(args.notifyTitle, async () => {
+            const destination = await args.issueDestination();
+            await args.exportToPgn(args.file, destination.handle);
+        });
+    } finally {
+        args.setLoading(false);
+    }
 }
