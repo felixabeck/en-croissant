@@ -320,6 +320,23 @@ impl EngineImageHandle {
         &self.id
     }
 }
+
+/// A no-follow engine-image descriptor produced by [`PathAuthority::resolve`].
+/// The field is private to this submodule so a pathname-opened `File` cannot be
+/// substituted at the `main.rs` call sites.
+mod verified {
+    pub(crate) struct VerifiedFile(std::fs::File);
+    impl VerifiedFile {
+        pub(super) fn from_resolved(resolved: &mut super::ResolvedPath) -> Option<Self> {
+            resolved.file.take().map(Self)
+        }
+        pub(super) fn into_inner(self) -> std::fs::File {
+            self.0
+        }
+    }
+}
+pub(crate) use verified::VerifiedFile;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum EngineHandleKind {
@@ -2352,32 +2369,29 @@ impl PathAuthority {
         ))
     }
 
-    /// Reads bounded bytes from an exact, revalidated image capability. Native
-    /// paths remain inside the authority layer.
-    pub(crate) fn read_engine_image(
+    /// Opens an exact, revalidated image capability and applies the pre-read
+    /// metadata bound. The caller reads through [`read_engine_image_bytes`] after
+    /// the authority guard has been dropped.
+    fn open_engine_image(
         &mut self,
         image: &EngineImageHandle,
         max_bytes: usize,
-    ) -> Result<Vec<u8>, Error> {
+    ) -> Result<(VerifiedFile, u64), Error> {
         let mut resolved = self.resolve(image.path_ref(), PathOperation::ImageRead, &[])?;
-        let mut file = resolved
+        let declared = resolved
             .file
-            .take()
-            .ok_or_else(|| Error::InvalidInput("engine image capability is not a file".into()))?;
-        let declared = file.metadata()?.len();
+            .as_ref()
+            .ok_or_else(|| Error::InvalidInput("engine image capability is not a file".into()))?
+            .metadata()?
+            .len();
         if declared > max_bytes as u64 {
             return Err(Error::ResourceLimit(
                 "engine image exceeds the supported size limit".into(),
             ));
         }
-        let mut bytes = Vec::with_capacity(usize::try_from(declared).unwrap_or(max_bytes));
-        file.read_to_end(&mut bytes)?;
-        if bytes.len() > max_bytes {
-            return Err(Error::ResourceLimit(
-                "engine image exceeds the supported size limit".into(),
-            ));
-        }
-        Ok(bytes)
+        let file = VerifiedFile::from_resolved(&mut resolved)
+            .ok_or_else(|| Error::InvalidInput("engine image capability is not a file".into()))?;
+        Ok((file, declared))
     }
 
     pub(crate) fn register_opening_book(
@@ -3873,6 +3887,41 @@ impl PathAuthority {
         })
     }
 }
+
+/// Takes the process-wide authority lock only long enough to open and bound the
+/// image descriptor. The guard is dropped before this function returns.
+pub(crate) fn engine_image_reader_for(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    image: &EngineImageHandle,
+    max_bytes: usize,
+) -> Result<(VerifiedFile, u64), Error> {
+    let mut lock = authority
+        .lock()
+        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+    let authority = lock
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+    authority.open_engine_image(image, max_bytes)
+}
+
+/// Consumes the no-follow descriptor. `declared` sizes the allocation;
+/// `max_bytes` is the post-read bound, and they are different numbers.
+pub(crate) fn read_engine_image_bytes(
+    file: VerifiedFile,
+    declared: u64,
+    max_bytes: usize,
+) -> Result<Vec<u8>, Error> {
+    let mut file = file.into_inner();
+    let mut bytes = Vec::with_capacity(usize::try_from(declared).unwrap_or(max_bytes));
+    file.read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(Error::ResourceLimit(
+            "engine image exceeds the supported size limit".into(),
+        ));
+    }
+    Ok(bytes)
+}
+
 fn validate_persisted_shape(entry: &StoredEntry) -> Result<(), Error> {
     if !matches!(
         entry.class,
@@ -4178,9 +4227,20 @@ mod tests {
     };
     use std::{
         os::unix::ffi::OsStringExt,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Mutex,
+        },
         time::UNIX_EPOCH,
     };
+
+    const _: fn(VerifiedFile, u64, usize) -> Result<Vec<u8>, Error> = read_engine_image_bytes;
+    type EngineImageReaderForFn = fn(
+        &std::sync::Mutex<Option<PathAuthority>>,
+        &EngineImageHandle,
+        usize,
+    ) -> Result<(VerifiedFile, u64), Error>;
+    const _: EngineImageReaderForFn = engine_image_reader_for;
     struct TestClock(AtomicU64);
     impl TestClock {
         fn new(v: u64) -> Self {
@@ -4197,6 +4257,67 @@ mod tests {
     }
     fn authority(dir: &tempfile::TempDir, clock: Arc<TestClock>) -> PathAuthority {
         PathAuthority::open_with_clock(dir.path().join("registry.json"), vec![], clock, 2).unwrap()
+    }
+
+    fn registered_engine_image(
+        dir: &tempfile::TempDir,
+        contents: &[u8],
+    ) -> (Mutex<Option<PathAuthority>>, EngineImageHandle, PathBuf) {
+        let image = dir.path().join("image.png");
+        fs::write(&image, contents).unwrap();
+        let mut authority = authority(dir, Arc::new(TestClock::new(0)));
+        let handle = authority
+            .register_engine_image(&image, "image")
+            .expect("adopted image handle");
+        (Mutex::new(Some(authority)), handle, image)
+    }
+
+    fn body_at_indent<'a>(source: &'a str, signature: &str) -> &'a str {
+        let sig_pos = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("signature {signature:?} must exist"));
+        let line_start = source[..sig_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let signature_line = source[line_start..]
+            .split_once('\n')
+            .map(|(line, _)| line)
+            .unwrap_or(&source[line_start..]);
+        let indent = signature_line.len() - signature_line.trim_start().len();
+        let after_sig_line = match source[line_start..].find('\n') {
+            Some(i) => line_start + i + 1,
+            None => return &source[line_start..],
+        };
+        let rest = &source[after_sig_line..];
+        let mut consumed = 0;
+        for line in rest.split_inclusive('\n') {
+            let content = line.strip_suffix('\n').unwrap_or(line);
+            let content = content.strip_suffix('\r').unwrap_or(content);
+            if is_same_or_outer_delimiter(content, indent) {
+                return &source[line_start..after_sig_line + consumed];
+            }
+            consumed += line.len();
+        }
+        &source[line_start..]
+    }
+
+    fn is_same_or_outer_delimiter(line: &str, indent: usize) -> bool {
+        if line.trim().is_empty() {
+            return false;
+        }
+        let line_indent = line.len() - line.trim_start().len();
+        if line_indent > indent {
+            return false;
+        }
+        let trimmed = line.trim_start().trim_end_matches('\r');
+        trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("pub(crate) fn ")
+            || trimmed.starts_with("async fn ")
+            || trimmed.starts_with("pub async fn ")
+            || trimmed.starts_with("pub(crate) async fn ")
+            || trimmed.starts_with("#[")
+            || trimmed.starts_with("impl ")
+            || trimmed.starts_with("mod ")
+            || trimmed == "}"
     }
 
     #[cfg(unix)]
@@ -6588,5 +6709,107 @@ mod tests {
             .pending_artifacts
             .iter()
             .any(|pending| pending.root == *removed.path_ref()));
+    }
+
+    const READ_TOKENS: [&str; 8] = [
+        "read_to_end",
+        "read_to_string",
+        "read_bytes",
+        "read_bounded_bytes",
+        "sha256_open_file",
+        "sha256_file",
+        "fs::read",
+        ".read(",
+    ];
+
+    #[test]
+    fn engine_image_split_keeps_reads_off_the_opener_and_lock_wrapper() {
+        let source = include_str!("path_authority.rs");
+        assert!(
+            source.contains("    fn open_engine_image("),
+            "open_engine_image must be module-private"
+        );
+
+        let open = body_at_indent(source, "fn open_engine_image(");
+        assert!(
+            open.starts_with("    fn open_engine_image("),
+            "open_engine_image must have no visibility modifier: {open}"
+        );
+        assert!(open.contains("max_bytes"));
+        for token in READ_TOKENS {
+            assert!(
+                !open.contains(token),
+                "open_engine_image must not contain {token:?}: {open}"
+            );
+        }
+
+        let reader = body_at_indent(source, "fn engine_image_reader_for(");
+        assert!(
+            reader.contains("open_engine_image"),
+            "engine_image_reader_for must call open_engine_image: {reader}"
+        );
+        for token in READ_TOKENS {
+            assert!(
+                !reader.contains(token),
+                "engine_image_reader_for must not contain {token:?}: {reader}"
+            );
+        }
+
+        let bytes = body_at_indent(source, "fn read_engine_image_bytes(");
+        assert!(!bytes.contains("File::open"), "{bytes}");
+        assert!(!bytes.contains("resolve"), "{bytes}");
+        assert!(!bytes.contains("pgn_path_authority"), "{bytes}");
+    }
+
+    #[test]
+    fn engine_image_reader_then_bytes_returns_exact_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = b"\x89PNG\r\n\x1a\nengine-image";
+        let (mutex, handle, _) = registered_engine_image(&dir, contents);
+        let (file, declared) = engine_image_reader_for(&mutex, &handle, 1024).unwrap();
+        assert_eq!(declared, contents.len() as u64);
+        let bytes = read_engine_image_bytes(file, declared, 1024).unwrap();
+        assert_eq!(bytes, contents);
+    }
+
+    #[test]
+    fn engine_image_reader_rejects_oversized_file_without_a_descriptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = b"0123456789";
+        let (mutex, handle, _) = registered_engine_image(&dir, contents);
+        match engine_image_reader_for(&mutex, &handle, 4) {
+            Ok(_) => panic!("oversized image produced a VerifiedFile"),
+            Err(error) => assert!(matches!(error, Error::ResourceLimit(_))),
+        }
+    }
+
+    #[test]
+    fn engine_image_bytes_rejects_growth_past_max_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = b"01234567";
+        let (mutex, handle, image) = registered_engine_image(&dir, contents);
+        let max_bytes = 10;
+        let (file, declared) = engine_image_reader_for(&mutex, &handle, max_bytes).unwrap();
+        assert_eq!(declared, contents.len() as u64);
+        let mut extra = fs::OpenOptions::new().append(true).open(&image).unwrap();
+        extra.write_all(b"grown!").unwrap();
+        drop(extra);
+        let error = read_engine_image_bytes(file, declared, max_bytes).unwrap_err();
+        assert!(matches!(error, Error::ResourceLimit(_)));
+    }
+
+    #[test]
+    fn engine_image_bytes_accepts_growth_under_max_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = b"01234567";
+        let (mutex, handle, image) = registered_engine_image(&dir, contents);
+        let max_bytes = 20;
+        let (file, declared) = engine_image_reader_for(&mutex, &handle, max_bytes).unwrap();
+        assert_eq!(declared, contents.len() as u64);
+        let mut extra = fs::OpenOptions::new().append(true).open(&image).unwrap();
+        extra.write_all(b"grown").unwrap();
+        drop(extra);
+        let bytes = read_engine_image_bytes(file, declared, max_bytes).unwrap();
+        assert_eq!(bytes, b"01234567grown");
     }
 }

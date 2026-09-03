@@ -929,7 +929,7 @@ async fn issue_engine_image(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Engine image".into());
-    let bytes = {
+    let grant = {
         let mut lock = state
             .pgn_path_authority
             .lock()
@@ -937,19 +937,25 @@ async fn issue_engine_image(
         let authority = lock
             .as_mut()
             .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-        let grant = authority.grant_dialog(
+        authority.grant_dialog(
             &path,
             display_name.clone(),
             crate::infra::path_authority::PathClass::SingleDialogGrant,
             crate::infra::path_authority::PathOperation::ImageRead,
             Duration::from_secs(300),
             1,
-        )?;
-        authority.read_engine_image(
-            &crate::infra::path_authority::EngineImageHandle::new(grant),
-            MAX_ENGINE_IMAGE_BYTES,
         )?
     };
+    let (file, declared) = crate::infra::path_authority::engine_image_reader_for(
+        &state.pgn_path_authority,
+        &crate::infra::path_authority::EngineImageHandle::new(grant),
+        MAX_ENGINE_IMAGE_BYTES,
+    )?;
+    let bytes = crate::infra::path_authority::read_engine_image_bytes(
+        file,
+        declared,
+        MAX_ENGINE_IMAGE_BYTES,
+    )?;
     engine_image_mime_type(&bytes)?;
     let image_dir = app.path().app_data_dir()?.join("engine-images");
     std::fs::create_dir_all(&image_dir)?;
@@ -972,13 +978,16 @@ fn read_engine_image(
     image: crate::infra::path_authority::EngineImageHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<EngineImageData, Error> {
-    let bytes = state
-        .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .read_engine_image(&image, MAX_ENGINE_IMAGE_BYTES)?;
+    let (file, declared) = crate::infra::path_authority::engine_image_reader_for(
+        &state.pgn_path_authority,
+        &image,
+        MAX_ENGINE_IMAGE_BYTES,
+    )?;
+    let bytes = crate::infra::path_authority::read_engine_image_bytes(
+        file,
+        declared,
+        MAX_ENGINE_IMAGE_BYTES,
+    )?;
     Ok(EngineImageData {
         mime_type: engine_image_mime_type(&bytes)?.into(),
         bytes,
