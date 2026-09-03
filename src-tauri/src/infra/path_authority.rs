@@ -4222,6 +4222,7 @@ fn resolve_windows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::blocking::source_scan::body_at_indent;
     use crate::infra::fs::{
         set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
     };
@@ -4270,54 +4271,6 @@ mod tests {
             .register_engine_image(&image, "image")
             .expect("adopted image handle");
         (Mutex::new(Some(authority)), handle, image)
-    }
-
-    fn body_at_indent<'a>(source: &'a str, signature: &str) -> &'a str {
-        let sig_pos = source
-            .find(signature)
-            .unwrap_or_else(|| panic!("signature {signature:?} must exist"));
-        let line_start = source[..sig_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let signature_line = source[line_start..]
-            .split_once('\n')
-            .map(|(line, _)| line)
-            .unwrap_or(&source[line_start..]);
-        let indent = signature_line.len() - signature_line.trim_start().len();
-        let after_sig_line = match source[line_start..].find('\n') {
-            Some(i) => line_start + i + 1,
-            None => return &source[line_start..],
-        };
-        let rest = &source[after_sig_line..];
-        let mut consumed = 0;
-        for line in rest.split_inclusive('\n') {
-            let content = line.strip_suffix('\n').unwrap_or(line);
-            let content = content.strip_suffix('\r').unwrap_or(content);
-            if is_same_or_outer_delimiter(content, indent) {
-                return &source[line_start..after_sig_line + consumed];
-            }
-            consumed += line.len();
-        }
-        &source[line_start..]
-    }
-
-    fn is_same_or_outer_delimiter(line: &str, indent: usize) -> bool {
-        if line.trim().is_empty() {
-            return false;
-        }
-        let line_indent = line.len() - line.trim_start().len();
-        if line_indent > indent {
-            return false;
-        }
-        let trimmed = line.trim_start().trim_end_matches('\r');
-        trimmed.starts_with("fn ")
-            || trimmed.starts_with("pub fn ")
-            || trimmed.starts_with("pub(crate) fn ")
-            || trimmed.starts_with("async fn ")
-            || trimmed.starts_with("pub async fn ")
-            || trimmed.starts_with("pub(crate) async fn ")
-            || trimmed.starts_with("#[")
-            || trimmed.starts_with("impl ")
-            || trimmed.starts_with("mod ")
-            || trimmed == "}"
     }
 
     #[cfg(unix)]

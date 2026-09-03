@@ -1823,89 +1823,131 @@ mod tests {
 
 #[cfg(test)]
 mod blocking_offload_scans {
-    fn body_at_indent<'a>(source: &'a str, signature: &str) -> &'a str {
-        let sig_pos = source
-            .find(signature)
-            .unwrap_or_else(|| panic!("signature {signature:?} must exist"));
-        let line_start = source[..sig_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let signature_line = source[line_start..]
-            .split_once('\n')
-            .map(|(line, _)| line)
-            .unwrap_or(&source[line_start..]);
-        let indent = signature_line.len() - signature_line.trim_start().len();
-        let after_sig_line = match source[line_start..].find('\n') {
-            Some(i) => line_start + i + 1,
-            None => return &source[line_start..],
-        };
-        let rest = &source[after_sig_line..];
-        let mut consumed = 0;
-        for line in rest.split_inclusive('\n') {
-            let content = line.strip_suffix('\n').unwrap_or(line);
-            let content = content.strip_suffix('\r').unwrap_or(content);
-            if is_same_or_outer_delimiter(content, indent) {
-                return &source[line_start..after_sig_line + consumed];
-            }
-            consumed += line.len();
-        }
-        &source[line_start..]
-    }
+    use crate::infra::blocking::source_scan::body_at_indent;
 
-    fn is_same_or_outer_delimiter(line: &str, indent: usize) -> bool {
-        if line.trim().is_empty() {
-            return false;
-        }
-        let line_indent = line.len() - line.trim_start().len();
-        if line_indent > indent {
-            return false;
-        }
-        let trimmed = line.trim_start().trim_end_matches('\r');
-        trimmed.starts_with("fn ")
-            || trimmed.starts_with("pub fn ")
-            || trimmed.starts_with("pub(crate) fn ")
-            || trimmed.starts_with("async fn ")
-            || trimmed.starts_with("pub async fn ")
-            || trimmed.starts_with("pub(crate) async fn ")
-            || trimmed.starts_with("#[")
-            || trimmed.starts_with("impl ")
-            || trimmed.starts_with("mod ")
-            || trimmed == "}"
-    }
-
+    /// Asserting that a converted command merely *mentions* `BLOCKING_GATEWAY` does not pin the
+    /// offload: moving the worker call back onto the command future and leaving a decoy
+    /// `BLOCKING_GATEWAY.spawn(|| Ok(()))` behind would keep such a scan green, which is exactly
+    /// the GTK-main-loop regression this range exists to prevent. So each command is paired with
+    /// the worker it offloads, and the worker call must appear exactly once, after the gateway
+    /// acquisition — i.e. inside the spawned closure.
     #[test]
-    fn s1_converted_symbols_contain_blocking_gateway() {
+    fn s1_converted_symbols_offload_their_worker_through_the_gateway() {
         let main = include_str!("main.rs");
         let puzzle = include_str!("puzzle.rs");
-        for signature in [
-            "async fn save_native_export(",
-            "async fn open_app_log(",
-            "async fn get_database_workspace(",
-            "async fn list_workspace_databases(",
-            "async fn create_workspace_database(",
-            "async fn database_download_destination(",
-            "async fn get_engine_workspace(",
-            "async fn read_engine_image(",
-            "async fn engine_archive_destination(",
-            "async fn register_installed_engine(",
-            "async fn open_engine_workspace(",
-            "async fn list_path_capabilities(",
-            "async fn promote_path_capability(",
-            "async fn issue_engine_image(",
-        ] {
-            let body = body_at_indent(main, signature);
-            assert!(
-                body.contains("BLOCKING_GATEWAY"),
-                "{signature} must contain BLOCKING_GATEWAY: {body}"
+        // The argument text of the `BLOCKING_GATEWAY.spawn*(…)` call in `body`. Position alone is
+        // not enough: `BLOCKING_GATEWAY.spawn(|| Ok(())).await?;` followed by a direct call to the
+        // worker puts that call after the gateway token and still runs it on the command future.
+        let gateway_closure = |body: &'static str, signature: &str| -> &'static str {
+            let gateway = body
+                .find("BLOCKING_GATEWAY")
+                .unwrap_or_else(|| panic!("{signature} must acquire BLOCKING_GATEWAY: {body}"));
+            let rest = &body[gateway..];
+            let spawn = rest
+                .find(".spawn")
+                .unwrap_or_else(|| panic!("{signature} must call .spawn on the gateway: {body}"));
+            let open = spawn
+                + rest[spawn..]
+                    .find('(')
+                    .unwrap_or_else(|| panic!("{signature} must open the spawn call: {body}"));
+            let mut depth = 0usize;
+            for (offset, character) in rest[open..].char_indices() {
+                match character {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &rest[open + 1..open + offset];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("{signature} has an unbalanced spawn call: {body}");
+        };
+        let assert_offloads = move |source: &'static str, signature: &str, worker: &str| {
+            let body = body_at_indent(source, signature);
+            let call = format!("{worker}(");
+            let occurrences = body.matches(call.as_str()).count();
+            assert_eq!(
+                occurrences, 1,
+                "{signature} must call {call} exactly once, so the closure scan cannot be \
+                 satisfied while a second call runs on the command future: {body}"
             );
+            let closure = gateway_closure(body, signature);
+            assert!(
+                closure.contains(call.as_str()),
+                "{signature} must call {call} inside the BLOCKING_GATEWAY closure, not on the \
+                 command future; closure was {closure:?}: {body}"
+            );
+        };
+        for (signature, worker) in [
+            (
+                "async fn save_native_export(",
+                "save_native_export_blocking",
+            ),
+            ("async fn open_app_log(", "open_app_log_blocking"),
+            (
+                "async fn get_database_workspace(",
+                "get_database_workspace_blocking",
+            ),
+            (
+                "async fn list_workspace_databases(",
+                "list_workspace_databases_blocking",
+            ),
+            (
+                "async fn create_workspace_database(",
+                "create_workspace_database_blocking",
+            ),
+            (
+                "async fn database_download_destination(",
+                "database_download_destination_blocking",
+            ),
+            (
+                "async fn get_engine_workspace(",
+                "get_engine_workspace_blocking",
+            ),
+            ("async fn read_engine_image(", "read_engine_image_blocking"),
+            (
+                "async fn engine_archive_destination(",
+                "engine_archive_destination_blocking",
+            ),
+            (
+                "async fn register_installed_engine(",
+                "register_installed_engine_blocking",
+            ),
+            (
+                "async fn open_engine_workspace(",
+                "open_engine_workspace_blocking",
+            ),
+            (
+                "async fn list_path_capabilities(",
+                "list_path_capabilities_blocking",
+            ),
+            (
+                "async fn promote_path_capability(",
+                "promote_path_capability_blocking",
+            ),
+            (
+                "async fn issue_engine_image(",
+                "issue_engine_image_blocking",
+            ),
+        ] {
+            assert_offloads(main, signature, worker);
         }
-        for signature in [
-            "pub async fn get_puzzle_workspace(",
-            "pub async fn issue_puzzle_download_destination(",
+        // `get_puzzle_workspace` is the documented exception: `active_or_default_puzzle_workspace`
+        // already is the blocking body, so no `*_blocking` wrapper was added (`e770bcdb`).
+        for (signature, worker) in [
+            (
+                "pub async fn get_puzzle_workspace(",
+                "active_or_default_puzzle_workspace",
+            ),
+            (
+                "pub async fn issue_puzzle_download_destination(",
+                "issue_puzzle_download_destination_blocking",
+            ),
         ] {
-            let body = body_at_indent(puzzle, signature);
-            assert!(
-                body.contains("BLOCKING_GATEWAY"),
-                "{signature} must contain BLOCKING_GATEWAY: {body}"
-            );
+            assert_offloads(puzzle, signature, worker);
         }
         for signature in [
             "async fn save_board_snapshot(",
@@ -1982,6 +2024,25 @@ mod blocking_offload_scans {
                     }
                 }
                 search_from = abs + "_blocking(".len();
+            }
+        }
+
+        // Workers that carry a blocking body without the `_blocking` suffix are invisible to the
+        // walk above, so they are named here. `active_or_default_puzzle_workspace` is the
+        // documented exception (`e770bcdb`, `d-20260903-06`): it already was the blocking body,
+        // so no pass-through wrapper was added — and without this it would be the one offloaded
+        // worker never checked for the nested acquisition that deadlocks the gateway.
+        for (file, source, name) in [(
+            "puzzle.rs",
+            include_str!("puzzle.rs"),
+            "active_or_default_puzzle_workspace",
+        )] {
+            let body = body_at_indent(source, &format!("fn {name}("));
+            for token in ["BLOCKING_GATEWAY", "block_on", "Handle::current", ".await"] {
+                assert!(
+                    !body.contains(token),
+                    "{file}::{name} must not nest a gateway acquisition (contains {token:?}): {body}"
+                );
             }
         }
     }

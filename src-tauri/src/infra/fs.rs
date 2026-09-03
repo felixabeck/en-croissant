@@ -830,6 +830,7 @@ pub(crate) use unix::MAX_REMOVE_TREE_DEPTH;
 #[cfg(all(test, unix))]
 pub(crate) use unix::{
     current_test_removal_injector, set_test_removal_injector, RemovalFault, RemovalFaultPoint,
+    RemovalInjector,
 };
 
 pub fn atomic_replace_with_precommit<F, P>(

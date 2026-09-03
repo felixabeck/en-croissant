@@ -20,6 +20,64 @@ pub struct BlockingGateway {
     semaphore: Arc<tokio::sync::Semaphore>,
 }
 
+/// Source-text scanning shared by the blocking-offload invariant tests in `main.rs`,
+/// `puzzle.rs` and `infra/path_authority.rs`. It lives here, beside the non-nesting rule it
+/// exists to prove, and there is exactly one copy on purpose: both scans depend on the same
+/// delimiter list, so a private second copy would let an edit to one (a new `fn` prefix,
+/// attribute placement, CRLF) silently change what the other treats as a function body.
+#[cfg(test)]
+pub(crate) mod source_scan {
+    /// The source text of `signature`'s body, from its signature line up to the first line at
+    /// the same or an outer indentation that opens a new item or closes this one.
+    pub(crate) fn body_at_indent<'a>(source: &'a str, signature: &str) -> &'a str {
+        let sig_pos = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("signature {signature:?} must exist"));
+        let line_start = source[..sig_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let signature_line = source[line_start..]
+            .split_once('\n')
+            .map(|(line, _)| line)
+            .unwrap_or(&source[line_start..]);
+        let indent = signature_line.len() - signature_line.trim_start().len();
+        let after_sig_line = match source[line_start..].find('\n') {
+            Some(i) => line_start + i + 1,
+            None => return &source[line_start..],
+        };
+        let rest = &source[after_sig_line..];
+        let mut consumed = 0;
+        for line in rest.split_inclusive('\n') {
+            let content = line.strip_suffix('\n').unwrap_or(line);
+            let content = content.strip_suffix('\r').unwrap_or(content);
+            if is_same_or_outer_delimiter(content, indent) {
+                return &source[line_start..after_sig_line + consumed];
+            }
+            consumed += line.len();
+        }
+        &source[line_start..]
+    }
+
+    fn is_same_or_outer_delimiter(line: &str, indent: usize) -> bool {
+        if line.trim().is_empty() {
+            return false;
+        }
+        let line_indent = line.len() - line.trim_start().len();
+        if line_indent > indent {
+            return false;
+        }
+        let trimmed = line.trim_start().trim_end_matches('\r');
+        trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("pub(crate) fn ")
+            || trimmed.starts_with("async fn ")
+            || trimmed.starts_with("pub async fn ")
+            || trimmed.starts_with("pub(crate) async fn ")
+            || trimmed.starts_with("#[")
+            || trimmed.starts_with("impl ")
+            || trimmed.starts_with("mod ")
+            || trimmed == "}"
+    }
+}
+
 fn panic_payload(payload: &(dyn Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_owned()
@@ -27,6 +85,39 @@ fn panic_payload(payload: &(dyn Any + Send)) -> String {
         message.clone()
     } else {
         "unknown panic payload".to_owned()
+    }
+}
+
+/// Test injectors are thread-local and `spawn_blocking` hops to another OS thread, so both
+/// gateway methods have to carry the calling thread's injectors across and disarm the pooled
+/// thread again afterwards. Captured once here rather than spelled out at each call site: the
+/// two sequences have to stay identical, and a worker that keeps an injector after a panic
+/// leaks it into whatever test runs on that pooled thread next.
+#[cfg(test)]
+struct CapturedInjectors {
+    atomic: Option<Arc<dyn crate::infra::fs::AtomicWriterInjector + Send + Sync>>,
+    #[cfg(unix)]
+    removal: Option<Arc<dyn crate::infra::fs::RemovalInjector + Send + Sync>>,
+}
+
+#[cfg(test)]
+impl CapturedInjectors {
+    /// Called on the thread that owns the injectors, before the hop.
+    fn capture() -> Self {
+        Self {
+            atomic: crate::infra::fs::current_test_atomic_file_injector(),
+            #[cfg(unix)]
+            removal: crate::infra::fs::current_test_removal_injector(),
+        }
+    }
+
+    /// Called on the blocking worker. The returned guard disarms that thread on every exit path,
+    /// including an unwind out of the closure.
+    fn install(self) -> TestInjectorGuard {
+        crate::infra::fs::set_test_atomic_file_injector(self.atomic);
+        #[cfg(unix)]
+        crate::infra::fs::set_test_removal_injector(self.removal);
+        TestInjectorGuard
     }
 }
 
@@ -82,21 +173,12 @@ impl BlockingGateway {
             .await
             .map_err(|_| Error::Cancellation)?;
 
-        // Test injectors are thread-local; spawn_blocking hops to another OS thread.
         #[cfg(test)]
-        let atomic_injector = crate::infra::fs::current_test_atomic_file_injector();
-        #[cfg(all(test, unix))]
-        let removal_injector = crate::infra::fs::current_test_removal_injector();
+        let injectors = CapturedInjectors::capture();
 
         let handle = tokio::task::spawn_blocking(move || {
             #[cfg(test)]
-            {
-                crate::infra::fs::set_test_atomic_file_injector(atomic_injector);
-                #[cfg(unix)]
-                crate::infra::fs::set_test_removal_injector(removal_injector);
-            }
-            #[cfg(test)]
-            let _injector_guard = TestInjectorGuard;
+            let _injector_guard = injectors.install();
             catch_unwind(AssertUnwindSafe(f))
         });
 
@@ -124,21 +206,12 @@ impl BlockingGateway {
             return Err(Error::Cancellation);
         }
         let worker_cancellation = cancellation.clone();
-        // Test injectors are thread-local; spawn_blocking hops to another OS thread.
         #[cfg(test)]
-        let atomic_injector = crate::infra::fs::current_test_atomic_file_injector();
-        #[cfg(all(test, unix))]
-        let removal_injector = crate::infra::fs::current_test_removal_injector();
+        let injectors = CapturedInjectors::capture();
         let handle = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             #[cfg(test)]
-            {
-                crate::infra::fs::set_test_atomic_file_injector(atomic_injector);
-                #[cfg(unix)]
-                crate::infra::fs::set_test_removal_injector(removal_injector);
-            }
-            #[cfg(test)]
-            let _injector_guard = TestInjectorGuard;
+            let _injector_guard = injectors.install();
             catch_unwind(AssertUnwindSafe(|| f(&worker_cancellation)))
         });
         map_join(handle.await)
@@ -316,5 +389,71 @@ mod tests {
             fired.load(Ordering::SeqCst),
             "injector installed on the test thread must fire inside BLOCKING_GATEWAY.spawn"
         );
+    }
+
+    /// The injector and semaphore tests above all pass if `f` were simply called inline after
+    /// `acquire`, which would put every converted command straight back on the runtime worker the
+    /// offload exists to keep free. Only the thread identity distinguishes the two.
+    #[tokio::test]
+    async fn spawn_runs_the_closure_on_a_blocking_pool_thread() {
+        let gateway = BlockingGateway::new(1);
+        let caller = std::thread::current().id();
+        let worker = gateway
+            .spawn(move || Ok(std::thread::current().id()))
+            .await
+            .expect("spawn");
+        assert_ne!(
+            caller, worker,
+            "spawn must hand the closure to spawn_blocking, not run it on the caller"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_cancellable_runs_the_closure_on_a_blocking_pool_thread() {
+        let gateway = BlockingGateway::new(1);
+        let caller = std::thread::current().id();
+        let worker = gateway
+            .spawn_cancellable(CancellationToken::new(), move |_| {
+                Ok(std::thread::current().id())
+            })
+            .await
+            .expect("spawn_cancellable");
+        assert_ne!(
+            caller, worker,
+            "spawn_cancellable must hand the closure to spawn_blocking, not run it on the caller"
+        );
+    }
+
+    /// `TestInjectorGuard` is what stops a panicking worker from leaving a pooled thread armed
+    /// with the previous test's injector. Deleting its `Drop` impl is invisible to every other
+    /// test here, because `spawn` re-installs the captured injector on entry — so this drives a
+    /// runtime with exactly one blocking thread and then asks that thread directly.
+    #[test]
+    fn a_panicking_worker_leaves_no_injector_on_the_pooled_thread() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let gateway = BlockingGateway::new(1);
+            crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(FlagInjector(
+                Arc::new(AtomicBool::new(false)),
+            ))));
+            let result = gateway
+                .spawn(|| -> Result<(), Error> { panic!("leaves the guard to clean up") })
+                .await;
+            assert!(matches!(result, Err(Error::Conflict(_))));
+            crate::infra::fs::set_test_atomic_file_injector(None);
+
+            let still_armed = tokio::task::spawn_blocking(|| {
+                crate::infra::fs::current_test_atomic_file_injector().is_some()
+            })
+            .await
+            .expect("plain spawn_blocking");
+            assert!(
+                !still_armed,
+                "the guard must disarm the pooled thread even when the closure panicked"
+            );
+        });
     }
 }
