@@ -11,6 +11,7 @@ import {
     renderTopBar,
     resetInstallChainForTests,
     runNativeMenuAction,
+    bindAppMenuCallbacks,
     wantNativeDecorations,
     type AppMenuCallbacks,
     type MenuGroup,
@@ -253,6 +254,57 @@ test("clearSavedDataFromMenu clears when ask is true", async () => {
         },
     });
     expect(cleared).toBe(true);
+});
+
+test("bindAppMenuCallbacks returns runMenu's promise for each wired command", async () => {
+    const opened = deferred<void>();
+    const seen: unknown[] = [];
+    const callbacks = bindAppMenuCallbacks({
+        runMenu: async (command, successMessage) => {
+            try {
+                await command();
+                if (successMessage) seen.push(successMessage);
+            } catch (error) {
+                seen.push(error);
+            }
+        },
+        about: () => {
+            seen.push("about");
+        },
+        createNewTab: () => opened.promise,
+        openNewFile: async () => {
+            throw new Error("open failed");
+        },
+        openSettings: async () => undefined,
+        exit: async () => undefined,
+        reload: () => {
+            seen.push("reload");
+        },
+        toggleFullscreen: async () => undefined,
+        documentation: async () => undefined,
+        clearSavedData: async () => undefined,
+        openLogs: async () => undefined,
+        openLogsSuccessMessage: "logs-ok",
+    });
+
+    const pending = callbacks.createNewTab();
+    expect(pending).toBeInstanceOf(Promise);
+    let settled = false;
+    void Promise.resolve(pending).then(() => {
+        settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    opened.resolve();
+    await pending;
+    expect(settled).toBe(true);
+
+    await callbacks.openNewFile();
+    expect(seen).toEqual([expect.any(Error)]);
+    callbacks.about();
+    callbacks.reload();
+    await callbacks.openLogs();
+    expect(seen).toEqual([expect.any(Error), "about", "reload", "logs-ok"]);
 });
 
 test("runNativeMenuAction notifies string rejections and skips Cancellation", async () => {

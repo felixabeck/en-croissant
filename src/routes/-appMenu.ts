@@ -22,15 +22,15 @@ export type MenuGroup = {
 
 export type AppMenuCallbacks = {
     about: () => void;
-    createNewTab: () => void;
-    openNewFile: () => void;
-    openSettings: () => void;
-    exit: () => void;
+    createNewTab: () => void | Promise<void>;
+    openNewFile: () => void | Promise<void>;
+    openSettings: () => void | Promise<void>;
+    exit: () => void | Promise<void>;
     reload: () => void;
-    toggleFullscreen: () => void;
-    documentation: () => void;
-    clearSavedData: () => void;
-    openLogs: () => void;
+    toggleFullscreen: () => void | Promise<void>;
+    documentation: () => void | Promise<void>;
+    clearSavedData: () => void | Promise<void>;
+    openLogs: () => void | Promise<void>;
 };
 
 export type WindowPlatform = "win32" | "linux" | "other";
@@ -238,6 +238,59 @@ export async function runWindowAction(
     notify: (error: unknown) => void,
 ): Promise<void> {
     await runNativeMenuAction(op, notify);
+}
+
+export type AppMenuCommandBindings = {
+    runMenu: (command: () => Promise<unknown>, successMessage?: string) => Promise<void>;
+    about: () => void;
+    createNewTab: () => Promise<unknown>;
+    openNewFile: () => Promise<unknown>;
+    openSettings: () => Promise<unknown>;
+    exit: () => Promise<unknown>;
+    reload: () => void;
+    toggleFullscreen: () => Promise<unknown>;
+    documentation: () => Promise<unknown>;
+    clearSavedData: () => Promise<unknown>;
+    openLogs: () => Promise<unknown>;
+    openLogsSuccessMessage?: string;
+};
+
+export function bindAppMenuCallbacks(bindings: AppMenuCommandBindings): AppMenuCallbacks {
+    return {
+        about: bindings.about,
+        createNewTab: () => bindings.runMenu(bindings.createNewTab),
+        openNewFile: () => bindings.runMenu(bindings.openNewFile),
+        openSettings: () => bindings.runMenu(bindings.openSettings),
+        exit: () => bindings.runMenu(bindings.exit),
+        reload: bindings.reload,
+        toggleFullscreen: () => bindings.runMenu(bindings.toggleFullscreen),
+        documentation: () => bindings.runMenu(bindings.documentation),
+        clearSavedData: () => bindings.runMenu(bindings.clearSavedData),
+        openLogs: () => bindings.runMenu(bindings.openLogs, bindings.openLogsSuccessMessage),
+    };
+}
+
+export type WindowControlOps = {
+    minimize: () => Promise<unknown>;
+    toggleMaximize: () => Promise<unknown>;
+    close: () => Promise<unknown>;
+};
+
+export type WindowControlHandlers = {
+    minimize: () => Promise<void>;
+    toggleMaximize: () => Promise<void>;
+    close: () => Promise<void>;
+};
+
+export function bindWindowControls(
+    window: WindowControlOps,
+    notify: (error: unknown) => void,
+): WindowControlHandlers {
+    return {
+        minimize: () => runWindowAction(() => window.minimize(), notify),
+        toggleMaximize: () => runWindowAction(() => window.toggleMaximize(), notify),
+        close: () => runWindowAction(() => window.close(), notify),
+    };
 }
 
 export type MenuHandle = {

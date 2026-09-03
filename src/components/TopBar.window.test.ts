@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { runWindowAction, watchMaximized } from "@/routes/-appMenu";
+import { bindWindowControls, runWindowAction, watchMaximized } from "@/routes/-appMenu";
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -8,6 +8,37 @@ function deferred<T>() {
     });
     return { promise, resolve };
 }
+
+test("window-control handlers return runWindowAction's promise and notify rejections", async () => {
+    const minimize = deferred<void>();
+    const seen: unknown[] = [];
+    const handlers = bindWindowControls(
+        {
+            minimize: () => minimize.promise,
+            toggleMaximize: async () => {
+                throw new Error("maximize failed");
+            },
+            close: async () => undefined,
+        },
+        (error) => {
+            seen.push(error);
+        },
+    );
+
+    const pending = handlers.minimize();
+    let settled = false;
+    void pending.then(() => {
+        settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    minimize.resolve();
+    await pending;
+    expect(settled).toBe(true);
+
+    await expect(handlers.toggleMaximize()).resolves.toBeUndefined();
+    expect(seen).toHaveLength(1);
+});
 
 test("runWindowAction notifies a rejected native call once", async () => {
     const seen: unknown[] = [];

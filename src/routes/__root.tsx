@@ -20,6 +20,7 @@ import { openFile, pickPgnFile } from "@/utils/files";
 import { createTab } from "@/utils/tabs";
 import {
   assembleNativeMenuResources,
+  bindAppMenuCallbacks,
   buildAppMenuTree,
   clearSavedDataFromMenu,
   createNewTabFromMenu,
@@ -131,55 +132,38 @@ function RootLayout() {
 
   const menuCallbacks: AppMenuCallbacks = useMemo(
     () =>
-      ({
+      bindAppMenuCallbacks({
+        runMenu,
         about: () => setOpened(true),
-        createNewTab: () => {
-          void runMenu(createNewTab);
-        },
-        openNewFile: () => {
-          void runMenu(openNewFile);
-        },
-        openSettings: () => {
-          void runMenu(openSettings);
-        },
-        exit: () => {
-          void runMenu(async () => {
-            await exit(0);
-          });
-        },
+        createNewTab,
+        openNewFile,
+        openSettings,
+        exit: () => exit(0),
         reload: () => location.reload(),
-        toggleFullscreen: () => {
-          void runMenu(toggleFullscreen);
-        },
-        documentation: () => {
-          void runMenu(() => tauri.openDocumentation());
-        },
-        clearSavedData: () => {
-          void runMenu(() =>
-            clearSavedDataFromMenu({
-              ask,
-              confirmMessage: t("Menu.Help.ClearSavedData.Confirm"),
-              title: t("Menu.Help.ClearSavedData.Title"),
-              clear: () => {
-                localStorage.clear();
-                sessionStorage.clear();
-                location.reload();
-              },
-            }),
-          );
-        },
-        openLogs: () => {
-          void runMenu(() => tauri.openAppLog(), t("Menu.Help.OpenLogs"));
-        },
-      }) satisfies AppMenuCallbacks,
+        toggleFullscreen,
+        documentation: () => tauri.openDocumentation(),
+        clearSavedData: () =>
+          clearSavedDataFromMenu({
+            ask,
+            confirmMessage: t("Menu.Help.ClearSavedData.Confirm"),
+            title: t("Menu.Help.ClearSavedData.Title"),
+            clear: () => {
+              localStorage.clear();
+              sessionStorage.clear();
+              location.reload();
+            },
+          }),
+        openLogs: () => tauri.openAppLog(),
+        openLogsSuccessMessage: t("Menu.Help.OpenLogs"),
+      }),
     [createNewTab, openNewFile, openSettings, runMenu, t, toggleFullscreen],
   );
 
   useHotkeys(keyMap.NEW_TAB.keys, () => {
-    void runMenu(createNewTab);
+    void menuCallbacks.createNewTab();
   });
   useHotkeys(keyMap.OPEN_FILE.keys, () => {
-    void runMenu(openNewFile);
+    void menuCallbacks.openNewFile();
   });
 
   const menuActions = useMemo(

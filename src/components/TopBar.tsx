@@ -1,9 +1,9 @@
 import { Box, Button, Group, Image, Menu, Text, useComputedColorScheme } from "@mantine/core";
 import { getCurrentWebviewWindow } from "@/platform/native";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { runWindowAction, watchMaximized, type MenuGroup } from "@/routes/-appMenu";
+import { bindWindowControls, watchMaximized, type MenuGroup } from "@/routes/-appMenu";
 import { IconAction } from "./common/IconAction";
 import classes from "./TopBar.module.css";
 
@@ -80,6 +80,10 @@ function TopBar({
   // looked empty. `useComputedColorScheme` resolves the app scheme, "auto" included.
   const colorScheme = useComputedColorScheme("dark");
   const [isMaximized, setIsMaximized] = useState(false);
+  const windowControls = useMemo(
+    () => bindWindowControls(appWindow, (error) => notifyUnlessCancelled(t("Common.Error"), error)),
+    [t],
+  );
 
   useEffect(() => {
     return watchMaximized({
@@ -162,36 +166,21 @@ function TopBar({
           <Group gap={0}>
             <IconAction
               label={t("Window.Minimize")}
-              onClick={() =>
-                void runWindowAction(
-                  () => appWindow.minimize(),
-                  (error) => notifyUnlessCancelled(t("Common.Error"), error),
-                )
-              }
+              onClick={() => void windowControls.minimize()}
               className={classes.icon}
             >
               <IconMinimize />
             </IconAction>
             <IconAction
               label={t(isMaximized ? "Window.Restore" : "Window.Maximize")}
-              onClick={() =>
-                void runWindowAction(
-                  () => appWindow.toggleMaximize(),
-                  (error) => notifyUnlessCancelled(t("Common.Error"), error),
-                )
-              }
+              onClick={() => void windowControls.toggleMaximize()}
               className={classes.icon}
             >
               {isMaximized ? <IconMaximize /> : <IconSquare />}
             </IconAction>
             <IconAction
               label={t("Window.Close")}
-              onClick={() =>
-                void runWindowAction(
-                  () => appWindow.close(),
-                  (error) => notifyUnlessCancelled(t("Common.Error"), error),
-                )
-              }
+              onClick={() => void windowControls.close()}
               className={classes.close}
             >
               <IconX />
