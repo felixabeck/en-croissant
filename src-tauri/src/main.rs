@@ -65,6 +65,7 @@ use crate::game::{
     abort_game, get_game_engine_logs, get_game_state, make_game_move, resign_game, start_game,
     take_back_game_move, ClockUpdateEvent, GameMoveEvent, GameOverEvent,
 };
+use crate::infra::blocking::BLOCKING_GATEWAY;
 
 use crate::file_workspace::{
     create_workspace_directory, create_workspace_file, issue_file_workspace, list_file_workspace,
@@ -512,7 +513,7 @@ async fn issue_pgn_export_destination(
         .create_pgn_export_destination(&path, display_name)
 }
 
-fn save_native_export(
+async fn save_native_export(
     app: &tauri::AppHandle,
     suggested_name: &str,
     extension: &str,
@@ -528,13 +529,25 @@ fn save_native_export(
         .ok_or(Error::Cancellation)?
         .into_path()
         .map_err(|error| Error::InvalidInput(format!("invalid native file selection: {error}")))?;
-    if path.extension().and_then(|value| value.to_str()) != Some(extension) {
+    let extension = extension.to_owned();
+    let bytes = bytes.to_vec();
+    BLOCKING_GATEWAY
+        .spawn(move || save_native_export_blocking(path, extension, bytes))
+        .await
+}
+
+fn save_native_export_blocking(
+    path: PathBuf,
+    extension: String,
+    bytes: Vec<u8>,
+) -> Result<(), Error> {
+    if path.extension().and_then(|value| value.to_str()) != Some(extension.as_str()) {
         return Err(Error::InvalidInput(format!(
             "export must use .{extension} extension"
         )));
     }
     crate::infra::fs::atomic_replace(&path, |file| {
-        file.write_all(bytes).map_err(Error::from)?;
+        file.write_all(&bytes).map_err(Error::from)?;
         Ok(())
     })?;
     Ok(())
@@ -543,15 +556,15 @@ fn save_native_export(
 /// Native save dialog and atomic export for a renderer-produced board image.
 #[tauri::command]
 #[specta::specta]
-fn save_board_snapshot(app: tauri::AppHandle, bytes: Vec<u8>) -> Result<(), Error> {
-    save_native_export(&app, "board.png", "png", &bytes)
+async fn save_board_snapshot(app: tauri::AppHandle, bytes: Vec<u8>) -> Result<(), Error> {
+    save_native_export(&app, "board.png", "png", &bytes).await
 }
 
 /// Native save dialog and atomic export for renderer-selected engine logs.
 #[tauri::command]
 #[specta::specta]
-fn save_engine_logs(app: tauri::AppHandle, text: String) -> Result<(), Error> {
-    save_native_export(&app, "engine-logs.csv", "csv", text.as_bytes())
+async fn save_engine_logs(app: tauri::AppHandle, text: String) -> Result<(), Error> {
+    save_native_export(&app, "engine-logs.csv", "csv", text.as_bytes()).await
 }
 
 /// Opens the fixed project documentation URL without granting arbitrary URL authority to the
@@ -568,7 +581,13 @@ fn open_documentation(app: tauri::AppHandle) -> Result<(), Error> {
 /// Opens the application-owned log file without exposing its native path to the renderer.
 #[tauri::command]
 #[specta::specta]
-fn open_app_log(app: tauri::AppHandle) -> Result<(), Error> {
+async fn open_app_log(app: tauri::AppHandle) -> Result<(), Error> {
+    BLOCKING_GATEWAY
+        .spawn(move || open_app_log_blocking(app))
+        .await
+}
+
+fn open_app_log_blocking(app: tauri::AppHandle) -> Result<(), Error> {
     use tauri_plugin_opener::OpenerExt;
     let path = app.path().app_log_dir()?.join("en-croissant.log");
     app.opener()
@@ -668,12 +687,21 @@ async fn issue_database_workspace(
 /// never receives a renderer path and is stable across restarts.
 #[tauri::command]
 #[specta::specta]
-fn get_database_workspace(
+async fn get_database_workspace(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::DatabaseRootHandle, Error> {
-    let mut authority_lock = state
-        .pgn_path_authority
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || get_database_workspace_blocking(&authority, app))
+        .await
+}
+
+fn get_database_workspace_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    app: tauri::AppHandle,
+) -> Result<crate::infra::path_authority::DatabaseRootHandle, Error> {
+    let mut authority_lock = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     let authority = authority_lock
@@ -691,12 +719,21 @@ fn get_database_workspace(
 
 #[tauri::command]
 #[specta::specta]
-fn list_workspace_databases(
+async fn list_workspace_databases(
     root: crate::infra::path_authority::DatabaseRootHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<crate::infra::path_authority::DatabaseDescriptor>, Error> {
-    state
-        .pgn_path_authority
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || list_workspace_databases_blocking(&authority, root))
+        .await
+}
+
+fn list_workspace_databases_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    root: crate::infra::path_authority::DatabaseRootHandle,
+) -> Result<Vec<crate::infra::path_authority::DatabaseDescriptor>, Error> {
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -706,16 +743,26 @@ fn list_workspace_databases(
 
 #[tauri::command]
 #[specta::specta]
-fn create_workspace_database(
+async fn create_workspace_database(
     root: crate::infra::path_authority::DatabaseRootHandle,
     filename: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::DatabaseHandle, Error> {
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || create_workspace_database_blocking(&authority, root, filename))
+        .await
+}
+
+fn create_workspace_database_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    root: crate::infra::path_authority::DatabaseRootHandle,
+    filename: String,
+) -> Result<crate::infra::path_authority::DatabaseHandle, Error> {
     if filename.is_empty() || filename.contains('/') || filename.contains('\\') {
         return Err(Error::InvalidInput("invalid database filename".into()));
     }
-    state
-        .pgn_path_authority
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -725,12 +772,21 @@ fn create_workspace_database(
 
 #[tauri::command]
 #[specta::specta]
-fn database_download_destination(
+async fn database_download_destination(
     root: crate::infra::path_authority::DatabaseRootHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
-    state
-        .pgn_path_authority
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || database_download_destination_blocking(&authority, root))
+        .await
+}
+
+fn database_download_destination_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    root: crate::infra::path_authority::DatabaseRootHandle,
+) -> Result<crate::infra::path_authority::PathRef, Error> {
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -771,12 +827,21 @@ async fn issue_engine_workspace(
 
 #[tauri::command]
 #[specta::specta]
-fn get_engine_workspace(
+async fn get_engine_workspace(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::EngineRootHandle, Error> {
-    let mut lock = state
-        .pgn_path_authority
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || get_engine_workspace_blocking(&authority, app))
+        .await
+}
+
+fn get_engine_workspace_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    app: tauri::AppHandle,
+) -> Result<crate::infra::path_authority::EngineRootHandle, Error> {
+    let mut lock = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     let authority = lock
@@ -925,13 +990,23 @@ async fn issue_engine_image(
     })
     .await
     .map_err(map_picker_join)??;
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_engine_image_blocking(&authority, app, path))
+        .await
+}
+
+fn issue_engine_image_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    app: tauri::AppHandle,
+    path: PathBuf,
+) -> Result<crate::infra::path_authority::EngineImageHandle, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Engine image".into());
     let grant = {
-        let mut lock = state
-            .pgn_path_authority
+        let mut lock = authority
             .lock()
             .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
         let authority = lock
@@ -947,7 +1022,7 @@ async fn issue_engine_image(
         )?
     };
     let (file, declared) = crate::infra::path_authority::engine_image_reader_for(
-        &state.pgn_path_authority,
+        authority,
         &crate::infra::path_authority::EngineImageHandle::new(grant),
         MAX_ENGINE_IMAGE_BYTES,
     )?;
@@ -963,8 +1038,7 @@ async fn issue_engine_image(
     crate::infra::fs::atomic_replace(&destination, |file| {
         file.write_all(&bytes).map_err(Error::from)
     })?;
-    state
-        .pgn_path_authority
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -974,12 +1048,22 @@ async fn issue_engine_image(
 
 #[tauri::command]
 #[specta::specta]
-fn read_engine_image(
+async fn read_engine_image(
     image: crate::infra::path_authority::EngineImageHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<EngineImageData, Error> {
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || read_engine_image_blocking(&authority, image))
+        .await
+}
+
+fn read_engine_image_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    image: crate::infra::path_authority::EngineImageHandle,
+) -> Result<EngineImageData, Error> {
     let (file, declared) = crate::infra::path_authority::engine_image_reader_for(
-        &state.pgn_path_authority,
+        authority,
         &image,
         MAX_ENGINE_IMAGE_BYTES,
     )?;
@@ -1028,12 +1112,21 @@ async fn issue_opening_book(
 
 #[tauri::command]
 #[specta::specta]
-fn engine_archive_destination(
+async fn engine_archive_destination(
     root: crate::infra::path_authority::EngineRootHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
-    state
-        .pgn_path_authority
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || engine_archive_destination_blocking(&authority, root))
+        .await
+}
+
+fn engine_archive_destination_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    root: crate::infra::path_authority::EngineRootHandle,
+) -> Result<crate::infra::path_authority::PathRef, Error> {
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -1043,13 +1136,23 @@ fn engine_archive_destination(
 
 #[tauri::command]
 #[specta::specta]
-fn register_installed_engine(
+async fn register_installed_engine(
     root: crate::infra::path_authority::EngineRootHandle,
     relative_path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::EngineHandle, Error> {
-    state
-        .pgn_path_authority
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || register_installed_engine_blocking(&authority, root, relative_path))
+        .await
+}
+
+fn register_installed_engine_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    root: crate::infra::path_authority::EngineRootHandle,
+    relative_path: String,
+) -> Result<crate::infra::path_authority::EngineHandle, Error> {
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -1059,14 +1162,24 @@ fn register_installed_engine(
 
 #[tauri::command]
 #[specta::specta]
-fn open_engine_workspace(
+async fn open_engine_workspace(
     app: tauri::AppHandle,
     root: crate::infra::path_authority::EngineRootHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || open_engine_workspace_blocking(&authority, app, root))
+        .await
+}
+
+fn open_engine_workspace_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    app: tauri::AppHandle,
+    root: crate::infra::path_authority::EngineRootHandle,
+) -> Result<(), Error> {
     use tauri_plugin_opener::OpenerExt;
-    let path = state
-        .pgn_path_authority
+    let path = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -1079,11 +1192,19 @@ fn open_engine_workspace(
 
 #[tauri::command]
 #[specta::specta]
-fn list_path_capabilities(
+async fn list_path_capabilities(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<crate::infra::path_authority::PathDescriptor>, Error> {
-    state
-        .pgn_path_authority
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || list_path_capabilities_blocking(&authority))
+        .await
+}
+
+fn list_path_capabilities_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+) -> Result<Vec<crate::infra::path_authority::PathDescriptor>, Error> {
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -1093,10 +1214,11 @@ fn list_path_capabilities(
 
 #[tauri::command]
 #[specta::specta]
-fn revoke_path_capability(
+async fn revoke_path_capability(
     id: crate::infra::path_authority::PathRef,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, Error> {
+    // revoke_dialog is a HashMap::remove; a permit for a map removal is waste.
     state
         .pgn_path_authority
         .lock()
@@ -1108,15 +1230,29 @@ fn revoke_path_capability(
 
 #[tauri::command]
 #[specta::specta]
-fn promote_path_capability(
+async fn promote_path_capability(
     id: crate::infra::path_authority::PathRef,
     path_class: crate::infra::path_authority::PathClass,
     display_name: String,
     operations: Vec<crate::infra::path_authority::PathOperation>,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::PathCommit, Error> {
-    state
-        .pgn_path_authority
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            promote_path_capability_blocking(&authority, id, path_class, display_name, operations)
+        })
+        .await
+}
+
+fn promote_path_capability_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    id: crate::infra::path_authority::PathRef,
+    path_class: crate::infra::path_authority::PathClass,
+    display_name: String,
+    operations: Vec<crate::infra::path_authority::PathOperation>,
+) -> Result<crate::infra::path_authority::PathCommit, Error> {
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -1672,5 +1808,171 @@ mod tests {
         let games = GameManager::new();
         assert!(shutdown_backend(&supervisor, &games, None, Duration::from_secs(30)).await);
         assert!(shutdown_backend(&supervisor, &games, None, Duration::from_secs(30)).await);
+    }
+}
+
+#[cfg(test)]
+mod blocking_offload_scans {
+    fn body_at_indent<'a>(source: &'a str, signature: &str) -> &'a str {
+        let sig_pos = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("signature {signature:?} must exist"));
+        let line_start = source[..sig_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let signature_line = source[line_start..]
+            .split_once('\n')
+            .map(|(line, _)| line)
+            .unwrap_or(&source[line_start..]);
+        let indent = signature_line.len() - signature_line.trim_start().len();
+        let after_sig_line = match source[line_start..].find('\n') {
+            Some(i) => line_start + i + 1,
+            None => return &source[line_start..],
+        };
+        let rest = &source[after_sig_line..];
+        let mut consumed = 0;
+        for line in rest.split_inclusive('\n') {
+            let content = line.strip_suffix('\n').unwrap_or(line);
+            let content = content.strip_suffix('\r').unwrap_or(content);
+            if is_same_or_outer_delimiter(content, indent) {
+                return &source[line_start..after_sig_line + consumed];
+            }
+            consumed += line.len();
+        }
+        &source[line_start..]
+    }
+
+    fn is_same_or_outer_delimiter(line: &str, indent: usize) -> bool {
+        if line.trim().is_empty() {
+            return false;
+        }
+        let line_indent = line.len() - line.trim_start().len();
+        if line_indent > indent {
+            return false;
+        }
+        let trimmed = line.trim_start().trim_end_matches('\r');
+        trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("pub(crate) fn ")
+            || trimmed.starts_with("async fn ")
+            || trimmed.starts_with("pub async fn ")
+            || trimmed.starts_with("pub(crate) async fn ")
+            || trimmed.starts_with("#[")
+            || trimmed.starts_with("impl ")
+            || trimmed.starts_with("mod ")
+            || trimmed == "}"
+    }
+
+    #[test]
+    fn s1_converted_symbols_contain_blocking_gateway() {
+        let main = include_str!("main.rs");
+        let puzzle = include_str!("puzzle.rs");
+        for signature in [
+            "async fn save_native_export(",
+            "async fn open_app_log(",
+            "async fn get_database_workspace(",
+            "async fn list_workspace_databases(",
+            "async fn create_workspace_database(",
+            "async fn database_download_destination(",
+            "async fn get_engine_workspace(",
+            "async fn read_engine_image(",
+            "async fn engine_archive_destination(",
+            "async fn register_installed_engine(",
+            "async fn open_engine_workspace(",
+            "async fn list_path_capabilities(",
+            "async fn promote_path_capability(",
+            "async fn issue_engine_image(",
+        ] {
+            let body = body_at_indent(main, signature);
+            assert!(
+                body.contains("BLOCKING_GATEWAY"),
+                "{signature} must contain BLOCKING_GATEWAY: {body}"
+            );
+        }
+        for signature in [
+            "pub async fn get_puzzle_workspace(",
+            "pub async fn issue_puzzle_download_destination(",
+        ] {
+            let body = body_at_indent(puzzle, signature);
+            assert!(
+                body.contains("BLOCKING_GATEWAY"),
+                "{signature} must contain BLOCKING_GATEWAY: {body}"
+            );
+        }
+        for signature in [
+            "async fn save_board_snapshot(",
+            "async fn save_engine_logs(",
+        ] {
+            let body = body_at_indent(main, signature);
+            assert!(
+                body.contains("save_native_export"),
+                "{signature} must forward to save_native_export: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn s2_dialogs_precede_blocking_gateway() {
+        let main = include_str!("main.rs");
+        let save = body_at_indent(main, "async fn save_native_export(");
+        let save_dialog = save
+            .find("blocking_save_file")
+            .expect("save_native_export must call blocking_save_file");
+        let save_gateway = save
+            .find("BLOCKING_GATEWAY")
+            .expect("save_native_export must call BLOCKING_GATEWAY");
+        assert!(
+            save_dialog < save_gateway,
+            "save_native_export must run blocking_save_file before BLOCKING_GATEWAY: {save}"
+        );
+
+        let image = body_at_indent(main, "async fn issue_engine_image(");
+        let picker = image
+            .find("blocking_pick_file")
+            .expect("issue_engine_image must call blocking_pick_file");
+        let image_gateway = image
+            .find("BLOCKING_GATEWAY")
+            .expect("issue_engine_image must call BLOCKING_GATEWAY");
+        assert!(
+            picker < image_gateway,
+            "issue_engine_image must run the picker before BLOCKING_GATEWAY: {image}"
+        );
+    }
+
+    #[test]
+    fn s8_blocking_functions_do_not_nest_the_gateway() {
+        for (file, source) in [
+            ("main.rs", include_str!("main.rs")),
+            ("puzzle.rs", include_str!("puzzle.rs")),
+        ] {
+            let mut search_from = 0;
+            while let Some(rel) = source[search_from..].find("_blocking(") {
+                let abs = search_from + rel;
+                let line_start = source[..abs].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let line_end = source[abs..]
+                    .find('\n')
+                    .map(|i| abs + i)
+                    .unwrap_or(source.len());
+                let line = &source[line_start..line_end];
+                let trimmed = line.trim_start();
+                let is_sync_fn = trimmed.starts_with("fn ")
+                    || trimmed.starts_with("pub fn ")
+                    || trimmed.starts_with("pub(crate) fn ");
+                if is_sync_fn {
+                    let name_start = trimmed.find("fn ").expect("sync fn prefix") + 3;
+                    let name = trimmed[name_start..]
+                        .split('(')
+                        .next()
+                        .expect("function name")
+                        .trim();
+                    let body = body_at_indent(source, &format!("fn {name}("));
+                    for token in ["BLOCKING_GATEWAY", "block_on", "Handle::current", ".await"] {
+                        assert!(
+                            !body.contains(token),
+                            "{file}::{name} must not nest a gateway acquisition (contains {token:?}): {body}"
+                        );
+                    }
+                }
+                search_from = abs + "_blocking(".len();
+            }
+        }
     }
 }

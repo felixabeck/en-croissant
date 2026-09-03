@@ -235,10 +235,9 @@ pub struct PuzzleDatabaseInfo {
 
 fn active_or_default_puzzle_workspace(
     app: &tauri::AppHandle,
-    state: &crate::AppState,
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
 ) -> Result<crate::infra::path_authority::PuzzleRootDescriptor, Error> {
-    let mut authority_lock = state
-        .pgn_path_authority
+    let mut authority_lock = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     let authority = authority_lock
@@ -293,22 +292,41 @@ pub async fn issue_puzzle_workspace(
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_puzzle_workspace(
+pub async fn get_puzzle_workspace(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<crate::infra::path_authority::PuzzleRootDescriptor, Error> {
-    active_or_default_puzzle_workspace(&app, &state)
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || get_puzzle_workspace_blocking(&authority, app))
+        .await
+}
+
+fn get_puzzle_workspace_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    app: tauri::AppHandle,
+) -> Result<crate::infra::path_authority::PuzzleRootDescriptor, Error> {
+    active_or_default_puzzle_workspace(&app, authority)
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn issue_puzzle_download_destination(
+pub async fn issue_puzzle_download_destination(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
-    let workspace = active_or_default_puzzle_workspace(&app, &state)?;
-    state
-        .pgn_path_authority
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_puzzle_download_destination_blocking(&authority, app))
+        .await
+}
+
+fn issue_puzzle_download_destination_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    app: tauri::AppHandle,
+) -> Result<crate::infra::path_authority::PathRef, Error> {
+    let workspace = active_or_default_puzzle_workspace(&app, authority)?;
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -322,7 +340,7 @@ pub async fn list_puzzle_databases(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Vec<PuzzleDatabaseInfo>, Error> {
-    let workspace = active_or_default_puzzle_workspace(&app, &state)?;
+    let workspace = active_or_default_puzzle_workspace(&app, &state.pgn_path_authority)?;
     let files = state
         .pgn_path_authority
         .lock()
