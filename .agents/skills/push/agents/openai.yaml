@@ -1,4 +1,4 @@
 interface:
-  display_name: "Push En Croissant"
-  short_description: "Validate, review and push En Croissant safely"
-  default_prompt: "Use $push to validate, independently review, commit, and push the current En Croissant changes."
+  display_name: "Push ChessFable"
+  short_description: "Validate, review and push ChessFable safely"
+  default_prompt: "Use $push to validate, independently review, commit, and push the current ChessFable changes."

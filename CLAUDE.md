@@ -1,8 +1,10 @@
-# En Croissant — project context
+# ChessFable — project context
 
-Chess GUI: Tauri v2 desktop shell (Rust) + React/TypeScript renderer. This is Felix's **fork**
-(`origin` = `felixabeck/en-croissant`, `upstream` = the original project). Upstream history is the
-error history this project learns from; foreign upstream changes are never rewritten casually.
+Chess GUI: Tauri v2 desktop shell (Rust) + React/TypeScript renderer. **ChessFable** is Felix's
+fork of En Croissant (`origin` = `felixabeck/en-croissant`, `upstream` = the original project).
+Upstream history is the error history this project learns from; foreign upstream changes are
+never rewritten casually. En Croissant is the upstream name and the GitHub remote, not this
+project's name.
 
 ## Layout
 
@@ -99,7 +101,7 @@ untranslated JSX and missing locale keys (`pnpm i18n:jsx`, `pnpm i18n:check`), d
 
 Adversarial review runs in two tiers, and names never collide between them. Six project-independent
 lenses live in `~/.claude/agents/review-*.md` (`plan`, `minimalism`, `root-cause`, `tests`,
-`code-quality`, `error-handling`); six En-Croissant-specific ones live in `.claude/agents/` and
+`code-quality`, `error-handling`); six ChessFable-specific ones live in `.claude/agents/` and
 carry this codebase's failure history:
 
 | Lens | Owns | Triggered by a diff touching |
@@ -151,7 +153,7 @@ This repository is worked on by Claude Code, Codex, and Grok.
 
 * Claude Code reads `.claude/skills/push/SKILL.md` directly; Codex reaches it through
   `.agents/skills/push/SKILL.md`, whose Codex delta names its own committer; and
-  `.grok/rules/grok-croissant.md` points at the canonical file.
+  `.grok/rules/grok-chessfable.md` points at the canonical file.
 * Gate scope is split, because the full set is slow enough that running it per commit is not
   practical. Per commit, run the narrowest affected checks from the mapping in
   `.claude/skills/push/SKILL.md`. Once per task, after the last commit, run the full affected set.

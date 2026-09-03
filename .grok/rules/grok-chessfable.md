@@ -1,4 +1,4 @@
-# Grok overlay — En Croissant
+# Grok overlay — ChessFable
 
 Grok-only delta. Shared conventions live in `CLAUDE.md` and `AGENTS.md`.
 Do not copy them here.

@@ -1,7 +1,8 @@
-# En Croissant — agent context
+# ChessFable — agent context
 
-Chess GUI: Tauri v2 desktop shell (Rust) + React/TypeScript renderer. Felix's **fork**
-(`origin` = `felixabeck/en-croissant`, `upstream` = the original project).
+Chess GUI: Tauri v2 desktop shell (Rust) + React/TypeScript renderer. **ChessFable** is Felix's
+fork of En Croissant (`origin` = `felixabeck/en-croissant`, `upstream` = the original project).
+En Croissant is the upstream name and the GitHub remote, not this project's name.
 
 **`CLAUDE.md` in this directory is the canonical project context — read it first.** It carries the
 repository layout, the gate mapping, the review lenses and the commit conventions. This file exists
@@ -51,7 +52,7 @@ direct tool invocations.
 * Set `GIT_COMMITTER_NAME` to the acting agent (`Claude Code`, `Codex`, or `Grok`); author stays
   Felix Beck, with no co-author or AI trailer. Claude Code reads `.claude/skills/push/SKILL.md`,
   Codex reaches it through `.agents/skills/push/SKILL.md`, whose delta names `Codex`, and
-  `.grok/rules/grok-croissant.md` points at the canonical file.
+  `.grok/rules/grok-chessfable.md` points at the canonical file.
 * Per commit, run the narrowest affected checks from the canonical push mapping; once per task,
   after the last commit, run the full affected set. Never commit on red.
 * Handoffs longer than a few lines go in `tasks/handoffs/YYYY-MM-DD-<slug>.md`, never through Felix;

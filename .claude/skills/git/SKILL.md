@@ -1,11 +1,11 @@
 ---
 name: git
-description: Create one explicit, well-scoped En Croissant commit without pushing or adding AI/co-author trailers.
+description: Create one explicit, well-scoped ChessFable commit without pushing or adding AI/co-author trailers.
 ---
 
 # Git — smart commit
 
-This is the canonical En Croissant commit workflow. It commits only when Felix explicitly asks to
+This is the canonical ChessFable commit workflow. It commits only when Felix explicitly asks to
 commit, invokes `/git`, or invokes `$git`.
 
 ## Inspect and scope

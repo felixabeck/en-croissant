@@ -4,7 +4,7 @@
     <img width="115" height="115" src="https://github.com/franciscoBSalgueiro/en-croissant/blob/master/src-tauri/icons/icon.png" alt="Logo of the original En Croissant project">
   </a>
 
-<h3 align="center">En Croissant</h3>
+<h3 align="center">ChessFable</h3>
 
   <p align="center">
     The Ultimate Chess Toolkit
@@ -24,7 +24,7 @@
 > Modified by Felix Beck since 2026-08-09, and released under the GNU General Public License v3.0
 > with no warranty. Not affiliated with, nor endorsed by, the original project.
 
-En-Croissant is an open-source, cross-platform chess GUI that aims to be powerful, customizable and easy to use.
+ChessFable is an open-source, cross-platform chess GUI that aims to be powerful, customizable and easy to use. It is Felix Beck's fork of En Croissant.
 
 ## Features
 
@@ -40,7 +40,7 @@ En-Croissant is an open-source, cross-platform chess GUI that aims to be powerfu
 
 Refer to the [Tauri documentation](https://tauri.app/start/prerequisites/) for the requirements on your platform.
 
-En-Croissant uses pnpm as the package manager for dependencies. Refer to the [pnpm install instructions](https://pnpm.io/installation) for how to install it on your platform.
+ChessFable uses pnpm as the package manager for dependencies. Refer to the [pnpm install instructions](https://pnpm.io/installation) for how to install it on your platform.
 
 ```bash
 git clone https://github.com/felixabeck/en-croissant
@@ -53,7 +53,7 @@ The built app can be found at `src-tauri/target/release`
 
 ## Donate
 
-If you wish to support the development of this GUI, you can do so [here](https://encroissant.org/support). All donations are greatly appreciated!
+If you wish to support the original En Croissant project, you can do so [here](https://encroissant.org/support). All donations are greatly appreciated!
 
 ## Contributing
 

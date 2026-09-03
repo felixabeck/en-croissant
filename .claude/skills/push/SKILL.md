@@ -1,12 +1,12 @@
 ---
 name: push
-description: Validate, independently review, remediate, commit, and ordinarily push En Croissant changes to the current branch's configured upstream. Use only when Felix explicitly asks to push; push is not a release or deployment.
+description: Validate, independently review, remediate, commit, and ordinarily push ChessFable changes to the current branch's configured upstream. Use only when Felix explicitly asks to push; push is not a release or deployment.
 disable-model-invocation: false
 ---
 
-# Push En Croissant
+# Push ChessFable
 
-Complete the push autonomously. Read `~/.claude/references/push-review-policy.md` first; it is the single source for authorization, attribution, review lenses, model allocation, triage, remediation, and red-gate behavior. This skill adds only En-Croissant mechanics.
+Complete the push autonomously. Read `~/.claude/references/push-review-policy.md` first; it is the single source for authorization, attribution, review lenses, model allocation, triage, remediation, and red-gate behavior. This skill adds only ChessFable mechanics.
 
 ## Relationship to the `build` skill
 
@@ -213,11 +213,11 @@ the Specta registry and generated bindings, and listener lifetimes remain owned 
 Repair every `Fix`, inspect each repair diff, and rerun every gate invalidated by the repair.
 Security and filesystem refusal paths must be exercised, not merely read.
 
-En-Croissant runtime compatibility addition: the lens executor, its model rungs and the fallback switch are governed by `~/.claude/references/review-lens-contract.md`. Do not restate them here. If a runtime exposes none of the contract's model names, use independent typed reviewer agents with the smallest self-contained context and disclose that the review used the same model family as the author. Do not silently run the lenses inline while fan-out exists. AntiGravity reviews follow Felix's configured quota order: Gemini first, then Claude Opus at its second-highest reasoning level; never Sonnet or GPT there.
+ChessFable runtime compatibility addition: the lens executor, its model rungs and the fallback switch are governed by `~/.claude/references/review-lens-contract.md`. Do not restate them here. If a runtime exposes none of the contract's model names, use independent typed reviewer agents with the smallest self-contained context and disclose that the review used the same model family as the author. Do not silently run the lenses inline while fan-out exists. AntiGravity reviews follow Felix's configured quota order: Gemini first, then Claude Opus at its second-highest reasoning level; never Sonnet or GPT there.
 
 ## Project `Skip` catalog
 
-En Croissant adds these rejected actions to the shared policy §4 `Skip` catalog:
+ChessFable adds these rejected actions to the shared policy §4 `Skip` catalog:
 
 * Rebaselining coverage or lowering a coverage floor to clear a ratchet.
 * Re-recording e2e snapshots natively.
@@ -238,4 +238,4 @@ Use the exact-string override keywords from
 - Verify local `HEAD` equals `@{u}` and report commits, destination, gate results, review findings/verdicts, and that no release/deployment occurred.
 - On any persistent red gate, follow the shared policy: do not push and report the exact blocker.
 
-En-Croissant override to shared policy §7: this workflow never performs a force push. A message containing `force push` requires a separate stop for the exact refspec and force-with-lease decision; it is not treated as an automatic gate-skip-and-push marker here.
+ChessFable override to shared policy §7: this workflow never performs a force push. A message containing `force push` requires a separate stop for the exact refspec and force-with-lease decision; it is not treated as an automatic gate-skip-and-push marker here.
