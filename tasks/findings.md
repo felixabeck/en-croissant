@@ -4294,7 +4294,7 @@ Handled in `b9250a36`, `7d834f82`. Settings and advanced navigation look up by `
 
 ### Native pickers in AddDatabase, DatabasesPage export, and AccountCard still ignore rejection
 
-* **ID:** f-20260831-15 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260831-15 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/components/databases/AddDatabase.tsx` (`issuePgnWorkspace` in FileInput `onClick`),
   `src/components/databases/DatabasesPage.tsx` (`issuePgnExportDestination` inside `try/finally` with
   no `catch`), `src/components/home/AccountCard.tsx` (`ensureDownloadDestination` /
@@ -4310,6 +4310,11 @@ Handled in `b9250a36`, `7d834f82`. Settings and advanced navigation look up by `
   and Display contract already exist (`d-20260831-25`, `d-20260831-26`).
 * **Found by:** locate + `review-error-handling` over the `f-20260830-12` build, 2026-08-31.
   Related: `f-20260830-12` (same class, Root `-`, handled in this run).
+
+* **Handled:** AddDatabase PGN picker, DatabasesPage export (`runPgnExport`), and AccountCard download destination use `runUnlessCancelled` / `notifyUnlessCancelled`. Cancellation is silent; real failures notify; export loading always clears. Proof: `AddDatabase.test.tsx`, `databaseMutation.test.ts`, `AccountCard.picker.test.tsx`.
+* **Commits:** `35889711`
+* **Rejected:** mounting DatabasesPage to test the export catch (`d-20260903-03`); showing a Cancellation notification (`d-20260831-26`).
+* **Governed-by:** d-20260831-26, d-20260903-03
 
 ### Tab-tree flush failures are only logged, so a full sessionStorage quota drops pending edits on quit
 
@@ -4452,12 +4457,17 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 
 ### RootLayout and TopBar still have no wiring test for menu and window-control handlers
 
-* **ID:** f-20260901-03 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260901-03 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/routes/__root.tsx` (`menuCallbacks` / `runMenu` / `useHotkeys`), `src/components/TopBar.tsx` (minimize/maximize/close click handlers).
 * **Defect:** f-20260830-47 extracted and tested the menu tree and the `runNativeMenuAction` / `runWindowAction` helpers. The product still wires those helpers in RootLayout and TopBar, and nothing mounts either component. Removing `runMenu` from a menu callback, or the `runWindowAction` wrapper from a window-control click, leaves every current test green. `createMenu` is now a thin `assembleNativeMenuResources` wrapper; the remaining untested surface is that wiring, not the sequential assembler.
 * **Why it matters:** an unhandled rejection on Help → Clear saved data, Open file, or a window-control click is the same class the extract was meant to close, and it would ship again without a red test.
 * **Fix shape:** extract the RootLayout callback object and the TopBar window-control handlers into the existing `-appMenu.ts` / `TopBar.window` test surface so each handler's returned promise is the helper's promise (same pending-until-settled proof as `openPgnFromMenu`). Do not jsdom-mount RootLayout — that was rejected in `tasks/plans/2026-09-01-native-menu-tree.md` because it would mock every native import and would not catch GTK. Related: f-20260830-47 (handled). Root `-`, so named here rather than shared.
 * **Found by:** cumulative review of the native-menu-tree slice (drain session 98e601ec), recovered after the 2026-09-01 04:00 shutdown. `review-tests` confidence 98/97.
+
+* **Handled:** RootLayout menu callbacks go through `bindAppMenuCallbacks`; TopBar minimize/maximize/close go through `bindWindowControls`. Each handler returns `runNativeMenuAction` / `runWindowAction`'s promise. Proof: `-appMenu.test.ts`, `TopBar.window.test.ts`.
+* **Commits:** `eed230e5`
+* **Rejected:** jsdom-mounting RootLayout (already rejected in the native-menu-tree plan).
+* **Governed-by:** d-20260901-11
 
 ---
 
@@ -4585,13 +4595,19 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 
 ### Database and puzzle install cards still key progress by manifest array index
 
-* **ID:** f-20260901-15 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260901-15 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 
 * **Where:** `src/components/databases/AddDatabase.tsx` (`db_${databaseId}`), `src/components/puzzles/AddPuzzle.tsx` (`puzzle_db_${databaseId}`).
 * **Defect:** progress identity is the manifest array index. A refetch or reorder can attach another card's running or succeeded job, the same class the engine download cards just left.
 * **Why it matters:** ProgressButton still treats `succeeded` as completed for these callers. A stale succeeded job disables the wrong card as Installed.
 * **Related:** f-20260831-13 (handled; engine cards now use `downloadLink`). Root `-` so named here. Different file set from the engine install slice.
 * **Found by:** numbered-1/2/4 review of the engine progress-id fix, 2026-09-01. Confidence 97.
+
+* **Handled:** Database and puzzle install cards key ProgressButton and `downloadFile` by `db:${downloadLink}` / `puzzle_db:${downloadLink}`. React keys use that progress id. `initInstalled` stays title-based because native DatabaseInfo has no download URL (`d-20260903-02`). Proof: `db.test.ts`, `AddDatabase.test.tsx`, `AddPuzzle.test.tsx`.
+* **Commits:** `35889711`
+* **Rejected:** keeping the manifest array index; persisting downloadLink on install (Specta/schema, not required to stop stale progress attachment).
+* **Lens:** `review-correctness` APPROVED
+* **Governed-by:** d-20260903-02
 
 ---
 
@@ -4640,7 +4656,7 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 
 ### 22 frontend test files charge a component-graph import to the 5000 ms test timeout
 
-* **ID:** f-20260901-19 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260901-19 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
 
 `src/components/boards/BoardGame.test.tsx` reddened master CI three times on 2026-09-01 (runs
 33517593225, 33522388348, 33522556421) with `Test timed out in 5000ms`, because
@@ -4684,6 +4700,11 @@ with a static top-level import, keeping the existing `vi.mock` block — and mov
 vitest's untimed collection phase (`@vitest/runner` `index.js:1781-1834`; `testTimeout` is applied
 only at `:1137-1143`). Doing it once removes the whole class rather than waiting for the next file
 to cross 5000 ms on a slow runner.
+
+* **Handled:** The 22 listed files now statically import the unit under test. `vi.mock` stays hoisted. The seven files that call `vi.resetModules` or need pre-import window setup were left dynamic. FileInfo's mock state moved into `vi.hoisted` so the static import does not hit TDZ.
+* **Commits:** `a44396c9` (AddPuzzle.test.tsx also in `35889711`)
+* **Rejected:** raising `testTimeout` (`d-20260901-36`).
+* **Governed-by:** d-20260901-36
 
 ---
 
