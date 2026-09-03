@@ -16,6 +16,7 @@ import { useAtom, useStore } from "jotai";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
+import { runUnlessCancelled } from "@/components/files/notifyError";
 import { addRecentFileAtom, currentTabAtom } from "@/state/atoms";
 import { tabStorage } from "@/state/store/tabStorage";
 import { parsePGN } from "@/utils/chess";
@@ -220,10 +221,12 @@ export default function ImportModal({
           <FileInput
             label={t("Common.PGNFile")}
             description={t("Import.PGN.ClickToSelect")}
-            onClick={async () => {
-              const selected = await pickPgnFile();
-              setFile(selected);
-              setFilename(selected?.name || "");
+            onClick={() => {
+              void runUnlessCancelled(t("Common.Error"), async () => {
+                const selected = await pickPgnFile();
+                setFile(selected);
+                setFilename(selected?.name || "");
+              });
             }}
             value={file ? new File([new Blob()], file.name) : null}
             onChange={(e) => {

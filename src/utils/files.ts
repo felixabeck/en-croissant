@@ -1,7 +1,7 @@
 import { tauri } from "@/platform/tauri";
 import { Result } from "@badrap/result";
 import { platform } from "@/platform/native";
-import { runWithAppliedRecovery } from "@/platform/errors";
+import { errorUnlessCancelled, runWithAppliedRecovery } from "@/platform/errors";
 import { defaultGame, makePgn } from "chessops/pgn";
 import { getDefaultStore } from "jotai";
 import useSWR from "swr";
@@ -28,8 +28,9 @@ export async function pickPgnFile(): Promise<FileMetadata | null> {
     let descriptor;
     try {
         descriptor = await tauri.issuePgnWorkspace();
-    } catch {
-        return null;
+    } catch (error) {
+        if (errorUnlessCancelled(error) === null) return null;
+        throw error;
     }
     const count = await tauri.countPgnGames(descriptor.handle);
     return {
@@ -51,8 +52,9 @@ export async function ensureFileWorkspace(): Promise<FileWorkspaceHandle | null>
         store.set(fileWorkspaceAtom, result.handle);
         store.set(fileWorkspaceDisplayNameAtom, result.displayName);
         return result.handle;
-    } catch {
-        return null;
+    } catch (error) {
+        if (errorUnlessCancelled(error) === null) return null;
+        throw error;
     }
 }
 

@@ -40,13 +40,13 @@ import {
 } from "@/utils/db";
 import { pickPgnFile } from "@/utils/files";
 import { formatBytes, formatNumber } from "@/utils/format";
-import { runUnlessCancelled } from "@/components/files/notifyError";
 import ConfirmModal from "../common/ConfirmModal";
 import GenericCard from "../common/GenericCard";
 import AddDatabase from "./AddDatabase";
 import {
   deleteDatabaseAndInvalidate,
   invalidateDeletedDatabase,
+  runAddGamesToDatabase,
   runPgnExport,
 } from "./databaseMutation";
 import { PlayerSearchInput } from "./PlayerSearchInput";
@@ -470,22 +470,24 @@ export default function DatabasesPage() {
                         variant="default"
                         rightSection={<IconPlus size="1rem" />}
                         onClick={() => {
-                          void runUnlessCancelled(t("Common.Error"), async () => {
-                            const selected = await pickPgnFile();
-                            if (!selected) return;
-                            const files = [selected.handle];
-                            const sourceFileName = selected.name;
-                            setConversionState((prev) => ({
-                              ...prev,
-                              inProgress: true,
-                              targetDatabasePath: selectedDatabase.file,
-                              targetDatabaseTitle: selectedDatabase.title,
-                              sourceFileName,
-                            }));
-                            try {
-                              await tauri.convertPgn(files, selectedDatabase.file, null, "", null);
+                          void runAddGamesToDatabase({
+                            pickPgnFile,
+                            convertPgn: async (files, dest) => {
+                              await tauri.convertPgn(files, dest, null, "", null);
                               await mutate();
-                            } finally {
+                            },
+                            dest: selectedDatabase.file,
+                            notifyTitle: t("Common.Error"),
+                            begin: (sourceFileName) => {
+                              setConversionState((prev) => ({
+                                ...prev,
+                                inProgress: true,
+                                targetDatabasePath: selectedDatabase.file,
+                                targetDatabaseTitle: selectedDatabase.title,
+                                sourceFileName,
+                              }));
+                            },
+                            finish: () => {
                               setConversionState((prev) => ({
                                 ...prev,
                                 inProgress: false,
@@ -495,7 +497,7 @@ export default function DatabasesPage() {
                                 targetDatabaseTitle: null,
                                 sourceFileName: null,
                               }));
-                            }
+                            },
                           });
                         }}
                       >

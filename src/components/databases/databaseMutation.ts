@@ -53,3 +53,23 @@ export async function runPgnExport(args: {
         args.setLoading(false);
     }
 }
+
+export async function runAddGamesToDatabase(args: {
+    pickPgnFile: () => Promise<{ handle: FileWorkspaceHandle; name: string } | null>;
+    convertPgn: (files: FileWorkspaceHandle[], dest: DatabaseHandle) => Promise<unknown>;
+    dest: DatabaseHandle;
+    notifyTitle: string;
+    begin: (sourceFileName: string) => void;
+    finish: () => void;
+}): Promise<void> {
+    await runUnlessCancelled(args.notifyTitle, async () => {
+        const selected = await args.pickPgnFile();
+        if (!selected) return;
+        args.begin(selected.name);
+        try {
+            await args.convertPgn([selected.handle], args.dest);
+        } finally {
+            args.finish();
+        }
+    });
+}

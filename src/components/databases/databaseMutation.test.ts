@@ -3,6 +3,7 @@ import type { DatabaseHandle } from "@/bindings";
 import {
     deleteDatabaseAndInvalidate,
     invalidateDeletedDatabase,
+    runAddGamesToDatabase,
     runPgnExport,
     type DatabaseRemovalState,
 } from "./databaseMutation";
@@ -146,5 +147,99 @@ describe("PGN export picker", () => {
             message: "permission denied",
         });
         expect(setLoading.mock.calls.map((call) => call[0])).toEqual([true, false]);
+    });
+});
+
+describe("Add Games picker", () => {
+    const dest = database("add-games");
+    const handle = { id: { id: "pgn-in" }, kind: "fileWorkspace" as const };
+    const selected = { handle, name: "games.pgn" };
+
+    beforeEach(() => {
+        notify.mockClear();
+    });
+
+    it("converts the picked file and always finishes", async () => {
+        const order: string[] = [];
+        const convertPgn = vi.fn().mockResolvedValue(undefined);
+        await runAddGamesToDatabase({
+            pickPgnFile: async () => selected,
+            convertPgn,
+            dest,
+            notifyTitle: "Common.Error",
+            begin: (sourceFileName) => {
+                order.push(`begin:${sourceFileName}`);
+            },
+            finish: () => {
+                order.push("finish");
+            },
+        });
+        expect(convertPgn).toHaveBeenCalledWith([handle], dest);
+        expect(order).toEqual(["begin:games.pgn", "finish"]);
+        expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("stays silent on a cancelled pick", async () => {
+        const begin = vi.fn();
+        const finish = vi.fn();
+        const convertPgn = vi.fn();
+        await runAddGamesToDatabase({
+            pickPgnFile: async () => null,
+            convertPgn,
+            dest,
+            notifyTitle: "Common.Error",
+            begin,
+            finish,
+        });
+        expect(convertPgn).not.toHaveBeenCalled();
+        expect(begin).not.toHaveBeenCalled();
+        expect(finish).not.toHaveBeenCalled();
+        expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("notifies a real picker failure", async () => {
+        const begin = vi.fn();
+        const finish = vi.fn();
+        const convertPgn = vi.fn();
+        await runAddGamesToDatabase({
+            pickPgnFile: async () => {
+                throw new Error("permission denied");
+            },
+            convertPgn,
+            dest,
+            notifyTitle: "Common.Error",
+            begin,
+            finish,
+        });
+        expect(notify).toHaveBeenCalledWith({
+            color: "red",
+            title: "Common.Error",
+            message: "permission denied",
+        });
+        expect(convertPgn).not.toHaveBeenCalled();
+        expect(begin).not.toHaveBeenCalled();
+        expect(finish).not.toHaveBeenCalled();
+    });
+
+    it("notifies convert failure and still finishes", async () => {
+        const order: string[] = [];
+        await runAddGamesToDatabase({
+            pickPgnFile: async () => selected,
+            convertPgn: vi.fn().mockRejectedValue(new Error("convert failed")),
+            dest,
+            notifyTitle: "Common.Error",
+            begin: (sourceFileName) => {
+                order.push(`begin:${sourceFileName}`);
+            },
+            finish: () => {
+                order.push("finish");
+            },
+        });
+        expect(order).toEqual(["begin:games.pgn", "finish"]);
+        expect(notify).toHaveBeenCalledWith({
+            color: "red",
+            title: "Common.Error",
+            message: "convert failed",
+        });
     });
 });

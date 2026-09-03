@@ -1,13 +1,34 @@
-import { expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     createWorkspaceFile: vi.fn(),
     listFileWorkspace: vi.fn(),
+    issuePgnWorkspace: vi.fn(),
+    countPgnGames: vi.fn(),
+    issueFileWorkspace: vi.fn(),
+    storeGet: vi.fn(),
+    storeSet: vi.fn(),
 }));
 
 vi.mock("@/platform/tauri", () => ({ tauri: mocks }));
 
-import { createFile } from "./files";
+vi.mock("jotai", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("jotai")>();
+    return {
+        ...actual,
+        getDefaultStore: () => ({
+            get: mocks.storeGet,
+            set: mocks.storeSet,
+        }),
+    };
+});
+
+import { fileWorkspaceAtom, fileWorkspaceDisplayNameAtom } from "@/state/atoms";
+import { createFile, ensureFileWorkspace, pickPgnFile } from "./files";
+
+afterEach(() => {
+    vi.clearAllMocks();
+});
 
 test.each(["game", "game.pgn"])(
     "recovers a created PGN listed as %s after an uncertain commit",
@@ -42,3 +63,74 @@ test.each(["game", "game.pgn"])(
         expect(mocks.listFileWorkspace).toHaveBeenCalledWith(parent);
     },
 );
+
+describe("pickPgnFile", () => {
+    const handle = { id: { id: "pgn" }, kind: "fileWorkspace" } as const;
+
+    test("returns null on Cancellation without counting games", async () => {
+        mocks.issuePgnWorkspace.mockRejectedValueOnce(new Error("Cancellation"));
+        await expect(pickPgnFile()).resolves.toBeNull();
+        expect(mocks.countPgnGames).not.toHaveBeenCalled();
+    });
+
+    test("rejects a permission-denied picker failure without counting games", async () => {
+        const error = new Error("permission denied");
+        mocks.issuePgnWorkspace.mockRejectedValueOnce(error);
+        await expect(pickPgnFile()).rejects.toBe(error);
+        expect(mocks.countPgnGames).not.toHaveBeenCalled();
+    });
+
+    test("does not treat connection aborted as cancel", async () => {
+        const error = new Error("connection aborted");
+        mocks.issuePgnWorkspace.mockRejectedValueOnce(error);
+        await expect(pickPgnFile()).rejects.toBe(error);
+        expect(mocks.countPgnGames).not.toHaveBeenCalled();
+    });
+
+    test("returns metadata and counts games on success", async () => {
+        mocks.issuePgnWorkspace.mockResolvedValueOnce({
+            handle,
+            displayName: "games.pgn",
+        });
+        mocks.countPgnGames.mockResolvedValueOnce(3);
+        await expect(pickPgnFile()).resolves.toMatchObject({
+            type: "file",
+            handle,
+            name: "games",
+            numGames: 3,
+            metadata: { type: "game", tags: [] },
+        });
+        expect(mocks.countPgnGames).toHaveBeenCalledWith(handle);
+    });
+});
+
+describe("ensureFileWorkspace", () => {
+    const handle = { id: { id: "workspace" }, kind: "fileWorkspace" } as const;
+
+    beforeEach(() => {
+        mocks.storeGet.mockReturnValue(null);
+    });
+
+    test("returns null on Cancellation without storing a handle", async () => {
+        mocks.issueFileWorkspace.mockRejectedValueOnce(new Error("Cancellation"));
+        await expect(ensureFileWorkspace()).resolves.toBeNull();
+        expect(mocks.storeSet).not.toHaveBeenCalled();
+    });
+
+    test("rejects a permission-denied picker failure", async () => {
+        const error = new Error("permission denied");
+        mocks.issueFileWorkspace.mockRejectedValueOnce(error);
+        await expect(ensureFileWorkspace()).rejects.toBe(error);
+        expect(mocks.storeSet).not.toHaveBeenCalled();
+    });
+
+    test("stores the issued handle on success", async () => {
+        mocks.issueFileWorkspace.mockResolvedValueOnce({
+            handle,
+            displayName: "My Files",
+        });
+        await expect(ensureFileWorkspace()).resolves.toBe(handle);
+        expect(mocks.storeSet).toHaveBeenCalledWith(fileWorkspaceAtom, handle);
+        expect(mocks.storeSet).toHaveBeenCalledWith(fileWorkspaceDisplayNameAtom, "My Files");
+    });
+});

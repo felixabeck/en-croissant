@@ -4,6 +4,7 @@ import { INITIAL_FEN } from "chessops/fen";
 import { useAtom, useSetAtom, useStore } from "jotai";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { normalizeError } from "@/platform/errors";
 import { activeTabAtom, addRecentFileAtom, tabFamily, tabsAtom } from "@/state/atoms";
 import { headersToPGN } from "@/utils/chess";
 import { createFile, ensureFileWorkspace } from "@/utils/files";
@@ -45,49 +46,53 @@ export default function CreateRepertoireModal({
       orientation: color,
     });
 
-    const workspace = await ensureFileWorkspace();
-    if (!workspace) return;
-    const result = await createFile({
-      filename: trimmedName,
-      filetype: "repertoire",
-      pgn,
-      workspace,
-      parent: workspace,
-    });
+    try {
+      const workspace = await ensureFileWorkspace();
+      if (!workspace) return;
+      const result = await createFile({
+        filename: trimmedName,
+        filetype: "repertoire",
+        pgn,
+        workspace,
+        parent: workspace,
+      });
 
-    if (result.isErr) {
-      setError(result.error.message);
-      return;
-    }
+      if (result.isErr) {
+        setError(result.error.message);
+        return;
+      }
 
-    const fileInfo = result.value;
-    const id = await createTab({
-      tab: {
+      const fileInfo = result.value;
+      const id = await createTab({
+        tab: {
+          name: trimmedName,
+          type: "analysis",
+        },
+        setTabs,
+        setActiveTab,
+        pgn,
+        gameOrigin: {
+          kind: "file",
+          file: fileInfo,
+          gameNumber: 0,
+        },
+      });
+
+      store.set(tabFamily(id), "practice");
+      store.set(addRecentFileAtom, {
         name: trimmedName,
-        type: "analysis",
-      },
-      setTabs,
-      setActiveTab,
-      pgn,
-      gameOrigin: {
-        kind: "file",
-        file: fileInfo,
-        gameNumber: 0,
-      },
-    });
+        handle: fileInfo.handle,
+        type: "repertoire",
+      });
+      navigate({ to: "/" });
 
-    store.set(tabFamily(id), "practice");
-    store.set(addRecentFileAtom, {
-      name: trimmedName,
-      handle: fileInfo.handle,
-      type: "repertoire",
-    });
-    navigate({ to: "/" });
-
-    setName("");
-    setColor("white");
-    setError("");
-    setOpened(false);
+      setName("");
+      setColor("white");
+      setError("");
+      setOpened(false);
+    } catch (error) {
+      setError(normalizeError(error).message);
+    }
   }
 
   return (
