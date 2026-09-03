@@ -297,16 +297,11 @@ pub async fn get_puzzle_workspace(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<crate::infra::path_authority::PuzzleRootDescriptor, Error> {
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    // `active_or_default_puzzle_workspace` already holds the whole body, so it is the blocking
+    // function; a `get_puzzle_workspace_blocking` forwarding to it would be a pass-through.
     BLOCKING_GATEWAY
-        .spawn(move || get_puzzle_workspace_blocking(&authority, app))
+        .spawn(move || active_or_default_puzzle_workspace(&app, &authority))
         .await
-}
-
-fn get_puzzle_workspace_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    app: tauri::AppHandle,
-) -> Result<crate::infra::path_authority::PuzzleRootDescriptor, Error> {
-    active_or_default_puzzle_workspace(&app, authority)
 }
 
 #[tauri::command]
