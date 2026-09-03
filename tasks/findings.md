@@ -5041,3 +5041,74 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
 * **Why it matters:** `.claude/rules/engine-lifecycle.md` requires a `best_moves` payload to be used only when engine id, tab, FEN *and* the searched move list all match *and* the engine is still loaded. Settings are part of the search identity; the live path does not bind the result to the search that requested it. Sibling of `f-20260831-09`, which already names the missing process generation on this file's fingerprint and on `stop_engine` / `terminate_tab`. This is the same missing discriminator on the live event path for a *same-process* settings change, which that finding's "replace the binary" framing does not spell out.
 * **Why it is `build`:** a local clear of `engineMovesFamily` on fingerprint change still cannot tell an old info line from a new one while both share fen/moves/tab/engine. Binding the event to the search that produced it is the generation-on-payload question already opened by `f-20260831-09`. Do not "fix" this with a frontend-only epoch that the payload cannot carry.
 * **Found by:** the `review-engine-protocol` lens (confidence 88) during `$push` of `ee564004..HEAD` (import-hoist of `EvalListener.test.tsx` only). Pre-existing enclosing defect.
+
+---
+
+## 2026-09-03 — filed through the inbox spool
+
+### Engine-image provenance is unforgeable outside `path_authority.rs` and still forgeable inside it
+
+* **ID:** f-20260903-02 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority.rs` — `mod verified` / `VerifiedFile`,
+  `open_engine_image`, `engine_image_reader_for`, and `ResolvedPath` (fields at `:1041-1052`).
+* **Defect:** `b345ea01` split `read_engine_image` so the authority guard is no longer held across
+  the read, and made the descriptor a `VerifiedFile` whose only constructor takes the file out of a
+  `ResolvedPath`. Outside `path_authority.rs` that is airtight: no caller can construct one, so a
+  pathname reopen does not compile. **Inside that file it is not.** `ResolvedPath.file` is
+  module-private, so code in `path_authority.rs` can do
+  `resolved.file = Some(fs::File::open(stored_path)?)` and then call `from_resolved`, or read into a
+  discarded `Vec`, `seek(SeekFrom::Start(0))`, and return the descriptor anyway. The `READ_TOKENS`
+  scan on the opener and the wrapper narrows this but cannot close it — a token ban is a list, and
+  eight successive versions of it were each defeated by a concrete port during plan review.
+* **Why it matters:** `resolve` produces a **no-follow** descriptor. If a future edit in that file
+  substituted one obtained by opening the stored path by name, a symlink swap after the metadata
+  check would send up to 10 MiB of an attacker-chosen file to the renderer. The consequence is the
+  same one `resolve` exists to prevent.
+* **This is pre-existing, not introduced.** Before the split, `read_engine_image` resolved and read
+  in one method and nothing stopped a future edit there from opening by name either. The split
+  *narrows* the reach from "any caller of the method" to "an edit inside one file". It is filed
+  because the narrowing is not the closure, not because the change regressed anything.
+* **Fix shape:** relocate `ResolvedPath` and the opener into separate modules so the file that can
+  mint a `VerifiedFile` is not the file that can mutate a `ResolvedPath`. That is a module-boundary
+  change across `path_authority.rs`, which is why it is a different area from the offload cluster
+  and is filed rather than absorbed.
+* **Related:** `f-20260830-36` (`blocking-work-not-offloaded`), whose engine-image half this came
+  out of; the design and the eight rejected scans are `d-20260903-08`.
+* **Found by:** Claude Code plan review, rounds 6-13, 2026-09-03.
+
+### `issue_puzzle_download_destination_blocking` is untested, and the puzzle path cannot be unit-tested without a `Runtime` generic
+
+* **ID:** f-20260903-03 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/puzzle.rs` — `issue_puzzle_download_destination_blocking` (~:318) and
+  `active_or_default_puzzle_workspace` (~:236).
+* **Defect:** the command conversions in `a47d9066` added new production code on the puzzle-workspace
+  path with no test. `issue_puzzle_download_destination_blocking` resolves the workspace and then
+  takes the authority lock to derive the download destination; nothing exercises it.
+* **Why it is not merely a number, and what actually happened:** the first version of this entry
+  reported `pnpm gate:ensure backend-coverage` **red** —
+  `auxiliary-domain-services functions regressed: 56/135, baseline 53/127`. It is green again as of
+  `<this run's puzzle.rs commit>`, but **not** because anything was tested: reviewing the diff
+  against decision `d-20260903-06` showed the conversion had also created a redundant
+  `get_puzzle_workspace_blocking` that did nothing but forward to
+  `active_or_default_puzzle_workspace`. D-H says an existing *synchronous* helper **is** the blocking
+  function and no new symbol is created, so that wrapper was a deviation from the reviewed plan.
+  Deleting it is a plan-compliance fix on its own merits — and it removed one uncovered function,
+  which took the ratio back above its baseline. The debt it was signalling is still here.
+* **Why the remaining function is hard to cover:** `active_or_default_puzzle_workspace` takes the
+  concrete `&tauri::AppHandle` (`AppHandle<Wry>`), while `tauri::test::mock_app()` yields
+  `AppHandle<MockRuntime>`. A unit test cannot call it, or anything downstream of it, without making
+  it generic over `R: tauri::Runtime` — along with `issue_puzzle_download_destination_blocking`,
+  `list_puzzle_databases` and `resolve_puzzle`. The in-tree precedent for that shape exists
+  (`db/search.rs:851`, `fs.rs:1678`). That is a production signature change, and the run that found
+  this had already lost its executor, so it would have landed unreviewed by any lens.
+* **Fix shape:** genericise those four over `R: tauri::Runtime`, then unit-test the blocking function
+  against a `mock_app()` and a temp-dir `PathAuthority` — the fixtures already exist in that file's
+  test module. Do it together with phase 3b of
+  `tasks/plans/2026-09-03-blocking-work-not-offloaded.md`, which converts `issue_puzzle_workspace`
+  and `list_puzzle_databases` in the same file and will move this area's counts again anyway.
+* **Do not** clear a future recurrence by editing `backend-coverage-baselines.json` or lowering the
+  area floor — `docs/coverage.md`, and `.claude/settings.json` denies the known spellings
+  deliberately.
+* **Related:** `f-20260830-38`, whose command conversions introduced it; `d-20260903-06` for the
+  shape those wrappers have and why a pass-through is not one.
+* **Found by:** Claude Code, running `pnpm gate:ensure backend-coverage` on its own diff, 2026-09-03.
