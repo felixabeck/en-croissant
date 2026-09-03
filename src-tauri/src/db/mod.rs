@@ -17,7 +17,9 @@ use crate::{
     error::Error,
     infra::{
         fs::{remove_optional_regular_at, AtomicFileOutcome},
-        path_authority::{DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathOperation},
+        path_authority::{
+            DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathAuthority, PathOperation,
+        },
     },
     opening::get_opening_from_setup,
     AppState,
@@ -50,7 +52,6 @@ use std::{
     io::{BufWriter, Write},
     str::FromStr,
 };
-use tauri::State;
 
 use log::info;
 use tauri_specta::Event as _;
@@ -153,22 +154,21 @@ impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error>
 }
 
 pub(crate) fn get_db_or_create(
-    state: &State<AppState>,
+    repository: &crate::db::DatabaseRepository,
     db_path: &Path,
 ) -> Result<repository::DatabaseConnection, Error> {
-    state.database_repository.connection(db_path)
+    repository.connection(db_path)
 }
 
 /// The sole database capability boundary.  Native repository code receives a
 /// checked path only after the opaque handle and the exact requested operation
 /// have been validated; no renderer path is ever parsed here.
 pub(crate) fn resolve_database(
-    state: &AppState,
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
     handle: &DatabaseHandle,
     operation: PathOperation,
 ) -> Result<std::path::PathBuf, Error> {
-    state
-        .pgn_path_authority
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -512,7 +512,11 @@ pub async fn convert_pgn(
     description: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let db_path = resolve_database(&state, &database, PathOperation::DatabaseCreate)?;
+    let db_path = resolve_database(
+        &state.pgn_path_authority,
+        &database,
+        PathOperation::DatabaseCreate,
+    )?;
 
     if files.is_empty() {
         return Ok(());
@@ -623,7 +627,7 @@ pub async fn convert_pgn(
     }
     .emit(&app);
     state.database_repository.data_changed(&db_path)?;
-    search::invalidate_search_cache(&state, &db_path);
+    state.search_cache.invalidate_database(&db_path);
 
     Ok(())
 }
@@ -632,7 +636,11 @@ pub fn generate_search_index(
     handle: &DatabaseHandle,
     state: &tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let db_path = resolve_database(state, handle, PathOperation::DatabaseMutate)?;
+    let db_path = resolve_database(
+        &state.pgn_path_authority,
+        handle,
+        PathOperation::DatabaseMutate,
+    )?;
     let target = state
         .pgn_path_authority
         .lock()
@@ -668,7 +676,7 @@ fn generate_search_index_locked(
     target: &DatabaseFileTarget,
     state: &tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let mut database_connection = get_db_or_create(state, db_path)?;
+    let mut database_connection = get_db_or_create(&state.database_repository, db_path)?;
     let db = &mut *database_connection;
     let index_leaf = search_index::preferred_sidecar_leaf(&target.leaf);
 
@@ -724,7 +732,7 @@ fn generate_search_index_locked(
             ));
         }
     }
-    search::invalidate_search_cache(state, db_path);
+    state.search_cache.invalidate_database(db_path);
 
     info!("Search index generated in {:?}", start.elapsed());
     Ok(())
@@ -850,13 +858,17 @@ pub async fn get_db_info(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<DatabaseInfo, Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseRead)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseRead,
+    )?;
 
     info!("get_db_info {:?}", file);
 
     let path = file;
 
-    let mut database_connection = get_db_or_create(&state, &path)?;
+    let mut database_connection = get_db_or_create(&state.database_repository, &path)?;
     let db = &mut *database_connection;
 
     let info_records: Vec<Info> = info::table.load(db)?;
@@ -905,10 +917,14 @@ pub async fn create_indexes(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseMutate)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseMutate,
+    )?;
 
     state.database_repository.with_index_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state, &file)?;
+        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
         let db = &mut *database_connection;
         create_required_indexes(db)
     })
@@ -920,9 +936,13 @@ pub async fn delete_indexes(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseMutate)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseMutate,
+    )?;
     state.database_repository.with_index_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state, &file)?;
+        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
         let db = &mut *database_connection;
         drop_required_indexes(db)
     })
@@ -936,10 +956,14 @@ pub async fn edit_db_info(
     description: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseMutate)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseMutate,
+    )?;
 
     state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state, &file)?;
+        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
         let db = &mut *database_connection;
         if let Some(title) = title {
             diesel::insert_into(info::table)
@@ -964,7 +988,7 @@ pub async fn edit_db_info(
         Ok(())
     })?;
     state.database_repository.data_changed(&file)?;
-    search::invalidate_search_cache(&state, &file);
+    state.search_cache.invalidate_database(&file);
     Ok(())
 }
 
@@ -1088,9 +1112,13 @@ pub async fn get_games(
     query: GameQuery,
     state: tauri::State<'_, AppState>,
 ) -> Result<QueryResponse<Vec<NormalizedGame>>, Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseRead)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseRead,
+    )?;
 
-    let mut database_connection = get_db_or_create(&state, &file)?;
+    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
     let db = &mut *database_connection;
 
     let mut count: Option<i64> = None;
@@ -1310,9 +1338,13 @@ pub async fn get_latest_game_timestamp(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<f64>, Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseRead)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseRead,
+    )?;
 
-    let mut database_connection = get_db_or_create(&state, &file)?;
+    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
     let db = &mut *database_connection;
     Ok(get_latest_game_timestamp_in_db(db)?.map(|timestamp| timestamp as f64))
 }
@@ -1398,9 +1430,13 @@ pub async fn get_player(
     id: i32,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<Player>, Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseRead)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseRead,
+    )?;
 
-    let mut database_connection = get_db_or_create(&state, &file)?;
+    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
     let db = &mut *database_connection;
     let player = players::table
         .filter(players::id.eq(id))
@@ -1416,9 +1452,13 @@ pub async fn get_players(
     query: PlayerQuery,
     state: tauri::State<'_, AppState>,
 ) -> Result<QueryResponse<Vec<Player>>, Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseRead)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseRead,
+    )?;
 
-    let mut database_connection = get_db_or_create(&state, &file)?;
+    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
     let db = &mut *database_connection;
     let mut count: Option<i64> = None;
 
@@ -1494,9 +1534,13 @@ pub async fn get_tournaments(
     query: TournamentQuery,
     state: tauri::State<'_, AppState>,
 ) -> Result<QueryResponse<Vec<Event>>, Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseRead)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseRead,
+    )?;
 
-    let mut database_connection = get_db_or_create(&state, &file)?;
+    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
     let db = &mut *database_connection;
     let mut count: Option<i64> = None;
 
@@ -1616,9 +1660,13 @@ pub async fn get_players_game_info(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<PlayerGameInfo, Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseRead)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseRead,
+    )?;
 
-    let mut database_connection = get_db_or_create(&state, &file)?;
+    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
     let db = &mut *database_connection;
     let timer = Instant::now();
 
@@ -1771,7 +1819,11 @@ pub async fn delete_database(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     let handle = file.clone();
-    let file = resolve_database(&state, &file, PathOperation::DatabaseMutate)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseMutate,
+    )?;
     let target = state
         .pgn_path_authority
         .lock()
@@ -1795,7 +1847,7 @@ pub async fn delete_database(
         return finish_database_deletion(primary_gone, unlinked, Err(error));
     }
 
-    search::invalidate_search_cache(&state, &file);
+    state.search_cache.invalidate_database(&file);
     let registry_result = (|| {
         state
             .pgn_path_authority
@@ -1936,15 +1988,19 @@ pub async fn delete_duplicated_games(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseMutate)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseMutate,
+    )?;
 
     state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state, &file)?;
+        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
         let db = &mut *database_connection;
         db.transaction(delete_duplicated_games_transaction)
     })?;
     state.database_repository.data_changed(&file)?;
-    search::invalidate_search_cache(&state, &file);
+    state.search_cache.invalidate_database(&file);
     Ok(())
 }
 
@@ -1975,15 +2031,19 @@ pub async fn delete_empty_games(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseMutate)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseMutate,
+    )?;
 
     state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state, &file)?;
+        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
         let db = &mut *database_connection;
         db.transaction(delete_empty_games_transaction)
     })?;
     state.database_repository.data_changed(&file)?;
-    search::invalidate_search_cache(&state, &file);
+    state.search_cache.invalidate_database(&file);
     Ok(())
 }
 
@@ -2098,9 +2158,13 @@ pub async fn export_to_pgn(
     destination: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseExport)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseExport,
+    )?;
 
-    let mut database_connection = get_db_or_create(&state, &file)?;
+    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
     let db = &mut *database_connection;
 
     let mut writer = BufWriter::new(Vec::new());
@@ -2177,15 +2241,19 @@ pub async fn delete_db_game(
     game_id: i32,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseMutate)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseMutate,
+    )?;
 
     state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state, &file)?;
+        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
         let db = &mut *database_connection;
         db.transaction(|db| delete_db_game_transaction(db, game_id))
     })?;
     state.database_repository.data_changed(&file)?;
-    search::invalidate_search_cache(&state, &file);
+    state.search_cache.invalidate_database(&file);
     Ok(())
 }
 
@@ -2205,7 +2273,11 @@ pub async fn write_db_game(
     pgn: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseMutate)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseMutate,
+    )?;
 
     let mut importer = Importer::new(None);
     let mut parsed = BufferedReader::new(pgn.as_bytes())
@@ -2214,14 +2286,14 @@ pub async fn write_db_game(
         .flatten();
     let temp_game = parsed.next().ok_or(Error::NoMovesFound)?;
     state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state, &file)?;
+        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
         let db = &mut *database_connection;
         db.transaction(|db| {
             write_parsed_db_game(db, game_id, &temp_game, maintain_database_metadata)
         })
     })?;
     state.database_repository.data_changed(&file)?;
-    search::invalidate_search_cache(&state, &file);
+    state.search_cache.invalidate_database(&file);
     Ok(())
 }
 
@@ -2306,15 +2378,19 @@ pub async fn merge_players(
     player2: i32,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(&state, &file, PathOperation::DatabaseMutate)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &file,
+        PathOperation::DatabaseMutate,
+    )?;
 
     state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state, &file)?;
+        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
         let db = &mut *database_connection;
         db.transaction(|db| merge_players_transaction(db, player1, player2))
     })?;
     state.database_repository.data_changed(&file)?;
-    search::invalidate_search_cache(&state, &file);
+    state.search_cache.invalidate_database(&file);
     Ok(())
 }
 

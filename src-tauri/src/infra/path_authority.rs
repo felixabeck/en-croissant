@@ -4598,7 +4598,7 @@ mod tests {
                 }
             }
         }
-        set_test_atomic_file_injector(Some(Box::new(ParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(ParentSync)));
         let mut dropped_engine_executables = Vec::new();
         let durability = authority
             .remove_workspace_entry(
@@ -5393,7 +5393,7 @@ mod tests {
                 }
             }
         }
-        set_test_atomic_file_injector(Some(Box::new(Fail)));
+        set_test_atomic_file_injector(Some(Arc::new(Fail)));
         assert!(a.save().is_err());
         set_test_atomic_file_injector(None);
         assert_eq!(fs::read(&reg).unwrap(), before);
@@ -5409,7 +5409,7 @@ mod tests {
                 }
             }
         }
-        set_test_atomic_file_injector(Some(Box::new(Uncertain)));
+        set_test_atomic_file_injector(Some(Arc::new(Uncertain)));
         let durability = a.save().expect("uncertain registry commit");
         set_test_atomic_file_injector(None);
         assert_eq!(
@@ -5479,7 +5479,7 @@ mod tests {
                 }
             }
         }
-        set_test_atomic_file_injector(Some(Box::new(ParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(ParentSync)));
         assert!(matches!(
             a.commit_candidate(candidate, Some(&dialog)).unwrap(),
             CommitDurability::DurabilityUncertain(_)
@@ -6059,7 +6059,7 @@ mod tests {
         let (mut authority, root) =
             writable_root(&dir, vec![PathOperation::ReadPgn, PathOperation::WritePgn]);
         fs::write(dir.path().join("root/game.pgn"), b"*").unwrap();
-        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
         let error = authority
             .register_workspace_child(
                 &FileWorkspaceHandle::new(root),
@@ -6084,7 +6084,7 @@ mod tests {
         let root = authority
             .get_or_create_database_root(&root_path, "databases")
             .unwrap();
-        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
         let error = authority
             .create_database_child(&root, OsStr::new("created.db3"))
             .expect_err("uncertain registry durability must be surfaced");
@@ -6112,7 +6112,7 @@ mod tests {
         let root = app.id.clone();
         let mut authority =
             PathAuthority::open(dir.path().join("registry.json"), vec![app]).unwrap();
-        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
         let error = authority
             .register_downloaded_pgn(&root, OsStr::new("games.pgn"))
             .expect_err("uncertain registry durability must be surfaced");
@@ -6134,7 +6134,7 @@ mod tests {
         let root = app.id.clone();
         let mut authority =
             PathAuthority::open(dir.path().join("registry.json"), vec![app]).unwrap();
-        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
         let error = authority
             .register_download_artifact(
                 &root,
@@ -6172,7 +6172,7 @@ mod tests {
                 1,
             )
             .unwrap();
-        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
         let engine_handle = authority
             .register_engine_file(&engine, "engine")
             .expect("adopted engine handle");
@@ -6231,7 +6231,7 @@ mod tests {
         let engine = authority
             .get_or_create_engine_root(&engine_path, "engines")
             .unwrap();
-        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
         authority.set_active_database_root(&database).unwrap();
         authority.set_active_puzzle_root(&puzzle).unwrap();
         authority.set_active_engine_root(&engine).unwrap();
@@ -6263,7 +6263,7 @@ mod tests {
             )
             .unwrap();
         fs::rename(&old, &new).unwrap();
-        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
         let error = authority
             .rebind_workspace_entry(&handle, &new, "new")
             .expect_err("uncertain registry durability must be surfaced");
@@ -6293,7 +6293,7 @@ mod tests {
             )
             .unwrap();
         fs::rename(&old, &new).unwrap();
-        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
         let error = authority
             .rebase_workspace_entries(&old, &new)
             .expect_err("uncertain registry durability must be surfaced");
@@ -6327,7 +6327,7 @@ mod tests {
                 vec![PathOperation::ReadPgn],
             )
             .unwrap();
-        set_test_atomic_file_injector(Some(Box::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
         authority.abandon_download_artifact(&first);
         set_test_atomic_file_injector(None);
         assert!(authority.pending_artifacts.is_empty());
@@ -6341,7 +6341,7 @@ mod tests {
                 vec![PathOperation::ReadPgn],
             )
             .unwrap();
-        set_test_atomic_file_injector(Some(Box::new(AlwaysIo)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
         authority.abandon_download_artifact(&second);
         set_test_atomic_file_injector(None);
         assert!(authority
@@ -6433,7 +6433,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
         let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        set_test_atomic_file_injector(Some(Box::new(MetadataFailure(attempts.clone()))));
+        set_test_atomic_file_injector(Some(Arc::new(MetadataFailure(attempts.clone()))));
         let durability = authority.save().unwrap();
         set_test_atomic_file_injector(None);
         assert!(matches!(
@@ -6547,7 +6547,7 @@ mod tests {
         authority.active_engine_root = Some(removed.path_ref().clone());
         authority.save().unwrap();
 
-        set_test_atomic_file_injector(Some(Box::new(AlwaysIo)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
         let mut dropped_engine_executables = Vec::new();
         assert!(authority
             .remove_workspace_entry(

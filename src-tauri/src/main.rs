@@ -382,12 +382,13 @@ pub struct AppState {
     pub(crate) database_repository: Arc<db::DatabaseRepository>,
     #[derivative(Default(value = "Arc::new(Semaphore::new(2))"))]
     new_request: Arc<Semaphore>,
-    #[derivative(Default(value = "Default::default()"))]
-    pub(crate) search_cache: SearchCache,
+    #[derivative(Default(value = "Arc::new(SearchCache::default())"))]
+    pub(crate) search_cache: Arc<SearchCache>,
     #[derivative(Default(value = "Default::default()"))]
     pub pgn_repository: crate::pgn::PgnRepository,
-    #[derivative(Default(value = "std::sync::Mutex::new(None)"))]
-    pub pgn_path_authority: std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    #[derivative(Default(value = "Arc::new(std::sync::Mutex::new(None))"))]
+    pub pgn_path_authority:
+        Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
 
     engine_supervisor: Arc<EngineSupervisor>,
     #[derivative(Default(value = "Arc::new(AuthLifecycle::default())"))]

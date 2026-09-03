@@ -7,6 +7,8 @@
 //! never follow a target link or leave the opened parent directory.
 
 use crate::error::Error;
+#[cfg(test)]
+use std::sync::Arc;
 use std::{ffi::OsStr, fs::File, io::Write, path::Path};
 
 #[derive(Debug)]
@@ -61,26 +63,31 @@ pub(crate) trait AtomicWriterInjector {
 
 #[cfg(test)]
 std::thread_local! {
-    static TEST_ATOMIC_FILE_INJECTOR: std::cell::RefCell<Option<Box<dyn AtomicWriterInjector>>> =
-        const { std::cell::RefCell::new(None) };
+    static TEST_ATOMIC_FILE_INJECTOR: std::cell::RefCell<
+        Option<Arc<dyn AtomicWriterInjector + Send + Sync>>,
+    > = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
-pub(crate) fn set_test_atomic_file_injector(injector: Option<Box<dyn AtomicWriterInjector>>) {
+pub(crate) fn set_test_atomic_file_injector(
+    injector: Option<Arc<dyn AtomicWriterInjector + Send + Sync>>,
+) {
     TEST_ATOMIC_FILE_INJECTOR.with(|current| *current.borrow_mut() = injector);
+}
+
+#[cfg(test)]
+pub(crate) fn current_test_atomic_file_injector(
+) -> Option<Arc<dyn AtomicWriterInjector + Send + Sync>> {
+    TEST_ATOMIC_FILE_INJECTOR.with(|current| current.borrow().clone())
 }
 
 fn io(err: std::io::Error) -> Error {
     Error::Io(Box::new(err))
 }
 #[cfg(test)]
-fn inject_atomic_file(point: AtomicFileFaultPoint) -> Result<(), Error> {
-    TEST_ATOMIC_FILE_INJECTOR.with(|current| {
-        current
-            .borrow()
-            .as_ref()
-            .map_or(Ok(()), |injector| injector.inject(point).map_err(io))
-    })
+pub(crate) fn inject_atomic_file(point: AtomicFileFaultPoint) -> Result<(), Error> {
+    current_test_atomic_file_injector()
+        .map_or(Ok(()), |injector| injector.inject(point).map_err(io))
 }
 
 #[cfg(unix)]
@@ -145,23 +152,28 @@ mod unix {
 
     #[cfg(test)]
     std::thread_local! {
-        static TEST_REMOVAL_INJECTOR: std::cell::RefCell<Option<Box<dyn RemovalInjector>>> =
-            const { std::cell::RefCell::new(None) };
+        static TEST_REMOVAL_INJECTOR: std::cell::RefCell<
+            Option<Arc<dyn RemovalInjector + Send + Sync>>,
+        > = const { std::cell::RefCell::new(None) };
     }
 
     #[cfg(test)]
-    pub(crate) fn set_test_removal_injector(injector: Option<Box<dyn RemovalInjector>>) {
+    pub(crate) fn set_test_removal_injector(
+        injector: Option<Arc<dyn RemovalInjector + Send + Sync>>,
+    ) {
         TEST_REMOVAL_INJECTOR.with(|current| *current.borrow_mut() = injector);
     }
 
     #[cfg(test)]
+    pub(crate) fn current_test_removal_injector() -> Option<Arc<dyn RemovalInjector + Send + Sync>>
+    {
+        TEST_REMOVAL_INJECTOR.with(|current| current.borrow().clone())
+    }
+
+    #[cfg(test)]
     pub(super) fn inject_removal(point: RemovalFaultPoint) -> Result<Option<u64>, Error> {
-        TEST_REMOVAL_INJECTOR.with(|current| {
-            current
-                .borrow()
-                .as_ref()
-                .map_or(Ok(None), |injector| injector.inject(point).map_err(io))
-        })
+        current_test_removal_injector()
+            .map_or(Ok(None), |injector| injector.inject(point).map_err(io))
     }
 
     fn name(path: &Path) -> Result<&OsStr, Error> {
@@ -816,7 +828,9 @@ mod unix {
 #[cfg(unix)]
 pub(crate) use unix::MAX_REMOVE_TREE_DEPTH;
 #[cfg(all(test, unix))]
-pub(crate) use unix::{set_test_removal_injector, RemovalFault, RemovalFaultPoint};
+pub(crate) use unix::{
+    current_test_removal_injector, set_test_removal_injector, RemovalFault, RemovalFaultPoint,
+};
 
 pub fn atomic_replace_with_precommit<F, P>(
     target: &Path,
@@ -1542,7 +1556,7 @@ mod tests {
         parent: &File,
         name: &OsStr,
         expected: (u64, u64),
-        injector: Box<dyn unix::RemovalInjector>,
+        injector: Arc<dyn unix::RemovalInjector + Send + Sync>,
     ) -> Result<(), Error> {
         unix::set_test_removal_injector(Some(injector));
         let result = remove_entry_at(parent, name, expected, true);
@@ -1562,7 +1576,7 @@ mod tests {
             &parent,
             OsStr::new("victim"),
             expected,
-            Box::new(RemovalSwap {
+            Arc::new(RemovalSwap {
                 point: unix::RemovalFaultPoint::BeforeTopOpen,
                 target: victim.clone(),
                 replacement,
@@ -1590,7 +1604,7 @@ mod tests {
             &parent,
             OsStr::new("victim"),
             expected,
-            Box::new(RemovalSwap {
+            Arc::new(RemovalSwap {
                 point: unix::RemovalFaultPoint::BeforeChildOpen,
                 target: child.clone(),
                 replacement,
@@ -1619,7 +1633,7 @@ mod tests {
             &parent,
             OsStr::new("victim"),
             expected,
-            Box::new(RemovalSwap {
+            Arc::new(RemovalSwap {
                 point: unix::RemovalFaultPoint::BeforeChildStat,
                 target: child.clone(),
                 replacement,
@@ -1646,7 +1660,7 @@ mod tests {
             &parent,
             OsStr::new("victim"),
             expected,
-            Box::new(ParentDeviceOverride(expected.0.wrapping_add(1))),
+            Arc::new(ParentDeviceOverride(expected.0.wrapping_add(1))),
         )
         .expect_err("mount must be rejected");
 
@@ -1685,7 +1699,7 @@ mod tests {
             &parent,
             OsStr::new("victim"),
             expected,
-            Box::new(unix::RemovalFault(
+            Arc::new(unix::RemovalFault(
                 unix::RemovalFaultPoint::AfterEntryRemoved,
             )),
         )
@@ -1716,7 +1730,7 @@ mod tests {
             &parent,
             OsStr::new("victim"),
             expected,
-            Box::new(unix::RemovalFault(unix::RemovalFaultPoint::ParentSync)),
+            Arc::new(unix::RemovalFault(unix::RemovalFaultPoint::ParentSync)),
         )
         .expect_err("parent sync failure must preserve commit status");
 
@@ -1906,7 +1920,7 @@ mod tests {
 
     fn run_atomic_file_fault<F>(
         target: &Path,
-        injector: Box<dyn AtomicWriterInjector>,
+        injector: Arc<dyn AtomicWriterInjector + Send + Sync>,
         write_fn: F,
     ) -> Result<AtomicFileOutcome, Error>
     where
@@ -1935,7 +1949,7 @@ mod tests {
         let target = dir.path().join("new");
         let outcome = run_atomic_file_fault(
             &target,
-            Box::new(PrivateTemp {
+            Arc::new(PrivateTemp {
                 parent: dir.path().to_path_buf(),
             }),
             |f| f.write_all(b"new").map_err(io),
@@ -2062,7 +2076,7 @@ mod tests {
             complete: complete.clone(),
             observed_at_rename: observed.clone(),
         };
-        set_test_atomic_file_injector(Some(Box::new(injector)));
+        set_test_atomic_file_injector(Some(Arc::new(injector)));
         atomic_replace_with_precommit(
             &target,
             || {
@@ -2103,7 +2117,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let target = dir.path().join("new");
             let fault = Fault(Some(point), None, Arc::new(Mutex::new(Vec::new())));
-            assert!(run_atomic_file_fault(&target, Box::new(fault), |f| f
+            assert!(run_atomic_file_fault(&target, Arc::new(fault), |f| f
                 .write_all(b"new")
                 .map_err(io))
             .is_err());
@@ -2121,7 +2135,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
         );
         assert!(matches!(
-            run_atomic_file_fault(&target, Box::new(sync_fault), |f| f
+            run_atomic_file_fault(&target, Arc::new(sync_fault), |f| f
                 .write_all(b"new")
                 .map_err(io)),
             Ok(AtomicFileOutcome::CommittedDurabilityUncertain(_))
@@ -2134,7 +2148,7 @@ mod tests {
             Some(AtomicFileFaultPoint::Cleanup),
             cleanup_points.clone(),
         );
-        assert!(run_atomic_file_fault(&second, Box::new(cleanup_fault), |_| Ok(())).is_err());
+        assert!(run_atomic_file_fault(&second, Arc::new(cleanup_fault), |_| Ok(())).is_err());
         assert!(cleanup_points
             .lock()
             .expect("lock")
@@ -2144,7 +2158,7 @@ mod tests {
         let real_cleanup_fault = BreakCleanup {
             parent: dir.path().to_path_buf(),
         };
-        match run_atomic_file_fault(&third, Box::new(real_cleanup_fault), |_| Ok(())) {
+        match run_atomic_file_fault(&third, Arc::new(real_cleanup_fault), |_| Ok(())) {
             Err(error @ Error::OperationAndCleanup { .. }) => {
                 let Error::OperationAndCleanup { primary, cleanup } = &error else {
                     unreachable!();
@@ -2177,7 +2191,7 @@ mod tests {
                 action,
             };
             assert!(matches!(
-                run_atomic_file_fault(&target, Box::new(injector), |f| f
+                run_atomic_file_fault(&target, Arc::new(injector), |f| f
                     .write_all(b"new")
                     .map_err(io)),
                 Err(Error::Conflict(_))
@@ -2204,7 +2218,7 @@ mod tests {
             action: "parent",
         };
         assert!(matches!(
-            run_atomic_file_fault(&target, Box::new(injector), |f| f
+            run_atomic_file_fault(&target, Arc::new(injector), |f| f
                 .write_all(b"new")
                 .map_err(io)),
             Err(Error::Conflict(_))
@@ -2217,7 +2231,7 @@ mod tests {
             parent: dir.path().to_path_buf(),
             action: "create",
         };
-        assert!(run_atomic_file_fault(&target, Box::new(injector), |f| f
+        assert!(run_atomic_file_fault(&target, Arc::new(injector), |f| f
             .write_all(b"new")
             .map_err(io))
         .is_err());

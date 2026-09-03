@@ -30,6 +30,18 @@ fn panic_payload(payload: &(dyn Any + Send)) -> String {
     }
 }
 
+#[cfg(test)]
+struct TestInjectorGuard;
+
+#[cfg(test)]
+impl Drop for TestInjectorGuard {
+    fn drop(&mut self) {
+        crate::infra::fs::set_test_atomic_file_injector(None);
+        #[cfg(unix)]
+        crate::infra::fs::set_test_removal_injector(None);
+    }
+}
+
 fn map_join<R>(
     join: Result<std::thread::Result<Result<R, Error>>, tokio::task::JoinError>,
 ) -> Result<R, Error> {
@@ -70,7 +82,23 @@ impl BlockingGateway {
             .await
             .map_err(|_| Error::Cancellation)?;
 
-        let handle = tokio::task::spawn_blocking(move || catch_unwind(AssertUnwindSafe(f)));
+        // Test injectors are thread-local; spawn_blocking hops to another OS thread.
+        #[cfg(test)]
+        let atomic_injector = crate::infra::fs::current_test_atomic_file_injector();
+        #[cfg(all(test, unix))]
+        let removal_injector = crate::infra::fs::current_test_removal_injector();
+
+        let handle = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            {
+                crate::infra::fs::set_test_atomic_file_injector(atomic_injector);
+                #[cfg(unix)]
+                crate::infra::fs::set_test_removal_injector(removal_injector);
+            }
+            #[cfg(test)]
+            let _injector_guard = TestInjectorGuard;
+            catch_unwind(AssertUnwindSafe(f))
+        });
 
         map_join(handle.await)
     }
@@ -96,8 +124,21 @@ impl BlockingGateway {
             return Err(Error::Cancellation);
         }
         let worker_cancellation = cancellation.clone();
+        // Test injectors are thread-local; spawn_blocking hops to another OS thread.
+        #[cfg(test)]
+        let atomic_injector = crate::infra::fs::current_test_atomic_file_injector();
+        #[cfg(all(test, unix))]
+        let removal_injector = crate::infra::fs::current_test_removal_injector();
         let handle = tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            #[cfg(test)]
+            {
+                crate::infra::fs::set_test_atomic_file_injector(atomic_injector);
+                #[cfg(unix)]
+                crate::infra::fs::set_test_removal_injector(removal_injector);
+            }
+            #[cfg(test)]
+            let _injector_guard = TestInjectorGuard;
             catch_unwind(AssertUnwindSafe(|| f(&worker_cancellation)))
         });
         map_join(handle.await)
@@ -240,5 +281,40 @@ mod tests {
         third.await.unwrap().unwrap();
         assert!(third_ran.load(Ordering::SeqCst));
         assert!(high_water.load(Ordering::SeqCst) <= 2);
+    }
+
+    struct FlagInjector(Arc<AtomicBool>);
+
+    impl crate::infra::fs::AtomicWriterInjector for FlagInjector {
+        fn inject(&self, _: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+            self.0.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn atomic_file_injector_fires_inside_spawn_blocking_worker() {
+        struct ResetInjector;
+        impl Drop for ResetInjector {
+            fn drop(&mut self) {
+                crate::infra::fs::set_test_atomic_file_injector(None);
+            }
+        }
+
+        let fired = Arc::new(AtomicBool::new(false));
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(FlagInjector(
+            fired.clone(),
+        ))));
+        let _reset = ResetInjector;
+        BLOCKING_GATEWAY
+            .spawn(|| {
+                crate::infra::fs::inject_atomic_file(crate::infra::fs::AtomicFileFaultPoint::Write)
+            })
+            .await
+            .expect("spawn");
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "injector installed on the test thread must fire inside BLOCKING_GATEWAY.spawn"
+        );
     }
 }

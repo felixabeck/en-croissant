@@ -837,6 +837,7 @@ mod tests {
         },
         path_authority::PathAuthority,
     };
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -960,7 +961,7 @@ mod tests {
         entry: &FileWorkspaceHandle,
         point: RemovalFaultPoint,
     ) -> Result<(), Error> {
-        set_test_removal_injector(Some(Box::new(RemovalFault(point))));
+        set_test_removal_injector(Some(Arc::new(RemovalFault(point))));
         let result = permanently_delete_entry(state, workspace, entry).await;
         set_test_removal_injector(None);
         result
@@ -1046,7 +1047,7 @@ mod tests {
     async fn registry_failure_after_unlink_is_applied_despite_error_and_keeps_persisted_state() {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry) = registered_child_directory(&state, &workspace, "victim");
-        set_test_atomic_file_injector(Some(Box::new(RegistryWriteFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(RegistryWriteFailure)));
         let error = permanently_delete_entry(&state, &workspace, &entry)
             .await
             .expect_err("registry failure after unlink must be applied-despite-error");
@@ -1110,7 +1111,7 @@ mod tests {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry) = registered_child_directory(&state, &workspace, "victim");
         let removed_entry = registered_child_file(&state, &workspace, &child.join("removed"));
-        set_test_atomic_file_injector(Some(Box::new(RegistryWriteFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(RegistryWriteFailure)));
         let error = delete_entry_with_fault(
             &state,
             &workspace,
@@ -1212,7 +1213,7 @@ mod tests {
         let executable = registered_engine_file(&state, &executable_path);
         let key = EngineKey::new("tab".into(), "operation".into()).expect("engine key");
         supervise_test_engine(&state, &key, "application-engine", executable).await;
-        set_test_atomic_file_injector(Some(Box::new(RegistryWriteFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(RegistryWriteFailure)));
 
         let result = permanently_delete_entry(&state, &workspace, &entry).await;
         set_test_atomic_file_injector(None);
@@ -1365,7 +1366,7 @@ mod tests {
 
         let (_directory, state, workspace) = workspace_state();
         let root = mutation_target(&state, &workspace).expect("workspace target");
-        set_test_atomic_file_injector(Some(Box::new(ParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(ParentSync)));
         let error = create_workspace_directory_inner(
             workspace.clone(),
             workspace,

@@ -464,7 +464,9 @@ mod tests {
             vec![],
         )
         .expect("path authority");
-        crate::infra::fs::set_test_atomic_file_injector(Some(Box::new(ParentSyncFailure)));
+        crate::infra::fs::set_test_atomic_file_injector(Some(std::sync::Arc::new(
+            ParentSyncFailure,
+        )));
         let _reset = ResetAtomicInjector;
         let commit = authority
             .migrate_legacy_os_path(

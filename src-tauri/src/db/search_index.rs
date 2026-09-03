@@ -971,7 +971,7 @@ mod tests {
         let preferred_leaf = preferred_sidecar_leaf(&database_leaf);
         let legacy_leaf = legacy_sidecar_leaf(&database_leaf);
 
-        set_test_atomic_file_injector(Some(Box::new(ParentSyncFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(ParentSyncFailure)));
         let result =
             promote_legacy_index_sidecar_at(&parent, &preferred_leaf, &legacy_leaf, &identity);
         set_test_atomic_file_injector(None);
@@ -990,7 +990,7 @@ mod tests {
     fn search_index_write_to_reports_uncertain_parent_sync() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("uncertain.ecsi");
-        set_test_atomic_file_injector(Some(Box::new(ParentSyncFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(ParentSyncFailure)));
         let result = SearchIndex::default().write_to(&path);
         set_test_atomic_file_injector(None);
 

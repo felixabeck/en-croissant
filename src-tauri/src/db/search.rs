@@ -35,7 +35,7 @@ use crate::{
         MaterialCount,
     },
     error::Error,
-    infra::path_authority::{DatabaseFileTarget, DatabaseHandle, PathOperation},
+    infra::path_authority::{DatabaseFileTarget, DatabaseHandle, PathAuthority, PathOperation},
     progress::{begin_progress, update_progress_with_state, ProgressLease, ProgressState},
     AppState, SearchIndexIdentity, SearchResultKey,
 };
@@ -165,8 +165,17 @@ async fn load_search_index(
     handle: &DatabaseHandle,
     state: &tauri::State<'_, AppState>,
 ) -> Result<(SearchIndexIdentity, MmapSearchIndex), Error> {
-    let database = resolve_database(state, handle, PathOperation::DatabaseRead)?.canonicalize()?;
-    let read_target = database_file_target(state, handle, PathOperation::DatabaseRead)?;
+    let database = resolve_database(
+        &state.pgn_path_authority,
+        handle,
+        PathOperation::DatabaseRead,
+    )?
+    .canonicalize()?;
+    let read_target = database_file_target(
+        &state.pgn_path_authority,
+        handle,
+        PathOperation::DatabaseRead,
+    )?;
     let db_identity = state
         .database_repository
         .database_identity_expected(&database, read_target.identity)?;
@@ -186,7 +195,11 @@ async fn load_search_index(
     };
     let _generation_guard = generation_lock.lock.lock().await;
 
-    let read_target = database_file_target(state, handle, PathOperation::DatabaseRead)?;
+    let read_target = database_file_target(
+        &state.pgn_path_authority,
+        handle,
+        PathOperation::DatabaseRead,
+    )?;
     let db_identity = state
         .database_repository
         .database_identity_expected(&database, read_target.identity)?;
@@ -195,7 +208,11 @@ async fn load_search_index(
         return cache_loaded_index(state, &database, expected_source, index);
     }
 
-    let mutate_target = database_file_target(state, handle, PathOperation::DatabaseMutate)?;
+    let mutate_target = database_file_target(
+        &state.pgn_path_authority,
+        handle,
+        PathOperation::DatabaseMutate,
+    )?;
     let preferred_leaf = preferred_sidecar_leaf(&mutate_target.leaf);
     let legacy_leaf = legacy_sidecar_leaf(&mutate_target.leaf);
     promote_legacy_index_sidecar_at(
@@ -219,7 +236,11 @@ async fn load_search_index(
         Err(error) => return Err(error),
     };
 
-    let read_target = database_file_target(state, handle, PathOperation::DatabaseRead)?;
+    let read_target = database_file_target(
+        &state.pgn_path_authority,
+        handle,
+        PathOperation::DatabaseRead,
+    )?;
     let db_identity = state
         .database_repository
         .database_identity_expected(&database, read_target.identity)?;
@@ -236,12 +257,11 @@ async fn load_search_index(
 }
 
 fn database_file_target(
-    state: &AppState,
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
     handle: &DatabaseHandle,
     operation: PathOperation,
 ) -> Result<DatabaseFileTarget, Error> {
-    state
-        .pgn_path_authority
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -301,12 +321,6 @@ fn cache_loaded_index(
         .search_cache
         .insert_index(identity.clone(), index.clone());
     Ok((identity, index))
-}
-
-/// Clears cached query results and loaded archives after a database mutation
-/// has regenerated/deleted its companion search index.
-pub fn invalidate_search_cache(state: &AppState, database: &Path) {
-    state.search_cache.invalidate_database(database);
 }
 
 pub async fn preload_search_index(
@@ -556,7 +570,11 @@ async fn search_position_inner(
     progress: &SearchProgress,
 ) -> Result<(Vec<PositionStats>, Vec<NormalizedGame>), Error> {
     let database_handle = file;
-    let file = resolve_database(&state, &database_handle, PathOperation::DatabaseRead)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &database_handle,
+        PathOperation::DatabaseRead,
+    )?;
 
     let database = file.canonicalize()?;
     let collision_lock = state
@@ -570,7 +588,7 @@ async fn search_position_inner(
     };
     let _guard = _collision_cleanup.lock.lock().await;
 
-    let mut database_connection = get_db_or_create(&state, &file)?;
+    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
     let db = &mut *database_connection;
 
     let start = Instant::now();
@@ -739,7 +757,11 @@ pub async fn is_position_in_db(
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, Error> {
     let database_handle = file;
-    let file = resolve_database(&state, &database_handle, PathOperation::DatabaseRead)?;
+    let file = resolve_database(
+        &state.pgn_path_authority,
+        &database_handle,
+        PathOperation::DatabaseRead,
+    )?;
     let database = file.canonicalize()?;
     let collision_lock = state
         .search_cache
@@ -815,10 +837,11 @@ mod tests {
         db::{legacy_index_path, SearchIndex},
         infra::{
             fs::{set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector},
-            path_authority::{PathAuthority, PathClass},
+            path_authority::PathClass,
         },
     };
     use diesel::Connection;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn loader_test_case(
@@ -933,7 +956,7 @@ mod tests {
             PathOperation::DatabaseRead,
             PathOperation::DatabaseMutate,
         ]);
-        set_test_atomic_file_injector(Some(Box::new(ParentSyncFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(ParentSyncFailure)));
         let result =
             tauri::async_runtime::block_on(load_search_index(&handle, &app.state::<AppState>()));
         set_test_atomic_file_injector(None);
