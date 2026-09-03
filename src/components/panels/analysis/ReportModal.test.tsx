@@ -2,6 +2,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
+import ReportModal from "./ReportModal";
+
 const mocks = vi.hoisted(() => ({
   addAnalysis: vi.fn(),
   analyzeGame: vi.fn(),
@@ -105,7 +107,6 @@ afterEach(async () => {
 test("passes the immutable engine id and catches analysis rejection", async () => {
   const failure = new Error("analysis failed");
   mocks.analyzeGame.mockRejectedValue(failure);
-  const ReportModal = (await import("./ReportModal")).default;
 
   await act(async () => {
     root.render(

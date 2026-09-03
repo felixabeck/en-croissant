@@ -41,6 +41,7 @@ vi.mock("./common/AppModal", () => ({
 }));
 
 import AboutModal from "./About";
+import catalogue from "@/translation/en-US.json";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -79,11 +80,10 @@ test("renders the modification notice inside the opened About dialog", async () 
 // date is interpolated, but not that the shipped English string actually says what GPL-3 section
 // 5(a) requires. Assert the catalogue itself: a notice that names no modifier does not discharge
 // the licence, and that is a defect no rendering test would catch.
-test("the shipped en-US notice carries every element section 5(a) requires", async () => {
-  const catalogue = (await import("@/translation/en-US.json")).default as {
-    translation: Record<string, string>;
-  };
-  const notice = catalogue.translation["About.ModificationNotice"];
+test("the shipped en-US notice carries every element section 5(a) requires", () => {
+  const notice = (catalogue as { translation: Record<string, string> }).translation[
+    "About.ModificationNotice"
+  ];
 
   expect(notice).toBeDefined();
   expect(notice).toContain("{{date}}");

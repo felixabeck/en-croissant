@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   scoreTypeFamily: vi.fn((_engineId: string) => Symbol("scoreType")),
 }));
 
+import AnalysisRow from "./AnalysisRow";
+
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/state/atoms", () => ({
   moveHighlightAtom: Symbol("moveHighlightAtom"),
@@ -67,7 +69,6 @@ afterEach(async () => {
 });
 
 test("keys score display by id while copied output keeps the engine name", async () => {
-  const AnalysisRow = (await import("./AnalysisRow")).default;
   await act(async () => {
     root.render(
       <>

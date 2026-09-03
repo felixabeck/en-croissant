@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { defaultEngineProgressId } from "@/utils/engines";
+import AddEngine from "./AddEngine";
 
 const mocks = vi.hoisted(() => ({
   engines: [] as Array<{
@@ -145,7 +146,7 @@ test("wires installed state and progress id from the download URL", async () => 
       downloadLink: mocks.defaultEngines[0].downloadLink,
     },
   ];
-  const AddEngine = (await import("./AddEngine")).default;
+
   await act(async () => {
     root.render(<AddEngine opened setOpened={() => undefined} />);
   });
@@ -160,7 +161,7 @@ test("wires installed state and progress id from the download URL", async () => 
 test("a succeeded download that fails to register is not treated as installed", async () => {
   mocks.installDefaultEngine.mockRejectedValue(new Error("register failed"));
   mocks.clearProgress.mockRejectedValue(new Error("clear failed"));
-  const AddEngine = (await import("./AddEngine")).default;
+
   await act(async () => {
     root.render(<AddEngine opened setOpened={() => undefined} />);
   });

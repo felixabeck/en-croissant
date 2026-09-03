@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { LocalEngine } from "@/utils/engines";
+import EngineForm from "./EngineForm";
 
 const mocks = vi.hoisted(() => ({
   issueEngineBinary: vi.fn(),
@@ -81,7 +82,6 @@ test("keeps the adopted binary handle after a successful picker", async () => {
         submit({} as LocalEngine);
       },
   };
-  const EngineForm = (await import("./EngineForm")).default;
 
   await act(async () => {
     root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />);
@@ -106,7 +106,6 @@ test("does not attach a handle when the native picker is cancelled", async () =>
     setFieldValue: vi.fn(),
     onSubmit: () => () => undefined,
   };
-  const EngineForm = (await import("./EngineForm")).default;
 
   await act(async () => {
     root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />);
@@ -129,7 +128,6 @@ test("notifies a real binary picker failure without attaching a handle", async (
     setFieldValue: vi.fn(),
     onSubmit: () => () => undefined,
   };
-  const EngineForm = (await import("./EngineForm")).default;
 
   await act(async () => {
     root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />);
@@ -156,7 +154,6 @@ test("keeps the adopted binary handle when configuration fails", async () => {
     setFieldValue: vi.fn(),
     onSubmit: () => () => undefined,
   };
-  const EngineForm = (await import("./EngineForm")).default;
 
   await act(async () => {
     root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />);
@@ -181,7 +178,6 @@ test("does not attach an image handle when the image picker is cancelled", async
     setFieldValue: vi.fn(),
     onSubmit: () => () => undefined,
   };
-  const EngineForm = (await import("./EngineForm")).default;
 
   await act(async () => {
     root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />);
@@ -205,7 +201,6 @@ test("notifies a real image picker failure without attaching a handle", async ()
     setFieldValue: vi.fn(),
     onSubmit: () => () => undefined,
   };
-  const EngineForm = (await import("./EngineForm")).default;
 
   await act(async () => {
     root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />);

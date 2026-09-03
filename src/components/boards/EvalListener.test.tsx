@@ -104,8 +104,9 @@ afterEach(() => {
   host.remove();
 });
 
+import EvalListener from "./EvalListener";
+
 async function render() {
-  const EvalListener = (await import("./EvalListener")).default;
   await act(async () => root.render(<EvalListener />));
 }
 
@@ -162,7 +163,6 @@ test("a delayed stop from a stale request cannot start a replacement search", as
 
   await render();
   mocks.activeTab = "tab-2";
-  const EvalListener = (await import("./EvalListener")).default;
   await act(async () => root.render(<EvalListener />));
   await act(async () => {
     resolvers[0]();

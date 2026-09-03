@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   renderLogs: vi.fn(),
 }));
 
+import LogsPanel from "./LogsPanel";
+
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
@@ -71,7 +73,6 @@ afterEach(async () => {
 test("a rejected log fetch notifies once and is not rendered as empty success", async () => {
   const failure = new Error("engine disconnected");
   mocks.getEngineLogs.mockRejectedValue(failure);
-  const LogsPanel = (await import("./LogsPanel")).default;
 
   await act(async () => {
     root.render(<LogsPanel />);

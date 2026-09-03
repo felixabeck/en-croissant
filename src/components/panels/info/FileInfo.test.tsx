@@ -2,35 +2,42 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({
-  countPgnGames: vi.fn(),
-  formatNumber: vi.fn((value: number) => String(value)),
-  notify: vi.fn(),
-  setCurrentTab: vi.fn(),
-  setGames: vi.fn(),
-}));
-const currentTabAtom = {};
-const currentTab = {
-  value: "tab-a",
-  gameOrigin: {
-    kind: "file" as const,
-    gameNumber: 0,
-    file: {
-      type: "file" as const,
-      handle: { id: { id: "workspace-token" }, kind: "fileWorkspace" as const },
-      name: "games.pgn",
-      numGames: 3,
-      metadata: { type: "game" as const, tags: [] },
-      lastModified: 1,
+import FileInfo from "./FileInfo";
+import { getTabFile } from "@/utils/tabs";
+
+const mocks = vi.hoisted(() => {
+  const currentTab = {
+    value: "tab-a",
+    gameOrigin: {
+      kind: "file" as const,
+      gameNumber: 0,
+      file: {
+        type: "file" as const,
+        handle: { id: { id: "workspace-token" }, kind: "fileWorkspace" as const },
+        name: "games.pgn",
+        numGames: 3,
+        metadata: { type: "game" as const, tags: [] },
+        lastModified: 1,
+      },
     },
-  },
-};
+  };
+  return {
+    countPgnGames: vi.fn(),
+    formatNumber: vi.fn((value: number) => String(value)),
+    notify: vi.fn(),
+    setCurrentTab: vi.fn(),
+    setGames: vi.fn(),
+    currentTabAtom: {},
+    currentTab,
+    activeTab: currentTab as typeof currentTab | undefined,
+  };
+});
+const currentTab = mocks.currentTab;
 
 vi.mock("@/platform/tauri", () => ({ tauri: { countPgnGames: mocks.countPgnGames } }));
-vi.mock("@/state/atoms", () => ({ currentTabAtom }));
-let activeTab: typeof currentTab | undefined = currentTab;
+vi.mock("@/state/atoms", () => ({ currentTabAtom: mocks.currentTabAtom }));
 vi.mock("jotai", () => ({
-  useAtom: () => [activeTab, mocks.setCurrentTab],
+  useAtom: () => [mocks.activeTab, mocks.setCurrentTab],
 }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@mantine/core", () => {
@@ -78,12 +85,12 @@ beforeEach(async () => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  const FileInfo = (await import("./FileInfo")).default;
+
   await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
 });
 
 afterEach(async () => {
-  activeTab = currentTab;
+  mocks.activeTab = currentTab;
   currentTab.value = "tab-a";
   currentTab.gameOrigin.file.numGames = 3;
   await act(async () => root.unmount());
@@ -145,34 +152,33 @@ test("reload ignores a count that finished after the tab changed", async () => {
         resolveCount = resolve;
       }),
   );
-  const pending = clickReload();
+  act(() => {
+    container.querySelector("button")!.click();
+  });
   currentTab.value = "tab-b";
-  const FileInfo = (await import("./FileInfo")).default;
   await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
   await act(async () => resolveCount(11));
-  await pending;
   expect(mocks.setCurrentTab).not.toHaveBeenCalled();
   expect(mocks.setGames).not.toHaveBeenCalled();
 });
 
 test("renders a zero game count when the file has none recorded", async () => {
   currentTab.gameOrigin.file.numGames = undefined as unknown as number;
-  const FileInfo = (await import("./FileInfo")).default;
+
   await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
   expect(mocks.formatNumber).toHaveBeenCalledWith(0);
 });
 
 test("renders nothing when no tab is selected", async () => {
-  activeTab = undefined;
-  const FileInfo = (await import("./FileInfo")).default;
+  mocks.activeTab = undefined;
+
   await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
   expect(container.querySelector("button")).toBeNull();
 });
 
 test("renders nothing when the tab has no file", async () => {
-  const { getTabFile } = await import("@/utils/tabs");
   vi.mocked(getTabFile).mockReturnValueOnce(undefined);
-  const FileInfo = (await import("./FileInfo")).default;
+
   await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
   expect(container.querySelector("button")).toBeNull();
 });

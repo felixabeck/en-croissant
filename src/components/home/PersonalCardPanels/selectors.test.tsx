@@ -60,6 +60,9 @@ vi.mock("@mantine/core", () => {
   };
 });
 
+import TimeControlSelector from "./TimeControlSelector";
+import WebsiteAccountSelector from "./WebsiteAccountSelector";
+
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 let container: HTMLDivElement;
@@ -78,7 +81,6 @@ afterEach(async () => {
 
 describe("personal card selectors", () => {
   test("notifies a replacement time-control callback with the current selection", async () => {
-    const TimeControlSelector = (await import("./TimeControlSelector")).default;
     const firstCallback = vi.fn();
     const replacementCallback = vi.fn();
 
@@ -106,7 +108,6 @@ describe("personal card selectors", () => {
   });
 
   test("notifies replacement website and account callbacks without changing selections", async () => {
-    const WebsiteAccountSelector = (await import("./WebsiteAccountSelector")).default;
     const firstWebsiteCallback = vi.fn();
     const firstAccountCallback = vi.fn();
     const replacementWebsiteCallback = vi.fn();

@@ -18,6 +18,8 @@ vi.mock("@mantine/core", () => ({
   ),
 }));
 
+import { SideInput } from "./SideInput";
+
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 let container: HTMLDivElement;
@@ -35,7 +37,6 @@ afterEach(async () => {
 });
 
 test("derives selection from the current side and label without an effect write", async () => {
-  const SideInput = (await import("./SideInput")).SideInput;
   const setSides = vi.fn();
 
   await act(async () => {

@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Engine } from "@/utils/engines";
-import type { Settings } from "./EngineSettingsForm";
+import EngineSettingsForm, { type Settings } from "./EngineSettingsForm";
 
 const mocks = vi.hoisted(() => ({
   activeTabAtom: Symbol("activeTabAtom"),
@@ -108,7 +108,6 @@ afterEach(async () => {
 });
 
 async function render(setSettings = vi.fn()) {
-  const EngineSettingsForm = (await import("./EngineSettingsForm")).default;
   await act(async () => {
     root.render(
       <EngineSettingsForm

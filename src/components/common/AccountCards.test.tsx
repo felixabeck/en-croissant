@@ -26,6 +26,8 @@ vi.mock("../home/AccountCard", () => ({
   ),
 }));
 vi.mock("../home/EmptyAccounts", () => ({ EmptyAccounts: () => <div>Empty</div> }));
+import AccountCards from "./AccountCards";
+
 vi.mock("./IconAction", () => ({ default: () => null }));
 vi.mock("@tabler/icons-react", () => ({
   IconCheck: () => null,
@@ -57,7 +59,6 @@ const session = {
 };
 
 async function renderCards() {
-  const AccountCards = (await import("./AccountCards")).default;
   await act(async () => {
     root.render(<AccountCards databases={[]} setDatabases={vi.fn()} onAddAccount={vi.fn()} />);
   });

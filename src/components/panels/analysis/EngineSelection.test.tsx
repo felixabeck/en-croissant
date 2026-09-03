@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   stopEngine: vi.fn(),
 }));
 
+import EngineSelection from "./EngineSelection";
+
 vi.mock("react-i18next", () => ({
   Trans: ({ i18nKey }: { i18nKey: string }) => i18nKey,
   useTranslation: () => ({ t: (key: string) => key }),
@@ -81,7 +83,6 @@ afterEach(async () => {
 test("a rejected stop leaves the engine loaded and notifies", async () => {
   const failure = new Error("stop failed");
   mocks.stopEngine.mockRejectedValue(failure);
-  const EngineSelection = (await import("./EngineSelection")).default;
 
   await act(async () => root.render(<EngineSelection />));
   await act(async () => {
@@ -99,7 +100,6 @@ test("a rejected stop leaves the engine loaded and notifies", async () => {
 
 test("a successful stop flips loaded state", async () => {
   mocks.stopEngine.mockResolvedValue(undefined);
-  const EngineSelection = (await import("./EngineSelection")).default;
 
   await act(async () => root.render(<EngineSelection />));
   await act(async () => {

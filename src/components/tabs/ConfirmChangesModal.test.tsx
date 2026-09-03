@@ -9,6 +9,8 @@ const fixtures = vi.hoisted(() => ({
 
 vi.mock("@/state/atoms", () => ({ currentTabAtom: fixtures.currentTab }));
 vi.mock("jotai", () => ({ useAtom: () => [undefined, vi.fn()] }));
+import ConfirmChangesModal from "./ConfirmChangesModal";
+
 vi.mock("@/utils/tabs", () => ({ saveToFile: fixtures.saveToFile }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@mantine/core", () => ({
@@ -50,7 +52,7 @@ test("a successful background save targets the pending tab before closing it", a
   });
   const updateTab = vi.fn();
   const onSaved = vi.fn();
-  const ConfirmChangesModal = (await import("./ConfirmChangesModal")).default;
+
   await act(async () =>
     root.render(
       <ConfirmChangesModal
@@ -77,7 +79,7 @@ test("a successful background save targets the pending tab before closing it", a
 test("a failed save keeps the pending close open", async () => {
   fixtures.saveToFile.mockResolvedValue("failed");
   const onSaved = vi.fn();
-  const ConfirmChangesModal = (await import("./ConfirmChangesModal")).default;
+
   await act(async () =>
     root.render(
       <ConfirmChangesModal

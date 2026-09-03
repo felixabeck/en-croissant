@@ -1,4 +1,4 @@
-import { act, type ComponentType } from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -151,11 +151,12 @@ const destination = {
   lastModified: 1,
 };
 
+import FilesPage from "./FilesPage";
+
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 let container: HTMLDivElement;
 let root: Root;
-let FilesPage: ComponentType;
 
 function button(name: string) {
   return [...container.querySelectorAll("button")].find((element) => element.textContent === name)!;
@@ -200,7 +201,6 @@ beforeEach(async () => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  FilesPage = (await import("./FilesPage")).default;
   await act(async () => root.render(<FilesPage />));
 });
 

@@ -1,4 +1,4 @@
-import { act, type ComponentType } from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SWRConfig } from "swr";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -21,6 +21,8 @@ vi.mock("@/platform/tauri", () => ({
 vi.mock("@/components/files/notifyError", () => ({
   notifyUnlessCancelled: mocks.notifyUnlessCancelled,
 }));
+import EnginesPage, { EngineName } from "./EnginesPage";
+
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
 vi.mock("@/routes/engines", () => ({ Route: { useSearch: () => ({ selected: 0 }) } }));
 vi.mock("react-i18next", () => ({
@@ -107,7 +109,6 @@ function makeEngine(handleId: string): LocalEngine {
 
 let host: HTMLDivElement;
 let root: Root;
-let EngineName: ComponentType<{ engine: Engine }>;
 
 async function render(engine: Engine) {
   await act(async () => {
@@ -121,12 +122,11 @@ async function render(engine: Engine) {
   });
 }
 
-beforeEach(async () => {
+beforeEach(() => {
   vi.clearAllMocks();
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
-  EngineName = (await import("./EnginesPage")).EngineName;
 });
 
 afterEach(async () => {
@@ -175,7 +175,6 @@ test("local removal retires by id and drops persisted state even when retirement
   const failure = new Error("retirement failed");
   atomEngines = [engine];
   mocks.retireEngine.mockRejectedValue(failure);
-  const EnginesPage = (await import("./EnginesPage")).default;
 
   await act(async () => root.render(<EnginesPage />));
   await act(async () => {

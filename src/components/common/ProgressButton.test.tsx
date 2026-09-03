@@ -23,6 +23,8 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 vi.mock("./IconAction", () => ({ default: () => null }));
+import ProgressButton from "./ProgressButton";
+
 vi.mock("@mantine/core", () => ({
   Box: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   Button: ({ children, disabled, onClick }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
@@ -60,7 +62,6 @@ afterEach(async () => {
 });
 
 test("a failed download does not mark the engine as installed", async () => {
-  const ProgressButton = (await import("./ProgressButton")).default;
   await act(async () => {
     root.render(
       <ProgressButton
@@ -85,7 +86,6 @@ test("a failed download does not mark the engine as installed", async () => {
 
 test("cancelled progress does not mark the action completed", async () => {
   progress.item = { ...progress.item, state: "cancelled" };
-  const ProgressButton = (await import("./ProgressButton")).default;
   await act(async () => {
     root.render(
       <ProgressButton
@@ -109,7 +109,6 @@ test("cancelled progress does not mark the action completed", async () => {
 });
 
 test("initInstalled marks the action completed even if progress failed", async () => {
-  const ProgressButton = (await import("./ProgressButton")).default;
   await act(async () => {
     root.render(
       <ProgressButton
@@ -134,7 +133,6 @@ test("initInstalled marks the action completed even if progress failed", async (
 
 test("completeOnProgressSuccess false ignores a succeeded download job", async () => {
   progress.item = { ...progress.item, state: "succeeded" };
-  const ProgressButton = (await import("./ProgressButton")).default;
   await act(async () => {
     root.render(
       <ProgressButton
@@ -160,7 +158,6 @@ test("completeOnProgressSuccess false ignores a succeeded download job", async (
 
 test("a succeeded download marks the action completed", async () => {
   progress.item = { ...progress.item, state: "succeeded" };
-  const ProgressButton = (await import("./ProgressButton")).default;
   await act(async () => {
     root.render(
       <ProgressButton

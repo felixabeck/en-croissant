@@ -16,6 +16,8 @@ vi.mock("@/platform/tauri", () => ({
 }));
 vi.mock("@/utils/lichess/api", () => ({ getLichessAccount: mocks.getLichessAccount }));
 
+import { authenticateLichess } from "./authentication";
+
 beforeEach(() => {
     vi.clearAllMocks();
     getDefaultStore().set(sessionsAtom, []);
@@ -26,8 +28,6 @@ beforeEach(() => {
 describe("authenticateLichess", () => {
     test("returns failure without upserting when native authentication fails", async () => {
         mocks.getAuthenticationStatus.mockResolvedValue({ state: "failed" });
-        const { authenticateLichess } = await import("./authentication");
-
         await expect(authenticateLichess("alias", "Player")).resolves.toEqual({ ok: false });
         expect(getDefaultStore().get(sessionsAtom)).toEqual([]);
     });
@@ -38,8 +38,6 @@ describe("authenticateLichess", () => {
             account: { handle: "native-handle", username: "Player" },
             durability_uncertain: false,
         });
-        const { authenticateLichess } = await import("./authentication");
-
         await expect(authenticateLichess("alias", "Player")).resolves.toEqual({
             ok: true,
             durabilityUncertain: false,
@@ -56,8 +54,6 @@ describe("authenticateLichess", () => {
             account: { handle: "native-handle", username: "Player" },
             durability_uncertain: true,
         });
-        const { authenticateLichess } = await import("./authentication");
-
         await expect(authenticateLichess("alias", "Player")).resolves.toEqual({
             ok: true,
             durabilityUncertain: true,
@@ -71,8 +67,6 @@ describe("authenticateLichess", () => {
             account: { handle: "native-handle", username: "Player" },
         });
         mocks.getLichessAccount.mockResolvedValue(null);
-        const { authenticateLichess } = await import("./authentication");
-
         await expect(authenticateLichess("alias", "Player")).resolves.toEqual({
             ok: true,
             durabilityUncertain: false,

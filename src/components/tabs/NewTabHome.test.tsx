@@ -31,6 +31,8 @@ const fixtures = vi.hoisted(() => ({
   dueStats: { due: 0, unseen: 0 },
 }));
 
+import NewTabHome from "./NewTabHome";
+
 vi.mock("@/platform/tauri", () => ({
   tauri: {
     countPgnGames: fixtures.countPgnGames,
@@ -136,7 +138,6 @@ afterEach(async () => {
 });
 
 test("does not let an obsolete recent-file check overwrite newer atom state", async () => {
-  const NewTabHome = (await import("./NewTabHome")).default;
   let rejectStaleCheck: ((reason?: unknown) => void) | undefined;
   fixtures.countPgnGames.mockImplementation((handle: { id: { id: string } }) => {
     if (handle.id.id === "stale") {
@@ -168,7 +169,6 @@ test("does not let an obsolete recent-file check overwrite newer atom state", as
 });
 
 test("notifies when opening a recent file is denied without creating a tab", async () => {
-  const NewTabHome = (await import("./NewTabHome")).default;
   fixtures.readGames.mockRejectedValueOnce(new Error("permission denied"));
 
   await act(async () => {
@@ -191,8 +191,6 @@ test("notifies when opening a recent file is denied without creating a tab", asy
 });
 
 test("notifies when counting games for a recent file is denied without creating a tab", async () => {
-  const NewTabHome = (await import("./NewTabHome")).default;
-
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
   });
@@ -214,7 +212,6 @@ test("notifies when counting games for a recent file is denied without creating 
 });
 
 test("keeps recent-file cancellation silent without creating a tab", async () => {
-  const NewTabHome = (await import("./NewTabHome")).default;
   fixtures.readGames.mockRejectedValueOnce(new Error("Cancellation"));
 
   await act(async () => {
@@ -242,7 +239,7 @@ test("hides due practice counts when a repertoire is fully practiced", async () 
       lastOpened: 3,
     },
   ];
-  const NewTabHome = (await import("./NewTabHome")).default;
+
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
   });
@@ -259,7 +256,7 @@ test("opens a recent repertoire into the practice panel", async () => {
       lastOpened: 3,
     },
   ];
-  const NewTabHome = (await import("./NewTabHome")).default;
+
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
   });
@@ -285,7 +282,7 @@ test("shows due practice counts on recent repertoire files", async () => {
       lastOpened: 3,
     },
   ];
-  const NewTabHome = (await import("./NewTabHome")).default;
+
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
   });
@@ -293,7 +290,6 @@ test("shows due practice counts on recent repertoire files", async () => {
 });
 
 test("home cards start play, analysis, puzzles, import, and repertoire", async () => {
-  const NewTabHome = (await import("./NewTabHome")).default;
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
   });
@@ -333,7 +329,7 @@ test("home cards start play, analysis, puzzles, import, and repertoire", async (
 
 test("shows an empty recent-files state", async () => {
   fixtures.recentFiles = [];
-  const NewTabHome = (await import("./NewTabHome")).default;
+
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
   });
@@ -342,7 +338,7 @@ test("shows an empty recent-files state", async () => {
 
 test("keeps a recent file after a transient count failure", async () => {
   fixtures.countPgnGames.mockRejectedValueOnce(new Error("permission denied"));
-  const NewTabHome = (await import("./NewTabHome")).default;
+
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
   });
@@ -354,7 +350,7 @@ test("keeps a recent file after a transient count failure", async () => {
 
 test("drops a recent file that is gone", async () => {
   fixtures.countPgnGames.mockRejectedValueOnce(new Error("file not found"));
-  const NewTabHome = (await import("./NewTabHome")).default;
+
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
   });
@@ -366,7 +362,7 @@ test("drops a recent file that is gone", async () => {
 
 test("opens a recent file with an empty pgn as a blank analysis tab", async () => {
   fixtures.readGames.mockResolvedValueOnce([]);
-  const NewTabHome = (await import("./NewTabHome")).default;
+
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
   });
@@ -381,8 +377,6 @@ test("opens a recent file with an empty pgn as a blank analysis tab", async () =
 });
 
 test("opens a recent file into a new analysis tab", async () => {
-  const NewTabHome = (await import("./NewTabHome")).default;
-
   await act(async () => {
     root.render(<NewTabHome id="new-tab" />);
   });

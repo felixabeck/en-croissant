@@ -4,6 +4,7 @@ import { Provider, createStore } from "jotai";
 import { afterEach, expect, test, vi } from "vitest";
 import { activeTabAtom, expandedDirectoriesAtom, tabsAtom } from "@/state/atoms";
 import type { Entry } from "./file";
+import DirectoryTree from "./DirectoryTree";
 
 const mocks = vi.hoisted(() => ({ navigate: vi.fn(), openFile: vi.fn() }));
 
@@ -107,7 +108,7 @@ test("supports ARIA-tree roving focus, keyboard expansion, selection, and opaque
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  const DirectoryTree = (await import("./DirectoryTree")).default;
+
   const onRequestDelete = vi.fn();
   function Harness() {
     const [selected, setSelected] = useState<Entry | null>(null);
@@ -188,7 +189,7 @@ test("filters the visible navigation model and opens a filtered file with Enter"
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  const DirectoryTree = (await import("./DirectoryTree")).default;
+
   function Harness() {
     const [selected, setSelected] = useState<Entry | null>(null);
     return (
@@ -250,7 +251,7 @@ test("routes context, M, and drag move intents with opaque entry handles", async
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  const DirectoryTree = (await import("./DirectoryTree")).default;
+
   function Harness() {
     const [selected, setSelected] = useState<Entry | null>(null);
     return (

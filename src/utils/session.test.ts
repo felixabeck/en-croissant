@@ -14,6 +14,8 @@ vi.mock("@/bindings/generated", () => ({
 }));
 vi.mock("@/utils/lichess/api", () => ({ getLichessAccount: mocks.getLichessAccount }));
 
+import { initializePersistedSessions } from "./session";
+
 beforeEach(() => {
     vi.restoreAllMocks();
     localStorage.clear();
@@ -41,8 +43,6 @@ describe("initializePersistedSessions", () => {
             account: { username: "player", handle: "migrated-handle" },
             durability_uncertain: false,
         });
-        const { initializePersistedSessions } = await import("./session");
-
         await initializePersistedSessions();
 
         const sessions = JSON.parse(localStorage.getItem("sessions")!);
@@ -70,8 +70,6 @@ describe("initializePersistedSessions", () => {
             status: "error",
             error: "unavailable",
         });
-        const { initializePersistedSessions } = await import("./session");
-
         await initializePersistedSessions();
 
         expect(localStorage.getItem("sessions")).not.toContain("credential-that-must-be-removed");
@@ -98,8 +96,6 @@ describe("initializePersistedSessions", () => {
             status: "error",
             error: "unavailable",
         });
-        const { initializePersistedSessions } = await import("./session");
-
         await initializePersistedSessions();
 
         expect(mocks.migrateLegacyLichessToken).toHaveBeenCalledWith(
@@ -131,8 +127,6 @@ describe("initializePersistedSessions", () => {
             status: "error",
             error: "unavailable",
         });
-        const { initializePersistedSessions } = await import("./session");
-
         await initializePersistedSessions();
 
         expect(mocks.migrateLegacyLichessToken).toHaveBeenCalledWith(
@@ -157,8 +151,6 @@ describe("initializePersistedSessions", () => {
         mocks.listLichessAccounts.mockResolvedValue([
             { username: "felix", handle: "native-handle" },
         ]);
-        const { initializePersistedSessions } = await import("./session");
-
         await initializePersistedSessions();
         await initializePersistedSessions();
 
