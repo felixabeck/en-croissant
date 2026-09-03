@@ -520,15 +520,25 @@ async fn save_native_export(
     bytes: &[u8],
 ) -> Result<(), Error> {
     use tauri_plugin_dialog::DialogExt;
-    let path = app
-        .dialog()
-        .file()
-        .add_filter(extension.to_uppercase(), &[extension])
-        .set_file_name(suggested_name)
-        .blocking_save_file()
-        .ok_or(Error::Cancellation)?
-        .into_path()
-        .map_err(|error| Error::InvalidInput(format!("invalid native file selection: {error}")))?;
+    let picker_app = app.clone();
+    let picker_extension = extension.to_owned();
+    let picker_name = suggested_name.to_owned();
+    let path = tokio::task::spawn_blocking(move || {
+        picker_app
+            .dialog()
+            .file()
+            .add_filter(
+                picker_extension.to_uppercase(),
+                &[picker_extension.as_str()],
+            )
+            .set_file_name(picker_name)
+            .blocking_save_file()
+            .ok_or(Error::Cancellation)?
+            .into_path()
+            .map_err(|error| Error::InvalidInput(format!("invalid native file selection: {error}")))
+    })
+    .await
+    .map_err(map_picker_join)??;
     let extension = extension.to_owned();
     let bytes = bytes.to_vec();
     BLOCKING_GATEWAY
