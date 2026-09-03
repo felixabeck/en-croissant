@@ -2722,6 +2722,42 @@ Handled by `eb3ddf82`. load_search_index keeps DatabaseRead for a valid preferre
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. The lock-site count was
   independently derived and is roughly twice what the first pass reported.
 
+**Partial progress, 2026-09-03 (drain session ce8785e6). Still open — four of nine phases shipped.**
+
+The plan is `tasks/plans/2026-09-03-blocking-work-not-offloaded.md`; it converged after 18 rounds of
+adversarial review and is the specification for the rest. The design questions are settled in
+`d-20260903-04` (no gateway re-entrancy guard, non-nesting invariant instead), `d-20260903-05`
+(`Arc` handles, no context bundle), `d-20260903-06` (thin command + `<name>_blocking` shape),
+`d-20260903-07` (test injectors cross the worker) and `d-20260903-08` (engine-image `VerifiedFile`).
+Do not re-derive them.
+
+Shipped and green (`cargo test` 492, clippy, fmt, `bindings:check`, `rust:surface:check`):
+
+* `85437156` — `infra/blocking.rs` gets its first four tests, one join mapper that logs the panic
+  payload it used to discard, and the non-nesting invariant on the type and in the rule file.
+* `cc9af733` — `pgn_path_authority` and `search_cache` become `Arc`; three helpers retyped onto the
+  one field each reads; `invalidate_search_cache` deleted and inlined; the two test failure
+  injectors become `Arc<dyn … + Send + Sync>` and the gateway carries them into its worker under
+  `#[cfg(test)]`.
+* `b345ea01` — the engine-image read leaves the authority guard: `open_engine_image` /
+  `engine_image_reader_for` / `read_engine_image_bytes`, the `VerifiedFile` newtype, two `const`
+  arity pins, a `READ_TOKENS` scan and four behavioural tests. Residual hole filed separately.
+* `a47d9066` — sixteen synchronous `main.rs` / `puzzle.rs` capability commands become thin `async`
+  wrappers over `*_blocking` functions on the gateway, dialogs deliberately outside the permit, plus
+  the S-1 / S-2 / S-8 source scans.
+
+Not started: the `file_workspace.rs` mutators and the `workspace_mutation` lock (plan phase 3, third
+sub-step), the already-`async` `issue_*` capability commands (phase 3b), the whole `db/**` offload
+and the `chess.rs` novelty pass (phase 4), and the staged-download hash (phase 5).
+
+**Why it stopped:** the Grok executor went down mid-phase. Two write leaves stalled after emitting
+only `available_commands`, and two minimal probes (`grok-4.5`, `--effort low`, one-line prompt)
+timed out at 180 s and 240 s with the same signature. Per
+`~/.claude/references/review-lens-contract.md` a write leaf that dies this way is a failed phase:
+no `Agent` fallback writes files and there is no mid-run executor switch. Nothing was pushed. The
+four commits above are local, green and individually sound. **Resume with
+`--executor codex`.**
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
@@ -2756,6 +2792,32 @@ Handled by `eb3ddf82`. load_search_index keeps DatabaseRead for a valid preferre
   `db/mod.rs:1724` calls inline — the correct pattern is in-tree and simply was not applied here.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
 
+**Not started, 2026-09-03 (drain session ce8785e6).** The cluster's shared groundwork shipped but no
+`db/**` work did. See the progress note on `f-20260830-36` for the four commits, and
+`tasks/plans/2026-09-03-blocking-work-not-offloaded.md` phase 4 for the specification, which is
+frozen after 18 review rounds. Load-bearing points that plan review established and that a fresh
+session should not re-derive:
+
+* Wrapping `db/` layer by layer **deadlocks** the four-permit gateway. The concrete chains are
+  `search_position_inner` → `load_search_index` → `generate_search_index` →
+  `generate_search_index_locked`, and every `command → with_write_lock → get_db_or_create` pair. One
+  permit per command, at the command boundary, callees stay synchronous (`d-20260903-04`).
+* `load_search_index` must become synchronous; its only `.await` is a `tokio::sync::Mutex` that
+  becomes a `std::sync::Mutex` with poison mapped to `Error::Conflict`. Four `#[test]`s and one
+  `include_str!` scan change with it, all named in the plan's Risks section.
+* `convert_pgn` holds a `!Send` `MutexGuard` across the whole import, so the write lease must be
+  acquired **inside** the closure.
+* `new_request`'s `OwnedSemaphorePermit` must be moved **into** the closure, not held across the
+  gateway await — `spawn` drops its own permit when the caller is abandoned while the worker keeps
+  running, which would release the two-search cap mid-scan.
+* `SearchProgress` stays on the async frame; the worker gets a cloned `ProgressLease` plus
+  `AppHandle`, or an abandoned search reports `Succeeded` after the scan finishes.
+* `retire_and_wait`'s unbounded `Condvar` becomes a bounded wait **with an unwind** — on timeout it
+  must clear `retiring` and remove the tombstone, or the database is left neither openable nor
+  deletable until restart.
+
+Stopped because the Grok executor went down; resume with `--executor codex`. Nothing pushed.
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
@@ -2788,6 +2850,35 @@ Handled by `eb3ddf82`. load_search_index keeps DatabaseRead for a valid preferre
   gateway. The design question is which of them need to stay ordered relative to each other once
   they no longer run on a single thread.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+**Partially shipped, 2026-09-03 (drain session ce8785e6). Still open.**
+
+`a47d9066` converted sixteen of the synchronous commands — `save_board_snapshot`,
+`save_engine_logs`, `open_app_log`, `get_database_workspace`, `list_workspace_databases`,
+`create_workspace_database`, `database_download_destination`, `get_engine_workspace`,
+`read_engine_image`, `engine_archive_destination`, `register_installed_engine`,
+`open_engine_workspace`, `list_path_capabilities`, `promote_path_capability`,
+`get_puzzle_workspace`, `issue_puzzle_download_destination` — plus `issue_engine_image`, with
+`revoke_path_capability` made `async` without a permit because `revoke_dialog` is a `HashMap::remove`.
+Native dialogs are deliberately outside the permit. S-1, S-2 and S-8 scans are in
+`main.rs::blocking_offload_scans`.
+
+Still to do, specified in `tasks/plans/2026-09-03-blocking-work-not-offloaded.md`:
+
+* The five `file_workspace.rs` mutators, the `workspace_mutation` lock over the
+  `mutation_target` → registry window in seven bodies, and the three restructures —
+  `list_file_workspace` (the recursive `tree_entry` walk interleaves `count_pgn_games_core` per PGN
+  leaf, so it needs a sync `collect_tree_entries` returning `FileWorkspaceHandle`s plus an async
+  counting pass, not a wrap), `create_workspace_file`, and `permanently_delete_entry` — where the
+  blocking half must return the dropped `PathRef` vector **alongside** an error so the wrapper can
+  still `retire_executables` on the failure path (`d-20260901-29`).
+* Phase 3b: the already-`async` `issue_*` capability commands in `main.rs`, `fs.rs`, `puzzle.rs` and
+  `file_workspace.rs`, which hold the authority guard across `promote_dialog`'s three fsyncs on a
+  Tokio worker.
+
+The count in the original entry was low: 114 registered commands, 36 sync, not 37 of 113.
+
+Stopped because the Grok executor went down; resume with `--executor codex`. Nothing pushed.
 
 ---
 
