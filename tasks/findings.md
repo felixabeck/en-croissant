@@ -4937,3 +4937,16 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
   entry for it existed in this ledger. This repo's working tree was not touched.
 
 **Handled 2026-09-02.** The kit copy vendored at `faf40ca3` already carries `_enforce_python_floor` (header-driven; a no-op here because this ledger has no `**Python floor:**` line) and `_READ_ERRORS` / `_READ_ERRORS_LEDGER`. The ChessRiddle parity mesh the blocker `chessriddle-adopts-entrypoint-guard` named — `scripts/findings-parity-tests.py`, `SIBLING_REF`, `pnpm findings:parity:check` — no longer exists. Identity is `kit sync --check`. Closing as handled; a later En-Croissant `**Python floor:**` header line would be a different finding.
+
+---
+
+## 2026-09-03 — filed through the inbox spool
+
+### Live analysis `onBestMoves` accepts in-flight lines after a same-position settings change
+
+* **ID:** f-20260903-01 · **Status:** open · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/boards/EvalListener.tsx` around the `onBestMoves` callback (currently `:157`). `generation.current` is incremented only for the post-stop `getBestMoves` promise (`:234`); the live `best_moves` listener never consults it. `BestMovesPayload` has no request id, go mode, or options.
+* **Defect:** the live listener accepts a payload when engine id, tab, FEN and move list match the current render. Changing MultiPV, Hash, Threads, or go on the same position updates `requestFingerprint` and the callback ref immediately, while `stopEngine` runs only after the 50ms throttle. In-flight `info` from the previous search still matches fen/moves/tab/engine and is written into `engineMovesFamily` under `${fen}:${moves.join(",")}`, which is also not cleared on settings change. Sequence: analyze the start position at MultiPV 3, then set MultiPV to 1 — the three old lines stay visible, and one more old info event can land, until the replacement search emits.
+* **Why it matters:** `.claude/rules/engine-lifecycle.md` requires a `best_moves` payload to be used only when engine id, tab, FEN *and* the searched move list all match *and* the engine is still loaded. Settings are part of the search identity; the live path does not bind the result to the search that requested it. Sibling of `f-20260831-09`, which already names the missing process generation on this file's fingerprint and on `stop_engine` / `terminate_tab`. This is the same missing discriminator on the live event path for a *same-process* settings change, which that finding's "replace the binary" framing does not spell out.
+* **Why it is `build`:** a local clear of `engineMovesFamily` on fingerprint change still cannot tell an old info line from a new one while both share fen/moves/tab/engine. Binding the event to the search that produced it is the generation-on-payload question already opened by `f-20260831-09`. Do not "fix" this with a frontend-only epoch that the payload cannot carry.
+* **Found by:** the `review-engine-protocol` lens (confidence 88) during `$push` of `ee564004..HEAD` (import-hoist of `EvalListener.test.tsx` only). Pre-existing enclosing defect.
