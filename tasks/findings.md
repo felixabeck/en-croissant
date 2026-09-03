@@ -5112,3 +5112,73 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
 * **Related:** `f-20260830-38`, whose command conversions introduced it; `d-20260903-06` for the
   shape those wrappers have and why a pass-through is not one.
 * **Found by:** Claude Code, running `pnpm gate:ensure backend-coverage` on its own diff, 2026-09-03.
+
+---
+
+## 2026-09-03 — filed through the inbox spool
+
+### A failed or truncated PGN import commits its games and reports success, and never invalidates the search cache
+
+* **ID:** f-20260903-04 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs` — the import loop around `convert_pgn` (the
+  `BufferedReader::into_iter` consumption), and `write_db_game`.
+* **Defect:** two layers of `Result` are `.flatten()`ed away. `BufferedReader::into_iter` yields
+  `Result<Option<TempGame>, io::Error>` (pgn-reader 0.26: underlying reads *and* irrecoverable
+  parse errors), and both the outer and inner layers are flattened, so an I/O or parse error is
+  indistinguishable from "no more games". The transaction then commits and the import returns
+  `Ok`. Concrete input: a `.pgn.bz2` whose bzip2 stream is truncated after N complete games —
+  those N games are stored and the user is told the import succeeded, with the tail silently
+  missing. `write_db_game` has the same double-flatten: a two-game paste whose first game is
+  skipped (`Importer.skip`, `end_game` → `None`) stores the *second* game under the requested
+  `game_id`.
+* **Second half, on the error path:** when a multi-file import does fail, `data_changed` and
+  `search_cache.invalidate_database` run only after every file has succeeded. Connections use
+  `PRAGMA journal_mode = WAL`, so a committed file need not change the `.db3` length or mtime that
+  `IndexSource` fingerprints. A later position search therefore reopens the stale `.ecsi` sidecar —
+  its source still "matches" — and answers from games that are no longer what the database holds.
+* **Why it matters:** silent data loss presented as success is the worst shape this pipeline can
+  fail in; the user has no signal to retry, and the stale index means the wrong answer is served
+  from then on rather than an obvious error.
+* **The design question that makes this `build`:** whether a truncated or unparsable source should
+  fail the whole import, or import what it could and report the loss explicitly. That is a product
+  question about what the user is promised, and it decides the shape of the fix; the swallowed
+  `Result` is the mechanism either way.
+* **Related, already filed:** `f-20260831-07` owns the per-file transaction boundary (a mid-import
+  failure leaving games behind); this entry is the *error propagation* and cache-invalidation half
+  of the same path and should be worked with it. `f-20260831-05` is a different game-boundary
+  defect in the same area.
+* **Found by:** the `review-pgn-index` lens during the `$push` review of the
+  `blocking-work-not-offloaded` range, 2026-09-03 (confidence 90).
+
+---
+
+## 2026-09-03 — filed through the inbox spool
+
+### Nothing stops a caller putting the 10 MiB engine-image read back under the path-authority mutex
+
+* **ID:** f-20260903-05 · **Status:** open · **Area:** native-fs · **Root:** blocking-work-not-offloaded · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs` — `issue_engine_image_blocking` and `read_engine_image_blocking`;
+  helpers `engine_image_reader_for` / `read_engine_image_bytes` in
+  `src-tauri/src/infra/path_authority.rs`.
+* **Defect:** `b345ea01` split the engine-image read so the process-wide `pgn_path_authority` mutex
+  is held only to resolve and bound the no-follow descriptor, and the up-to-10 MiB `read_to_end`
+  runs after the guard drops. The helper-level tests
+  (`engine_image_reader_then_bytes_returns_exact_contents` and the oversize/growth cases) plus the
+  `READ_TOKENS` scan pin that the *helpers* keep that shape: they go red if `read_to_end` moves back
+  into the opener. **They do not constrain the call sites.** A caller that re-acquires
+  `authority.lock()` around `read_engine_image_bytes` after `engine_image_reader_for` has returned
+  puts the whole read back under the mutex, and every existing test stays green.
+* **Why it matters:** that mutex is process-wide, so holding it across a 10 MiB read stalls every
+  other path-authority operation — the exact failure `b345ea01` removed. The guard that exists
+  today lives one layer below the place the mistake would be made.
+* **What a fix looks like:** a source scan in the same family as `s1`/`s8` asserting that in each
+  `*_engine_image_blocking` body no lock acquisition encloses the `read_engine_image_bytes` call —
+  or, better, a type-level seam that makes the reader unusable while a guard is held, so the
+  property is not carried by a text scan at all. The choice between those is why this is `lens`
+  rather than `inline`.
+* **Explicitly not claimed:** the current call sites are correct. This is about the absence of a
+  proof, not a live defect.
+* **Related:** same root as `f-20260830-36`/`-37`/`-38`; the `d-20260903-08` seam is what this would
+  finish guarding.
+* **Found by:** the `review-tests` lens during the `$push` review of the
+  `blocking-work-not-offloaded` range, 2026-09-03 (confidence 90).
