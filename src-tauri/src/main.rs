@@ -253,8 +253,8 @@ impl<K: Clone + Eq + std::hash::Hash, V: Clone> BoundedSearchCache<K, V> {
 pub(crate) struct SearchCache {
     results: Mutex<BoundedSearchCache<SearchResultKey, CachedSearchResult>>,
     indexes: Mutex<BoundedSearchCache<SearchIndexIdentity, MmapSearchIndex>>,
-    collisions: DashMap<(GameQuery, PathBuf), Arc<tokio::sync::Mutex<()>>>,
-    generation_locks: DashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>,
+    collisions: DashMap<(GameQuery, PathBuf), Arc<Mutex<()>>>,
+    generation_locks: DashMap<PathBuf, Arc<Mutex<()>>>,
 }
 
 impl SearchCache {
@@ -311,31 +311,23 @@ impl SearchCache {
             .insert(identity, index, SEARCH_INDEX_CACHE_CAPACITY);
     }
 
-    pub(crate) fn collision_lock(
-        &self,
-        query: GameQuery,
-        database: PathBuf,
-    ) -> Arc<tokio::sync::Mutex<()>> {
+    pub(crate) fn collision_lock(&self, query: GameQuery, database: PathBuf) -> Arc<Mutex<()>> {
         self.collisions
             .entry((query, database))
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .or_insert_with(|| Arc::new(Mutex::new(())))
             .value()
             .clone()
     }
 
-    pub(crate) fn generation_lock(&self, index: PathBuf) -> Arc<tokio::sync::Mutex<()>> {
+    pub(crate) fn generation_lock(&self, index: PathBuf) -> Arc<Mutex<()>> {
         self.generation_locks
             .entry(index)
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .or_insert_with(|| Arc::new(Mutex::new(())))
             .value()
             .clone()
     }
 
-    pub(crate) fn remove_generation_lock_if_idle(
-        &self,
-        index: &Path,
-        lock: &Arc<tokio::sync::Mutex<()>>,
-    ) {
+    pub(crate) fn remove_generation_lock_if_idle(&self, index: &Path, lock: &Arc<Mutex<()>>) {
         if Arc::strong_count(lock) == 2 {
             self.generation_locks
                 .remove_if(index, |_, existing| Arc::ptr_eq(existing, lock));
@@ -346,7 +338,7 @@ impl SearchCache {
         &self,
         query: &GameQuery,
         database: &Path,
-        lock: &Arc<tokio::sync::Mutex<()>>,
+        lock: &Arc<Mutex<()>>,
     ) {
         // One strong reference is held by the map and one by the cleanup
         // guard. Any waiter holds another reference, so it keeps the key alive
@@ -1855,13 +1847,13 @@ mod search_cache_tests {
         assert_ne!(first.database, second.database);
     }
 
-    #[tokio::test]
-    async fn generation_lock_is_shared_only_for_the_same_index_path() {
+    #[test]
+    fn generation_lock_is_shared_only_for_the_same_index_path() {
         let cache = SearchCache::default();
         let first = cache.generation_lock(PathBuf::from("one.ecsi"));
         let same = cache.generation_lock(PathBuf::from("one.ecsi"));
         let other = cache.generation_lock(PathBuf::from("two.ecsi"));
-        let held = first.lock().await;
+        let held = first.lock().unwrap();
         assert!(same.try_lock().is_err());
         assert!(other.try_lock().is_ok());
         drop(held);
@@ -2251,12 +2243,145 @@ mod blocking_offload_scans {
     }
 
     #[test]
+    fn s4_database_commands_offload_through_named_blocking_functions() {
+        let db = include_str!("db/mod.rs");
+        let search = include_str!("db/search.rs");
+        let chess = include_str!("chess.rs");
+        for name in [
+            "get_db_info",
+            "create_indexes",
+            "delete_indexes",
+            "edit_db_info",
+            "get_games",
+            "get_latest_game_timestamp",
+            "get_player",
+            "get_players",
+            "get_tournaments",
+            "get_players_game_info",
+            "delete_database",
+            "delete_duplicated_games",
+            "delete_empty_games",
+            "export_to_pgn",
+            "delete_db_game",
+            "write_db_game",
+            "merge_players",
+            "preload_reference_db",
+            "convert_pgn",
+        ] {
+            let blocking = body_at_indent(db, &format!("fn {name}_blocking("));
+            assert!(
+                !blocking.trim().is_empty(),
+                "{name}_blocking must exist: {blocking}"
+            );
+            let wrapper = body_at_indent(db, &format!("pub async fn {name}("));
+            assert!(
+                wrapper.contains("BLOCKING_GATEWAY"),
+                "pub async fn {name} must acquire BLOCKING_GATEWAY: {wrapper}"
+            );
+        }
+        let search_blocking = body_at_indent(search, "fn search_position_blocking(");
+        assert!(
+            !search_blocking.trim().is_empty(),
+            "search_position_blocking must exist: {search_blocking}"
+        );
+        let search_wrapper = body_at_indent(search, "pub async fn search_position(");
+        assert!(
+            search_wrapper.contains("BLOCKING_GATEWAY"),
+            "pub async fn search_position must acquire BLOCKING_GATEWAY: {search_wrapper}"
+        );
+
+        let convert = body_at_indent(db, "fn convert_pgn_blocking(");
+        assert!(
+            convert.contains("ConvertProgress"),
+            "convert_pgn_blocking must emit ConvertProgress: {convert}"
+        );
+        let players_info = body_at_indent(db, "fn get_players_game_info_blocking(");
+        assert!(
+            players_info.contains("DatabaseProgress"),
+            "get_players_game_info_blocking must emit DatabaseProgress: {players_info}"
+        );
+        assert!(
+            players_info.contains("* 100_f64"),
+            "get_players_game_info_blocking must keep the 0..=100 scale: {players_info}"
+        );
+
+        assert!(
+            search_blocking.contains("ProgressLease"),
+            "search_position_blocking must take ProgressLease: {search_blocking}"
+        );
+        assert!(
+            search_blocking.contains("search_progress_percent"),
+            "search_position_blocking must keep the 0..=100 scale: {search_blocking}"
+        );
+        for token in ["Succeeded", "Failed", "Cancelled", "complete("] {
+            assert!(
+                !search_blocking.contains(token),
+                "search_position_blocking must not decide the terminal state (contains {token:?}): {search_blocking}"
+            );
+        }
+        assert!(
+            search_wrapper.contains("SearchProgress"),
+            "search_position must keep SearchProgress on the async frame: {search_wrapper}"
+        );
+        assert!(
+            search_wrapper.contains("complete("),
+            "search_position must complete the lease on the async side: {search_wrapper}"
+        );
+
+        let search_signature = search_blocking
+            .split_once('{')
+            .map(|(signature, _)| signature)
+            .unwrap_or(search_blocking);
+        assert!(
+            search_signature.contains("OwnedSemaphorePermit"),
+            "search_position_blocking must take OwnedSemaphorePermit: {search_signature}"
+        );
+        let novelty = body_at_indent(chess, "fn novelty_lookup_blocking(");
+        let novelty_signature = novelty
+            .split_once('{')
+            .map(|(signature, _)| signature)
+            .unwrap_or(novelty);
+        assert!(
+            novelty_signature.contains("OwnedSemaphorePermit"),
+            "novelty_lookup_blocking must take OwnedSemaphorePermit: {novelty_signature}"
+        );
+    }
+
+    #[test]
+    fn s7_analyze_game_kills_the_engine_before_the_novelty_lookup() {
+        let chess = include_str!("chess.rs");
+        let body = body_at_indent(chess, "pub async fn analyze_game(");
+        assert!(
+            body.contains("BLOCKING_GATEWAY"),
+            "analyze_game must acquire BLOCKING_GATEWAY: {body}"
+        );
+        let last_ingest = body
+            .rmatch_indices("ingest_info_line")
+            .next()
+            .map(|(index, _)| index)
+            .expect("analyze_game must call ingest_info_line");
+        let first_novelty = body
+            .find("novelty_lookup_blocking")
+            .expect("analyze_game must call novelty_lookup_blocking");
+        let terminate_between = body
+            .match_indices("terminate_exact")
+            .any(|(index, _)| index > last_ingest && index < first_novelty);
+        assert!(
+            terminate_between,
+            "analyze_game must call terminate_exact after the UCI loop and before novelty_lookup_blocking: {body}"
+        );
+    }
+
+    #[test]
     fn s8_blocking_functions_do_not_nest_the_gateway() {
         for (file, source) in [
             ("main.rs", include_str!("main.rs")),
             ("puzzle.rs", include_str!("puzzle.rs")),
             ("file_workspace.rs", include_str!("file_workspace.rs")),
             ("fs.rs", include_str!("fs.rs")),
+            ("db/mod.rs", include_str!("db/mod.rs")),
+            ("db/search.rs", include_str!("db/search.rs")),
+            ("chess.rs", include_str!("chess.rs")),
         ] {
             let mut search_from = 0;
             while let Some(rel) = source[search_from..].find("_blocking(") {

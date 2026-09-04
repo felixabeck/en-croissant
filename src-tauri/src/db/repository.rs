@@ -3,6 +3,7 @@ use std::{
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
+    time::{Duration, Instant},
 };
 
 use diesel::{
@@ -17,6 +18,9 @@ use super::{migrations, ConnectionOptions, DatabaseSchemaIdentity};
 const MAX_OPEN_DATABASES: usize = 16;
 // Maximum number of pooled SQLite connections per database.
 const MAX_CONNECTIONS_PER_DATABASE: u32 = 16;
+// Must exceed `PRAGMA busy_timeout = 30000` in `db/mod.rs` so an ordinary
+// contended write completes rather than tripping retirement.
+const RETIRE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 type SqlitePool = Pool<ConnectionManager<SqliteConnection>>;
 /// A pooled connection cannot outlive the repository lifecycle lease which
@@ -129,12 +133,29 @@ struct RepositoryState {
 /// Paths are canonical before insertion, so aliases cannot produce separate
 /// pools, locks, revisions, or cache invalidations. The bounded LRU eviction
 /// only releases idle entries; live callers keep their entry alive via Arc.
-#[derive(Default)]
 pub struct DatabaseRepository {
     state: Mutex<RepositoryState>,
+    retire_wait: Duration,
+}
+
+impl Default for DatabaseRepository {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(RepositoryState::default()),
+            retire_wait: RETIRE_WAIT_TIMEOUT,
+        }
+    }
 }
 
 impl DatabaseRepository {
+    #[cfg(test)]
+    fn with_retire_wait(retire_wait: Duration) -> Self {
+        Self {
+            state: Mutex::new(RepositoryState::default()),
+            retire_wait,
+        }
+    }
+
     pub fn connection(&self, path: &Path) -> Result<DatabaseConnection, Error> {
         loop {
             let (canonical, entry) = self.entry(path)?;
@@ -334,7 +355,7 @@ impl DatabaseRepository {
         let canonical = canonical_database_path(path)?;
         let entry = self.remove_entry(&canonical)?;
         if let Some(entry) = entry {
-            entry.retire_and_wait()?;
+            entry.retire_and_wait(self.retire_wait)?;
         }
         Ok(())
     }
@@ -362,7 +383,14 @@ impl DatabaseRepository {
             state.entries.get(&canonical).cloned()
         };
         if let Some(entry) = &entry {
-            entry.retire_and_wait()?;
+            if let Err(error) = entry.retire_and_wait(self.retire_wait) {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+                state.tombstones.remove(&canonical);
+                return Err(error);
+            }
         }
         let result = operation();
         let mut state = self
@@ -442,7 +470,7 @@ impl DatabaseRepository {
     }
 
     fn retire_replaced(&self, canonical: &Path, entry: &Arc<DatabaseEntry>) -> Result<(), Error> {
-        entry.retire_and_wait()?;
+        entry.retire_and_wait(self.retire_wait)?;
         let mut state = self
             .state
             .lock()
@@ -537,17 +565,30 @@ impl DatabaseEntry {
         }
     }
 
-    fn retire_and_wait(&self) -> Result<(), Error> {
+    fn retire_and_wait(&self, timeout: Duration) -> Result<(), Error> {
         let mut lifecycle = self
             .lifecycle
             .lock()
             .map_err(|_| Error::Conflict("database lifecycle lock poisoned".into()))?;
         lifecycle.retiring = true;
+        let deadline = Instant::now() + timeout;
         while lifecycle.active != 0 {
-            lifecycle = self
+            let now = Instant::now();
+            if now >= deadline {
+                lifecycle.retiring = false;
+                self.lifecycle_changed.notify_all();
+                return Err(Error::Conflict("database retirement timed out".into()));
+            }
+            let (guard, wait_result) = self
                 .lifecycle_changed
-                .wait(lifecycle)
+                .wait_timeout(lifecycle, deadline.saturating_duration_since(now))
                 .map_err(|_| Error::Conflict("database lifecycle lock poisoned".into()))?;
+            lifecycle = guard;
+            if wait_result.timed_out() && lifecycle.active != 0 {
+                lifecycle.retiring = false;
+                self.lifecycle_changed.notify_all();
+                return Err(Error::Conflict("database retirement timed out".into()));
+            }
         }
         Ok(())
     }
@@ -732,6 +773,45 @@ mod tests {
         assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
         drop(active_read);
         assert!(done_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+    }
+
+    #[test]
+    fn retire_wait_timeout_unwinds_tombstone_and_retiring_flag() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let repository = DatabaseRepository::with_retire_wait(Duration::from_millis(200));
+        let mut setup = repository.initialization_connection(&path).unwrap();
+        migrations::prepare_database(&mut setup, "title", "description").unwrap();
+        drop(setup);
+        repository.mark_schema_validated(&path).unwrap();
+        let held_lease = repository.connection(&path).unwrap();
+
+        let result = repository.delete_exclusive(&path, || Ok(()));
+        assert!(
+            matches!(result, Err(Error::Conflict(ref message)) if message.contains("timed out")),
+            "held lease must expire retire_and_wait: {result:?}"
+        );
+
+        let canonical = canonical_database_path(&path).unwrap();
+        let state = repository.state.lock().unwrap();
+        assert!(
+            !state.tombstones.contains(&canonical),
+            "timeout must remove the deletion tombstone"
+        );
+        let entry = state
+            .entries
+            .get(&canonical)
+            .expect("timeout must leave the entry in the repository")
+            .clone();
+        drop(state);
+        assert!(
+            !entry.lifecycle.lock().unwrap().retiring,
+            "timeout must clear the retiring flag"
+        );
+
+        drop(held_lease);
+        repository.connection(&path).unwrap();
+        repository.delete_exclusive(&path, || Ok(())).unwrap();
     }
 
     #[test]

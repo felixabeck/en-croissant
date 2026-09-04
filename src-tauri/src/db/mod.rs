@@ -16,13 +16,14 @@ use crate::{
     },
     error::Error,
     infra::{
+        blocking::BLOCKING_GATEWAY,
         fs::{remove_optional_regular_at, AtomicFileOutcome},
         path_authority::{
             DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathAuthority, PathOperation,
         },
     },
     opening::get_opening_from_setup,
-    AppState,
+    AppState, SearchCache,
 };
 use chrono::{NaiveDate, NaiveTime};
 use dashmap::DashMap;
@@ -45,7 +46,10 @@ use std::{
     ffi::OsStr,
     fs::File,
     path::Path,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Instant, SystemTime},
 };
 use std::{
@@ -512,26 +516,52 @@ pub async fn convert_pgn(
     description: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let db_path = resolve_database(
-        &state.pgn_path_authority,
-        &database,
-        PathOperation::DatabaseCreate,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    let search_cache = Arc::clone(&state.search_cache);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            convert_pgn_blocking(
+                &authority,
+                &repository,
+                &search_cache,
+                files,
+                database,
+                timestamp,
+                app,
+                title,
+                description,
+            )
+        })
+        .await
+}
+
+#[allow(clippy::too_many_arguments)]
+fn convert_pgn_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
+    files: Vec<FileWorkspaceHandle>,
+    database: DatabaseHandle,
+    timestamp: Option<i32>,
+    app: tauri::AppHandle,
+    title: String,
+    description: Option<String>,
+) -> Result<(), Error> {
+    let db_path = resolve_database(authority, &database, PathOperation::DatabaseCreate)?;
 
     if files.is_empty() {
         return Ok(());
     }
 
     let description = description.unwrap_or_default();
-    let write_lease = state.database_repository.write_lease(&db_path)?;
+    let write_lease = repository.write_lease(&db_path)?;
     let _write_guard = write_lease.lock()?;
 
-    let mut database_connection = state
-        .database_repository
-        .initialization_connection(&db_path)?;
+    let mut database_connection = repository.initialization_connection(&db_path)?;
     let db = &mut *database_connection;
     let database_was_created = migrations::prepare_database(db, &title, &description)?;
-    state.database_repository.mark_schema_validated(&db_path)?;
+    repository.mark_schema_validated(&db_path)?;
 
     // start counting time
     let start = Instant::now();
@@ -540,8 +570,7 @@ pub async fn convert_pgn(
 
     for file_handle in files {
         let (file, current_file_name) = {
-            let mut authority = state
-                .pgn_path_authority
+            let mut authority = authority
                 .lock()
                 .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
             let authority = authority
@@ -626,31 +655,28 @@ pub async fn convert_pgn(
         source_file_name: None,
     }
     .emit(&app);
-    state.database_repository.data_changed(&db_path)?;
-    state.search_cache.invalidate_database(&db_path);
+    repository.data_changed(&db_path)?;
+    search_cache.invalidate_database(&db_path);
 
     Ok(())
 }
 
 pub fn generate_search_index(
     handle: &DatabaseHandle,
-    state: &tauri::State<'_, AppState>,
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
 ) -> Result<(), Error> {
-    let db_path = resolve_database(
-        &state.pgn_path_authority,
-        handle,
-        PathOperation::DatabaseMutate,
-    )?;
-    let target = state
-        .pgn_path_authority
+    let db_path = resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
+    let target = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .database_file_target(handle, PathOperation::DatabaseMutate)?;
-    state.database_repository.with_write_lock(&db_path, || {
-        state.database_repository.with_index_lock(&db_path, || {
-            generate_search_index_locked(&db_path, &target, state)
+    repository.with_write_lock(&db_path, || {
+        repository.with_index_lock(&db_path, || {
+            generate_search_index_locked(&db_path, &target, repository, search_cache)
         })
     })
 }
@@ -674,9 +700,10 @@ struct SearchIndexGameRecord {
 fn generate_search_index_locked(
     db_path: &Path,
     target: &DatabaseFileTarget,
-    state: &tauri::State<'_, AppState>,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
 ) -> Result<(), Error> {
-    let mut database_connection = get_db_or_create(&state.database_repository, db_path)?;
+    let mut database_connection = get_db_or_create(repository, db_path)?;
     let db = &mut *database_connection;
     let index_leaf = search_index::preferred_sidecar_leaf(&target.leaf);
 
@@ -719,9 +746,7 @@ fn generate_search_index_locked(
         writer.push(entry);
     }
     let source = IndexSource::from_database_identity(
-        &state
-            .database_repository
-            .database_identity_expected(db_path, target.identity)?,
+        &repository.database_identity_expected(db_path, target.identity)?,
     )?;
     match writer.write_to_at(&target.parent, &index_leaf, source)? {
         AtomicFileOutcome::DurableCommit => {}
@@ -732,7 +757,7 @@ fn generate_search_index_locked(
             ));
         }
     }
-    state.search_cache.invalidate_database(db_path);
+    search_cache.invalidate_database(db_path);
 
     info!("Search index generated in {:?}", start.elapsed());
     Ok(())
@@ -858,17 +883,25 @@ pub async fn get_db_info(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<DatabaseInfo, Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseRead,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    BLOCKING_GATEWAY
+        .spawn(move || get_db_info_blocking(&authority, &repository, file))
+        .await
+}
+
+fn get_db_info_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+) -> Result<DatabaseInfo, Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
     info!("get_db_info {:?}", file);
 
     let path = file;
 
-    let mut database_connection = get_db_or_create(&state.database_repository, &path)?;
+    let mut database_connection = get_db_or_create(repository, &path)?;
     let db = &mut *database_connection;
 
     let info_records: Vec<Info> = info::table.load(db)?;
@@ -917,14 +950,22 @@ pub async fn create_indexes(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseMutate,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    BLOCKING_GATEWAY
+        .spawn(move || create_indexes_blocking(&authority, &repository, file))
+        .await
+}
 
-    state.database_repository.with_index_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn create_indexes_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+) -> Result<(), Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+
+    repository.with_index_lock(&file, || {
+        let mut database_connection = get_db_or_create(repository, &file)?;
         let db = &mut *database_connection;
         create_required_indexes(db)
     })
@@ -936,13 +977,21 @@ pub async fn delete_indexes(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseMutate,
-    )?;
-    state.database_repository.with_index_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    BLOCKING_GATEWAY
+        .spawn(move || delete_indexes_blocking(&authority, &repository, file))
+        .await
+}
+
+fn delete_indexes_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+) -> Result<(), Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    repository.with_index_lock(&file, || {
+        let mut database_connection = get_db_or_create(repository, &file)?;
         let db = &mut *database_connection;
         drop_required_indexes(db)
     })
@@ -956,14 +1005,35 @@ pub async fn edit_db_info(
     description: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseMutate,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    let search_cache = Arc::clone(&state.search_cache);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            edit_db_info_blocking(
+                &authority,
+                &repository,
+                &search_cache,
+                file,
+                title,
+                description,
+            )
+        })
+        .await
+}
 
-    state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn edit_db_info_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
+    file: DatabaseHandle,
+    title: Option<String>,
+    description: Option<String>,
+) -> Result<(), Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+
+    repository.with_write_lock(&file, || {
+        let mut database_connection = get_db_or_create(repository, &file)?;
         let db = &mut *database_connection;
         if let Some(title) = title {
             diesel::insert_into(info::table)
@@ -987,8 +1057,8 @@ pub async fn edit_db_info(
         }
         Ok(())
     })?;
-    state.database_repository.data_changed(&file)?;
-    state.search_cache.invalidate_database(&file);
+    repository.data_changed(&file)?;
+    search_cache.invalidate_database(&file);
     Ok(())
 }
 
@@ -1112,13 +1182,22 @@ pub async fn get_games(
     query: GameQuery,
     state: tauri::State<'_, AppState>,
 ) -> Result<QueryResponse<Vec<NormalizedGame>>, Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseRead,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    BLOCKING_GATEWAY
+        .spawn(move || get_games_blocking(&authority, &repository, file, query))
+        .await
+}
 
-    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn get_games_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+    query: GameQuery,
+) -> Result<QueryResponse<Vec<NormalizedGame>>, Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+
+    let mut database_connection = get_db_or_create(repository, &file)?;
     let db = &mut *database_connection;
 
     let mut count: Option<i64> = None;
@@ -1338,13 +1417,21 @@ pub async fn get_latest_game_timestamp(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<f64>, Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseRead,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    BLOCKING_GATEWAY
+        .spawn(move || get_latest_game_timestamp_blocking(&authority, &repository, file))
+        .await
+}
 
-    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn get_latest_game_timestamp_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+) -> Result<Option<f64>, Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+
+    let mut database_connection = get_db_or_create(repository, &file)?;
     let db = &mut *database_connection;
     Ok(get_latest_game_timestamp_in_db(db)?.map(|timestamp| timestamp as f64))
 }
@@ -1430,13 +1517,22 @@ pub async fn get_player(
     id: i32,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<Player>, Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseRead,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    BLOCKING_GATEWAY
+        .spawn(move || get_player_blocking(&authority, &repository, file, id))
+        .await
+}
 
-    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn get_player_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+    id: i32,
+) -> Result<Option<Player>, Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+
+    let mut database_connection = get_db_or_create(repository, &file)?;
     let db = &mut *database_connection;
     let player = players::table
         .filter(players::id.eq(id))
@@ -1452,13 +1548,22 @@ pub async fn get_players(
     query: PlayerQuery,
     state: tauri::State<'_, AppState>,
 ) -> Result<QueryResponse<Vec<Player>>, Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseRead,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    BLOCKING_GATEWAY
+        .spawn(move || get_players_blocking(&authority, &repository, file, query))
+        .await
+}
 
-    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn get_players_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+    query: PlayerQuery,
+) -> Result<QueryResponse<Vec<Player>>, Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+
+    let mut database_connection = get_db_or_create(repository, &file)?;
     let db = &mut *database_connection;
     let mut count: Option<i64> = None;
 
@@ -1534,13 +1639,22 @@ pub async fn get_tournaments(
     query: TournamentQuery,
     state: tauri::State<'_, AppState>,
 ) -> Result<QueryResponse<Vec<Event>>, Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseRead,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    BLOCKING_GATEWAY
+        .spawn(move || get_tournaments_blocking(&authority, &repository, file, query))
+        .await
+}
 
-    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn get_tournaments_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+    query: TournamentQuery,
+) -> Result<QueryResponse<Vec<Event>>, Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+
+    let mut database_connection = get_db_or_create(repository, &file)?;
     let db = &mut *database_connection;
     let mut count: Option<i64> = None;
 
@@ -1660,13 +1774,23 @@ pub async fn get_players_game_info(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<PlayerGameInfo, Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseRead,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    BLOCKING_GATEWAY
+        .spawn(move || get_players_game_info_blocking(&authority, &repository, file, id, app))
+        .await
+}
 
-    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn get_players_game_info_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+    id: i32,
+    app: tauri::AppHandle,
+) -> Result<PlayerGameInfo, Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+
+    let mut database_connection = get_db_or_create(repository, &file)?;
     let db = &mut *database_connection;
     let timer = Instant::now();
 
@@ -1818,27 +1942,34 @@ pub async fn delete_database(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    let search_cache = Arc::clone(&state.search_cache);
+    BLOCKING_GATEWAY
+        .spawn(move || delete_database_blocking(&authority, &repository, &search_cache, file))
+        .await
+}
+
+fn delete_database_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
+    file: DatabaseHandle,
+) -> Result<(), Error> {
     let handle = file.clone();
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseMutate,
-    )?;
-    let target = state
-        .pgn_path_authority
+    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    let target = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .database_file_target(&handle, PathOperation::DatabaseMutate)?;
     let expected_source = IndexSource::from_database_identity(
-        &state
-            .database_repository
-            .database_identity_expected(&file, target.identity)?,
+        &repository.database_identity_expected(&file, target.identity)?,
     )?;
     let mut primary_gone = false;
     let mut unlinked = 0;
-    let unlink_result = state.database_repository.delete_exclusive(&file, || {
+    let unlink_result = repository.delete_exclusive(&file, || {
         unlinked = unlink_database_files(&target, &expected_source)?;
         primary_gone = true;
         Ok(())
@@ -1847,10 +1978,9 @@ pub async fn delete_database(
         return finish_database_deletion(primary_gone, unlinked, Err(error));
     }
 
-    state.search_cache.invalidate_database(&file);
+    search_cache.invalidate_database(&file);
     let registry_result = (|| {
-        state
-            .pgn_path_authority
+        authority
             .lock()
             .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
             .as_mut()
@@ -1988,19 +2118,31 @@ pub async fn delete_duplicated_games(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseMutate,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    let search_cache = Arc::clone(&state.search_cache);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            delete_duplicated_games_blocking(&authority, &repository, &search_cache, file)
+        })
+        .await
+}
 
-    state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn delete_duplicated_games_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
+    file: DatabaseHandle,
+) -> Result<(), Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+
+    repository.with_write_lock(&file, || {
+        let mut database_connection = get_db_or_create(repository, &file)?;
         let db = &mut *database_connection;
         db.transaction(delete_duplicated_games_transaction)
     })?;
-    state.database_repository.data_changed(&file)?;
-    state.search_cache.invalidate_database(&file);
+    repository.data_changed(&file)?;
+    search_cache.invalidate_database(&file);
     Ok(())
 }
 
@@ -2031,19 +2173,29 @@ pub async fn delete_empty_games(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseMutate,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    let search_cache = Arc::clone(&state.search_cache);
+    BLOCKING_GATEWAY
+        .spawn(move || delete_empty_games_blocking(&authority, &repository, &search_cache, file))
+        .await
+}
 
-    state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn delete_empty_games_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
+    file: DatabaseHandle,
+) -> Result<(), Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+
+    repository.with_write_lock(&file, || {
+        let mut database_connection = get_db_or_create(repository, &file)?;
         let db = &mut *database_connection;
         db.transaction(delete_empty_games_transaction)
     })?;
-    state.database_repository.data_changed(&file)?;
-    state.search_cache.invalidate_database(&file);
+    repository.data_changed(&file)?;
+    search_cache.invalidate_database(&file);
     Ok(())
 }
 
@@ -2158,13 +2310,22 @@ pub async fn export_to_pgn(
     destination: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseExport,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    BLOCKING_GATEWAY
+        .spawn(move || export_to_pgn_blocking(&authority, &repository, file, destination))
+        .await
+}
 
-    let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn export_to_pgn_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    file: DatabaseHandle,
+    destination: FileWorkspaceHandle,
+) -> Result<(), Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseExport)?;
+
+    let mut database_connection = get_db_or_create(repository, &file)?;
     let db = &mut *database_connection;
 
     let mut writer = BufWriter::new(Vec::new());
@@ -2212,8 +2373,7 @@ pub async fn export_to_pgn(
     let bytes = writer
         .into_inner()
         .map_err(|error| Error::from(error.into_error()))?;
-    let resolved = state
-        .pgn_path_authority
+    let resolved = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -2241,19 +2401,32 @@ pub async fn delete_db_game(
     game_id: i32,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseMutate,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    let search_cache = Arc::clone(&state.search_cache);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            delete_db_game_blocking(&authority, &repository, &search_cache, file, game_id)
+        })
+        .await
+}
 
-    state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn delete_db_game_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
+    file: DatabaseHandle,
+    game_id: i32,
+) -> Result<(), Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+
+    repository.with_write_lock(&file, || {
+        let mut database_connection = get_db_or_create(repository, &file)?;
         let db = &mut *database_connection;
         db.transaction(|db| delete_db_game_transaction(db, game_id))
     })?;
-    state.database_repository.data_changed(&file)?;
-    state.search_cache.invalidate_database(&file);
+    repository.data_changed(&file)?;
+    search_cache.invalidate_database(&file);
     Ok(())
 }
 
@@ -2273,11 +2446,25 @@ pub async fn write_db_game(
     pgn: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseMutate,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    let search_cache = Arc::clone(&state.search_cache);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            write_db_game_blocking(&authority, &repository, &search_cache, file, game_id, pgn)
+        })
+        .await
+}
+
+fn write_db_game_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
+    file: DatabaseHandle,
+    game_id: i32,
+    pgn: String,
+) -> Result<(), Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
     let mut importer = Importer::new(None);
     let mut parsed = BufferedReader::new(pgn.as_bytes())
@@ -2285,15 +2472,15 @@ pub async fn write_db_game(
         .flatten()
         .flatten();
     let temp_game = parsed.next().ok_or(Error::NoMovesFound)?;
-    state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+    repository.with_write_lock(&file, || {
+        let mut database_connection = get_db_or_create(repository, &file)?;
         let db = &mut *database_connection;
         db.transaction(|db| {
             write_parsed_db_game(db, game_id, &temp_game, maintain_database_metadata)
         })
     })?;
-    state.database_repository.data_changed(&file)?;
-    state.search_cache.invalidate_database(&file);
+    repository.data_changed(&file)?;
+    search_cache.invalidate_database(&file);
     Ok(())
 }
 
@@ -2378,19 +2565,40 @@ pub async fn merge_players(
     player2: i32,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let file = resolve_database(
-        &state.pgn_path_authority,
-        &file,
-        PathOperation::DatabaseMutate,
-    )?;
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    let search_cache = Arc::clone(&state.search_cache);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            merge_players_blocking(
+                &authority,
+                &repository,
+                &search_cache,
+                file,
+                player1,
+                player2,
+            )
+        })
+        .await
+}
 
-    state.database_repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(&state.database_repository, &file)?;
+fn merge_players_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
+    file: DatabaseHandle,
+    player1: i32,
+    player2: i32,
+) -> Result<(), Error> {
+    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+
+    repository.with_write_lock(&file, || {
+        let mut database_connection = get_db_or_create(repository, &file)?;
         let db = &mut *database_connection;
         db.transaction(|db| merge_players_transaction(db, player1, player2))
     })?;
-    state.database_repository.data_changed(&file)?;
-    state.search_cache.invalidate_database(&file);
+    repository.data_changed(&file)?;
+    search_cache.invalidate_database(&file);
     Ok(())
 }
 
@@ -2486,7 +2694,23 @@ pub async fn preload_reference_db(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    search::preload_search_index(&file, &state).await
+    let authority = Arc::clone(&state.pgn_path_authority);
+    let repository = Arc::clone(&state.database_repository);
+    let search_cache = Arc::clone(&state.search_cache);
+    BLOCKING_GATEWAY
+        .spawn(move || preload_reference_db_blocking(&authority, &repository, &search_cache, file))
+        .await
+}
+
+fn preload_reference_db_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &Arc<SearchCache>,
+    file: DatabaseHandle,
+) -> Result<(), Error> {
+    let (_, index) = search::load_search_index(authority, repository, search_cache, &file)?;
+    info!("Preloaded reference database with {} games", index.len());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2684,7 +2908,7 @@ mod tests {
     fn delete_database_uses_fd_relative_target_and_outcome_mapper() {
         let source = include_str!("mod.rs");
         let body = source
-            .split("pub async fn delete_database")
+            .split("fn delete_database_blocking")
             .nth(1)
             .unwrap()
             .split("fn finish_database_deletion")
@@ -2775,7 +2999,7 @@ mod tests {
         let source = include_str!("mod.rs");
 
         for function_name in ["get_games", "get_players", "get_tournaments"] {
-            let signature = format!("pub async fn {function_name}(");
+            let signature = format!("fn {function_name}_blocking(");
             let start = source.find(&signature).unwrap();
             let remainder = &source[start..];
             let end = remainder

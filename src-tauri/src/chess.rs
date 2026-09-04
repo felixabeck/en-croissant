@@ -26,17 +26,23 @@ use vampirc_uci::{
 };
 
 use crate::{
-    db::{is_position_in_db, GameQuery, PositionQueryJs},
+    db::{is_position_in_db, DatabaseRepository, GameQuery, PositionQueryJs},
     engine::{
         parse_fen_and_apply_moves, resolve_engine_options, spawn_registered, EngineActor,
         EngineDeadlines, EngineKey, EngineLog, EngineOption, EngineRequestId, GoMode,
         ResolvedEngineOption,
     },
     error::Error,
-    infra::path_authority::{DatabaseHandle, EngineExecutable, EngineHandle, PathOperation},
+    infra::{
+        blocking::BLOCKING_GATEWAY,
+        path_authority::{
+            DatabaseHandle, EngineExecutable, EngineHandle, PathAuthority, PathOperation,
+        },
+    },
     progress::{begin_progress, update_progress_with_state, ProgressState},
-    AppState,
+    AppState, SearchCache,
 };
+use tokio::sync::OwnedSemaphorePermit;
 
 pub struct EngineProcess {
     base: Arc<EngineActor>,
@@ -784,8 +790,6 @@ pub async fn analyze_game(
         }};
     }
 
-    let mut novelty_found = false;
-
     for (i, (_, moves, _)) in fens.iter().enumerate() {
         if supervised.cancelled.load(Ordering::SeqCst) {
             let cleanup = state
@@ -905,41 +909,68 @@ pub async fn analyze_game(
         fens.reverse();
     }
 
-    for (i, analysis) in analysis.iter_mut().enumerate() {
-        let fen = &fens[i].0;
-        // let query = PositionQuery::exact_from_fen(&fen.to_string())?;
-        let query = PositionQueryJs {
-            fen: fen.to_string(),
-            type_: "exact".to_string(),
-        };
-
-        analysis.is_sacrifice = fens[i].2;
-        if options.annotate_novelties && !novelty_found {
-            if let Some(reference) = options.reference_db.clone() {
-                analysis.novelty = match is_position_in_db(
-                    reference,
-                    GameQuery::new().position(query.clone()).clone(),
-                    state.clone(),
-                )
-                .await
-                {
-                    Ok(found) => !found,
-                    Err(error) => fail_analysis_progress!(error),
-                };
-                if analysis.novelty {
-                    novelty_found = true;
-                }
-            } else {
-                fail_analysis_progress!(Error::MissingReferenceDatabase);
-            }
-        }
-    }
     if let Err(error) = state
         .engine_supervisor
         .terminate_exact(&analysis_key, supervised.generation)
         .await
     {
         fail_analysis_progress!(error);
+    }
+
+    let present = if options.annotate_novelties {
+        let Some(reference) = options.reference_db.clone() else {
+            fail_analysis_progress!(Error::MissingReferenceDatabase);
+        };
+        let queries: Vec<GameQuery> = fens
+            .iter()
+            .map(|(fen, _, _)| {
+                GameQuery::new().position(PositionQueryJs {
+                    fen: fen.to_string(),
+                    type_: "exact".to_string(),
+                })
+            })
+            .collect();
+        let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+        let repository = std::sync::Arc::clone(&state.database_repository);
+        let search_cache = std::sync::Arc::clone(&state.search_cache);
+        let permit = match state.new_request.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                fail_analysis_progress!(Error::Conflict(
+                    "position search permit unavailable".into()
+                ))
+            }
+        };
+        match BLOCKING_GATEWAY
+            .spawn(move || {
+                novelty_lookup_blocking(
+                    &authority,
+                    &repository,
+                    &search_cache,
+                    permit,
+                    reference,
+                    queries,
+                )
+            })
+            .await
+        {
+            Ok(present) => present,
+            Err(error) => fail_analysis_progress!(error),
+        }
+    } else {
+        Vec::new()
+    };
+    let mut novelty_found = false;
+    for (i, analysis) in analysis.iter_mut().enumerate() {
+        analysis.is_sacrifice = fens[i].2;
+        if options.annotate_novelties && !novelty_found {
+            if let Some(&found) = present.get(i) {
+                analysis.novelty = !found;
+                if analysis.novelty {
+                    novelty_found = true;
+                }
+            }
+        }
     }
     update_progress_with_state(
         &state.progress_state,
@@ -949,6 +980,29 @@ pub async fn analyze_game(
         ProgressState::Succeeded,
     )?;
     Ok(analysis)
+}
+
+/// Returns a prefix of `queries` ending at the first absent position, or the
+/// full length when every position is present. A full-index scan per ply is
+/// the cost this offload exists to bound.
+fn novelty_lookup_blocking(
+    authority: &std::sync::Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &std::sync::Arc<SearchCache>,
+    permit: OwnedSemaphorePermit,
+    file: DatabaseHandle,
+    queries: Vec<GameQuery>,
+) -> Result<Vec<bool>, Error> {
+    let _permit = permit;
+    let mut present = Vec::with_capacity(queries.len());
+    for query in &queries {
+        let found = is_position_in_db(authority, repository, search_cache, &file, query)?;
+        present.push(found);
+        if !found {
+            break;
+        }
+    }
+    Ok(present)
 }
 
 const MATE_SCORE: i32 = 10000;
