@@ -463,9 +463,9 @@ async getOpeningFromName(name: string) : Promise<Result<string, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
-async getPlayersGameInfo(file: DatabaseHandle, id: number) : Promise<Result<PlayerGameInfo, ErrorPayload>> {
+async getPlayersGameInfo(progressId: string, file: DatabaseHandle, id: number) : Promise<Result<PlayerGameInfo, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_players_game_info", { file, id }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_players_game_info", { progressId, file, id }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -953,7 +953,6 @@ export const events = __makeEvents__<{
 bestMovesPayload: BestMovesPayload,
 clockUpdateEvent: ClockUpdateEvent,
 convertProgress: ConvertProgress,
-databaseProgress: DatabaseProgress,
 gameMoveEvent: GameMoveEvent,
 gameOverEvent: GameOverEvent,
 progressEvent: ProgressEvent
@@ -961,7 +960,6 @@ progressEvent: ProgressEvent
 bestMovesPayload: "best-moves-payload",
 clockUpdateEvent: "clock-update-event",
 convertProgress: "convert-progress",
-databaseProgress: "database-progress",
 gameMoveEvent: "game-move-event",
 gameOverEvent: "game-over-event",
 progressEvent: "progress-event"
@@ -1008,7 +1006,6 @@ export type DatabaseDescriptor = { handle: DatabaseHandle; filename: string; ava
 export type DatabaseHandle = { id: PathRef; kind: DatabaseHandleKind }
 export type DatabaseHandleKind = "database"
 export type DatabaseInfo = { title: string; description: string; player_count: number; event_count: number; game_count: number; storage_size: bigint; filename: string; indexed: boolean }
-export type DatabaseProgress = { id: string; progress: number }
 /**
  * Opaque handle for a database root.  A root is the only capability that may
  * create or discover database children; the renderer never supplies a path or

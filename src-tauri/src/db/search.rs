@@ -40,7 +40,7 @@ use crate::{
         blocking::BLOCKING_GATEWAY,
         path_authority::{DatabaseFileTarget, DatabaseHandle, PathAuthority, PathOperation},
     },
-    progress::{begin_progress, update_progress_with_state, ProgressLease, ProgressState},
+    progress::{update_progress_with_state, JobProgress, ProgressLease, ProgressState},
     AppState, SearchCache, SearchIndexIdentity, SearchResultKey,
 };
 
@@ -454,66 +454,6 @@ fn search_progress_percent(processed: usize, total: usize) -> f32 {
     (processed as f64 / total as f64 * 100.0) as f32
 }
 
-/// Search progress goes through the one shared progress store instead of a
-/// bespoke event, so the renderer's `useProgress` subscription, the generation
-/// leases and the bounded retention policy apply to a search exactly as they do
-/// to every other long-running job.
-struct SearchProgress<R: tauri::Runtime = tauri::Wry> {
-    app: tauri::AppHandle<R>,
-    lease: ProgressLease,
-}
-
-impl<R: tauri::Runtime> SearchProgress<R> {
-    fn new(app: tauri::AppHandle<R>, id: String) -> Result<Self, Error> {
-        let lease = {
-            let state = app.state::<AppState>();
-            begin_progress(&state.progress_state, &app, id)?
-        };
-        Ok(Self { app, lease })
-    }
-
-    #[cfg(test)]
-    fn report(&self, processed: usize, total: usize) {
-        self.transition(
-            search_progress_percent(processed, total),
-            ProgressState::Running,
-        );
-    }
-
-    fn complete(&self, state: ProgressState) {
-        let progress = if matches!(state, ProgressState::Succeeded) {
-            100.0
-        } else {
-            0.0
-        };
-        self.transition(progress, state);
-    }
-
-    /// A lease superseded by a newer search on the same tab, or cleared by the
-    /// user, makes the transition fail. That is the intended outcome — the older
-    /// producer must not drive the newer bar — and it must not abort the search
-    /// that is still running.
-    fn transition(&self, progress: f32, state: ProgressState) {
-        let app_state = self.app.state::<AppState>();
-        let _ = update_progress_with_state(
-            &app_state.progress_state,
-            &self.app,
-            &self.lease,
-            progress,
-            state,
-        );
-    }
-}
-
-impl<R: tauri::Runtime> Drop for SearchProgress<R> {
-    /// A search dropped without a terminal transition was cancelled. The store
-    /// keeps the first terminal state it is given, so this is a no-op after
-    /// `complete` and only fires on a genuinely abandoned search.
-    fn drop(&mut self) {
-        self.transition(0.0, ProgressState::Cancelled);
-    }
-}
-
 #[tauri::command]
 #[specta::specta]
 pub async fn search_position(
@@ -523,7 +463,7 @@ pub async fn search_position(
     tab_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(Vec<PositionStats>, Vec<NormalizedGame>), Error> {
-    let progress = SearchProgress::new(app.clone(), tab_id)?;
+    let progress = JobProgress::new(app.clone(), tab_id)?;
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
@@ -533,7 +473,7 @@ pub async fn search_position(
         .acquire_owned()
         .await
         .map_err(|_| Error::Conflict("position search permit unavailable".into()))?;
-    let lease = progress.lease.clone();
+    let lease = progress.lease();
     let worker_app = app.clone();
     let result = BLOCKING_GATEWAY
         .spawn(move || {
@@ -1339,12 +1279,18 @@ mod tests {
     #[test]
     fn search_progress_is_visible_through_the_shared_store() {
         let app = progress_test_app();
-        let progress = SearchProgress::new(app.clone(), "tab-1".into()).unwrap();
+        let progress = JobProgress::new(app.clone(), "tab-1".into()).unwrap();
 
         let store = &app.state::<AppState>().progress_state;
         assert_eq!(store.get("tab-1").unwrap().state, ProgressState::Running);
 
-        progress.report(50, 200);
+        let _ = update_progress_with_state(
+            &app.state::<AppState>().progress_state,
+            &app,
+            &progress.lease(),
+            search_progress_percent(50, 200),
+            ProgressState::Running,
+        );
         assert_eq!(store.get("tab-1").unwrap().progress, 25.0);
 
         progress.complete(ProgressState::Succeeded);
@@ -1360,8 +1306,14 @@ mod tests {
     #[test]
     fn abandoned_search_is_cancelled_on_drop() {
         let app = progress_test_app();
-        let progress = SearchProgress::new(app.clone(), "tab-2".into()).unwrap();
-        progress.report(10, 100);
+        let progress = JobProgress::new(app.clone(), "tab-2".into()).unwrap();
+        let _ = update_progress_with_state(
+            &app.state::<AppState>().progress_state,
+            &app,
+            &progress.lease(),
+            search_progress_percent(10, 100),
+            ProgressState::Running,
+        );
         drop(progress);
 
         let store = &app.state::<AppState>().progress_state;
@@ -1373,15 +1325,27 @@ mod tests {
     #[test]
     fn a_newer_search_on_the_same_tab_supersedes_the_older_producer() {
         let app = progress_test_app();
-        let older = SearchProgress::new(app.clone(), "tab-3".into()).unwrap();
-        let newer = SearchProgress::new(app.clone(), "tab-3".into()).unwrap();
+        let older = JobProgress::new(app.clone(), "tab-3".into()).unwrap();
+        let newer = JobProgress::new(app.clone(), "tab-3".into()).unwrap();
 
         // The stale producer's updates are refused rather than driving the new bar.
-        older.report(90, 100);
+        let _ = update_progress_with_state(
+            &app.state::<AppState>().progress_state,
+            &app,
+            &older.lease(),
+            search_progress_percent(90, 100),
+            ProgressState::Running,
+        );
         let store = &app.state::<AppState>().progress_state;
         assert_eq!(store.get("tab-3").unwrap().progress, 0.0);
 
-        newer.report(10, 100);
+        let _ = update_progress_with_state(
+            &app.state::<AppState>().progress_state,
+            &app,
+            &newer.lease(),
+            search_progress_percent(10, 100),
+            ProgressState::Running,
+        );
         assert_eq!(store.get("tab-3").unwrap().progress, 10.0);
 
         // Even the stale producer's Drop must not cancel the running search.

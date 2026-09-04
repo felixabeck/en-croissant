@@ -34,9 +34,7 @@ use std::{
 
 use chess::BestMovesPayload;
 use dashmap::DashMap;
-use db::{
-    ConvertProgress, DatabaseProgress, GameQuery, IndexSource, NormalizedGame, PositionStats,
-};
+use db::{ConvertProgress, GameQuery, IndexSource, NormalizedGame, PositionStats};
 use derivative::Derivative;
 use engine::EngineSupervisor;
 use game::GameManager;
@@ -1590,7 +1588,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .events(tauri_specta::collect_events!(
             BestMovesPayload,
             ConvertProgress,
-            DatabaseProgress,
             ProgressEvent,
             GameMoveEvent,
             ClockUpdateEvent,
@@ -1943,6 +1940,35 @@ mod blocking_offload_scans {
     /// the GTK-main-loop regression this range exists to prevent. So each command is paired with
     /// the worker it offloads, and the worker call must appear exactly once, after the gateway
     /// acquisition — i.e. inside the spawned closure.
+    /// `body_at_indent` panics when its needle is absent. Runtime-generic
+    /// helpers are `fn name_blocking<R: …>(`, so the historical
+    /// `fn {name}_blocking(` needle misses them. Prefer the generic form when
+    /// it exists; keep the concrete form for helpers this phase does not
+    /// genericise (`convert_pgn_blocking`).
+    fn blocking_fn_signature(source: &str, name: &str) -> String {
+        let generic = format!("fn {name}_blocking<");
+        if source.contains(&generic) {
+            generic
+        } else {
+            format!("fn {name}_blocking(")
+        }
+    }
+
+    /// Offset of the next `_blocking(` or `_blocking<` in `source[from..]`.
+    /// Generic helpers would otherwise vanish from `s8` the moment their
+    /// signature stopped containing the literal `_blocking(`.
+    fn next_blocking_offset(source: &str, from: usize) -> Option<usize> {
+        let rest = &source[from..];
+        let paren = rest.find("_blocking(");
+        let generic = rest.find("_blocking<");
+        match (paren, generic) {
+            (None, None) => None,
+            (Some(paren), None) => Some(paren),
+            (None, Some(generic)) => Some(generic),
+            (Some(paren), Some(generic)) => Some(paren.min(generic)),
+        }
+    }
+
     fn assert_offloads(source: &'static str, signature: &str, worker: &str) {
         let body = body_at_indent(source, signature);
         let call = format!("{worker}(");
@@ -2276,7 +2302,7 @@ mod blocking_offload_scans {
             "preload_reference_db",
             "convert_pgn",
         ] {
-            let blocking = body_at_indent(db, &format!("fn {name}_blocking("));
+            let blocking = body_at_indent(db, &blocking_fn_signature(db, name));
             assert!(
                 !blocking.trim().is_empty(),
                 "{name}_blocking must exist: {blocking}"
@@ -2304,14 +2330,33 @@ mod blocking_offload_scans {
             convert.contains("ConvertProgress"),
             "convert_pgn_blocking must emit ConvertProgress: {convert}"
         );
-        let players_info = body_at_indent(db, "fn get_players_game_info_blocking(");
+        let players_info = body_at_indent(db, &blocking_fn_signature(db, "get_players_game_info"));
         assert!(
-            players_info.contains("DatabaseProgress"),
-            "get_players_game_info_blocking must emit DatabaseProgress: {players_info}"
+            players_info.contains("ProgressLease"),
+            "get_players_game_info_blocking must take ProgressLease: {players_info}"
         );
         assert!(
             players_info.contains("* 100_f64"),
             "get_players_game_info_blocking must keep the 0..=100 scale: {players_info}"
+        );
+        for token in ["Succeeded", "Failed", "Cancelled", "complete("] {
+            assert!(
+                !players_info.contains(token),
+                "get_players_game_info_blocking must not decide the terminal state (contains {token:?}): {players_info}"
+            );
+        }
+        let players_wrapper = body_at_indent(db, "pub async fn get_players_game_info(");
+        assert!(
+            players_wrapper.contains("JobProgress::new(app.clone(), progress_id)"),
+            "get_players_game_info must construct JobProgress from the renderer-minted id: {players_wrapper}"
+        );
+        assert!(
+            players_wrapper.contains(".ok()"),
+            "get_players_game_info must not fail the command when progress cannot start: {players_wrapper}"
+        );
+        assert!(
+            players_wrapper.contains("complete("),
+            "get_players_game_info must complete the lease on the async side: {players_wrapper}"
         );
 
         assert!(
@@ -2329,8 +2374,8 @@ mod blocking_offload_scans {
             );
         }
         assert!(
-            search_wrapper.contains("SearchProgress"),
-            "search_position must keep SearchProgress on the async frame: {search_wrapper}"
+            search_wrapper.contains("JobProgress"),
+            "search_position must keep JobProgress on the async frame: {search_wrapper}"
         );
         assert!(
             search_wrapper.contains("complete("),
@@ -2456,7 +2501,7 @@ mod blocking_offload_scans {
             ("chess.rs", include_str!("chess.rs")),
         ] {
             let mut search_from = 0;
-            while let Some(rel) = source[search_from..].find("_blocking(") {
+            while let Some(rel) = next_blocking_offset(source, search_from) {
                 let abs = search_from + rel;
                 let line_start = source[..abs].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let line_end = source[abs..]
@@ -2483,7 +2528,7 @@ mod blocking_offload_scans {
                         );
                     }
                 }
-                search_from = abs + "_blocking(".len();
+                search_from = abs + "_blocking".len();
             }
         }
 

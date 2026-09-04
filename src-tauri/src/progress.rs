@@ -6,9 +6,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use tauri::Manager;
 use tauri_specta::Event;
 
-use crate::error::Error;
+use crate::{error::Error, AppState};
 
 const PROGRESS_CAPACITY: usize = 1_000;
 const RUNNING_TTL: Duration = Duration::from_secs(60 * 60);
@@ -45,7 +46,7 @@ pub struct ProgressItem {
     pub state: ProgressState,
 }
 
-#[derive(Clone, Debug, Serialize, Type, Event)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, Type, Event)]
 pub struct ProgressEvent {
     pub id: String,
     pub generation: u64,
@@ -280,6 +281,62 @@ pub fn update_progress_with_state<R: tauri::Runtime>(
     Ok(())
 }
 
+/// Job progress goes through the one shared progress store instead of a
+/// bespoke event, so the renderer's `useProgress` subscription, the generation
+/// leases and the bounded retention policy apply to a long-running job exactly
+/// as they do to every other.
+pub struct JobProgress<R: tauri::Runtime = tauri::Wry> {
+    app: tauri::AppHandle<R>,
+    lease: ProgressLease,
+}
+
+impl<R: tauri::Runtime> JobProgress<R> {
+    pub fn new(app: tauri::AppHandle<R>, id: String) -> Result<Self, Error> {
+        let lease = {
+            let state = app.state::<AppState>();
+            begin_progress(&state.progress_state, &app, id)?
+        };
+        Ok(Self { app, lease })
+    }
+
+    pub fn lease(&self) -> ProgressLease {
+        self.lease.clone()
+    }
+
+    pub fn complete(&self, state: ProgressState) {
+        let progress = if matches!(state, ProgressState::Succeeded) {
+            100.0
+        } else {
+            0.0
+        };
+        self.transition(progress, state);
+    }
+
+    /// A lease superseded by a newer job on the same id, or cleared by the
+    /// user, makes the transition fail. That is the intended outcome — the older
+    /// producer must not drive the newer bar — and it must not abort the job
+    /// that is still running.
+    fn transition(&self, progress: f32, state: ProgressState) {
+        let app_state = self.app.state::<AppState>();
+        let _ = update_progress_with_state(
+            &app_state.progress_state,
+            &self.app,
+            &self.lease,
+            progress,
+            state,
+        );
+    }
+}
+
+impl<R: tauri::Runtime> Drop for JobProgress<R> {
+    /// A job dropped without a terminal transition was cancelled. The store
+    /// keeps the first terminal state it is given, so this is a no-op after
+    /// `complete` and only fires on a genuinely abandoned job.
+    fn drop(&mut self) {
+        self.transition(0.0, ProgressState::Cancelled);
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn start_progress(
@@ -341,6 +398,7 @@ mod tests {
     use std::{sync::Arc, thread, time::Duration};
 
     use super::*;
+    use tauri::Manager;
 
     #[test]
     fn stale_reporter_is_rejected_after_restart_and_clear() {
@@ -455,5 +513,57 @@ mod tests {
         assert!(store
             .transition(second.as_ref().unwrap(), 50.0, ProgressState::Running)
             .is_err());
+    }
+
+    fn job_progress_test_app() -> tauri::AppHandle<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_app();
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(ProgressEvent))
+            .mount_events(&app);
+        app.manage(crate::AppState::default());
+        app.handle().clone()
+    }
+
+    #[test]
+    fn job_progress_complete_succeeded_stores_100() {
+        let app = job_progress_test_app();
+        let progress = JobProgress::new(app.clone(), "job".into()).unwrap();
+        progress.complete(ProgressState::Succeeded);
+        let item = app
+            .state::<crate::AppState>()
+            .progress_state
+            .get("job")
+            .unwrap();
+        assert_eq!(item.state, ProgressState::Succeeded);
+        assert_eq!(item.progress, 100.0);
+    }
+
+    #[test]
+    fn job_progress_dropped_without_complete_stores_cancelled() {
+        let app = job_progress_test_app();
+        let progress = JobProgress::new(app.clone(), "job".into()).unwrap();
+        drop(progress);
+        let item = app
+            .state::<crate::AppState>()
+            .progress_state
+            .get("job")
+            .unwrap();
+        assert_eq!(item.state, ProgressState::Cancelled);
+        assert!(item.finished);
+    }
+
+    #[test]
+    fn job_progress_complete_does_not_overwrite_the_first_terminal_state() {
+        let app = job_progress_test_app();
+        let progress = JobProgress::new(app.clone(), "job".into()).unwrap();
+        progress.complete(ProgressState::Succeeded);
+        progress.complete(ProgressState::Failed);
+        let item = app
+            .state::<crate::AppState>()
+            .progress_state
+            .get("job")
+            .unwrap();
+        assert_eq!(item.state, ProgressState::Succeeded);
+        assert_eq!(item.progress, 100.0);
     }
 }

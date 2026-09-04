@@ -10,7 +10,7 @@ function PlayerCard({ player, file }: { player: Player; file: DatabaseHandle }) 
   const { data: info, isLoading } = useSWRImmutable(
     ["player-game-info", file, player.id],
     async ([, file, id]) => {
-      const games = await tauri.getPlayersGameInfo(file, id);
+      const games = await tauri.getPlayersGameInfo(crypto.randomUUID(), file, id);
       return games;
     },
   );

@@ -23,6 +23,7 @@ use crate::{
         },
     },
     opening::get_opening_from_setup,
+    progress::{update_progress_with_state, JobProgress, ProgressLease, ProgressState},
     AppState, SearchCache,
 };
 use chrono::{NaiveDate, NaiveTime};
@@ -58,6 +59,7 @@ use std::{
 };
 
 use log::info;
+use tauri::Manager;
 use tauri_specta::Event as _;
 
 use self::encoding::{
@@ -1753,12 +1755,6 @@ pub struct StatsData {
     pub opening: String,
 }
 
-#[derive(Serialize, Debug, Clone, Type, tauri_specta::Event)]
-pub struct DatabaseProgress {
-    pub id: String,
-    pub progress: f64,
-}
-
 /// Import progress for a PGN-to-database conversion. A conversion has no total
 /// to divide by until it finishes, so this reports the counters the UI shows
 /// rather than a percentage.
@@ -1772,24 +1768,39 @@ pub struct ConvertProgress {
 #[tauri::command]
 #[specta::specta]
 pub async fn get_players_game_info(
+    progress_id: String,
     file: DatabaseHandle,
     id: i32,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<PlayerGameInfo, Error> {
+    let progress = JobProgress::new(app.clone(), progress_id).ok();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
-    BLOCKING_GATEWAY
-        .spawn(move || get_players_game_info_blocking(&authority, &repository, file, id, app))
-        .await
+    let lease = progress.as_ref().map(JobProgress::lease);
+    let worker_app = app.clone();
+    let result = BLOCKING_GATEWAY
+        .spawn(move || {
+            get_players_game_info_blocking(&authority, &repository, file, id, worker_app, lease)
+        })
+        .await;
+    if let Some(progress) = &progress {
+        progress.complete(if result.is_ok() {
+            ProgressState::Succeeded
+        } else {
+            ProgressState::Failed
+        });
+    }
+    result
 }
 
-fn get_players_game_info_blocking(
+fn get_players_game_info_blocking<R: tauri::Runtime>(
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     id: i32,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
+    lease: Option<ProgressLease>,
 ) -> Result<PlayerGameInfo, Error> {
     let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
@@ -1891,11 +1902,15 @@ fn get_players_game_info_blocking(
 
                 let p = progress.fetch_add(1, Ordering::Relaxed);
                 if p.is_multiple_of(1000) || p == info.len() - 1 {
-                    let _ = DatabaseProgress {
-                        id: id.to_string(),
-                        progress: (p as f64 / info.len() as f64) * 100_f64,
+                    if let Some(lease) = &lease {
+                        let _ = update_progress_with_state(
+                            &app.state::<AppState>().progress_state,
+                            &app,
+                            lease,
+                            ((p as f64 / info.len() as f64) * 100_f64) as f32,
+                            ProgressState::Running,
+                        );
                     }
-                    .emit(&app);
                 }
 
                 Some(SiteStatsData {
@@ -4231,5 +4246,149 @@ mod tests {
         .unwrap();
         assert_eq!(remaining.count, Some(2));
         assert!(remaining.data.iter().all(|game| game.id != first_duplicate));
+    }
+
+    fn mount_progress_events(app: &tauri::AppHandle<tauri::test::MockRuntime>) {
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(
+                crate::progress::ProgressEvent
+            ))
+            .mount_events(app);
+    }
+
+    fn insert_kept_player_game(
+        db: &mut SqliteConnection,
+        white_id: i32,
+        black_id: i32,
+        event_id: i32,
+        site_id: i32,
+    ) {
+        create_game(
+            db,
+            NewGame {
+                event_id,
+                site_id,
+                white_id,
+                black_id,
+                white_elo: Some(2800),
+                black_elo: Some(2700),
+                white_material: 0,
+                black_material: 0,
+                date: Some("2026.08.09"),
+                time: None,
+                round: None,
+                result: Some("1-0"),
+                time_control: Some("600+0"),
+                eco: None,
+                ply_count: 2,
+                fen: None,
+                moves: &[],
+                pawn_home: 0,
+            },
+        )
+        .unwrap();
+    }
+
+    fn capture_progress_events(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<crate::progress::ProgressEvent>>> {
+        use tauri_specta::Event as _;
+        let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = frames.clone();
+        crate::progress::ProgressEvent::listen(app, move |event| {
+            captured
+                .lock()
+                .expect("progress frames")
+                .push(event.payload);
+        });
+        frames
+    }
+
+    #[test]
+    fn get_players_game_info_blocking_emits_a_nonzero_running_frame_for_two_kept_rows() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        mount_progress_events(&app);
+        let player_id = {
+            let state = app.state::<AppState>();
+            let mut db = state.database_repository.connection(&database).unwrap();
+            let white = create_player(&mut db, "White").unwrap();
+            let black = create_player(&mut db, "Black").unwrap();
+            let event = create_event(&mut db, "Event").unwrap();
+            let site = create_site(&mut db, "Site").unwrap();
+            insert_kept_player_game(&mut db, white.id, black.id, event.id, site.id);
+            insert_kept_player_game(&mut db, white.id, black.id, event.id, site.id);
+            white.id
+        };
+        let progress_id = "player-info-two-kept";
+        let lease = {
+            let state = app.state::<AppState>();
+            crate::progress::begin_progress(&state.progress_state, &app, progress_id.to_string())
+                .unwrap()
+        };
+        let frames = capture_progress_events(&app);
+        let state = app.state::<AppState>();
+        get_players_game_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            player_id,
+            app.clone(),
+            Some(lease),
+        )
+        .unwrap();
+
+        let captured = frames.lock().expect("progress frames");
+        assert!(
+            captured
+                .iter()
+                .any(|frame| frame.id == progress_id && frame.progress == 50.0),
+            "blocking body must emit a 50.0 Running frame under the lease id, got {captured:?}"
+        );
+        let item = state.progress_state.get(progress_id).unwrap();
+        assert_eq!(item.state, crate::progress::ProgressState::Running);
+        assert_eq!(item.progress, 50.0);
+    }
+
+    #[test]
+    fn get_players_game_info_blocking_emits_no_running_frame_when_every_row_is_filtered() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        mount_progress_events(&app);
+        let player_id = {
+            let state = app.state::<AppState>();
+            let mut db = state.database_repository.connection(&database).unwrap();
+            let white = create_player(&mut db, "White").unwrap();
+            let black = create_player(&mut db, "Black").unwrap();
+            let event = create_event(&mut db, "Event").unwrap();
+            let site = create_site(&mut db, "Site").unwrap();
+            insert_test_game(&mut db, white.id, black.id, event.id, site.id);
+            insert_test_game(&mut db, white.id, black.id, event.id, site.id);
+            white.id
+        };
+        let progress_id = "player-info-zero-kept";
+        let lease = {
+            let state = app.state::<AppState>();
+            crate::progress::begin_progress(&state.progress_state, &app, progress_id.to_string())
+                .unwrap()
+        };
+        let frames = capture_progress_events(&app);
+        let state = app.state::<AppState>();
+        get_players_game_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            player_id,
+            app.clone(),
+            Some(lease),
+        )
+        .unwrap();
+
+        let captured = frames.lock().expect("progress frames");
+        assert!(
+            captured.is_empty(),
+            "zero kept rows must not emit a Running frame, got {captured:?}"
+        );
+        let item = state.progress_state.get(progress_id).unwrap();
+        assert_eq!(item.state, crate::progress::ProgressState::Running);
+        assert_eq!(item.progress, 0.0);
     }
 }

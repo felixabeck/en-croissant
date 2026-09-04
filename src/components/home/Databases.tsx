@@ -12,7 +12,7 @@ import {
 } from "@mantine/core";
 import { IconDatabaseOff } from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import type { DatabaseInfo as PlainDatabaseInfo, PlayerGameInfo } from "@/bindings";
@@ -84,6 +84,8 @@ function Databases() {
     },
   );
 
+  const ownedProgress = useRef<Map<string, number>>(new Map());
+
   const {
     data: personalInfo,
     isLoading,
@@ -91,6 +93,7 @@ function Databases() {
   } = useSWRImmutable<PersonalInfo[]>(
     databases && name ? ["personalInfo", name, databases] : null,
     async () => {
+      ownedProgress.current = new Map();
       const playerDbs = playerDbNames.find((p) => p.name === name)?.databases;
       if (!databases || !playerDbs) return [];
       const results = await Promise.allSettled(
@@ -110,7 +113,9 @@ function Databases() {
               throw new Error("Player not found in database");
             }
             const player = players.data[0];
-            const info = await tauri.getPlayersGameInfo(db.file, player.id);
+            const progressId = crypto.randomUUID();
+            ownedProgress.current.set(progressId, 0);
+            const info = await tauri.getPlayersGameInfo(progressId, db.file, player.id);
             return { db, info };
           }),
       );
@@ -121,14 +126,26 @@ function Databases() {
   );
 
   const [progress, setProgress] = useState(0);
-  const subscribeDatabaseProgress = useCallback(
-    (listener: Parameters<typeof tauriSubscriptions.databaseProgress>[0]) =>
-      tauriSubscriptions.databaseProgress(listener),
+  const subscribeProgress = useCallback(
+    (listener: Parameters<typeof tauriSubscriptions.progress>[0]) =>
+      tauriSubscriptions.progress(listener),
     [],
   );
-  useTauriListener(subscribeDatabaseProgress, (e) => setProgress(e.payload.progress), {
-    onError: notifyListenerError,
-  });
+  useTauriListener(
+    subscribeProgress,
+    (e) => {
+      const map = ownedProgress.current;
+      if (!map.has(e.payload.id)) {
+        return;
+      }
+      map.set(e.payload.id, e.payload.progress);
+      const values = [...map.values()];
+      setProgress(
+        values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length,
+      );
+    },
+    { onError: notifyListenerError },
+  );
 
   return (
     <>

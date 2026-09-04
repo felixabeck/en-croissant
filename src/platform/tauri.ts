@@ -69,8 +69,6 @@ export const tauriSubscriptions = {
         events.clockUpdateEvent.listen(callback),
     convertProgress: (callback: Parameters<typeof events.convertProgress.listen>[0]) =>
         events.convertProgress.listen(callback),
-    databaseProgress: (callback: Parameters<typeof events.databaseProgress.listen>[0]) =>
-        events.databaseProgress.listen(callback),
     gameMove: (callback: Parameters<typeof events.gameMoveEvent.listen>[0]) =>
         events.gameMoveEvent.listen(callback),
     gameOver: (callback: Parameters<typeof events.gameOverEvent.listen>[0]) =>
