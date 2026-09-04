@@ -34,19 +34,38 @@ afterEach(() => {
     vi.clearAllMocks();
 });
 
-test.each(["game", "game.pgn"])(
-    "recovers a created PGN listed as %s after an uncertain commit",
-    async (listedName) => {
+test.each([
+    {
+        path: "structured backend-error",
+        listedName: "game",
+        rejection: new TauriCommandError({
+            tag: "backend-error",
+            category: "durability",
+            message: "Committed but durability uncertain: registry replacement",
+        }),
+    },
+    {
+        path: "structured backend-error",
+        listedName: "game.pgn",
+        rejection: new TauriCommandError({
+            tag: "backend-error",
+            category: "durability",
+            message: "Committed but durability uncertain: registry replacement",
+        }),
+    },
+    {
+        path: "string fallback",
+        listedName: "game.pgn",
+        // Fallback-path coverage: classify() still matches this owned Display literal.
+        rejection: new Error("Committed but durability uncertain: registry replacement"),
+    },
+])(
+    "recovers a created PGN listed as $listedName after an uncertain commit via the $path",
+    async ({ listedName, rejection }) => {
         const workspace = { id: { id: "workspace" }, kind: "fileWorkspace" } as const;
         const parent = { id: { id: "parent" }, kind: "fileWorkspace" } as const;
         const handle = { id: { id: "created" }, kind: "fileWorkspace" };
-        mocks.createWorkspaceFile.mockRejectedValueOnce(
-            new TauriCommandError({
-                tag: "backend-error",
-                category: "durability",
-                message: "Committed but durability uncertain: registry replacement",
-            }),
-        );
+        mocks.createWorkspaceFile.mockRejectedValueOnce(rejection);
         mocks.listFileWorkspace.mockResolvedValueOnce([
             {
                 handle,
@@ -71,38 +90,6 @@ test.each(["game", "game.pgn"])(
         expect(mocks.listFileWorkspace).toHaveBeenCalledWith(parent);
     },
 );
-
-test("recovers a created PGN after an uncertain commit through the string fallback path", async () => {
-    const workspace = { id: { id: "workspace" }, kind: "fileWorkspace" } as const;
-    const parent = { id: { id: "parent" }, kind: "fileWorkspace" } as const;
-    const handle = { id: { id: "created" }, kind: "fileWorkspace" };
-    // Fallback-path coverage: classify() still matches this owned Display literal.
-    mocks.createWorkspaceFile.mockRejectedValueOnce(
-        new Error("Committed but durability uncertain: registry replacement"),
-    );
-    mocks.listFileWorkspace.mockResolvedValueOnce([
-        {
-            handle,
-            kind: "file",
-            name: "game.pgn",
-            children: [],
-            metadata: { type: "game", tags: [] },
-            gameCount: 1,
-            lastModified: 42,
-        },
-    ]);
-
-    const result = await createFile({
-        filename: "game.pgn",
-        filetype: "game",
-        workspace,
-        parent,
-    });
-
-    expect(result.isOk).toBe(true);
-    expect(result.unwrap()).toMatchObject({ handle, name: "game.pgn", numGames: 1 });
-    expect(mocks.listFileWorkspace).toHaveBeenCalledWith(parent);
-});
 
 describe("pickPgnFile", () => {
     const handle = { id: { id: "pgn" }, kind: "fileWorkspace" } as const;

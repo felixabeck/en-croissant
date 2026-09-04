@@ -1,4 +1,4 @@
-import type { ErrorCategory, ErrorPayload } from "./tauri";
+import type { ErrorCategory, ErrorPayload } from "@/bindings";
 
 export type AppErrorCategory =
     | "cancelled"

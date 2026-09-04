@@ -45,42 +45,38 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-test("recovers an account database handle after an uncertain create", async () => {
-  const root = { id: { id: "database-root" }, kind: "databaseRoot" };
-  const handle = { id: { id: "database" }, kind: "database" };
-  mocks.getDatabaseWorkspace.mockResolvedValue(root);
-  mocks.listWorkspaceDatabases
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce([{ handle, filename: "Felix_lichess.db3", availability: "available" }]);
-  mocks.createWorkspaceDatabase.mockRejectedValue(
-    new TauriCommandError({
+test.each([
+  {
+    path: "structured backend-error",
+    rejection: new TauriCommandError({
       tag: "backend-error",
       category: "durability",
       message: "Committed but durability uncertain: registry replacement",
     }),
-  );
+  },
+  {
+    path: "string fallback",
+    // Fallback-path coverage: classify() still matches this owned Display literal.
+    rejection: new Error("Committed but durability uncertain: registry replacement"),
+  },
+])(
+  "recovers an account database handle after an uncertain create via the $path",
+  async ({ rejection }) => {
+    const root = { id: { id: "database-root" }, kind: "databaseRoot" };
+    const handle = { id: { id: "database" }, kind: "database" };
+    mocks.getDatabaseWorkspace.mockResolvedValue(root);
+    mocks.listWorkspaceDatabases
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { handle, filename: "Felix_lichess.db3", availability: "available" },
+      ]);
+    mocks.createWorkspaceDatabase.mockRejectedValue(rejection);
 
-  await expect(ensureAccountDatabaseHandle(undefined, "Felix", "lichess")).resolves.toBe(handle);
-  expect(mocks.createWorkspaceDatabase).toHaveBeenCalledWith(root, "Felix_lichess.db3");
-  expect(mocks.listWorkspaceDatabases).toHaveBeenCalledTimes(2);
-});
-
-test("recovers an account database handle after an uncertain create through the string fallback path", async () => {
-  const root = { id: { id: "database-root" }, kind: "databaseRoot" };
-  const handle = { id: { id: "database" }, kind: "database" };
-  mocks.getDatabaseWorkspace.mockResolvedValue(root);
-  mocks.listWorkspaceDatabases
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce([{ handle, filename: "Felix_lichess.db3", availability: "available" }]);
-  // Fallback-path coverage: classify() still matches this owned Display literal.
-  mocks.createWorkspaceDatabase.mockRejectedValue(
-    new Error("Committed but durability uncertain: registry replacement"),
-  );
-
-  await expect(ensureAccountDatabaseHandle(undefined, "Felix", "lichess")).resolves.toBe(handle);
-  expect(mocks.createWorkspaceDatabase).toHaveBeenCalledWith(root, "Felix_lichess.db3");
-  expect(mocks.listWorkspaceDatabases).toHaveBeenCalledTimes(2);
-});
+    await expect(ensureAccountDatabaseHandle(undefined, "Felix", "lichess")).resolves.toBe(handle);
+    expect(mocks.createWorkspaceDatabase).toHaveBeenCalledWith(root, "Felix_lichess.db3");
+    expect(mocks.listWorkspaceDatabases).toHaveBeenCalledTimes(2);
+  },
+);
 
 test("does not refresh databases after unmount", async () => {
   let progressListener!: (event: {

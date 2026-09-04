@@ -1,12 +1,6 @@
 import { commands, events, type Result as GeneratedResult } from "@/bindings/generated";
 import { normalizeError } from "./errors";
 
-// The facade is the only module allowed to reach `@/bindings/generated` (`d-20260831-32`),
-// so the typed error contract is re-exported from here rather than imported directly by
-// every consumer. `errors.ts` takes these as type-only imports, which erase at compile time
-// and so do not create a runtime cycle with the `normalizeError` import above.
-export type { ErrorCategory, ErrorPayload } from "@/bindings/generated";
-
 type CommandResult<T> = GeneratedResult<T, unknown>;
 
 type SuccessResult<T> = Extract<T, { status: "ok" }>;

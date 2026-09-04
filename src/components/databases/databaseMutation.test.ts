@@ -43,34 +43,32 @@ describe("database deletion transaction", () => {
         expect(order).toEqual(["native", "invalidate"]);
     });
 
-    it("invalidates after partial removal and preserves the rejection", async () => {
-        const deleted = database("delete-me");
-        const invalidate = vi.fn();
-        const error = new TauriCommandError({
-            tag: "backend-error",
-            category: "partial-removal",
-            message: "Partially removed: 1 entries were deleted before failing: conflict",
-        });
+    it.each([
+        {
+            path: "structured backend-error",
+            error: new TauriCommandError({
+                tag: "backend-error",
+                category: "partial-removal",
+                message: "Partially removed: 1 entries were deleted before failing: conflict",
+            }),
+        },
+        {
+            path: "string fallback",
+            // Fallback-path coverage: classify() still matches this owned Display literal.
+            error: new Error("Partially removed: 1 entries were deleted before failing: conflict"),
+        },
+    ])(
+        "invalidates after partial removal and preserves the rejection via the $path",
+        async ({ error }) => {
+            const deleted = database("delete-me");
+            const invalidate = vi.fn();
 
-        await expect(
-            deleteDatabaseAndInvalidate(deleted, vi.fn().mockRejectedValue(error), invalidate),
-        ).rejects.toBe(error);
-        expect(invalidate).toHaveBeenCalledWith(deleted);
-    });
-
-    it("invalidates after partial removal through the string fallback path", async () => {
-        const deleted = database("delete-me");
-        const invalidate = vi.fn();
-        // Fallback-path coverage: classify() still matches this owned Display literal.
-        const error = new Error(
-            "Partially removed: 1 entries were deleted before failing: conflict",
-        );
-
-        await expect(
-            deleteDatabaseAndInvalidate(deleted, vi.fn().mockRejectedValue(error), invalidate),
-        ).rejects.toBe(error);
-        expect(invalidate).toHaveBeenCalledWith(deleted);
-    });
+            await expect(
+                deleteDatabaseAndInvalidate(deleted, vi.fn().mockRejectedValue(error), invalidate),
+            ).rejects.toBe(error);
+            expect(invalidate).toHaveBeenCalledWith(deleted);
+        },
+    );
 
     it("clears stale selection, reference and opened view for the deleted handle only", () => {
         const deleted = database("delete-me");
