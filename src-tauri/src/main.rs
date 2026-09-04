@@ -1825,6 +1825,25 @@ mod tests {
 mod blocking_offload_scans {
     use crate::infra::blocking::source_scan::body_at_indent;
 
+    /// Byte offset of the `)` matching the `(` at `open`. Shared so the gateway-closure scan
+    /// and the engine-image lock-across-read scan cannot diverge.
+    fn closing_paren(source: &str, open: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        for (offset, character) in source[open..].char_indices() {
+            match character {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(open + offset);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Asserting that a converted command merely *mentions* `BLOCKING_GATEWAY` does not pin the
     /// offload: moving the worker call back onto the command future and leaving a decoy
     /// `BLOCKING_GATEWAY.spawn(|| Ok(()))` behind would keep such a scan green, which is exactly
@@ -1850,20 +1869,9 @@ mod blocking_offload_scans {
                 + rest[spawn..]
                     .find('(')
                     .unwrap_or_else(|| panic!("{signature} must open the spawn call: {body}"));
-            let mut depth = 0usize;
-            for (offset, character) in rest[open..].char_indices() {
-                match character {
-                    '(' => depth += 1,
-                    ')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return &rest[open + 1..open + offset];
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            panic!("{signature} has an unbalanced spawn call: {body}");
+            let close = closing_paren(rest, open)
+                .unwrap_or_else(|| panic!("{signature} has an unbalanced spawn call: {body}"));
+            &rest[open + 1..close]
         };
         let assert_offloads = move |source: &'static str, signature: &str, worker: &str| {
             let body = body_at_indent(source, signature);
@@ -2043,6 +2051,86 @@ mod blocking_offload_scans {
                     !body.contains(token),
                     "{file}::{name} must not nest a gateway acquisition (contains {token:?}): {body}"
                 );
+            }
+        }
+    }
+
+    /// Helper-level tests in `path_authority.rs` pin that the helpers keep the split, but they
+    /// do not constrain the callers. Re-acquiring `authority.lock()` around
+    /// `read_engine_image_bytes` puts the whole up-to-10 MiB read back under the process-wide
+    /// mutex, and those tests stay green. This is the caller-side half, and it is what goes red
+    /// when a call site puts the read back under the guard — or stops going through the split
+    /// at all.
+    #[test]
+    fn s10_engine_image_call_sites_read_outside_the_authority_guard() {
+        let main = include_str!("main.rs");
+        for signature in [
+            "fn issue_engine_image_blocking(",
+            "fn read_engine_image_blocking(",
+        ] {
+            let body = body_at_indent(main, signature);
+            let reader_token = "engine_image_reader_for(";
+            let read_token = "read_engine_image_bytes(";
+            assert_eq!(
+                body.matches(reader_token).count(),
+                1,
+                "{signature} must call {reader_token} exactly once: {body}"
+            );
+            assert_eq!(
+                body.matches(read_token).count(),
+                1,
+                "{signature} must call {read_token} exactly once: {body}"
+            );
+            assert!(
+                body.contains("MAX_ENGINE_IMAGE_BYTES"),
+                "{signature} must mention MAX_ENGINE_IMAGE_BYTES: {body}"
+            );
+            let reader = body.find(reader_token).unwrap();
+            let read = body.find(read_token).unwrap();
+            assert!(
+                reader < read,
+                "{signature} must call {reader_token} before {read_token}: {body}"
+            );
+
+            let open = read + "read_engine_image_bytes".len();
+            let close = closing_paren(body, open).unwrap_or_else(|| {
+                panic!("{signature} has an unbalanced {read_token} call: {body}")
+            });
+            let read_end = close + 1;
+
+            let mut depth_at = vec![0usize; body.len()];
+            let mut depth = 0usize;
+            for (i, character) in body.char_indices() {
+                depth_at[i] = depth;
+                match character {
+                    '{' => depth += 1,
+                    '}' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+                for byte in 1..character.len_utf8() {
+                    depth_at[i + byte] = depth_at[i];
+                }
+            }
+
+            let mut search_from = 0;
+            while let Some(rel) = body[search_from..].find(".lock(") {
+                let i = search_from + rel;
+                if i < reader {
+                    // A guard taken at a strictly deeper block level than the read has
+                    // provably been dropped by the time the read runs, because the block
+                    // closed. A guard taken at the read's own level would still be alive.
+                    assert!(
+                        depth_at[i] > depth_at[reader],
+                        "{signature} must drop any authority lock taken before \
+                         {reader_token} before the read runs: {body}"
+                    );
+                } else if i < read_end {
+                    panic!(
+                        "{signature} must not re-acquire an authority lock around \
+                         {read_token}: {body}"
+                    );
+                }
+                search_from = i + ".lock(".len();
             }
         }
     }
