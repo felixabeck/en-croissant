@@ -1512,3 +1512,163 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** the literal reading of the plan, which names only `list_puzzle_children` for the closure.
 * **Reason:** `active_or_default_puzzle_workspace` does a `create_dir_all` and takes the authority lock. Left on the async side it would keep exactly the work this phase removes on a Tokio worker. It is synchronous and runs sequentially before `list_puzzle_children`, so the two share one permit rather than nesting — legal under the non-nesting invariant (`d-20260903-04`) — and D-H asks for one spawn over one `*_blocking` body rather than two sequential gateway calls. The nested await that would actually deadlock, `puzzle_database_info_for_file`, stays async and is what S-9 pins. Reversal path: none needed; if that helper ever gains a gateway acquisition of its own it must leave the closure, which S-8 would force.
 * **Decided by:** Claude Code, autonomously under `full auto`, drain session 0a2310ce-f1c5-4667-86ff-228aef15145c · **Superseded-by:** -
+
+### d-20260904-05 — What shape does the typed IPC error payload take on the wire?
+
+* **Question:** What shape does the typed IPC error payload take on the wire?
+* **Governs:** f-20260830-08
+* **Chosen:** `ErrorPayload { tag, category, message }`. `category` is a 19-value `ErrorCategory`
+  enum promoted from the private `Error::category()` that already classified every variant
+  exhaustively; `message` is the variant's `Display`.
+* **Rejected:** category alone — `Game not found: {0}`, `Invalid input: {0}`, `Conflict: {0}` and
+  `Resource limit: {0}` carry the only actionable detail the user gets, and ~30 `notifyError` call
+  sites render `message`. Also rejected: a tagged union mirroring all 40 variants — nothing in the
+  renderer consumes `PartialRemoval.removed_entries` or `OperationAndCleanup`'s two strings, the
+  latter deliberately omits both from `Display` and is tested doing so, and a 40-arm union makes
+  every renderer `switch` a maintenance surface for distinctions the UI never draws.
+* **Reason:** category is the axis the renderer actually branches on, and it was the one thing
+  the substring table was trying to reconstruct.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+
+### d-20260904-06 — Does the backend emit the renderer's seven categories, or its own richer set?
+
+* **Question:** Does the backend emit the renderer's seven categories, or its own richer set?
+* **Governs:** f-20260830-08
+* **Chosen:** its own 19; `src/platform/errors.ts` holds one exhaustive
+  `Record<ErrorCategory, AppErrorCategory>` mapping them onto the existing seven.
+* **Rejected:** emitting the seven renderer categories from `error.rs` directly.
+* **Reason:** that puts a UI taxonomy in the backend and discards the distinction the mapping is
+  the only record of. The two-level shape closes the loop at compile time in both languages: a new
+  `Error` variant fails `cargo check` on the exhaustive match, a new `ErrorCategory` fails
+  `tsgo --noEmit` on a missing `Record` key. `AppErrorCategory` deliberately stays at seven values
+  because `ConfirmModal.tsx:16` interpolates each into `Common.ConfirmationError.${category}`, so
+  an eighth is a missing locale key (`f-20260830-11`).
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+
+### d-20260904-07 — How is an `ErrorPayload` told apart from the renderer's own `AppError`?
+
+* **Question:** How is an `ErrorPayload` told apart from the renderer's own `AppError`?
+* **Governs:** f-20260830-08
+* **Chosen:** a constant `tag: "backend-error"` field on the wire. `isErrorPayload` tests it, runs
+  before `isAppError`, and cannot match an `AppError`.
+* **Rejected:** a membership test on the mapping table's keys, which was the first design.
+  `AppError` and `ErrorPayload` are the same JSON shape and the vocabularies overlap on `network`
+  and `permission`, so **no ordering of a structural guard is correct**: first, it swallows a
+  genuine already-normalised `AppError` carrying those two and breaks `normalizeError`'s
+  return-by-identity contract; second, a live command payload skips both the mapping and
+  `redact()` and is only accidentally right while those mappings are the identity. Also rejected:
+  renaming the backend categories so they never collide — it works today and breaks silently the
+  first time either vocabulary grows.
+* **Reason:** an exact discriminant costs one constant string per payload and removes the whole
+  class. The earlier rejection of a discriminant rested on that cost alone, which universal rule 4
+  does not admit as grounds against a known-better design.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+
+### d-20260904-08 — Is the dropped native diagnostic logged when a variant stops being transparent?
+
+* **Question:** Is the dropped native diagnostic logged when a variant stops being transparent?
+* **Governs:** f-20260830-08
+* **Chosen:** no. The six newly-opaque variants (`Io`, `Zip`, `Tauri`, `TauriOpener`, `Diesel`,
+  `R2d2`) keep their cause on `#[source]`, and `impl Serialize for Error` has no side effects.
+* **Rejected:** a `log::warn!` of the `source()` chain from `Serialize`, which was the first
+  design and looked right because `Serialize` is exactly the IPC boundary. It would have delivered
+  the absolute path, SQL fragment or connection string to the renderer anyway:
+  `src-tauri/src/main.rs:1615` configures `tauri-plugin-log` with
+  `[TargetKind::Stdout, TargetKind::Webview]` in debug builds at `LevelFilter::Info`, and
+  `src/App.tsx:89` calls `attachConsole()`. Also rejected: `log::debug!`, which the global
+  `Info` filter drops entirely — not a safer log, no log. Also rejected: changing `main.rs`'s log
+  targets, which is a different file set and a decision about the whole logging configuration.
+* **Reason:** the leak this closes must not be reopened through a second channel. The cost is
+  stated rather than hidden: the native cause of an `Io`/`Diesel`/`Zip`/`Tauri`/`R2d2` failure is
+  now reachable from Rust but written to no log by default, where it used to be visible (redacted)
+  in the renderer notification. The webview log target is filed as its own finding.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+
+### d-20260904-09 — Does the renderer's substring table survive?
+
+* **Question:** Does the renderer's substring table survive?
+* **Governs:** f-20260830-08
+* **Chosen:** yes, unchanged, with its comment rewritten to say what it now is: the fallback for
+  errors that are not backend command errors — a thrown JS `Error`, a `useTauriListener` callback
+  failure, `close_splashscreen`'s genuine `Result<(), String>`, and any non-command rejection. No
+  branch deleted, including the two owned literals `partially removed:` and
+  `committed but durability uncertain:` that `d-20260830-05` and `d-20260831-01` pinned.
+  `errorUnlessCancelled` still keys on the exact message `Cancellation` rather than on the
+  category, because `Analysis cancelled` shares that category and must stay visible
+  (`f-20260830-28`).
+* **Rejected:** deleting it once commands were typed.
+* **Reason:** it still has four live inputs, and the two literal branches are what the fallback
+  path needs to keep classifying a durability failure correctly.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+
+### d-20260904-10 — How does the puzzle-themes check survive `Error::Diesel` becoming opaque?
+
+* **Question:** How does the puzzle-themes check survive `Error::Diesel` becoming opaque?
+* **Governs:** f-20260830-08
+* **Chosen:** a typed `Error::PuzzleThemesUnavailable` with its own `ErrorCategory`, produced by an
+  extracted `load_puzzle_themes` that matches the raw `diesel::result::Error` **before** `?`
+  converts it and is scoped to the `themes` query alone. `AppError` gains an optional
+  `backendCategory`, and `Puzzles.tsx` branches on that.
+* **Rejected:** leaving `Diesel` transparent so `error.message.includes("no such table")` keeps
+  working — it is the single largest leak in the set, carrying table names, column names,
+  constraints and SQL fragments. Also rejected: mapping the new variant onto the existing
+  `Database` category, which would show "your puzzle database is outdated" for every database
+  failure. Also rejected: branching on `AppError.category`, which is `not-found` and shared with
+  `missing-resource`, so `NoPuzzles` or a missing file would trigger the alert. Also rejected:
+  putting the substring match in `From<diesel::result::Error>`, which would relabel every missing
+  table in the application.
+* **Reason:** this diff would otherwise have silently deleted a localised user-facing warning
+  with every gate green, since nothing covered `themesTableMissing`. That is the red gate, not a
+  finding to defer. Four tests now redden for the four distinct wrong implementations.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+
+### d-20260904-11 — Where does `errors.ts` import the generated error types from?
+
+* **Question:** Where does `errors.ts` import the generated error types from?
+* **Governs:** f-20260830-08
+* **Chosen:** `@/bindings`, the type barrel, whose own comment says renderer callers may import
+  generated types there and never command or event values.
+* **Rejected:** a `export type { ErrorCategory, ErrorPayload }` re-export added to
+  `src/platform/tauri.ts`. That was the first fix when `tauri:boundary:check` rejected a direct
+  `@/bindings/generated` import — correct about the constraint (`d-20260831-32` keeps that module
+  illegal outside the facade, and the checker does not exempt type-only imports) and wrong about
+  the seam, since the barrel already existed and every other consumer uses it.
+* **Reason:** a pass-through with one caller is an abstraction without a second consumer.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+
+### d-20260904-12 — Does `Error::Io` categorise on `ErrorKind`?
+
+* **Question:** Does `Error::Io` categorise on `ErrorKind`?
+* **Governs:** f-20260830-08
+* **Chosen:** yes, narrowly: `NotFound` → `MissingResource`, `PermissionDenied` → `Permission`,
+  everything else → `Io`.
+* **Rejected:** one flat `Io` category; and a wider `ErrorKind` map.
+* **Reason:** this is the concrete payoff of typing. An `ENOENT` used to reach the renderer as
+  `"No such file or directory (os error 2)"`, which matches no branch of the substring table and
+  landed in `unexpected`. Only these two kinds, because they are the two the renderer already has
+  categories for — a wider map would invent distinctions no consumer makes.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+
+### d-20260904-13 — Was the `bindings-ipc` cluster worked whole or sliced?
+
+* **Question:** Was the `bindings-ipc` cluster worked whole or sliced?
+* **Governs:** f-20260830-08, f-20260901-04, f-20260901-08, f-20260904-02
+* **Chosen:** sliced. This run worked the pinned `f-20260830-08` alone, through `build`.
+* **Rejected:** one `build` over all four cluster members.
+* **Reason:** all four carry `Root: -`, so no evidenced common cause binds them, and the file sets
+  are disjoint: `f-20260830-08` is `error.rs` plus the wholesale regeneration of
+  `generated.ts`, while the other three are the progress-broadcast discriminator
+  (`useProgress.ts`, `ReportModal`/`ReportPanel`, `Databases.tsx`, `useConversionProgress.ts`).
+  Rule 4a cuts by area cohesion; one plan carrying two independent design questions would have
+  made the review arbitrate both at once over an unreviewable diff. Precedent: `d-20260827-07`
+  (an area is a vocabulary bucket, not a file set), `d-20260827-11`, `d-20260828-19`,
+  `d-20260831-01`. The other three remain open at their filed tiers.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -

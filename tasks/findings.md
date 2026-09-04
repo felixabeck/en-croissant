@@ -1519,7 +1519,7 @@ from disk (commit `2565ee3d`).
 
 ### Every backend error reaches the renderer as one opaque string, so the UI classifies it by substring
 
-* **ID:** f-20260830-08 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-08 · **Status:** handled · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/error.rs:216-231` (the hand-written `serde::Serialize` and `specta::Type`
   impls) and `src/platform/errors.ts:37-54` (`normalizeError`).
 * **Defect:** `Error` implements `Type` as `DataType::Primitive(PrimitiveType::String)` and
@@ -1555,6 +1555,61 @@ from disk (commit `2565ee3d`).
   that stay prose.
 * **Found by:** the `review-ipc-contract` and `review-error-handling` lenses (94 and 98 confidence)
   during the plan review of the `remove-tree-unhardened` cluster, 2026-08-30.
+
+**Handled 2026-09-04.** `Error` has a real Specta type. It serialises as
+`ErrorPayload { tag, category, message }`; `impl Type` delegates both `inline` and `reference` to
+that struct, so 108 of the 109 `Result<T, string>` command signatures became
+`Result<T, ErrorPayload>` and `src/bindings/generated.ts` gained `ErrorCategory`, `ErrorPayload`
+and `ErrorPayloadTag`. `closeSplashscreen` keeps `Result<null, string>` because its Rust error
+really is a `String` — filed separately.
+
+The classifier already existed: `Error::category()` was a private exhaustive match whose only
+caller was `PartialRemoval`'s own format string. It is now `pub`, returns a 19-value
+`ErrorCategory`, and its `Display` returns the same prose, so `PartialRemoval`'s message is
+byte-identical. The renderer maps those 19 onto its existing seven `AppErrorCategory` values
+through one exhaustive `Record`, so the loop closes at compile time on both sides: a new `Error`
+variant fails `cargo check`, a new `ErrorCategory` fails `tsgo --noEmit`.
+
+**Two things this found that the finding did not describe.** First, six variants were still
+`#[error(transparent)]` around a foreign error, so `Io`, `Zip`, `Tauri`, `TauriOpener`, `Diesel`
+and `R2d2` were shipping absolute paths, SQL fragments and connection strings to the renderer
+*today* — the finding described the loss of structure, not the live leak. They now carry an owned
+literal and keep the cause on `#[source]`, finishing the conversion `Reqwest`, `CredentialFailure`
+and `OperationAndCleanup` had already made. Second, making `Diesel` opaque would have silently
+deleted the localised `Puzzle.DatabaseOutdated` alert, which read `no such table` out of a Diesel
+`Display`; nothing covered it, so every gate would have stayed green. Plan review found it, and it
+is fixed here with a typed `PuzzleThemesUnavailable` and four tests crossed against the four ways
+the check can be written wrong.
+
+`classify()` survives unchanged as the fallback for renderer-originated errors, listener failures
+and `close_splashscreen`. `errorUnlessCancelled` still keys on the exact message `Cancellation`,
+because `Analysis cancelled` shares the category and must stay visible (`f-20260830-28`).
+
+**Proof, all run on this machine:** `cargo test` 522, `pnpm vitest run` 616, `cargo clippy -D
+warnings`, `cargo fmt`, `rust:surface:check`, `lint:ci`, both boundary checks, `bindings:check`,
+both coverage ratchets, `bundle:check`, `frontend-build`, `e2e-container` 8/8, the findings gates,
+and `pnpm verify:app` against the real Tauri window with the real backend — the last because this
+re-types the error of every command, and it is the only check that observes real IPC in the real
+product. Demonstrated reverts rather than asserted ones: dropping the structured branch from
+`errors.ts` reddens 21 tests; `#[serde(skip)]` on the wire `tag` reddens 11; each of the four wrong
+puzzle-alert implementations reddens a different one of its four cases.
+
+**Commits:** `b7b41866`, `51cf9c3f`, `4116051b`, `0c6f77c2`, `eae41d85`, `7f5ae060`.
+
+**Rejected:** category-only and 40-arm-union wire shapes; emitting the renderer's seven categories
+from the backend; a membership guard instead of the `tag` discriminant; logging the dropped cause
+from `Serialize`; deleting the substring table; leaving `Diesel` transparent; branching the puzzle
+alert on `AppError.category`; a `tauri.ts` type re-export where the `@/bindings` barrel already
+existed. Recorded as `d-20260904-05` through `d-20260904-13`.
+
+**Filed, not folded in:** the debug log target is the webview (`main.rs:1615` +
+`App.tsx:89`), which is the second, unguarded channel into the renderer; and `close_splashscreen`
+is the last `Result<(), String>` command.
+
+**Slice:** this run worked `f-20260830-08` alone. The rest of the `bindings-ipc` cluster —
+`f-20260901-04` (build), `f-20260901-08` (lens), `f-20260904-02` (build) — is the
+progress-broadcast discriminator, a disjoint file set with no shared `Root`, and stays open
+(`d-20260904-13`).
 
 ### Every removal in `infra/fs.rs` unlinks by name, and Linux offers no way to unlink by descriptor
 
