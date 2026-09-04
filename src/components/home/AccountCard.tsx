@@ -16,14 +16,13 @@ import { useTranslation } from "react-i18next";
 import type { DatabaseHandle, FileWorkspaceHandle, PathRef } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyListenerError, notifyUnlessCancelled } from "@/components/files/notifyError";
-import { databaseConversionStateAtom, downloadDestinationAtom } from "@/state/atoms";
-import { downloadChessCom } from "@/utils/chess.com/api";
 import {
-  conversionProgressId,
-  getDatabases,
-  sameDatabaseHandle,
-  type ManagedDatabaseInfo,
-} from "@/utils/db";
+  clearOwnedConversion,
+  databaseConversionStateAtom,
+  downloadDestinationAtom,
+} from "@/state/atoms";
+import { downloadChessCom } from "@/utils/chess.com/api";
+import { conversionProgressId, getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
 import { capitalize } from "@/utils/format";
 import { downloadLichess } from "@/utils/lichess/api";
 import { useTauriListener } from "@/platform/useTauriListener";
@@ -150,7 +149,7 @@ export function AccountCard({
         setConversionState((prev) => ({
           ...prev,
           inProgress: true,
-          targetDatabasePath: databaseHandle,
+          targetDatabase: databaseHandle,
           targetDatabaseTitle: filename,
           sourceFileName: `${title}_${type}.pgn`,
         }));
@@ -166,22 +165,10 @@ export function AccountCard({
         await tauri.setProgressState(progressLease, 0, "failed").catch(() => undefined);
         throw caught;
       }
-      await tauri.setProgressState(progressLease, 100, "succeeded");
+      await tauri.setProgressState(progressLease, 100, "succeeded").catch(() => undefined);
       return databaseHandle;
     } finally {
-      setConversionState((previous) =>
-        sameDatabaseHandle(previous.targetDatabasePath, databaseHandle)
-          ? {
-              ...previous,
-              inProgress: false,
-              totalGames: 0,
-              elapsedSeconds: 0,
-              targetDatabasePath: null,
-              targetDatabaseTitle: null,
-              sourceFileName: null,
-            }
-          : previous,
-      );
+      setConversionState(clearOwnedConversion(databaseHandle));
     }
   }
 

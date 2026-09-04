@@ -236,7 +236,7 @@ function ConversionProbe() {
     <output
       data-in-progress={String(state.inProgress)}
       data-total={String(state.totalGames)}
-      data-target={state.targetDatabasePath ? databaseHandleKey(state.targetDatabasePath) : "none"}
+      data-target={state.targetDatabase ? databaseHandleKey(state.targetDatabase) : "none"}
       data-source={state.sourceFileName ?? "none"}
     />
   );
@@ -269,7 +269,7 @@ beforeEach(() => {
     inProgress: false,
     totalGames: 0,
     elapsedSeconds: 0,
-    targetDatabasePath: null,
+    targetDatabase: null,
     targetDatabaseTitle: null,
     sourceFileName: null,
   });
@@ -391,7 +391,7 @@ test("submitting a local conversion disables Add before the workspace handle exi
 
   await vi.waitFor(() => {
     expect(conversionState().inProgress).toBe(true);
-    expect(conversionState().targetDatabasePath).toBeNull();
+    expect(conversionState().targetDatabase).toBeNull();
   });
   expect(
     (host.querySelector('button[aria-label="Common.AddNew"]') as HTMLButtonElement).disabled,
@@ -404,7 +404,7 @@ test("finishing AddDatabase does not wipe a later Add Games conversion or its pr
   await renderRoute();
   await startAddDatabase();
   expect(mocks.convertPgn.mock.calls[0]?.[0]).toBe(conversionProgressId(handleA));
-  expect(conversionState().targetDatabasePath).toEqual(handleA);
+  expect(conversionState().targetDatabase).toEqual(handleA);
   expect(conversionState().inProgress).toBe(true);
 
   await selectExistingDatabase();
@@ -417,12 +417,12 @@ test("finishing AddDatabase does not wipe a later Add Games conversion or its pr
     "",
     null,
   );
-  expect(conversionState().targetDatabasePath).toEqual(handleB);
+  expect(conversionState().targetDatabase).toEqual(handleB);
   expect(conversionState().inProgress).toBe(true);
 
   await act(async () => convertCalls[0]!.resolve());
   await vi.waitFor(() => {
-    expect(conversionState().targetDatabasePath).toEqual(handleB);
+    expect(conversionState().targetDatabase).toEqual(handleB);
     expect(conversionState().inProgress).toBe(true);
   });
 
@@ -449,7 +449,7 @@ test("AccountCard convert() throw clears the conversion it owns", async () => {
   await vi.waitFor(() => expect(mocks.convertPgn).toHaveBeenCalled());
   await vi.waitFor(() => {
     expect(conversionState().inProgress).toBe(false);
-    expect(conversionState().targetDatabasePath).toBeNull();
+    expect(conversionState().targetDatabase).toBeNull();
   });
   expect(mocks.notify).toHaveBeenCalledWith({
     color: "red",
@@ -462,10 +462,10 @@ test("AccountCard convert() throw does not wipe a concurrent Add Games conversio
   await renderRoute(true);
   await selectExistingDatabase();
   await startAccountDownload();
-  expect(conversionState().targetDatabasePath).toEqual(accountHandle);
+  expect(conversionState().targetDatabase).toEqual(accountHandle);
 
   await startAddGames();
-  expect(conversionState().targetDatabasePath).toEqual(handleB);
+  expect(conversionState().targetDatabase).toEqual(handleB);
   expect(conversionState().inProgress).toBe(true);
 
   const accountCall = convertCalls.find(
@@ -473,7 +473,7 @@ test("AccountCard convert() throw does not wipe a concurrent Add Games conversio
   )!;
   await act(async () => accountCall.reject(new Error("convert failed")));
   await vi.waitFor(() => {
-    expect(conversionState().targetDatabasePath).toEqual(handleB);
+    expect(conversionState().targetDatabase).toEqual(handleB);
     expect(conversionState().inProgress).toBe(true);
   });
 });

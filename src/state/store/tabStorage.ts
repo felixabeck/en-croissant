@@ -300,7 +300,10 @@ export class TabStorageRepository {
     clone(sourceTabId: string, targetTabId: string) {
         const source = this.read(sourceTabId);
         if (!source) return;
-        const copy = structuredClone(source);
+        // Round-trip through serialize/parse so a pending partialized store
+        // (which still carries action functions) cannot reach structuredClone.
+        const copy = decodeLegacyOrCompressed(serializeStorageValue(source));
+        if (!copy) return;
         // A duplicate tab must not share a live analysis lease.
         if (isRecord(copy.state)) {
             const report = isRecord(copy.state.report) ? copy.state.report : {};

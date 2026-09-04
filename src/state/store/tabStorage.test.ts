@@ -429,6 +429,33 @@ test("clone does not copy a live report operationId onto the duplicate tab", () 
     });
 });
 
+test("clone of a pending write carrying store actions succeeds without inheriting the report lease", () => {
+    const tree = treeWith((state) => {
+        state.dirty = true;
+        state.report = { inProgress: true, operationId: "report_live" };
+    });
+    storage.write("pending-actions", {
+        version: 0,
+        state: {
+            ...tree,
+            setReportOperationId: () => undefined,
+            setReportInProgress: () => undefined,
+        },
+    });
+
+    expect(() => structuredClone(storage.read("pending-actions"))).toThrow(/could not be cloned/);
+    expect(() => storage.clone("pending-actions", "copy-pending-actions")).not.toThrow();
+
+    expect(storage.read("pending-actions")?.state).toMatchObject({
+        report: { inProgress: true, operationId: "report_live" },
+    });
+    expect(storage.read("copy-pending-actions")?.state).toMatchObject({
+        dirty: true,
+        report: { inProgress: false, operationId: null },
+    });
+    expect(storage.read("copy-pending-actions")?.state).not.toHaveProperty("setReportOperationId");
+});
+
 test("drops corrupt trees rather than letting hydration crash", () => {
     sessionStorage.setItem("broken", "not a tree");
 

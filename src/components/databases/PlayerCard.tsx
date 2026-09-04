@@ -7,13 +7,14 @@ import PersonalPlayerCard from "../home/PersonalCard";
 
 function PlayerCard({ player, file }: { player: Player; file: DatabaseHandle }) {
   const { t } = useTranslation();
-  const { data: info, isLoading } = useSWRImmutable(
-    ["player-game-info", file, player.id],
-    async ([, file, id]) => {
-      const games = await tauri.getPlayersGameInfo(crypto.randomUUID(), file, id);
-      return games;
-    },
-  );
+  const {
+    data: info,
+    isLoading,
+    error,
+  } = useSWRImmutable(["player-game-info", file, player.id], async ([, file, id]) => {
+    const games = await tauri.getPlayersGameInfo(crypto.randomUUID(), file, id);
+    return games;
+  });
 
   return (
     <>
@@ -24,6 +25,13 @@ function PlayerCard({ player, file }: { player: Player; file: DatabaseHandle }) 
               <Text fw="bold">{t("Databases.Player.ProcessingData")}</Text>
               <Loader />
             </Stack>
+          </Center>
+        </Paper>
+      )}
+      {error && (
+        <Paper withBorder h="100%">
+          <Center h="100%">
+            <Text ta="center">{t("Home.Databases.ErrorLoading", { error })}</Text>
           </Center>
         </Paper>
       )}

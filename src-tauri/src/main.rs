@@ -2329,6 +2329,11 @@ mod blocking_offload_scans {
             convert.contains("ConvertProgress"),
             "convert_pgn_blocking must emit ConvertProgress: {convert}"
         );
+        let convert_wrapper = body_at_indent(db, "pub async fn convert_pgn(");
+        assert!(
+            convert_wrapper.contains("description,\n                progress_id,"),
+            "convert_pgn must forward progress_id into convert_pgn_blocking: {convert_wrapper}"
+        );
         let players_info = body_at_indent(db, &blocking_fn_signature(db, "get_players_game_info"));
         assert!(
             players_info.contains("ProgressLease"),
@@ -2348,6 +2353,12 @@ mod blocking_offload_scans {
         assert!(
             players_wrapper.contains("JobProgress::new(app.clone(), progress_id)"),
             "get_players_game_info must construct JobProgress from the renderer-minted id: {players_wrapper}"
+        );
+        assert!(
+            players_wrapper.contains(
+                "get_players_game_info_blocking(&authority, &repository, file, id, worker_app, lease)"
+            ),
+            "get_players_game_info must forward the JobProgress lease into the blocking call: {players_wrapper}"
         );
         assert!(
             players_wrapper.contains(".ok()"),

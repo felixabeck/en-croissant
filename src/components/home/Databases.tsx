@@ -12,7 +12,7 @@ import {
 } from "@mantine/core";
 import { IconDatabaseOff } from "@tabler/icons-react";
 import { useAtomValue } from "jotai";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import type { DatabaseInfo as PlainDatabaseInfo, PlayerGameInfo } from "@/bindings";
@@ -20,7 +20,7 @@ import { notifyListenerError } from "@/components/files/notifyError";
 import { sessionsAtom } from "@/state/atoms";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { activeDatabaseViewStore } from "@/state/store/database";
-import { getDatabases, query_players } from "@/utils/db";
+import { databaseHandleKey, getDatabases, query_players } from "@/utils/db";
 import type { Session } from "@/utils/session";
 import { DatabaseViewStateContext } from "../databases/DatabaseViewStateContext";
 import PersonalPlayerCard from "./PersonalCard";
@@ -50,6 +50,18 @@ interface PersonalInfo {
   db: DatabaseInfo;
   info: PlayerGameInfo;
 }
+
+/** Stable identity matching the `["personalInfo", name, databases]` SWR key. */
+function personalInfoProgressKey(name: string, databases: DatabaseInfo[]): string {
+  return JSON.stringify(["personalInfo", name, databases.map((db) => databaseHandleKey(db.file))]);
+}
+
+/**
+ * Owned progress ids for an in-flight personalInfo fetch. Module-scoped so a remount
+ * can still match ProgressEvents while SWR reuses the original fetcher. The entry is
+ * replaced at the start of each fetch so the map cannot grow without bound.
+ */
+const ownedProgressByKey = new Map<string, Map<string, number>>();
 
 function Databases() {
   const { t } = useTranslation();
@@ -84,20 +96,21 @@ function Databases() {
     },
   );
 
-  const ownedProgress = useRef<Map<string, number>>(new Map());
-
   const {
     data: personalInfo,
     isLoading,
     error,
   } = useSWRImmutable<PersonalInfo[]>(
     databases && name ? ["personalInfo", name, databases] : null,
-    async () => {
-      ownedProgress.current = new Map();
-      const playerDbs = playerDbNames.find((p) => p.name === name)?.databases;
-      if (!databases || !playerDbs) return [];
+    async ([, playerName, playerDatabases]: [string, string, DatabaseInfo[]]) => {
+      const progressKey = personalInfoProgressKey(playerName, playerDatabases);
+      const map = new Map<string, number>();
+      ownedProgressByKey.clear();
+      ownedProgressByKey.set(progressKey, map);
+      const playerDbs = playerDbNames.find((p) => p.name === playerName)?.databases;
+      if (!playerDbs) return [];
       const results = await Promise.allSettled(
-        databases
+        playerDatabases
           .filter((db) => playerDbs.includes((db.type === "success" && db.title) || ""))
           .map(async (db) => {
             const players = await query_players(db.file, {
@@ -114,7 +127,7 @@ function Databases() {
             }
             const player = players.data[0];
             const progressId = crypto.randomUUID();
-            ownedProgress.current.set(progressId, 0);
+            map.set(progressId, 0);
             const info = await tauri.getPlayersGameInfo(progressId, db.file, player.id);
             return { db, info };
           }),
@@ -134,15 +147,16 @@ function Databases() {
   useTauriListener(
     subscribeProgress,
     (e) => {
-      const map = ownedProgress.current;
-      if (!map.has(e.payload.id)) {
+      if (!databases || !name) {
+        return;
+      }
+      const map = ownedProgressByKey.get(personalInfoProgressKey(name, databases));
+      if (!map?.has(e.payload.id)) {
         return;
       }
       map.set(e.payload.id, e.payload.progress);
       const values = [...map.values()];
-      setProgress(
-        values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length,
-      );
+      setProgress(values.reduce((sum, value) => sum + value, 0) / values.length);
     },
     { onError: notifyListenerError },
   );

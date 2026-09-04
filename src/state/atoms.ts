@@ -25,7 +25,7 @@ import { DEFAULT_TIME_CONTROL, type OpponentSettings } from "@/components/boards
 import { type Position, positionSchema } from "@/components/files/opening";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import { positionFromFen, swapMove } from "@/utils/chessops";
-import type { SuccessDatabaseInfo } from "@/utils/db";
+import { sameDatabaseHandle, type SuccessDatabaseInfo } from "@/utils/db";
 import { type Engine, type EngineSettings, engineSchema } from "@/utils/engines";
 import {
     type LichessGamesOptions,
@@ -410,20 +410,32 @@ export type DatabaseConversionState = {
     inProgress: boolean;
     totalGames: number;
     elapsedSeconds: number;
-    targetDatabasePath: DatabaseHandle | null;
+    targetDatabase: DatabaseHandle | null;
     targetDatabaseTitle: string | null;
     sourceFileName: string | null;
 };
 
-/** Backend jobs are reconciled by their native IDs at startup; never restore a stale snapshot. */
-export const databaseConversionStateAtom = atom<DatabaseConversionState>({
+export const idleDatabaseConversionState: DatabaseConversionState = {
     inProgress: false,
     totalGames: 0,
     elapsedSeconds: 0,
-    targetDatabasePath: null,
+    targetDatabase: null,
     targetDatabaseTitle: null,
     sourceFileName: null,
-});
+};
+
+/** Backend jobs are reconciled by their native IDs at startup; never restore a stale snapshot. */
+export const databaseConversionStateAtom = atom<DatabaseConversionState>(
+    idleDatabaseConversionState,
+);
+
+/** Restore the idle snapshot only when `previous.targetDatabase` is `handle`. */
+export function clearOwnedConversion(handle: DatabaseHandle | null) {
+    return (previous: DatabaseConversionState): DatabaseConversionState =>
+        sameDatabaseHandle(previous.targetDatabase, handle)
+            ? idleDatabaseConversionState
+            : previous;
+}
 
 /** Database metadata is authoritative in native storage, not in renderer persistence. */
 export const selectedDatabaseAtom = atom<SuccessDatabaseInfo | null>(null);

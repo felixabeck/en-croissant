@@ -175,6 +175,34 @@ test("two owned ids average", async () => {
   expect(displayedProgress()).toContain("50%");
 });
 
+test("a ProgressEvent under an id registered by the original fetcher still moves the bar after unmount and remount", async () => {
+  const cache = new Map();
+  const swrConfig = { provider: () => cache };
+
+  async function renderDatabasesMounted(mounted: boolean) {
+    await act(async () => {
+      root.render(<SWRConfig value={swrConfig}>{mounted ? <Databases /> : null}</SWRConfig>);
+    });
+  }
+
+  await renderDatabasesMounted(true);
+  await vi.waitFor(() => expect(mocks.getPlayersGameInfo).toHaveBeenCalled());
+  const ownedId = mocks.getPlayersGameInfo.mock.calls[0][0] as string;
+
+  await renderDatabasesMounted(false);
+  await renderDatabasesMounted(true);
+
+  expect(mocks.getPlayersGameInfo).toHaveBeenCalledTimes(1);
+  await vi.waitFor(() => expect(displayedProgress()).toContain("0%"));
+
+  await act(async () => {
+    progressListener(progressEvent(ownedId, 40));
+  });
+
+  expect(displayedProgress()).toContain("40%");
+  expect(container.querySelector("[data-testid='progress']")?.textContent).toBe("40");
+});
+
 test("a foreign event arriving before any id is registered renders 0% not NaN%", async () => {
   let resolvePlayers!: (value: {
     data: Array<{ id: number; name: string; elo: null }>;

@@ -192,6 +192,37 @@ describe("useProgress", () => {
     expect(container.querySelector("output")?.dataset.generation).toBe("none");
   });
 
+  test("drops a progress event whose id does not match the subscription", async () => {
+    mocks.getProgress.mockResolvedValue(null);
+    await act(async () => root.render(<Probe id="job" />));
+
+    await act(async () => {
+      eventHandler?.({
+        payload: {
+          id: "job",
+          generation: BigInt(1),
+          progress: 40,
+          finished: false,
+          state: "running",
+          cleared: false,
+        },
+      });
+      eventHandler?.({
+        payload: {
+          id: "other-job",
+          generation: BigInt(2),
+          progress: 90,
+          finished: true,
+          state: "succeeded",
+          cleared: false,
+        },
+      });
+    });
+
+    expect(container.querySelector("output")?.textContent).toBe("40:false");
+    expect(container.querySelector("output")?.dataset.generation).toBe("1");
+  });
+
   test("changing IDs resets the generation floor and visible item", async () => {
     mocks.getProgress.mockImplementation(async (id: string) =>
       id === "first"

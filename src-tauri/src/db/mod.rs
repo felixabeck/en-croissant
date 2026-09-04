@@ -1781,6 +1781,11 @@ pub async fn get_players_game_info(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<PlayerGameInfo, Error> {
+    // `.ok()` rather than `?`: this command returns data that
+    // `src/components/home/Databases.tsx` consumes through `Promise.allSettled`,
+    // which swallows rejections. Failing because a progress emit failed would
+    // silently drop one personal database from the home card with no error
+    // anywhere.
     let progress = JobProgress::new(app.clone(), progress_id).ok();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
@@ -4300,17 +4305,16 @@ mod tests {
         .unwrap();
     }
 
-    fn capture_progress_events(
+    fn capture_events<E>(
         app: &tauri::AppHandle<tauri::test::MockRuntime>,
-    ) -> std::sync::Arc<std::sync::Mutex<Vec<crate::progress::ProgressEvent>>> {
-        use tauri_specta::Event as _;
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<E>>>
+    where
+        E: tauri_specta::Event + serde::de::DeserializeOwned + Send + 'static,
+    {
         let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = frames.clone();
-        crate::progress::ProgressEvent::listen(app, move |event| {
-            captured
-                .lock()
-                .expect("progress frames")
-                .push(event.payload);
+        E::listen(app, move |event| {
+            captured.lock().expect("event frames").push(event.payload);
         });
         frames
     }
@@ -4336,7 +4340,7 @@ mod tests {
             crate::progress::begin_progress(&state.progress_state, &app, progress_id.to_string())
                 .unwrap()
         };
-        let frames = capture_progress_events(&app);
+        let frames = capture_events::<crate::progress::ProgressEvent>(&app);
         let state = app.state::<AppState>();
         get_players_game_info_blocking(
             &state.pgn_path_authority,
@@ -4381,7 +4385,7 @@ mod tests {
             crate::progress::begin_progress(&state.progress_state, &app, progress_id.to_string())
                 .unwrap()
         };
-        let frames = capture_progress_events(&app);
+        let frames = capture_events::<crate::progress::ProgressEvent>(&app);
         let state = app.state::<AppState>();
         get_players_game_info_blocking(
             &state.pgn_path_authority,
@@ -4407,21 +4411,6 @@ mod tests {
         tauri_specta::Builder::<tauri::test::MockRuntime>::new()
             .events(tauri_specta::collect_events!(ConvertProgress))
             .mount_events(app);
-    }
-
-    fn capture_convert_progress(
-        app: &tauri::AppHandle<tauri::test::MockRuntime>,
-    ) -> std::sync::Arc<std::sync::Mutex<Vec<ConvertProgress>>> {
-        use tauri_specta::Event as _;
-        let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured = frames.clone();
-        ConvertProgress::listen(app, move |event| {
-            captured
-                .lock()
-                .expect("convert progress frames")
-                .push(event.payload);
-        });
-        frames
     }
 
     #[test]
@@ -4454,7 +4443,7 @@ mod tests {
             FileWorkspaceHandle::new(commit.id)
         };
         mount_convert_progress_events(&app);
-        let frames = capture_convert_progress(&app);
+        let frames = capture_events::<ConvertProgress>(&app);
         let progress_id = "convert-one-game";
         let state = app.state::<AppState>();
         convert_pgn_blocking(

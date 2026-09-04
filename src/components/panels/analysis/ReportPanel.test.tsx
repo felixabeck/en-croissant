@@ -2,8 +2,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
+import { tabStorage } from "@/state/store/tabStorage";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
 import { getMainLine } from "@/utils/chess";
+import type { TreeState } from "@/utils/treeReducer";
 import ReportPanel from "./ReportPanel";
 
 const mocks = vi.hoisted(() => ({
@@ -19,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   setReportingMode: vi.fn(),
   setReportSettings: vi.fn(),
   reportingMode: false,
+  progressId: undefined as string | undefined,
   progress: {
     finished: false,
     progress: 0,
@@ -57,7 +60,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/hooks/useProgress", () => ({
-  useProgress: () => mocks.progress,
+  useProgress: (id: string) => {
+    mocks.progressId = id;
+    return mocks.progress;
+  },
 }));
 vi.mock("@/platform/tauri", () => ({
   tauri: {
@@ -186,6 +192,7 @@ async function renderPanel() {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.reportingMode = false;
+  mocks.progressId = undefined;
   mocks.progress.finished = false;
   mocks.progress.progress = 0;
   mocks.progress.isActive = false;
@@ -205,6 +212,8 @@ afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
   vi.unstubAllGlobals();
+  tabStorage.flush();
+  tabStorage.remove("tab-1");
 });
 
 test("ProgressButton subscribes to the registered operation id without treating success as complete", async () => {
@@ -239,6 +248,29 @@ test("cancel after remount against the same tree store cancels the registered id
   expect(store.getState().report.inProgress).toBe(false);
 });
 
+test("cancel after a board-tab remount hydrating through tabStorage cancels the registered id", async () => {
+  store = createTreeStore("tab-1");
+  await renderPanel();
+  await act(async () => {
+    mocks.reportModalProps!.registerOperation("report_tab-1_uuid");
+  });
+  tabStorage.flush();
+
+  await act(async () => root.unmount());
+  // Zustand persist defaults version to 0; tabStorage writes version 1, so
+  // createTreeStore("tab-1") will not rehydrate. Load the persisted snapshot.
+  const persisted = tabStorage.read("tab-1");
+  store = createTreeStore(undefined, persisted?.state as TreeState);
+  root = createRoot(host);
+  await renderPanel();
+
+  expect(mocks.progressButtonProps?.id).toBe("report_tab-1_uuid");
+  await act(async () => {
+    mocks.progressButtonProps?.onCancel?.();
+  });
+  expect(mocks.cancelAnalysis).toHaveBeenCalledWith("report_tab-1_uuid");
+});
+
 test("isCurrentOperation reads the live store, not a render snapshot", async () => {
   await renderPanel();
   const isCurrent = mocks.reportModalProps!.isCurrentOperation;
@@ -250,6 +282,7 @@ test("isCurrentOperation reads the live store, not a render snapshot", async () 
 
   expect(isCurrent("report_tab-1_uuid", fingerprint)).toBe(true);
   expect(isCurrent("report_other", fingerprint)).toBe(false);
+  expect(isCurrent("report_tab-1_uuid", "different-fingerprint")).toBe(false);
 });
 
 test("a finished progress item clears inProgress while leaving the operation id", async () => {
@@ -262,6 +295,7 @@ test("a finished progress item clears inProgress while leaving the operation id"
   mocks.progress.finished = true;
   await renderPanel();
 
+  expect(mocks.progressId).toBe("op-1");
   expect(store.getState().report.inProgress).toBe(false);
   expect(store.getState().report.operationId).toBe("op-1");
 });

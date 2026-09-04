@@ -13,9 +13,10 @@ import { conversionProgressId } from "@/utils/db";
  *
  * This is mounted application-wide rather than on the databases route: an import
  * keeps running while the user navigates away, and the counters have to be
- * correct when they come back. It only writes the fields the native event owns,
- * so it cannot clobber the target database, title, or the `inProgress` flag that
- * the route itself sets around the conversion call.
+ * correct when they come back. A frame is applied only when its `id` matches
+ * `conversionProgressId` of the conversion currently stored in `targetDatabase`;
+ * matching frames also set `inProgress: true`. The owning route still writes
+ * the target database and title.
  */
 export function useConversionProgress() {
     const setConversionState = useSetAtom(databaseConversionStateAtom);
@@ -31,8 +32,8 @@ export function useConversionProgress() {
         ({ payload }) => {
             setConversionState((previous) => {
                 if (
-                    previous.targetDatabasePath == null ||
-                    payload.id !== conversionProgressId(previous.targetDatabasePath)
+                    previous.targetDatabase == null ||
+                    payload.id !== conversionProgressId(previous.targetDatabase)
                 ) {
                     return previous;
                 }

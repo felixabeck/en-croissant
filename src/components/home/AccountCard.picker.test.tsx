@@ -48,6 +48,7 @@ vi.mock("jotai", async (importOriginal) => ({
 vi.mock("@/state/atoms", () => ({
   downloadDestinationAtom: Symbol("downloadDestination"),
   databaseConversionStateAtom: Symbol("conversion"),
+  clearOwnedConversion: () => (previous: unknown) => previous,
 }));
 vi.mock("@/platform/useTauriListener", () => ({
   useTauriListener: () => undefined,
@@ -189,5 +190,37 @@ test("convertPgn failure is not masked when marking the lease failed also reject
   expect(mocks.notify).not.toHaveBeenCalledWith(
     expect.objectContaining({ message: "progress failed" }),
   );
+  expect(downloadButton().disabled).toBe(false);
+});
+
+test("a rejecting setProgressState after a successful convert still runs the post-import step", async () => {
+  const destination = { id: "dest" };
+  const artifact = { id: { id: "pgn" }, kind: "fileWorkspace" as const };
+  const root = { id: { id: "database-root" }, kind: "databaseRoot" };
+  const handle = { id: { id: "database" }, kind: "database" as const };
+  const lease = { id: "chesscom_Felix", generation: 1n };
+  mocks.issueDownloadDestination.mockResolvedValue(destination);
+  mocks.downloadChessCom.mockResolvedValue(artifact);
+  mocks.getDatabaseWorkspace.mockResolvedValue(root);
+  mocks.listWorkspaceDatabases.mockResolvedValue([
+    { handle, filename: "Felix_chesscom.db3", availability: "available" },
+  ]);
+  mocks.startProgress.mockResolvedValue(lease);
+  mocks.convertPgn.mockResolvedValue(undefined);
+  mocks.setProgressState.mockRejectedValue(new Error("progress failed"));
+  mocks.deleteEmptyGames.mockResolvedValue(undefined);
+  await renderCard();
+  await act(async () => downloadButton().click());
+  expect(mocks.convertPgn).toHaveBeenCalledWith(
+    conversionProgressId(handle),
+    [artifact],
+    handle,
+    null,
+    "Felix Chess.com",
+    null,
+  );
+  expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 100, "succeeded");
+  expect(mocks.deleteEmptyGames).toHaveBeenCalledWith(handle);
+  expect(mocks.notify).not.toHaveBeenCalled();
   expect(downloadButton().disabled).toBe(false);
 });

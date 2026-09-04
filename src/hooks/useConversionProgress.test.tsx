@@ -62,7 +62,7 @@ beforeEach(async () => {
     inProgress: false,
     totalGames: 0,
     elapsedSeconds: 0,
-    targetDatabasePath: target,
+    targetDatabase: target,
     targetDatabaseTitle: "Lichess import",
     sourceFileName: "games.pgn",
   });
@@ -137,7 +137,7 @@ test("does not start a conversion when no target database is in flight", async (
       inProgress: false,
       totalGames: 0,
       elapsedSeconds: 0,
-      targetDatabasePath: null,
+      targetDatabase: null,
       targetDatabaseTitle: null,
       sourceFileName: null,
     });

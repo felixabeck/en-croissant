@@ -30,7 +30,7 @@ import { useTranslation } from "react-i18next";
 import useSWR, { useSWRConfig } from "swr";
 import type { DatabaseHandle, DatabaseInfo } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
-import { databaseConversionStateAtom, referenceDbAtom } from "@/state/atoms";
+import { clearOwnedConversion, databaseConversionStateAtom, referenceDbAtom } from "@/state/atoms";
 import { activeDatabaseViewStore, useActiveDatabaseViewStore } from "@/state/store/database";
 import {
   conversionProgressId,
@@ -69,13 +69,13 @@ export default function DatabasesPage() {
   );
   const visibleDatabases = useMemo(() => {
     return (databases ?? []).filter((item) => {
-      if (!conversionState.inProgress || !conversionState.targetDatabasePath) {
+      if (!conversionState.inProgress || !conversionState.targetDatabase) {
         return true;
       }
 
-      return !sameDatabaseHandle(item.file, conversionState.targetDatabasePath);
+      return !sameDatabaseHandle(item.file, conversionState.targetDatabase);
     });
-  }, [databases, conversionState.inProgress, conversionState.targetDatabasePath]);
+  }, [databases, conversionState.inProgress, conversionState.targetDatabase]);
   const filteredDatabases = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
     if (!normalizedSearch) {
@@ -475,25 +475,13 @@ export default function DatabasesPage() {
                               setConversionState((prev) => ({
                                 ...prev,
                                 inProgress: true,
-                                targetDatabasePath: dest,
+                                targetDatabase: dest,
                                 targetDatabaseTitle: selectedDatabase.title,
                                 sourceFileName,
                               }));
                             },
                             finish: () => {
-                              setConversionState((previous) =>
-                                sameDatabaseHandle(previous.targetDatabasePath, dest)
-                                  ? {
-                                      ...previous,
-                                      inProgress: false,
-                                      totalGames: 0,
-                                      elapsedSeconds: 0,
-                                      targetDatabasePath: null,
-                                      targetDatabaseTitle: null,
-                                      sourceFileName: null,
-                                    }
-                                  : previous,
-                              );
+                              setConversionState(clearOwnedConversion(dest));
                             },
                           });
                         }}

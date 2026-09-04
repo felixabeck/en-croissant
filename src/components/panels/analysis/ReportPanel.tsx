@@ -34,7 +34,9 @@ function ReportPanel() {
   const rootFingerprintRef = useRef(rootFingerprint);
   rootFingerprintRef.current = rootFingerprint;
 
-  const progressId = operationId ?? `report_${activeTab}`;
+  // Inert placeholder that never matches an emitted event; useProgress requires a string.
+  const IDLE_REPORT_PROGRESS_ID = `report_${activeTab}`;
+  const progressId = operationId ?? IDLE_REPORT_PROGRESS_ID;
   const { finished } = useProgress(progressId);
 
   useEffect(() => {
@@ -83,13 +85,6 @@ function ReportPanel() {
     if (id) void tauri.cancelAnalysis(id);
   }, [setInProgress, setReportOperationId, store]);
 
-  const registerOperation = useCallback(
-    (id: string) => {
-      setReportOperationId(id);
-    },
-    [setReportOperationId],
-  );
-
   const isCurrentOperation = useCallback(
     (id: string, fingerprint: string) =>
       store.getState().report.operationId === id && rootFingerprintRef.current === fingerprint,
@@ -113,7 +108,7 @@ function ReportPanel() {
         reportingMode={reportingMode}
         closeReportingMode={closeReportingMode}
         setInProgress={setInProgress}
-        registerOperation={registerOperation}
+        registerOperation={setReportOperationId}
         isCurrentOperation={isCurrentOperation}
       />
       <Stack mb="lg" gap="0.4rem" mr="xs">

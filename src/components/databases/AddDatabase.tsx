@@ -22,12 +22,11 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { KeyedMutator } from "swr";
 import { type DatabaseHandle, type DatabaseInfo, type FileWorkspaceHandle } from "@/bindings";
-import { databaseConversionStateAtom } from "@/state/atoms";
+import { clearOwnedConversion, databaseConversionStateAtom } from "@/state/atoms";
 import {
   conversionProgressId,
   getDatabases,
   manifestDatabaseInstallCard,
-  sameDatabaseHandle,
   type DownloadableDatabaseInfo,
   useDefaultDatabases,
 } from "@/utils/db";
@@ -105,25 +104,12 @@ function AddDatabase({
         thisHandle = dbPath;
         setConversionState((prev) => ({
           ...prev,
-          targetDatabasePath: dbPath,
+          targetDatabase: dbPath,
         }));
       });
       await setDatabases(await getDatabases());
     } finally {
-      setConversionState((previous) =>
-        sameDatabaseHandle(previous.targetDatabasePath, thisHandle) ||
-        (thisHandle === null && previous.targetDatabasePath === null)
-          ? {
-              ...previous,
-              inProgress: false,
-              totalGames: 0,
-              elapsedSeconds: 0,
-              targetDatabasePath: null,
-              targetDatabaseTitle: null,
-              sourceFileName: null,
-            }
-          : previous,
-      );
+      setConversionState(clearOwnedConversion(thisHandle));
     }
   }
 
