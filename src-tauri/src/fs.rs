@@ -769,6 +769,20 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
     }
 
     let reservation = if register_pgn_artifact {
+        let payload =
+            match crate::infra::path_authority::hash_staged_payload(staged_file.clone()).await {
+                Ok(payload) => payload,
+                Err(error) => {
+                    update_progress_with_state(
+                        &state.progress_state,
+                        app,
+                        &progress_lease,
+                        0.0,
+                        ProgressState::Failed,
+                    )?;
+                    return Err(error);
+                }
+            };
         let reservation = state
             .pgn_path_authority
             .lock()
@@ -778,7 +792,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
             .reserve_download_artifact(
                 &destination,
                 filename.clone(),
-                &staged_file,
+                payload,
                 filename.to_string_lossy().into_owned(),
                 vec![crate::infra::path_authority::PathOperation::ReadPgn],
             );
@@ -920,6 +934,8 @@ pub(crate) async fn install_staged_pgn_artifact(
     state: &AppState,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
     let filename = std::ffi::OsString::from(filename);
+    let payload =
+        crate::infra::path_authority::hash_staged_payload(staged.path().to_path_buf()).await?;
     let reservation = state
         .pgn_path_authority
         .lock()
@@ -929,7 +945,7 @@ pub(crate) async fn install_staged_pgn_artifact(
         .reserve_download_artifact(
             &destination,
             filename.clone(),
-            staged.path(),
+            payload,
             filename.to_string_lossy().into_owned(),
             vec![crate::infra::path_authority::PathOperation::ReadPgn],
         )?;

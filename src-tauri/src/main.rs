@@ -2348,6 +2348,56 @@ mod blocking_offload_scans {
     }
 
     #[test]
+    fn s5_staged_hash_leaves_the_guard_and_the_tokio_worker() {
+        let path_authority = include_str!("infra/path_authority.rs");
+        let reserve = body_at_indent(path_authority, "fn reserve_download_artifact");
+        assert!(
+            !reserve.contains("sha256_file"),
+            "reserve_download_artifact must not hash the staged payload: {reserve}"
+        );
+        assert!(
+            !reserve.contains("sha256_open_file"),
+            "reserve_download_artifact must not hash the staged payload: {reserve}"
+        );
+
+        let activate = body_at_indent(path_authority, "fn activate_download_artifact");
+        assert!(
+            activate.contains("sha256_open_file"),
+            "activate_download_artifact must hash the published inode: {activate}"
+        );
+
+        let helper = body_at_indent(path_authority, "pub(crate) async fn hash_staged_payload");
+        let gateway = helper
+            .find("BLOCKING_GATEWAY")
+            .expect("hash_staged_payload must acquire BLOCKING_GATEWAY");
+        let hash = helper
+            .find("sha256_file")
+            .expect("hash_staged_payload must call sha256_file");
+        assert!(
+            gateway < hash,
+            "hash_staged_payload must enter BLOCKING_GATEWAY before hashing: {helper}"
+        );
+
+        let fs = include_str!("fs.rs");
+        for signature in [
+            "async fn download_to_destination_inner",
+            "pub(crate) async fn install_staged_pgn_artifact",
+        ] {
+            let body = body_at_indent(fs, signature);
+            let hash = body
+                .find("hash_staged_payload")
+                .unwrap_or_else(|| panic!("{signature} must call hash_staged_payload: {body}"));
+            let reserve = body.find("reserve_download_artifact").unwrap_or_else(|| {
+                panic!("{signature} must call reserve_download_artifact: {body}")
+            });
+            assert!(
+                hash < reserve,
+                "{signature} must hash the staged payload before reserve_download_artifact: {body}"
+            );
+        }
+    }
+
+    #[test]
     fn s7_analyze_game_kills_the_engine_before_the_novelty_lookup() {
         let chess = include_str!("chess.rs");
         let body = body_at_indent(chess, "pub async fn analyze_game(");

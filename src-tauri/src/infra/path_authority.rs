@@ -749,6 +749,14 @@ fn sha256_file(path: &Path) -> Result<(u64, String), Error> {
     sha256_open_file(&mut file)
 }
 
+/// SHA-256 of an exclusive staged tempfile. Runs on the blocking pool so neither
+/// the Tokio worker nor the process-wide authority mutex is occupied for the hash.
+pub(crate) async fn hash_staged_payload(path: PathBuf) -> Result<(u64, String), Error> {
+    crate::infra::blocking::BLOCKING_GATEWAY
+        .spawn(move || sha256_file(&path))
+        .await
+}
+
 fn sha256_open_file(file: &mut fs::File) -> Result<(u64, String), Error> {
     let mut hasher = Sha256::new();
     let mut size = 0_u64;
@@ -3170,13 +3178,14 @@ impl PathAuthority {
     }
 
     /// Persists a recovery intent before the download target is mutated. It binds the root inode,
-    /// single leaf, and SHA-256/size of the already-complete staging payload. The reservation has
-    /// no renderer-visible capability and cannot be used to access the target until activation.
+    /// single leaf, and the caller-supplied SHA-256/size of the already-complete staging payload.
+    /// The reservation has no renderer-visible capability and cannot be used to access the target
+    /// until activation.
     pub(crate) fn reserve_download_artifact(
         &mut self,
         root: &PathRef,
         filename: OsString,
-        staged_payload: &Path,
+        (payload_size, payload_sha256): (u64, String),
         display_name: impl Into<String>,
         operations: Vec<PathOperation>,
     ) -> Result<PendingArtifactReservation, Error> {
@@ -3219,7 +3228,6 @@ impl PathAuthority {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(Error::from(error)),
         };
-        let (payload_size, payload_sha256) = sha256_file(staged_payload)?;
         let pending = PendingArtifact {
             id: PathRef::fresh(),
             root: root.clone(),
@@ -5616,7 +5624,7 @@ mod tests {
                 .reserve_download_artifact(
                     &root_id,
                     OsString::from("games.pgn"),
-                    &staged,
+                    sha256_file(&staged).unwrap(),
                     "games.pgn",
                     vec![PathOperation::ReadPgn],
                 )
@@ -5672,7 +5680,7 @@ mod tests {
                 .reserve_download_artifact(
                     &app_root.id,
                     OsString::from("games.pgn"),
-                    &staged,
+                    sha256_file(&staged).unwrap(),
                     "games.pgn",
                     vec![PathOperation::ReadPgn],
                 )
@@ -5703,7 +5711,7 @@ mod tests {
             .reserve_download_artifact(
                 &app_root.id,
                 OsString::from("games.pgn"),
-                &staged,
+                sha256_file(&staged).unwrap(),
                 "games.pgn",
                 vec![PathOperation::ReadPgn],
             )
@@ -5751,7 +5759,7 @@ mod tests {
             .reserve_download_artifact(
                 &app_root.id,
                 OsString::from("games.pgn"),
-                &staged,
+                sha256_file(&staged).unwrap(),
                 "games.pgn",
                 vec![PathOperation::ReadPgn],
             )
@@ -6396,7 +6404,7 @@ mod tests {
             .reserve_download_artifact(
                 &root,
                 OsString::from("first"),
-                &staged,
+                sha256_file(&staged).unwrap(),
                 "first",
                 vec![PathOperation::ReadPgn],
             )
@@ -6410,7 +6418,7 @@ mod tests {
             .reserve_download_artifact(
                 &root,
                 OsString::from("second"),
-                &staged,
+                sha256_file(&staged).unwrap(),
                 "second",
                 vec![PathOperation::ReadPgn],
             )
@@ -6611,7 +6619,7 @@ mod tests {
             .reserve_download_artifact(
                 removed.path_ref(),
                 OsString::from("stale.pgn"),
-                &staged,
+                sha256_file(&staged).unwrap(),
                 "stale.pgn",
                 vec![PathOperation::ReadPgn],
             )
@@ -6642,7 +6650,7 @@ mod tests {
             .reserve_download_artifact(
                 &root,
                 OsString::from("sibling.pgn"),
-                &staged,
+                sha256_file(&staged).unwrap(),
                 "sibling.pgn",
                 vec![PathOperation::ReadPgn],
             )
