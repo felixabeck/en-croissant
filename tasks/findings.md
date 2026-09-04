@@ -5542,3 +5542,64 @@ The shared `closing_paren` helper introduced here became the basis of the closur
   explicitly under "What is NOT proved" rather than claiming a proof it does not have.
 * **Found by:** rounds 6 to 13 of the plan review for the `blocking-work-not-offloaded` cluster;
   filed by that plan's phase 7, 2026-09-04.
+
+---
+
+## 2026-09-04 — filed through the inbox spool
+
+### Debug builds send every log record to the renderer, so any logged native cause is renderer-visible
+
+* **ID:** f-20260904-07 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs:1615` (`let log_targets = [TargetKind::Stdout, TargetKind::Webview];`
+  under `#[cfg(debug_assertions)]`), `src-tauri/src/main.rs:1635` (`.level(LevelFilter::Info)`),
+  and `src/App.tsx:89` (`attachConsole()`).
+* **Defect:** in a debug build every `log::info!`/`warn!`/`error!` record in the backend is
+  emitted on the `log://log` channel by `tauri-plugin-log` and attached to the renderer console.
+  The renderer is therefore a live sink for arbitrary backend log text, including absolute paths,
+  SQL fragments, connection strings and keyring diagnostics. Release builds are unaffected
+  (`main.rs:1618-1622` uses `Stdout` + `LogDir`), but debug is the build the project is developed
+  and driven in, and `pnpm verify:app` runs a release binary while `pnpm dev` does not.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` forbids moving a raw backend
+  diagnostic into the renderer, and `.claude/rules/ipc-events.md` owns the renderer boundary. The
+  command surface is being made typed and leak-free by `f-20260830-08`, and this is the second,
+  unguarded channel into the same process — a backend author who logs a cause reasonably believes
+  it stays backend-side. No gate can see it: `tauri:boundary:check` inspects renderer imports and
+  `bindings:check` inspects types, and neither models a log target.
+* **How it surfaced:** the `review-tauri-security` lens (confidence 93) during plan review of the
+  `f-20260830-08` typed-error plan, 2026-09-04. That plan's first draft logged the dropped native
+  cause from `impl Serialize for Error`, which would have delivered the exact text it was removing
+  from the wire straight back to the renderer. The plan dropped the logging instead
+  (`d-PENDING`, D-G) and filed this, because the log-target configuration is `main.rs` bootstrap
+  and a different file set.
+* **Fix shape:** decide whether the webview target is wanted at all; if it is, it needs its own
+  level or its own filtered target rather than sharing `LevelFilter::Info` with stdout, so that
+  a diagnostic can be logged backend-side without reaching the renderer. Verified by a test that
+  a record containing a path is absent from the webview target's stream.
+* **Related:** `f-20260830-08` (open) is the command-surface half of the same boundary; `Root` is
+  `-` because the mechanism is a log target, not the error contract.
+
+### `close_splashscreen` is the one command whose IPC error stays an untyped string
+
+* **ID:** f-20260904-08 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs:410-414` — `close_splashscreen` returns `Result<(), String>` and
+  builds its two failures with `ok_or_else(|| "no window labeled 'main' found".to_string())` and
+  `main_win.show().map_err(|e| e.to_string())`. Renderer side: `src/bindings/generated.ts:8`
+  (`Promise<Result<null, string>>`).
+* **Defect:** every other fallible command in the application returns `Result<_, crate::error::Error>`
+  (108 of 114). This one carries a hand-rolled `String`, so after `f-20260830-08` types the `Error`
+  wire contract it is the single remaining `Result<T, string>` in `generated.ts` and the single
+  command whose error the renderer must still classify by prose. `map_err(|e| e.to_string())` on a
+  `tauri::Error` also puts that error's `Display` — which can name a window label or a path — on the
+  wire unredacted, the same class the typed contract removes everywhere else.
+* **Why it matters:** one untyped exception to a typed contract is the shape that makes the next
+  author think the contract is optional, and it is the reason `src/platform/errors.ts` must keep a
+  string-classification fallback path for a command at all. Converting it lets the fallback be
+  documented as renderer-originated errors only.
+* **Fix shape:** return `Result<(), Error>`; `Error::InvalidInput` (or a `MissingResource` arm) for
+  the absent window, `Error::Tauri` for the `show()` failure. Regenerate bindings. `src/App.tsx` is
+  the only caller — check whether it inspects the error at all.
+* **Pre-existing:** yes; untouched by the typed-error work, which deliberately scoped it out.
+* **Related:** `f-20260830-08` (open) types the other 108. `Root` is `-` because this is a single
+  command's signature rather than the shared serialization mechanism.
+* **Found by:** the locate probe and three lenses during plan review of the `f-20260830-08` typed-error
+  plan, 2026-09-04.
