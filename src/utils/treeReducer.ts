@@ -108,6 +108,7 @@ export function defaultTree(fen?: string): TreeState {
         },
         report: {
             inProgress: false,
+            operationId: null,
         },
         boardStateMap: {},
     };
@@ -207,6 +208,7 @@ export function buildTranspositionMaps(
 
 export interface ReportState {
     inProgress: boolean;
+    operationId: string | null;
 }
 
 export function getBoardState(fen: string): string {

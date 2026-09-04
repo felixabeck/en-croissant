@@ -7,6 +7,7 @@ import ReportModal from "./ReportModal";
 const mocks = vi.hoisted(() => ({
   addAnalysis: vi.fn(),
   analyzeGame: vi.fn(),
+  startProgress: vi.fn(),
   enginesAtom: Symbol("enginesAtom"),
   referenceDbAtom: Symbol("referenceDbAtom"),
   notifyUnlessCancelled: vi.fn(),
@@ -22,7 +23,9 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("@/platform/tauri", () => ({ tauri: { analyzeGame: mocks.analyzeGame } }));
+vi.mock("@/platform/tauri", () => ({
+  tauri: { analyzeGame: mocks.analyzeGame, startProgress: mocks.startProgress },
+}));
 vi.mock("@/components/files/notifyError", () => ({
   notifyUnlessCancelled: mocks.notifyUnlessCancelled,
 }));
@@ -137,4 +140,5 @@ test("passes the immutable engine id and catches analysis rejection", async () =
     [],
   );
   expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
+  expect(mocks.startProgress).not.toHaveBeenCalled();
 });

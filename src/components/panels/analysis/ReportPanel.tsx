@@ -4,12 +4,13 @@ import { IconZoomCheck } from "@tabler/icons-react";
 import cx from "clsx";
 import equal from "fast-deep-equal";
 import { useAtom, useAtomValue } from "jotai";
-import React, { memo, useCallback, useContext, useMemo, useRef } from "react";
+import React, { memo, useCallback, useContext, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import EvalChart from "@/components/common/EvalChart";
 import ProgressButton from "@/components/common/ProgressButton";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
+import { useProgress } from "@/hooks/useProgress";
 import { activeTabAtom, currentReportModalOpenAtom } from "@/state/atoms";
 import { ANNOTATION_INFO, isBasicAnnotation } from "@/utils/annotation";
 import { getGameStats, getMainLine } from "@/utils/chess";
@@ -26,22 +27,74 @@ function ReportPanel() {
   const [reportingMode, setReportingMode] = useAtom(currentReportModalOpenAtom);
 
   const inProgress = useStore(store, (s) => s.report.inProgress);
+  const operationId = useStore(store, (s) => s.report.operationId);
   const setInProgress = useStore(store, (s) => s.setReportInProgress);
-  const operationId = useRef<string | null>(null);
+  const setReportOperationId = useStore(store, (s) => s.setReportOperationId);
   const rootFingerprint = `${root.fen}\u0000${getMainLine(root).join("\u0000")}`;
   const rootFingerprintRef = useRef(rootFingerprint);
   rootFingerprintRef.current = rootFingerprint;
 
+  const progressId = operationId ?? `report_${activeTab}`;
+  const { finished } = useProgress(progressId);
+
+  useEffect(() => {
+    if (finished) {
+      setInProgress(false);
+    }
+  }, [finished, setInProgress]);
+
+  useEffect(() => {
+    if (!inProgress) return;
+
+    if (!operationId) {
+      setInProgress(false);
+      return;
+    }
+
+    let active = true;
+    const queriedId = operationId;
+    tauri
+      .getProgress(queriedId)
+      .then((item) => {
+        if (!active) return;
+        if (store.getState().report.operationId !== queriedId) return;
+        if (item?.finished) {
+          setInProgress(false);
+          setReportOperationId(null);
+        }
+      })
+      .catch(() => {
+        // A lookup failure is not a finished job; leave in-flight state alone.
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [inProgress, operationId, setInProgress, setReportOperationId, store]);
+
   const stats = useMemo(() => getGameStats(root), [root]);
 
   const handleCancel = useCallback(() => {
-    const id = operationId.current;
+    const id = store.getState().report.operationId;
     // Invalidate first: native cancellation is asynchronous and may still
     // resolve successfully after the user switches tabs.
-    operationId.current = null;
+    setReportOperationId(null);
     setInProgress(false);
     if (id) void tauri.cancelAnalysis(id);
-  }, [setInProgress]);
+  }, [setInProgress, setReportOperationId, store]);
+
+  const registerOperation = useCallback(
+    (id: string) => {
+      setReportOperationId(id);
+    },
+    [setReportOperationId],
+  );
+
+  const isCurrentOperation = useCallback(
+    (id: string, fingerprint: string) =>
+      store.getState().report.operationId === id && rootFingerprintRef.current === fingerprint,
+    [store],
+  );
 
   const openReportingMode = useCallback(() => {
     setReportingMode(true);
@@ -60,22 +113,19 @@ function ReportPanel() {
         reportingMode={reportingMode}
         closeReportingMode={closeReportingMode}
         setInProgress={setInProgress}
-        registerOperation={(id) => {
-          operationId.current = id;
-        }}
-        isCurrentOperation={(id, fingerprint) =>
-          operationId.current === id && rootFingerprintRef.current === fingerprint
-        }
+        registerOperation={registerOperation}
+        isCurrentOperation={isCurrentOperation}
       />
       <Stack mb="lg" gap="0.4rem" mr="xs">
         <ProgressButton
-          id={`report_${activeTab}`}
+          id={progressId}
           redoable
           disabled={root.children.length === 0}
           leftIcon={<IconZoomCheck size="0.875rem" />}
           onClick={openReportingMode}
           onCancel={handleCancel}
           initInstalled={false}
+          completeOnProgressSuccess={false}
           labels={{
             action: t("Board.Analysis.GenerateReport"),
             completed: t("Board.Analysis.ReportGenerated"),

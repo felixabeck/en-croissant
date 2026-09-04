@@ -141,7 +141,10 @@ const persistedTreeSchema = z.object({
     headers: headersSchema,
     position: pathSchema,
     dirty: z.boolean(),
-    report: z.object({ inProgress: z.boolean() }),
+    report: z.object({
+        inProgress: z.boolean(),
+        operationId: z.string().nullable().optional(),
+    }),
     practicePath: pathSchema.nullable().optional(),
 });
 
@@ -165,6 +168,17 @@ export function isBoundedTreeForStorage(value: unknown): boolean {
     return isRecord(value) && visit(value.root, 0);
 }
 
+function migrateReport(report: unknown): { inProgress: boolean; operationId: string | null } {
+    if (!isRecord(report)) {
+        return { inProgress: false, operationId: null };
+    }
+    return {
+        inProgress: typeof report.inProgress === "boolean" ? report.inProgress : false,
+        // Coerce a wrong-typed id to null: Zod would otherwise reject the whole tree.
+        operationId: typeof report.operationId === "string" ? report.operationId : null,
+    };
+}
+
 /** Adds fields that were absent before TreeState persistence was versioned. */
 export function migrateTreeForStorage(value: unknown): unknown {
     if (!isRecord(value)) return value;
@@ -172,10 +186,7 @@ export function migrateTreeForStorage(value: unknown): unknown {
         ...value,
         position: Array.isArray(value.position) ? value.position : [],
         dirty: typeof value.dirty === "boolean" ? value.dirty : false,
-        report:
-            isRecord(value.report) && typeof value.report.inProgress === "boolean"
-                ? value.report
-                : { inProgress: false },
+        report: migrateReport(value.report),
     };
 }
 
@@ -289,7 +300,13 @@ export class TabStorageRepository {
     clone(sourceTabId: string, targetTabId: string) {
         const source = this.read(sourceTabId);
         if (!source) return;
-        this.write(targetTabId, structuredClone(source));
+        const copy = structuredClone(source);
+        // A duplicate tab must not share a live analysis lease.
+        if (isRecord(copy.state)) {
+            const report = isRecord(copy.state.report) ? copy.state.report : {};
+            copy.state.report = { ...report, inProgress: false, operationId: null };
+        }
+        this.write(targetTabId, copy);
     }
 
     remove(tabId: string) {

@@ -83,6 +83,7 @@ export interface TreeStoreState extends TreeState {
     ) => void;
 
     setReportInProgress: (value: boolean) => void;
+    setReportOperationId: (value: string | null) => void;
 
     practicePath: number[] | null;
     setPracticePath: (path: number[] | null) => void;
@@ -539,6 +540,14 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
             set(
                 produce((state: Draft<TreeStoreState>) => {
                     state.report.inProgress = value;
+                }),
+            );
+        },
+
+        setReportOperationId: (value: string | null) => {
+            set(
+                produce((state: Draft<TreeStoreState>) => {
+                    state.report.operationId = value;
                 }),
             );
         },

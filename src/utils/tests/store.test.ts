@@ -56,6 +56,7 @@ const treeE4D5: () => TreeState = () => ({
     },
     report: {
         inProgress: false,
+        operationId: null,
     },
 });
 
@@ -117,6 +118,7 @@ const treeE4D5Nf3: () => TreeState = () => ({
     },
     report: {
         inProgress: false,
+        operationId: null,
     },
 });
 
@@ -129,6 +131,7 @@ const getNewState = () => {
         dirty: s.dirty,
         report: {
             inProgress: false,
+            operationId: null,
         },
         boardStateMap: s.boardStateMap,
     };

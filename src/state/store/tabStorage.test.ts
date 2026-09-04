@@ -365,10 +365,68 @@ test("tree migration preserves valid values and repairs every invalid legacy fie
             dirty: true,
             report: { inProgress: true },
         }),
-    ).toMatchObject({ position: [0], dirty: true, report: { inProgress: true } });
+    ).toMatchObject({
+        position: [0],
+        dirty: true,
+        report: { inProgress: true, operationId: null },
+    });
     expect(
         migrateTreeForStorage({ position: "bad", dirty: 1, report: { inProgress: "bad" } }),
-    ).toMatchObject({ position: [], dirty: false, report: { inProgress: false } });
+    ).toMatchObject({
+        position: [],
+        dirty: false,
+        report: { inProgress: false, operationId: null },
+    });
+});
+
+test("report operationId survives a seed/read round trip", () => {
+    const tree = treeWith((state) => {
+        state.report = { inProgress: true, operationId: "report_tab_abc" };
+    });
+    storage.seed("report-id", tree);
+    expect(storage.read("report-id")?.state).toMatchObject({
+        report: { inProgress: true, operationId: "report_tab_abc" },
+    });
+});
+
+test("a pre-upgrade report blob without operationId still hydrates", () => {
+    const tree = structuredClone(defaultTree()) as unknown as Record<string, unknown>;
+    tree.report = { inProgress: false };
+    sessionStorage.setItem("pre-upgrade-report", JSON.stringify(tree));
+
+    expect(storage.read("pre-upgrade-report")?.state).toMatchObject({
+        report: { inProgress: false, operationId: null },
+    });
+    expect(sessionStorage.getItem("pre-upgrade-report")).not.toBeNull();
+});
+
+test("a wrong-typed report operationId hydrates as null instead of discarding the tab", () => {
+    const tree = structuredClone(defaultTree()) as unknown as Record<string, unknown>;
+    tree.report = { inProgress: true, operationId: 123 };
+    sessionStorage.setItem("wrong-typed-report", JSON.stringify(tree));
+
+    expect(storage.read("wrong-typed-report")?.state).toMatchObject({
+        report: { inProgress: true, operationId: null },
+        root: defaultTree().root,
+    });
+    expect(sessionStorage.getItem("wrong-typed-report")).not.toBeNull();
+});
+
+test("clone does not copy a live report operationId onto the duplicate tab", () => {
+    const tree = treeWith((state) => {
+        state.dirty = true;
+        state.report = { inProgress: true, operationId: "report_live" };
+    });
+    storage.write("source-report", { version: 0, state: tree });
+    storage.clone("source-report", "copy-report");
+
+    expect(storage.read("source-report")?.state).toMatchObject({
+        report: { inProgress: true, operationId: "report_live" },
+    });
+    expect(storage.read("copy-report")?.state).toMatchObject({
+        dirty: true,
+        report: { inProgress: false, operationId: null },
+    });
 });
 
 test("drops corrupt trees rather than letting hydration crash", () => {
