@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseHandle } from "@/bindings";
+import { TauriCommandError } from "@/platform/tauri";
 import {
     deleteDatabaseAndInvalidate,
     invalidateDeletedDatabase,
@@ -45,6 +46,22 @@ describe("database deletion transaction", () => {
     it("invalidates after partial removal and preserves the rejection", async () => {
         const deleted = database("delete-me");
         const invalidate = vi.fn();
+        const error = new TauriCommandError({
+            tag: "backend-error",
+            category: "partial-removal",
+            message: "Partially removed: 1 entries were deleted before failing: conflict",
+        });
+
+        await expect(
+            deleteDatabaseAndInvalidate(deleted, vi.fn().mockRejectedValue(error), invalidate),
+        ).rejects.toBe(error);
+        expect(invalidate).toHaveBeenCalledWith(deleted);
+    });
+
+    it("invalidates after partial removal through the string fallback path", async () => {
+        const deleted = database("delete-me");
+        const invalidate = vi.fn();
+        // Fallback-path coverage: classify() still matches this owned Display literal.
         const error = new Error(
             "Partially removed: 1 entries were deleted before failing: conflict",
         );

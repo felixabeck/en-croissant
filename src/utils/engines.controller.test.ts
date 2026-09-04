@@ -12,8 +12,12 @@ const native = vi.hoisted(() => ({
     getEngineConfig: vi.fn(),
 }));
 
-vi.mock("@/platform/tauri", () => ({ tauri: native }));
+vi.mock("@/platform/tauri", async () => {
+    const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
+    return { ...actual, tauri: native };
+});
 
+import { TauriCommandError } from "@/platform/tauri";
 import {
     getBestMoves,
     installDefaultEngine,
@@ -86,7 +90,11 @@ describe("engine registration recovery", () => {
     it("recovers the adopted handle after an uncertain registry commit", async () => {
         native.registerInstalledEngine
             .mockRejectedValueOnce(
-                new Error("Committed but durability uncertain: registry replacement"),
+                new TauriCommandError({
+                    tag: "backend-error",
+                    category: "durability",
+                    message: "Committed but durability uncertain: registry replacement",
+                }),
             )
             .mockResolvedValueOnce(handle);
 
@@ -125,6 +133,7 @@ describe("engine registration recovery", () => {
         native.downloadEngineArchive.mockResolvedValue(undefined);
         native.registerInstalledEngine
             .mockRejectedValueOnce(
+                // Fallback-path coverage: classify() still matches this owned Display literal.
                 new Error("Committed but durability uncertain: registry replacement"),
             )
             .mockResolvedValueOnce(handle);

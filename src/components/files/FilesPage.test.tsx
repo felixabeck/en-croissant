@@ -20,19 +20,23 @@ const mocks = vi.hoisted(() => ({
 }));
 const stateAtoms = vi.hoisted(() => ({ fileWorkspaceAtom: {}, fileWorkspaceDisplayNameAtom: {} }));
 
-vi.mock("@/platform/tauri", () => ({
-  tauri: {
-    listFileWorkspace: mocks.listFileWorkspace,
-    trashWorkspaceEntry: mocks.trashWorkspaceEntry,
-    restoreWorkspaceEntry: mocks.restoreWorkspaceEntry,
-    permanentlyDeleteWorkspaceEntry: mocks.permanentlyDeleteWorkspaceEntry,
-    moveWorkspaceEntry: mocks.moveWorkspaceEntry,
-    createWorkspaceFile: mocks.createWorkspaceFile,
-    createWorkspaceDirectory: mocks.createWorkspaceDirectory,
-    renameWorkspaceFile: mocks.renameWorkspaceFile,
-    issueFileWorkspace: mocks.issueFileWorkspace,
-  },
-}));
+vi.mock("@/platform/tauri", async () => {
+  const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
+  return {
+    ...actual,
+    tauri: {
+      listFileWorkspace: mocks.listFileWorkspace,
+      trashWorkspaceEntry: mocks.trashWorkspaceEntry,
+      restoreWorkspaceEntry: mocks.restoreWorkspaceEntry,
+      permanentlyDeleteWorkspaceEntry: mocks.permanentlyDeleteWorkspaceEntry,
+      moveWorkspaceEntry: mocks.moveWorkspaceEntry,
+      createWorkspaceFile: mocks.createWorkspaceFile,
+      createWorkspaceDirectory: mocks.createWorkspaceDirectory,
+      renameWorkspaceFile: mocks.renameWorkspaceFile,
+      issueFileWorkspace: mocks.issueFileWorkspace,
+    },
+  };
+});
 vi.mock("jotai", () => ({
   useAtom: (atom: object) =>
     atom === stateAtoms.fileWorkspaceAtom
@@ -151,7 +155,16 @@ const destination = {
   lastModified: 1,
 };
 
+import { TauriCommandError } from "@/platform/tauri";
 import FilesPage from "./FilesPage";
+
+function commandError(category: "durability" | "partial-removal", message: string) {
+  return new TauriCommandError({
+    tag: "backend-error",
+    category,
+    message,
+  });
+}
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -233,6 +246,7 @@ describe("trash confirmations", () => {
   test("partial permanent-delete rejection clears the banner, relists, and shows specific copy", async () => {
     await completeTrash();
     mocks.mutate.mockClear();
+    // Fallback-path coverage: classify() still matches this owned Display literal.
     mocks.permanentlyDeleteWorkspaceEntry.mockRejectedValueOnce(
       new Error("Partially removed: 1 entries were deleted before failing: child not found"),
     );
@@ -262,7 +276,7 @@ describe("trash confirmations", () => {
     await completeTrash();
     mocks.mutate.mockClear();
     mocks.permanentlyDeleteWorkspaceEntry.mockRejectedValueOnce(
-      new Error("Committed but durability uncertain: parent not found"),
+      commandError("durability", "Committed but durability uncertain: parent not found"),
     );
     mocks.mutate.mockRejectedValueOnce(new Error("list unavailable"));
     click("Delete permanently");
@@ -352,7 +366,7 @@ test("cancelled collection selection stays silent", async () => {
 
 test("applied-despite-error create refreshes and closes without operationFailed", async () => {
   mocks.createWorkspaceFile.mockRejectedValueOnce(
-    new Error("Committed but durability uncertain: registry replacement"),
+    commandError("durability", "Committed but durability uncertain: registry replacement"),
   );
   click("Create file");
   await settle();
@@ -376,7 +390,7 @@ test("applied-despite-error create refreshes and closes without operationFailed"
 
 test("applied-despite-error move refreshes and clears the move", async () => {
   mocks.moveWorkspaceEntry.mockRejectedValueOnce(
-    new Error("Committed but durability uncertain: registry replacement"),
+    commandError("durability", "Committed but durability uncertain: registry replacement"),
   );
   click("Drag to folder");
   await settle();
@@ -389,7 +403,7 @@ test("applied-despite-error move refreshes and clears the move", async () => {
 
 test("trash and restore refresh after applied-despite-error", async () => {
   mocks.trashWorkspaceEntry.mockRejectedValueOnce(
-    new Error("Committed but durability uncertain: registry replacement"),
+    commandError("durability", "Committed but durability uncertain: registry replacement"),
   );
   click("Select sample file");
   click("Trash");
@@ -398,7 +412,7 @@ test("trash and restore refresh after applied-despite-error", async () => {
 
   mocks.mutate.mockClear();
   mocks.restoreWorkspaceEntry.mockRejectedValueOnce(
-    new Error("Committed but durability uncertain: registry replacement"),
+    commandError("durability", "Committed but durability uncertain: registry replacement"),
   );
   click("Undo");
   await act(async () => button("Restore").click());

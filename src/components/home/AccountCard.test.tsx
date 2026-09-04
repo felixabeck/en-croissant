@@ -1,7 +1,7 @@
 import { MantineProvider } from "@mantine/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getDatabaseWorkspace: vi.fn(),
@@ -11,10 +11,14 @@ const mocks = vi.hoisted(() => ({
   progress: vi.fn(),
 }));
 
-vi.mock("@/platform/tauri", () => ({
-  tauri: mocks,
-  tauriSubscriptions: { progress: mocks.progress },
-}));
+vi.mock("@/platform/tauri", async () => {
+  const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
+  return {
+    ...actual,
+    tauri: mocks,
+    tauriSubscriptions: { progress: mocks.progress },
+  };
+});
 vi.mock("@/utils/db", () => ({ getDatabases: mocks.getDatabases }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: vi.fn() } }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -34,7 +38,12 @@ Object.defineProperty(window, "matchMedia", {
   }),
 });
 
+import { TauriCommandError } from "@/platform/tauri";
 import { AccountCard, ensureAccountDatabaseHandle } from "./AccountCard";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 test("recovers an account database handle after an uncertain create", async () => {
   const root = { id: { id: "database-root" }, kind: "databaseRoot" };
@@ -43,6 +52,27 @@ test("recovers an account database handle after an uncertain create", async () =
   mocks.listWorkspaceDatabases
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce([{ handle, filename: "Felix_lichess.db3", availability: "available" }]);
+  mocks.createWorkspaceDatabase.mockRejectedValue(
+    new TauriCommandError({
+      tag: "backend-error",
+      category: "durability",
+      message: "Committed but durability uncertain: registry replacement",
+    }),
+  );
+
+  await expect(ensureAccountDatabaseHandle(undefined, "Felix", "lichess")).resolves.toBe(handle);
+  expect(mocks.createWorkspaceDatabase).toHaveBeenCalledWith(root, "Felix_lichess.db3");
+  expect(mocks.listWorkspaceDatabases).toHaveBeenCalledTimes(2);
+});
+
+test("recovers an account database handle after an uncertain create through the string fallback path", async () => {
+  const root = { id: { id: "database-root" }, kind: "databaseRoot" };
+  const handle = { id: { id: "database" }, kind: "database" };
+  mocks.getDatabaseWorkspace.mockResolvedValue(root);
+  mocks.listWorkspaceDatabases
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([{ handle, filename: "Felix_lichess.db3", availability: "available" }]);
+  // Fallback-path coverage: classify() still matches this owned Display literal.
   mocks.createWorkspaceDatabase.mockRejectedValue(
     new Error("Committed but durability uncertain: registry replacement"),
   );

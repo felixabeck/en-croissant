@@ -30,7 +30,10 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("@/platform/tauri", () => ({ tauri: mocks }));
+vi.mock("@/platform/tauri", async () => {
+  const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
+  return { ...actual, tauri: mocks };
+});
 vi.mock("@/utils/db", async () => {
   const actual = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
   return {
@@ -103,6 +106,7 @@ vi.mock("@mantine/core", () => ({
 }));
 vi.mock("@tabler/icons-react", () => ({ IconAlertCircle: () => null }));
 
+import { TauriCommandError } from "@/platform/tauri";
 import { convertLocalDatabaseWithLoading } from "./AddDatabase";
 import AddDatabase from "./AddDatabase";
 
@@ -167,6 +171,40 @@ test("continues conversion with a handle recovered after an uncertain create", a
   const handle = { id: { id: "database" }, kind: "database" };
   const source = { id: { id: "source" }, kind: "fileWorkspace" } as const;
   mocks.getDatabaseWorkspace.mockResolvedValue(workspaceRoot);
+  mocks.createWorkspaceDatabase.mockRejectedValue(
+    new TauriCommandError({
+      tag: "backend-error",
+      category: "durability",
+      message: "Committed but durability uncertain: registry replacement",
+    }),
+  );
+  mocks.listWorkspaceDatabases.mockResolvedValue([
+    {
+      handle,
+      filename: "00000000-0000-4000-8000-000000000001.db3",
+      availability: "available",
+    },
+  ]);
+  mocks.convertPgn.mockResolvedValue(undefined);
+  const onCreated = vi.fn();
+  const loading: boolean[] = [];
+
+  await expect(
+    convertLocalDatabaseWithLoading([source], "Imported", "notes", onCreated, (value) =>
+      loading.push(value as boolean),
+    ),
+  ).resolves.toBe(handle);
+  expect(loading).toEqual([true, false]);
+  expect(onCreated).toHaveBeenCalledWith(handle);
+  expect(mocks.convertPgn).toHaveBeenCalledWith([source], handle, null, "Imported", "notes");
+});
+
+test("continues conversion with a handle recovered after an uncertain create through the string fallback path", async () => {
+  const workspaceRoot = { id: { id: "database-root" }, kind: "databaseRoot" };
+  const handle = { id: { id: "database" }, kind: "database" };
+  const source = { id: { id: "source" }, kind: "fileWorkspace" } as const;
+  mocks.getDatabaseWorkspace.mockResolvedValue(workspaceRoot);
+  // Fallback-path coverage: classify() still matches this owned Display literal.
   mocks.createWorkspaceDatabase.mockRejectedValue(
     new Error("Committed but durability uncertain: registry replacement"),
   );

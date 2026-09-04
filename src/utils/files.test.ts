@@ -10,7 +10,10 @@ const mocks = vi.hoisted(() => ({
     storeSet: vi.fn(),
 }));
 
-vi.mock("@/platform/tauri", () => ({ tauri: mocks }));
+vi.mock("@/platform/tauri", async () => {
+    const actual = await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri");
+    return { ...actual, tauri: mocks };
+});
 
 vi.mock("jotai", async (importOriginal) => {
     const actual = await importOriginal<typeof import("jotai")>();
@@ -23,6 +26,7 @@ vi.mock("jotai", async (importOriginal) => {
     };
 });
 
+import { TauriCommandError } from "@/platform/tauri";
 import { fileWorkspaceAtom, fileWorkspaceDisplayNameAtom } from "@/state/atoms";
 import { createFile, ensureFileWorkspace, pickPgnFile } from "./files";
 
@@ -37,7 +41,11 @@ test.each(["game", "game.pgn"])(
         const parent = { id: { id: "parent" }, kind: "fileWorkspace" } as const;
         const handle = { id: { id: "created" }, kind: "fileWorkspace" };
         mocks.createWorkspaceFile.mockRejectedValueOnce(
-            new Error("Committed but durability uncertain: registry replacement"),
+            new TauriCommandError({
+                tag: "backend-error",
+                category: "durability",
+                message: "Committed but durability uncertain: registry replacement",
+            }),
         );
         mocks.listFileWorkspace.mockResolvedValueOnce([
             {
@@ -63,6 +71,38 @@ test.each(["game", "game.pgn"])(
         expect(mocks.listFileWorkspace).toHaveBeenCalledWith(parent);
     },
 );
+
+test("recovers a created PGN after an uncertain commit through the string fallback path", async () => {
+    const workspace = { id: { id: "workspace" }, kind: "fileWorkspace" } as const;
+    const parent = { id: { id: "parent" }, kind: "fileWorkspace" } as const;
+    const handle = { id: { id: "created" }, kind: "fileWorkspace" };
+    // Fallback-path coverage: classify() still matches this owned Display literal.
+    mocks.createWorkspaceFile.mockRejectedValueOnce(
+        new Error("Committed but durability uncertain: registry replacement"),
+    );
+    mocks.listFileWorkspace.mockResolvedValueOnce([
+        {
+            handle,
+            kind: "file",
+            name: "game.pgn",
+            children: [],
+            metadata: { type: "game", tags: [] },
+            gameCount: 1,
+            lastModified: 42,
+        },
+    ]);
+
+    const result = await createFile({
+        filename: "game.pgn",
+        filetype: "game",
+        workspace,
+        parent,
+    });
+
+    expect(result.isOk).toBe(true);
+    expect(result.unwrap()).toMatchObject({ handle, name: "game.pgn", numGames: 1 });
+    expect(mocks.listFileWorkspace).toHaveBeenCalledWith(parent);
+});
 
 describe("pickPgnFile", () => {
     const handle = { id: { id: "pgn" }, kind: "fileWorkspace" } as const;
