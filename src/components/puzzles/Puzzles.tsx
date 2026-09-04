@@ -160,7 +160,9 @@ function Puzzles({ id }: { id: string }) {
       .catch((error: Error) => {
         if (cancelled || generation !== requestGeneration.current) return;
         setAvailableThemes([]);
-        setThemesTableMissing(error.message.includes("no such table"));
+        setThemesTableMissing(
+          normalizeError(error).backendCategory === "puzzle-themes-unavailable",
+        );
       });
     return () => {
       cancelled = true;
