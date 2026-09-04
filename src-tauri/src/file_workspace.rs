@@ -6,9 +6,10 @@
 
 use crate::{
     error::Error,
+    infra::blocking::BLOCKING_GATEWAY,
     infra::path_authority::{
-        CommitDurability, FileWorkspaceDescriptor, FileWorkspaceHandle, PathClass, PathOperation,
-        PathRef, WorkspaceMutationTarget, WorkspaceRemovalStatus,
+        CommitDurability, FileWorkspaceDescriptor, FileWorkspaceHandle, PathAuthority, PathClass,
+        PathOperation, PathRef, WorkspaceMutationTarget, WorkspaceRemovalStatus,
     },
     pgn, AppState,
 };
@@ -17,6 +18,7 @@ use specta::Type;
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, UNIX_EPOCH},
 };
 
@@ -68,11 +70,10 @@ pub struct WorkspaceEntry {
     pub last_modified: i64,
 }
 
-fn authority<'a>(
-    state: &'a AppState,
-) -> Result<std::sync::MutexGuard<'a, Option<crate::infra::path_authority::PathAuthority>>, Error> {
-    state
-        .pgn_path_authority
+fn authority(
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+) -> Result<MutexGuard<'_, Option<PathAuthority>>, Error> {
+    pgn_path_authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))
 }
@@ -125,8 +126,11 @@ fn timestamp(path: &Path) -> Result<i64, Error> {
         .as_secs() as i64)
 }
 
-fn workspace_root(state: &AppState, workspace: &FileWorkspaceHandle) -> Result<PathBuf, Error> {
-    authority(state)?
+fn workspace_root(
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    workspace: &FileWorkspaceHandle,
+) -> Result<PathBuf, Error> {
+    authority(pgn_path_authority)?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .workspace_root(workspace, PathOperation::ReadPgn)
@@ -134,10 +138,10 @@ fn workspace_root(state: &AppState, workspace: &FileWorkspaceHandle) -> Result<P
 
 #[cfg(unix)]
 fn mutation_target(
-    state: &AppState,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
     entry: &FileWorkspaceHandle,
 ) -> Result<WorkspaceMutationTarget, Error> {
-    authority(state)?
+    authority(pgn_path_authority)?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .workspace_mutation_target(entry)
@@ -172,11 +176,11 @@ fn ensure_registered_descendant(
 }
 
 fn workspace_components(
-    state: &AppState,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
     path: &Path,
 ) -> Result<Vec<std::ffi::OsString>, Error> {
-    let root = workspace_root(state, workspace)?;
+    let root = workspace_root(pgn_path_authority, workspace)?;
     let relative = path
         .strip_prefix(&root)
         .map_err(|_| Error::InvalidInput("workspace entry escapes its root".into()))?;
@@ -187,13 +191,13 @@ fn workspace_components(
 }
 
 fn register_entry(
-    state: &AppState,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
     path: &Path,
     display_name: String,
 ) -> Result<FileWorkspaceHandle, Error> {
-    let components = workspace_components(state, workspace, path)?;
-    authority(state)?
+    let components = workspace_components(pgn_path_authority, workspace, path)?;
+    authority(pgn_path_authority)?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .register_workspace_child(workspace, &components, display_name)
@@ -201,15 +205,15 @@ fn register_entry(
 
 #[cfg(unix)]
 fn register_created_entry(
-    state: &AppState,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
     path: &Path,
     display_name: String,
     identity: (u64, u64),
     is_dir: bool,
 ) -> Result<FileWorkspaceHandle, Error> {
-    let components = workspace_components(state, workspace, path)?;
-    authority(state)?
+    let components = workspace_components(pgn_path_authority, workspace, path)?;
+    authority(pgn_path_authority)?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .register_workspace_child_expected(workspace, &components, display_name, identity, is_dir)
@@ -223,69 +227,103 @@ pub(crate) fn map_picker_join(error: tokio::task::JoinError) -> Error {
     }
 }
 
-async fn tree_entry(
-    state: &tauri::State<'_, AppState>,
+fn collect_tree_entries(
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
-    path: PathBuf,
-) -> Result<Option<WorkspaceEntry>, Error> {
-    let meta = fs::symlink_metadata(&path)?;
-    if meta.file_type().is_symlink() || path.file_name().is_some_and(|name| name == TRASH_DIRECTORY)
-    {
-        return Ok(None);
-    }
-    let name = path
-        .file_name()
-        .ok_or_else(|| Error::InvalidInput("workspace entry has no name".into()))?
-        .to_string_lossy()
-        .into_owned();
-    if meta.is_dir() {
-        let handle = register_entry(state.inner(), workspace, &path, name.clone())?;
-        let mut children = fs::read_dir(&path)?
-            .map(|entry| entry.map_err(Error::from))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(|entry| entry.path())
-            .collect::<Vec<_>>();
-        children.sort();
-        let mut output = Vec::new();
-        for child in children {
-            if let Some(entry) = Box::pin(tree_entry(state, workspace, child)).await? {
-                output.push(entry);
-            }
+) -> Result<(Vec<WorkspaceEntry>, Vec<FileWorkspaceHandle>), Error> {
+    fn visit(
+        pgn_path_authority: &Mutex<Option<PathAuthority>>,
+        workspace: &FileWorkspaceHandle,
+        path: PathBuf,
+        missing: &mut Vec<FileWorkspaceHandle>,
+    ) -> Result<Option<WorkspaceEntry>, Error> {
+        let meta = fs::symlink_metadata(&path)?;
+        if meta.file_type().is_symlink()
+            || path.file_name().is_some_and(|name| name == TRASH_DIRECTORY)
+        {
+            return Ok(None);
         }
-        return Ok(Some(WorkspaceEntry {
+        let name = path
+            .file_name()
+            .ok_or_else(|| Error::InvalidInput("workspace entry has no name".into()))?
+            .to_string_lossy()
+            .into_owned();
+        if meta.is_dir() {
+            let handle = register_entry(pgn_path_authority, workspace, &path, name.clone())?;
+            let mut children = fs::read_dir(&path)?
+                .map(|entry| entry.map_err(Error::from))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            children.sort();
+            let mut output = Vec::new();
+            for child in children {
+                if let Some(entry) = visit(pgn_path_authority, workspace, child, missing)? {
+                    output.push(entry);
+                }
+            }
+            return Ok(Some(WorkspaceEntry {
+                handle,
+                kind: WorkspaceEntryKind::Directory,
+                name,
+                children: output,
+                metadata: None,
+                game_count: None,
+                last_modified: timestamp(&path)?,
+            }));
+        }
+        if !meta.is_file() || !name.to_ascii_lowercase().ends_with(".pgn") {
+            return Ok(None);
+        }
+        let handle = register_entry(
+            pgn_path_authority,
+            workspace,
+            &path,
+            name.trim_end_matches(".pgn").to_string(),
+        )?;
+        missing.push(handle.clone());
+        Ok(Some(WorkspaceEntry {
             handle,
-            kind: WorkspaceEntryKind::Directory,
-            name,
-            children: output,
-            metadata: None,
+            kind: WorkspaceEntryKind::File,
+            name: name.trim_end_matches(".pgn").to_string(),
+            children: vec![],
+            metadata: Some(metadata_from(&path)?),
             game_count: None,
             last_modified: timestamp(&path)?,
-        }));
+        }))
     }
-    if !meta.is_file() || !name.to_ascii_lowercase().ends_with(".pgn") {
-        return Ok(None);
+
+    let root = workspace_root(pgn_path_authority, workspace)?;
+    let mut paths = fs::read_dir(root)?
+        .map(|entry| entry.map_err(Error::from))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    paths.sort();
+    let mut entries = Vec::new();
+    let mut missing = Vec::new();
+    for path in paths {
+        if let Some(entry) = visit(pgn_path_authority, workspace, path, &mut missing)? {
+            entries.push(entry);
+        }
     }
-    let handle = register_entry(
-        state.inner(),
-        workspace,
-        &path,
-        name.trim_end_matches(".pgn").to_string(),
-    )?;
-    let resolved = authority(state.inner())?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .resolve(handle.path_ref(), PathOperation::ReadPgn, &[])?;
-    let game_count = pgn::count_pgn_games_core(resolved, state.clone()).await?;
-    Ok(Some(WorkspaceEntry {
-        handle,
-        kind: WorkspaceEntryKind::File,
-        name: name.trim_end_matches(".pgn").to_string(),
-        children: vec![],
-        metadata: Some(metadata_from(&path)?),
-        game_count: Some(game_count),
-        last_modified: timestamp(&path)?,
-    }))
+    Ok((entries, missing))
+}
+
+fn set_workspace_game_count(
+    entries: &mut [WorkspaceEntry],
+    handle: &FileWorkspaceHandle,
+    game_count: i32,
+) {
+    for entry in entries {
+        if &entry.handle == handle {
+            entry.game_count = Some(game_count);
+            return;
+        }
+        set_workspace_game_count(&mut entry.children, handle, game_count);
+    }
 }
 
 #[tauri::command]
@@ -311,7 +349,7 @@ pub async fn issue_file_workspace(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "PGN collection".into());
-    let mut authority = authority(state.inner())?;
+    let mut authority = authority(&state.pgn_path_authority)?;
     let authority = authority
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
@@ -342,19 +380,19 @@ pub async fn list_file_workspace(
     workspace: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<WorkspaceEntry>, Error> {
-    let root = workspace_root(state.inner(), &workspace)?;
-    let mut paths = fs::read_dir(root)?
-        .map(|entry| entry.map_err(Error::from))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .map(|entry| entry.path())
-        .collect::<Vec<_>>();
-    paths.sort();
-    let mut entries = Vec::new();
-    for path in paths {
-        if let Some(entry) = tree_entry(&state, &workspace, path).await? {
-            entries.push(entry);
-        }
+    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let (mut entries, missing) = BLOCKING_GATEWAY
+        .spawn(move || collect_tree_entries(&pgn_path_authority, &workspace))
+        .await?;
+    for handle in missing {
+        let resolved = {
+            authority(&state.pgn_path_authority)?
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+                .resolve(handle.path_ref(), PathOperation::ReadPgn, &[])?
+        };
+        let game_count = pgn::count_pgn_games_core(resolved, state.clone()).await?;
+        set_workspace_game_count(&mut entries, &handle, game_count);
     }
     Ok(entries)
 }
@@ -403,12 +441,12 @@ fn paired_rename(
 }
 
 fn rebind_after_move(
-    state: &AppState,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
     entry: &FileWorkspaceHandle,
     source: &WorkspaceMutationTarget,
     target: &Path,
 ) -> Result<(), Error> {
-    let mut authority = authority(state)?;
+    let mut authority = authority(pgn_path_authority)?;
     let authority = authority
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
@@ -433,8 +471,45 @@ pub async fn create_workspace_file(
     pgn: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkspaceEntry, Error> {
-    let root = mutation_target(state.inner(), &workspace)?;
-    let parent_target = mutation_target(state.inner(), &parent)?;
+    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let workspace_mutation = Arc::clone(&state.workspace_mutation);
+    let mut entry = BLOCKING_GATEWAY
+        .spawn(move || {
+            create_workspace_file_blocking(
+                workspace,
+                parent,
+                name,
+                metadata,
+                pgn,
+                &pgn_path_authority,
+                &workspace_mutation,
+            )
+        })
+        .await?;
+    let resolved = {
+        authority(&state.pgn_path_authority)?
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+            .resolve(entry.handle.path_ref(), PathOperation::ReadPgn, &[])?
+    };
+    entry.game_count = Some(pgn::count_pgn_games_core(resolved, state).await?);
+    Ok(entry)
+}
+
+fn create_workspace_file_blocking(
+    workspace: FileWorkspaceHandle,
+    parent: FileWorkspaceHandle,
+    name: String,
+    metadata: WorkspaceMetadata,
+    pgn: String,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    workspace_mutation: &Mutex<()>,
+) -> Result<WorkspaceEntry, Error> {
+    let _guard = workspace_mutation
+        .lock()
+        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let root = mutation_target(pgn_path_authority, &workspace)?;
+    let parent_target = mutation_target(pgn_path_authority, &parent)?;
     ensure_registered_descendant(&root, &parent_target)?;
     let parent_dir = parent_target.directory()?;
     let filename = pgn_name(&name)?;
@@ -483,25 +558,20 @@ pub async fn create_workspace_file(
         crate::error::DurabilityStage::WorkspaceSidecarCreation,
     );
     let handle = register_created_entry(
-        state.inner(),
+        pgn_path_authority,
         &workspace,
         &target,
         name.clone(),
         installed.identity,
         false,
     )?;
-    let resolved = authority(state.inner())?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .resolve(handle.path_ref(), PathOperation::ReadPgn, &[])?;
-    let game_count = pgn::count_pgn_games_core(resolved, state).await?;
     let entry = WorkspaceEntry {
         handle,
         kind: WorkspaceEntryKind::File,
         name,
         children: vec![],
         metadata: Some(metadata),
-        game_count: Some(game_count),
+        game_count: None,
         last_modified: timestamp(&target)?,
     };
     if let Some(error) = pgn_uncertainty.or(sidecar_uncertainty) {
@@ -512,23 +582,39 @@ pub async fn create_workspace_file(
 
 #[tauri::command]
 #[specta::specta]
-pub fn create_workspace_directory(
+pub async fn create_workspace_directory(
     workspace: FileWorkspaceHandle,
     parent: FileWorkspaceHandle,
     name: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkspaceEntry, Error> {
-    create_workspace_directory_inner(workspace, parent, name, state.inner())
+    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let workspace_mutation = Arc::clone(&state.workspace_mutation);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            create_workspace_directory_inner(
+                workspace,
+                parent,
+                name,
+                &pgn_path_authority,
+                &workspace_mutation,
+            )
+        })
+        .await
 }
 
 fn create_workspace_directory_inner(
     workspace: FileWorkspaceHandle,
     parent: FileWorkspaceHandle,
     name: String,
-    state: &AppState,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    workspace_mutation: &Mutex<()>,
 ) -> Result<WorkspaceEntry, Error> {
-    let root = mutation_target(state, &workspace)?;
-    let parent_target = mutation_target(state, &parent)?;
+    let _guard = workspace_mutation
+        .lock()
+        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let root = mutation_target(pgn_path_authority, &workspace)?;
+    let parent_target = mutation_target(pgn_path_authority, &parent)?;
     ensure_registered_descendant(&root, &parent_target)?;
     let parent_dir = parent_target.directory()?;
     let name = validate_name(&name)?.to_string();
@@ -537,7 +623,7 @@ fn create_workspace_directory_inner(
     crate::infra::fs::create_dir_at(parent_dir, &target_leaf)?;
     let identity = crate::infra::fs::entry_identity_at(parent_dir, &target_leaf, true)?;
     let handle = match register_created_entry(
-        state,
+        pgn_path_authority,
         &workspace,
         &target,
         name.clone(),
@@ -574,15 +660,40 @@ fn create_workspace_directory_inner(
 
 #[tauri::command]
 #[specta::specta]
-pub fn move_workspace_entry(
+pub async fn move_workspace_entry(
     workspace: FileWorkspaceHandle,
     entry: FileWorkspaceHandle,
     target_directory: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let root = mutation_target(state.inner(), &workspace)?;
-    let source = mutation_target(state.inner(), &entry)?;
-    let destination = mutation_target(state.inner(), &target_directory)?;
+    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let workspace_mutation = Arc::clone(&state.workspace_mutation);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            move_workspace_entry_blocking(
+                workspace,
+                entry,
+                target_directory,
+                &pgn_path_authority,
+                &workspace_mutation,
+            )
+        })
+        .await
+}
+
+fn move_workspace_entry_blocking(
+    workspace: FileWorkspaceHandle,
+    entry: FileWorkspaceHandle,
+    target_directory: FileWorkspaceHandle,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    workspace_mutation: &Mutex<()>,
+) -> Result<(), Error> {
+    let _guard = workspace_mutation
+        .lock()
+        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let root = mutation_target(pgn_path_authority, &workspace)?;
+    let source = mutation_target(pgn_path_authority, &entry)?;
+    let destination = mutation_target(pgn_path_authority, &target_directory)?;
     ensure_registered_descendant(&root, &source)?;
     ensure_registered_descendant(&root, &destination)?;
     let name = source.leaf.clone();
@@ -591,20 +702,47 @@ pub fn move_workspace_entry(
         return Ok(());
     }
     paired_rename(&source, destination.directory()?, &name)?;
-    rebind_after_move(state.inner(), &entry, &source, &target)
+    rebind_after_move(pgn_path_authority, &entry, &source, &target)
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn rename_workspace_file(
+pub async fn rename_workspace_file(
     workspace: FileWorkspaceHandle,
     entry: FileWorkspaceHandle,
     name: String,
     metadata: WorkspaceMetadata,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let root = mutation_target(state.inner(), &workspace)?;
-    let source = mutation_target(state.inner(), &entry)?;
+    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let workspace_mutation = Arc::clone(&state.workspace_mutation);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            rename_workspace_file_blocking(
+                workspace,
+                entry,
+                name,
+                metadata,
+                &pgn_path_authority,
+                &workspace_mutation,
+            )
+        })
+        .await
+}
+
+fn rename_workspace_file_blocking(
+    workspace: FileWorkspaceHandle,
+    entry: FileWorkspaceHandle,
+    name: String,
+    metadata: WorkspaceMetadata,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    workspace_mutation: &Mutex<()>,
+) -> Result<(), Error> {
+    let _guard = workspace_mutation
+        .lock()
+        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let root = mutation_target(pgn_path_authority, &workspace)?;
+    let source = mutation_target(pgn_path_authority, &entry)?;
     ensure_registered_descendant(&root, &source)?;
     if source.is_dir {
         return Err(Error::InvalidInput("workspace entry must be a file".into()));
@@ -625,26 +763,34 @@ pub fn rename_workspace_file(
         )
         .map_err(Error::from)
     })?;
-    rebind_after_move(state.inner(), &entry, &source, &target)
+    rebind_after_move(pgn_path_authority, &entry, &source, &target)
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn trash_workspace_entry(
+pub async fn trash_workspace_entry(
     workspace: FileWorkspaceHandle,
     entry: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    trash_entry(state.inner(), &workspace, &entry)
+    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let workspace_mutation = Arc::clone(&state.workspace_mutation);
+    BLOCKING_GATEWAY
+        .spawn(move || trash_entry(&pgn_path_authority, &workspace_mutation, &workspace, &entry))
+        .await
 }
 
 fn trash_entry(
-    state: &AppState,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    workspace_mutation: &Mutex<()>,
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
 ) -> Result<(), Error> {
-    let root = mutation_target(state, workspace)?;
-    let source = mutation_target(state, entry)?;
+    let _guard = workspace_mutation
+        .lock()
+        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let root = mutation_target(pgn_path_authority, workspace)?;
+    let source = mutation_target(pgn_path_authority, entry)?;
     ensure_registered_descendant(&root, &source)?;
     let root_dir = root.directory()?;
     let trash = std::ffi::OsString::from(TRASH_DIRECTORY);
@@ -673,26 +819,34 @@ fn trash_entry(
     } else {
         paired_rename(&source, &bucket_dir, &source.leaf)?;
     }
-    rebind_after_move(state, entry, &source, &target)
+    rebind_after_move(pgn_path_authority, entry, &source, &target)
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn restore_workspace_entry(
+pub async fn restore_workspace_entry(
     workspace: FileWorkspaceHandle,
     entry: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    restore_entry(state.inner(), &workspace, &entry)
+    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let workspace_mutation = Arc::clone(&state.workspace_mutation);
+    BLOCKING_GATEWAY
+        .spawn(move || restore_entry(&pgn_path_authority, &workspace_mutation, &workspace, &entry))
+        .await
 }
 
 fn restore_entry(
-    state: &AppState,
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    workspace_mutation: &Mutex<()>,
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
 ) -> Result<(), Error> {
-    let root = mutation_target(state, workspace)?;
-    let source = mutation_target(state, entry)?;
+    let _guard = workspace_mutation
+        .lock()
+        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let root = mutation_target(pgn_path_authority, workspace)?;
+    let source = mutation_target(pgn_path_authority, entry)?;
     let trash_root = root.path().join(TRASH_DIRECTORY);
     source
         .path()
@@ -711,7 +865,7 @@ fn restore_entry(
     } else {
         paired_rename(&source, root.directory()?, &source.leaf)?;
     }
-    rebind_after_move(state, entry, &source, &target)
+    rebind_after_move(pgn_path_authority, entry, &source, &target)
 }
 
 #[tauri::command]
@@ -729,41 +883,20 @@ async fn permanently_delete_entry(
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
 ) -> Result<(), Error> {
-    let root = mutation_target(state, workspace)?;
-    let source = mutation_target(state, entry)?;
-    ensure_registered_descendant(&root, &source)?;
-    let removal_error = match crate::infra::fs::remove_entry_at(
-        &source.parent,
-        &source.leaf,
-        source.identity,
-        source.is_dir,
-    ) {
-        Ok(()) => None,
-        Err(error @ Error::CommittedDurabilityUncertain(_)) => Some(error),
-        Err(error @ Error::PartialRemoval { .. }) => Some(error),
-        Err(error) => return Err(error),
-    };
-    let sidecar_error = if source.is_dir {
-        None
-    } else {
-        sidecar_leaf(&source.leaf)
-            .and_then(|sidecar| {
-                crate::infra::fs::remove_optional_regular_at(&source.parent, &sidecar)
-            })
-            .err()
-    };
-    let removal_status = if matches!(removal_error, Some(Error::PartialRemoval { .. })) {
-        WorkspaceRemovalStatus::Partial
-    } else {
-        WorkspaceRemovalStatus::Complete
-    };
-    let mut dropped_engine_executables = Vec::<PathRef>::new();
-    let registry_result = (|| {
-        authority(state)?
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-            .remove_workspace_entry(entry, removal_status, &mut dropped_engine_executables)
-    })();
+    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    let workspace_mutation = Arc::clone(&state.workspace_mutation);
+    let workspace = workspace.clone();
+    let entry = entry.clone();
+    let (dropped_engine_executables, result) = BLOCKING_GATEWAY
+        .spawn(move || {
+            Ok(permanently_delete_entry_blocking(
+                &pgn_path_authority,
+                &workspace_mutation,
+                &workspace,
+                &entry,
+            ))
+        })
+        .await?;
     if let Err(error) = state
         .engine_supervisor
         .retire_executables(dropped_engine_executables)
@@ -771,59 +904,113 @@ async fn permanently_delete_entry(
     {
         log::warn!("workspace removal engine retirement failed: {error}");
     }
+    result
+}
 
-    if let Some(error @ Error::PartialRemoval { .. }) = removal_error {
-        match registry_result {
-            Ok(CommitDurability::Durable) => {}
-            Ok(CommitDurability::DurabilityUncertain(stage)) => {
-                log::warn!("partial workspace removal registry durability uncertain: {stage}");
+fn permanently_delete_entry_blocking(
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    workspace_mutation: &Mutex<()>,
+    workspace: &FileWorkspaceHandle,
+    entry: &FileWorkspaceHandle,
+) -> (Vec<PathRef>, Result<(), Error>) {
+    let mut dropped_engine_executables = Vec::<PathRef>::new();
+    let result = (|| {
+        let _guard = workspace_mutation
+            .lock()
+            .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+        let root = mutation_target(pgn_path_authority, workspace)?;
+        let source = mutation_target(pgn_path_authority, entry)?;
+        ensure_registered_descendant(&root, &source)?;
+        let removal_error = match crate::infra::fs::remove_entry_at(
+            &source.parent,
+            &source.leaf,
+            source.identity,
+            source.is_dir,
+        ) {
+            Ok(()) => None,
+            Err(error @ Error::CommittedDurabilityUncertain(_)) => Some(error),
+            Err(error @ Error::PartialRemoval { .. }) => Some(error),
+            Err(error) => return Err(error),
+        };
+        let sidecar_error = if source.is_dir {
+            None
+        } else {
+            sidecar_leaf(&source.leaf)
+                .and_then(|sidecar| {
+                    crate::infra::fs::remove_optional_regular_at(&source.parent, &sidecar)
+                })
+                .err()
+        };
+        let removal_status = if matches!(removal_error, Some(Error::PartialRemoval { .. })) {
+            WorkspaceRemovalStatus::Partial
+        } else {
+            WorkspaceRemovalStatus::Complete
+        };
+        let registry_result = (|| {
+            authority(pgn_path_authority)?
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+                .remove_workspace_entry(entry, removal_status, &mut dropped_engine_executables)
+        })();
+
+        if let Some(error @ Error::PartialRemoval { .. }) = removal_error {
+            match registry_result {
+                Ok(CommitDurability::Durable) => {}
+                Ok(CommitDurability::DurabilityUncertain(stage)) => {
+                    log::warn!("partial workspace removal registry durability uncertain: {stage}");
+                }
+                Err(registry_error) => {
+                    log::warn!(
+                        "partial workspace removal registry reconciliation failed: {registry_error}"
+                    );
+                }
             }
-            Err(registry_error) => {
-                log::warn!(
-                    "partial workspace removal registry reconciliation failed: {registry_error}"
-                );
-            }
+            return Err(error);
         }
-        return Err(error);
-    }
 
-    let registry_durability = match registry_result {
-        Ok(durability) => durability,
-        Err(error) => {
-            log::warn!("workspace removal registry reconciliation failed: {error}");
-            if let Some(sidecar_error) = sidecar_error {
-                log::warn!("workspace sidecar cleanup also failed after removal: {sidecar_error}");
+        let registry_durability = match registry_result {
+            Ok(durability) => durability,
+            Err(error) => {
+                log::warn!("workspace removal registry reconciliation failed: {error}");
+                if let Some(sidecar_error) = sidecar_error {
+                    log::warn!(
+                        "workspace sidecar cleanup also failed after removal: {sidecar_error}"
+                    );
+                }
+                if let Some(Error::CommittedDurabilityUncertain(stage)) = removal_error {
+                    log::warn!("workspace removal durability also uncertain: {stage}");
+                }
+                return Err(Error::CommittedDurabilityUncertain(
+                    crate::error::DurabilityStage::RegistryReplacement,
+                ));
+            }
+        };
+        if let Some(error) = sidecar_error {
+            log::warn!("workspace sidecar cleanup failed after removal: {error}");
+            if let CommitDurability::DurabilityUncertain(stage) = registry_durability {
+                log::warn!("workspace removal registry durability also uncertain: {stage}");
             }
             if let Some(Error::CommittedDurabilityUncertain(stage)) = removal_error {
                 log::warn!("workspace removal durability also uncertain: {stage}");
             }
             return Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::RegistryReplacement,
+                crate::error::DurabilityStage::WorkspaceRemoval,
             ));
         }
-    };
-    if let Some(error) = sidecar_error {
-        log::warn!("workspace sidecar cleanup failed after removal: {error}");
-        if let CommitDurability::DurabilityUncertain(stage) = registry_durability {
-            log::warn!("workspace removal registry durability also uncertain: {stage}");
-        }
         if let Some(Error::CommittedDurabilityUncertain(stage)) = removal_error {
-            log::warn!("workspace removal durability also uncertain: {stage}");
+            if let CommitDurability::DurabilityUncertain(registry_stage) = registry_durability {
+                log::warn!(
+                    "workspace removal registry durability also uncertain: {registry_stage}"
+                );
+            }
+            return Err(Error::CommittedDurabilityUncertain(stage));
         }
-        return Err(Error::CommittedDurabilityUncertain(
-            crate::error::DurabilityStage::WorkspaceRemoval,
-        ));
-    }
-    if let Some(Error::CommittedDurabilityUncertain(stage)) = removal_error {
-        if let CommitDurability::DurabilityUncertain(registry_stage) = registry_durability {
-            log::warn!("workspace removal registry durability also uncertain: {registry_stage}");
+        if let CommitDurability::DurabilityUncertain(stage) = registry_durability {
+            return Err(Error::CommittedDurabilityUncertain(stage));
         }
-        return Err(Error::CommittedDurabilityUncertain(stage));
-    }
-    if let CommitDurability::DurabilityUncertain(stage) = registry_durability {
-        return Err(Error::CommittedDurabilityUncertain(stage));
-    }
-    Ok(())
+        Ok(())
+    })();
+    (dropped_engine_executables, result)
 }
 
 #[cfg(test)]
@@ -899,7 +1086,7 @@ mod tests {
         workspace: &FileWorkspaceHandle,
         name: &str,
     ) -> (PathBuf, FileWorkspaceHandle) {
-        let root = mutation_target(state, workspace).expect("workspace target");
+        let root = mutation_target(&state.pgn_path_authority, workspace).expect("workspace target");
         let child = root.path().join(name);
         fs::create_dir(&child).expect("child directory");
         fs::write(child.join("removed"), b"content").expect("child content");
@@ -909,8 +1096,15 @@ mod tests {
             true,
         )
         .expect("child identity");
-        let entry = register_created_entry(state, workspace, &child, name.into(), identity, true)
-            .expect("child handle");
+        let entry = register_created_entry(
+            &state.pgn_path_authority,
+            workspace,
+            &child,
+            name.into(),
+            identity,
+            true,
+        )
+        .expect("child handle");
         (child, entry)
     }
 
@@ -920,7 +1114,7 @@ mod tests {
         path: &Path,
     ) -> FileWorkspaceHandle {
         register_entry(
-            state,
+            &state.pgn_path_authority,
             workspace,
             path,
             path.file_stem()
@@ -932,7 +1126,7 @@ mod tests {
     }
 
     fn registered_engine_file(state: &AppState, path: &Path) -> PathRef {
-        authority(state)
+        authority(&state.pgn_path_authority)
             .expect("authority lock")
             .as_mut()
             .expect("authority")
@@ -983,11 +1177,11 @@ mod tests {
         assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
         assert!(!child.exists(), "the directory was completely removed");
         assert!(matches!(
-            mutation_target(&state, &entry),
+            mutation_target(&state.pgn_path_authority, &entry),
             Err(Error::InvalidInput(message)) if message == "workspace entry is not persistent"
         ));
         assert!(matches!(
-            mutation_target(&state, &descendant_entry),
+            mutation_target(&state.pgn_path_authority, &descendant_entry),
             Err(Error::InvalidInput(message)) if message == "workspace entry is not persistent"
         ));
     }
@@ -1012,16 +1206,17 @@ mod tests {
 
         assert!(matches!(error, Error::PartialRemoval { .. }));
         assert!(child.exists(), "the top directory remains");
-        mutation_target(&state, &entry).expect("authority record remains");
+        mutation_target(&state.pgn_path_authority, &entry).expect("authority record remains");
         for (path, handle) in [
             (child.join("removed"), removed_entry),
             (survivor, survivor_entry),
         ] {
             if path.exists() {
-                mutation_target(&state, &handle).expect("surviving descendant remains registered");
+                mutation_target(&state.pgn_path_authority, &handle)
+                    .expect("surviving descendant remains registered");
             } else {
                 assert!(matches!(
-                    mutation_target(&state, &handle),
+                    mutation_target(&state.pgn_path_authority, &handle),
                     Err(Error::InvalidInput(message))
                         if message == "workspace entry is not persistent"
                 ));
@@ -1059,10 +1254,10 @@ mod tests {
             Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::RegistryReplacement)
         ));
         assert!(
-            mutation_target(&state, &entry).is_err(),
+            mutation_target(&state.pgn_path_authority, &entry).is_err(),
             "deleted object is retained as unavailable"
         );
-        assert!(authority(&state)
+        assert!(authority(&state.pgn_path_authority)
             .expect("authority lock")
             .as_mut()
             .expect("authority")
@@ -1081,7 +1276,7 @@ mod tests {
     #[tokio::test]
     async fn sidecar_failure_after_unlink_still_removes_authority_record() {
         let (_directory, state, workspace) = workspace_state();
-        let root = workspace_root(&state, &workspace).expect("workspace root");
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
         let file = root.join("victim.pgn");
         fs::write(&file, b"*").expect("victim file");
         fs::create_dir(root.join("victim.info")).expect("invalid sidecar directory");
@@ -1097,7 +1292,7 @@ mod tests {
             Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::WorkspaceRemoval)
         ));
         assert!(matches!(
-            mutation_target(&state, &entry),
+            mutation_target(&state.pgn_path_authority, &entry),
             Err(Error::InvalidInput(message)) if message == "workspace entry is not persistent"
         ));
         assert_eq!(
@@ -1123,12 +1318,13 @@ mod tests {
         set_test_atomic_file_injector(None);
 
         assert!(matches!(error, Error::PartialRemoval { .. }));
-        mutation_target(&state, &entry).expect("top record remains after partial removal");
+        mutation_target(&state.pgn_path_authority, &entry)
+            .expect("top record remains after partial removal");
         assert!(
-            mutation_target(&state, &removed_entry).is_err(),
+            mutation_target(&state.pgn_path_authority, &removed_entry).is_err(),
             "failed registry save retains removed descendant as unavailable"
         );
-        assert!(authority(&state)
+        assert!(authority(&state.pgn_path_authority)
             .expect("authority lock")
             .as_mut()
             .expect("authority")
@@ -1198,7 +1394,13 @@ mod tests {
         let key = EngineKey::new("tab".into(), "operation".into()).expect("engine key");
         supervise_test_engine(&state, &key, "application-engine", executable).await;
 
-        trash_entry(&state, &workspace, &entry).expect("trash directory");
+        trash_entry(
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &workspace,
+            &entry,
+        )
+        .expect("trash directory");
 
         assert!(state.engine_supervisor.get_exact(&key).is_some());
         state.engine_supervisor.terminate_all().await.unwrap();
@@ -1235,10 +1437,24 @@ mod tests {
         fs::write(&descendant, b"*").expect("descendant");
         let descendant_entry = registered_child_file(&state, &workspace, &descendant);
 
-        trash_entry(&state, &workspace, &entry).expect("trash directory");
-        mutation_target(&state, &descendant_entry).expect("descendant survives trash rebase");
-        restore_entry(&state, &workspace, &entry).expect("restore directory");
-        mutation_target(&state, &descendant_entry).expect("descendant survives restore rebase");
+        trash_entry(
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &workspace,
+            &entry,
+        )
+        .expect("trash directory");
+        mutation_target(&state.pgn_path_authority, &descendant_entry)
+            .expect("descendant survives trash rebase");
+        restore_entry(
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &workspace,
+            &entry,
+        )
+        .expect("restore directory");
+        mutation_target(&state.pgn_path_authority, &descendant_entry)
+            .expect("descendant survives restore rebase");
     }
 
     #[test]
@@ -1285,32 +1501,39 @@ mod tests {
     #[test]
     fn workspace_helpers_bind_only_registered_descendants_and_preserve_sidecar_names() {
         let (directory, state, workspace) = workspace_state();
-        let root = workspace_root(&state, &workspace).expect("workspace root");
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
         let game = root.join("round-one.pgn");
         fs::write(&game, "[Event \"Round one\"]\n\n1. e4 e5 *\n").expect("PGN");
 
         assert_eq!(
-            workspace_components(&state, &workspace, &game).unwrap(),
+            workspace_components(&state.pgn_path_authority, &workspace, &game).unwrap(),
             vec!["round-one.pgn"]
         );
-        assert!(
-            workspace_components(&state, &workspace, &directory.path().join("outside.pgn"))
-                .is_err()
-        );
+        assert!(workspace_components(
+            &state.pgn_path_authority,
+            &workspace,
+            &directory.path().join("outside.pgn")
+        )
+        .is_err());
         assert_eq!(
             sidecar_leaf(Path::new("round-one.pgn").as_os_str()).unwrap(),
             "round-one.info"
         );
         assert!(sidecar_leaf(Path::new("/").as_os_str()).is_err());
 
-        let entry =
-            register_entry(&state, &workspace, &game, "Round one".into()).expect("entry handle");
+        let entry = register_entry(
+            &state.pgn_path_authority,
+            &workspace,
+            &game,
+            "Round one".into(),
+        )
+        .expect("entry handle");
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
             let metadata = fs::metadata(&game).expect("game metadata");
             let expected = register_created_entry(
-                &state,
+                &state.pgn_path_authority,
                 &workspace,
                 &game,
                 "Round one expected".into(),
@@ -1318,9 +1541,12 @@ mod tests {
                 false,
             )
             .expect("expected entry handle");
-            let root_target = mutation_target(&state, &workspace).expect("root target");
-            let entry_target = mutation_target(&state, &entry).expect("entry target");
-            let expected_target = mutation_target(&state, &expected).expect("expected target");
+            let root_target =
+                mutation_target(&state.pgn_path_authority, &workspace).expect("root target");
+            let entry_target =
+                mutation_target(&state.pgn_path_authority, &entry).expect("entry target");
+            let expected_target =
+                mutation_target(&state.pgn_path_authority, &expected).expect("expected target");
             ensure_registered_descendant(&root_target, &entry_target).expect("entry inside root");
             ensure_registered_descendant(&root_target, &expected_target)
                 .expect("expected entry inside root");
@@ -1365,13 +1591,15 @@ mod tests {
         }
 
         let (_directory, state, workspace) = workspace_state();
-        let root = mutation_target(&state, &workspace).expect("workspace target");
+        let root =
+            mutation_target(&state.pgn_path_authority, &workspace).expect("workspace target");
         set_test_atomic_file_injector(Some(Arc::new(ParentSync)));
         let error = create_workspace_directory_inner(
             workspace.clone(),
             workspace,
             "created".into(),
-            &state,
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
         )
         .expect_err("uncertain registry durability must be surfaced");
         set_test_atomic_file_injector(None);

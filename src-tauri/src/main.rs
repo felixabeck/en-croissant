@@ -390,6 +390,8 @@ pub struct AppState {
     #[derivative(Default(value = "Arc::new(std::sync::Mutex::new(None))"))]
     pub pgn_path_authority:
         Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+    #[derivative(Default(value = "Arc::new(std::sync::Mutex::new(()))"))]
+    pub(crate) workspace_mutation: Arc<std::sync::Mutex<()>>,
 
     engine_supervisor: Arc<EngineSupervisor>,
     #[derivative(Default(value = "Arc::new(AuthLifecycle::default())"))]
@@ -1957,6 +1959,34 @@ mod blocking_offload_scans {
         ] {
             assert_offloads(puzzle, signature, worker);
         }
+        let file_workspace = include_str!("file_workspace.rs");
+        for (signature, worker) in [
+            ("pub async fn list_file_workspace(", "collect_tree_entries"),
+            (
+                "pub async fn create_workspace_file(",
+                "create_workspace_file_blocking",
+            ),
+            (
+                "pub async fn create_workspace_directory(",
+                "create_workspace_directory_inner",
+            ),
+            (
+                "pub async fn move_workspace_entry(",
+                "move_workspace_entry_blocking",
+            ),
+            (
+                "pub async fn rename_workspace_file(",
+                "rename_workspace_file_blocking",
+            ),
+            ("pub async fn trash_workspace_entry(", "trash_entry"),
+            ("pub async fn restore_workspace_entry(", "restore_entry"),
+            (
+                "async fn permanently_delete_entry(",
+                "permanently_delete_entry_blocking",
+            ),
+        ] {
+            assert_offloads(file_workspace, signature, worker);
+        }
         for signature in [
             "async fn save_board_snapshot(",
             "async fn save_engine_logs(",
@@ -1967,6 +1997,14 @@ mod blocking_offload_scans {
                 "{signature} must forward to save_native_export: {body}"
             );
         }
+        let delete_command = body_at_indent(
+            file_workspace,
+            "pub async fn permanently_delete_workspace_entry(",
+        );
+        assert!(
+            delete_command.contains("permanently_delete_entry"),
+            "permanently_delete_workspace_entry must forward to permanently_delete_entry: {delete_command}"
+        );
     }
 
     #[test]
@@ -1998,10 +2036,35 @@ mod blocking_offload_scans {
     }
 
     #[test]
+    fn s3_workspace_mutation_is_on_the_blocking_signatures() {
+        let source = include_str!("file_workspace.rs");
+        for signature in [
+            "fn create_workspace_directory_inner(",
+            "fn trash_entry(",
+            "fn restore_entry(",
+            "fn move_workspace_entry_blocking(",
+            "fn rename_workspace_file_blocking(",
+            "fn create_workspace_file_blocking(",
+            "fn permanently_delete_entry_blocking(",
+        ] {
+            let body = body_at_indent(source, signature);
+            let signature_text = body
+                .split_once('{')
+                .map(|(signature, _)| signature)
+                .unwrap_or(body);
+            assert!(
+                signature_text.contains("workspace_mutation"),
+                "{signature} must take workspace_mutation: {signature_text}"
+            );
+        }
+    }
+
+    #[test]
     fn s8_blocking_functions_do_not_nest_the_gateway() {
         for (file, source) in [
             ("main.rs", include_str!("main.rs")),
             ("puzzle.rs", include_str!("puzzle.rs")),
+            ("file_workspace.rs", include_str!("file_workspace.rs")),
         ] {
             let mut search_from = 0;
             while let Some(rel) = source[search_from..].find("_blocking(") {
@@ -2040,11 +2103,22 @@ mod blocking_offload_scans {
         // documented exception (`e770bcdb`, `d-20260903-06`): it already was the blocking body,
         // so no pass-through wrapper was added — and without this it would be the one offloaded
         // worker never checked for the nested acquisition that deadlocks the gateway.
-        for (file, source, name) in [(
-            "puzzle.rs",
-            include_str!("puzzle.rs"),
-            "active_or_default_puzzle_workspace",
-        )] {
+        let file_workspace = include_str!("file_workspace.rs");
+        for (file, source, name) in [
+            (
+                "puzzle.rs",
+                include_str!("puzzle.rs"),
+                "active_or_default_puzzle_workspace",
+            ),
+            ("file_workspace.rs", file_workspace, "collect_tree_entries"),
+            (
+                "file_workspace.rs",
+                file_workspace,
+                "create_workspace_directory_inner",
+            ),
+            ("file_workspace.rs", file_workspace, "trash_entry"),
+            ("file_workspace.rs", file_workspace, "restore_entry"),
+        ] {
             let body = body_at_indent(source, &format!("fn {name}("));
             for token in ["BLOCKING_GATEWAY", "block_on", "Handle::current", ".await"] {
                 assert!(
@@ -2052,6 +2126,22 @@ mod blocking_offload_scans {
                     "{file}::{name} must not nest a gateway acquisition (contains {token:?}): {body}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn s9_nested_awaits_stay_on_the_async_side() {
+        let source = include_str!("file_workspace.rs");
+        for (signature, token) in [
+            ("async fn list_file_workspace(", "count_pgn_games_core"),
+            ("async fn create_workspace_file(", "count_pgn_games_core"),
+            ("async fn permanently_delete_entry(", "retire_executables"),
+        ] {
+            let body = body_at_indent(source, signature);
+            assert!(
+                body.contains(token),
+                "{signature} must keep {token} on the async side: {body}"
+            );
         }
     }
 
