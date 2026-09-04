@@ -185,6 +185,31 @@ mod tests {
     }
 
     #[test]
+    fn starting_fen_is_the_starting_position_opening() {
+        let name = get_opening_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+            .unwrap();
+        assert_eq!(name, "Starting Position");
+        assert!(matches!(
+            get_opening_from_fen("8/8/8/8/8/8/8/4K2k w - - 0 1"),
+            Err(Error::NoOpeningFound)
+        ));
+    }
+
+    #[test]
+    fn opening_from_fens_walks_back_to_the_last_known_position() {
+        let start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let off_book = "8/8/8/8/8/8/8/4K2k w - - 0 1";
+        assert_eq!(
+            get_opening_from_fens(vec![start.to_string(), off_book.to_string()]).unwrap(),
+            "Starting Position"
+        );
+        assert!(matches!(
+            get_opening_from_fens(vec![off_book.to_string()]),
+            Err(Error::NoOpeningFound)
+        ));
+    }
+
+    #[test]
     fn test_get_opening_from_name_non_pgn() {
         let res_start = get_opening_from_name("Starting Position");
         assert!(res_start.is_err());

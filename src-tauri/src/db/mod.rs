@@ -2719,7 +2719,10 @@ fn preload_reference_db_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::path_authority::PathClass;
     use pgn_reader::BufferedReader;
+    use std::path::{Path, PathBuf};
+    use tauri::Manager;
 
     #[test]
     fn finish_database_deletion_returns_ok_when_the_tail_succeeds() {
@@ -3648,5 +3651,585 @@ mod tests {
         );
         assert_eq!(database_state(db).1, 3);
         assert_info_counts_match_tables(db);
+    }
+
+    fn blocking_database_case() -> (
+        tempfile::TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        DatabaseHandle,
+        PathBuf,
+    ) {
+        use diesel::connection::SimpleConnection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("games.db3");
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        connection.batch_execute(CREATE_TABLES_SQL).unwrap();
+        connection
+            .batch_execute("INSERT INTO Info (Name, Value) VALUES ('Version', '2.0.0');")
+            .unwrap();
+        drop(connection);
+
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let operations = vec![PathOperation::DatabaseRead, PathOperation::DatabaseMutate];
+        let grant = authority
+            .grant_dialog_operations(
+                &database,
+                "games",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                std::time::Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let commit = authority
+            .promote_dialog(&grant, PathClass::PersistentFile, "games", operations)
+            .unwrap();
+        let handle = DatabaseHandle::new(commit.id);
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        (dir, app.handle().clone(), handle, database)
+    }
+
+    fn insert_named_game(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        database: &Path,
+        white: &str,
+        black: &str,
+        event: &str,
+        site: &str,
+    ) -> i32 {
+        let state = app.state::<AppState>();
+        let mut db = state.database_repository.connection(database).unwrap();
+        let white = create_player(&mut db, white).unwrap();
+        let black = create_player(&mut db, black).unwrap();
+        let event = create_event(&mut db, event).unwrap();
+        let site = create_site(&mut db, site).unwrap();
+        insert_test_game(&mut db, white.id, black.id, event.id, site.id).id
+    }
+
+    const REPLACEMENT_PGN: &str = r#"[Event "Candidates"]
+[Site "Madrid"]
+[Date "2026.08.09"]
+[UTCTime "12:00:00"]
+[White "Carlsen"]
+[Black "Nepomniachtchi"]
+[Result "1-0"]
+[WhiteElo "2860"]
+[BlackElo "2790"]
+
+1. e4 e5 1-0
+"#;
+
+    #[test]
+    fn write_db_game_then_read_it_back_returns_the_same_moves() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(
+            &app,
+            &database,
+            "Old White",
+            "Old Black",
+            "Old Event",
+            "Old Site",
+        );
+        let state = app.state::<AppState>();
+
+        let empty = write_db_game_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            game_id,
+            String::new(),
+        );
+        assert!(
+            matches!(empty, Err(Error::NoMovesFound)),
+            "a PGN with no games must not overwrite the stored game"
+        );
+
+        write_db_game_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            game_id,
+            REPLACEMENT_PGN.to_string(),
+        )
+        .unwrap();
+
+        let games = get_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            GameQuery {
+                outcome: Some("1-0".into()),
+                sides: Some(Sides::WhiteBlack),
+                ..GameQuery::new()
+            },
+        )
+        .unwrap();
+        assert_eq!(games.count, Some(1));
+        assert_eq!(games.data.len(), 1);
+        assert_eq!(games.data[0].white, "Carlsen");
+        assert_eq!(games.data[0].black, "Nepomniachtchi");
+        assert_eq!(games.data[0].event, "Candidates");
+        assert_eq!(games.data[0].site, "Madrid");
+        assert_eq!(games.data[0].moves, "1. e4 e5 1-0");
+
+        let white_id = games.data[0].white_id;
+        let event_id = games.data[0].event_id;
+
+        let dated = get_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            GameQuery {
+                start_date: Some("2026.01.01".into()),
+                end_date: Some("2026.12.31".into()),
+                tournament_id: Some(event_id),
+                options: Some(QueryOptions {
+                    skip_count: false,
+                    page: Some(1),
+                    page_size: Some(10),
+                    sort: GameSort::Date,
+                    direction: SortDirection::Asc,
+                }),
+                ..GameQuery::new()
+            },
+        )
+        .unwrap();
+        assert_eq!(dated.count, Some(1));
+        assert_eq!(dated.data[0].id, game_id);
+
+        let any_side = get_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            GameQuery {
+                player1: Some(white_id),
+                sides: Some(Sides::Any),
+                range1: Some((2800, 2900)),
+                options: Some(QueryOptions {
+                    skip_count: true,
+                    page: Some(1),
+                    page_size: Some(1),
+                    sort: GameSort::WhiteElo,
+                    direction: SortDirection::Desc,
+                }),
+                ..GameQuery::new()
+            },
+        )
+        .unwrap();
+        assert_eq!(any_side.count, None);
+        assert_eq!(any_side.data.len(), 1);
+
+        let as_black = get_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            GameQuery {
+                player1: Some(white_id),
+                sides: Some(Sides::BlackWhite),
+                range1: Some((2700, 2800)),
+                range2: Some((2800, 2900)),
+                ..GameQuery::new()
+            },
+        )
+        .unwrap();
+        assert_eq!(as_black.count, Some(0));
+        assert!(as_black.data.is_empty());
+
+        let white = get_player_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            games.data[0].white_id,
+        )
+        .unwrap()
+        .expect("written white player must exist");
+        assert_eq!(white.name.as_deref(), Some("Carlsen"));
+        assert!(
+            get_player_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle.clone(),
+                999,
+            )
+            .unwrap()
+            .is_none(),
+            "a missing player id must return None rather than an error"
+        );
+
+        let players = get_players_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            PlayerQuery {
+                options: QueryOptions {
+                    skip_count: false,
+                    page: None,
+                    page_size: None,
+                    sort: PlayerSort::Name,
+                    direction: SortDirection::Asc,
+                },
+                name: Some("Carlsen".into()),
+                range: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(players.count, Some(1));
+        assert_eq!(players.data[0].name.as_deref(), Some("Carlsen"));
+
+        let rated = get_players_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            PlayerQuery {
+                options: QueryOptions {
+                    skip_count: true,
+                    page: Some(1),
+                    page_size: Some(10),
+                    sort: PlayerSort::Elo,
+                    direction: SortDirection::Desc,
+                },
+                name: None,
+                range: Some((2800, 2900)),
+            },
+        )
+        .unwrap();
+        assert_eq!(rated.count, None);
+        assert!(
+            rated.data.is_empty(),
+            "Players.Elo is not written from game ratings, so a rating band matches nobody"
+        );
+
+        let tournaments = get_tournaments_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            TournamentQuery {
+                options: QueryOptions {
+                    skip_count: false,
+                    page: None,
+                    page_size: None,
+                    sort: TournamentSort::Name,
+                    direction: SortDirection::Asc,
+                },
+                name: Some("Candidates".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(tournaments.count, Some(1));
+        assert_eq!(tournaments.data[0].name.as_deref(), Some("Candidates"));
+
+        let paged_events = get_tournaments_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            TournamentQuery {
+                options: QueryOptions {
+                    skip_count: true,
+                    page: Some(1),
+                    page_size: Some(5),
+                    sort: TournamentSort::Id,
+                    direction: SortDirection::Desc,
+                },
+                name: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(paged_events.count, None);
+        assert!(paged_events
+            .data
+            .iter()
+            .any(|event| event.name.as_deref() == Some("Candidates")));
+
+        let timestamp = get_latest_game_timestamp_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+        )
+        .unwrap();
+        let expected = NaiveDate::from_ymd_opt(2026, 8, 9)
+            .unwrap()
+            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap())
+            .and_utc()
+            .timestamp_millis() as f64;
+        assert_eq!(timestamp, Some(expected));
+    }
+
+    #[test]
+    fn get_db_info_reflects_edits_and_whether_indexes_exist() {
+        let (_dir, app, handle, _database) = blocking_database_case();
+        let state = app.state::<AppState>();
+
+        let before = get_db_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+        )
+        .unwrap();
+        assert_eq!(before.title, "Untitled");
+        assert_eq!(before.description, "");
+        assert_eq!(before.filename, "games.db3");
+        assert!(!before.indexed);
+        assert!(before.storage_size > 0);
+
+        edit_db_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            Some("My Library".into()),
+            Some("Annotated games".into()),
+        )
+        .unwrap();
+
+        create_indexes_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+        )
+        .unwrap();
+
+        let indexed = get_db_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+        )
+        .unwrap();
+        assert_eq!(indexed.title, "My Library");
+        assert_eq!(indexed.description, "Annotated games");
+        assert!(indexed.indexed);
+
+        edit_db_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            Some("Renamed".into()),
+            None,
+        )
+        .unwrap();
+        edit_db_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            None,
+            Some("New description".into()),
+        )
+        .unwrap();
+
+        delete_indexes_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+        )
+        .unwrap();
+
+        let after = get_db_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+        )
+        .unwrap();
+        assert_eq!(after.title, "Renamed");
+        assert_eq!(after.description, "New description");
+        assert!(!after.indexed);
+    }
+
+    #[test]
+    fn blocking_maintenance_removes_empty_duplicates_and_merged_players() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let empty_id = insert_named_game(
+            &app,
+            &database,
+            "Empty White",
+            "Empty Black",
+            "Empty Event",
+            "Empty Site",
+        );
+        let first_duplicate = insert_named_game(
+            &app,
+            &database,
+            "Dup White",
+            "Dup Black",
+            "Dup Event",
+            "Dup Site",
+        );
+        let _second_duplicate = insert_named_game(
+            &app,
+            &database,
+            "Dup White",
+            "Dup Black",
+            "Dup Event",
+            "Dup Site",
+        );
+        let source_game = insert_named_game(
+            &app,
+            &database,
+            "Source",
+            "Opponent",
+            "Merge Event",
+            "Merge Site",
+        );
+        let target_game = insert_named_game(
+            &app,
+            &database,
+            "Target",
+            "Opponent",
+            "Merge Event",
+            "Merge Site",
+        );
+
+        {
+            let state = app.state::<AppState>();
+            let mut db = state.database_repository.connection(&database).unwrap();
+            diesel::update(games::table.find(empty_id))
+                .set(games::ply_count.eq(0))
+                .execute(&mut *db)
+                .unwrap();
+        }
+
+        let state = app.state::<AppState>();
+        delete_empty_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+        )
+        .unwrap();
+
+        let after_empty = get_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            GameQuery::new(),
+        )
+        .unwrap();
+        assert_eq!(after_empty.count, Some(4));
+        assert!(
+            after_empty.data.iter().all(|game| game.id != empty_id),
+            "zero-ply games must be gone after delete_empty_games"
+        );
+
+        delete_duplicated_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+        )
+        .unwrap();
+
+        let after_duplicates = get_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            GameQuery::new(),
+        )
+        .unwrap();
+        assert_eq!(after_duplicates.count, Some(3));
+        let duplicate_ids: Vec<i32> = after_duplicates
+            .data
+            .iter()
+            .filter(|game| game.white == "Dup White")
+            .map(|game| game.id)
+            .collect();
+        assert_eq!(duplicate_ids, vec![first_duplicate]);
+
+        let source = get_players_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            PlayerQuery {
+                options: QueryOptions {
+                    skip_count: false,
+                    page: None,
+                    page_size: None,
+                    sort: PlayerSort::Name,
+                    direction: SortDirection::Asc,
+                },
+                name: Some("Source".into()),
+                range: None,
+            },
+        )
+        .unwrap();
+        let target = get_players_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            PlayerQuery {
+                options: QueryOptions {
+                    skip_count: false,
+                    page: None,
+                    page_size: None,
+                    sort: PlayerSort::Name,
+                    direction: SortDirection::Asc,
+                },
+                name: Some("Target".into()),
+                range: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(source.data.len(), 1);
+        assert_eq!(target.data.len(), 1);
+        let source_id = source.data[0].id;
+        let target_id = target.data[0].id;
+
+        merge_players_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            source_id,
+            target_id,
+        )
+        .unwrap();
+
+        let source_after = get_player_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            source_id,
+        )
+        .unwrap();
+        assert!(source_after.is_none(), "merged source player must be gone");
+        let rewritten = get_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle.clone(),
+            GameQuery {
+                player1: Some(target_id),
+                sides: Some(Sides::WhiteBlack),
+                ..GameQuery::new()
+            },
+        )
+        .unwrap();
+        let rewritten_ids: Vec<i32> = rewritten.data.iter().map(|game| game.id).collect();
+        assert!(
+            rewritten_ids.contains(&source_game) && rewritten_ids.contains(&target_game),
+            "both of the source player's games must now belong to the target"
+        );
+
+        delete_db_game_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            first_duplicate,
+        )
+        .unwrap();
+        let remaining = get_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            GameQuery::new(),
+        )
+        .unwrap();
+        assert_eq!(remaining.count, Some(2));
+        assert!(remaining.data.iter().all(|game| game.id != first_duplicate));
     }
 }

@@ -830,7 +830,12 @@ pub fn is_position_in_db(
 mod tests {
     use super::*;
     use crate::{
-        db::{legacy_index_path, SearchIndex},
+        db::{
+            legacy_index_path,
+            models::NewGame,
+            ops::{create_event, create_game, create_player, create_site},
+            SearchIndex,
+        },
         infra::{
             fs::{set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector},
             path_authority::PathClass,
@@ -1382,5 +1387,162 @@ mod tests {
         // Even the stale producer's Drop must not cancel the running search.
         drop(older);
         assert_eq!(store.get("tab-3").unwrap().state, ProgressState::Running);
+    }
+
+    const STARTING_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    const AFTER_E4_E5_NF3_FEN: &str =
+        "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2";
+    const AFTER_D4_FEN: &str = "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 1";
+
+    fn insert_white_win_e4_e5(connection: &mut SqliteConnection) -> i32 {
+        let white = create_player(connection, "Carlsen").unwrap();
+        let black = create_player(connection, "Nakamura").unwrap();
+        let event = create_event(connection, "Candidates").unwrap();
+        let site = create_site(connection, "Madrid").unwrap();
+
+        let mut chess = Chess::default();
+        for san in ["e4", "e5"] {
+            let m = SanPlus::from_ascii(san.as_bytes())
+                .unwrap()
+                .san
+                .to_move(&chess)
+                .unwrap();
+            chess.play_unchecked(&m);
+        }
+        let material = get_material_count(chess.board());
+        create_game(
+            connection,
+            NewGame {
+                event_id: event.id,
+                site_id: site.id,
+                white_id: white.id,
+                black_id: black.id,
+                white_elo: Some(2800),
+                black_elo: Some(2700),
+                white_material: i32::from(material.white),
+                black_material: i32::from(material.black),
+                date: Some("2026.08.09"),
+                time: Some("12:00:00"),
+                round: None,
+                result: Some("1-0"),
+                time_control: None,
+                eco: Some("C20"),
+                ply_count: 2,
+                fen: None,
+                moves: &[12, 12],
+                pawn_home: i32::from(get_pawn_home(chess.board())),
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    fn position_search_database() -> (
+        TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        DatabaseHandle,
+        PathBuf,
+    ) {
+        let (dir, app, handle, database) = loader_test_case(vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+        ]);
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        insert_white_win_e4_e5(&mut connection);
+        drop(connection);
+        (dir, app, handle, database)
+    }
+
+    fn exact_position_query(fen: &str) -> GameQuery {
+        GameQuery::new().position(PositionQueryJs {
+            fen: fen.to_string(),
+            type_: "exact".to_string(),
+        })
+    }
+
+    #[test]
+    fn is_position_in_db_finds_a_played_position_and_rejects_an_unplayed_one() {
+        let (_dir, app, handle, _database) = position_search_database();
+        let state = app.state::<AppState>();
+
+        let present = is_position_in_db(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &exact_position_query(STARTING_FEN),
+        )
+        .unwrap();
+        assert!(
+            present,
+            "the starting position of 1. e4 e5 must be found in the database"
+        );
+
+        let absent = is_position_in_db(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &exact_position_query(AFTER_E4_E5_NF3_FEN),
+        )
+        .unwrap();
+        assert!(
+            !absent,
+            "1. e4 e5 2. Nf3 is not a position of the stored game"
+        );
+
+        let absent_again = is_position_in_db(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &exact_position_query(AFTER_E4_E5_NF3_FEN),
+        )
+        .unwrap();
+        assert!(
+            !absent_again,
+            "a repeated miss must stay a miss when served from the search cache"
+        );
+
+        let no_position = is_position_in_db(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &GameQuery::new(),
+        )
+        .unwrap();
+        assert!(
+            !no_position,
+            "a query without a position is not a position match"
+        );
+
+        let pruned = is_position_in_db(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &exact_position_query(AFTER_D4_FEN),
+        )
+        .unwrap();
+        assert!(
+            !pruned,
+            "1. d4 is unreachable from a game that never moved the d-pawn"
+        );
+
+        let invalid = is_position_in_db(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &GameQuery::new().position(PositionQueryJs {
+                fen: STARTING_FEN.to_string(),
+                type_: "surprise".to_string(),
+            }),
+        );
+        assert!(
+            matches!(invalid, Err(Error::InvalidInput(_))),
+            "an unsupported position query type must be rejected, not treated as a miss"
+        );
     }
 }
