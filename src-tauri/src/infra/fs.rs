@@ -1707,6 +1707,10 @@ mod tests {
         .expect_err("post-removal failure must be reported");
 
         let serialized = serde_json::to_string(&error).expect("serialize partial removal");
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
+        assert_eq!(payload["category"], "partial-removal");
+        assert_eq!(payload["message"], error.to_string());
         assert!(!serialized.contains("/private/removal"));
         assert!(!serialized.contains(r"C:\private\removal"));
         assert!(!serialized.contains("injected removal failure"));
@@ -1735,9 +1739,13 @@ mod tests {
         )
         .expect_err("parent sync failure must preserve commit status");
 
+        let serialized = serde_json::to_string(&error).expect("serialize removal error");
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
+        assert_eq!(payload["category"], "durability");
         assert_eq!(
-            serde_json::to_string(&error).expect("serialize removal error"),
-            "\"Committed but durability uncertain: workspace removal\""
+            payload["message"],
+            "Committed but durability uncertain: workspace removal"
         );
 
         assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
@@ -2164,11 +2172,15 @@ mod tests {
                 let Error::OperationAndCleanup { primary, cleanup } = &error else {
                     unreachable!();
                 };
-                assert!(primary.contains("primary"));
+                assert_eq!(primary, "I/O failure");
                 assert!(!cleanup.is_empty());
+                let serialized = serde_json::to_string(&error).expect("serialize cleanup error");
+                let payload: serde_json::Value =
+                    serde_json::from_str(&serialized).expect("serialized error is a JSON object");
+                assert_eq!(payload["category"], "operation-and-cleanup");
                 assert_eq!(
-                    serde_json::to_string(&error).expect("serialize cleanup error"),
-                    "\"Operation failed; temporary cleanup also failed\""
+                    payload["message"],
+                    "Operation failed; temporary cleanup also failed"
                 );
             }
             other => panic!("expected structured cleanup error, got {other:?}"),

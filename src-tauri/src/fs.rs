@@ -1790,7 +1790,10 @@ mod tests {
             "/private/staging/payload: permission denied",
         ))));
         let serialized = serde_json::to_string(&error).unwrap();
-        assert_eq!(serialized, "\"I/O failure\"");
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
+        assert_eq!(payload["category"], "io");
+        assert_eq!(payload["message"], "I/O failure");
         assert!(!serialized.contains("staging"));
     }
 
@@ -1819,7 +1822,11 @@ mod tests {
 
         let error = file_exists_with_authority(&mut authority, &handle.id).unwrap_err();
         let serialized = serde_json::to_string(&error).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
         assert!(matches!(error, Error::InvalidInput(_)));
+        assert_eq!(payload["category"], "invalid-input");
+        assert_eq!(payload["message"], error.to_string());
         assert!(!serialized.contains(&executable.display().to_string()));
         assert!(!serialized.contains("Permission denied"));
         assert!(!serialized.contains("os error"));
@@ -1857,7 +1864,11 @@ mod tests {
 
         let error = get_file_metadata_with_authority(&mut authority, &handle.id).unwrap_err();
         let serialized = serde_json::to_string(&error).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
         assert!(matches!(error, Error::InvalidInput(_)));
+        assert_eq!(payload["category"], "invalid-input");
+        assert_eq!(payload["message"], error.to_string());
         assert!(!serialized.contains(&executable.display().to_string()));
         assert!(!serialized.contains("Permission denied"));
         assert!(!serialized.contains("os error"));
@@ -1877,7 +1888,11 @@ mod tests {
         let error =
             get_file_metadata_with_authority(&mut authority, handle.path_ref()).unwrap_err();
         let serialized = serde_json::to_string(&error).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
         assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(payload["category"], "conflict");
+        assert_eq!(payload["message"], error.to_string());
         assert!(!serialized.contains(&executable.display().to_string()));
         assert!(!serialized.contains("No such file"));
         assert!(!serialized.contains("os error"));
@@ -2373,9 +2388,12 @@ mod tests {
                     )
                 ));
                 let serialized = serde_json::to_string(&error).unwrap();
+                let payload: serde_json::Value =
+                    serde_json::from_str(&serialized).expect("serialized error is a JSON object");
+                assert_eq!(payload["category"], "durability");
                 assert_eq!(
-                    serialized,
-                    "\"Committed but durability uncertain: old directory cleanup\""
+                    payload["message"],
+                    "Committed but durability uncertain: old directory cleanup"
                 );
                 assert!(!serialized.contains(&root.path().display().to_string()));
                 assert!(!serialized.contains("directory cleanup exceeded"));

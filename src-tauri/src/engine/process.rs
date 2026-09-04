@@ -2166,13 +2166,16 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let logged = match REGISTRATION_CLEANUP_ERRORS.lock() {
-                    Ok(errors) => errors
-                        .iter()
-                        .any(|message| message.contains("fake cancelled terminate failed")),
-                    Err(poisoned) => poisoned
-                        .into_inner()
-                        .iter()
-                        .any(|message| message.contains("fake cancelled terminate failed")),
+                    Ok(errors) => errors.iter().any(|message| {
+                        message.contains(
+                            "cancelled engine registration could not be terminated cleanly",
+                        ) && message.contains("I/O failure")
+                    }),
+                    Err(poisoned) => poisoned.into_inner().iter().any(|message| {
+                        message.contains(
+                            "cancelled engine registration could not be terminated cleanly",
+                        ) && message.contains("I/O failure")
+                    }),
                 };
                 if logged {
                     break;

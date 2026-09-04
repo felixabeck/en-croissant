@@ -1283,9 +1283,12 @@ mod tests {
             .iter()
             .any(|descriptor| descriptor.id == *entry.path_ref()));
         let serialized = serde_json::to_string(&error).expect("serialize registry failure");
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
+        assert_eq!(payload["category"], "durability");
         assert_eq!(
-            serialized,
-            "\"Committed but durability uncertain: registry replacement\""
+            payload["message"],
+            "Committed but durability uncertain: registry replacement"
         );
         assert!(!serialized.contains("/private/registry"));
         assert!(!serialized.contains(r"C:\private\registry"));
@@ -1313,9 +1316,13 @@ mod tests {
             mutation_target(&state.pgn_path_authority, &entry),
             Err(Error::InvalidInput(message)) if message == "workspace entry is not persistent"
         ));
+        let serialized = serde_json::to_string(&error).expect("serialize sidecar failure");
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
+        assert_eq!(payload["category"], "durability");
         assert_eq!(
-            serde_json::to_string(&error).expect("serialize sidecar failure"),
-            "\"Committed but durability uncertain: workspace removal\""
+            payload["message"],
+            "Committed but durability uncertain: workspace removal"
         );
     }
 
@@ -1350,7 +1357,13 @@ mod tests {
             .iter()
             .any(|descriptor| descriptor.id == *removed_entry.path_ref()));
         let serialized = serde_json::to_string(&error).expect("serialize partial removal");
-        assert!(serialized.starts_with("\"Partially removed:"));
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
+        assert_eq!(payload["category"], "partial-removal");
+        assert!(payload["message"]
+            .as_str()
+            .expect("message")
+            .starts_with("Partially removed:"));
         assert!(!serialized.contains("/private/registry"));
         assert!(!serialized.contains(r"C:\private\registry"));
     }

@@ -116,6 +116,27 @@ fn load_puzzles(
     Ok(rows)
 }
 
+fn load_puzzle_themes(
+    repository: &DatabaseRepository,
+    file: std::fs::File,
+    expected_object: (u64, u64),
+) -> Result<Vec<String>, Error> {
+    let mut database_connection =
+        repository.schema_specific_connection_expected_file(file, expected_object)?;
+    let db = &mut *database_connection;
+    themes::table
+        .select(themes::name)
+        .order(themes::name.asc())
+        .load(db)
+        .map_err(|error| {
+            if error.to_string().contains("no such table: themes") {
+                Error::PuzzleThemesUnavailable
+            } else {
+                Error::from(error)
+            }
+        })
+}
+
 fn puzzle_database_info(
     repository: &DatabaseRepository,
     path: &Path,
@@ -472,13 +493,7 @@ pub async fn get_puzzle_themes(
     BLOCKING_GATEWAY
         .spawn(move || {
             let _pinned = resolved;
-            let mut database_connection = repository
-                .schema_specific_connection_expected_file(file_handle, expected_object)?;
-            let db = &mut *database_connection;
-            Ok(themes::table
-                .select(themes::name)
-                .order(themes::name.asc())
-                .load(db)?)
+            load_puzzle_themes(repository.as_ref(), file_handle, expected_object)
         })
         .await
 }
@@ -770,5 +785,100 @@ mod tests {
             None,
         )
         .is_err());
+    }
+
+    fn opened_identity(path: &Path) -> (u64, u64) {
+        crate::infra::path_authority::opened_file_identity(&std::fs::File::open(path).unwrap())
+            .unwrap()
+    }
+
+    fn serialized_payload(error: &Error) -> (String, serde_json::Value) {
+        let serialized = serde_json::to_string(error).expect("serialize error");
+        let payload = serde_json::from_str(&serialized).expect("serialized error is a JSON object");
+        (serialized, payload)
+    }
+
+    #[test]
+    fn missing_themes_table_is_puzzle_themes_unavailable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("empty-themes.db3");
+        let repository = DatabaseRepository::default();
+        drop(repository.schema_specific_connection(&path).unwrap());
+        let object = opened_identity(&path);
+        let error = load_puzzle_themes(&repository, std::fs::File::open(&path).unwrap(), object)
+            .expect_err("empty schema must report missing puzzle themes");
+        let (_serialized, payload) = serialized_payload(&error);
+        assert_eq!(payload["category"], "puzzle-themes-unavailable");
+        assert!(matches!(error, Error::PuzzleThemesUnavailable));
+    }
+
+    #[test]
+    fn themes_table_without_name_is_a_database_failure_without_sql() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("themes-without-name.db3");
+        let repository = DatabaseRepository::default();
+        let mut database_connection = repository.schema_specific_connection(&path).unwrap();
+        database_connection
+            .batch_execute("CREATE TABLE themes (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        database_connection
+            .batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+        drop(database_connection);
+        let object = opened_identity(&path);
+        let error = load_puzzle_themes(&repository, std::fs::File::open(&path).unwrap(), object)
+            .expect_err("themes without name must stay a diesel failure");
+        let (serialized, payload) = serialized_payload(&error);
+        assert_eq!(payload["category"], "database");
+        assert!(matches!(error, Error::Diesel(_)));
+        let source = std::error::Error::source(&error).expect("Diesel keeps its cause");
+        let source_text = source.to_string();
+        assert!(
+            !source_text.contains("no such table"),
+            "arm 2 must not be a missing table, got {source_text}"
+        );
+        assert!(
+            !serialized.contains(&source_text),
+            "SQL fragment leaked on the wire: {serialized}"
+        );
+    }
+
+    #[test]
+    fn themed_load_puzzles_missing_themes_stays_a_database_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("themed-without-themes.db3");
+        let repository = DatabaseRepository::default();
+        let mut database_connection = repository.schema_specific_connection(&path).unwrap();
+        database_connection
+            .batch_execute(
+                "CREATE TABLE puzzles (id INTEGER PRIMARY KEY, fen TEXT NOT NULL, moves TEXT NOT NULL, rating INTEGER NOT NULL, rating_deviation INTEGER NOT NULL, popularity INTEGER NOT NULL, nb_plays INTEGER NOT NULL);
+                 CREATE TABLE puzzle_themes (puzzle_id INTEGER NOT NULL, theme_id INTEGER NOT NULL);
+                 INSERT INTO puzzles VALUES (1, 'fen', 'e2e4', 1200, 10, 1, 1);"
+            )
+            .unwrap();
+        database_connection
+            .batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+        drop(database_connection);
+        let object = opened_identity(&path);
+        let error = load_puzzles(
+            &repository,
+            std::fs::File::open(&path).unwrap(),
+            object,
+            0,
+            u16::MAX,
+            Some("fork"),
+        )
+        .expect_err("themed load without themes must stay a diesel failure");
+        let (serialized, payload) = serialized_payload(&error);
+        assert_eq!(payload["category"], "database");
+        assert!(matches!(error, Error::Diesel(_)));
+        let source = std::error::Error::source(&error).expect("Diesel keeps its cause");
+        let source_text = source.to_string();
+        assert!(
+            source_text.contains("no such table: themes"),
+            "arm 3 must see SQLite's missing themes table on source(), got {source_text}"
+        );
+        assert!(!serialized.contains("no such table: themes"));
     }
 }

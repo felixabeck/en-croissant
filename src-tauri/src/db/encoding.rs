@@ -436,7 +436,12 @@ mod tests {
         };
 
         let error = encode_move(&illegal_move, &chess).unwrap_err();
-        assert_eq!(error.to_string(), "Move is not legal in the given position");
+        assert_eq!(error.to_string(), "I/O failure");
+        let source = std::error::Error::source(&error).expect("Io keeps its cause");
+        assert_eq!(
+            source.to_string(),
+            "Move is not legal in the given position"
+        );
     }
 
     #[test]
@@ -459,7 +464,9 @@ mod tests {
         let missing_black_king: Fen = "8/8/8/8/8/8/8/K7 w - - 0 1".parse().unwrap();
 
         let error = decode_game(&[], missing_black_king).unwrap_err();
-        assert!(error.to_string().starts_with("Invalid initial FEN setup:"));
+        assert_eq!(error.to_string(), "I/O failure");
+        let source = std::error::Error::source(&error).expect("Io keeps its cause");
+        assert!(source.to_string().starts_with("Invalid initial FEN setup:"));
     }
 
     #[test]

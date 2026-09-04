@@ -47,22 +47,85 @@ impl std::fmt::Display for DurabilityStage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "kebab-case")]
+pub enum ErrorCategory {
+    Io,
+    Parsing,
+    Platform,
+    Network,
+    ChessData,
+    Database,
+    InvalidInput,
+    MissingResource,
+    Conflict,
+    ResourceLimit,
+    Authentication,
+    Credential,
+    Cancellation,
+    Durability,
+    PartialRemoval,
+    OperationAndCleanup,
+    EngineTimeout,
+    Permission,
+    PuzzleThemesUnavailable,
+}
+
+impl std::fmt::Display for ErrorCategory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Io => "I/O failure",
+            Self::Parsing => "parsing failure",
+            Self::Platform => "platform failure",
+            Self::Network => "network failure",
+            Self::ChessData => "chess data failure",
+            Self::Database => "database failure",
+            Self::InvalidInput => "invalid input",
+            Self::MissingResource => "missing resource",
+            Self::Conflict => "conflict",
+            Self::ResourceLimit => "resource limit",
+            Self::Authentication => "authentication failure",
+            Self::Credential => "credential failure",
+            Self::Cancellation => "cancellation",
+            Self::Durability => "durability failure",
+            Self::PartialRemoval => "partial removal",
+            Self::OperationAndCleanup => "operation and cleanup failure",
+            Self::EngineTimeout => "engine timeout",
+            Self::Permission => "permission denied",
+            Self::PuzzleThemesUnavailable => "puzzle themes unavailable",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "kebab-case")]
+pub enum ErrorPayloadTag {
+    BackendError,
+}
+
+#[derive(Serialize, Type)]
+pub struct ErrorPayload {
+    pub tag: ErrorPayloadTag,
+    pub category: ErrorCategory,
+    pub message: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error(transparent)]
-    Io(Box<std::io::Error>),
+    #[error("I/O failure")]
+    Io(#[source] Box<std::io::Error>),
 
-    #[error(transparent)]
-    Zip(Box<zip::result::ZipError>),
+    #[error("parsing failure")]
+    Zip(#[source] Box<zip::result::ZipError>),
 
     #[error(transparent)]
     ParseInt(Box<std::num::ParseIntError>),
 
-    #[error(transparent)]
-    Tauri(Box<tauri::Error>),
+    #[error("platform failure")]
+    Tauri(#[source] Box<tauri::Error>),
 
-    #[error(transparent)]
-    TauriOpener(Box<tauri_plugin_opener::Error>),
+    #[error("platform failure")]
+    TauriOpener(#[source] Box<tauri_plugin_opener::Error>),
 
     #[error("network failure")]
     Reqwest(Box<reqwest::Error>),
@@ -85,11 +148,11 @@ pub enum Error {
     #[error(transparent)]
     IllegalSan(Box<shakmaty::san::SanError>),
 
-    #[error(transparent)]
-    Diesel(Box<diesel::result::Error>),
+    #[error("database failure")]
+    Diesel(#[source] Box<diesel::result::Error>),
 
-    #[error(transparent)]
-    R2d2(Box<diesel::r2d2::PoolError>),
+    #[error("database failure")]
+    R2d2(#[source] Box<diesel::r2d2::PoolError>),
 
     #[error(transparent)]
     SystemTime(Box<std::time::SystemTimeError>),
@@ -111,6 +174,9 @@ pub enum Error {
 
     #[error("No puzzles")]
     NoPuzzles,
+
+    #[error("Puzzle themes unavailable")]
+    PuzzleThemesUnavailable,
 
     #[error("Players aren't the same. They have played against each other")]
     NotDistinctPlayers,
@@ -179,20 +245,26 @@ pub enum Error {
 }
 
 impl Error {
-    fn category(&self) -> &'static str {
+    pub fn category(&self) -> ErrorCategory {
         match self {
-            Self::Io(_) => "I/O failure",
+            Self::Io(error) => match error.kind() {
+                std::io::ErrorKind::NotFound => ErrorCategory::MissingResource,
+                std::io::ErrorKind::PermissionDenied => ErrorCategory::Permission,
+                _ => ErrorCategory::Io,
+            },
             Self::Zip(_) | Self::ParseInt(_) | Self::Fen(_) | Self::ParseUciMove(_) => {
-                "parsing failure"
+                ErrorCategory::Parsing
             }
-            Self::Tauri(_) | Self::TauriOpener(_) => "platform failure",
-            Self::Reqwest(_) => "network failure",
+            Self::Tauri(_) | Self::TauriOpener(_) => ErrorCategory::Platform,
+            Self::Reqwest(_) => ErrorCategory::Network,
             Self::ChessPosition(_)
             | Self::IllegalUciMove(_)
             | Self::ParseSan(_)
-            | Self::IllegalSan(_) => "chess data failure",
-            Self::Diesel(_) | Self::R2d2(_) => "database failure",
-            Self::SystemTime(_) | Self::InvalidInput(_) | Self::InvalidColor(_) => "invalid input",
+            | Self::IllegalSan(_) => ErrorCategory::ChessData,
+            Self::Diesel(_) | Self::R2d2(_) => ErrorCategory::Database,
+            Self::SystemTime(_) | Self::InvalidInput(_) | Self::InvalidColor(_) => {
+                ErrorCategory::InvalidInput
+            }
             Self::NoStdin
             | Self::NoStdout
             | Self::NoMovesFound
@@ -201,21 +273,23 @@ impl Error {
             | Self::NoPuzzles
             | Self::GameNotFound(_)
             | Self::EngineNotInitialized
-            | Self::EngineDisconnected => "missing resource",
+            | Self::EngineDisconnected => ErrorCategory::MissingResource,
             Self::NotDistinctPlayers
             | Self::GameNotInProgress
             | Self::NotHumanTurn
             | Self::NotEngineTurn
-            | Self::EngineTimeout(_)
-            | Self::AnalysisCancelled
-            | Self::Conflict(_) => "conflict",
-            Self::ResourceLimit(_) => "resource limit",
-            Self::OAuthFailure(_) => "authentication failure",
-            Self::CredentialFailure(_) | Self::CredentialRecoveryRequired => "credential failure",
-            Self::Cancellation => "cancellation",
-            Self::CommittedDurabilityUncertain(_) => "durability failure",
-            Self::PartialRemoval { .. } => "partial removal",
-            Self::OperationAndCleanup { .. } => "operation and cleanup failure",
+            | Self::Conflict(_) => ErrorCategory::Conflict,
+            Self::ResourceLimit(_) => ErrorCategory::ResourceLimit,
+            Self::OAuthFailure(_) => ErrorCategory::Authentication,
+            Self::CredentialFailure(_) | Self::CredentialRecoveryRequired => {
+                ErrorCategory::Credential
+            }
+            Self::Cancellation | Self::AnalysisCancelled => ErrorCategory::Cancellation,
+            Self::CommittedDurabilityUncertain(_) => ErrorCategory::Durability,
+            Self::PartialRemoval { .. } => ErrorCategory::PartialRemoval,
+            Self::OperationAndCleanup { .. } => ErrorCategory::OperationAndCleanup,
+            Self::EngineTimeout(_) => ErrorCategory::EngineTimeout,
+            Self::PuzzleThemesUnavailable => ErrorCategory::PuzzleThemesUnavailable,
         }
     }
 }
@@ -315,16 +389,30 @@ impl serde::Serialize for Error {
     where
         S: serde::ser::Serializer,
     {
-        serializer.serialize_str(self.to_string().as_ref())
+        // No logging: debug builds send Info-and-above records to the webview.
+        ErrorPayload {
+            tag: ErrorPayloadTag::BackendError,
+            category: self.category(),
+            message: self.to_string(),
+        }
+        .serialize(serializer)
     }
 }
 
 impl Type for Error {
     fn inline(
-        _type_map: &mut specta::TypeMap,
-        _generics: specta::Generics,
+        type_map: &mut specta::TypeMap,
+        generics: specta::Generics,
     ) -> specta::datatype::DataType {
-        specta::datatype::DataType::Primitive(specta::datatype::PrimitiveType::String)
+        ErrorPayload::inline(type_map, generics)
+    }
+
+    fn reference(
+        type_map: &mut specta::TypeMap,
+        generics: &[specta::datatype::DataType],
+    ) -> specta::datatype::reference::Reference {
+        // Result uses E::reference; specta's default inlines and would omit a named type.
+        ErrorPayload::reference(type_map, generics)
     }
 }
 
@@ -333,6 +421,10 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, Once};
 
+    fn parsed_payload(serialized: &str) -> serde_json::Value {
+        serde_json::from_str(serialized).expect("serialized error must be a JSON object")
+    }
+
     #[test]
     fn reqwest_serializes_as_network_failure() {
         let reqwest_error = reqwest::Client::new()
@@ -340,7 +432,9 @@ mod tests {
             .build()
             .expect_err("invalid URL must fail request construction");
         let serialized = serde_json::to_string(&Error::from(reqwest_error)).unwrap();
-        assert_eq!(serialized, "\"network failure\"");
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "network");
+        assert_eq!(payload["message"], "network failure");
         assert!(!serialized.contains("http"));
     }
 
@@ -352,7 +446,7 @@ mod tests {
 
     impl log::Log for CapturingLogger {
         fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-            metadata.level() <= log::Level::Warn
+            metadata.level() <= log::Level::Info
         }
 
         fn log(&self, record: &log::Record<'_>) {
@@ -371,7 +465,7 @@ mod tests {
         LOGGER_INIT.call_once(|| {
             log::set_logger(&CAPTURING_LOGGER)
                 .expect("capturing logger could not be installed in this test binary");
-            log::set_max_level(log::LevelFilter::Warn);
+            log::set_max_level(log::LevelFilter::Info);
         });
     }
 
@@ -409,7 +503,12 @@ mod tests {
         for stage in stages {
             let serialized = serde_json::to_string(&Error::CommittedDurabilityUncertain(stage))
                 .expect("serialize durability error");
-            assert!(serialized.starts_with("\"Committed but durability uncertain: "));
+            let payload = parsed_payload(&serialized);
+            assert_eq!(payload["category"], "durability");
+            assert!(payload["message"]
+                .as_str()
+                .expect("message")
+                .starts_with("Committed but durability uncertain: "));
             assert!(!serialized.contains("/private/producer"));
             assert!(!serialized.contains(r"C:\producer"));
             assert!(!serialized.contains("raw operating system failure"));
@@ -422,9 +521,12 @@ mod tests {
             primary: "/private/producer: raw operating system failure".into(),
             cleanup: r"C:\producer: access denied".into(),
         };
+        let serialized = serde_json::to_string(&error).expect("serialize cleanup error");
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "operation-and-cleanup");
         assert_eq!(
-            serde_json::to_string(&error).expect("serialize cleanup error"),
-            "\"Operation failed; temporary cleanup also failed\""
+            payload["message"],
+            "Operation failed; temporary cleanup also failed"
         );
     }
 
@@ -512,9 +614,174 @@ mod tests {
                 "/private/root: raw operating system failure",
             ))),
         };
+        let serialized = serde_json::to_string(&err).expect("serialize error");
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "partial-removal");
         assert_eq!(
-            serde_json::to_string(&err).expect("serialize error"),
-            "\"Partially removed: 2 entries were deleted before failing: I/O failure\""
+            payload["message"],
+            "Partially removed: 2 entries were deleted before failing: I/O failure"
         );
+    }
+
+    #[test]
+    fn engine_timeout_serializes_as_engine_timeout_category() {
+        let serialized =
+            serde_json::to_string(&Error::EngineTimeout("waiting for readyok".into())).unwrap();
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "engine-timeout");
+    }
+
+    #[test]
+    fn analysis_cancelled_serializes_as_cancellation_category() {
+        let serialized = serde_json::to_string(&Error::AnalysisCancelled).unwrap();
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "cancellation");
+    }
+
+    #[test]
+    fn io_not_found_serializes_as_missing_resource_without_path() {
+        let serialized = serde_json::to_string(&Error::from(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "/private/secret",
+        )))
+        .unwrap();
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "missing-resource");
+        assert_eq!(payload["message"], "I/O failure");
+        assert!(!serialized.contains("/private/secret"));
+    }
+
+    #[test]
+    fn io_permission_denied_serializes_as_permission_without_path() {
+        let serialized = serde_json::to_string(&Error::from(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "/private/secret",
+        )))
+        .unwrap();
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "permission");
+        assert!(!serialized.contains("/private/secret"));
+    }
+
+    #[test]
+    fn io_other_serializes_as_io_category() {
+        let serialized =
+            serde_json::to_string(&Error::from(std::io::Error::other("unclassified"))).unwrap();
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "io");
+    }
+
+    #[test]
+    fn opaque_foreign_variants_omit_the_cause_from_the_payload_and_keep_it_on_source() {
+        let r2d2_error = r2d2_timeout_error();
+        assert!(r2d2_error
+            .to_string()
+            .contains("timed out waiting for connection"));
+        let cases: [(&str, Error, &str, &str); 6] = [
+            (
+                "io",
+                Error::from(std::io::Error::other("unique-io-marker")),
+                "unique-io-marker",
+                "I/O failure",
+            ),
+            (
+                "zip",
+                Error::from(zip::result::ZipError::InvalidArchive("unique-zip-marker")),
+                "unique-zip-marker",
+                "parsing failure",
+            ),
+            (
+                "tauri",
+                Error::from(tauri::Error::AssetNotFound(
+                    "/private/secret-tauri-asset".into(),
+                )),
+                "/private/secret-tauri-asset",
+                "platform failure",
+            ),
+            (
+                "tauri-opener",
+                Error::from(tauri_plugin_opener::Error::UnknownProgramName(
+                    "secret-opener-program".into(),
+                )),
+                "secret-opener-program",
+                "platform failure",
+            ),
+            (
+                "diesel",
+                Error::from(diesel::result::Error::DatabaseError(
+                    diesel::result::DatabaseErrorKind::Unknown,
+                    Box::new("SELECT * FROM secret_diesel_table".to_string()),
+                )),
+                "SELECT * FROM secret_diesel_table",
+                "database failure",
+            ),
+            (
+                "r2d2",
+                Error::from(r2d2_error),
+                "timed out waiting for connection",
+                "database failure",
+            ),
+        ];
+        for (label, error, marker, message) in cases {
+            let serialized = serde_json::to_string(&error).expect("serialize opaque variant");
+            let payload = parsed_payload(&serialized);
+            assert_eq!(payload["message"], message, "{label} message");
+            assert!(
+                !serialized.contains(marker),
+                "{label} leaked foreign display {marker:?} in {serialized}"
+            );
+            let source = std::error::Error::source(&error)
+                .unwrap_or_else(|| panic!("{label} must keep its cause on source()"));
+            let source_text = source.to_string();
+            assert!(
+                source_text.contains(marker),
+                "{label} source {source_text} did not contain {marker}"
+            );
+        }
+    }
+
+    fn r2d2_timeout_error() -> diesel::r2d2::PoolError {
+        let directory = tempfile::tempdir().expect("r2d2 leak tempdir");
+        let path = directory.path().join("r2d2-leak.db");
+        let manager = diesel::r2d2::ConnectionManager::<diesel::SqliteConnection>::new(
+            path.to_string_lossy().into_owned(),
+        );
+        let pool = diesel::r2d2::Pool::builder()
+            .max_size(1)
+            .connection_timeout(std::time::Duration::from_millis(50))
+            .build(manager)
+            .expect("r2d2 pool");
+        let _held = pool.get().expect("hold the only connection");
+        match pool.get() {
+            Err(error) => error,
+            Ok(_) => panic!("exhausted pool times out"),
+        }
+    }
+
+    #[test]
+    fn serialize_emits_no_log_record_of_the_native_cause() {
+        install_capturing_logger();
+        const MARKER: &str = "/private/serialize-no-log-marker-f20260830";
+        let error = Error::from(std::io::Error::other(MARKER));
+        let _serialized = serde_json::to_string(&error).expect("serialize error");
+        assert!(
+            CAPTURED_LOGS
+                .lock()
+                .expect("captured log mutex poisoned")
+                .iter()
+                .all(|message| !message.contains(MARKER)),
+            "serializing Error must not log the native cause"
+        );
+    }
+
+    #[test]
+    fn credential_failure_serialization_omits_the_keyring_string() {
+        let error = Error::CredentialFailure("/private/keyring-secret-token".into());
+        let serialized = serde_json::to_string(&error).expect("serialize credential error");
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "credential");
+        assert_eq!(payload["message"], "Credential operation failed");
+        assert!(!serialized.contains("/private/keyring-secret-token"));
+        assert!(!serialized.contains("keyring-secret-token"));
     }
 }
