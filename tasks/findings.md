@@ -4706,12 +4706,28 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 
 ### ConvertProgress and DatabaseProgress broadcasts still lack a discriminator the renderer filters on
 
-* **ID:** f-20260901-04 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260901-04 · **Status:** handled · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs` ConvertProgress emit; `src/hooks/useConversionProgress.ts:30`; `DatabaseProgress.id` at `src/bindings/generated.ts:1003` vs `src/components/home/Databases.tsx:129`.
 * **Defect:** `ConvertProgress` is globally emitted without an operation id, and `useConversionProgress` writes every event into one shared atom, so concurrent conversions mix counts and source names. `DatabaseProgress` carries an `id`, but `Databases.tsx` ignores it and `Promise.allSettled` of `getPlayersGameInfo` therefore drives one bar with interleaved percentages. Related: ipc-events.md incidents `daecd674` / `convert_progress`; this is the remaining discriminator gap, not the unregistered-event bug already handled. Root `-` because the two payloads already differ (one has a unused id, one has none).
 * **Why it matters:** `.claude/rules/ipc-events.md` — anything broadcast globally carries an id the receiver filters on. Concurrent imports or player-info queries present as a jumping or false-complete bar.
 * **Fix shape:** give ConvertProgress a real operation id and filter on it; filter DatabaseProgress on an id that uniquely identifies the in-flight `getPlayersGameInfo` (not a database-local player row id).
 * **Found by:** `review-ipc-contract` over the f-20260830-30 cluster cumulative diff, 2026-09-01. Pre-existing; different area from the listener/persist work.
+
+Handled 2026-09-04. `DatabaseProgress` is deleted: `get_players_game_info` takes a
+renderer-minted `progress_id` and reports through the one `ProgressEvent` registry, copying
+`search_position`'s division of labour (guard on the async frame, cloned lease into the blocking
+closure, `complete(Succeeded|Failed)` from the join result without `?`). That gave the command a
+terminal state for the first time. `ConvertProgress` is kept as a counter event — a conversion has
+no total to divide by — and gains an `id` set from a new `progress_id` argument;
+`useConversionProgress` accepts a frame only when it matches
+`conversionProgressId(previous.targetDatabase)`. The half that decides whether the filter works is
+the teardown: the two sites that cannot compare a handle (`DatabasesPage`'s `setLoading` bridge,
+`AccountCard`'s `onClick` `finally`) stop writing the atom entirely, and the handle-owning ones
+compare with `sameDatabaseHandle`. `SearchProgress` was extracted to `progress.rs` as the shared
+runtime-generic `JobProgress` rather than copied. Commits `a5f81f5d`, `e3d12ba4`, plus the review
+fixes in the follow-up commit. Decisions `d-20260904-14`, `-15`, `-16`, `-18`, `-19`.
+Rejected: giving `DatabaseProgress` a better id; folding the conversion counters into
+`ProgressEvent`; a lease for `convert_pgn`; making all four conversion teardowns compare-and-clear.
 
 ### createTab seeds the tree before the workspace envelope is durable
 
@@ -4751,12 +4767,27 @@ Handled 2026-09-01. `PlayerConfig::Engine` requires `engine_id`. Game actors reg
 
 ### Report analysis progress is emitted under a UUID id that ReportPanel never subscribes to
 
-* **ID:** f-20260901-08 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260901-08 · **Status:** handled · **Area:** bindings-ipc · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/panels/analysis/ReportModal.tsx` builds `report_${tab}_${uuid}`; `src-tauri/src/chess.rs` `analyze_game` emits `ProgressEvent` under that id; `ReportPanel.tsx` subscribes and clears `report_${activeTab}`.
 * **Defect:** `useProgress` requires exact id equality, so the report progress bar never shows real progress and cancellation clears the wrong entry.
 * **Why it matters:** the same producer/consumer split as `search_progress` / `convert_progress` in `.claude/rules/ipc-events.md`. Pre-existing; surfaced while adding `engine_id` to `analyzeGame`.
 * **Related:** not the same defect as f-20260831-11. Root `-`.
 * **Found by:** `review-ipc-contract` over the f-20260831-11 cumulative diff, 2026-09-01. Confidence 99.
+
+Handled 2026-09-04, together with `f-20260904-02`, which is the same defect filed four days later
+by a second lens run. The report operation id now lives on the per-tab zustand tree's `report`
+slice, so `ProgressButton` subscribes to the id `analyze_game` actually emits under and the bar
+moves. Because `ReportPanel` unmounts on every board-tab and sub-tab switch (`keepMounted={false}`),
+putting the id in the store also fixes the reattach: Cancel works after a remount, where it
+previously found a null ref. Two traps decided the shape — the persisted Zod schema strips unknown
+keys (so the schema and `migrateTreeForStorage` had to change, coercing rather than rejecting, or a
+wrong-typed value would discard a whole analysed game), and `isCurrentOperation` must read the live
+store because `ReportModal` captures that callback at submit time and zustand `set` does not update
+a closed-over value. The button gets `completeOnProgressSuccess={false}` so a succeeded progress
+entry cannot claim a report whose result the unmount dropped. Commit `f73298f7` plus the review
+fixes. Decisions `d-20260904-17`, `-20`, `-21`.
+Rejected: `useState`/`useRef` for the id; emitting the per-tab id from the backend; a
+`tauri.startProgress` handshake before `analyzeGame` (`d-20260904-21` records why it is unsafe).
 
 ### report-settings hydrates unvalidated JSON and an unguarded write can throw
 
@@ -5394,7 +5425,7 @@ The shared `closing_paren` helper introduced here became the basis of the closur
 
 ### The analysis report's progress bar never updates, because the backend's operation id and the button's listener id can never be equal
 
-* **ID:** f-20260904-02 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260904-02 · **Status:** handled · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/components/panels/analysis/ReportModal.tsx` (`operationId` is
   `` `report_${tab}_${crypto.randomUUID()}` ``, passed to `tauri.analyzeGame`),
   `src/components/panels/analysis/ReportPanel.tsx` (the `ProgressButton` is given
@@ -5424,6 +5455,13 @@ The shared `closing_paren` helper introduced here became the basis of the closur
   lookup onto the blocking pool and did not touch either id.
 * **Found by:** the `review-ipc-contract` lens (confidence 95) over the cumulative diff of the
   `blocking-work-not-offloaded` range, 2026-09-04. Verified by reading the three renderer files.
+
+Handled 2026-09-04. Same defect as `f-20260901-08`, filed independently four days apart by two
+`review-ipc-contract` runs; both are closed by commit `f73298f7`. The trade-off this entry spelled
+out — lift the id out of `ReportModal` into shared state, versus emit the per-tab id from the
+backend — was settled the first way: the id lives on the per-tab tree store, which additionally
+survives the `keepMounted={false}` unmount that made Cancel a no-op. See the closing note on
+`f-20260901-08` and decisions `d-20260904-17`, `-20`, `-21`.
 
 ### A partly-failed multi-file import leaves the search index describing the database as it was before
 

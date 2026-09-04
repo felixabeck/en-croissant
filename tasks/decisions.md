@@ -1672,3 +1672,185 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
   (an area is a vocabulary bucket, not a file set), `d-20260827-11`, `d-20260828-19`,
   `d-20260831-01`. The other three remain open at their filed tiers.
 * **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260904-14 — Is `DatabaseProgress` deleted, or kept and given an id the renderer filters on?
+
+* **Question:** Is `DatabaseProgress` deleted, or kept and given an id the renderer filters on?
+* **Governs:** f-20260901-04
+* **Chosen:** deleted. `get_players_game_info` takes a renderer-minted `progress_id` and reports
+  through the one `ProgressEvent` registry, mirroring `search_position`'s guard-on-the-async-frame
+  shape.
+* **Rejected:** keeping the event and passing it a better id.
+* **Reason:** `DatabaseProgress` was a bare `{ id, progress }` percentage — exactly what
+  `ProgressEvent` already is, minus the generation lease, the terminal state, the bounded retention
+  and the stale-producer rejection. `.claude/rules/ipc-events.md` forbids a second progress channel
+  in as many words ("There is one ProgressEvent"), and keeping it would have preserved a percentage
+  channel with none of those guarantees. Deleting it also gave the command a terminal state for the
+  first time: `p` counts only kept rows, so the last frame was at most `((n-1)/n)*100`, and an
+  empty or fully filtered result emitted nothing at all.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260904-15 — Is `ConvertProgress` also folded into `ProgressEvent`, or kept as its own event?
+
+* **Question:** Is `ConvertProgress` also folded into `ProgressEvent`, or kept as its own event?
+* **Governs:** f-20260901-04
+* **Chosen:** kept as its own event, given an `id`, and deliberately NOT given a progress lease.
+* **Rejected:** (a) adding optional counter fields to `ProgressEvent`; (b) taking a
+  `begin_progress` lease around `convert_pgn` in addition to the counters.
+* **Reason:** a PGN conversion has no total to divide by, so it reports counters
+  (`imported_games`, `elapsed_ms`, `source_file_name`) and not a percentage — it is a domain detail
+  channel, not a competing progress mechanism, which is what `ipc-events.md` actually forbids.
+  Folding the counters into the shared event would put two nullable fields on every one of its
+  consumers to serve one producer. A second lease has no consumer either: the terminal state of a
+  conversion is already owned by the routes' own teardown paths. What the rule does require of a
+  global broadcast — an id the receiver filters on — is what was added.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260904-16 — How is each progress id minted: deterministically from the resource, or per call?
+
+* **Question:** How is each progress id minted: deterministically from the resource, or per call?
+* **Governs:** f-20260901-04
+* **Chosen:** both, and the split is deliberate. `get_players_game_info` uses a per-call
+  `crypto.randomUUID()` held in a module-scoped map keyed like the SWR fetch; `convert_pgn` uses a
+  deterministic `conversionProgressId(handle)` projecting through `databaseHandleKey`.
+* **Rejected:** one scheme for both — a deterministic id everywhere, or a UUID everywhere.
+* **Reason:** the constraint differs. For the home card the id must be known to the component that
+  filters, and the player-row id only exists after `query_players` resolves *inside* the SWR
+  fetcher, so a component computing its owned set in render would have an empty set for exactly as
+  long as the bar is visible; a database-handle-only id would instead re-admit a concurrently
+  mounted `PlayerCard`'s frames, which is the original defect. For conversions the identity is
+  known before the call — all three routes write the target handle into the atom first — so a
+  deterministic id needs no plumbing and a UUID would need a second field carrying an identity the
+  atom already holds. Note `conversionProgressId` must project through `databaseHandleKey`:
+  `DatabaseHandle` is an object, and interpolating it yields `conversion:[object Object]` for every
+  import.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260904-17 — Where does the analysis report's operation id live?
+
+* **Question:** Where does the analysis report's operation id live?
+* **Governs:** f-20260901-08, f-20260904-02
+* **Chosen:** on the per-tab zustand tree's `report` slice, persisted through `tabStorage`
+  alongside `report.inProgress`, with `isCurrentOperation` reading the LIVE store.
+* **Rejected:** (a) `useState` or the existing `useRef` in `ReportPanel`; (b) making the backend
+  emit the per-tab id `report_${activeTab}` instead.
+* **Reason:** `BoardsPage` and `AnalysisPanel` are both `keepMounted={false}`, so `ReportPanel`
+  unmounts whenever the user leaves the board tab or the Report sub-tab — a ref or local state
+  dies with it, which is exactly the pre-existing defect where a returning panel has
+  `inProgress: true` rehydrated from sessionStorage and a null id, so Cancel silently does
+  nothing. Emitting the per-tab id instead would lose the ability to distinguish two reports on
+  one tab. Two consequences are load-bearing and were nearly missed: the persisted Zod schema
+  (`tabStorage.ts`) strips unknown keys, so without schema plus `migrateTreeForStorage` coercion
+  the whole change is a no-op after the first tab switch — while making the field *required*
+  instead makes `parseTree` return null and discards every open game; and `isCurrentOperation`
+  must read `store.getState()` rather than a render snapshot, because `ReportModal.analyze()`
+  captures the callback at submit time and zustand `set` does not update a closed-over value, so
+  the naive translation leaves the guard permanently false and `addAnalysis` never fires.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260904-18 — Which teardowns may clear `databaseConversionStateAtom`?
+
+* **Question:** Which teardowns may clear `databaseConversionStateAtom`?
+* **Governs:** f-20260901-04
+* **Chosen:** only a teardown that owns a `DatabaseHandle`, comparing with `sameDatabaseHandle`.
+  The two that cannot — `DatabasesPage`'s `setLoading` bridge and `AccountCard`'s `onClick`
+  `finally` — stop writing that atom entirely, and `AccountCard`'s compare-and-clear moves inside
+  `convert()`.
+* **Rejected:** (a) leaving all four teardowns unconditional; (b) making all four
+  compare-and-clear.
+* **Reason:** the filter added for `ConvertProgress` keys on `targetDatabase`, so any route that
+  nulls that field while another import is running kills the survivor's discriminator and the live
+  counter dies silently — the `convert_progress` incident in `ipc-events.md` again. (b) is not
+  implementable: the `setLoading` bridge is a `Dispatch<SetStateAction<boolean>>` with no handle in
+  scope and runs *before* the handle-owning `finally`, so comparing `previous.targetDatabase` with
+  itself is a tautology that always clears; and `AccountCard`'s `onClick` never receives the handle
+  because `convert()` rethrows on a `convertPgn` failure, so a `finally` there would leave a failed
+  first-time download showing a perpetual converting loader with the Add control disabled.
+  Removing the `setLoading` bridge also required `AddDatabase` to raise `inProgress` itself before
+  converting, because that bridge was what set the flag synchronously on submit; without it a
+  double-submit window opens until `onCreated` fires.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260904-19 — Is `SearchProgress` extracted for the second caller, and with what surface?
+
+* **Question:** Is `SearchProgress` extracted for the second caller, and with what surface?
+* **Governs:** f-20260901-04
+* **Chosen:** extracted to `src-tauri/src/progress.rs` as a public runtime-generic `JobProgress`
+  (`new`, `lease`, `complete`, private `transition`, `Drop`), with `search.rs` routed through it in
+  the same change, and both blocking helpers made generic over `R: tauri::Runtime`.
+* **Rejected:** (a) a second hand-written guard in `db/mod.rs`; (b) a bare rename, keeping the
+  struct and its `lease` field private; (c) keeping a `report(processed, total)` convenience method
+  and a second percent helper.
+* **Reason:** the guard gets three things right that a copy would not — `app.state::<AppState>()`
+  because the blocking frame has no `tauri::State`, `let _ =` on every transition so a superseded
+  lease can neither abort the job nor mask the real error with a `Conflict`, and `Drop` →
+  `Cancelled` so an early return cannot strand an entry `Running` for the full hour TTL. (b) does
+  not compile: `search_position` reads the private `lease` field directly. (c) leaves dead code —
+  this is a binary crate, so `pub` does not suppress `dead_code`, and the only callers were tests;
+  those now report the way production does. Two traps are worth recording: `JobProgress` must never
+  be constructed inside the blocking closure, because its `Drop` would write `Cancelled` before the
+  wrapper's `complete(Succeeded)` and terminal state is sticky; and the generic signatures break
+  four `body_at_indent` needles in `main.rs`, which panics on a missing needle rather than missing
+  softly.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260904-20 — How does the report button avoid claiming a completed report whose result was dropped?
+
+* **Question:** How does the report button avoid claiming a completed report whose result was dropped?
+* **Governs:** f-20260901-08, f-20260904-02
+* **Chosen:** `completeOnProgressSuccess={false}` on the report's `ProgressButton`, and
+  `ReportPanel` subscribes with `useProgress` itself to clear `inProgress` (keeping the id) when
+  the item is finished.
+* **Rejected:** (a) leaving `completeOnProgressSuccess` at its default `true`; (b) splitting the
+  prop into two inside `ProgressButton`.
+* **Reason:** `analyzeGame`'s `Vec<MoveAnalysis>` is delivered only to the `ReportModal` instance
+  that started it, and `keepMounted={false}` destroys that instance, so a report finishing while
+  the panel is closed is silently discarded. Making the bar work without (a) would newly render
+  "Report generated" for a game the tree never received — a *worse* lie than the broken bar. But
+  that one prop couples two behaviours in `ProgressButton`: the completed label, and the effect
+  that clears `inProgress` when the item is finished. Switching it off alone would leave a
+  remounted panel stuck on "Generating Report" at 100% for a process that has already exited, so
+  the panel takes over the clearing. (b) was rejected because it would add an option to a shared
+  component for one of four callers. The underlying result-drop is filed separately; when it is
+  fixed, this prop should be reconsidered.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260904-21 — Does the renderer take a progress lease up front to close `analyze_game`'s pre-lease window?
+
+* **Question:** Does the renderer take a progress lease up front to close `analyze_game`'s pre-lease window?
+* **Governs:** f-20260901-08, f-20260904-02
+* **Chosen:** no. `ReportModal` calls no `startProgress`, and the mount reconcile in `ReportPanel`
+  clears only on a *finished* item — an absent entry and a rejected lookup both leave state alone.
+  The arm that does clear is `inProgress: true` with no `operationId`.
+* **Rejected:** calling `tauri.startProgress(operationId)` after `registerOperation` and before
+  `analyzeGame`, so the registry entry would exist from registration and "absent" could safely
+  mean "not running". This was specified in an intermediate draft of the plan and removed.
+* **Reason:** `start_progress` *is* `begin_progress`, and `ProgressStore::start` deliberately
+  invalidates the former producer (`progress.rs`, "Starting the same ID deliberately invalidates
+  its former producer"). `ReportModal.analyze()` is a synchronous function, so the call is
+  fire-and-forget: whenever it settles *after* `analyze_game` has taken its own lease, the
+  backend's producer is the one invalidated and every subsequent frame is refused — the bar dies
+  permanently, which is worse than the defect being fixed. It would also strand a `Running` entry
+  for the full one-hour TTL whenever `analyzeGame` rejects before taking its lease. The stale-state
+  case the absent-arm was meant to catch is narrower than it looks: the tree persists to
+  sessionStorage, which a genuine application restart clears along with the backend's progress
+  store, so "in progress with a live backend and no entry" is essentially only the pre-lease race.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+
+### d-20260904-22 — Was the `bindings-ipc` cluster sliced again on 2026-09-04?
+
+* **Question:** Was the `bindings-ipc` cluster sliced again on 2026-09-04?
+* **Governs:** f-20260901-04, f-20260901-08, f-20260904-02, f-20260904-07, f-20260904-08
+* **Chosen:** sliced. This run worked `{f-20260901-04, f-20260901-08, f-20260904-02}` together
+  through `build`, and left `f-20260904-07` (`lens`) and `f-20260904-08` (`inline`) open at their
+  filed tiers.
+* **Rejected:** one `build` over all five remaining members.
+* **Reason:** the three worked together are one design question — what a progress id identifies and
+  how the renderer filters on it — over one file set (`db/mod.rs`, `progress.rs`, the progress
+  hooks, `Databases.tsx`, the analysis panel). `f-20260901-08` and `f-20260904-02` turned out to be
+  the *same* defect filed twice by two lens runs four days apart, and both are closed by the same
+  change. The other two are disjoint: `f-20260904-07` is the debug-build webview log target in
+  `main.rs` bootstrap and `f-20260904-08` is `close_splashscreen`'s signature, neither of which
+  shares a design question with progress discriminators. This follows `d-20260904-13`, which
+  settled that this cluster is worked sliced rather than whole, and rule 4a's cut by area cohesion.
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
