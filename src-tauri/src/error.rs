@@ -422,7 +422,18 @@ mod tests {
     use std::sync::{Mutex, Once};
 
     fn parsed_payload(serialized: &str) -> serde_json::Value {
-        serde_json::from_str(serialized).expect("serialized error must be a JSON object")
+        let payload: serde_json::Value =
+            serde_json::from_str(serialized).expect("serialized error must be a JSON object");
+        // The discriminant is what lets the renderer tell an ErrorPayload from its own AppError,
+        // which is the same JSON shape and shares the values `network` and `permission`
+        // (`d-PENDING`, D-I). Asserting it here rather than in one test covers every serialize
+        // test at once: without it, dropping `tag` from the wire leaves the whole suite green
+        // while `isErrorPayload` never matches in production.
+        assert_eq!(
+            payload["tag"], "backend-error",
+            "every serialized Error must carry the wire discriminant"
+        );
+        payload
     }
 
     #[test]
@@ -677,18 +688,20 @@ mod tests {
         assert!(r2d2_error
             .to_string()
             .contains("timed out waiting for connection"));
-        let cases: [(&str, Error, &str, &str); 6] = [
+        let cases: [(&str, Error, &str, &str, &str); 6] = [
             (
                 "io",
                 Error::from(std::io::Error::other("unique-io-marker")),
                 "unique-io-marker",
                 "I/O failure",
+                "io",
             ),
             (
                 "zip",
                 Error::from(zip::result::ZipError::InvalidArchive("unique-zip-marker")),
                 "unique-zip-marker",
                 "parsing failure",
+                "parsing",
             ),
             (
                 "tauri",
@@ -697,6 +710,7 @@ mod tests {
                 )),
                 "/private/secret-tauri-asset",
                 "platform failure",
+                "platform",
             ),
             (
                 "tauri-opener",
@@ -705,6 +719,7 @@ mod tests {
                 )),
                 "secret-opener-program",
                 "platform failure",
+                "platform",
             ),
             (
                 "diesel",
@@ -714,18 +729,25 @@ mod tests {
                 )),
                 "SELECT * FROM secret_diesel_table",
                 "database failure",
+                "database",
             ),
             (
                 "r2d2",
                 Error::from(r2d2_error),
                 "timed out waiting for connection",
                 "database failure",
+                "database",
             ),
         ];
-        for (label, error, marker, message) in cases {
+        for (label, error, marker, message, category) in cases {
             let serialized = serde_json::to_string(&error).expect("serialize opaque variant");
             let payload = parsed_payload(&serialized);
             assert_eq!(payload["message"], message, "{label} message");
+            // Pin the category per variant, not only the Display. Without this, regrouping a
+            // variant into another `category()` arm leaves this test and every renderer
+            // BACKEND_CATEGORY row green -- those rows feed hand-built categories, never a
+            // serialized Zip or Diesel -- and ConfirmModal then interpolates the wrong key.
+            assert_eq!(payload["category"], category, "{label} category");
             assert!(
                 !serialized.contains(marker),
                 "{label} leaked foreign display {marker:?} in {serialized}"
