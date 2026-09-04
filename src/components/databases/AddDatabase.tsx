@@ -18,14 +18,16 @@ import {
 import { useForm } from "@mantine/form";
 import { IconAlertCircle } from "@tabler/icons-react";
 import { useSetAtom } from "jotai";
-import { type Dispatch, type SetStateAction, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { KeyedMutator } from "swr";
 import { type DatabaseHandle, type DatabaseInfo, type FileWorkspaceHandle } from "@/bindings";
 import { databaseConversionStateAtom } from "@/state/atoms";
 import {
+  conversionProgressId,
   getDatabases,
   manifestDatabaseInstallCard,
+  sameDatabaseHandle,
   type DownloadableDatabaseInfo,
   useDefaultDatabases,
 } from "@/utils/db";
@@ -59,37 +61,27 @@ export async function convertLocalDatabase(
       )?.handle,
   );
   onCreated(dbPath);
-  await tauri.convertPgn(paths, dbPath, null, title, description ?? null);
+  await tauri.convertPgn(
+    conversionProgressId(dbPath),
+    paths,
+    dbPath,
+    null,
+    title,
+    description ?? null,
+  );
   return dbPath;
-}
-
-export async function convertLocalDatabaseWithLoading(
-  paths: FileWorkspaceHandle[],
-  title: string,
-  description: string | undefined,
-  onCreated: (handle: DatabaseHandle) => void,
-  setLoading: Dispatch<SetStateAction<boolean>>,
-): Promise<DatabaseHandle> {
-  setLoading(true);
-  try {
-    return await convertLocalDatabase(paths, title, description, onCreated);
-  } finally {
-    setLoading(false);
-  }
 }
 
 function AddDatabase({
   databases,
   opened,
   setOpened,
-  setLoading,
   disableLocalConversion,
   setDatabases,
 }: {
   databases: DatabaseInfo[];
   opened: boolean;
   setOpened: (opened: boolean) => void;
-  setLoading: Dispatch<SetStateAction<boolean>>;
   disableLocalConversion: boolean;
   setDatabases: KeyedMutator<DatabaseInfo[]>;
 }) {
@@ -100,34 +92,38 @@ function AddDatabase({
 
   async function convertDB(paths: FileWorkspaceHandle[], title: string, description?: string) {
     if (paths.length === 0) return;
+    let thisHandle: DatabaseHandle | null = null;
     try {
       const sourceFileName = "PGN";
-      await convertLocalDatabaseWithLoading(
-        paths,
-        title,
-        description,
-        (dbPath) => {
-          setConversionState((prev) => ({
-            ...prev,
-            inProgress: true,
-            targetDatabasePath: dbPath,
-            targetDatabaseTitle: title,
-            sourceFileName,
-          }));
-        },
-        setLoading,
-      );
-      await setDatabases(await getDatabases());
-    } finally {
       setConversionState((prev) => ({
         ...prev,
-        inProgress: false,
-        totalGames: 0,
-        elapsedSeconds: 0,
-        targetDatabasePath: null,
-        targetDatabaseTitle: null,
-        sourceFileName: null,
+        inProgress: true,
+        targetDatabaseTitle: title,
+        sourceFileName,
       }));
+      await convertLocalDatabase(paths, title, description, (dbPath) => {
+        thisHandle = dbPath;
+        setConversionState((prev) => ({
+          ...prev,
+          targetDatabasePath: dbPath,
+        }));
+      });
+      await setDatabases(await getDatabases());
+    } finally {
+      setConversionState((previous) =>
+        sameDatabaseHandle(previous.targetDatabasePath, thisHandle) ||
+        (thisHandle === null && previous.targetDatabasePath === null)
+          ? {
+              ...previous,
+              inProgress: false,
+              totalGames: 0,
+              elapsedSeconds: 0,
+              targetDatabasePath: null,
+              targetDatabaseTitle: null,
+              sourceFileName: null,
+            }
+          : previous,
+      );
     }
   }
 

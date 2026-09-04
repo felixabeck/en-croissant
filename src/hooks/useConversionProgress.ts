@@ -5,6 +5,7 @@ import { notifyListenerError } from "@/components/files/notifyError";
 import { tauriSubscriptions } from "@/platform/tauri";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { databaseConversionStateAtom } from "@/state/atoms";
+import { conversionProgressId } from "@/utils/db";
 
 /**
  * Keeps the live import counters on the databases page fed while a PGN
@@ -28,13 +29,21 @@ export function useConversionProgress() {
     useTauriListener(
         subscribe,
         ({ payload }) => {
-            setConversionState((previous) => ({
-                ...previous,
-                inProgress: true,
-                totalGames: payload.imported_games,
-                elapsedSeconds: payload.elapsed_ms / 1000,
-                sourceFileName: payload.source_file_name ?? previous.sourceFileName,
-            }));
+            setConversionState((previous) => {
+                if (
+                    previous.targetDatabasePath == null ||
+                    payload.id !== conversionProgressId(previous.targetDatabasePath)
+                ) {
+                    return previous;
+                }
+                return {
+                    ...previous,
+                    inProgress: true,
+                    totalGames: payload.imported_games,
+                    elapsedSeconds: payload.elapsed_ms / 1000,
+                    sourceFileName: payload.source_file_name ?? previous.sourceFileName,
+                };
+            });
         },
         { onError: notifyListenerError },
     );

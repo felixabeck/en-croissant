@@ -509,7 +509,9 @@ impl Visitor for Importer {
 
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)] // IPC contract is generated and intentionally stable.
 pub async fn convert_pgn(
+    progress_id: String,
     files: Vec<FileWorkspaceHandle>,
     database: DatabaseHandle,
     timestamp: Option<i32>,
@@ -533,6 +535,7 @@ pub async fn convert_pgn(
                 app,
                 title,
                 description,
+                progress_id,
             )
         })
         .await
@@ -542,16 +545,17 @@ pub async fn convert_pgn(
 // `'static` and AppState is not Clone. A bundle type was rejected (plan
 // decision D-B).
 #[allow(clippy::too_many_arguments)]
-fn convert_pgn_blocking(
+fn convert_pgn_blocking<R: tauri::Runtime>(
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     files: Vec<FileWorkspaceHandle>,
     database: DatabaseHandle,
     timestamp: Option<i32>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     title: String,
     description: Option<String>,
+    progress_id: String,
 ) -> Result<(), Error> {
     let db_path = resolve_database(authority, &database, PathOperation::DatabaseCreate)?;
 
@@ -614,6 +618,7 @@ fn convert_pgn_blocking(
                     // Best effort: a dropped progress frame must never abort an
                     // import, and this runs on renderer-driven input.
                     let _ = ConvertProgress {
+                        id: progress_id.clone(),
                         imported_games: (imported_games + file_imported_games) as u32,
                         elapsed_ms: elapsed,
                         source_file_name: current_file_name.clone(),
@@ -655,6 +660,7 @@ fn convert_pgn_blocking(
             .execute(db)?;
     }
     let _ = ConvertProgress {
+        id: progress_id,
         imported_games: imported_games as u32,
         elapsed_ms: start.elapsed().as_millis() as u32,
         source_file_name: None,
@@ -1758,8 +1764,9 @@ pub struct StatsData {
 /// Import progress for a PGN-to-database conversion. A conversion has no total
 /// to divide by until it finishes, so this reports the counters the UI shows
 /// rather than a percentage.
-#[derive(Serialize, Debug, Clone, Type, tauri_specta::Event)]
+#[derive(Serialize, Deserialize, Debug, Clone, Type, tauri_specta::Event)]
 pub struct ConvertProgress {
+    pub id: String,
     pub imported_games: u32,
     pub elapsed_ms: u32,
     pub source_file_name: Option<String>,
@@ -3686,7 +3693,11 @@ mod tests {
         drop(connection);
 
         let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
-        let operations = vec![PathOperation::DatabaseRead, PathOperation::DatabaseMutate];
+        let operations = vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseCreate,
+        ];
         let grant = authority
             .grant_dialog_operations(
                 &database,
@@ -4390,5 +4401,85 @@ mod tests {
         let item = state.progress_state.get(progress_id).unwrap();
         assert_eq!(item.state, crate::progress::ProgressState::Running);
         assert_eq!(item.progress, 0.0);
+    }
+
+    fn mount_convert_progress_events(app: &tauri::AppHandle<tauri::test::MockRuntime>) {
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(ConvertProgress))
+            .mount_events(app);
+    }
+
+    fn capture_convert_progress(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<ConvertProgress>>> {
+        use tauri_specta::Event as _;
+        let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = frames.clone();
+        ConvertProgress::listen(app, move |event| {
+            captured
+                .lock()
+                .expect("convert progress frames")
+                .push(event.payload);
+        });
+        frames
+    }
+
+    #[test]
+    fn convert_pgn_blocking_emits_exactly_two_frames_with_the_passed_id_for_one_game() {
+        let (dir, app, handle, _database) = blocking_database_case();
+        let pgn_path = dir.path().join("one-game.pgn");
+        std::fs::write(&pgn_path, REPLACEMENT_PGN).unwrap();
+        let pgn_handle = {
+            let state = app.state::<AppState>();
+            let mut guard = state.pgn_path_authority.lock().unwrap();
+            let authority = guard.as_mut().unwrap();
+            let grant = authority
+                .grant_dialog_operations(
+                    &pgn_path,
+                    "one-game.pgn",
+                    PathClass::BoundedDialogGrant,
+                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                    std::time::Duration::from_secs(30),
+                    1,
+                )
+                .unwrap();
+            let commit = authority
+                .promote_dialog(
+                    &grant,
+                    PathClass::PersistentFile,
+                    "one-game.pgn",
+                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                )
+                .unwrap();
+            FileWorkspaceHandle::new(commit.id)
+        };
+        mount_convert_progress_events(&app);
+        let frames = capture_convert_progress(&app);
+        let progress_id = "convert-one-game";
+        let state = app.state::<AppState>();
+        convert_pgn_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            vec![pgn_handle],
+            handle,
+            None,
+            app.clone(),
+            "Test".into(),
+            None,
+            progress_id.to_string(),
+        )
+        .unwrap();
+
+        let captured = frames.lock().expect("convert progress frames");
+        assert_eq!(
+            captured.len(),
+            2,
+            "a one-game import must emit the periodic frame (0.is_multiple_of(1000)) and the terminal frame, got {captured:?}"
+        );
+        assert!(
+            captured.iter().all(|frame| frame.id == progress_id),
+            "both ConvertProgress frames must carry the threaded progress_id, got {captured:?}"
+        );
     }
 }

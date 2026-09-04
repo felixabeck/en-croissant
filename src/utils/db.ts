@@ -106,6 +106,11 @@ export function defaultDatabaseProgressId(downloadLink: string): string {
     return `db:${downloadLink}`;
 }
 
+/** Deterministic ConvertProgress id for one in-flight import of `database`. */
+export function conversionProgressId(database: DatabaseHandle): string {
+    return `conversion:${databaseHandleKey(database)}`;
+}
+
 export function defaultPuzzleDatabaseProgressId(downloadLink: string): string {
     return `puzzle_db:${downloadLink}`;
 }

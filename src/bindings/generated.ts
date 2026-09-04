@@ -503,9 +503,9 @@ async mergePlayers(file: DatabaseHandle, player1: number, player2: number) : Pro
     else return { status: "error", error: e  as any };
 }
 },
-async convertPgn(files: FileWorkspaceHandle[], database: DatabaseHandle, timestamp: number | null, title: string, description: string | null) : Promise<Result<null, ErrorPayload>> {
+async convertPgn(progressId: string, files: FileWorkspaceHandle[], database: DatabaseHandle, timestamp: number | null, title: string, description: string | null) : Promise<Result<null, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("convert_pgn", { files, database, timestamp, title, description }) };
+    return { status: "ok", data: await TAURI_INVOKE("convert_pgn", { progressId, files, database, timestamp, title, description }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -996,7 +996,7 @@ export type CommitDurability = "Durable" | { DurabilityUncertain: DurabilityStag
  * to divide by until it finishes, so this reports the counters the UI shows
  * rather than a percentage.
  */
-export type ConvertProgress = { imported_games: number; elapsed_ms: number; source_file_name: string | null }
+export type ConvertProgress = { id: string; imported_games: number; elapsed_ms: number; source_file_name: string | null }
 export type DatabaseDescriptor = { handle: DatabaseHandle; filename: string; availability: PathAvailability }
 /**
  * Opaque handle for one exact database file.  It is deliberately a distinct

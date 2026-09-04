@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { conversionProgressId } from "@/utils/db";
 import { AccountCard } from "./AccountCard";
 
 const mocks = vi.hoisted(() => ({
@@ -34,7 +35,10 @@ vi.mock("@/platform/tauri", () => ({
 }));
 vi.mock("@/utils/chess.com/api", () => ({ downloadChessCom: mocks.downloadChessCom }));
 vi.mock("@/utils/lichess/api", () => ({ downloadLichess: vi.fn() }));
-vi.mock("@/utils/db", () => ({ getDatabases: vi.fn() }));
+vi.mock("@/utils/db", async () => {
+  const actual = await vi.importActual<typeof import("@/utils/db")>("@/utils/db");
+  return { ...actual, getDatabases: vi.fn() };
+});
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("jotai", async (importOriginal) => ({
@@ -154,7 +158,7 @@ test("convertPgn failure is not masked when marking the lease failed also reject
   const destination = { id: "dest" };
   const artifact = { id: { id: "pgn" }, kind: "fileWorkspace" as const };
   const root = { id: { id: "database-root" }, kind: "databaseRoot" };
-  const handle = { id: { id: "database" }, kind: "database" };
+  const handle = { id: { id: "database" }, kind: "database" as const };
   const lease = { id: "chesscom_Felix", generation: 1n };
   mocks.issueDownloadDestination.mockResolvedValue(destination);
   mocks.downloadChessCom.mockResolvedValue(artifact);
@@ -167,7 +171,14 @@ test("convertPgn failure is not masked when marking the lease failed also reject
   mocks.setProgressState.mockRejectedValue(new Error("progress failed"));
   await renderCard();
   await act(async () => downloadButton().click());
-  expect(mocks.convertPgn).toHaveBeenCalled();
+  expect(mocks.convertPgn).toHaveBeenCalledWith(
+    conversionProgressId(handle),
+    [artifact],
+    handle,
+    null,
+    "Felix Chess.com",
+    null,
+  );
   expect(mocks.setProgressState).toHaveBeenCalledWith(lease, 0, "failed");
   expect(mocks.deleteEmptyGames).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledWith({

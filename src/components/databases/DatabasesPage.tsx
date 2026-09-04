@@ -33,6 +33,7 @@ import { IconAction } from "@/components/common/IconAction";
 import { databaseConversionStateAtom, referenceDbAtom } from "@/state/atoms";
 import { activeDatabaseViewStore, useActiveDatabaseViewStore } from "@/state/store/database";
 import {
+  conversionProgressId,
   databaseHandleKey,
   getDatabases,
   sameDatabaseHandle,
@@ -165,22 +166,6 @@ export default function DatabasesPage() {
         databases={databases ?? []}
         opened={open}
         setOpened={setOpen}
-        setLoading={(next) => {
-          const value = typeof next === "function" ? next(conversionState.inProgress) : next;
-          setConversionState((prev) => ({
-            ...prev,
-            inProgress: value,
-            ...(value
-              ? {}
-              : {
-                  totalGames: 0,
-                  elapsedSeconds: 0,
-                  targetDatabasePath: null,
-                  targetDatabaseTitle: null,
-                  sourceFileName: null,
-                }),
-          }));
-        }}
         disableLocalConversion={conversionState.inProgress}
         setDatabases={mutate}
       />
@@ -470,33 +455,45 @@ export default function DatabasesPage() {
                         variant="default"
                         rightSection={<IconPlus size="1rem" />}
                         onClick={() => {
+                          const dest = selectedDatabase.file;
                           void runAddGamesToDatabase({
                             pickPgnFile,
-                            convertPgn: async (files, dest) => {
-                              await tauri.convertPgn(files, dest, null, "", null);
+                            convertPgn: async (files, destination) => {
+                              await tauri.convertPgn(
+                                conversionProgressId(destination),
+                                files,
+                                destination,
+                                null,
+                                "",
+                                null,
+                              );
                               await mutate();
                             },
-                            dest: selectedDatabase.file,
+                            dest,
                             notifyTitle: t("Common.Error"),
                             begin: (sourceFileName) => {
                               setConversionState((prev) => ({
                                 ...prev,
                                 inProgress: true,
-                                targetDatabasePath: selectedDatabase.file,
+                                targetDatabasePath: dest,
                                 targetDatabaseTitle: selectedDatabase.title,
                                 sourceFileName,
                               }));
                             },
                             finish: () => {
-                              setConversionState((prev) => ({
-                                ...prev,
-                                inProgress: false,
-                                totalGames: 0,
-                                elapsedSeconds: 0,
-                                targetDatabasePath: null,
-                                targetDatabaseTitle: null,
-                                sourceFileName: null,
-                              }));
+                              setConversionState((previous) =>
+                                sameDatabaseHandle(previous.targetDatabasePath, dest)
+                                  ? {
+                                      ...previous,
+                                      inProgress: false,
+                                      totalGames: 0,
+                                      elapsedSeconds: 0,
+                                      targetDatabasePath: null,
+                                      targetDatabaseTitle: null,
+                                      sourceFileName: null,
+                                    }
+                                  : previous,
+                              );
                             },
                           });
                         }}

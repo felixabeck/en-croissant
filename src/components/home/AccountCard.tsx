@@ -18,7 +18,12 @@ import { IconAction } from "@/components/common/IconAction";
 import { notifyListenerError, notifyUnlessCancelled } from "@/components/files/notifyError";
 import { databaseConversionStateAtom, downloadDestinationAtom } from "@/state/atoms";
 import { downloadChessCom } from "@/utils/chess.com/api";
-import { getDatabases, type ManagedDatabaseInfo } from "@/utils/db";
+import {
+  conversionProgressId,
+  getDatabases,
+  sameDatabaseHandle,
+  type ManagedDatabaseInfo,
+} from "@/utils/db";
 import { capitalize } from "@/utils/format";
 import { downloadLichess } from "@/utils/lichess/api";
 import { useTauriListener } from "@/platform/useTauriListener";
@@ -139,28 +144,45 @@ export function AccountCard({
   ): Promise<DatabaseHandle> {
     const filename = title + (type === "lichess" ? " Lichess" : " Chess.com");
     const databaseHandle = await ensureDatabaseHandle();
-    const progressLease = await tauri.startProgress(`${type}_${title}`);
     try {
-      setConversionState((prev) => ({
-        ...prev,
-        inProgress: true,
-        targetDatabasePath: databaseHandle,
-        targetDatabaseTitle: filename,
-        sourceFileName: `${title}_${type}.pgn`,
-      }));
-      await tauri.convertPgn(
-        [source],
-        databaseHandle,
-        timestamp === null ? null : timestamp / 1000,
-        filename,
-        null,
+      const progressLease = await tauri.startProgress(`${type}_${title}`);
+      try {
+        setConversionState((prev) => ({
+          ...prev,
+          inProgress: true,
+          targetDatabasePath: databaseHandle,
+          targetDatabaseTitle: filename,
+          sourceFileName: `${title}_${type}.pgn`,
+        }));
+        await tauri.convertPgn(
+          conversionProgressId(databaseHandle),
+          [source],
+          databaseHandle,
+          timestamp === null ? null : timestamp / 1000,
+          filename,
+          null,
+        );
+      } catch (caught) {
+        await tauri.setProgressState(progressLease, 0, "failed").catch(() => undefined);
+        throw caught;
+      }
+      await tauri.setProgressState(progressLease, 100, "succeeded");
+      return databaseHandle;
+    } finally {
+      setConversionState((previous) =>
+        sameDatabaseHandle(previous.targetDatabasePath, databaseHandle)
+          ? {
+              ...previous,
+              inProgress: false,
+              totalGames: 0,
+              elapsedSeconds: 0,
+              targetDatabasePath: null,
+              targetDatabaseTitle: null,
+              sourceFileName: null,
+            }
+          : previous,
       );
-    } catch (caught) {
-      await tauri.setProgressState(progressLease, 0, "failed").catch(() => undefined);
-      throw caught;
     }
-    await tauri.setProgressState(progressLease, 100, "succeeded");
-    return databaseHandle;
   }
 
   const subscribeProgress = useCallback(
@@ -263,15 +285,6 @@ export function AccountCard({
                   notifyUnlessCancelled(t("Common.Error"), cause);
                 } finally {
                   setLoading(false);
-                  setConversionState((prev) => ({
-                    ...prev,
-                    inProgress: false,
-                    totalGames: 0,
-                    elapsedSeconds: 0,
-                    targetDatabasePath: null,
-                    targetDatabaseTitle: null,
-                    sourceFileName: null,
-                  }));
                 }
               }}
             >

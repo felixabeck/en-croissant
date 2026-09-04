@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { defaultDatabaseProgressId } from "@/utils/db";
+import { conversionProgressId, defaultDatabaseProgressId } from "@/utils/db";
 
 const mocks = vi.hoisted(() => ({
   getDatabaseWorkspace: vi.fn(),
@@ -107,7 +107,7 @@ vi.mock("@mantine/core", () => ({
 vi.mock("@tabler/icons-react", () => ({ IconAlertCircle: () => null }));
 
 import { TauriCommandError } from "@/platform/tauri";
-import { convertLocalDatabaseWithLoading } from "./AddDatabase";
+import { convertLocalDatabase } from "./AddDatabase";
 import AddDatabase from "./AddDatabase";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -157,7 +157,6 @@ async function renderAddDatabase(
         databases={databases as never}
         opened
         setOpened={setOpened}
-        setLoading={() => undefined}
         disableLocalConversion={false}
         setDatabases={setDatabases as never}
       />,
@@ -184,7 +183,7 @@ test.each([
   "continues conversion with a handle recovered after an uncertain create via the $path",
   async ({ rejection }) => {
     const workspaceRoot = { id: { id: "database-root" }, kind: "databaseRoot" };
-    const handle = { id: { id: "database" }, kind: "database" };
+    const handle = { id: { id: "database" }, kind: "database" as const };
     const source = { id: { id: "source" }, kind: "fileWorkspace" } as const;
     mocks.getDatabaseWorkspace.mockResolvedValue(workspaceRoot);
     mocks.createWorkspaceDatabase.mockRejectedValue(rejection);
@@ -197,16 +196,19 @@ test.each([
     ]);
     mocks.convertPgn.mockResolvedValue(undefined);
     const onCreated = vi.fn();
-    const loading: boolean[] = [];
 
-    await expect(
-      convertLocalDatabaseWithLoading([source], "Imported", "notes", onCreated, (value) =>
-        loading.push(value as boolean),
-      ),
-    ).resolves.toBe(handle);
-    expect(loading).toEqual([true, false]);
+    await expect(convertLocalDatabase([source], "Imported", "notes", onCreated)).resolves.toBe(
+      handle,
+    );
     expect(onCreated).toHaveBeenCalledWith(handle);
-    expect(mocks.convertPgn).toHaveBeenCalledWith([source], handle, null, "Imported", "notes");
+    expect(mocks.convertPgn).toHaveBeenCalledWith(
+      conversionProgressId(handle),
+      [source],
+      handle,
+      null,
+      "Imported",
+      "notes",
+    );
   },
 );
 

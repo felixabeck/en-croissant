@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseHandle } from "@/bindings";
 import {
+    conversionProgressId,
     databaseHandleFromKey,
     databaseHandleKey,
     defaultDatabaseProgressId,
@@ -45,6 +46,21 @@ describe("database capability UI mapping", () => {
         expect(sameDatabaseHandle(handle("same"), handle("same"))).toBe(true);
         expect(sameDatabaseHandle(handle("first"), handle("second"))).toBe(false);
         expect(sameDatabaseHandle(handle("first"), null)).toBe(false);
+    });
+});
+
+describe("conversionProgressId", () => {
+    it("projects different handles to different ids", () => {
+        expect(conversionProgressId(handle("first"))).not.toBe(
+            conversionProgressId(handle("second")),
+        );
+        expect(conversionProgressId(handle("first"))).toBe(
+            `conversion:${databaseHandleKey(handle("first"))}`,
+        );
+    });
+
+    it("is stable for the same handle", () => {
+        expect(conversionProgressId(handle("same"))).toBe(conversionProgressId(handle("same")));
     });
 });
 

@@ -1943,8 +1943,7 @@ mod blocking_offload_scans {
     /// `body_at_indent` panics when its needle is absent. Runtime-generic
     /// helpers are `fn name_blocking<R: …>(`, so the historical
     /// `fn {name}_blocking(` needle misses them. Prefer the generic form when
-    /// it exists; keep the concrete form for helpers this phase does not
-    /// genericise (`convert_pgn_blocking`).
+    /// it exists.
     fn blocking_fn_signature(source: &str, name: &str) -> String {
         let generic = format!("fn {name}_blocking<");
         if source.contains(&generic) {
@@ -2325,7 +2324,7 @@ mod blocking_offload_scans {
         );
         let search_wrapper = body_at_indent(search, "pub async fn search_position(");
 
-        let convert = body_at_indent(db, "fn convert_pgn_blocking(");
+        let convert = body_at_indent(db, &blocking_fn_signature(db, "convert_pgn"));
         assert!(
             convert.contains("ConvertProgress"),
             "convert_pgn_blocking must emit ConvertProgress: {convert}"
