@@ -345,11 +345,21 @@ pub async fn issue_file_workspace(
     })
     .await
     .map_err(map_picker_join)??;
+    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_file_workspace_blocking(&pgn_path_authority, path))
+        .await
+}
+
+fn issue_file_workspace_blocking(
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    path: PathBuf,
+) -> Result<FileWorkspaceDescriptor, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "PGN collection".into());
-    let mut authority = authority(&state.pgn_path_authority)?;
+    let mut authority = authority(pgn_path_authority)?;
     let authority = authority
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;

@@ -441,12 +441,21 @@ async fn issue_pgn_workspace(
     })
     .await
     .map_err(map_picker_join)??;
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_pgn_workspace_blocking(&authority, path))
+        .await
+}
+
+fn issue_pgn_workspace_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    path: PathBuf,
+) -> Result<crate::infra::path_authority::FileWorkspaceDescriptor, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "PGN".into());
-    let mut authority_guard = state
-        .pgn_path_authority
+    let mut authority_guard = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     let authority = authority_guard
@@ -501,12 +510,21 @@ async fn issue_pgn_export_destination(
     })
     .await
     .map_err(map_picker_join)??;
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_pgn_export_destination_blocking(&authority, path))
+        .await
+}
+
+fn issue_pgn_export_destination_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    path: PathBuf,
+) -> Result<crate::infra::path_authority::FileWorkspaceDescriptor, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "PGN export".into());
-    let mut authority_guard = state
-        .pgn_path_authority
+    let mut authority_guard = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     authority_guard
@@ -628,12 +646,21 @@ async fn issue_download_destination(
     })
     .await
     .map_err(map_picker_join)??;
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_download_destination_blocking(&authority, path))
+        .await
+}
+
+fn issue_download_destination_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    path: PathBuf,
+) -> Result<crate::infra::path_authority::PathRef, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Download destination".into());
-    let mut authority = state
-        .pgn_path_authority
+    let mut authority = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     let authority = authority
@@ -679,12 +706,21 @@ async fn issue_database_workspace(
     })
     .await
     .map_err(map_picker_join)??;
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_database_workspace_blocking(&authority, path))
+        .await
+}
+
+fn issue_database_workspace_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    path: PathBuf,
+) -> Result<crate::infra::path_authority::DatabaseRootHandle, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Databases".into());
-    let mut authority_lock = state
-        .pgn_path_authority
+    let mut authority_lock = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     let authority = authority_lock
@@ -825,8 +861,17 @@ async fn issue_engine_workspace(
     })
     .await
     .map_err(map_picker_join)??;
-    let mut lock = state
-        .pgn_path_authority
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_engine_workspace_blocking(&authority, path))
+        .await
+}
+
+fn issue_engine_workspace_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    path: PathBuf,
+) -> Result<crate::infra::path_authority::EngineRootHandle, Error> {
+    let mut lock = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     let authority = lock
@@ -886,12 +931,21 @@ async fn issue_engine_binary(
     })
     .await
     .map_err(map_picker_join)??;
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_engine_binary_blocking(&authority, path))
+        .await
+}
+
+fn issue_engine_binary_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    path: PathBuf,
+) -> Result<crate::infra::path_authority::EngineHandle, Error> {
     let label = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Engine".into());
-    state
-        .pgn_path_authority
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -925,12 +979,22 @@ async fn issue_engine_resource(
     })
     .await
     .map_err(map_picker_join)??;
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_engine_resource_blocking(&authority, path, directory))
+        .await
+}
+
+fn issue_engine_resource_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    path: PathBuf,
+    directory: bool,
+) -> Result<crate::infra::path_authority::EngineResourceHandle, Error> {
     let label = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Engine resource".into());
-    let mut lock = state
-        .pgn_path_authority
+    let mut lock = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     let authority = lock
@@ -1109,12 +1173,21 @@ async fn issue_opening_book(
     })
     .await
     .map_err(map_picker_join)??;
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_opening_book_blocking(&authority, path))
+        .await
+}
+
+fn issue_opening_book_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    path: PathBuf,
+) -> Result<crate::infra::path_authority::OpeningBookHandle, Error> {
     let label = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Opening book".into());
-    state
-        .pgn_path_authority
+    authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
@@ -1942,6 +2015,38 @@ mod blocking_offload_scans {
                 "async fn issue_engine_image(",
                 "issue_engine_image_blocking",
             ),
+            (
+                "async fn issue_pgn_workspace(",
+                "issue_pgn_workspace_blocking",
+            ),
+            (
+                "async fn issue_pgn_export_destination(",
+                "issue_pgn_export_destination_blocking",
+            ),
+            (
+                "async fn issue_download_destination(",
+                "issue_download_destination_blocking",
+            ),
+            (
+                "async fn issue_database_workspace(",
+                "issue_database_workspace_blocking",
+            ),
+            (
+                "async fn issue_engine_workspace(",
+                "issue_engine_workspace_blocking",
+            ),
+            (
+                "async fn issue_engine_binary(",
+                "issue_engine_binary_blocking",
+            ),
+            (
+                "async fn issue_engine_resource(",
+                "issue_engine_resource_blocking",
+            ),
+            (
+                "async fn issue_opening_book(",
+                "issue_opening_book_blocking",
+            ),
         ] {
             assert_offloads(main, signature, worker);
         }
@@ -1956,11 +2061,23 @@ mod blocking_offload_scans {
                 "pub async fn issue_puzzle_download_destination(",
                 "issue_puzzle_download_destination_blocking",
             ),
+            (
+                "pub async fn issue_puzzle_workspace(",
+                "issue_puzzle_workspace_blocking",
+            ),
+            (
+                "pub async fn list_puzzle_databases(",
+                "list_puzzle_databases_blocking",
+            ),
         ] {
             assert_offloads(puzzle, signature, worker);
         }
         let file_workspace = include_str!("file_workspace.rs");
         for (signature, worker) in [
+            (
+                "pub async fn issue_file_workspace(",
+                "issue_file_workspace_blocking",
+            ),
             ("pub async fn list_file_workspace(", "collect_tree_entries"),
             (
                 "pub async fn create_workspace_file(",
@@ -1986,6 +2103,20 @@ mod blocking_offload_scans {
             ),
         ] {
             assert_offloads(file_workspace, signature, worker);
+        }
+        let fs = include_str!("fs.rs");
+        for (signature, worker) in [
+            (
+                "pub async fn set_file_as_executable(",
+                "set_file_as_executable_blocking",
+            ),
+            ("pub async fn file_exists(", "file_exists_blocking"),
+            (
+                "pub async fn get_file_metadata(",
+                "get_file_metadata_blocking",
+            ),
+        ] {
+            assert_offloads(fs, signature, worker);
         }
         for signature in [
             "async fn save_board_snapshot(",
@@ -2033,6 +2164,66 @@ mod blocking_offload_scans {
             picker < image_gateway,
             "issue_engine_image must run the picker before BLOCKING_GATEWAY: {image}"
         );
+
+        let file_workspace = include_str!("file_workspace.rs");
+        let puzzle = include_str!("puzzle.rs");
+        for (source, signature, picker) in [
+            (main, "async fn issue_pgn_workspace(", "blocking_pick_file"),
+            (
+                main,
+                "async fn issue_pgn_export_destination(",
+                "blocking_save_file",
+            ),
+            (
+                main,
+                "async fn issue_download_destination(",
+                "blocking_pick_folder",
+            ),
+            (
+                main,
+                "async fn issue_database_workspace(",
+                "blocking_pick_folder",
+            ),
+            (
+                main,
+                "async fn issue_engine_workspace(",
+                "blocking_pick_folder",
+            ),
+            (main, "async fn issue_engine_binary(", "blocking_pick_file"),
+            (
+                main,
+                "async fn issue_engine_resource(",
+                "blocking_pick_file",
+            ),
+            (
+                main,
+                "async fn issue_engine_resource(",
+                "blocking_pick_folder",
+            ),
+            (main, "async fn issue_opening_book(", "blocking_pick_file"),
+            (
+                file_workspace,
+                "pub async fn issue_file_workspace(",
+                "blocking_pick_folder",
+            ),
+            (
+                puzzle,
+                "pub async fn issue_puzzle_workspace(",
+                "blocking_pick_folder",
+            ),
+        ] {
+            let body = body_at_indent(source, signature);
+            let picker_at = body
+                .find(picker)
+                .unwrap_or_else(|| panic!("{signature} must call {picker}: {body}"));
+            let gateway_at = body
+                .find("BLOCKING_GATEWAY")
+                .unwrap_or_else(|| panic!("{signature} must call BLOCKING_GATEWAY: {body}"));
+            assert!(
+                picker_at < gateway_at,
+                "{signature} must run {picker} before BLOCKING_GATEWAY: {body}"
+            );
+        }
     }
 
     #[test]
@@ -2065,6 +2256,7 @@ mod blocking_offload_scans {
             ("main.rs", include_str!("main.rs")),
             ("puzzle.rs", include_str!("puzzle.rs")),
             ("file_workspace.rs", include_str!("file_workspace.rs")),
+            ("fs.rs", include_str!("fs.rs")),
         ] {
             let mut search_from = 0;
             while let Some(rel) = source[search_from..].find("_blocking(") {
@@ -2143,6 +2335,12 @@ mod blocking_offload_scans {
                 "{signature} must keep {token} on the async side: {body}"
             );
         }
+        let puzzle = include_str!("puzzle.rs");
+        let list_puzzles = body_at_indent(puzzle, "pub async fn list_puzzle_databases(");
+        assert!(
+            list_puzzles.contains("puzzle_database_info_for_file"),
+            "list_puzzle_databases must keep puzzle_database_info_for_file on the async side: {list_puzzles}"
+        );
     }
 
     /// Helper-level tests in `path_authority.rs` pin that the helpers keep the split, but they

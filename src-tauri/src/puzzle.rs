@@ -272,12 +272,21 @@ pub async fn issue_puzzle_workspace(
     })
     .await
     .map_err(map_picker_join)??;
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || issue_puzzle_workspace_blocking(&authority, path))
+        .await
+}
+
+fn issue_puzzle_workspace_blocking(
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    path: PathBuf,
+) -> Result<crate::infra::path_authority::PuzzleRootDescriptor, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Puzzles".into());
-    let mut authority_lock = state
-        .pgn_path_authority
+    let mut authority_lock = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     let authority = authority_lock
@@ -335,19 +344,28 @@ pub async fn list_puzzle_databases(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Vec<PuzzleDatabaseInfo>, Error> {
-    let workspace = active_or_default_puzzle_workspace(&app, &state.pgn_path_authority)?;
-    let files = state
-        .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .list_puzzle_children(&workspace.root)?;
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    let files = BLOCKING_GATEWAY
+        .spawn(move || list_puzzle_databases_blocking(&app, &authority))
+        .await?;
     let mut databases = Vec::with_capacity(files.len());
     for file in files {
         databases.push(puzzle_database_info_for_file(&state, file.file).await?);
     }
     Ok(databases)
+}
+
+fn list_puzzle_databases_blocking(
+    app: &tauri::AppHandle,
+    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+) -> Result<Vec<crate::infra::path_authority::PuzzleDatabaseDescriptor>, Error> {
+    let workspace = active_or_default_puzzle_workspace(app, authority)?;
+    authority
+        .lock()
+        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+        .list_puzzle_children(&workspace.root)
 }
 
 async fn puzzle_database_info_for_file(

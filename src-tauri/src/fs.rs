@@ -1500,8 +1500,17 @@ pub async fn set_file_as_executable(
     file: crate::infra::path_authority::PathRef,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let mut authority = state
-        .pgn_path_authority
+    let authority = Arc::clone(&state.pgn_path_authority);
+    crate::infra::blocking::BLOCKING_GATEWAY
+        .spawn(move || set_file_as_executable_blocking(&authority, file))
+        .await
+}
+
+fn set_file_as_executable_blocking(
+    authority: &Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    file: crate::infra::path_authority::PathRef,
+) -> Result<(), Error> {
+    let mut authority = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     authority
@@ -1521,8 +1530,17 @@ pub async fn file_exists(
     file: crate::infra::path_authority::PathRef,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, Error> {
-    let mut authority_guard = state
-        .pgn_path_authority
+    let authority = Arc::clone(&state.pgn_path_authority);
+    crate::infra::blocking::BLOCKING_GATEWAY
+        .spawn(move || file_exists_blocking(&authority, file))
+        .await
+}
+
+fn file_exists_blocking(
+    authority: &Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    file: crate::infra::path_authority::PathRef,
+) -> Result<bool, Error> {
+    let mut authority_guard = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     let authority = authority_guard
@@ -1542,8 +1560,17 @@ pub async fn get_file_metadata(
     file: crate::infra::path_authority::PathRef,
     state: tauri::State<'_, AppState>,
 ) -> Result<FileMetadata, Error> {
-    let mut authority_guard = state
-        .pgn_path_authority
+    let authority = Arc::clone(&state.pgn_path_authority);
+    crate::infra::blocking::BLOCKING_GATEWAY
+        .spawn(move || get_file_metadata_blocking(&authority, file))
+        .await
+}
+
+fn get_file_metadata_blocking(
+    authority: &Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    file: crate::infra::path_authority::PathRef,
+) -> Result<FileMetadata, Error> {
+    let mut authority_guard = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
     let authority = authority_guard
