@@ -5581,6 +5581,21 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Found by:** rounds 6 to 13 of the plan review for the `blocking-work-not-offloaded` cluster;
   filed by that plan's phase 7, 2026-09-04.
 
+* **2026-09-04 — duplicate of `f-20260903-02`, not an independent finding.** Both entries describe
+  the same defect in the same symbols: `ResolvedPath.file` is module-private, so code *inside*
+  `path_authority.rs` can set `resolved.file = Some(fs::File::open(stored_path)?)` and call
+  `VerifiedFile::from_resolved`, or read into a discarded `Vec`, `seek(SeekFrom::Start(0))` and
+  return the descriptor anyway; both cite `d-20260903-08` as the seam, both name the same
+  consequence (a symlink swap after the metadata check sending up to 10 MiB of an attacker-chosen
+  file to the renderer), and both prescribe the same fix — relocate `ResolvedPath` and the opener
+  into separate modules. `f-20260903-02` was filed by the plan review that found it (rounds 6-13,
+  2026-09-03); this entry was filed by that same plan's phase 7 on 2026-09-04, which did not check
+  that the review had already filed it.
+* Neither is `rejected`: the defect is real and still open. The run that closes it works
+  **`f-20260903-02`** and sets **both** to `handled` with the same commits. Noted here rather than
+  in `f-20260903-02` so whichever entry a future `next` surfaces first leads to the other.
+* Left open by `d-20260904-23`, which sliced this run to `f-20260901-01` + `f-20260903-03`.
+
 ---
 
 ## 2026-09-04 — filed through the inbox spool
