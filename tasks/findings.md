@@ -5641,3 +5641,108 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   command's signature rather than the shared serialization mechanism.
 * **Found by:** the locate probe and three lenses during plan review of the `f-20260830-08` typed-error
   plan, 2026-09-04.
+
+---
+
+## 2026-09-04 — filed through the inbox spool
+
+### The analysis report's result is dropped when the panel unmounts, so a report finished in the background is silently lost
+
+* **ID:** f-20260904-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/panels/analysis/ReportModal.tsx:56-60` (`mounted.current`) and
+  `:120-129` (the `.then` that calls `addAnalysis`, and the `.finally` that clears
+  `report.inProgress`); the unmount boundaries are `src/components/tabs/BoardsPage.tsx:194` and
+  `src/components/panels/analysis/AnalysisPanel.tsx:99`, both Mantine `keepMounted={false}`.
+* **Defect:** `analyze_game`'s `Vec<MoveAnalysis>` has exactly one reader — the `.then` inside the
+  `ReportModal` instance that started it, gated on `mounted.current`. Leaving the Report sub-tab or
+  the board tab unmounts `TreeStateProvider`, `ReportPanel` and `ReportModal`, so `mounted.current`
+  becomes `false`. The UCI child keeps running under `EngineKey { tab: "analysis", engine: <id> }`
+  and finishes normally, but the resolved analysis is discarded and `report.inProgress` is never
+  cleared. On return the panel is a fresh instance that never called `analyzeGame`, and the store it
+  would write to is a fresh `createTreeStore` — the old store's writes cannot reach it. The user
+  waited for a full-game analysis and gets no annotations.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — "Renderer state is not
+  authoritative for native jobs" and "give every spawn, subscription and job an owner". A native
+  job whose result is only deliverable while a particular component happens to be mounted has no
+  owner. `useConversionProgress` is mounted application-wide in `src/App.tsx:143` for precisely this
+  reason, with the comment "an import keeps running while the user navigates away"; the report has
+  no equivalent.
+* **Why it is `build`:** the fix is to move ownership of the report operation above the
+  `keepMounted={false}` boundary — an app- or `BoardsPage`-level owner that holds the promise and
+  applies the result to the right tab, reaching a tab whose store may not be mounted (so probably
+  through `tabStorage`, the way `createTab` seeds a tree). That is a design question about where a
+  long-running renderer-initiated native job lives, not a patch to a guard.
+* **Related:** `f-20260901-08` / `f-20260904-02` (both handled by the progress-discriminator run of
+  2026-09-04) are the *progress* half of the same panel. `Root` is `-` because the mechanism is
+  result ownership, not the id mismatch. That run deliberately set
+  `completeOnProgressSuccess={false}` on the report `ProgressButton` (`d-PENDING`) so that fixing
+  the bar would not newly render "Report generated" for an analysis the tree never received; when
+  this finding is fixed, that prop should be reconsidered.
+* **Found by:** the `review-engine-protocol` lens (confidence 95) during plan review of the
+  progress-discriminator plan, 2026-09-04.
+
+### Closing a board tab does not terminate a running analysis report's engine
+
+* **ID:** f-20260904-10 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/chess.rs:685` — `EngineKey::new("analysis".into(), id.clone())` gives
+  every report actor the literal tab `"analysis"`; `src-tauri/src/chess.rs:396-397` `kill_engines(tab)`
+  and the supervisor's `terminate_tab` match on `key.tab == <ui tab id>`; the renderer side is
+  `src/components/tabs/BoardsPage.tsx:81` and `closeWorkspaceTabAtom` in `src/state/atoms.ts:104`.
+* **Defect:** a report's UCI child is keyed under the constant tab `"analysis"`, never under the
+  board tab that started it. Closing that board tab removes its session storage and calls
+  `killEngines(uiTabId)`, which cannot match `"analysis"`, so the engine keeps searching the whole
+  game until it finishes on its own or the application exits. `cancel_analysis` is the only path
+  that reaches it, and it is called only from `ReportPanel`'s Cancel button — which the tab close
+  does not go through.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — "Give every spawn a name of the
+  exit paths it is cleaned up on: normal completion, cancel, tab close, resource swap, application
+  exit, error." Tab close is a named exit path and this spawn is not cleaned up on it. The same
+  class as `e5422566` (issue #723, engine children outliving the application) and the sibling of
+  the handled `f-20260831-11` / `f-20260901-06` / `f-20260901-07` retire-on-identity-loss work — a
+  full-game report is a long search, so the leak is a real CPU cost, not a theoretical one.
+* **Fix shape:** either key report actors under the originating board tab (so `terminate_tab`
+  already reaches them, at the cost of the `"analysis"` namespace that keeps them out of the board's
+  own engine set), or have the tab-close path cancel the operation id the tree store now holds. The
+  progress-discriminator run of 2026-09-04 put that id in `report.operationId` on the per-tab tree,
+  so it is available to a close handler for the first time; `closeWorkspaceTabAtom` currently
+  constructs a fresh `createTreeStore(value)` rather than reading the live provider, which is the
+  part to check first.
+* **Related:** `f-20260901-08` / `f-20260904-02` (handled 2026-09-04) put `report.operationId` in
+  the store and are what makes the second fix shape possible. `Root` is `-` because the mechanism is
+  an engine key namespace, not the progress id mismatch.
+* **Found by:** the `review-engine-protocol` lens (confidence 93) during plan review of the
+  progress-discriminator plan, 2026-09-04.
+
+### Cancelling an analysis report before its engine is published is a silent no-op
+
+* **ID:** f-20260904-11 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/chess.rs:656-665` (`cancel_analysis`), `:684-721` (everything
+  `analyze_game` does before the lease), `:748` (`EngineProcess::new`, where the actor is first
+  published to the supervisor); renderer side `src/components/panels/analysis/ReportPanel.tsx`
+  `handleCancel`.
+* **Defect:** `cancel_analysis` sets the `cancelled` flag only when
+  `engine_supervisor.get_exact(EngineKey { tab: "analysis", engine: id })` already returns a
+  published actor, and otherwise returns `Ok(())`. `analyze_game` does not publish that actor
+  until after executable resolution and a full mainline replay that runs `naive_eval` twice per
+  ply. For a long game that window is seconds, and a cancel issued inside it is accepted,
+  reported as success, and forgotten: the command then goes on to spawn the UCI child and
+  analyse the whole game. The user pressed Cancel, the button returned to its idle state, and the
+  engine kept running.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — "a cancel flag checked after
+  the emit is not cancellation", and every asynchronous operation needs a cancellation guard that
+  covers its whole lifetime rather than the part after registration. `06c23b6a` is the same class
+  on the search path. It is now more reachable than before: the progress-discriminator run of
+  2026-09-04 made the report's Cancel button actually work (`f-20260901-08` / `f-20260904-02`),
+  so a user who could previously never cancel a report at all can now press it during exactly
+  this window.
+* **Fix shape:** register the cancellation intent against the key before the long pre-spawn work,
+  so `analyze_game` observes it at its first `cancelled` check rather than requiring the actor to
+  exist — for example publishing a placeholder/reservation at the top of the command, or keeping
+  a set of cancelled operation ids the command consults after resolution. Either way
+  `cancel_analysis` must stop returning `Ok(())` for an id it did nothing about.
+* **Related:** `f-20260830-51` (handled) and `f-20260831-11` (handled) are the termination-path
+  siblings; the tab-close half of the report engine's lifetime is the finding filed alongside this
+  one on 2026-09-04. `Root` is `-` because the mechanism here is a registration-order race, not a
+  missing terminate caller.
+* **Found by:** the `review-engine-protocol` lens (confidence 88) over the cumulative diff of the
+  progress-discriminator range, 2026-09-04. Pre-existing; the range did not touch `chess.rs`.
