@@ -2697,7 +2697,7 @@ Handled by `eb3ddf82`. load_search_index keeps DatabaseRead for a valid preferre
 
 ### One process-wide blocking mutex serialises 51 call sites, and three of them hold it across a whole-file SHA-256 or a full registry fsync
 
-* **ID:** f-20260830-36 · **Status:** open · **Area:** native-fs · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-36 · **Status:** handled · **Area:** native-fs · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/main.rs:389-390` (the mutex), `:603-620` (fsync under lock),
   `src-tauri/src/fs.rs:651-664` and `:807-820` (SHA-256 under lock),
   `src-tauri/src/infra/path_authority.rs:3060` and `:692-707` (the hash), `:1929` (the commit).
@@ -2722,7 +2722,7 @@ Handled by `eb3ddf82`. load_search_index keeps DatabaseRead for a valid preferre
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30. The lock-site count was
   independently derived and is roughly twice what the first pass reported.
 
-**Partial progress, 2026-09-03 (drain session ce8785e6). Still open — four of nine phases shipped.**
+**Partial progress, 2026-09-03 (drain session ce8785e6) — four of nine phases shipped. It remained open after that run; the rest landed on 2026-09-04, see the closing note below.**
 
 The plan is `tasks/plans/2026-09-03-blocking-work-not-offloaded.md`; it converged after 18 rounds of
 adversarial review and is the specification for the rest. The design questions are settled in
@@ -2758,13 +2758,41 @@ no `Agent` fallback writes files and there is no mid-run executor switch. Nothin
 four commits above are local, green and individually sound. **Resume with
 `--executor codex`.**
 
+**Handled, 2026-09-04 (drain session 0a2310ce). Both halves of this finding are closed.**
+
+The staged SHA-256 no longer runs under the guard or on a Tokio worker: `reserve_download_artifact`
+takes the already-computed `(size, digest)` pair, and the one new helper `hash_staged_payload`
+hashes inside `BLOCKING_GATEWAY` before either caller locks (`f98a3987`). S-5 pins all four
+properties, including the ordering, because hashing and then entering an empty gateway call
+satisfies mere presence and leaves the Tokio-worker stall intact.
+
+The 51-call-site mutex half is closed by the conversions themselves: `714e470d` (the five
+`file_workspace.rs` mutators, the three restructures, and the explicit `workspace_mutation` lock
+that replaces dispatch-thread serialisation), `c5362e0d` (the fourteen already-async `issue_*`
+commands, whose guard used to span `promote_dialog`'s three fsyncs) and `a22bbdf4` (the database
+layer). `7b1d92ca` closes the engine-image call-site half by proving no lock encloses
+`read_engine_image_bytes` (`f-20260903-05`).
+
+Not closed, and filed rather than dropped: `activate_download_artifact` still hashes the published
+inode under the same process-wide mutex on a Tokio worker — the original stall one step later. The
+plan ruled that function out of scope for the caller-digest question only, which is a security
+argument about *whether* to hash, not about the guard or the thread. See `d-20260904-03` and the
+new `native-fs` finding under this root. The same-module `VerifiedFile` forgery residual is filed
+too, as plan phase 7 required.
+
+Review of the cumulative range found five of its own scans green against the mutant they were
+written for; `7fe851ed` makes each fail, each demonstrated red and reverted. `c8a5228b` restores the
+backend coverage ratchet with tests, not a baseline, using the fact that the offload made these
+bodies synchronous and therefore unit-testable for the first time. `pnpm verify:app` passes all
+seven checks against the real window after `f6c3240a`.
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### Every database command, the PGN import and the search-index scans run on Tokio workers with no offload, while the blocking gateway bounds a different population
 
-* **ID:** f-20260830-37 · **Status:** open · **Area:** db-search · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-37 · **Status:** handled · **Area:** db-search · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs` (no `spawn_blocking` or `BLOCKING_GATEWAY` anywhere in the
   file), `db/search.rs:476,622,659,717`, `db/mod.rs:502,654,1037,1346,1364,1441,1561`,
   `db/repository.rs:314-326,535-548`, `chess.rs:811`, `infra/blocking.rs:8,31`.
@@ -2818,13 +2846,44 @@ session should not re-derive:
 
 Stopped because the Grok executor went down; resume with `--executor codex`. Nothing pushed.
 
+**Handled, 2026-09-04 (drain session 0a2310ce).**
+
+`a22bbdf4` offloads the database layer. All twenty commands take exactly one permit at the command
+boundary and their callees stay synchronous — `load_search_index`, `generate_search_index`,
+`generate_search_index_locked`, `is_position_in_db` and `get_db_or_create` were made sync precisely
+so a second permit cannot be taken, since wrapping layer by layer deadlocks the four-permit pool
+through `search_position_inner` to `generate_search_index_locked` and through every command to
+`get_db_or_create`. The rayon scans, all Diesel work, the whole `convert_pgn` decode-parse-insert,
+and `delete_database`'s `Condvar` wait now run on the pool rather than on a Tokio worker, so the
+gateway bounds the heaviest blocking work in the process instead of only the work that was already
+correctly offloaded — and that work now has the `catch_unwind` too.
+
+Two things deliberately did not move: `new_request`'s permit is moved into the closure, because
+`spawn` drops its own permit when the caller is abandoned while the worker runs, which would
+release the two-search cap mid-scan; and `SearchProgress` stays on the async frame, because
+`ProgressStore::transition` keeps the first terminal state, so a worker completing the lease would
+make an abandoned search paint as `Succeeded`.
+
+`analyze_game` now kills the engine between the UCI loop and the novelty pass, closing the window
+where a slow lookup kept a live child with no reachable kill. The lookups run in one worker and
+still stop at the first unseen position (`d-20260904-02`); the order-dependent tagging stays async.
+`retire_and_wait` is bounded and unwinds (`d-20260904-01`).
+
+S-4, S-7, the extended S-8, T-2 and T-3 cover it; `7fe851ed` closed the holes review found in S-4
+and S-8. `c8a5228b` covers the bodies the offload made unit-testable, restoring the coverage
+ratchet without touching a baseline.
+
+Three pre-existing defects in `db/**` that this run read but did not fix are filed rather than
+absorbed: the partial-import index staleness, the silent row-drop in `export_to_pgn`, and the
+memory half already tracked as `f-20260831-06`.
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### A third of the IPC surface runs on the GTK main thread, including a directory walk that fsyncs once per file it discovers
 
-* **ID:** f-20260830-38 · **Status:** open · **Area:** bindings-ipc · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-38 · **Status:** handled · **Area:** bindings-ipc · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/main.rs:693` (`list_workspace_databases`), `:970` (`read_engine_image`),
   `src-tauri/src/file_workspace.rs:490,539,561,595,635,665` (the six mutators);
   registry at `main.rs:1120-1232`.
@@ -2851,7 +2910,7 @@ Stopped because the Grok executor went down; resume with `--executor codex`. Not
   they no longer run on a single thread.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
 
-**Partially shipped, 2026-09-03 (drain session ce8785e6). Still open.**
+**Partially shipped, 2026-09-03 (drain session ce8785e6). It remained open after that run; the rest landed on 2026-09-04, see the closing note below.**
 
 `a47d9066` converted sixteen of the synchronous commands — `save_board_snapshot`,
 `save_engine_logs`, `open_app_log`, `get_database_workspace`, `list_workspace_databases`,
@@ -2879,6 +2938,32 @@ Still to do, specified in `tasks/plans/2026-09-03-blocking-work-not-offloaded.md
 The count in the original entry was low: 114 registered commands, 36 sync, not 37 of 113.
 
 Stopped because the Grok executor went down; resume with `--executor codex`. Nothing pushed.
+
+**Handled, 2026-09-04 (drain session 0a2310ce).**
+
+The remaining sync commands left the GTK main loop in `714e470d`: the five `file_workspace.rs`
+mutators are thin async wrappers over their blocking bodies, with the three keep-name helpers
+(`create_workspace_directory_inner`, `trash_entry`, `restore_entry`) staying synchronous while the
+command holds the spawn. `list_file_workspace` — the directory walk that fsynced once per file it
+discovered — is a restructure rather than a wrap: `collect_tree_entries` does the whole recursive
+walk and registration in one closure and returns the handles whose PGN counts are missing, and an
+async pass counts them. `create_workspace_file` and `permanently_delete_entry` got the same split.
+
+`c5362e0d` finished the other side, converting the fourteen already-async `issue_*` capability
+commands in `main.rs`, `fs.rs`, `puzzle.rs` and `file_workspace.rs`, with every native picker
+awaited outside the permit and `list_puzzle_databases` split so its per-file
+`puzzle_database_info_for_file` await cannot nest a second acquisition.
+
+The serialisation those seven mutation entry points used to get for free from the single dispatch
+thread is now explicit — `AppState.workspace_mutation`, taken inside the worker, covering
+`mutation_target` through the registry write, poison mapped to `Error::Conflict`.
+
+S-1, S-2, S-3, S-8 and S-9 cover these symbols, and `7fe851ed` made S-1's closure walk the shared
+one so a decoy spawn cannot satisfy any of them.
+
+Every converted command uses `spawn` rather than `spawn_cancellable`, because no path carries a
+`CancellationToken`. That is filed as its own `bindings-ipc` finding under this root rather than
+half-done here, as D-G requires.
 
 ---
 
@@ -5156,7 +5241,7 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
 
 ### Nothing stops a caller putting the 10 MiB engine-image read back under the path-authority mutex
 
-* **ID:** f-20260903-05 · **Status:** open · **Area:** native-fs · **Root:** blocking-work-not-offloaded · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260903-05 · **Status:** handled · **Area:** native-fs · **Root:** blocking-work-not-offloaded · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/main.rs` — `issue_engine_image_blocking` and `read_engine_image_blocking`;
   helpers `engine_image_reader_for` / `read_engine_image_bytes` in
   `src-tauri/src/infra/path_authority.rs`.
@@ -5182,3 +5267,26 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
   finish guarding.
 * **Found by:** the `review-tests` lens during the `$push` review of the
   `blocking-work-not-offloaded` range, 2026-09-03 (confidence 90).
+
+**Handled, 2026-09-04 (drain session 0a2310ce), commit `7b1d92ca`.**
+
+`s10_engine_image_call_sites_read_outside_the_authority_guard` is the caller-side half the helper
+tests could not provide. For both `*_engine_image_blocking` bodies it pins that the split is wired
+up at all — `engine_image_reader_for` exactly once, `read_engine_image_bytes` exactly once, in that
+order, with `MAX_ENGINE_IMAGE_BYTES` — and then walks every `.lock(` occurrence against a running
+brace depth: a guard taken before the reader must sit at a strictly deeper block level, so it has
+provably closed; a guard taken anywhere between the reader and the end of the read call fails
+outright; a guard after the read is allowed, because `issue_engine_image_blocking` legitimately
+re-locks to register the image. Verified red by inserting `let _guard = authority.lock()` before
+the read, then reverted.
+
+**The type-level seam was considered and rejected.** The entry asks for it in preference to a scan.
+Rust cannot express "no lock is currently held": the mutex is an ordinary `std::sync::Mutex` that
+any code in the crate may lock, so no witness token threaded through `read_engine_image_bytes`
+would be sound unless lock ownership itself were restructured — which is the module split already
+filed as the S-6 residual. The scan is what is actually provable here, and it is stated as such.
+Reversal path: if `ResolvedPath` and the opener are ever relocated into separate modules, the seam
+becomes expressible and this scan can be replaced by it.
+
+The shared `closing_paren` helper introduced here became the basis of the closure walk that
+`7fe851ed` later gave S-4, S-5 and S-7.
