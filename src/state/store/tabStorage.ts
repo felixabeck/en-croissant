@@ -190,14 +190,15 @@ export function migrateTreeForStorage(value: unknown): unknown {
     };
 }
 
-function parseTree(value: unknown): StoredTree | null {
+type StoredTree = StorageValue<unknown>;
+type ValidatedStoredTree = StorageValue<z.infer<typeof persistedTreeSchema>>;
+
+function parseTree(value: unknown): ValidatedStoredTree | null {
     const candidate = migrateTreeForStorage(value);
     if (!isBoundedTreeForStorage(candidate)) return null;
     const parsed = persistedTreeSchema.safeParse(candidate);
     return parsed.success ? { version: TREE_STORAGE_VERSION, state: parsed.data } : null;
 }
-
-type StoredTree = StorageValue<unknown>;
 
 export function createTabStorageQuotaError(cause: unknown): Error {
     return new Error(
@@ -228,7 +229,7 @@ export function parseLegacyTreeJson(value: string): unknown | null {
     }
 }
 
-export function decodeLegacyOrCompressed(value: string): StoredTree | null {
+export function decodeLegacyOrCompressed(value: string): ValidatedStoredTree | null {
     const decoded = decodeCompressedOrJson(value);
     const envelope = z
         .object({ version: z.number().int().nonnegative(), state: z.unknown() })
@@ -298,17 +299,14 @@ export class TabStorageRepository {
     }
 
     clone(sourceTabId: string, targetTabId: string) {
-        const source = this.read(sourceTabId);
-        if (!source) return;
         // Round-trip through serialize/parse so a pending partialized store
         // (which still carries action functions) cannot reach structuredClone.
-        const copy = decodeLegacyOrCompressed(serializeStorageValue(source));
+        // A missing source serializes as null and is rejected by the same validation
+        // guard as any other invalid pending value.
+        const copy = decodeLegacyOrCompressed(serializeStorageValue(this.read(sourceTabId)));
         if (!copy) return;
         // A duplicate tab must not share a live analysis lease.
-        if (isRecord(copy.state)) {
-            const report = isRecord(copy.state.report) ? copy.state.report : {};
-            copy.state.report = { ...report, inProgress: false, operationId: null };
-        }
+        copy.state.report = { ...copy.state.report, inProgress: false, operationId: null };
         this.write(targetTabId, copy);
     }
 
