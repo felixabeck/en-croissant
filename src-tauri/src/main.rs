@@ -1400,6 +1400,12 @@ impl SoundServerLifecycle {
             .take();
         if let Some(shutdown) = shutdown {
             let _ = shutdown.send(());
+            // `scripts/verify-app.mjs` asserts this line: it is the only externally
+            // observable evidence that the signal was sent rather than the sender
+            // merely dropped. `b663a122` moved this teardown inside the shutdown
+            // budget and deleted the log with the block it replaced, while adding
+            // the assertion for it, so the check has been failing ever since.
+            log::info!("Sound server shutdown signalled");
         }
         let join = self.join.lock().await.take();
         if let Some(join) = join {
