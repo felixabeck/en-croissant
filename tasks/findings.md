@@ -5290,3 +5290,200 @@ becomes expressible and this scan can be replaced by it.
 
 The shared `closing_paren` helper introduced here became the basis of the closure walk that
 `7fe851ed` later gave S-4, S-5 and S-7.
+
+---
+
+## 2026-09-04 — filed through the inbox spool
+
+### `activate_download_artifact` still hashes the published inode under the process-wide authority mutex, on a Tokio worker
+
+* **ID:** f-20260904-01 · **Status:** open · **Area:** native-fs · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority.rs` — `activate_download_artifact` and its
+  `sha256_open_file` call; call sites `src-tauri/src/fs.rs` in `download_to_destination_inner`
+  (the mark-and-activate block) and `install_staged_pgn_artifact`; restart recovery in
+  `recover_pending_artifacts`.
+* **Defect:** `f-20260830-36` was a whole-file SHA-256 of a downloaded payload held on the
+  process-wide `pgn_path_authority` mutex from an async command. That hash was removed from
+  `reserve_download_artifact` and now runs through `hash_staged_payload` on `BLOCKING_GATEWAY`
+  before the lock is taken. The *same two commands* then re-acquire the mutex and call
+  `activate_download_artifact`, which SHA-256s the **published** inode through `sha256_open_file`
+  while `&mut self` is held — so after a multi-gigabyte database install the success path still
+  hashes the whole file under the process-wide mutex, on a Tokio worker. It is the original stall,
+  one step later.
+* **Why it matters:** the guard is process-wide, so every unrelated path operation in the process
+  waits for that hash, and a Tokio worker is parked for its duration. That is precisely the pair of
+  properties `f-20260830-36` was filed about, and the range that closed it does not close this half.
+* **Why this was not fixed in that range:** the plan
+  (`tasks/plans/2026-09-03-blocking-work-not-offloaded.md`, approach point 5) rules
+  `activate_download_artifact` out of scope, and correctly — but for a *different* question. Three
+  review lenses independently rejected giving activate a caller-supplied digest, because activate
+  hashes the published inode through the no-follow descriptor `resolve()` just opened, whereas
+  reserve hashes an exclusive private tempfile; a caller digest would be compared against the number
+  the caller got from reserve, making the check tautological, and `recover_pending_artifacts` builds
+  its reservation from the journalled digest, so restart recovery would compare a record to itself.
+  **That argument is about whether to hash, not about holding the registry mutex or running on
+  Tokio.** The offload question for activate was never asked.
+* **Why it is `build`:** the fix shape exists in-tree — `engine_image_reader_for` /
+  `read_engine_image_bytes` with the `VerifiedFile` newtype (`b345ea01`): resolve the no-follow
+  descriptor under the guard, drop the guard, hash the descriptor, re-acquire to commit. Applying it
+  here is not mechanical, because activate's hash is a *verification* of the published inode against
+  the journalled digest and its ordering relative to the post-rename identity marker is what closes
+  the swap window. Deciding where the guard may be dropped without opening a TOCTOU gap is the same
+  design question that took thirteen rounds of plan review for the engine image. `S-5` currently
+  pins the sibling in place by requiring activate's body to contain `sha256_open_file`, so that
+  assertion has to move with the split.
+* **Related:** same root as `f-20260830-36`, whose other half this is;
+  `d-20260903-08` is the engine-image seam this would mirror.
+* **Found by:** the `review-root-cause` lens (confidence 90) over the cumulative diff of the
+  `blocking-work-not-offloaded` range, 2026-09-04.
+
+### The analysis report's progress bar never updates, because the backend's operation id and the button's listener id can never be equal
+
+* **ID:** f-20260904-02 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/panels/analysis/ReportModal.tsx` (`operationId` is
+  `` `report_${tab}_${crypto.randomUUID()}` ``, passed to `tauri.analyzeGame`),
+  `src/components/panels/analysis/ReportPanel.tsx` (the `ProgressButton` is given
+  `` id={`report_${activeTab}`} ``), `src/hooks/useProgress.ts` (the listener keeps a payload only
+  when `payload.id === id`), and `src-tauri/src/chess.rs` `analyze_game`, which takes its lease on
+  the `id` it was handed and emits `ProgressEvent` at `(i / fens.len()) * 100` and then `100.0`.
+* **Defect:** the emitted id always carries a UUID suffix; the listened-for id never does. The
+  strings therefore cannot match, `useProgress` discards every report update, and
+  `ProgressButton` renders its bar only when `progress !== 0`, so the overlay stays empty for the
+  whole analysis. Cancellation is unaffected because `cancel_analysis` routes through the UUID
+  `EngineKey` rather than the progress id.
+* **Why it matters:** a full-game report is the longest-running user-visible operation in the
+  application, and it currently shows no progress at all. It is also the same class as the two
+  incidents in `.claude/rules/ipc-events.md`: both sides type-check, the payload is well-formed,
+  and nothing in the Specta registry or `bindings:check` can see that the discriminator does not
+  line up — `bindings:check` validates types, never emitted values.
+* **Why it is `build`:** the two sides disagree about what a progress id identifies, and either
+  could be the one to change. Making the button listen for the operation id means lifting the id
+  out of `ReportModal` into shared state so `ReportPanel` can read it, which touches how a report
+  operation is registered and cancelled. Making the backend emit the per-tab id instead loses the
+  ability to distinguish two reports on one tab. That is a contract decision, not a string fix, and
+  it should be settled once for every `registerOperation` consumer rather than patched here.
+* **Related:** `f-20260901-04` is the same failure family on the other two progress broadcasts —
+  `ConvertProgress` and `DatabaseProgress` lack a discriminator the renderer filters on, where this
+  one has a discriminator that never matches.
+* **Pre-existing:** yes. The `blocking-work-not-offloaded` range moved `analyze_game`'s novelty
+  lookup onto the blocking pool and did not touch either id.
+* **Found by:** the `review-ipc-contract` lens (confidence 95) over the cumulative diff of the
+  `blocking-work-not-offloaded` range, 2026-09-04. Verified by reading the three renderer files.
+
+### A partly-failed multi-file import leaves the search index describing the database as it was before
+
+* **ID:** f-20260904-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs` — `convert_pgn_blocking`, which opens one Diesel transaction
+  per input file and calls `data_changed` / `search_cache.invalidate_database` only after the last
+  file has succeeded. Connections run `PRAGMA journal_mode = WAL`. Index freshness is decided by
+  `IndexSource { revision, database_length, database_modified_nanos, object }` read from the main
+  `.db3` plus the in-process revision.
+* **Defect:** import two files where the first is a small PGN and the second is unreadable — a
+  truncated `.zst`, an empty handle, an I/O error. File one commits into the WAL; the command then
+  returns `Err` without ever bumping `data_revision` or invalidating the mmap sidecar. Below
+  SQLite's autocheckpoint threshold the main file's size and mtime often do not change, so
+  `open_valid_preferred` treats the stale sidecar as current. `get_games` reads the new rows through
+  the connection, while `search_position` and `is_position_in_db` do not see them at all — until
+  some unrelated call reaches `data_changed` or a checkpoint rewrites the main file.
+* **Why it matters:** the two read paths disagree about the contents of the same database, silently
+  and for an unbounded time. A user who imports, sees the error, and searches gets results computed
+  against a database that no longer exists. `.claude/rules/pgn-scanning.md` makes the byte-offset
+  index authoritative for search; nothing here tells it that it is stale.
+* **Why it is `build`:** this is the index half of a question `f-20260831-07` already opens on the
+  data half — whether the import is one transaction across all files or per-file commits plus a
+  reported partial outcome. The invalidation cannot be decided independently: with one transaction
+  there is nothing to invalidate on failure, and with per-file commits the invalidation has to
+  happen per file, which changes when the sidecar is regenerated during a long import. The two
+  should be planned together.
+* **Related:** `f-20260831-07` (the same import path, the user-facing atomicity half) and
+  `f-20260831-06` (`whole-corpus-materialisation`, which constrains the one-transaction option).
+* **Pre-existing:** yes. The `blocking-work-not-offloaded` range moved this body into a gateway
+  closure and changed neither the transaction boundaries nor the invalidation point.
+* **Found by:** the `review-pgn-index` lens (confidence 90) over the cumulative diff of the
+  `blocking-work-not-offloaded` range, 2026-09-04.
+
+### Exporting a database silently omits every game whose row fails to decode
+
+* **ID:** f-20260904-04 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs` — `export_to_pgn_blocking`, the `load_iter(...).flatten()`
+  over the game rows.
+* **Defect:** `.flatten()` on an iterator of `Result` discards the `Err` variants. A row that fails
+  to decode — a corrupt move blob, a value outside its expected range, a Diesel type error — is
+  dropped from the export, and the command returns `Ok`. The user gets a PGN file that is missing
+  games and is told the export succeeded.
+* **Why it matters:** an export is what a user does to get their data out of the application, and
+  this is the one operation where silent omission is indistinguishable from success. It is the same
+  class as the `applied-despite-error` category on the filesystem side (`d-20260830-05`), inverted:
+  there an error was reported after the work applied; here no error is reported at all.
+* **Why it is `build`:** the alternative to dropping is not obvious. Failing the whole export on one
+  bad row means a single corrupt game makes the database unexportable, which is worse for the user
+  who is exporting precisely because something is wrong. Reporting a partial export needs an error
+  or result shape carrying which games were skipped, and a renderer that shows it — the same
+  decision `f-20260831-07` faces for imports, and it should get the same answer.
+* **Related:** `f-20260831-06` covers the *memory* defect at this same site (the export buffers the
+  complete PGN in a `BufWriter<Vec<u8>>` before writing); this finding is the *correctness* defect
+  beside it. `f-20260831-07` is the same partial-outcome question on the import side.
+* **Pre-existing:** yes. The `blocking-work-not-offloaded` range moved this body into a gateway
+  closure and did not change its error handling.
+* **Found by:** the `review-pgn-index` lens (confidence 93) over the cumulative diff of the
+  `blocking-work-not-offloaded` range, 2026-09-04.
+
+### Every offloaded command uses `spawn` rather than `spawn_cancellable`, because no path carries a `CancellationToken`
+
+* **ID:** f-20260904-05 · **Status:** open · **Area:** bindings-ipc · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
+* **Where:** the ~50 commands converted by `714e470d`, `c5362e0d`, `a22bbdf4` and `f98a3987` across
+  `src-tauri/src/main.rs`, `fs.rs`, `puzzle.rs`, `file_workspace.rs`, `db/mod.rs`, `db/search.rs`
+  and `chess.rs`; `BlockingGateway::spawn` and `spawn_cancellable` in
+  `src-tauri/src/infra/blocking.rs`.
+* **Defect:** decision D-G of `tasks/plans/2026-09-03-blocking-work-not-offloaded.md` says to use
+  `spawn_cancellable` wherever a `CancellationToken` already exists on the path and `spawn`
+  otherwise, and to file whatever is left on `spawn` only for want of a token. That is every single
+  converted command: none of these paths carries a token today. `spawn_cancellable` consequently has
+  no production caller at all outside its own tests.
+* **Why it matters:** the work that moved onto the pool is the long work — a full PGN import, a
+  rayon scan over an entire game index, a recursive delete, a multi-gigabyte hash. A caller that is
+  abandoned (tab closed, window closed, the renderer stops awaiting) drops the gateway's own permit,
+  but the worker keeps running to completion and keeps holding one of only four permits. With four
+  abandoned long operations the pool is fully occupied by work nobody is waiting for. Search has a
+  cancellation path (`SearchProgress`'s `Drop`) but it signals the renderer, not the worker.
+* **Why it is `build`:** giving these paths a token is not a per-command edit. It needs a decision
+  about where a token is owned and how it reaches the worker — per tab, per operation id, per
+  command invocation — and how it interacts with the existing `SearchProgress` `Drop` path and the
+  `EngineKey` generation used by `cancel_analysis`, so a cancelled operation ends up in exactly one
+  terminal state rather than two. That is the same identity question
+  `.claude/rules/async-resource-invariants.md` puts at the top of its single rule.
+* **Related:** same root as `f-20260830-36` / `-37` / `-38`; `d-20260903-04` records why the gateway
+  has no re-entrancy guard, which is the neighbouring decision about the same type.
+* **Found by:** the `blocking-work-not-offloaded` build run, 2026-09-04, as D-G and plan phase 7
+  require.
+
+### Inside `path_authority.rs` a `VerifiedFile` can still be built from a pathname-opened descriptor
+
+* **ID:** f-20260904-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority.rs` — the private `mod verified`, its
+  `VerifiedFile::from_resolved` constructor, `ResolvedPath`'s module-private `file` field,
+  `open_engine_image` and `engine_image_reader_for`.
+* **Defect:** `b345ea01` made the engine image read from `resolve`'s no-follow descriptor after the
+  authority guard drops, and `VerifiedFile`'s private field means no caller *outside*
+  `path_authority.rs` can construct one, open by name, or read without going through
+  `read_engine_image_bytes`. Inside that module the property is still forgeable: `ResolvedPath.file`
+  is module-private, so code in the file can set `resolved.file = Some(fs::File::open(stored_path)?)`
+  and then call `from_resolved`, and a wrapper can read into a discarded `Vec`, `seek(SeekFrom::Start(0))`
+  and still return the descriptor.
+* **Why it matters:** the consequence if it were forged is a symlink swap after the metadata check
+  sending up to 10 MiB of an attacker-chosen file to the renderer, bypassing `resolve`'s no-follow
+  descriptor entirely.
+* **What it is and is not:** this is a **pre-existing** property, not a regression. Today's
+  `read_engine_image` already resolved and read in one method, and nothing stopped a future edit
+  there from opening by name. The split does not weaken it and does narrow it: the reach shrinks
+  from "any caller in the crate" to "an edit inside one file".
+* **Why it is `build`:** neither a newtype nor a token ban closes it, because the offending code
+  would live in the module that owns both primitives. Closing it means relocating `ResolvedPath` and
+  the opener into separate modules so the constructor cannot see a raw `File` at all — a module
+  boundary change across a 6000-line security-critical file, with its own question about what else
+  has to move with `ResolvedPath`.
+* **Related:** `f-20260830-36`, whose engine-image half produced the split; `d-20260903-08` records
+  the seam. `S-6` in `tasks/plans/2026-09-03-blocking-work-not-offloaded.md` states this hole
+  explicitly under "What is NOT proved" rather than claiming a proof it does not have.
+* **Found by:** rounds 6 to 13 of the plan review for the `blocking-work-not-offloaded` cluster;
+  filed by that plan's phase 7, 2026-09-04.
