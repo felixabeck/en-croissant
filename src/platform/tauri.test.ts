@@ -10,7 +10,7 @@ vi.mock("@/bindings/generated", () => ({
 }));
 
 import { normalizeError } from "./errors";
-import { TauriCommandError, tauri } from "./tauri";
+import { TauriCommandError, tauri, unwrapCommand } from "./tauri";
 
 describe("tauri command facade", () => {
     test("returns command payloads instead of generated Result wrappers", async () => {
@@ -35,6 +35,32 @@ describe("tauri command facade", () => {
         expect(error.message).not.toContain("/home/user");
         expect(error.message).not.toContain("$1");
         expect(error.details).toBe(normalizeError(error));
+    });
+
+    test("maps a generated ErrorPayload through unwrapCommand", () => {
+        const result = {
+            status: "error" as const,
+            error: {
+                tag: "backend-error" as const,
+                category: "permission" as const,
+                message: "denied at /private/secret",
+            },
+        };
+        let caught: unknown;
+        try {
+            unwrapCommand(result);
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(TauriCommandError);
+        const commandError = caught as TauriCommandError;
+        expect(commandError.details).toEqual({
+            category: "permission",
+            backendCategory: "permission",
+            message: "denied at [path]",
+        });
+        expect(commandError.message).toBe("denied at [path]");
+        expect(commandError.message).not.toContain("/private/secret");
     });
 
     test("rethrows an already-normalised TauriCommandError", async () => {

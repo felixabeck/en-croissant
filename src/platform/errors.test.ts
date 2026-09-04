@@ -91,6 +91,7 @@ describe("normalizeError", () => {
     test("does not throw on empty values", () => {
         expect(normalizeError(undefined).category).toBe("unexpected");
         expect(normalizeError(() => undefined).category).toBe("unexpected");
+        expect(() => normalizeError(null)).not.toThrow();
     });
 
     // Each cause below is worded so that some *other* branch would claim it if
@@ -155,6 +156,27 @@ describe("normalizeError", () => {
         expect(errorUnlessCancelled("Cancellation")).toBeNull();
     });
 
+    test("errorUnlessCancelled still keys on the Cancellation message for structured payloads", () => {
+        expect(
+            errorUnlessCancelled({
+                tag: "backend-error",
+                category: "cancellation",
+                message: "Cancellation",
+            }),
+        ).toBeNull();
+        expect(
+            errorUnlessCancelled({
+                tag: "backend-error",
+                category: "cancellation",
+                message: "Analysis cancelled",
+            }),
+        ).toEqual({
+            category: "cancelled",
+            backendCategory: "cancellation",
+            message: "Analysis cancelled",
+        });
+    });
+
     test("keeps a real failure visible", () => {
         expect(errorUnlessCancelled(new Error("permission denied"))).toMatchObject({
             category: "permission",
@@ -180,7 +202,80 @@ describe("normalizeError", () => {
         const wrapped = Object.assign(new Error(details.message), { details });
         expect(normalizeError(wrapped)).toBe(details);
     });
+
+    // Each structured row carries a message `classify()` would map differently from
+    // BACKEND_CATEGORY, so deleting the ErrorPayload branch turns the row red.
+    test.each([
+        ["durability", "native failed", "applied-despite-error"],
+        ["engine-timeout", "timeout", "unexpected"],
+        ["conflict", "Engine timeout: waiting for readyok", "validation"],
+        ["cancellation", "connection aborted", "cancelled"],
+        ["missing-resource", "I/O failure", "not-found"],
+        ["permission", "I/O failure", "permission"],
+        ["parsing", "parsing failure", "validation"],
+        ["chess-data", "chess data failure", "validation"],
+        ["resource-limit", "resource limit", "validation"],
+        ["authentication", "authentication failure", "permission"],
+        ["credential", "credential failure", "permission"],
+        ["puzzle-themes-unavailable", "Puzzle themes unavailable", "not-found"],
+    ] as const)(
+        "maps structured %s payload to %s even when the message disagrees",
+        (backendCategory, message, category) => {
+            expect(
+                normalizeError({
+                    tag: "backend-error",
+                    category: backendCategory,
+                    message,
+                }),
+            ).toEqual({
+                category,
+                backendCategory,
+                message,
+            });
+        },
+    );
+
+    test("redacts a structured command payload", () => {
+        expect(
+            normalizeError({
+                tag: "backend-error",
+                category: "io",
+                message: "failed at /private/secret",
+            }),
+        ).toEqual({
+            category: "unexpected",
+            backendCategory: "io",
+            message: "failed at [path]",
+        });
+    });
+
+    test("preserves an already-normalised AppError that overlaps a backend category", () => {
+        const existing = { category: "network" as const, message: "connection aborted" };
+        expect(normalizeError(existing)).toBe(existing);
+
+        const payload = {
+            tag: "backend-error" as const,
+            category: "network" as const,
+            message: "connection aborted",
+        };
+        const mapped = normalizeError(payload);
+        expect(mapped).not.toBe(payload);
+        expect(mapped).toEqual({
+            category: "network",
+            backendCategory: "network",
+            message: "connection aborted",
+        });
+    });
 });
+
+const structuredAppliedPayloads = [
+    { tag: "backend-error" as const, category: "durability" as const, message: "native failed" },
+    {
+        tag: "backend-error" as const,
+        category: "partial-removal" as const,
+        message: "native failed",
+    },
+];
 
 describe("runAppliedMutationWithRefresh", () => {
     test("refreshes and resolves an applied-despite-error mutation", async () => {
@@ -286,4 +381,41 @@ describe("runDestructiveWithRefresh", () => {
         ).rejects.toThrow("native failed");
         expect(refresh).not.toHaveBeenCalled();
     });
+
+    test.each(structuredAppliedPayloads)(
+        "refreshes a structured $category payload the substring table would not apply",
+        async (payload) => {
+            const refresh = vi.fn();
+            await expect(
+                runDestructiveWithRefresh(async () => Promise.reject(payload), refresh),
+            ).rejects.toBe(payload);
+            expect(refresh).toHaveBeenCalledTimes(1);
+        },
+    );
+});
+
+describe("structured applied-despite-error helpers", () => {
+    test.each(structuredAppliedPayloads)(
+        "runAppliedMutationWithRefresh swallows structured $category",
+        async (payload) => {
+            const refresh = vi.fn();
+            await expect(
+                runAppliedMutationWithRefresh(async () => Promise.reject(payload), refresh),
+            ).resolves.toBeUndefined();
+            expect(refresh).toHaveBeenCalledTimes(1);
+        },
+    );
+
+    test.each(structuredAppliedPayloads)(
+        "runWithAppliedRecovery recovers from structured $category",
+        async (payload) => {
+            const recovered = { id: "recovered" };
+            await expect(
+                runWithAppliedRecovery(
+                    async () => Promise.reject(payload),
+                    async () => recovered,
+                ),
+            ).resolves.toBe(recovered);
+        },
+    );
 });

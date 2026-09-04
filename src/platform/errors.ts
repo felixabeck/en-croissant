@@ -1,3 +1,5 @@
+import type { ErrorCategory, ErrorPayload } from "./tauri";
+
 export type AppErrorCategory =
     | "cancelled"
     | "network"
@@ -11,6 +13,7 @@ export type AppError = {
     category: AppErrorCategory;
     message: string;
     diagnostic?: string;
+    backendCategory?: ErrorCategory;
 };
 
 const APP_ERROR_CATEGORIES: readonly AppErrorCategory[] = [
@@ -23,12 +26,42 @@ const APP_ERROR_CATEGORIES: readonly AppErrorCategory[] = [
     "unexpected",
 ];
 
+const BACKEND_CATEGORY: Record<ErrorCategory, AppErrorCategory> = {
+    io: "unexpected",
+    parsing: "validation",
+    platform: "unexpected",
+    network: "network",
+    "chess-data": "validation",
+    database: "unexpected",
+    "invalid-input": "validation",
+    "missing-resource": "not-found",
+    conflict: "validation",
+    "resource-limit": "validation",
+    authentication: "permission",
+    credential: "permission",
+    cancellation: "cancelled",
+    durability: "applied-despite-error",
+    "partial-removal": "applied-despite-error",
+    "operation-and-cleanup": "unexpected",
+    "engine-timeout": "unexpected",
+    permission: "permission",
+    "puzzle-themes-unavailable": "not-found",
+};
+
 const FEN_BOARD_PATTERN = /[rnbqkpRNBQKP1-8]+(?:\/[rnbqkpRNBQKP1-8]+){1,7}/g;
 const PGN_DRAW_PATTERN = /1\/2-1\/2/g;
 const PREFIX_SECRET_PATTERN = /(bearer\s+|token[=:]\s*|password[=:]\s*)[^\s,;]+/gi;
 const JSON_SECRET_PATTERN = /(["'](?:password|token)["']\s*:\s*["'])[^"']+/gi;
 const PATH_PATTERN =
     /(?:(?<![A-Za-z])[A-Za-z]:(?:\\|\/)+(?:(?:[^'"\n]*?[\\/])+)?[^'"\s\n]+|\\\\(?:[^'"\n]*?\\)+[^'"\s\n]+|~\/(?:[^/\s'"]+\/)*[^/\s'"]+|(?<![.:/\w])\/(?:[^/\s'"]+\/)+[^/\s'"]*|(?<![.:/\w])\/[^/\s'"]+\.[A-Za-z0-9]{1,24}\b)/g;
+
+function isErrorPayload(value: unknown): value is ErrorPayload {
+    return (
+        typeof value === "object" &&
+        value !== null &&
+        (value as { tag?: unknown }).tag === "backend-error"
+    );
+}
 
 function isAppError(value: unknown): value is AppError {
     if (typeof value !== "object" || value === null) return false;
@@ -84,6 +117,11 @@ function safelyStringify(value: unknown): string {
 
 function classify(source: string): AppErrorCategory {
     const lower = source.toLowerCase();
+    // Fallback for non-command errors (D-E): a thrown JS Error from the renderer itself,
+    // useTauriListener callback failures, close_splashscreen's genuine Result<(), String>,
+    // and any other non-command rejection. Backend command errors carry ErrorPayload and
+    // are mapped through BACKEND_CATEGORY, not this table.
+    //
     // `applied-despite-error` means: the destructive change reached the filesystem even though
     // this is an error. It covers both a partial removal and a complete one whose durability
     // could not be confirmed -- which is why it is not called "partially-applied", since the
@@ -149,6 +187,13 @@ function classify(source: string): AppErrorCategory {
 }
 
 export function normalizeError(error: unknown): AppError {
+    if (isErrorPayload(error)) {
+        return {
+            category: BACKEND_CATEGORY[error.category],
+            backendCategory: error.category,
+            message: redact(error.message),
+        };
+    }
     if (isAppError(error)) return error;
     if (error instanceof Error) {
         const details = (error as { details?: unknown }).details;
