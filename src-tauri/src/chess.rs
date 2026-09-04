@@ -982,9 +982,11 @@ pub async fn analyze_game(
     Ok(analysis)
 }
 
-/// Returns a prefix of `queries` ending at the first absent position, or the
-/// full length when every position is present. A full-index scan per ply is
-/// the cost this offload exists to bound.
+/// Returns a prefix of presence flags ending at the first absent position, or
+/// the full length when every position is present. Each element is "this
+/// position is PRESENT in the reference database"; the caller sets
+/// `analysis.novelty = !found`. A full-index scan per ply is the cost this
+/// offload exists to bound.
 fn novelty_lookup_blocking(
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,

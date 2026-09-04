@@ -536,6 +536,9 @@ pub async fn convert_pgn(
         .await
 }
 
+// Individual Arc handles the closure must own: BlockingGateway::spawn is
+// `'static` and AppState is not Clone. A bundle type was rejected (plan
+// decision D-B).
 #[allow(clippy::too_many_arguments)]
 fn convert_pgn_blocking(
     authority: &std::sync::Mutex<Option<PathAuthority>>,

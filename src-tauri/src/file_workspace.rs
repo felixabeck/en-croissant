@@ -227,6 +227,10 @@ pub(crate) fn map_picker_join(error: tokio::task::JoinError) -> Error {
     }
 }
 
+// A pre-existing synchronous helper is the blocking body and gets no pass-through
+// wrapper, so the command holds the spawn. Same keep-name rule as puzzle.rs:
+// `collect_tree_entries`, `create_workspace_directory_inner`, `trash_entry`,
+// `restore_entry`.
 fn collect_tree_entries(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
@@ -917,6 +921,10 @@ async fn permanently_delete_entry(
     result
 }
 
+// Dropped executables must reach `retire_executables` on the error path as well
+// as the success path, so they cannot travel through the `Result`. A plain
+// `spawn(..).await?` would drop them on `Err` and leave a running engine holding
+// an unlinked inode.
 fn permanently_delete_entry_blocking(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace_mutation: &Mutex<()>,

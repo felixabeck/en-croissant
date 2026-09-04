@@ -1911,51 +1911,53 @@ mod blocking_offload_scans {
         None
     }
 
+    /// The argument text of the `BLOCKING_GATEWAY.spawn*(…)` call in `body`. Position alone is
+    /// not enough: `BLOCKING_GATEWAY.spawn(|| Ok(())).await?;` followed by a direct call to the
+    /// worker puts that call after the gateway token and still runs it on the command future.
+    fn gateway_closure(body: &'static str, signature: &str) -> &'static str {
+        let gateway = body
+            .find("BLOCKING_GATEWAY")
+            .unwrap_or_else(|| panic!("{signature} must acquire BLOCKING_GATEWAY: {body}"));
+        let rest = &body[gateway..];
+        let spawn = rest
+            .find(".spawn")
+            .unwrap_or_else(|| panic!("{signature} must call .spawn on the gateway: {body}"));
+        let open = spawn
+            + rest[spawn..]
+                .find('(')
+                .unwrap_or_else(|| panic!("{signature} must open the spawn call: {body}"));
+        let close = closing_paren(rest, open)
+            .unwrap_or_else(|| panic!("{signature} has an unbalanced spawn call: {body}"));
+        &rest[open + 1..close]
+    }
+
     /// Asserting that a converted command merely *mentions* `BLOCKING_GATEWAY` does not pin the
     /// offload: moving the worker call back onto the command future and leaving a decoy
     /// `BLOCKING_GATEWAY.spawn(|| Ok(()))` behind would keep such a scan green, which is exactly
     /// the GTK-main-loop regression this range exists to prevent. So each command is paired with
     /// the worker it offloads, and the worker call must appear exactly once, after the gateway
     /// acquisition — i.e. inside the spawned closure.
+    fn assert_offloads(source: &'static str, signature: &str, worker: &str) {
+        let body = body_at_indent(source, signature);
+        let call = format!("{worker}(");
+        let occurrences = body.matches(call.as_str()).count();
+        assert_eq!(
+            occurrences, 1,
+            "{signature} must call {call} exactly once, so the closure scan cannot be \
+             satisfied while a second call runs on the command future: {body}"
+        );
+        let closure = gateway_closure(body, signature);
+        assert!(
+            closure.contains(call.as_str()),
+            "{signature} must call {call} inside the BLOCKING_GATEWAY closure, not on the \
+             command future; closure was {closure:?}: {body}"
+        );
+    }
+
     #[test]
     fn s1_converted_symbols_offload_their_worker_through_the_gateway() {
         let main = include_str!("main.rs");
         let puzzle = include_str!("puzzle.rs");
-        // The argument text of the `BLOCKING_GATEWAY.spawn*(…)` call in `body`. Position alone is
-        // not enough: `BLOCKING_GATEWAY.spawn(|| Ok(())).await?;` followed by a direct call to the
-        // worker puts that call after the gateway token and still runs it on the command future.
-        let gateway_closure = |body: &'static str, signature: &str| -> &'static str {
-            let gateway = body
-                .find("BLOCKING_GATEWAY")
-                .unwrap_or_else(|| panic!("{signature} must acquire BLOCKING_GATEWAY: {body}"));
-            let rest = &body[gateway..];
-            let spawn = rest
-                .find(".spawn")
-                .unwrap_or_else(|| panic!("{signature} must call .spawn on the gateway: {body}"));
-            let open = spawn
-                + rest[spawn..]
-                    .find('(')
-                    .unwrap_or_else(|| panic!("{signature} must open the spawn call: {body}"));
-            let close = closing_paren(rest, open)
-                .unwrap_or_else(|| panic!("{signature} has an unbalanced spawn call: {body}"));
-            &rest[open + 1..close]
-        };
-        let assert_offloads = move |source: &'static str, signature: &str, worker: &str| {
-            let body = body_at_indent(source, signature);
-            let call = format!("{worker}(");
-            let occurrences = body.matches(call.as_str()).count();
-            assert_eq!(
-                occurrences, 1,
-                "{signature} must call {call} exactly once, so the closure scan cannot be \
-                 satisfied while a second call runs on the command future: {body}"
-            );
-            let closure = gateway_closure(body, signature);
-            assert!(
-                closure.contains(call.as_str()),
-                "{signature} must call {call} inside the BLOCKING_GATEWAY closure, not on the \
-                 command future; closure was {closure:?}: {body}"
-            );
-        };
         for (signature, worker) in [
             (
                 "async fn save_native_export(",
@@ -2273,10 +2275,10 @@ mod blocking_offload_scans {
                 !blocking.trim().is_empty(),
                 "{name}_blocking must exist: {blocking}"
             );
-            let wrapper = body_at_indent(db, &format!("pub async fn {name}("));
-            assert!(
-                wrapper.contains("BLOCKING_GATEWAY"),
-                "pub async fn {name} must acquire BLOCKING_GATEWAY: {wrapper}"
+            assert_offloads(
+                db,
+                &format!("pub async fn {name}("),
+                &format!("{name}_blocking"),
             );
         }
         let search_blocking = body_at_indent(search, "fn search_position_blocking(");
@@ -2284,11 +2286,12 @@ mod blocking_offload_scans {
             !search_blocking.trim().is_empty(),
             "search_position_blocking must exist: {search_blocking}"
         );
-        let search_wrapper = body_at_indent(search, "pub async fn search_position(");
-        assert!(
-            search_wrapper.contains("BLOCKING_GATEWAY"),
-            "pub async fn search_position must acquire BLOCKING_GATEWAY: {search_wrapper}"
+        assert_offloads(
+            search,
+            "pub async fn search_position(",
+            "search_position_blocking",
         );
+        let search_wrapper = body_at_indent(search, "pub async fn search_position(");
 
         let convert = body_at_indent(db, "fn convert_pgn_blocking(");
         assert!(
@@ -2366,16 +2369,10 @@ mod blocking_offload_scans {
             "activate_download_artifact must hash the published inode: {activate}"
         );
 
-        let helper = body_at_indent(path_authority, "pub(crate) async fn hash_staged_payload");
-        let gateway = helper
-            .find("BLOCKING_GATEWAY")
-            .expect("hash_staged_payload must acquire BLOCKING_GATEWAY");
-        let hash = helper
-            .find("sha256_file")
-            .expect("hash_staged_payload must call sha256_file");
-        assert!(
-            gateway < hash,
-            "hash_staged_payload must enter BLOCKING_GATEWAY before hashing: {helper}"
+        assert_offloads(
+            path_authority,
+            "pub(crate) async fn hash_staged_payload(",
+            "sha256_file",
         );
 
         let fs = include_str!("fs.rs");
@@ -2405,6 +2402,11 @@ mod blocking_offload_scans {
             body.contains("BLOCKING_GATEWAY"),
             "analyze_game must acquire BLOCKING_GATEWAY: {body}"
         );
+        assert_offloads(
+            chess,
+            "pub async fn analyze_game(",
+            "novelty_lookup_blocking",
+        );
         let last_ingest = body
             .rmatch_indices("ingest_info_line")
             .next()
@@ -2419,6 +2421,20 @@ mod blocking_offload_scans {
         assert!(
             terminate_between,
             "analyze_game must call terminate_exact after the UCI loop and before novelty_lookup_blocking: {body}"
+        );
+    }
+
+    /// Textual proof that the early exit still exists, because no unit test in this tree
+    /// can drive `novelty_lookup_blocking` without a real reference database. This is not
+    /// a proof that `break` is the right bound — only that the early-exit is still in the
+    /// body.
+    #[test]
+    fn novelty_lookup_blocking_stops_at_the_first_absent_position() {
+        let chess = include_str!("chess.rs");
+        let novelty = body_at_indent(chess, "fn novelty_lookup_blocking(");
+        assert!(
+            novelty.contains("break"),
+            "novelty_lookup_blocking must stop at the first absent position: {novelty}"
         );
     }
 
@@ -2470,7 +2486,14 @@ mod blocking_offload_scans {
         // documented exception (`e770bcdb`, `d-20260903-06`): it already was the blocking body,
         // so no pass-through wrapper was added — and without this it would be the one offloaded
         // worker never checked for the nested acquisition that deadlocks the gateway.
+        //
+        // The five database helpers are the deadlock chain: `_blocking` bodies call them
+        // while holding a gateway permit, so wrapping any of them in `BLOCKING_GATEWAY.spawn`
+        // would take a second permit and stall. A glob cannot find them because they carry
+        // no `_blocking` suffix — commit `a22bbdf4` made them synchronous for that reason.
         let file_workspace = include_str!("file_workspace.rs");
+        let db = include_str!("db/mod.rs");
+        let search = include_str!("db/search.rs");
         for (file, source, name) in [
             (
                 "puzzle.rs",
@@ -2485,6 +2508,11 @@ mod blocking_offload_scans {
             ),
             ("file_workspace.rs", file_workspace, "trash_entry"),
             ("file_workspace.rs", file_workspace, "restore_entry"),
+            ("db/search.rs", search, "load_search_index"),
+            ("db/mod.rs", db, "generate_search_index"),
+            ("db/mod.rs", db, "generate_search_index_locked"),
+            ("db/search.rs", search, "is_position_in_db"),
+            ("db/mod.rs", db, "get_db_or_create"),
         ] {
             let body = body_at_indent(source, &format!("fn {name}("));
             for token in ["BLOCKING_GATEWAY", "block_on", "Handle::current", ".await"] {

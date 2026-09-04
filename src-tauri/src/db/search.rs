@@ -472,7 +472,7 @@ impl<R: tauri::Runtime> SearchProgress<R> {
         Ok(Self { app, lease })
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     fn report(&self, processed: usize, total: usize) {
         self.transition(
             search_progress_percent(processed, total),
@@ -557,6 +557,9 @@ pub async fn search_position(
     result
 }
 
+// Individual Arc handles the closure must own: BlockingGateway::spawn is
+// `'static` and AppState is not Clone. A bundle type was rejected (plan
+// decision D-B).
 #[allow(clippy::too_many_arguments)]
 fn search_position_blocking(
     authority: &Mutex<Option<PathAuthority>>,
@@ -1023,6 +1026,37 @@ mod tests {
         assert!(
             matches!(result, Err(Error::Conflict(_))),
             "poisoned generation lock must return Conflict, not panic"
+        );
+    }
+
+    #[test]
+    fn poisoned_collision_lock_returns_conflict_on_the_next_query() {
+        let (_dir, app, handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
+        let query = GameQuery::new();
+        let canonical = database.canonicalize().unwrap();
+        let lock = app
+            .state::<AppState>()
+            .search_cache
+            .collision_lock(query.clone(), canonical);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = lock.lock().unwrap();
+            panic!("poison the search cache collision lock");
+        }));
+        assert!(panicked.is_err());
+
+        let result = {
+            let state = app.state::<AppState>();
+            is_position_in_db(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                &handle,
+                &query,
+            )
+        };
+        assert!(
+            matches!(result, Err(Error::Conflict(_))),
+            "poisoned collision lock must return Conflict, not panic"
         );
     }
 
