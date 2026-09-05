@@ -54,8 +54,8 @@ Affected by `src-tauri/**` or root Rust/Tauri configuration:
 
 ```bash
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-cargo check --manifest-path src-tauri/Cargo.toml --all-targets
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 pnpm gate:ensure backend-test
 pnpm gate:ensure backend-coverage
 ```

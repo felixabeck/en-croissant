@@ -209,10 +209,11 @@ async function main() {
   } finally {
     if (supervisor) await supervisor.terminate();
     await signalForwarding.termination;
+    let fenceRemoved = false;
     try {
       if (runnerOwnsFence(runnerIdentity)) {
         rmSync(fencePath, { recursive: true });
-        fsyncDirectory(dirname(fencePath));
+        fenceRemoved = true;
       } else {
         console.error("Frontend mutation fence owner changed; leaving the fence in place.");
         exitCode = 1;
@@ -222,6 +223,16 @@ async function main() {
         `Cannot verify frontend mutation fence ownership; leaving the fence in place: ${error instanceof Error ? error.message : String(error)}`,
       );
       exitCode = 1;
+    }
+    if (fenceRemoved) {
+      try {
+        fsyncDirectory(dirname(fencePath));
+      } catch (error) {
+        console.error(
+          `Frontend mutation fence removed, directory sync failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        exitCode = 1;
+      }
     }
     signalForwarding.uninstall();
   }

@@ -96,12 +96,46 @@ export function pnpmReferences(command) {
 
 function unquoteYamlScalar(value) {
   if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    return value.slice(1, -1).replace(/\\(["\\])/gu, "$1");
+    const scalar = value.slice(1, -1);
+    const backslash = String.fromCodePoint(92);
+    let decoded = "";
+    for (let index = 0; index < scalar.length; index += 1) {
+      if (scalar[index] !== backslash) {
+        decoded += scalar[index];
+        continue;
+      }
+      const escape = scalar[index + 1];
+      if (escape === String.fromCodePoint(34) || escape === backslash) decoded += escape;
+      else if (escape === "n") decoded += "\n";
+      else if (escape === "t") decoded += "\t";
+      else {
+        const length = { x: 2, u: 4, U: 8 }[escape];
+        const hexadecimal = scalar.slice(index + 2, index + 2 + (length ?? 0));
+        const valid = length !== undefined && /^[0-9a-fA-F]+$/u.test(hexadecimal);
+        if (!valid || hexadecimal.length !== length) {
+          return {
+            error: `unsupported YAML escape in run: ${backslash}${escape ?? ""}`,
+            value,
+          };
+        }
+        const codePoint = Number.parseInt(hexadecimal, 16);
+        if (codePoint > 0x10ffff) {
+          return {
+            error: `unsupported YAML escape in run: ${backslash}${escape}${hexadecimal}`,
+            value,
+          };
+        }
+        decoded += String.fromCodePoint(codePoint);
+        index += length;
+      }
+      index += 1;
+    }
+    return { value: decoded };
   }
   if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
-    return value.slice(1, -1).replaceAll("''", "'");
+    return { value: value.slice(1, -1).replaceAll("''", "'") };
   }
-  return value;
+  return { value };
 }
 
 export function workflowSteps(workflow) {
@@ -124,7 +158,8 @@ export function workflowSteps(workflow) {
     const runEntry = block.find(({ line }) => /^run:\s*/u.test(line));
     if (!runEntry) continue;
     const runValue = runEntry.line.replace(/^run:\s*/u, "");
-    let run = unquoteYamlScalar(runValue);
+    const decodedRun = unquoteYamlScalar(runValue);
+    let run = decodedRun.value;
     const scalar = /^([|>])(?:[0-9][-+]?|[-+]?[0-9]?)$/u.exec(runValue);
     if (scalar) {
       const runLineIndentation = lines[runEntry.index].match(/^\s*/u)[0].length;
@@ -136,6 +171,10 @@ export function workflowSteps(workflow) {
       }
       run = commandLines.join(scalar[1] === "|" ? "\n" : " ").trim();
     }
+    const ifValue = block
+      .find(({ line }) => /^if:\s*/u.test(line))
+      ?.line.replace(/^if:\s*/u, "")
+      .trim();
     const continueOnError = block
       .find(({ line }) => /^continue-on-error:\s*/u.test(line))
       ?.line.replace(/^continue-on-error:\s*/u, "")
@@ -143,11 +182,51 @@ export function workflowSteps(workflow) {
     steps.push({
       name: name ?? "",
       run,
-      hasIf: block.some(({ line }) => /^if:\s*/u.test(line)),
-      continueOnError: continueOnError === "true",
+      runError: decodedRun.error,
+      hasIf: ifValue !== undefined,
+      ifValue,
+      continueOnError,
     });
   }
   return steps;
+}
+
+function workflowJobs(workflow) {
+  const jobs = [];
+  const lines = workflow.split(/\r?\n/u);
+  const jobsIndex = lines.findIndex((line) => /^\s*jobs:\s*$/u.test(line));
+  if (jobsIndex < 0) return jobs;
+  const jobsIndentation = lines[jobsIndex].match(/^\s*/u)[0].length;
+  for (let index = jobsIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() && line.match(/^\s*/u)[0].length <= jobsIndentation) break;
+    const job = new RegExp(`^\\s{${jobsIndentation + 2}}([\\w.-]+):\\s*$`, "u").exec(line);
+    if (!job) continue;
+    const indentation = jobsIndentation + 2;
+    let end = index + 1;
+    while (end < lines.length) {
+      const next = lines[end];
+      if (next.trim() && next.match(/^\s*/u)[0].length <= indentation) break;
+      end += 1;
+    }
+    const properties = lines
+      .slice(index + 1, end)
+      .filter(
+        (candidate) => candidate.trim() && candidate.match(/^\s*/u)[0].length === indentation + 2,
+      );
+    const valueFor = (key) =>
+      properties
+        .find((property) => new RegExp(`^\\s+${key}:\\s*`, "u").test(property))
+        ?.replace(new RegExp(`^\\s+${key}:\\s*`, "u"), "")
+        .trim();
+    jobs.push({
+      name: job[1],
+      ifValue: valueFor("if"),
+      continueOnError: valueFor("continue-on-error"),
+    });
+    index = end - 1;
+  }
+  return jobs;
 }
 
 function testIncludes(viteConfig) {
@@ -314,13 +393,14 @@ function commandSegments(command) {
     .filter(Boolean);
 }
 
-function invokesPnpmOrScript(command, repoRoot) {
+function invokesGate(command, repoRoot) {
   if (pnpmReferences(command).length > 0) return true;
   const scriptsDirectory = resolve(repoRoot, "scripts");
   return commandSegments(command).some((segment) => {
     const words = shellWords(segment);
     if (words.length === 0) return false;
     const executable = words[0].replace(/^\.\//u, "");
+    if (executable === "cargo" && ALLOWED_CARGO_COMMANDS.has(words[1])) return true;
     if (executable.startsWith("scripts/")) return true;
     if (!SCRIPT_RUNNERS.has(executable) || !words[1]) return false;
     const target = resolve(repoRoot, words[1]);
@@ -380,16 +460,27 @@ export async function checkGateRouting(
   }
 
   const steps = workflowSteps(workflow);
+  for (const step of steps) {
+    if (step.runError) findings.push(step.runError);
+  }
+  for (const job of workflowJobs(workflow)) {
+    if (job.ifValue !== undefined) {
+      findings.push(
+        `${TEST_WORKFLOW} workflow job has if: ${JSON.stringify(job.ifValue)}: ${job.name}`,
+      );
+    }
+    if (job.continueOnError !== undefined && job.continueOnError !== "false") {
+      findings.push(
+        `${TEST_WORKFLOW} workflow job has continue-on-error: ${JSON.stringify(job.continueOnError)}: ${job.name}`,
+      );
+    }
+  }
   const workflowContractSteps = steps.filter((step) =>
     pnpmReferences(step.run).includes(CONTRACT_GATE),
   );
   if (workflowContractSteps.length !== 1) {
     findings.push(
       `${TEST_WORKFLOW} must run ${CONTRACT_GATE} exactly once; replace duplicate tooling steps with one contract-gate step`,
-    );
-  } else if (workflowContractSteps[0].hasIf) {
-    findings.push(
-      `${TEST_WORKFLOW} must run ${CONTRACT_GATE} in a step without if:; remove the step condition`,
     );
   } else if (workflowContractSteps[0].run.trim() !== `pnpm ${CONTRACT_GATE}`) {
     findings.push(`${TEST_WORKFLOW} contract-gate step must be exactly pnpm ${CONTRACT_GATE}`);
@@ -464,18 +555,27 @@ export async function checkGateRouting(
     }
   }
   for (const step of steps) {
-    if (step.continueOnError && invokesPnpmOrScript(step.run, repoRoot)) {
+    if (step.hasIf && invokesGate(step.run, repoRoot)) {
       findings.push(
-        `${TEST_WORKFLOW} workflow step ignores the gate's exit status: ${step.name || step.run}`,
+        `${TEST_WORKFLOW} workflow step has if: ${JSON.stringify(step.ifValue)}: ${step.name || step.run}`,
       );
     }
-    if (invokesPnpmOrScript(step.run, repoRoot) && /\|\||[;|]/u.test(step.run)) {
+    if (
+      step.continueOnError !== undefined &&
+      step.continueOnError !== "false" &&
+      invokesGate(step.run, repoRoot)
+    ) {
+      findings.push(
+        `${TEST_WORKFLOW} workflow step ignores the gate's exit status with continue-on-error: ${JSON.stringify(step.continueOnError)}: ${step.name || step.run}`,
+      );
+    }
+    if (invokesGate(step.run, repoRoot) && /\|\||[;|]/u.test(step.run)) {
       findings.push(
         `${TEST_WORKFLOW} workflow step neutralises or chains gate exit codes: ${step.name || step.run}`,
       );
     }
     for (const segment of commandSegments(step.run)) {
-      if (!invokesPnpmOrScript(segment, repoRoot)) continue;
+      if (!invokesGate(segment, repoRoot)) continue;
       if (fencedLines.has(segment) || routedPackageSegments.has(segment)) continue;
       findings.push(
         `workflow command must exactly match a fenced line or routed package-script segment: ${segment}`,

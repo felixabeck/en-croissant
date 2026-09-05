@@ -47,7 +47,7 @@ async function fixture() {
       'appendFileSync(join(state, "packages"), `${process.env.STRYKER_PACKAGE}\\n`);',
       'writeFileSync(join(state, "pid"), `${process.pid}\\n`);',
       'writeFileSync(join(state, "started"), "");',
-      'if (["block", "grandchild-exit"].includes(process.env.SHIM_MODE)) {',
+      'if (["block", "grandchild-exit", "ignore-term"].includes(process.env.SHIM_MODE)) {',
       '  const grandchild = spawn("/bin/sleep", ["30"], { detached: false, stdio: "ignore" });',
       '  writeFileSync(join(state, "grandchild-pid"), `${grandchild.pid}\\n`);',
       "  grandchild.unref();",
@@ -301,10 +301,12 @@ test("a Stryker process that ignores SIGTERM is SIGKILLed before fence removal",
   const running = start(root, environment({ state, mode: "ignore-term" }));
   await waitFor(join(state, "started"));
   const childPid = Number(await readFile(join(state, "pid"), "utf8"));
+  const grandchildPid = Number(await readFile(join(state, "grandchild-pid"), "utf8"));
   running.child.kill("SIGTERM");
   const result = await running.done;
   assert.equal(result.code, 143, result.stderr);
   assert.equal(isAlive(childPid), false, `Stryker pid ${childPid} still exists`);
+  assert.equal(isAlive(grandchildPid), false, `grandchild pid ${grandchildPid} still exists`);
   assert.equal(existsSync(join(root, fence)), false);
 });
 

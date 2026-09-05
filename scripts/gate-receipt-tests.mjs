@@ -82,7 +82,7 @@ test("every gate fingerprints a pinned tool set, and every listed tool has a pro
     "backend-test": ["rustc", "cargo"],
     "backend-coverage": ["rustc", "cargo", "nightly", "cargo-llvm-cov", "node", "pnpm"],
     "frontend-coverage": ["node", "pnpm"],
-    "frontend-mutation": ["node", "pnpm"],
+    "frontend-mutation": ["node", "pnpm", "stryker"],
     "frontend-build": ["node", "pnpm"],
     "e2e-container": ["node", "pnpm", "playwright-image"],
     "tauri-build": ["rustc", "cargo", "node", "pnpm"],

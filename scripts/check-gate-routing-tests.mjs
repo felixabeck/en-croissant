@@ -52,12 +52,12 @@ async function fixture() {
   await write(
     root,
     ".claude/skills/push/SKILL.md",
-    "## 2. Gates\n\n```bash\npnpm gates:contract:check\npnpm gate:check\ncargo fmt -- --check\ncargo check\ncargo clippy\ncargo test\npython3 scripts/tool.py check\n```\n\n### Rust/Tauri backend\n\n```bash\npnpm test:coverage:backend\npnpm coverage:backend:check\n```\n\n### TypeScript/React frontend\n\n```bash\npnpm test:coverage\npnpm coverage:frontend:check\npnpm build-vite\npnpm bundle:check\npnpm test:e2e:container\npnpm mutation:frontend\n```\n\n### Cross-layer contracts\n\n```bash\npnpm bindings:check\n```\n\n## 3. Review\n\n```text\nscripts/**\n```\n\n## 4. Finish\n",
+    "## 2. Gates\n\n```bash\npnpm gates:contract:check\npnpm gate:check\ncargo fmt -- --check\ncargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked\ncargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings\ncargo test\npython3 scripts/tool.py check\n```\n\n### Rust/Tauri backend\n\n```bash\npnpm test:coverage:backend\npnpm coverage:backend:check\n```\n\n### TypeScript/React frontend\n\n```bash\npnpm test:coverage\npnpm coverage:frontend:check\npnpm build-vite\npnpm bundle:check\npnpm test:e2e:container\npnpm mutation:frontend\n```\n\n### Cross-layer contracts\n\n```bash\npnpm bindings:check\n```\n\n## 3. Review\n\n```text\nscripts/**\n```\n\n## 4. Finish\n",
   );
   await write(
     root,
     ".github/workflows/test.yml",
-    "steps:\n  - name: Contract\n    run: pnpm gates:contract:check\n  - name: Frontend coverage\n    run: pnpm test:coverage\n  - name: Frontend ratchet\n    run: pnpm coverage:frontend:check\n  - name: Frontend build\n    run: pnpm build-vite\n  - name: Bindings\n    run: pnpm bindings:check\n  - name: Bundle\n    run: pnpm bundle:check\n  - name: Browser\n    run: pnpm test:e2e:container\n  - name: Mutation\n    run: pnpm mutation:frontend\n  - name: Backend coverage\n    run: pnpm test:coverage:backend\n  - name: Backend ratchet\n    run: pnpm coverage:backend:check\n",
+    "steps:\n  - name: Contract\n    run: pnpm gates:contract:check\n  - name: Frontend coverage\n    run: pnpm test:coverage\n  - name: Frontend ratchet\n    run: pnpm coverage:frontend:check\n  - name: Frontend build\n    run: pnpm build-vite\n  - name: Bindings\n    run: pnpm bindings:check\n  - name: Bundle\n    run: pnpm bundle:check\n  - name: Browser\n    run: pnpm test:e2e:container\n  - name: Mutation\n    run: pnpm mutation:frontend\n  - name: Rust gates\n    run: |\n      cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked\n      cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings\n  - name: Backend coverage\n    run: pnpm test:coverage:backend\n  - name: Backend ratchet\n    run: pnpm coverage:backend:check\n",
   );
   await write(root, "vite.config.ts", 'test: { include: ["scripts/**/*.test.mjs"] },\n');
   await write(root, "scripts/check-example.mjs", "\n");
@@ -555,8 +555,24 @@ test("requires an unconditional contract-gate workflow step", async () => {
   await writeFile(workflowPath, workflow.replace("    run:", "    if: success()\n    run:"));
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),
-    /must run gates:contract:check in a step without if:/u,
+    /workflow step has if: "success\(\)": Contract/u,
   );
+});
+
+test("rejects if on any routed gate step but accepts if on an upload step", async () => {
+  const root = await fixture();
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  const workflow = await readFile(workflowPath, "utf8");
+  await writeFile(
+    workflowPath,
+    `${workflow.replace(
+      "    run: pnpm mutation:frontend",
+      "    if: github.ref == 'refs/heads/master'\n    run: pnpm mutation:frontend",
+    )}  - name: Upload\n    if: always()\n    uses: actions/upload-artifact@v4\n`,
+  );
+  const findings = (await checkGateRouting(root, { paths })).join("\n");
+  assert.match(findings, /workflow step has if: "github\.ref == 'refs\/heads\/master'": Mutation/u);
+  assert.doesNotMatch(findings, /Upload/u);
 });
 
 test("rejects continue-on-error on the contract-gate workflow step", async () => {
@@ -572,7 +588,7 @@ test("rejects continue-on-error on the contract-gate workflow step", async () =>
   );
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),
-    /workflow step ignores the gate's exit status: Contract/u,
+    /workflow step ignores the gate's exit status with continue-on-error: "true": Contract/u,
   );
 });
 
@@ -589,9 +605,49 @@ test("rejects continue-on-error on another routed gate step", async () => {
   );
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),
-    /workflow step ignores the gate's exit status: Mutation/u,
+    /workflow step ignores the gate's exit status with continue-on-error: "true": Mutation/u,
   );
 });
+
+test("rejects an expression-valued continue-on-error and quotes its value", async () => {
+  const root = await fixture();
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  const workflow = await readFile(workflowPath, "utf8");
+  await writeFile(
+    workflowPath,
+    workflow.replace(
+      "    run: pnpm gates:contract:check",
+      "    continue-on-error: ${{ true }}\n    run: pnpm gates:contract:check",
+    ),
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /continue-on-error: "\$\{\{ true \}\}": Contract/u,
+  );
+});
+
+for (const [property, value] of [
+  ["if", "false"],
+  ["continue-on-error", "true"],
+]) {
+  test(`rejects job-level ${property}`, async () => {
+    const root = await fixture();
+    const workflowPath = join(root, ".github/workflows/test.yml");
+    const workflow = await readFile(workflowPath, "utf8");
+    const indentedWorkflow = workflow
+      .split("\n")
+      .map((line) => (line ? `    ${line}` : line))
+      .join("\n");
+    await writeFile(
+      workflowPath,
+      `jobs:\n  test:\n    ${property}: ${value}\n    runs-on: ubuntu-latest\n${indentedWorkflow}`,
+    );
+    assert.match(
+      (await checkGateRouting(root, { paths })).join("\n"),
+      new RegExp(`workflow job has ${property}: "${value}": test`, "u"),
+    );
+  });
+}
 
 test("requires the contract workflow command to be exact", async () => {
   const root = await fixture();
@@ -660,6 +716,67 @@ test("unquotes YAML run scalars and their supported escapes", () => {
   );
   assert.equal(steps[0].run, 'node scripts/check-example.mjs "quoted" \\path');
   assert.equal(steps[1].run, "node scripts/check-example.mjs 'quoted'");
+});
+
+test("decodes YAML control and hexadecimal escapes in run scalars", () => {
+  const [step] = workflowSteps(`steps:\n  - run: "pnpm\\x20alpha\\nnext\\t\\u0041\\U0001F600"\n`);
+  assert.equal(step.run, "pnpm alpha\nnext\tA😀");
+  assert.equal(step.runError, undefined);
+});
+
+test("reports a CI-only script hidden by a YAML Unicode escape", async () => {
+  const root = await fixture();
+  const packagePath = join(root, "package.json");
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+  packageJson.scripts["ci-only:run"] = "node scripts/ci-only.mjs";
+  await writeFile(packagePath, JSON.stringify(packageJson));
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  await writeFile(
+    workflowPath,
+    `${await readFile(workflowPath, "utf8")}  - name: Escaped\n    run: "pnpm\\u0020ci-only:run"\n`,
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /workflow-routed package script ci-only:run/u,
+  );
+});
+
+test("reports unsupported YAML escapes in run scalars", async () => {
+  const root = await fixture();
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  await writeFile(
+    workflowPath,
+    `${await readFile(workflowPath, "utf8")}  - name: Unsupported\n    run: "pnpm \\q x"\n`,
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /unsupported YAML escape in run: \\q/u,
+  );
+});
+
+test("reports a Cargo workflow gate without an identical fenced line", async () => {
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(
+    skillPath,
+    skill.replace(
+      "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings",
+      "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    ),
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /workflow command must exactly match.*cargo clippy.*--locked/u,
+  );
+});
+
+test("accepts Cargo workflow gates with identical fenced lines", async () => {
+  const root = await fixture();
+  assert.doesNotMatch(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /workflow command must exactly match.*cargo/u,
+  );
 });
 
 test("reports CI-only scripts hidden in literal and folded block scalars", async () => {

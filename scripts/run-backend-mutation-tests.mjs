@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { fencedBlocks } from "./check-gate-routing.mjs";
 import {
   isAlive,
   runMutationRunner,
@@ -401,19 +400,4 @@ test("--check-guard passes without a fence and fails with the recovery text when
   assert.match(guarded.stderr, /1\. Confirm no `cargo mutants` process is running/);
 });
 
-test("the push skill keeps the executable mutation guard preflight wired", async () => {
-  // The canonical push contract is .claude/skills/push/SKILL.md; .agents holds a Codex
-  // bridge that deliberately restates no gate command. Reading the bridge here asserted
-  // the guard against a file that is not supposed to carry it.
-  const pushSkill = await readFile(
-    join(projectRoot, ".claude", "skills", "push", "SKILL.md"),
-    "utf8",
-  );
-  const packageJson = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"));
-  assert.match(packageJson.scripts["gates:contract:check"], /^pnpm mutation:guard:check\b/u);
-  assert.ok(
-    fencedBlocks(pushSkill).some((block) =>
-      block.contents.split(/\r?\n/u).includes("pnpm gates:contract:check"),
-    ),
-  );
-});
+// The wiring pin lives in check-gate-routing-tests.mjs, "the live repository pins one shared contract-gate list".

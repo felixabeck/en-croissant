@@ -49,7 +49,7 @@ export const REQUIRED_TOOLS = Object.freeze({
   "backend-test": ["rustc", "cargo"],
   "backend-coverage": ["rustc", "cargo", "nightly", "cargo-llvm-cov", "node", "pnpm"],
   "frontend-coverage": ["node", "pnpm"],
-  "frontend-mutation": ["node", "pnpm"],
+  "frontend-mutation": ["node", "pnpm", "stryker"],
   "frontend-build": ["node", "pnpm"],
   "e2e-container": ["node", "pnpm", "playwright-image"],
   "tauri-build": ["rustc", "cargo", "node", "pnpm"],
@@ -86,6 +86,16 @@ export const TOOL_PROBES = Object.freeze({
   "cargo-llvm-cov": (repoRoot) => capture("cargo", ["llvm-cov", "--version"], repoRoot),
   node: (repoRoot) => capture("node", ["--version"], repoRoot),
   pnpm: (repoRoot) => capture("pnpm", ["--version"], repoRoot),
+  stryker: (repoRoot) => {
+    try {
+      const packageJson = JSON.parse(
+        readFileSync(join(repoRoot, "node_modules", "@stryker-mutator", "core", "package.json")),
+      );
+      return typeof packageJson.version === "string" ? packageJson.version : undefined;
+    } catch {
+      return undefined;
+    }
+  },
   "playwright-image": () => {
     try {
       return playwrightImage();

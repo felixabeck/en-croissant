@@ -1,3 +1,5 @@
+const PROCESS_GROUP_POLL_MS = 10;
+
 function childIsRunning(child) {
   return child.exitCode === null && child.signalCode === null;
 }
@@ -27,7 +29,7 @@ async function sweepProcessGroup(child) {
       if (error?.code === "ESRCH") return;
       throw error;
     }
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, PROCESS_GROUP_POLL_MS));
   }
 }
 
