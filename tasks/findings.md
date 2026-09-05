@@ -4861,6 +4861,8 @@ Handled 2026-09-01. `logs()` returns `Result` without `unwrap_or_default`. Absen
 * **Related:** f-20260830-32 (handled class, image-read TOCTOU). Root `unbounded-native-reads` is the shared cause.
 * **Found by:** `review-tauri-security` over the f-20260831-13 / f-20260901-02 push range, 2026-09-01. Confidence 96. Pre-existing; not part of the keep_adopted_handle change.
 
+**Progress 2026-09-05 (AuthorizedDir run).** Phase 2 closed the registry-binding half: `register_installed_engine` now binds the `resolve` it previously discarded and calls `register_engine_file_verified(..., resolved.identity()?)`, so the stored identity is the descriptor's, not a second pathname walk. The finding's own subject remains open: `register_installed_engine` still throws the no-follow descriptors away and re-walks by pathname to build the `PathBuf` it hands the registrar (`workspace_root` + `Path::join` of the relative components). The recorded fix shape — "an architecture change in `PathAuthority`, not a one-line guard" — is no longer the whole truth; the identity check is now one argument, and what is left is routing registration through the retained descriptor instead of a reconstructed path. Stays `open` at `build`.
+
 ### Engine image and resource replacement never releases the previous capability
 
 * **ID:** f-20260901-13 · **Status:** open · **Area:** native-fs · **Root:** unbounded-path-registry · **Entry:** build · **Blocked:** none
@@ -6038,3 +6040,33 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   `f-20260830-27` (the engine manifest supplies a path component).
 * **Found by:** Claude Code, locate stage and plan review of
   `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
+
+**Progress 2026-09-05 (this run).** Converted the live check-then-reopen windows this slice could reach: engine-image install and registration now go through `AuthorizedDir` (`issue_engine_image_blocking` uses `atomic_replace_leaf_identified`; `register_engine_image` takes `(&AuthorizedDir, &OsStr, VerifiedIdentity, String)`); the three app-owned default roots pass `Some(dir.identity())` into `get_or_create_*_root`; the sound server retains an `AuthorizedDir` opened at startup and `serve_sound` walks descriptor-relative. `src-tauri/src/sound.rs` left `INITIAL_FS_SURFACE_ALLOWLIST`; `src-tauri/src/main.rs` dropped from 2 counted reaches to 1. The pre-existing `open_verified_directory` impostor-open is fixed (`VerifiedDir`). Commits `bc7ca1d0`, `2585fc3c`, `ec6f4149`, `97aefa9f`, `405cb2b8`.
+
+**Still open, explicitly out of this slice.** Seven backend-owned staging reaches in `src-tauri/src/fs.rs` (`:484`, `:591`, `:592`, `:827`, `:1243`, `:1444`, `:1503`) — filed as a sibling, cross-linked to `f-20260905-06`. The dialog-chosen export destination at `src-tauri/src/main.rs:570` (`save_native_export_blocking`; filed as `569` in this finding) — filed as a sibling. `d-20260901-03` already recorded that `PathRef` cannot represent a native save-dialog destination. This finding stays `open` until those two residues are closed or rejected.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### Seven backend-owned staging reaches still write by pathname inside a tempfile the process just created
+
+* **ID:** f-20260905-08 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs:484` (`create_dir_all` of a download parent), `:591` (`create_dir_all` of an archive parent), `:592` (`atomic_replace` into that parent), `:827` (`File::open` of a staged download), `:1243` (`DirBuilder` in `create_private_dir_all`), `:1444` (`atomic_replace` in `extract_gz`), `:1503` (`OpenOptions` in `private_output_file`).
+* **Defect:** these seven of the original ten "backend-chosen destination" counted sites in `f-20260905-07` are one class — they write inside a `tempfile` directory the process just created. They are the same design question as `f-20260905-06`'s two `atomic_install_dir` sites: whether `PathAuthority` grows a staging concept these can register against, or whether the release-surface checker learns a named exemption for backend-owned temporaries. Answering it inside the `f-20260905-07` AuthorizedDir run would have decided `f-20260905-06`'s question in a slice that does not own it.
+* **Why it matters:** seven of the remaining counted sites in `fs.rs`, and the only residue of `f-20260905-07` that is not a dialog destination. Closing them empties most of that file's count.
+* **Related:** `f-20260905-06` (temp-to-temp `atomic_install_dir`; Root `-`, so the relation is named here rather than shared); `f-20260905-07`, which this splits out of; `d-20260901-03` (`PathRef` cannot represent backend temp dirs).
+* **Found by:** Grok, implementation of `tasks/plans/2026-09-05-authorized-directory-descriptors.md` phase 5, 2026-09-05.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### The native save-dialog export writes by pathname to a destination PathRef cannot represent
+
+* **ID:** f-20260905-09 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs:570` (`save_native_export_blocking`; filed as `main.rs:569` in `f-20260905-07`).
+* **Defect:** the export destination comes from a native save dialog. `d-20260901-03` already recorded that `PathRef` cannot represent that destination. There is no check-then-use pair to close with `AuthorizedDir`: the process never owned the parent, and `AuthorizedDir`'s producers cannot express an arbitrary path. This is a different design question from the app-owned and resource-root conversions `f-20260905-07` closed.
+* **Why it matters:** the last counted reach in `main.rs` (the allowlist count is now 1). Emptying `main.rs` from the filesystem-surface allowlist waits on this.
+* **Related:** `f-20260905-07`, which this splits out of; `d-20260901-03`.
+* **Found by:** Grok, implementation of `tasks/plans/2026-09-05-authorized-directory-descriptors.md` phase 5, 2026-09-05.
