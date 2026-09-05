@@ -5,7 +5,7 @@ in a session's context dies with the next compaction. `Defer` is not a soft `Ski
 below will be fixed, just in a separate run. Handled entries stay as the record.
 
 **This file is an append-only log, not a queue.** The queue is *derived* from it by
-`scripts/findings.py`, which groups open findings by `Root` first and `Area` second. A new finding
+`scripts/findings.py`, which groups open findings by `Root` only; findings without a root are singletons. A new finding
 is appended wherever the run that found it happens to be writing — its position in the file carries
 no meaning, and nothing has to be filed "in the right place".
 
@@ -6083,3 +6083,16 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Why it matters:** the four default roots are created on first use. An ancestor swap is a different window from the leaf-symlink check the conversion added, and it is not covered by `credentials`'s "app-data directory itself is not a symlink" test, which looks at the last component.
 * **Related:** `f-20260905-07` (the conversion this residue survived; Root `-`, so the relation is named here rather than shared); `d-20260905-02`, `d-20260905-07`.
 * **Found by:** Codex `review-tauri-security` over `83376d74..HEAD`, 2026-09-05. Confidence 96. Same-area as this run; deferred because the fix is a design question (descriptor-backed `AppDataDir` + `mkdirat`) the frozen plan did not decide.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### `install-local.sh` still records provenance `reviewed` for a binary it never bound to HEAD
+
+* **ID:** f-20260905-11 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `scripts/install-local.sh:47` (`--untracked-files=no`), `:48` (`provenance="reviewed"` before any rebuild), `:71-74` (`pnpm build` with no post-build recheck), `:5` (`--no-build` copies `target/release` as-is). Tracking ref stored in a local named `upstream` at `:46`.
+* **Defect:** the versioned `releases/<commit>-<timestamp>` layout and atomic `current` swap (4c487d3b) closed the partial-publication hole: VERSION, icon, binary and sound resources land in a staging directory before `current` is renamed. Three provenance holes remain. `--no-build` copies whatever executable is in ignored `target/release` and still labels it `reviewed` with the current HEAD. The dirty check ignores untracked files, so an untracked build input can be compiled. Validation runs only before `pnpm build`; a concurrent edit during the compile is installed under the earlier HEAD. The local `upstream` is `@{upstream}` (origin/master here), which is this fork's tracking ref, not the `upstream` remote (the original project).
+* **Why it matters:** `$push` on master now runs this script as its last step and CLAUDE.md tells Felix the daily app is a reviewed copy. A stale or concurrently-edited binary published as `reviewed` is the failure the script exists to prevent.
+* **Related:** foreign commits `24720681`, `56b171ae`, `bcd7c9e4`, `4c487d3b` (Claude session `01JAkRySrZTT3Xzew3Jv7uJk`) landed on master during the AuthorizedDir push review.
+* **Found by:** Codex `review-correctness` / `review-root-cause` / `review-error-handling` over `d25d12a6..56b171ae`, 2026-09-05; re-checked against `4c487d3b`. Confidence 99. Deferred because that session is still iterating the installer on the same branch; rewriting it here races them.
