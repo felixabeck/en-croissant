@@ -1,6 +1,6 @@
 ---
 name: push
-description: Validate, independently review, remediate, commit, and ordinarily push ChessFable changes to the current branch's configured upstream. Use only when Felix explicitly asks to push; push is not a release or deployment.
+description: Validate, independently review, remediate, commit, and ordinarily push ChessFable changes to the current branch's configured upstream. Use when Felix asks to push, or when a drain session or a build run invokes it (push-review-policy section 1); push is not a release or deployment.
 disable-model-invocation: false
 ---
 
@@ -22,7 +22,7 @@ interrupted runs, and accumulated work from another session.
 
 - Inspect `git status --porcelain=v1`, `git branch --show-current`, `git rev-parse --abbrev-ref @{u}`, `git remote get-url origin`, and `git remote get-url --push origin`.
 - This repository's expected remote is `felixabeck/en-croissant` in either of its two legitimate forms — `git@github.com:felixabeck/en-croissant.git` (the `tuxedo-atlas` clone) or `https://github.com/felixabeck/en-croissant.git`. Any other owner, repository or host is a stop. Reject a separate `remote.origin.pushurl`. The current local branch must track the same-named `origin/<branch>`; `master` therefore must track `origin/master`. Stop for Felix if any identity is missing or different. Never invent or change a remote/upstream.
-- Build an explicit owned-path manifest from files created or edited in the invoking conversation plus file scopes assigned to its finished workers. Compare it with the initial status. Ambiguous or foreign paths are excluded and left untouched; if an already-committed foreign change would be exported, stop for Felix. Commit only manifest paths in cohesive atomic commits and never use `git add -A`.
+- Build an explicit owned-path manifest from files created or edited in the invoking conversation plus file scopes assigned to its finished workers. Compare it with the initial status. Ambiguous or foreign paths are excluded and left untouched. Commits already ahead of the upstream in this single-user checkout are Felix's own agents' unpushed work: they are in the reviewed range (`~/.claude/references/push-review-policy.md` §2) and are carried by this push, never a reason to stop for Felix; stop only for a committer outside the Multi-Agent rubric or an unexpected remote (§1). A drain session (`--yes` at drain start) or a `build` run invoking this skill is the explicit push request. Commit only manifest paths in cohesive atomic commits and never use `git add -A`.
 - Gates execute against the complete worktree. Therefore stop before any compile, generator, formatter, or browser gate when a foreign dirty path is code, generated output, dependency/configuration, test, asset, locale, workflow, or another input to an affected gate. Only clearly inert foreign Markdown/planning files may remain. Never generate or commit an owned output from foreign dirty inputs.
 - Every workflow-created commit sets `GIT_COMMITTER_NAME` to the acting agent per `~/.claude/references/push-review-policy.md` §1 (`Claude Code`, `Codex`, or `Grok`). Claude Code reads this file directly; Codex reaches it through `.agents/skills/push/SKILL.md`, which names its own committer. Leave the author untouched and add no co-author trailer.
 - Determine pushed files from `BASE=$(git merge-base HEAD @{u})` and both the committed and owned dirty diffs. Review `git diff "$BASE"..HEAD`, `git diff -- <owned tracked paths>`, `git diff --cached -- <owned tracked paths>`, plus each owned untracked file as a new-file diff. An explicit push includes already-ahead commits, so review their effective diff too.
@@ -115,7 +115,7 @@ That command runs the debug Specta exporter in export-only mode and then proves 
 
 ### Findings ledger
 
-`pnpm findings:kit:check` runs `kit sync --check .` and is local-only (`bash "$HOME/Projekte/agent-kit/bin/kit" sync --check .`;
+`pnpm findings:kit:check` runs `kit sync --check .` and is local-only (`env -u KIT_ROOT bash "$HOME/Projekte/agent-kit/bin/kit" sync --check .` — `KIT_ROOT` unset, so an inherited value cannot point the check at another kit tree;
 CI has no kit). It runs on **every** push: `scripts/findings.py` is the kit's vendored copy, and
 this line fails if those bytes have drifted from `~/Projekte/agent-kit`.
 

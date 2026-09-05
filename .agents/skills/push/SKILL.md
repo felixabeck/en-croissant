@@ -1,6 +1,6 @@
 ---
 name: push
-description: Validate, independently review, remediate, commit, and push ChessFable changes when Felix explicitly requests a push. Push is not release or deployment.
+description: Validate, independently review, remediate, commit, and push ChessFable changes when Felix requests a push or a drain session or build run invokes this skill. Push is not release or deployment.
 ---
 
 # push (Codex bridge)
@@ -14,4 +14,4 @@ Codex runtime deltas:
   untouched and add no AI or co-author trailer.
 * Run the shared review-policy lenses and fixes on the selected executor as directed by
   `~/.claude/references/review-lens-contract.md` and `~/.claude/references/executor-profiles.md`.
-* Push only when Felix explicitly requests it. Push never releases or deploys.
+* Push when Felix requests it, or when a drain session (`--yes` at drain start) or a `build` run invokes this skill — that invocation is the explicit request (`~/.claude/references/push-review-policy.md` §1); commits already ahead of the upstream are carried, never a stop. Push never releases or deploys.
