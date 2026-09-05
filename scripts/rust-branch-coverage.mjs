@@ -41,6 +41,29 @@ function run(command, argumentsList, options = {}) {
   return result.stdout ?? "";
 }
 
+export function coverageTools(runCommand = run) {
+  const rustc = ["run", toolchain, "rustc"];
+  const sysroot = runCommand("rustup", [...rustc, "--print", "sysroot"]).trim();
+  const version = runCommand("rustup", [...rustc, "-vV"]);
+  const host = /^host: ([A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)+)\r?$/m.exec(version)?.[1];
+  if (!sysroot || !host)
+    throw new Error(`Cannot determine sysroot and host for coverage toolchain ${toolchain}`);
+  const directory = resolve(sysroot, "lib", "rustlib", host, "bin");
+  const suffix = host.split("-").includes("windows") ? ".exe" : "";
+  return {
+    llvmProfdata: resolve(directory, `llvm-profdata${suffix}`),
+    llvmCov: resolve(directory, `llvm-cov${suffix}`),
+  };
+}
+
+export function isCoverageExecutable(name, details, platform = process.platform) {
+  const pattern =
+    platform === "win32" ? /^en_croissant-[0-9a-f]+\.exe$/ : /^en_croissant-[0-9a-f]+$/;
+  return (
+    pattern.test(name) && details.isFile() && (platform === "win32" || (details.mode & 0o111) !== 0)
+  );
+}
+
 /** One argv for both the bulk export and the per-source crash probe. */
 export function llvmCovExportArgs(profilePath, executable, sources) {
   return [
@@ -95,6 +118,7 @@ export function exportLcovOrDiagnose(
 }
 
 async function main() {
+  const { llvmProfdata, llvmCov } = coverageTools();
   run(
     "cargo",
     [
@@ -111,21 +135,16 @@ async function main() {
     { stdio: "inherit" },
   );
 
-  const sysroot = run("rustup", ["run", toolchain, "rustc", "--print", "sysroot"]).trim();
-  const llvmTools = resolve(sysroot, "lib/rustlib/x86_64-unknown-linux-gnu/bin");
-  const llvmProfdata = resolve(llvmTools, "llvm-profdata");
-  const llvmCov = resolve(llvmTools, "llvm-cov");
-
   const profiles = await filesBelow(coverageTarget, (path) => path.endsWith(".profraw"));
   if (profiles.length === 0) throw new Error("Rust coverage produced no raw profiles");
   run(llvmProfdata, ["merge", "-sparse", "-o", profilePath, ...profiles]);
 
   const executableCandidates = [];
   for (const entry of await readdir(dependencies)) {
-    if (!/^en_croissant-[0-9a-f]+$/.test(entry)) continue;
+    if (!entry.startsWith("en_croissant-")) continue;
     const path = resolve(dependencies, entry);
     const details = await stat(path);
-    if (details.isFile() && (details.mode & 0o111) !== 0)
+    if (isCoverageExecutable(entry, details))
       executableCandidates.push({ path, modified: details.mtimeMs });
   }
   if (executableCandidates.length === 0)
@@ -171,6 +190,6 @@ async function main() {
   console.log(`Rust LCOV: ${sourceCount} sources, ${branchRecords} branch records`);
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   await main();
 }

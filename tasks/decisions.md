@@ -2011,3 +2011,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** takeover by rename with pid liveness; with pid plus start time; with inode comparison; with a `spawning` state. Each closes one race and opens the next; a stale fence arises only after SIGKILL or a crash, and one printed command recovers it.
 * **Reason:** the async-resource rule wants ownership and cleanup that never affects another owner; refusing is the only takeover-free way to guarantee that, and it matches the backend runner, so both fences behave identically.
 * **Decided by:** Claude Code, 2026-09-05, diff-review fix round 3 of the contract-gate build run · **Superseded-by:** -
+
+### d-20260905-17 — Which compiler determines the backend coverage tool paths?
+
+* **Question:** Which compiler determines the backend coverage tool paths?
+* **Governs:** f-20260829-12
+* **Chosen:** Query sysroot and verbose host metadata through `rustup run` with the pinned coverage toolchain. Resolve LLVM tools below that host directory, including Windows executable suffixes. Keep native coverage-executable selection and entrypoint path comparison portable in the same script.
+* **Rejected:** Node architecture/platform mappings, the default compiler, and retaining a literal Linux triple.
+* **Reason:** LLVM tools belong to the pinned compiler's host installation, which can differ from Node or the default compiler. The same source trace found Unix-only executable matching and URL construction that would still prevent Windows execution after fixing the triple. Regression fixtures cover host shapes and invalid metadata; the real backend coverage command proves the local path.
+* **Reversal path:** Replace discovery only with evidence that the pinned compiler's installation layout changed; preserve the host fixtures and real coverage proof.
+* **Decided by:** Codex, interactive full-auto next-finding run · **Superseded-by:** -

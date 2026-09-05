@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import {
   assertAreaFloors,
@@ -21,11 +21,14 @@ import {
   normalisePath,
 } from "./coverage-scope.mjs";
 import {
+  coverageTools,
   exportLcovOrDiagnose,
   formatExportCrashMessage,
+  isCoverageExecutable,
   llvmCovExportArgs,
   probeCrashingSources,
 } from "./rust-branch-coverage.mjs";
+import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
 
 const config = {
   version: 1,
@@ -351,6 +354,77 @@ test("scopeSignature normalises exclude through excludePatterns", () => {
     "src-tauri/src/**/mod.rs",
     "src-tauri/src/db/schema.rs",
   ]);
+});
+
+test("coverage tools follow the pinned compiler host, including Windows tool suffixes", () => {
+  for (const host of [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+  ]) {
+    const sysroot = resolve("toolchain with spaces");
+    const calls = [];
+    const tools = coverageTools((command, args) => {
+      calls.push([command, ...args]);
+      return args.at(-1) === "sysroot"
+        ? `${sysroot}\n`
+        : `rustc 1.89.0-nightly\r\nhost: ${host}\r\nrelease: 1.89.0-nightly\r\n`;
+    });
+    const suffix = host.includes("-windows-") ? ".exe" : "";
+    assert.deepEqual(tools, {
+      llvmProfdata: resolve(sysroot, "lib/rustlib", host, "bin", `llvm-profdata${suffix}`),
+      llvmCov: resolve(sysroot, "lib/rustlib", host, "bin", `llvm-cov${suffix}`),
+    });
+    assert.deepEqual(calls, [
+      ["rustup", "run", RUST_COVERAGE_TOOLCHAIN, "rustc", "--print", "sysroot"],
+      ["rustup", "run", RUST_COVERAGE_TOOLCHAIN, "rustc", "-vV"],
+    ]);
+  }
+});
+
+test("coverage tools refuse invalid metadata and propagate command errors", () => {
+  for (const version of [
+    "rustc 1.89.0",
+    "host: ",
+    "host: ../../other",
+    "host: aarch64-apple-darwin extra",
+  ]) {
+    assert.throws(
+      () => coverageTools((_command, args) => (args.at(-1) === "sysroot" ? "/rust" : version)),
+      /Cannot determine sysroot and host/,
+    );
+  }
+  assert.throws(() => coverageTools(() => ""), /Cannot determine sysroot and host/);
+  const failure = new Error("pinned toolchain missing");
+  assert.throws(
+    () =>
+      coverageTools(() => {
+        throw failure;
+      }),
+    (error) => error === failure,
+  );
+});
+
+test("coverage executable selection respects native naming and file types", () => {
+  const file = { isFile: () => true, mode: 0o644 };
+  assert.equal(isCoverageExecutable("en_croissant-deadbeef.exe", file, "win32"), true);
+  assert.equal(isCoverageExecutable("en_croissant-deadbeef", file, "linux"), false);
+  assert.equal(
+    isCoverageExecutable("en_croissant-deadbeef", { ...file, mode: 0o755 }, "linux"),
+    true,
+  );
+  for (const name of [
+    "en_croissant-deadbeef.d",
+    "en_croissant-deadbeef.pdb",
+    "en_croissant-deadbeef.exe",
+  ]) {
+    assert.equal(isCoverageExecutable(name, { ...file, mode: 0o755 }, "linux"), false);
+  }
+  assert.equal(
+    isCoverageExecutable("en_croissant-deadbeef.exe", { ...file, isFile: () => false }, "win32"),
+    false,
+  );
 });
 
 test("bulk llvm-cov export and the crash probe share one argument builder", () => {
