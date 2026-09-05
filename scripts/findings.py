@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 8178a10107e6d0fcdfcdece415232927c635abcd780bb415f94f5458ceed0761
+# agent-kit-sha256: 996d01bcb9ce6af81292ac6f10d8e70449f695c6d2aac08aa2823407c39b68c3
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -354,7 +354,11 @@ LEDGER_META_VERSION = 1
 MUTATION_RECEIPT_KIND = "mutation-receipt"
 CITATION_CONTEXT_KIND = "citation-context"
 RECEIPT_PLACEHOLDER = "<!-- ledger-meta receipt-placeholder -->"
-REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+# A request id has one required first character plus up to 127 more.
+REQUEST_ID_MAX_LENGTH = 128
+REQUEST_ID_RE = re.compile(
+    rf"^[A-Za-z0-9][A-Za-z0-9._-]{{0,{REQUEST_ID_MAX_LENGTH - 1}}}$"
+)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 # The decisions spool uses the same pending-token shape as the findings spool.
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -1996,10 +2000,13 @@ def _append_citation_occurrences(
         )
 
 
-def _citation_occurrences(path: Path, source: str) -> tuple[list[CitationOccurrence], list[str]]:
-    if not path.exists():
-        return [], []
-    text = path.read_text(encoding="utf-8")
+def _citation_occurrences(
+    path: Path, source: str, *, text: str | None = None
+) -> tuple[list[CitationOccurrence], list[str]]:
+    if text is None:
+        if not path.exists():
+            return [], []
+        text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
     mask = _fence_mask(lines)
     occurrences: list[CitationOccurrence] = []
@@ -2077,25 +2084,39 @@ def _citation_context_key(data: dict[str, object]) -> tuple[object, ...]:
 
 
 def _citation_resolution(
-    ledger_path: Path, decisions_path: Path
+    ledger_path: Path,
+    decisions_path: Path,
+    *,
+    ledger_text: str | None = None,
+    ledger_metadata: list[LedgerMeta] | None = None,
+    decision_text: str | None = None,
+    decision_metadata: list[LedgerMeta] | None = None,
 ) -> tuple[dict[str, set[str]], list[str]]:
-    finding_occurrences, issues = _citation_occurrences(ledger_path, "findings")
+    finding_occurrences, issues = _citation_occurrences(
+        ledger_path, "findings", text=ledger_text
+    )
     decision_occurrences, decision_scan_issues = _citation_occurrences(
-        decisions_path, "decisions"
+        decisions_path, "decisions", text=decision_text
     )
     issues.extend(decision_scan_issues)
-    decision_text = (
-        decisions_path.read_text(encoding="utf-8") if decisions_path.exists() else ""
-    )
-    decision_metadata, metadata_issues = _scan_ledger_metadata(
-        decision_text, decisions_path
-    )
-    issues.extend(metadata_issues)
-    ledger_text = ledger_path.read_text(encoding="utf-8")
-    ledger_metadata, ledger_metadata_issues = _scan_ledger_metadata(
-        ledger_text, ledger_path
-    )
-    issues.extend(ledger_metadata_issues)
+    if decision_text is None:
+        decision_text = (
+            decisions_path.read_text(encoding="utf-8")
+            if decisions_path.exists()
+            else ""
+        )
+    if decision_metadata is None:
+        decision_metadata, metadata_issues = _scan_ledger_metadata(
+            decision_text, decisions_path
+        )
+        issues.extend(metadata_issues)
+    if ledger_text is None:
+        ledger_text = ledger_path.read_text(encoding="utf-8")
+    if ledger_metadata is None:
+        ledger_metadata, ledger_metadata_issues = _scan_ledger_metadata(
+            ledger_text, ledger_path
+        )
+        issues.extend(ledger_metadata_issues)
     for meta in ledger_metadata:
         if meta.data.get("kind") == CITATION_CONTEXT_KIND:
             issues.append(
@@ -2191,9 +2212,10 @@ def cmd_check(args: argparse.Namespace) -> int:
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
     ledger_text = args.ledger.read_text(encoding="utf-8")
-    ledger_metadata, _ledger_meta_issues = _scan_ledger_metadata(
+    ledger_metadata, ledger_meta_issues = _scan_ledger_metadata(
         ledger_text, args.ledger
     )
+    issues += ledger_meta_issues
     issues += _receipt_effect_issues(ledger_text, args.ledger, ledger_metadata)
     # The sibling decisions ledger may be absent only while no local decision is
     # cited. When present, its ids and metadata are load-bearing for this file.
@@ -2202,16 +2224,24 @@ def cmd_check(args: argparse.Namespace) -> int:
     decision_issues = malformed_decision_headings(args.decisions)
     decision_issues += malformed_superseded_trailers(args.decisions)
     decision_issues += duplicate_decision_ids(args.decisions)
+    decision_text = ""
+    decision_metadata: list[LedgerMeta] = []
     if args.decisions.exists():
         decision_text = args.decisions.read_text(encoding="utf-8")
-        decision_metadata, _decision_meta_issues = _scan_ledger_metadata(
+        decision_metadata, decision_meta_issues = _scan_ledger_metadata(
             decision_text, args.decisions
         )
+        decision_issues += decision_meta_issues
         decision_issues += _receipt_effect_issues(
             decision_text, args.decisions, decision_metadata
         )
     _resolved_citations, citation_issues = _citation_resolution(
-        args.ledger, args.decisions
+        args.ledger,
+        args.decisions,
+        ledger_text=ledger_text,
+        ledger_metadata=ledger_metadata,
+        decision_text=decision_text,
+        decision_metadata=decision_metadata,
     )
     decision_issues += citation_issues
     build_ledger = args.ledger.parent / "build-ledger.md"
@@ -3591,7 +3621,8 @@ def _mutation_request(
 ) -> MutationRequest:
     if request_id is not None and REQUEST_ID_RE.fullmatch(request_id) is None:
         raise LedgerError(
-            "--request-id must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}"
+            "--request-id must match [A-Za-z0-9][A-Za-z0-9._-]"
+            f"{{0,{REQUEST_ID_MAX_LENGTH - 1}}}"
         )
     input_sha256 = _sha256_bytes(raw_input)
     request_hash = _sha256_text(request_id) if request_id is not None else None
