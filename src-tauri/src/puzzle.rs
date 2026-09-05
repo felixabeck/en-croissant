@@ -266,12 +266,15 @@ fn active_or_default_puzzle_workspace<R: tauri::Runtime>(
     if let Some(workspace) = authority.active_puzzle_root()? {
         return Ok(workspace);
     }
-    let path = crate::infra::path_authority::ensure_app_owned_default_dir(
+    let authorized_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
         &crate::infra::path_authority::AppDataDir::for_app(app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Puzzles,
     )?;
-    let root =
-        authority.get_or_create_puzzle_root(path.path(), "Puzzles", Some(path.identity()))?;
+    let root = authority.get_or_create_puzzle_root(
+        authorized_dir.path(),
+        "Puzzles",
+        Some(authorized_dir.identity()),
+    )?;
     authority.set_active_puzzle_root(&root)?;
     authority
         .active_puzzle_root()?

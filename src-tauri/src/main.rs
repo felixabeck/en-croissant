@@ -749,12 +749,15 @@ fn get_database_workspace_blocking(
     if let Some(root) = authority.active_database_root()? {
         return Ok(root);
     }
-    let path = crate::infra::path_authority::ensure_app_owned_default_dir(
+    let authorized_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
         &crate::infra::path_authority::AppDataDir::for_app(&app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Databases,
     )?;
-    let root =
-        authority.get_or_create_database_root(path.path(), "Databases", Some(path.identity()))?;
+    let root = authority.get_or_create_database_root(
+        authorized_dir.path(),
+        "Databases",
+        Some(authorized_dir.identity()),
+    )?;
     authority.set_active_database_root(&root)?;
     Ok(root)
 }
@@ -901,12 +904,15 @@ fn get_engine_workspace_blocking(
     if let Some(root) = authority.active_engine_root()? {
         return Ok(root);
     }
-    let path = crate::infra::path_authority::ensure_app_owned_default_dir(
+    let authorized_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
         &crate::infra::path_authority::AppDataDir::for_app(&app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Engines,
     )?;
-    let root =
-        authority.get_or_create_engine_root(path.path(), "Engines", Some(path.identity()))?;
+    let root = authority.get_or_create_engine_root(
+        authorized_dir.path(),
+        "Engines",
+        Some(authorized_dir.identity()),
+    )?;
     authority.set_active_engine_root(&root)?;
     Ok(root)
 }
@@ -1111,8 +1117,16 @@ fn issue_engine_image_blocking(
     )?;
     let leaf_name = uuid::Uuid::new_v4().to_string();
     let leaf = OsStr::new(&leaf_name);
-    let (_, installed) = image_dir
+    let (outcome, installed) = image_dir
         .atomic_replace_leaf_identified(leaf, |file| file.write_all(&bytes).map_err(Error::from))?;
+    match outcome {
+        crate::infra::fs::AtomicFileOutcome::DurableCommit => {}
+        crate::infra::fs::AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
+            log::warn!(
+                "engine-image parent sync failed after installing {leaf_name:?}; the leaf is kept: {error}"
+            );
+        }
+    }
     let mut lock = match authority.lock() {
         Ok(lock) => lock,
         Err(_) => {
@@ -1150,7 +1164,7 @@ fn engine_image_error_after_cleanup(
     original: Error,
 ) -> Error {
     if let Err(cleanup) = image_dir.remove_leaf_identified(leaf, installed) {
-        log::error!("failed to remove an unregistered engine image: {cleanup}");
+        log::error!("failed to remove an unregistered engine image {leaf:?}: {cleanup}");
     }
     original
 }
@@ -2821,6 +2835,11 @@ mod blocking_offload_scans {
             !body.contains("crate::infra::fs::atomic_replace("),
             "{body}"
         );
+        assert!(
+            body.contains("CommittedDurabilityUncertain"),
+            "engine-image installation must handle uncertain parent durability: {body}"
+        );
+        assert!(!body.contains("let (_, installed)"), "{body}");
         assert_eq!(
             body.matches("engine_image_error_after_cleanup(").count(),
             3,
@@ -3054,7 +3073,7 @@ mod blocking_offload_scans {
                 .split_whitespace()
                 .collect();
             assert_eq!(
-                expected_identity, "Some(path.identity())",
+                expected_identity, "Some(authorized_dir.identity())",
                 "{file}::{name} must pass the descriptor identity third: {body}"
             );
         }
