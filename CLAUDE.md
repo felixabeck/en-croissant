@@ -122,8 +122,8 @@ Deferred findings go on disk the moment they are found, per universal rule 4b â€
 session's context, and never only into a handoff message.
 
 - The ledger is `tasks/findings.md`, an **append-only log**; the work queue is derived from it by
-  `python3 scripts/findings.py`, grouped by `Root` first and `Area` second. Position in the file
-  carries no meaning.
+  `python3 scripts/findings.py`, grouped by `Root` only; findings without a root are singletons,
+  ranked by relation then age. Position in the file carries no meaning.
 - **File every new finding with one command**, whether or not a drain is running. Write the complete
   `###` entry to a file with `**ID:** f-PENDING`, then run
   `python3 scripts/findings.py file <path-to-entry-file>`. It validates, publishes atomically

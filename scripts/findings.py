@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 382fbf82a81768bf2aa2c4dba0ec446eb952d9192be9919ed88df22fc0d00ec0
+# agent-kit-sha256: 14d4d541219265d27fa7d0132165d8548279d01852f7aeb23a8b9a8338c87d75
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -7,7 +7,7 @@ finding's position in the file therefore carries no meaning, which is what lets 
 run append wherever it happens to be writing without anyone having to file it "in
 the right place".
 
-Grouping is by ``Root`` first and ``Area`` second, because a shared root cause
+Grouping is by ``Root`` only; findings without a root are singletons. A shared root cause
 crosses area boundaries — two findings can share no file and sit in different
 areas yet be one defect. Picking them up together means one interview instead of
 two, and removes the case where fixing the second undoes the first.
@@ -790,8 +790,8 @@ class Finding:
 
     @property
     def cluster_key(self) -> tuple[str, str]:
-        """Root when it has one, else area. Root ranks above area."""
-        return ("root", self.root) if self.root != "-" else ("area", self.area)
+        """Group by an evidenced root; otherwise identify this finding alone."""
+        return ("root", self.root) if self.root != "-" else ("finding", self.id)
 
     def paths(self) -> set[str]:
         """Every path-shaped token anywhere in the body."""
@@ -1392,17 +1392,17 @@ def cluster_members(findings: list[Finding], key: tuple[str, str]) -> list[Findi
 
 
 def rank(findings: list[Finding]) -> list[tuple[tuple[str, str], list[Finding]]]:
-    """Pickable findings, grouped by root-then-area, best cluster first."""
+    """Pickable root clusters and singletons, ordered by relation then age."""
     keys: list[tuple[str, str]] = []
     for f in findings:
         if f.pickable and f.cluster_key not in keys:
             keys.append(f.cluster_key)
     clusters = [(key, cluster_members(findings, key)) for key in keys]
 
-    def sort_key(item: tuple[tuple[str, str], list[Finding]]) -> tuple[int, int, str]:
+    def sort_key(item: tuple[tuple[str, str], list[Finding]]) -> tuple[int, str]:
         (kind, _name), members = item
-        # a real shared root outranks a mere area grouping of the same size
-        return (-len(members), 0 if kind == "root" else 1, min(m.id for m in members))
+        # Root relation comes first, then the oldest member; size never ranks work.
+        return (0 if kind == "root" else 1, min(m.id for m in members))
 
     return sorted(clusters, key=sort_key)
 
@@ -1869,9 +1869,9 @@ def cmd_next(args: argparse.Namespace) -> int:
         key, members = clusters[0]
         kind, name = key
         reason = (
-            f"largest pickable cluster ({len(members)}), grouped by {kind} '{name}'"
-            if len(members) > 1
-            else f"only member of {kind} '{name}'"
+            f"root '{name}' ({len(members)} member(s)); roots first, then oldest ID"
+            if kind == "root"
+            else f"oldest pickable singleton '{name}'; no pickable roots remain"
         )
 
     entry, ids = _cluster_entry_and_ids(members)
@@ -1913,8 +1913,8 @@ def cmd_related(args: argparse.Namespace) -> int:
         print("(no related findings — this looks new)")
         return 0
     print(
-        "Check these before filing; file a new entry carrying the related finding's "
-        "Root slug, and name the related finding in the report."
+        "Check these before filing; reuse a Root only for an evidenced shared cause, "
+        "not merely a shared area or file. Name the related finding in the report."
     )
     print(
         "If its Root is `-`, the slug cannot carry the relation; name that finding "
