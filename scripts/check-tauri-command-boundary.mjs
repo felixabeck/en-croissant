@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isEntrypoint } from "./entrypoint.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 // Exact required re-export set for platform/native.ts, not an optional permit
@@ -299,8 +299,7 @@ export function runTauriBoundaryCheck({
   return paths;
 }
 
-const scriptPath = fileURLToPath(import.meta.url);
-if (process.argv[1] && resolve(process.argv[1]) === resolve(scriptPath)) {
+if (isEntrypoint(import.meta.url)) {
   try {
     runTauriBoundaryCheck();
   } catch (error) {

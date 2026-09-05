@@ -3,6 +3,7 @@ import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { excluded, normalisePath } from "./coverage-scope.mjs";
+import { isEntrypoint } from "./entrypoint.mjs";
 import { filesBelow } from "./files-below.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
 
@@ -44,8 +45,8 @@ function run(command, argumentsList, options = {}) {
 export function coverageTools(runCommand = run) {
   const rustc = ["run", toolchain, "rustc"];
   const sysroot = runCommand("rustup", [...rustc, "--print", "sysroot"]).trim();
-  const version = runCommand("rustup", [...rustc, "-vV"]);
-  const host = /^host: ([A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)+)\r?$/m.exec(version)?.[1];
+  const rustcMetadata = runCommand("rustup", [...rustc, "-vV"]);
+  const host = /^host: ([A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)+)\r?$/m.exec(rustcMetadata)?.[1];
   if (!sysroot || !host)
     throw new Error(`Cannot determine sysroot and host for coverage toolchain ${toolchain}`);
   const directory = resolve(sysroot, "lib", "rustlib", host, "bin");
@@ -190,6 +191,6 @@ async function main() {
   console.log(`Rust LCOV: ${sourceCount} sources, ${branchRecords} branch records`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+if (isEntrypoint(import.meta.url)) {
   await main();
 }

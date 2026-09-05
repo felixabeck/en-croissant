@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { installSignalForwarding, superviseChild } from "./child-supervisor.mjs";
+import { isEntrypoint } from "./entrypoint.mjs";
 import { fsyncDirectory } from "./fsync-directory.mjs";
 import { identityForPid, identityIsLive } from "./process-identity.mjs";
 
@@ -378,7 +379,7 @@ export async function runBackendMutation({ recordChild = recordSpawnedChild } = 
   return exitCode;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntrypoint(import.meta.url)) {
   try {
     process.exitCode = await runBackendMutation();
   } catch (error) {

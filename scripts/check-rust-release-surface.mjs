@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { isEntrypoint } from "./entrypoint.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 const INITIAL_DEAD_CODE_ALLOWLIST = Object.freeze([
@@ -656,8 +656,7 @@ export function runReleaseSurfaceCheck({
   return paths;
 }
 
-const scriptPath = fileURLToPath(import.meta.url);
-if (process.argv[1] && resolve(process.argv[1]) === resolve(scriptPath)) {
+if (isEntrypoint(import.meta.url)) {
   try {
     const paths = listTrackedRustSources(process.cwd());
     const residency = process.argv.includes("--check-allowlist-residency")

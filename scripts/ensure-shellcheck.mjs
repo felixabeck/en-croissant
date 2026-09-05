@@ -18,6 +18,7 @@ import {
 import { arch as hostArch, platform as hostPlatform } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isEntrypoint } from "./entrypoint.mjs";
 
 export const SHELLCHECK_VERSION = "v0.11.0";
 export const SHELLCHECK_SHA256 = Object.freeze({
@@ -268,6 +269,6 @@ export async function cliMain(argv, options = PRODUCTION_OPTIONS) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntrypoint(import.meta.url)) {
   process.exit(await cliMain(process.argv.slice(2)));
 }

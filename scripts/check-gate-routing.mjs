@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { globToRegExp, matches } from "./coverage-scope.mjs";
+import { isEntrypoint } from "./entrypoint.mjs";
 import { GATES } from "./gate-receipt.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
@@ -670,7 +671,7 @@ async function main() {
   console.log("Gate routing check: OK");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;

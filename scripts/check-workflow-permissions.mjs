@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
+import { isEntrypoint } from "./entrypoint.mjs";
 
 export const CONTENTS_WRITE_WORKFLOWS = new Set(["release.yml"]);
 export const WRITE_JOB_ALLOWED_ACTIONS = new Set([
@@ -350,7 +351,7 @@ async function main() {
   return 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntrypoint(import.meta.url)) {
   main()
     .then((status) => {
       process.exitCode = status;

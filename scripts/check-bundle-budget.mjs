@@ -1,6 +1,7 @@
 import { gzipSync } from "node:zlib";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
+import { isEntrypoint } from "./entrypoint.mjs";
 
 const BUNDLE_ASSET = /\.(?:css|js)$/u;
 
@@ -149,7 +150,7 @@ async function main() {
   console.log(formatBundleReport(report, budget));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;

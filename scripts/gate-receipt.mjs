@@ -16,6 +16,7 @@ import {
 import { arch, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isEntrypoint } from "./entrypoint.mjs";
 import { playwrightImage } from "./playwright-image.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
 
@@ -362,6 +363,6 @@ export function executeAction({
   return runGate({ gate, repoRoot, now, fingerprintToolchain, command, output });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntrypoint(import.meta.url)) {
   process.exitCode = executeAction({ action: process.argv[2], gate: process.argv[3] });
 }
