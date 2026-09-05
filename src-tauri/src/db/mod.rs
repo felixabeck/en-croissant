@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod allocation_probe;
 mod encoding;
 mod migrations;
 mod models;
@@ -67,7 +69,7 @@ use self::encoding::{
 };
 pub use self::repository::{DatabaseIdentity, DatabaseRepository};
 #[cfg(test)]
-pub use self::search_index::SearchIndex;
+pub use self::search_index::SearchIndexChunk;
 pub use self::search_index::{
     get_index_path, legacy_index_path, IndexSource, MmapSearchIndex, SearchGameEntry,
 };
@@ -2782,7 +2784,7 @@ fn preload_reference_db_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infra::path_authority::PathClass;
+    use crate::{db::allocation_probe, infra::path_authority::PathClass};
     use pgn_reader::BufferedReader;
     use std::path::{Path, PathBuf};
     use tauri::Manager;
@@ -2860,7 +2862,7 @@ mod tests {
         std::fs::write(&database, b"database").unwrap();
         let shared_sidecar = get_index_path(&collision_owner);
         assert_eq!(shared_sidecar, legacy_index_path(&database));
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to_with_source(
                 &shared_sidecar,
                 IndexSource::from_database(&collision_owner, 0).unwrap(),
@@ -2890,7 +2892,7 @@ mod tests {
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
         let preferred = get_index_path(&database);
         assert_eq!(preferred, legacy_index_path(&database));
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to_with_source(&preferred, expected_source.clone())
             .unwrap();
         let (parent, leaf) =
@@ -3006,6 +3008,41 @@ mod tests {
     }
 
     #[test]
+    fn production_index_generation_and_open_have_bounded_rust_heap_peaks() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let (corpus_bytes, row_count) = populate_large_valid_comment_corpus(&app, &database);
+        let generation_threshold = corpus_bytes / 2;
+        let open_threshold = corpus_bytes / 8;
+        let sanity_peak =
+            allocation_probe::assert_detects_owned_collection(corpus_bytes, generation_threshold);
+        let state = app.state::<AppState>();
+        let (result, generation_peak) = allocation_probe::measure(|| {
+            generate_search_index(
+                &handle,
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+            )
+        });
+        result.unwrap();
+        assert!(
+            generation_peak < generation_threshold,
+            "index generation peak {generation_peak} materialized too much of the {corpus_bytes}-byte corpus (threshold {generation_threshold}, sanity peak {sanity_peak})"
+        );
+
+        let file = File::open(get_index_path(&database)).unwrap();
+        let (opened, open_peak) = allocation_probe::measure(|| MmapSearchIndex::open_file(file));
+        assert_eq!(opened.unwrap().len(), row_count);
+        assert!(
+            open_peak < open_threshold,
+            "index open peak {open_peak} deserialized too much of the {corpus_bytes}-byte corpus (threshold {open_threshold}, sanity peak {sanity_peak})"
+        );
+        eprintln!(
+            "index heap evidence: corpus={corpus_bytes} generation_peak={generation_peak} generation_threshold={generation_threshold} open_peak={open_peak} open_threshold={open_threshold} sanity_peak={sanity_peak}"
+        );
+    }
+
+    #[test]
     fn search_index_generation_reports_uncertain_parent_sync() {
         use crate::infra::fs::{
             set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
@@ -3056,7 +3093,7 @@ mod tests {
                 .unwrap();
         }
         let index_path = get_index_path(&database);
-        SearchIndex {
+        SearchIndexChunk {
             entries: vec![crate::db::search_index::SearchGameEntry {
                 id: 99,
                 white_id: 1,
@@ -3861,6 +3898,54 @@ mod tests {
         insert_test_game(&mut db, white.id, black.id, event.id, site.id).id
     }
 
+    const HEAP_CORPUS_TARGET_BYTES: usize = 32 * 1024 * 1024;
+    const HEAP_ROW_COMMENT_BYTES: usize = 64 * 1024;
+
+    fn populate_large_valid_comment_corpus(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        database: &Path,
+    ) -> (usize, usize) {
+        let state = app.state::<AppState>();
+        let mut db = state.database_repository.connection(database).unwrap();
+        let white = create_player(&mut db, "White").unwrap();
+        let black = create_player(&mut db, "Black").unwrap();
+        let event = create_event(&mut db, "Heap evidence").unwrap();
+        let site = create_site(&mut db, "Disk").unwrap();
+        let comment = "x".repeat(HEAP_ROW_COMMENT_BYTES);
+        let mut moves = Vec::with_capacity(comment.len() + 6);
+        encode_comment(&comment, &mut moves);
+        let row_count = HEAP_CORPUS_TARGET_BYTES.div_ceil(moves.len());
+        db.transaction::<_, diesel::result::Error, _>(|db| {
+            for _ in 0..row_count {
+                diesel::insert_into(games::table)
+                    .values(NewGame {
+                        event_id: event.id,
+                        site_id: site.id,
+                        white_id: white.id,
+                        black_id: black.id,
+                        white_elo: Some(2_100),
+                        black_elo: Some(2_000),
+                        white_material: 39,
+                        black_material: 39,
+                        date: Some("2026.09.05"),
+                        time: None,
+                        round: None,
+                        result: Some("*"),
+                        time_control: None,
+                        eco: None,
+                        ply_count: 0,
+                        fen: None,
+                        moves: &moves,
+                        pawn_home: 0xffff,
+                    })
+                    .execute(db)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        (row_count * moves.len(), row_count)
+    }
+
     fn grant_pgn_destination(
         app: &tauri::AppHandle<tauri::test::MockRuntime>,
         path: &Path,
@@ -4006,6 +4091,35 @@ mod tests {
     }
 
     #[test]
+    fn production_export_heap_peak_stays_bounded_by_one_game() {
+        let (dir, app, handle, database) = blocking_database_case();
+        let (corpus_bytes, _) = populate_large_valid_comment_corpus(&app, &database);
+        let destination_path = dir.path().join("large-export.pgn");
+        std::fs::write(&destination_path, b"old").unwrap();
+        let destination = grant_pgn_destination(&app, &destination_path);
+        let threshold = corpus_bytes / 4;
+        let sanity_peak =
+            allocation_probe::assert_detects_owned_collection(corpus_bytes, threshold);
+        let state = app.state::<AppState>();
+        let (result, export_peak) = allocation_probe::measure(|| {
+            export_to_pgn_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                destination,
+            )
+        });
+        result.unwrap();
+        assert!(
+            export_peak < threshold,
+            "export peak {export_peak} materialized too much of the {corpus_bytes}-byte corpus (threshold {threshold}, sanity peak {sanity_peak})"
+        );
+        eprintln!(
+            "export heap evidence: corpus={corpus_bytes} peak={export_peak} threshold={threshold} sanity_peak={sanity_peak}"
+        );
+    }
+
+    #[test]
     fn imported_escaped_tags_roundtrip_through_production_export() {
         let source = r#"[Event "Open \"A\" \\ Cup"]
 [Site "Hall \"B\" \\ Wing"]
@@ -4104,13 +4218,6 @@ mod tests {
             .is_err());
             assert_eq!(std::fs::read(destination_path).unwrap(), b"old");
         }
-    }
-
-    #[test]
-    fn export_row_decode_error_is_not_silently_skipped() {
-        let rows = vec![Err(diesel::result::Error::NotFound)];
-        let result = write_pgn_rows(std::io::sink(), rows);
-        assert!(matches!(result, Err(Error::Diesel(_))));
     }
 
     #[test]

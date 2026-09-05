@@ -774,7 +774,7 @@ mod tests {
             legacy_index_path,
             models::NewGame,
             ops::{create_event, create_game, create_player, create_site},
-            SearchIndex,
+            SearchIndexChunk,
         },
         infra::{
             fs::{set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector},
@@ -844,7 +844,7 @@ mod tests {
     #[test]
     fn search_index_database_read_only_loads_valid_preferred_sidecar() {
         let (_dir, app, handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to_with_source(get_index_path(&database), loader_source(&app, &database))
             .unwrap();
 
@@ -865,7 +865,7 @@ mod tests {
         let (_legacy_dir, legacy_app, legacy_handle, legacy_database) =
             loader_test_case(vec![PathOperation::DatabaseRead]);
         let legacy = legacy_index_path(&legacy_database);
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to_with_source(&legacy, loader_source(&legacy_app, &legacy_database))
             .unwrap();
         let result = {

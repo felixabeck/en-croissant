@@ -154,7 +154,7 @@ pub struct SearchGameEntry {
 }
 
 #[derive(Clone, Debug, Archive, Serialize, Deserialize)]
-pub struct SearchIndex {
+pub struct SearchIndexChunk {
     pub entries: Vec<SearchGameEntry>,
 }
 
@@ -250,7 +250,8 @@ impl IndexSource {
     }
 }
 
-impl SearchIndex {
+#[cfg(test)]
+impl SearchIndexChunk {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -267,7 +268,6 @@ impl SearchIndex {
         self.entries.push(entry);
     }
 
-    #[cfg(test)]
     pub fn write_to<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         match self.write_to_with_source(path, IndexSource::default())? {
             AtomicFileOutcome::DurableCommit => Ok(()),
@@ -280,7 +280,6 @@ impl SearchIndex {
         }
     }
 
-    #[cfg(test)]
     pub fn write_to_with_source<P: AsRef<Path>>(
         &self,
         path: P,
@@ -335,13 +334,13 @@ fn estimated_entry_bytes(entry: &SearchGameEntry) -> usize {
 }
 
 fn write_chunk<W: Write>(file: &mut W, entries: &mut Vec<SearchGameEntry>) -> Result<u64, Error> {
-    let index = SearchIndex {
+    let index = SearchIndexChunk {
         entries: std::mem::take(entries),
     };
     let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&index).map_err(|error| {
         Error::InvalidInput(format!("search index serialization failed: {error}"))
     })?;
-    rkyv::access::<ArchivedSearchIndex, rkyv::rancor::Error>(&bytes).map_err(|error| {
+    rkyv::access::<ArchivedSearchIndexChunk, rkyv::rancor::Error>(&bytes).map_err(|error| {
         Error::InvalidInput(format!(
             "search index validation before publish failed: {error}"
         ))
@@ -376,12 +375,13 @@ where
             "search index source exceeds the metadata limit".into(),
         ));
     }
+    if !source_bytes.len().is_multiple_of(ARCHIVE_ALIGNMENT) {
+        return Err(Error::InvalidInput(
+            "serialized index source has invalid alignment".into(),
+        ));
+    }
     write_header(file, source_len, 0, 0)?;
     file.write_all(&source_bytes)?;
-    let source_end = HEADER_SIZE
-        .checked_add(source_bytes.len())
-        .ok_or_else(|| Error::ResourceLimit("search index source bounds overflow".into()))?;
-    let _ = write_padding(file, source_end)?;
 
     let mut chunk = Vec::with_capacity(CHUNK_ENTRY_LIMIT);
     let mut estimated_bytes = 0_usize;
@@ -424,7 +424,8 @@ where
     Ok(())
 }
 
-impl Default for SearchIndex {
+#[cfg(test)]
+impl Default for SearchIndexChunk {
     fn default() -> Self {
         Self::new()
     }
@@ -579,25 +580,22 @@ impl MmapSearchIndex {
         if header.source_len > MAX_SOURCE_BYTES {
             return Err(invalid_data("index source exceeds the metadata limit"));
         }
+        if !header.source_len.is_multiple_of(ARCHIVE_ALIGNMENT) {
+            return Err(invalid_data("misaligned index source length"));
+        }
         let source_end = HEADER_SIZE
             .checked_add(header.source_len)
             .ok_or_else(|| invalid_data("source bounds overflow"))?;
         let source_bytes = mmap
             .get(HEADER_SIZE..source_end)
             .ok_or_else(|| invalid_data("truncated index source"))?;
-        if (source_bytes.as_ptr() as usize) % ARCHIVE_ALIGNMENT != 0 {
+        if !(source_bytes.as_ptr() as usize).is_multiple_of(ARCHIVE_ALIGNMENT) {
             return Err(invalid_data("misaligned index source"));
         }
         let source = rkyv::from_bytes::<IndexSource, rkyv::rancor::Error>(source_bytes)
             .map_err(|error| invalid_data(format!("invalid index source archive: {error}")))?;
 
-        let mut cursor = align_up(source_end)?;
-        let source_padding = mmap
-            .get(source_end..cursor)
-            .ok_or_else(|| invalid_data("truncated index source padding"))?;
-        if source_padding.iter().any(|byte| *byte != 0) {
-            return Err(invalid_data("non-zero index source padding"));
-        }
+        let mut cursor = source_end;
         let minimum_chunk_bytes = CHUNK_HEADER_SIZE + ARCHIVE_ALIGNMENT;
         if header.chunk_count > mmap.len().saturating_sub(cursor) / minimum_chunk_bytes + 1 {
             return Err(invalid_data("declared chunk count exceeds archive bounds"));
@@ -634,11 +632,13 @@ impl MmapSearchIndex {
             let payload = mmap
                 .get(payload_offset..payload_end)
                 .ok_or_else(|| invalid_data("truncated search index chunk"))?;
-            if (payload.as_ptr() as usize) % ARCHIVE_ALIGNMENT != 0 {
+            if !(payload.as_ptr() as usize).is_multiple_of(ARCHIVE_ALIGNMENT) {
                 return Err(invalid_data("misaligned search index chunk"));
             }
-            let archived = rkyv::access::<ArchivedSearchIndex, rkyv::rancor::Error>(payload)
-                .map_err(|error| invalid_data(format!("invalid search index chunk: {error}")))?;
+            let archived = rkyv::access::<ArchivedSearchIndexChunk, rkyv::rancor::Error>(payload)
+                .map_err(|error| {
+                invalid_data(format!("invalid search index chunk: {error}"))
+            })?;
             if archived.entries.len() != entry_count {
                 return Err(invalid_data("chunk entry count does not match payload"));
             }
@@ -674,10 +674,10 @@ impl MmapSearchIndex {
         })
     }
 
-    fn archived_chunk(&self, chunk: &ChunkMetadata) -> &ArchivedSearchIndex {
+    fn archived_chunk(&self, chunk: &ChunkMetadata) -> &ArchivedSearchIndexChunk {
         // `open` fully validates this immutable mapping. The checked access is
         // repeated to keep the lifetime local and avoid self-referential state.
-        rkyv::access::<ArchivedSearchIndex, rkyv::rancor::Error>(
+        rkyv::access::<ArchivedSearchIndexChunk, rkyv::rancor::Error>(
             &self.mmap[chunk.payload_offset..chunk.payload_offset + chunk.payload_len],
         )
         .expect("validated immutable search archive")
@@ -978,7 +978,7 @@ mod tests {
         ];
 
         // Write
-        let index = SearchIndex {
+        let index = SearchIndexChunk {
             entries: entries.clone(),
         };
         index.write_to(&path).unwrap();
@@ -1036,7 +1036,7 @@ mod tests {
         ];
 
         // Create many entries
-        let mut index = SearchIndex::with_capacity(1000);
+        let mut index = SearchIndexChunk::with_capacity(1000);
         for i in 0..1000 {
             index.push(SearchGameEntry {
                 id: i,
@@ -1079,7 +1079,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("parallel.ecsi");
 
-        let mut index = SearchIndex::with_capacity(100);
+        let mut index = SearchIndexChunk::with_capacity(100);
         for i in 0..100 {
             index.push(SearchGameEntry {
                 id: i,
@@ -1129,7 +1129,7 @@ mod tests {
         let entries = (0..CHUNK_ENTRY_LIMIT + 17)
             .map(|id| test_entry(i32::try_from(id).unwrap(), vec![12, 12, 9, 9]))
             .collect::<Vec<_>>();
-        SearchIndex {
+        SearchIndexChunk {
             entries: entries.clone(),
         }
         .write_to(&path)
@@ -1211,7 +1211,7 @@ mod tests {
     fn oversized_entry_gets_its_own_chunk() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("oversized.ecsi");
-        SearchIndex {
+        SearchIndexChunk {
             entries: vec![
                 test_entry(1, vec![7; CHUNK_PAYLOAD_TARGET_BYTES + 1]),
                 test_entry(2, vec![8]),
@@ -1233,7 +1233,7 @@ mod tests {
     fn empty_archive_has_source_without_chunks() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("empty.ecsi");
-        SearchIndex::default().write_to(&path).unwrap();
+        SearchIndexChunk::default().write_to(&path).unwrap();
         let mapped = MmapSearchIndex::open(&path).unwrap();
         assert_eq!(mapped.len(), 0);
         assert!(mapped.chunks.is_empty());
@@ -1245,7 +1245,7 @@ mod tests {
         fn mutate_valid(mutator: impl FnOnce(&mut Vec<u8>)) -> io::Error {
             let dir = tempdir().unwrap();
             let path = dir.path().join("mutated.ecsi");
-            SearchIndex {
+            SearchIndexChunk {
                 entries: vec![test_entry(1, vec![12, 12])],
             }
             .write_to(&path)
@@ -1315,10 +1315,63 @@ mod tests {
     }
 
     #[test]
+    fn rejects_misaligned_source_length_from_an_emitted_archive() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("source-alignment.ecsi");
+        SearchIndexChunk::default().write_to(&path).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        let source_len = read_u64(&bytes, 8, "source").unwrap();
+        assert_eq!(source_len % ARCHIVE_ALIGNMENT as u64, 0);
+        bytes[8..16].copy_from_slice(&(source_len - 1).to_le_bytes());
+        std::fs::write(&path, bytes).unwrap();
+
+        assert_eq!(
+            MmapSearchIndex::open(&path)
+                .expect_err("misaligned source length must fail")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn rejects_nonzero_chunk_padding_from_an_emitted_archive() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("chunk-padding.ecsi");
+        let mut padding_offset = None;
+        for move_bytes in 0..ARCHIVE_ALIGNMENT {
+            SearchIndexChunk {
+                entries: vec![test_entry(1, vec![0; move_bytes])],
+            }
+            .write_to(&path)
+            .unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            let source_len = read_u64(&bytes, 8, "source").unwrap() as usize;
+            let chunk_header = align_up(HEADER_SIZE + source_len).unwrap();
+            let payload_len = read_u64(&bytes, chunk_header, "payload").unwrap() as usize;
+            let payload_end = chunk_header + CHUNK_HEADER_SIZE + payload_len;
+            if payload_end < align_up(payload_end).unwrap() {
+                padding_offset = Some(payload_end);
+                break;
+            }
+        }
+        let padding_offset = padding_offset.expect("fixture must force chunk padding");
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[padding_offset] = 1;
+        std::fs::write(&path, bytes).unwrap();
+
+        assert_eq!(
+            MmapSearchIndex::open(&path)
+                .expect_err("nonzero chunk padding must fail")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
     fn iterator_failure_preserves_the_previous_index() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("atomic.ecsi");
-        SearchIndex {
+        SearchIndexChunk {
             entries: vec![test_entry(7, vec![])],
         }
         .write_to(&path)
@@ -1356,9 +1409,7 @@ mod tests {
             [MAGIC.as_slice(), &VERSION.to_le_bytes()].concat(),
         )
         .unwrap();
-        let error = MmapSearchIndex::open(&truncated)
-            .err()
-            .expect("truncated archive must fail");
+        let error = MmapSearchIndex::open(&truncated).expect_err("truncated archive must fail");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 
         let corrupt = dir.path().join("corrupt.ecsi");
@@ -1367,9 +1418,7 @@ mod tests {
             [MAGIC.as_slice(), &VERSION.to_le_bytes(), &[0xff; 32]].concat(),
         )
         .unwrap();
-        let error = MmapSearchIndex::open(&corrupt)
-            .err()
-            .expect("corrupt archive must fail");
+        let error = MmapSearchIndex::open(&corrupt).expect_err("corrupt archive must fail");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(!MmapSearchIndex::is_valid(&corrupt));
     }
@@ -1398,9 +1447,9 @@ mod tests {
     fn atomic_write_never_leaves_a_partial_replacement() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("atomic.ecsi");
-        let first = SearchIndex::default();
+        let first = SearchIndexChunk::default();
         first.write_to(&path).unwrap();
-        let second = SearchIndex::with_capacity(1);
+        let second = SearchIndexChunk::with_capacity(1);
         second.write_to(&path).unwrap();
         assert!(MmapSearchIndex::is_valid(&path));
     }
@@ -1429,7 +1478,7 @@ mod tests {
         std::fs::write(&database, b"database").unwrap();
         let legacy = legacy_index_path(&database);
         let source = IndexSource::from_database(&database, 0).unwrap();
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to_with_source(&legacy, source)
             .unwrap();
         let preferred = get_index_path(&database);
@@ -1444,7 +1493,7 @@ mod tests {
         std::fs::write(&collision_database, b"database").unwrap();
         let collision_legacy = legacy_index_path(&collision_database);
         let collision_preferred = get_index_path(&collision_database);
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to_with_source(
                 &collision_legacy,
                 IndexSource::from_database(&collision_database, 0).unwrap(),
@@ -1477,7 +1526,7 @@ mod tests {
             modified: metadata.modified().unwrap(),
         };
         let legacy = legacy_index_path(&database);
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to_with_source(
                 &legacy,
                 IndexSource::from_database_identity(&identity).unwrap(),
@@ -1507,7 +1556,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("uncertain.ecsi");
         set_test_atomic_file_injector(Some(Arc::new(ParentSyncFailure)));
-        let result = SearchIndex::default().write_to(&path);
+        let result = SearchIndexChunk::default().write_to(&path);
         set_test_atomic_file_injector(None);
 
         assert!(matches!(
@@ -1545,7 +1594,7 @@ mod tests {
         std::fs::write(&sqlite, b"sqlite").unwrap();
         let shared_legacy = legacy_index_path(&db3);
         assert_eq!(shared_legacy, legacy_index_path(&sqlite));
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to_with_source(&shared_legacy, IndexSource::from_database(&db3, 0).unwrap())
             .unwrap();
 
@@ -1588,7 +1637,7 @@ mod tests {
         std::fs::write(&database, b"database").unwrap();
         let source = IndexSource::from_database(&database, 9).unwrap();
         let path = get_index_path(&database);
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to_with_source(&path, source.clone())
             .unwrap();
         assert_eq!(MmapSearchIndex::open(&path).unwrap().source(), &source);
@@ -1637,10 +1686,10 @@ mod tests {
 
         let first_index = get_index_path(&first_database);
         let second_index = get_index_path(&second_database);
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to_with_source(&first_index, first_source.clone())
             .unwrap();
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to_with_source(&second_index, second_source.clone())
             .unwrap();
 

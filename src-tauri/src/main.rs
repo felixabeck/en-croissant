@@ -1877,7 +1877,7 @@ fn memory_size() -> u32 {
 #[cfg(test)]
 mod search_cache_tests {
     use super::*;
-    use crate::db::SearchIndex;
+    use crate::db::SearchIndexChunk;
     use tempfile::tempdir;
 
     #[test]
@@ -1898,10 +1898,10 @@ mod search_cache_tests {
         let second_database = directory.path().join("second.db");
         std::fs::write(&first_database, []).unwrap();
         std::fs::write(&second_database, []).unwrap();
-        SearchIndex::default()
+        SearchIndexChunk::default()
             .write_to(db::get_index_path(&first_database))
             .unwrap();
-        let mut changed = SearchIndex::default();
+        let mut changed = SearchIndexChunk::default();
         changed.entries.push(crate::db::SearchGameEntry {
             id: 1,
             white_id: 1,
