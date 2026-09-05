@@ -164,7 +164,7 @@ test("rejects a missing package script named by a fenced gate command", async ()
 
 test("rejects a fenced gate command that is none of the accepted forms", async () => {
   // Pins the `unresolved gate command` branch: pnpm <script>, allowed cargo
-  // forms, and `python3 scripts/…` are accepted; anything else (including a
+  // forms, and the five supported script runners are accepted; anything else (including a
   // raw `kit …` line) must fail. Deleting that branch keeps this suite green
   // while `pnpm gates:routing:check` would accept an unroutable fence.
   const root = await fixture();
@@ -247,6 +247,50 @@ test("rejects a workflow-only script reached transitively", async () => {
     (await checkGateRouting(root, { paths })).join("\n"),
     /workflow-routed package script inner:run/u,
   );
+});
+
+test("rejects a direct workflow script command that has no push-skill route", async () => {
+  const root = await fixture();
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  await writeFile(
+    workflowPath,
+    `${await readFile(workflowPath, "utf8")}  - name: Direct script\n    run: node scripts/check-example.mjs --strict\n`,
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /workflow runs scripts\/check-example\.mjs directly \(node scripts\/check-example\.mjs --strict\); route it through a package script that the push skill fences/u,
+  );
+});
+
+test("accepts a direct workflow script command fenced verbatim in the push skill", async () => {
+  const root = await fixture();
+  const command = "node scripts/check-example.mjs --strict";
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  await writeFile(
+    workflowPath,
+    `${await readFile(workflowPath, "utf8")}  - name: Direct script\n    run: ${command}\n`,
+  );
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  await writeFile(
+    skillPath,
+    `${await readFile(skillPath, "utf8")}\n\`\`\`bash\n${command}\n\`\`\`\n`,
+  );
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
+});
+
+test("accepts a direct workflow script command inside a routed package script", async () => {
+  const root = await fixture();
+  const command = "node scripts/check-example.mjs --strict";
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  await writeFile(
+    workflowPath,
+    `${await readFile(workflowPath, "utf8")}  - name: Direct script\n    run: ${command}\n`,
+  );
+  const packagePath = join(root, "package.json");
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+  packageJson.scripts["all:check"] = `${command} && pnpm nested:check`;
+  await writeFile(packagePath, JSON.stringify(packageJson));
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
 });
 
 test("reports unknown receipt names for every receipt verb", async () => {

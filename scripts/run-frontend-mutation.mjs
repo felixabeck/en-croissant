@@ -12,9 +12,16 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { installSignalForwarding, superviseChild } from "./child-supervisor.mjs";
 import { mutationPackages } from "./frontend-mutation-packages.mjs";
-import { currentIdentity, identityForPid, identityIsLive } from "./process-identity.mjs";
+import {
+  currentIdentity,
+  identityForPid,
+  identityIsLive,
+  isCompleteIdentity,
+} from "./process-identity.mjs";
 
 const fencePath = "mutants.out/frontend/.mutation-in-progress";
 const ownerPath = join(fencePath, "owner.json");
@@ -34,36 +41,26 @@ function fsyncDirectory(path) {
   }
 }
 
-function validIdentity(value) {
-  return (
-    value &&
-    Number.isSafeInteger(value.pid) &&
-    value.pid > 0 &&
-    typeof value.startTime === "string" &&
-    value.startTime.length > 0
-  );
-}
-
 function readOwner() {
   try {
     const owner = JSON.parse(readFileSync(ownerPath, "utf8"));
-    if (!owner || typeof owner !== "object" || !validIdentity(owner.runner)) return undefined;
-    if (owner.child !== null && !validIdentity(owner.child)) return undefined;
+    if (!owner || typeof owner !== "object" || !isCompleteIdentity(owner.runner)) return undefined;
+    if (owner.child !== null && !isCompleteIdentity(owner.child)) return undefined;
     return owner;
   } catch {
     return undefined;
   }
 }
 
-function ownerIsLive(owner) {
-  return identityIsLive(owner.runner) || (owner.child !== null && identityIsLive(owner.child));
-}
-
-function refuseFence(owner) {
+function refuseFence(owner, reason = undefined) {
   const detail = owner
     ? ` (runner pid ${owner.runner.pid})`
     : " (owner record missing or malformed)";
-  console.error(`Frontend mutation fence is live: ${fencePath}${detail}`);
+  console.error(`Frontend mutation fence exists: ${fencePath}${detail}`);
+  if (reason) console.error(`Cannot determine whether the fence owner is alive: ${reason}`);
+  console.error("Recovery procedure:");
+  console.error("1. Confirm no stryker process is running, and terminate it if one is.");
+  console.error(`2. Remove ${fencePath} once nothing is running.`);
 }
 
 function publishFence(runnerIdentity) {
@@ -100,8 +97,17 @@ function acquireFence(runnerIdentity) {
     }
 
     const owner = readOwner();
-    if (!owner || ownerIsLive(owner)) {
+    if (!owner) {
       refuseFence(owner);
+      return false;
+    }
+    try {
+      if (identityIsLive(owner.runner) || owner.child === null || identityIsLive(owner.child)) {
+        refuseFence(owner);
+        return false;
+      }
+    } catch (error) {
+      refuseFence(owner, error instanceof Error ? error.message : String(error));
       return false;
     }
 
@@ -127,59 +133,30 @@ function writeOwner(runnerIdentity, childIdentity) {
   fsyncDirectory(fencePath);
 }
 
-function waitForChild(childProcess) {
-  return new Promise((resolve) => {
-    let spawnError;
-    childProcess.once("error", (error) => {
-      spawnError = error;
+function resolveStrykerEntry(cwd) {
+  let packagePath;
+  try {
+    packagePath = createRequire(join(cwd, "package.json")).resolve(
+      "@stryker-mutator/core/package.json",
+    );
+  } catch (error) {
+    throw new Error(`Cannot resolve the Stryker CLI from ${cwd}: ${error.message}`, {
+      cause: error,
     });
-    childProcess.once("close", (code, signal) => resolve({ code, signal, error: spawnError }));
-  });
-}
-
-let child;
-let childDone;
-let requestedSignal;
-let escalationTimer;
-
-function scheduleEscalation() {
-  if (escalationTimer) return;
-  escalationTimer = setTimeout(() => {
-    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-  }, terminationTimeoutMs);
-  escalationTimer.unref();
-}
-
-function clearEscalation() {
-  if (escalationTimer) clearTimeout(escalationTimer);
-  escalationTimer = undefined;
-}
-
-const signalHandler = (signal) => {
-  if (requestedSignal) return;
-  requestedSignal = signal;
-  if (child && child.exitCode === null && child.signalCode === null) {
-    child.kill("SIGTERM");
-    scheduleEscalation();
   }
-};
-
-async function terminateAndReapChild() {
-  if (!childDone) return;
-  if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-  scheduleEscalation();
-  await childDone;
-  clearEscalation();
-  child = undefined;
-  childDone = undefined;
+  const entry = join(dirname(packagePath), "bin", "stryker.js");
+  if (!existsSync(entry)) {
+    throw new Error(`Cannot resolve the Stryker CLI from ${cwd}: ${entry} does not exist`);
+  }
+  return entry;
 }
 
 async function main() {
   const runnerIdentity = currentIdentity();
   if (!acquireFence(runnerIdentity)) return 1;
 
-  process.on("SIGINT", signalHandler);
-  process.on("SIGTERM", signalHandler);
+  let supervisor;
+  const signalForwarding = installSignalForwarding(() => supervisor);
   let exitCode = 0;
   try {
     // Stryker cannot clean a sandbox after SIGKILL. Only the fence owner may purge
@@ -187,21 +164,20 @@ async function main() {
     rmSync(".stryker-tmp", { recursive: true, force: true });
 
     for (const mutationPackage of Object.keys(mutationPackages)) {
-      if (requestedSignal) break;
+      if (signalForwarding.requestedSignal) break;
       console.log(`\nFrontend mutation package: ${mutationPackage}`);
       writeOwner(runnerIdentity, null);
-      child = spawn("pnpm", ["exec", "stryker", "run"], {
+      const child = spawn(process.execPath, [resolveStrykerEntry(process.cwd()), "run"], {
+        detached: true,
         env: { ...process.env, STRYKER_PACKAGE: mutationPackage },
         stdio: "inherit",
       });
-      childDone = waitForChild(child);
+      supervisor = superviseChild(child, { terminationTimeoutMs, killProcessGroup: true });
       const childIdentity = child.pid === undefined ? undefined : identityForPid(child.pid);
       writeOwner(runnerIdentity, childIdentity ?? null);
-      const result = await childDone;
-      clearEscalation();
-      child = undefined;
-      childDone = undefined;
-      if (requestedSignal) break;
+      const result = await supervisor.done;
+      supervisor = undefined;
+      if (signalForwarding.requestedSignal) break;
       if (result.error) throw result.error;
       if (result.code !== 0) {
         exitCode = result.code ?? 1;
@@ -212,14 +188,16 @@ async function main() {
     console.error(error);
     exitCode = 1;
   } finally {
-    await terminateAndReapChild();
+    if (supervisor) await supervisor.terminate();
+    await signalForwarding.termination;
     rmSync(fencePath, { recursive: true });
     fsyncDirectory(dirname(fencePath));
-    process.off("SIGINT", signalHandler);
-    process.off("SIGTERM", signalHandler);
+    signalForwarding.uninstall();
   }
 
-  if (requestedSignal) return requestedSignal === "SIGINT" ? 130 : 143;
+  if (signalForwarding.requestedSignal) {
+    return signalForwarding.requestedSignal === "SIGINT" ? 130 : 143;
+  }
   return exitCode;
 }
 

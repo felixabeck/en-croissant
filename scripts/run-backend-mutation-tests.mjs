@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { fencedBlocks } from "./check-gate-routing.mjs";
+import {
+  isAlive,
+  runMutationRunner,
+  startMutationRunner,
+  waitFor,
+  writeShim,
+} from "./mutation-runner-test-harness.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const runner = join(projectRoot, "scripts", "run-backend-mutation.mjs");
@@ -27,7 +35,7 @@ async function fixture() {
   await mkdir(state);
   await writeFile(join(root, "src-tauri", "Cargo.toml"), '[package]\nname = "fixture"\n');
   await writeFile(join(root, "src-tauri", "src", "sample.rs"), "pub fn sample() {}\n");
-  await writeFile(
+  await writeShim(
     join(bin, "cargo"),
     `#!/bin/sh
 echo $$ > "$SHIM_STATE/pid"
@@ -66,7 +74,6 @@ case "$SHIM_MODE" in
 esac
 `,
   );
-  await chmod(join(bin, "cargo"), 0o755);
   git(root, ["init", "-q"]);
   git(root, ["add", "src-tauri"]);
   git(root, [
@@ -91,51 +98,8 @@ function environment({ bin, state, mode = "normal", path = `${bin}:${process.env
   };
 }
 
-function run(root, env, args = []) {
-  return spawnSync(process.execPath, [runner, ...args], {
-    cwd: root,
-    env,
-    encoding: "utf8",
-  });
-}
-
-function start(root, env, { stdio = ["ignore", "pipe", "pipe"] } = {}) {
-  const child = spawn(process.execPath, [runner], { cwd: root, env, stdio });
-  let stdout = "";
-  let stderr = "";
-  child.stdout?.on("data", (chunk) => {
-    stdout += chunk;
-  });
-  child.stderr?.on("data", (chunk) => {
-    stderr += chunk;
-  });
-  const done = new Promise((resolve) => {
-    child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
-  });
-  return { child, done };
-}
-
-async function waitFor(path, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      await readFile(path);
-      return;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
-  assert.fail(`Timed out waiting for ${path}`);
-}
-
-function isAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+const run = (root, env, args = []) => runMutationRunner(runner, root, env, args);
+const start = (root, env, options = {}) => startMutationRunner(runner, root, env, options);
 
 test("a normal clean run holds the fence for the run and removes it afterwards", async () => {
   const { root, bin, state } = await fixture();
@@ -223,6 +187,33 @@ test("cargo failing to spawn runs the finaliser and surfaces the underlying erro
   const result = run(root, environment({ bin, state, path: isolatedBin }));
   assert.equal(result.status, 1);
   assert.match(result.stderr, /spawn cargo ENOENT/);
+  assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
+});
+
+test("a child-record failure terminates cargo and clears the fence promptly", async () => {
+  const { root, bin, state } = await fixture();
+  const launcher = join(root, "record-failure.mjs");
+  await writeFile(
+    launcher,
+    `import { existsSync } from "node:fs";
+import { runBackendMutation } from ${JSON.stringify(pathToFileURL(runner).href)};
+process.exitCode = await runBackendMutation({
+  recordChild() {
+    const deadline = Date.now() + 2_000;
+    while (!existsSync(${JSON.stringify(join(state, "started"))}) && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+    throw new Error("forced record failure");
+  },
+});
+`,
+  );
+  const startedAt = Date.now();
+  const result = runMutationRunner(launcher, root, environment({ bin, state, mode: "block" }));
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /forced record failure/u);
+  assert.equal(existsSync(join(state, "terminated")), true);
+  assert.ok(Date.now() - startedAt < 4_000, "record failure did not terminate cargo promptly");
   assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
 });
 

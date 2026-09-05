@@ -18,6 +18,7 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { installSignalForwarding, superviseChild } from "./child-supervisor.mjs";
 import { identityForPid, identityIsLive } from "./process-identity.mjs";
 
 const fencePath = "mutants.out/backend/.mutation-in-progress";
@@ -121,7 +122,7 @@ function recordedIdentity() {
   }
 }
 
-function pidIsAlive(identity) {
+function ownerIsLive(identity) {
   return identityIsLive(identity);
 }
 
@@ -139,9 +140,16 @@ function printRecovery() {
   console.error("Recovery procedure:");
   console.error("1. Confirm no `cargo mutants` process is running, and terminate it if one is.");
   if (identity !== undefined) {
-    console.error(
-      `   Recorded cargo pid: ${identity.pid}; currently alive: ${pidIsAlive(identity) ? "yes" : "no"}.`,
-    );
+    try {
+      console.error(
+        `   Recorded cargo pid: ${identity.pid}; currently alive: ${ownerIsLive(identity) ? "yes" : "no"}.`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        `   Recorded cargo pid: ${identity.pid}; currently alive: unknown (${message}).`,
+      );
+    }
   } else {
     console.error("   No cargo child pid was recorded; inspect the process list by command name.");
   }
@@ -195,7 +203,7 @@ function assertCleanBackend() {
   }
 }
 
-function fsyncDirectory(path) {
+function fsyncParentDirectory(path) {
   const directoryFd = openSync(dirname(path), "r");
   try {
     fsyncSync(directoryFd);
@@ -207,7 +215,7 @@ function fsyncDirectory(path) {
 function discardUnspawnedFence(fd) {
   if (fd !== undefined) closeSync(fd);
   unlinkSync(fencePath);
-  fsyncDirectory(fencePath);
+  fsyncParentDirectory(fencePath);
 }
 
 function acquireFence() {
@@ -225,18 +233,8 @@ function acquireFence() {
   }
   writeSync(fenceFd, `started=${new Date().toISOString()}\n`);
   fsyncSync(fenceFd);
-  fsyncDirectory(fencePath);
+  fsyncParentDirectory(fencePath);
   return true;
-}
-
-function waitForChild(childProcess) {
-  return new Promise((resolve) => {
-    let spawnError;
-    childProcess.once("error", (error) => {
-      spawnError = error;
-    });
-    childProcess.once("close", (code, signal) => resolve({ code, signal, error: spawnError }));
-  });
 }
 
 function cargoArguments(mutationPackage) {
@@ -262,30 +260,13 @@ function cargoArguments(mutationPackage) {
 
 function clearFence() {
   unlinkSync(fencePath);
-  fsyncDirectory(fencePath);
+  fsyncParentDirectory(fencePath);
 }
 
 let fenceFd;
 let fenceStarted;
-let child;
-let childDone;
-let requestedSignal;
-let escalationTimer;
-
-const signalHandler = (signal) => {
-  if (requestedSignal) return;
-  requestedSignal = signal;
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
-  escalationTimer = setTimeout(() => {
-    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-  }, terminationTimeoutMs);
-  escalationTimer.unref();
-};
 
 async function finalise() {
-  if (escalationTimer) clearTimeout(escalationTimer);
-  if (childDone) await childDone;
   if (fenceFd !== undefined) {
     closeSync(fenceFd);
     fenceFd = undefined;
@@ -308,7 +289,20 @@ async function finalise() {
   return true;
 }
 
-async function main() {
+function recordSpawnedChild(child) {
+  if (child.pid === undefined) return;
+  const childIdentity = identityForPid(child.pid);
+  ftruncateSync(fenceFd, 0);
+  writeSync(
+    fenceFd,
+    `${fenceStarted}pid=${child.pid}\n${childIdentity ? `pidStartTime=${childIdentity.startTime}\n` : ""}`,
+    0,
+    "utf8",
+  );
+  fsyncSync(fenceFd);
+}
+
+export async function runBackendMutation({ recordChild = recordSpawnedChild } = {}) {
   if (existsSync(fencePath)) {
     printRecovery();
     return 1;
@@ -337,30 +331,24 @@ async function main() {
     throw error;
   }
 
-  process.on("SIGINT", signalHandler);
-  process.on("SIGTERM", signalHandler);
+  let supervisor;
+  const signalForwarding = installSignalForwarding(() => supervisor);
   let exitCode = 0;
   try {
     for (const mutationPackage of selectedPackages) {
-      if (requestedSignal) break;
+      if (signalForwarding.requestedSignal) break;
       console.log(`\nBackend mutation package: ${mutationPackage.id}`);
-      child = spawn("cargo", cargoArguments(mutationPackage), { stdio: "inherit" });
-      childDone = waitForChild(child);
-      if (child.pid !== undefined) {
-        const childIdentity = identityForPid(child.pid);
-        ftruncateSync(fenceFd, 0);
-        writeSync(
-          fenceFd,
-          `${fenceStarted}pid=${child.pid}\n${childIdentity ? `pidStartTime=${childIdentity.startTime}\n` : ""}`,
-          0,
-          "utf8",
-        );
-        fsyncSync(fenceFd);
+      const child = spawn("cargo", cargoArguments(mutationPackage), { stdio: "inherit" });
+      supervisor = superviseChild(child, { terminationTimeoutMs });
+      try {
+        recordChild(child);
+      } catch (error) {
+        await supervisor.terminate();
+        throw error;
       }
-      const result = await childDone;
-      child = undefined;
-      childDone = undefined;
-      if (requestedSignal) break;
+      const result = await supervisor.done;
+      supervisor = undefined;
+      if (signalForwarding.requestedSignal) break;
       if (result.error) throw result.error;
       if (result.code === 0) continue;
 
@@ -376,19 +364,24 @@ async function main() {
     console.error(error);
     exitCode = 1;
   } finally {
+    if (supervisor) await supervisor.terminate();
+    await signalForwarding.termination;
     const finalised = await finalise();
     if (!finalised) exitCode = 1;
-    process.off("SIGINT", signalHandler);
-    process.off("SIGTERM", signalHandler);
+    signalForwarding.uninstall();
   }
 
-  if (requestedSignal) return requestedSignal === "SIGINT" ? 130 : 143;
+  if (signalForwarding.requestedSignal) {
+    return signalForwarding.requestedSignal === "SIGINT" ? 130 : 143;
+  }
   return exitCode;
 }
 
-try {
-  process.exitCode = await main();
-} catch (error) {
-  console.error(error);
-  process.exitCode = 1;
+if (import.meta.url === `file://${process.argv[1]}`) {
+  try {
+    process.exitCode = await runBackendMutation();
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  }
 }

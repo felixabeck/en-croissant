@@ -1,0 +1,91 @@
+function childIsRunning(child) {
+  return child.exitCode === null && child.signalCode === null;
+}
+
+function signalChild(child, signal, killProcessGroup) {
+  try {
+    if (killProcessGroup) {
+      if (child.pid === undefined) return false;
+      process.kill(-child.pid, signal);
+      return true;
+    }
+    if (!childIsRunning(child)) return false;
+    return child.kill(signal);
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+export function superviseChild(child, { terminationTimeoutMs, killProcessGroup = false }) {
+  const done = new Promise((resolve) => {
+    let spawnError;
+    child.once("error", (error) => {
+      spawnError = error;
+    });
+    child.once("close", (code, signal) => resolve({ code, signal, error: spawnError }));
+  });
+  let termination;
+
+  return {
+    child,
+    done,
+    terminate() {
+      if (termination) return termination;
+      termination = (async () => {
+        signalChild(child, "SIGTERM", killProcessGroup);
+        let escalationTimer;
+        const escalation = new Promise((resolve, reject) => {
+          escalationTimer = setTimeout(() => {
+            try {
+              signalChild(child, "SIGKILL", killProcessGroup);
+              resolve();
+            } catch (error) {
+              reject(error);
+            }
+          }, terminationTimeoutMs);
+        });
+        try {
+          if (killProcessGroup && child.pid !== undefined) {
+            const result = await done;
+            await escalation;
+            return result;
+          }
+          await Promise.race([done, escalation]);
+          return await done;
+        } finally {
+          clearTimeout(escalationTimer);
+        }
+      })();
+      return termination;
+    },
+  };
+}
+
+export function installSignalForwarding(getSupervisor) {
+  let requestedSignal;
+  let termination = Promise.resolve();
+  const handler = (signal) => {
+    if (requestedSignal) return;
+    requestedSignal = signal;
+    const supervisor = getSupervisor();
+    if (supervisor) {
+      termination = supervisor.terminate();
+      termination.catch(() => {});
+    }
+  };
+  process.on("SIGINT", handler);
+  process.on("SIGTERM", handler);
+  return {
+    get requestedSignal() {
+      return requestedSignal;
+    },
+    get termination() {
+      return termination;
+    },
+    uninstall() {
+      process.off("SIGINT", handler);
+      process.off("SIGTERM", handler);
+    },
+  };
+}

@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { mutationPackages } from "./frontend-mutation-packages.mjs";
+import {
+  isAlive,
+  runMutationRunner,
+  startMutationRunner,
+  waitFor,
+  writeShim,
+} from "./mutation-runner-test-harness.mjs";
 import { currentIdentity, identityForPid } from "./process-identity.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -19,22 +26,54 @@ async function fixture() {
   const state = join(root, "shim-state");
   await mkdir(bin);
   await mkdir(state);
+  const packageDirectory = join(root, "node_modules", "@stryker-mutator", "core");
+  await mkdir(join(packageDirectory, "bin"), { recursive: true });
   await writeFile(
-    join(bin, "pnpm"),
-    `#!/bin/sh
-echo "$STRYKER_PACKAGE" >> "$SHIM_STATE/packages"
-echo $$ > "$SHIM_STATE/pid"
-: > "$SHIM_STATE/started"
-case "$SHIM_MODE" in
-  block)
-    trap 'if [ -d mutants.out/frontend/.mutation-in-progress ]; then : > "$SHIM_STATE/terminated-with-fence"; fi; : > "$SHIM_STATE/terminated"; exit 0' TERM INT
-    while [ ! -e "$SHIM_STATE/release" ]; do /bin/sleep 0.05; done
-    ;;
-esac
-if [ "$STRYKER_PACKAGE" = "$FAIL_PACKAGE" ]; then exit 7; fi
-`,
+    join(packageDirectory, "package.json"),
+    `${JSON.stringify({
+      name: "@stryker-mutator/core",
+      type: "module",
+      exports: { "./package.json": "./package.json" },
+    })}\n`,
   );
-  await chmod(join(bin, "pnpm"), 0o755);
+  await writeShim(
+    join(packageDirectory, "bin", "stryker.js"),
+    [
+      "#!/usr/bin/env node",
+      'import { appendFileSync, existsSync, writeFileSync } from "node:fs";',
+      'import { join } from "node:path";',
+      "const state = process.env.SHIM_STATE;",
+      'appendFileSync(join(state, "packages"), `${process.env.STRYKER_PACKAGE}\\n`);',
+      'writeFileSync(join(state, "pid"), `${process.pid}\\n`);',
+      'writeFileSync(join(state, "started"), "");',
+      "function recordTermination() {",
+      '  if (existsSync("mutants.out/frontend/.mutation-in-progress")) {',
+      '    writeFileSync(join(state, "terminated-with-fence"), "");',
+      "  }",
+      '  writeFileSync(join(state, "terminated"), "");',
+      "  process.exit(0);",
+      "}",
+      'if (process.env.SHIM_MODE === "block") {',
+      '  process.on("SIGTERM", recordTermination);',
+      '  process.on("SIGINT", recordTermination);',
+      "  const timer = setInterval(() => {",
+      '    if (existsSync(join(state, "release"))) {',
+      "      clearInterval(timer);",
+      "      process.exit(0);",
+      "    }",
+      "  }, 20);",
+      '} else if (process.env.SHIM_MODE === "ignore-term") {',
+      '  process.on("SIGTERM", () => {});',
+      '  process.on("SIGINT", () => {});',
+      "  setInterval(() => {}, 1_000);",
+      '} else if (process.env.SHIM_MODE === "record") {',
+      "  process.exit(0);",
+      "} else if (process.env.STRYKER_PACKAGE === process.env.FAIL_PACKAGE) {",
+      "  process.exit(7);",
+      "}",
+      "",
+    ].join("\n"),
+  );
   return { root, bin, state };
 }
 
@@ -48,38 +87,8 @@ function environment({ bin, state, mode = "normal", failPackage, path }) {
   };
 }
 
-function run(root, env, args = []) {
-  return spawnSync(process.execPath, [runner, ...args], { cwd: root, env, encoding: "utf8" });
-}
-
-function start(root, env) {
-  const child = spawn(process.execPath, [runner], {
-    cwd: root,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk;
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-  const done = new Promise((resolve) => {
-    child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
-  });
-  return { child, done };
-}
-
-async function waitFor(path, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(path)) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  assert.fail(`Timed out waiting for ${path}`);
-}
+const run = (root, env, args = []) => runMutationRunner(runner, root, env, args);
+const start = (root, env) => startMutationRunner(runner, root, env);
 
 async function waitForRecordedChild(root, timeoutMs = 5_000) {
   const path = join(root, fence, "owner.json");
@@ -96,15 +105,6 @@ async function waitForRecordedChild(root, timeoutMs = 5_000) {
   assert.fail(`Timed out waiting for a child identity in ${path}`);
 }
 
-function isAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function seedFence(root, owner) {
   const path = join(root, fence);
   await mkdir(path, { recursive: true });
@@ -114,7 +114,11 @@ async function seedFence(root, owner) {
 }
 
 function deadOwner(overrides = {}) {
-  return { runner: { pid: 2_000_000_000, startTime: "1" }, child: null, ...overrides };
+  return {
+    runner: { pid: 2_000_000_000, startTime: "1" },
+    child: { pid: 2_000_000_001, startTime: "1" },
+    ...overrides,
+  };
 }
 
 test("--list-packages prints the shared package map without creating a fence", async () => {
@@ -148,11 +152,12 @@ test("the runner stops at the first non-zero package and removes its fence", asy
   assert.equal(existsSync(join(root, fence)), false);
 });
 
-test("a pnpm spawn error removes the fence", async () => {
+test("a missing Stryker CLI is reported clearly and removes the fence", async () => {
   const { root, bin, state } = await fixture();
-  const result = run(root, environment({ bin, state, path: join(root, "missing-bin") }));
+  await rm(join(root, "node_modules", "@stryker-mutator", "core", "bin", "stryker.js"));
+  const result = run(root, environment({ bin, state }));
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /spawn pnpm ENOENT/u);
+  assert.match(result.stderr, /Cannot resolve the Stryker CLI.*stryker\.js does not exist/su);
   assert.equal(existsSync(join(root, fence)), false);
 });
 
@@ -170,7 +175,7 @@ test("a concurrent runner refuses a live owner without touching its sandbox", as
   await writeFile(join(root, ".stryker-tmp", "live"), "keep\n");
   const second = run(root, env);
   assert.equal(second.status, 1);
-  assert.match(second.stderr, /Frontend mutation fence is live: mutants\.out\/frontend/u);
+  assert.match(second.stderr, /Frontend mutation fence exists: mutants\.out\/frontend/u);
   assert.equal(await readFile(join(root, ".stryker-tmp", "live"), "utf8"), "keep\n");
   await writeFile(join(state, "release"), "");
   assert.equal((await first.done).code, 0);
@@ -230,6 +235,15 @@ test("a malformed owner record is treated as live and refused", async () => {
   assert.match(result.stderr, /owner record missing or malformed/u);
 });
 
+test("a dead runner with no recorded child is refused, not taken over", async () => {
+  const { root, bin, state } = await fixture();
+  await seedFence(root, deadOwner({ child: null }));
+  const result = run(root, environment({ bin, state }));
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /1\. Confirm no stryker process is running/u);
+  assert.equal(existsSync(join(root, fence)), true);
+});
+
 test("a live recorded child keeps a dead runner's fence live", async () => {
   const { root, bin, state } = await fixture();
   const sleeper = spawn("/bin/sleep", ["30"]);
@@ -245,7 +259,7 @@ test("a live recorded child keeps a dead runner's fence live", async () => {
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  test(`${signal} terminates and reaps pnpm before removing the fence`, async () => {
+  test(`${signal} terminates and reaps Stryker before removing the fence`, async () => {
     const { root, bin, state } = await fixture();
     const running = start(root, environment({ bin, state, mode: "block" }));
     await waitFor(join(state, "started"));
@@ -255,10 +269,22 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     assert.equal(result.code, signal === "SIGINT" ? 130 : 143, result.stderr);
     assert.equal(existsSync(join(state, "terminated")), true);
     assert.equal(existsSync(join(state, "terminated-with-fence")), true);
-    assert.equal(isAlive(childPid), false, `pnpm pid ${childPid} still exists`);
+    assert.equal(isAlive(childPid), false, `Stryker pid ${childPid} still exists`);
     assert.equal(existsSync(join(root, fence)), false);
   });
 }
+
+test("a Stryker process that ignores SIGTERM is SIGKILLed before fence removal", async () => {
+  const { root, bin, state } = await fixture();
+  const running = start(root, environment({ bin, state, mode: "ignore-term" }));
+  await waitFor(join(state, "started"));
+  const childPid = Number(await readFile(join(state, "pid"), "utf8"));
+  running.child.kill("SIGTERM");
+  const result = await running.done;
+  assert.equal(result.code, 143, result.stderr);
+  assert.equal(isAlive(childPid), false, `Stryker pid ${childPid} still exists`);
+  assert.equal(existsSync(join(root, fence)), false);
+});
 
 test("stryker config resolves every package through the shared map", async () => {
   const previous = process.env.STRYKER_PACKAGE;

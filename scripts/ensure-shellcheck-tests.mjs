@@ -10,6 +10,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   cliMain,
+  DOWNLOAD_TIMEOUT_MS,
   ensureShellcheck,
   PRODUCTION_OPTIONS,
   RELEASE_BASE_URL,
@@ -333,15 +334,55 @@ test("a truncated cached binary is replaced and never returned", async (t) => {
   assert.equal(server.requests.length, 2);
 });
 
+test("two callers concurrently repair a truncated cache without removing the winner", async (t) => {
+  const fixture = await fixtureArchive(t);
+  const cacheDir = await temporaryCache(t);
+  const server = await fixtureServer(t, (_request, response) => {
+    setTimeout(() => response.end(fixture.archive), 20);
+  });
+  const fixtureOptions = options({ ...fixture, ...server, cacheDir });
+  const binaryPath = await ensureShellcheck(fixtureOptions);
+  await writeFile(binaryPath, "truncated");
+  server.requests.length = 0;
+
+  const finalDirectory = join(cacheDir, "v0.11.0");
+  let republished = false;
+  let absentAfterRepublication = false;
+  const cacheWatcher = watch(cacheDir, (_event, filename) => {
+    if (filename !== "v0.11.0") return;
+    if (existsSync(finalDirectory)) republished = true;
+    else if (republished) absentAfterRepublication = true;
+  });
+  t.after(() => cacheWatcher.close());
+
+  const [first, second] = await Promise.all([
+    ensureShellcheck(fixtureOptions),
+    ensureShellcheck(fixtureOptions),
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.equal(first, binaryPath);
+  assert.equal(second, binaryPath);
+  assert.ok(server.requests.length <= 2, "a caller downloaded more than once");
+  assert.equal(republished, true);
+  assert.equal(absentAfterRepublication, false);
+  assert.equal(
+    await readFile(binaryPath, "utf8").then((contents) => contents === "truncated"),
+    false,
+  );
+});
+
 test("production constants and hooks wiring stay pinned", async () => {
   assert.equal(SHELLCHECK_VERSION, "v0.11.0");
   assert.deepEqual(SHELLCHECK_SHA256, {
     "linux-x64": "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198",
   });
   assert.equal(RELEASE_BASE_URL, "https://github.com/koalaman/shellcheck/releases/download");
+  assert.equal(DOWNLOAD_TIMEOUT_MS, 120_000);
   assert.equal(PRODUCTION_OPTIONS.version, SHELLCHECK_VERSION);
   assert.equal(PRODUCTION_OPTIONS.sha256, SHELLCHECK_SHA256);
   assert.equal(PRODUCTION_OPTIONS.baseUrl, RELEASE_BASE_URL);
+  assert.equal(PRODUCTION_OPTIONS.timeoutMs, DOWNLOAD_TIMEOUT_MS);
 
   const packageJson = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"));
   assert.match(packageJson.scripts["hooks:check"], /node scripts\/ensure-shellcheck\.mjs/);

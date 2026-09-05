@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
   mkdir,
@@ -22,6 +22,7 @@ export const SHELLCHECK_SHA256 = Object.freeze({
   "linux-x64": "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198",
 });
 export const RELEASE_BASE_URL = "https://github.com/koalaman/shellcheck/releases/download";
+export const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TEMPORARY_DIRECTORY_MAX_AGE_MS = 60 * 60 * 1000;
@@ -37,7 +38,7 @@ export const PRODUCTION_OPTIONS = Object.freeze({
   platform: hostPlatform(),
   arch: hostArch(),
   fetchImpl: globalThis.fetch,
-  timeoutMs: 120_000,
+  timeoutMs: DOWNLOAD_TIMEOUT_MS,
 });
 
 function sha256(contents) {
@@ -144,7 +145,7 @@ export async function ensureShellcheck({
   platform,
   arch,
   fetchImpl = globalThis.fetch,
-  timeoutMs = 120_000,
+  timeoutMs = DOWNLOAD_TIMEOUT_MS,
 }) {
   const platformKey = `${platform}-${arch}`;
   const expectedHash = hashes[platformKey];
@@ -170,7 +171,13 @@ export async function ensureShellcheck({
   if (hit) return hit;
 
   if (finalDirectoryExisted) {
-    await rm(finalDirectory, { recursive: true, force: true });
+    const staleDirectory = join(cacheDir, `.tmp-stale-${randomUUID()}`);
+    try {
+      await rename(finalDirectory, staleDirectory);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await rm(staleDirectory, { recursive: true, force: true });
   }
 
   const temporaryDirectory = await mkdtemp(join(cacheDir, ".tmp-"));
@@ -207,7 +214,13 @@ export async function ensureShellcheck({
     return installed;
   } finally {
     if (ownsTemporaryDirectory) {
-      await rm(temporaryDirectory, { recursive: true, force: true });
+      try {
+        await rm(temporaryDirectory, { recursive: true, force: true });
+      } catch (error) {
+        console.error(
+          `Secondary failure while cleaning ShellCheck temporary directory ${temporaryDirectory}: ${error.message}`,
+        );
+      }
     }
   }
 }

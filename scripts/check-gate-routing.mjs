@@ -119,8 +119,6 @@ export function workflowSteps(workflow) {
   return steps;
 }
 
-export const workflowRunCommands = (workflow) => workflowSteps(workflow).map((step) => step.run);
-
 function testIncludes(viteConfig) {
   const testBlock = /test\s*:\s*\{[\s\S]*?include\s*:\s*\[([\s\S]*?)\]/u.exec(viteConfig);
   if (!testBlock) return [];
@@ -266,9 +264,16 @@ function shellWords(command) {
   });
 }
 
+function commandSegments(command) {
+  return command
+    .split(/&&|\|\||[;|\n]/u)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
 function invokesScript(command, path) {
-  for (const segment of command.split(/&&|\|\||[;|\n]/u)) {
-    const words = shellWords(segment.trim());
+  for (const segment of commandSegments(command)) {
+    const words = shellWords(segment);
     if (words.length === 0) continue;
     const executable = words[0].replace(/^\.\//u, "");
     if (executable === path) return true;
@@ -331,7 +336,7 @@ export async function checkGateRouting(
     );
   }
 
-  const workflowCommands = workflowRunCommands(workflow);
+  const workflowCommands = steps.map((step) => step.run);
   const workflowFindings = [];
   const workflowRouted = routeCommands(
     workflowCommands.map((command) => ({ command, source: TEST_WORKFLOW })),
@@ -343,6 +348,24 @@ export async function checkGateRouting(
     if (!routed.has(name)) {
       findings.push(
         `workflow-routed package script ${name} is not reachable from ${PUSH_SKILL}; add it to ${CONTRACT_GATE} or to a path-routed fence in SKILL.md §2`,
+      );
+    }
+  }
+
+  const scriptsDirectory = resolve(repoRoot, "scripts");
+  const fencedLines = new Set(directGateCommands);
+  const routedPackageSegments = new Set(
+    [...routed].flatMap((name) => commandSegments(scripts[name] ?? "")),
+  );
+  for (const step of steps) {
+    for (const segment of commandSegments(step.run)) {
+      const words = shellWords(segment);
+      if (!SCRIPT_RUNNERS.has(words[0]) || !words[1]) continue;
+      const target = resolve(repoRoot, words[1]);
+      if (target !== scriptsDirectory && !target.startsWith(`${scriptsDirectory}${sep}`)) continue;
+      if (fencedLines.has(segment) || routedPackageSegments.has(segment)) continue;
+      findings.push(
+        `workflow runs ${words[1]} directly (${segment}); route it through a package script that the push skill fences`,
       );
     }
   }
