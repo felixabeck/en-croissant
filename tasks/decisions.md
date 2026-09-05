@@ -2059,3 +2059,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** none needed; a future guard shape goes into the helper and its test, never back into a script.
 * **Decided by:** Claude Code, 2026-09-05, `$push` review fix round · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"7d3cbe78d4cd0198f072a49611e827c79710b0b04cd3bb5498b0b8839011fa1b","input_sha256":"e4358a8bb161f24f49e6697d8ca242d83baec1eeb0b64aec6fc7639e94ac6b40","kind":"mutation-receipt","operation":"7e2909ecd803b9dcc9e24c80b1d9c1ca16f80002afc9da4d18c7346066f4d047","options":{"section":null},"request_id_sha256":null,"results":["d-20260905-19"],"target":"decisions-ledger","v":1} -->
+
+### d-20260905-20 — How should large PGN corpora be scanned, indexed and exported without materialising them?
+
+* **Question:** How should large PGN corpora be scanned, indexed and exported without materialising them?
+* **Governs:** f-20260831-06
+* **Chosen:** Keep compact scanner offsets in shared Arc storage with byte-budgeted cache retention, removing corpus file-size/game-count caps while retaining individual-line/page/game protections. Stream Diesel rows into a versioned chunked rkyv sidecar through the existing fd-relative atomic writer. Mmap open validates chunks and deserializes only provenance; parallel search borrows entries. Stream export into the existing atomic temporary file with explicit final flush.
+* **Rejected:** Raising the 64 MiB cap alone; retaining full game/move vectors or serializing an entire index; introducing another database/dependency; changing the source database format.
+* **Reason:** All four f-20260831-06 sites hold or refuse corpora despite a domain contract for hundreds-of-megabytes PGNs. Existing load_iter, atomic_replace_at and replace_pgn_atomic supply the streaming seams. The sidecar is a regenerable cache; incompatible versions follow authorized regeneration, while operational I/O errors propagate. One oversized record may exceed the chunk rollover target and occupies a chunk alone. Reversal path: version the cache format again and regenerate, without rewriting source databases.
+* **Decided by:** Codex autonomously under full auto, after two Codex plan-review rounds · **Superseded-by:** -
+
+### d-20260905-21 — What happens when a streaming database export cannot encode every selected row?
+
+* **Question:** What happens when a streaming database export cannot encode every selected row?
+* **Governs:** f-20260831-06, f-20260904-04
+* **Chosen:** Propagate row, malformed FEN, movetext, write and terminal-flush errors before atomic publication, preserving the existing destination. Keep the existing Result<(), Error> and committed-durability-uncertain outcome.
+* **Rejected:** Silently skipping rows or moves; publishing a partial file as successful; adding a partial-recovery export UI and a new result type within the streaming change.
+* **Reason:** The current command promises completion through Result and an atomic replacement, and the renderer already handles typed export failures. Streaming must not turn a delayed write or row error into published incomplete data. A deliberately partial recovery/export feature is a separate product design. Reversal path: add an explicitly requested partial-export mode with a typed report and matching UI; do not silently weaken complete export.
+* **Decided by:** Codex autonomously under full auto, after two Codex plan-review rounds · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"7beaba254c92011d915f66e905506c8895c9f4cb46dad1f1a25b44cfca29b98b","input_sha256":"cf918d505d04532139249cc2954bbb80c54b26b5718d4da8b878dc9eccba41aa","kind":"mutation-receipt","operation":"a89172eb518437ad462e735f2f53a852f2d40f2b1c47d857b24011002f0e3512","options":{"section":null},"request_id_sha256":null,"results":["d-20260905-20","d-20260905-21"],"target":"decisions-ledger","v":1} -->

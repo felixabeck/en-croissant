@@ -4282,7 +4282,7 @@ allocated the id.
 
 ### An inline `;` comment after a move opens a brace comment, merging the next game into the current one
 
-* **ID:** f-20260831-05 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260831-05 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/pgn.rs`, the game-boundary scanner: the `;` handling recognises a
   rest-of-line comment only when `;` is the first character of the line.
 * **Defect:** PGN allows `;` to start a comment anywhere on a line, running to the end of it. The
@@ -4302,9 +4302,15 @@ allocated the id.
   `native-fs` cluster, 2026-08-31. Pre-existing; that cluster touched `pgn.rs` only for an error
   payload.
 
+* **Implementation review, 2026-09-05:** The first regression fixture accidentally included a later closing brace before the next game header, so the old scanner could recover and pass the test. Root required the exact inline-semicolon input immediately followed by game B, with range/content assertions, and separate quoted/brace-comment cases. The same executor is correcting the fixture before acceptance. Plan authorship and arbitration shared the root context; detection used the same model family as code.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"0a8e755299bf5af11ef7ed947cfeeb1f2019f80b3401adc982afdf87040d2b24","input_sha256":"452a040a371876796ed828e72bff45b479e47fc5b969ed76e3da6236208cdb57","kind":"mutation-receipt","operation":"7e387e6c3453f49ae2576cf2e212d10be0907a66958ec942ddc7764aa8860c86","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-05"],"target":"f-20260831-05","v":1} -->
+
+* **Handled, 2026-09-05:** 6694b6e7 corrects inline semicolon boundaries and reescapes decoded export tags without changing raw stored tag representation. Root reran 17 PGN tests and 130 database tests, formatting and clean-diff checks. The exact semicolon regression checks both games and their byte ranges without a later brace masking the defect. Import -> production export -> import verifies quotes/backslashes in both players and optional decoded tags, plus unchanged raw Event/Site escapes.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8fab175268994a4a3322ffeff9c8e9bf434717882c60d98ff24f2b135e27058e","input_sha256":"59e223b9b59dad5b336b772a08f0a1eea2f81a68cdb3c2e39a24235f6c0221a4","kind":"mutation-receipt","operation":"e4202a115c38e8ca4f29a24287909929bc0d5b9d4baf31c6737ed6f5d1e48db6","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-05"],"target":"f-20260831-05","v":1} -->
+
 ### The PGN pipeline materialises whole corpora: a 64 MiB scan cap, and three corpus-sized buffers
 
-* **ID:** f-20260831-06 · **Status:** open · **Area:** pgn-import · **Root:** whole-corpus-materialisation · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-06 · **Status:** handled · **Area:** pgn-import · **Root:** whole-corpus-materialisation · **Entry:** build · **Blocked:** none
 * **Where:** four sites, one cause.
   * `src-tauri/src/pgn.rs` — the streaming scanner refuses any file above 64 MiB before it scans.
   * `src-tauri/src/db/mod.rs` — search-index generation loads every game and move blob into one
@@ -4330,6 +4336,15 @@ allocated the id.
   first.
 * **Found by:** the `review-pgn-index` lens (confidence 100, 100, 99, 100 on the four sites) over
   the cumulative diff of the `native-fs` cluster, 2026-08-31. All four pre-existing.
+
+* **Implementation review, 2026-09-05:** the first chunk-reader draft allowed an untrusted source_len to reach IndexSource deserialization, whose NativePath contains an owned vector. That could reintroduce a corpus-sized allocation through malformed provenance. The database worker must bound provenance bytes before deserialization and reject oversized source framing; this enforces the small-metadata requirement in f-20260831-06.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"de905e5c8f872188dd9ec75409cd645f2fba34c84e53beb645a53150d4cdc7de","input_sha256":"d3cea63c6646f67d22b60e6ba9574e70c90e4bdcda82f8e294ec6234d1b90a6b","kind":"mutation-receipt","operation":"df764c1f91f8e58c21e7ade215d467bcd5a0a7b8e7bc4ef3e242863acf38bc36","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-06"],"target":"f-20260831-06","v":1} -->
+
+* **Implementation review, 2026-09-05:** Root found that the initial export laziness test only counted total iterator calls after completion, so collecting all rows first would still pass. The initial index chunk-count/borrowed-pointer tests likewise prove storage/open behavior but not streaming construction. Assigned stronger production-writer observations before source exhaustion, plus a small buffered terminal-write failure case, to the same phase executor before acceptance. Plan authorship and arbitration shared the root context; detection used the same model family as the code.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"890aa4c180a56d0ac808da1ad2ee20a05fa483411ceb8deb67ff7f2ef7f47928","input_sha256":"03a707f0a3af02168b73a9d5935d1194388e758b93ae2de815d342f65f2c302c","kind":"mutation-receipt","operation":"8cb37662901e949a488612853b8e680a04c4fa7436f4105bccfbc546790a8c4a","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-06"],"target":"f-20260831-06","v":1} -->
+
+* **Handled, 2026-09-05:** 244898f7 removes the corpus-size/game-count scanner refusals, shares Arc ranges, and limits retained scan bytes. 7e3d91e9 streams Diesel rows into bounded version-7 index chunks, validates/maps entries without corpus deserialization, and streams PGN export into the fd-authorized atomic destination. Root reran 15 PGN tests (including valid 301 MiB input and 100,005 games), 129 database tests, formatting and clean-diff checks. Streaming writer observations run before source exhaustion; corrupt framing/provenance and export row/FEN/move/write/final-flush failures are covered. Final cumulative review and affected gates belong to the same authorized push run. Decisions d-20260905-20 and d-20260905-21 record format/atomicity choices and reversal paths.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"abf5974da706148a86c1281581ac4e7f19559f36f90eb2608d29941e11001429","input_sha256":"dbac553c26ecb353419ce67e8f9a51b50b27c57e6b4f8c1f70412f859ffde6f4","kind":"mutation-receipt","operation":"7e733176730a9ff5b949e651381e50a3ed96391e50a8ba70d59316fccff697ef","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-06"],"target":"f-20260831-06","v":1} -->
 
 ### A multi-file PGN import commits each file in its own transaction, so a mid-import failure leaves games behind
 
@@ -5570,7 +5585,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### Exporting a database silently omits every game whose row fails to decode
 
-* **ID:** f-20260904-04 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260904-04 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs` — `export_to_pgn_blocking`, the `load_iter(...).flatten()`
   over the game rows.
 * **Defect:** `.flatten()` on an iterator of `Result` discards the `Err` variants. A row that fails
@@ -5593,6 +5608,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   closure and did not change its error handling.
 * **Found by:** the `review-pgn-index` lens (confidence 93) over the cumulative diff of the
   `blocking-work-not-offloaded` range, 2026-09-04.
+
+* **Handled, 2026-09-05:** 7e3d91e9 replaces flattened/discarded export conversion results with fallible row-by-row serialization into the existing atomic temporary file. Invalid rows, FEN, moves, writes and terminal buffered flushes fail before replacement, preserving the old destination. Root reran all 129 database tests including these cases. d-20260905-21 preserves the existing complete-success Result contract; no partial-export mode or UI was introduced.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"ad64adecc95baa2df908520be32297a3185149fcd18151f6aee672d973b5f2de","input_sha256":"f02330886de37aa47b1e45eecf0a390cc66b9987afdcfdd8d7ca78db70eb4606","kind":"mutation-receipt","operation":"e4070484fef9027511c6e06ad4432c78b5fd2d7d1fec6cdd3776c7ee117741f4","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-04"],"target":"f-20260904-04","v":1} -->
 
 ### Every offloaded command uses `spawn` rather than `spawn_cancellable`, because no path carries a `CancellationToken`
 
@@ -6209,3 +6227,18 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   selection needs a plan, and the double-click cause must be measured before it is fixed.
 * **Related:** `f-20260905-13` (the clipped Move control in the same tree row).
 * **Found by:** Felix opening his imported repertoires, session 2026-09-05.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### PGN export writes decoded player names into quoted tags without escaping
+
+* **ID:** f-20260905-15 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/db/mod.rs:336` decodes escaped White/Black headers; `PgnGame::write` at `:2259` writes the stored names verbatim inside quotes.
+* **Defect:** a valid player name containing a quote or backslash becomes a malformed or changed tag after export. The importer uses `RawHeader::decode_utf8_lossy` for player names, so the exported text must escape these decoded characters again.
+* **Related:** f-20260904-04 concerns export omission; f-20260831-06 streams the same exporter. This is a distinct serialization defect, not the corpus allocation cause.
+* **Found by:** Codex source trace during the whole-corpus-materialisation build. Fix in this run's export verification/remediation with a round-trip regression; do not silently broaden the selected cluster's root.
+
+* **Handled, 2026-09-05:** 6694b6e7 corrects inline semicolon boundaries and reescapes decoded export tags without changing raw stored tag representation. Root reran 17 PGN tests and 130 database tests, formatting and clean-diff checks. The exact semicolon regression checks both games and their byte ranges without a later brace masking the defect. Import -> production export -> import verifies quotes/backslashes in both players and optional decoded tags, plus unchanged raw Event/Site escapes.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8fab175268994a4a3322ffeff9c8e9bf434717882c60d98ff24f2b135e27058e","input_sha256":"59e223b9b59dad5b336b772a08f0a1eea2f81a68cdb3c2e39a24235f6c0221a4","kind":"mutation-receipt","operation":"2812e46bc68f6e9be290bb2040e686d8ce371708efc21ee2abba10adc4cb37a4","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-15"],"target":"f-20260905-15","v":1} -->
