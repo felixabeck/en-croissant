@@ -176,10 +176,13 @@ in the actual product: it drives the real window off-screen through `kwin_waylan
 `webkit2gtk-driver` (apt) and `tauri-driver` (cargo), plus a `pnpm build`, and is not a push gate.
 
 The daily desktop app is **not** `src-tauri/target/release/en-croissant`: the application-menu
-entry runs a copy under `~/.local/opt/chessfable/`, written only by `scripts/install-local.sh`
-from a clean tree whose HEAD is on the pushed upstream (`VERSION` there names the commit). So
-`pnpm build`, `verify:app` and a drain may overwrite `target/release` freely without changing what
-Felix is using; a reviewed change reaches him only through that install step.
+entry runs `~/.local/opt/chessfable/current/bin/en-croissant`, a versioned copy written only by
+`scripts/install-local.sh` from a clean tree whose HEAD is on the pushed upstream (`VERSION`
+beside it names the commit; `$push` runs the install as its last step on master). So `pnpm build`,
+`verify:app` and a drain may overwrite `target/release` freely without changing what Felix is
+using, and an install while the app is running takes effect only at the next launch. The
+`bin/` + `lib/en-croissant/` layout is what Tauri's `resource_dir()` requires outside a cargo
+output directory; resources beside the binary are not found (measured 2026-09-05).
 
 What remains Felix's is now only **native GTK chrome** — menus, file dialogs, window decorations.
 WebDriver sees the page, not the GTK widgets around it, and `issue_engine_binary` always opens a
