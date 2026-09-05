@@ -46,12 +46,13 @@ async function fixture() {
       "}",
       'appendFileSync(join(state, "packages"), `${process.env.STRYKER_PACKAGE}\\n`);',
       'writeFileSync(join(state, "pid"), `${process.pid}\\n`);',
-      'writeFileSync(join(state, "started"), "");',
       'if (["block", "grandchild-exit", "ignore-term"].includes(process.env.SHIM_MODE)) {',
       '  const grandchild = spawn("/bin/sleep", ["30"], { detached: false, stdio: "ignore" });',
       '  writeFileSync(join(state, "grandchild-pid"), `${grandchild.pid}\\n`);',
       "  grandchild.unref();",
       "}",
+      "// `started` is the readiness marker tests wait on; it must follow every state it advertises.",
+      'writeFileSync(join(state, "started"), "");',
       "function recordTermination() {",
       '  if (existsSync("mutants.out/frontend/.mutation-in-progress")) {',
       '    writeFileSync(join(state, "terminated-with-fence"), "");',
@@ -95,7 +96,7 @@ function environment({ state, mode = "normal", failPackage }) {
 }
 
 const run = (root, env, args = []) => runMutationRunner(runner, root, env, args);
-const start = (root, env) => startMutationRunner(runner, root, env);
+const start = (t, root, env) => startMutationRunner(t, runner, root, env);
 
 async function waitForRecordedChild(root, timeoutMs = 5_000) {
   const path = join(root, fence, "owner.json");
@@ -168,10 +169,10 @@ test("a missing Stryker CLI is reported clearly and removes the fence", async ()
   assert.equal(existsSync(join(root, fence)), false);
 });
 
-test("a concurrent runner refuses a live owner without touching its sandbox", async () => {
+test("a concurrent runner refuses a live owner without touching its sandbox", async (t) => {
   const { root, state } = await fixture();
   const env = environment({ state, mode: "block" });
-  const first = start(root, env);
+  const first = start(t, root, env);
   await waitFor(join(state, "started"));
   const childPid = Number(await readFile(join(state, "pid"), "utf8"));
   const owner = await waitForRecordedChild(root);
@@ -246,9 +247,9 @@ test("a dead runner with no recorded child is refused with recovery", async () =
   assert.equal(existsSync(join(root, fence)), true);
 });
 
-test("the finaliser does not remove a fence it does not own", async () => {
+test("the finaliser does not remove a fence it does not own", async (t) => {
   const { root, state } = await fixture();
-  const running = start(root, environment({ state, mode: "block" }));
+  const running = start(t, root, environment({ state, mode: "block" }));
   await waitFor(join(state, "started"));
   await writeFile(join(root, fence, "owner.json"), `${JSON.stringify(deadOwner())}\n`);
   await writeFile(join(state, "release"), "");
@@ -268,9 +269,9 @@ test("a surviving grandchild is swept after the Stryker root exits", async () =>
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  test(`${signal} terminates and reaps Stryker before removing the fence`, async () => {
+  test(`${signal} terminates and reaps Stryker before removing the fence`, async (t) => {
     const { root, state } = await fixture();
-    const running = start(root, environment({ state, mode: "block" }));
+    const running = start(t, root, environment({ state, mode: "block" }));
     await waitFor(join(state, "started"));
     const childPid = Number(await readFile(join(state, "pid"), "utf8"));
     const grandchildPid = Number(await readFile(join(state, "grandchild-pid"), "utf8"));
@@ -285,9 +286,9 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   });
 }
 
-test("a signal delivered while the Stryker shim is starting is forwarded", async () => {
+test("a signal delivered while the Stryker shim is starting is forwarded", async (t) => {
   const { root, state } = await fixture();
-  const running = start(root, environment({ state, mode: "startup-delay" }));
+  const running = start(t, root, environment({ state, mode: "startup-delay" }));
   await waitFor(join(state, "booting"));
   assert.equal(existsSync(join(state, "started")), false);
   running.child.kill("SIGINT");
@@ -296,9 +297,9 @@ test("a signal delivered while the Stryker shim is starting is forwarded", async
   assert.equal(existsSync(join(root, fence)), false);
 });
 
-test("a Stryker process that ignores SIGTERM is SIGKILLed before fence removal", async () => {
+test("a Stryker process that ignores SIGTERM is SIGKILLed before fence removal", async (t) => {
   const { root, state } = await fixture();
-  const running = start(root, environment({ state, mode: "ignore-term" }));
+  const running = start(t, root, environment({ state, mode: "ignore-term" }));
   await waitFor(join(state, "started"));
   const childPid = Number(await readFile(join(state, "pid"), "utf8"));
   const grandchildPid = Number(await readFile(join(state, "grandchild-pid"), "utf8"));

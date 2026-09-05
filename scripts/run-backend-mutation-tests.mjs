@@ -98,11 +98,11 @@ function environment({ bin, state, mode = "normal", path = `${bin}:${process.env
 }
 
 const run = (root, env, args = []) => runMutationRunner(runner, root, env, args);
-const start = (root, env, options = {}) => startMutationRunner(runner, root, env, options);
+const start = (t, root, env, options = {}) => startMutationRunner(t, runner, root, env, options);
 
-test("a normal clean run holds the fence for the run and removes it afterwards", async () => {
+test("a normal clean run holds the fence for the run and removes it afterwards", async (t) => {
   const { root, bin, state } = await fixture();
-  const running = start(root, environment({ bin, state, mode: "block" }));
+  const running = start(t, root, environment({ bin, state, mode: "block" }));
   await waitFor(join(state, "started"));
   await readFile(join(state, "fence-present-at-spawn"));
   assert.match(
@@ -115,10 +115,10 @@ test("a normal clean run holds the fence for the run and removes it afterwards",
   assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
 });
 
-test("an uncatchable mid-flight kill leaves the fence and makes the next run refuse", async () => {
+test("an uncatchable mid-flight kill leaves the fence and makes the next run refuse", async (t) => {
   const { root, bin, state } = await fixture();
   const env = environment({ bin, state, mode: "block" });
-  const running = start(root, env, { stdio: "ignore" });
+  const running = start(t, root, env, { stdio: "ignore" });
   await waitFor(join(state, "started"));
   const cargoPid = Number(await readFile(join(state, "pid"), "utf8"));
   running.child.kill("SIGKILL");
@@ -132,9 +132,9 @@ test("an uncatchable mid-flight kill leaves the fence and makes the next run ref
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  test(`${signal} terminates and reaps cargo before the finaliser clears the fence`, async () => {
+  test(`${signal} terminates and reaps cargo before the finaliser clears the fence`, async (t) => {
     const { root, bin, state } = await fixture();
-    const running = start(root, environment({ bin, state, mode: "ignore-term" }));
+    const running = start(t, root, environment({ bin, state, mode: "ignore-term" }));
     await waitFor(join(state, "started"));
     const cargoPid = Number(await readFile(join(state, "pid"), "utf8"));
     running.child.kill(signal);
@@ -312,10 +312,10 @@ test("--check-guard surfaces an unreadable fence record and still refuses", asyn
   assert.match(result.stderr, /Fence owner record is unreadable:.*(?:EACCES|permission denied)/su);
 });
 
-test("exclusive fence creation rejects a second concurrent runner", async () => {
+test("exclusive fence creation rejects a second concurrent runner", async (t) => {
   const { root, bin, state } = await fixture();
   const env = environment({ bin, state, mode: "block" });
-  const first = start(root, env);
+  const first = start(t, root, env);
   await waitFor(join(state, "started"));
   const second = run(root, env);
   assert.equal(second.status, 1);
