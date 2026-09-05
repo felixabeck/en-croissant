@@ -6134,3 +6134,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Related:** `f-20260831-06` (large PGN import) — without it the reference database this
   filter is for cannot be imported from PGN; the manifest downloads are unaffected.
 * **Found by:** Felix's preparation-workflow description, session 2026-09-05.
+
+* **Addendum (2026-09-05, Felix):** the explorer must also let him exclude fast games. Mega and
+  YottaBase carry no `TimeControl` tag, but official rapid and blitz events are recognisable by
+  the event name ("rapid", "blitz", "Schnell", "bullet", "armageddon"). Add an "exclude rapid/blitz
+  events" toggle implemented as a case-insensitive event-name predicate, and state in the panel
+  that it is name-based. Felix's target set: classical only, rapid tolerated, nothing faster.
