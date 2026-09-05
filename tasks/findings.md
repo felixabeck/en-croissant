@@ -4655,12 +4655,40 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 
 ### Empty the Rust filesystem-surface allowlist by routing remaining production reaches through PathAuthority
 
-* **ID:** f-20260901-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260901-01 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** the shrink-only allowlist in `scripts/check-rust-release-surface.mjs` (`INITIAL_FS_SURFACE_ALLOWLIST` / `INITIAL_FS_SURFACE_COUNTS`), covering production `std::fs` / `tokio::fs` / pathname `atomic_replace` in `credentials.rs`, `db/mod.rs`, `db/repository.rs`, `db/search_index.rs`, `file_workspace.rs`, `fs.rs`, `main.rs`, `puzzle.rs`, `sound.rs`.
 * **Defect:** f-20260830-23 landed the write-time gate (R3/R4) with those nine files exempted at pinned match counts. The original invariant — every filesystem reach goes through PathAuthority, and pathname `&Path` primitives are not callable from outside it — is still false for those files. `atomic_replace(&Path)` remains `pub` and is still used from `main.rs`, `credentials.rs`, `fs.rs` and `search_index.rs`.
 * **Why it matters:** the gate stops *new* modules; it does not stop a new `std::fs::write` in `main.rs` except via the per-file count (same-count substitution on one line still passes). Emptying the allowlist is what makes the convention true.
 * **Fix shape:** route each remaining production site through PathAuthority / descriptor `*_at` forms, then shrink the allowlist and counts to empty. Related: f-20260830-23 (the gate; Root `-`, so named here rather than shared). Do not reopen clippy.toml (`d-20260901-02`).
 * **Found by:** Grok, drain session d0b4541b, while closing f-20260830-23, 2026-09-01.
+
+* **Handled:** 2026-09-05, commits `6e1d76fd` (the gate rule), `2a207ae0` (`db/search_index.rs`),
+  `080fd335` (the registration-body extraction) and `66fce39e` (the app-owned default root).
+  Measured: **37 counted R3/R4 sites to 30**, and **nine allowlisted files to seven** —
+  `src-tauri/src/db/search_index.rs` and `src-tauri/src/puzzle.rs` removed entirely, `main.rs`
+  lowered from 5 to 2.
+* **The allowlist is NOT empty, and this closure does not claim the convention is now true.**
+  The remaining 30 sites are six distinct design questions in three ledger areas, each filed as
+  its own build-tier entry with this run's evidence: **`f-20260905-02`** (credential
+  initialisation runs before `PathAuthority::open`, 5 sites), **`f-20260905-03`**
+  (`canonical_database_path` is the repository's map key, 3 sites), **`f-20260905-04`**
+  (`DatabaseIdentity.path` is archived into every `.ecsi` sidecar's provenance, plus the
+  lock-across-pool-construction defect in the same function family), **`f-20260905-05`**
+  (`PathAuthority` has no directory-enumeration capability, 5 sites),
+  **`f-20260905-06`** (the temp-to-temp `atomic_install_dir` pair), and **`f-20260905-07`**
+  (the backend-chosen-destination token question, 10 sites — the one that actually gates
+  emptying the allowlist, and which names the still-open engine-image symlink window).
+  `f-20260905-01` records a defect this run's design deliberately carries forward: a deleted
+  **default** root directory is now a permanent dead end.
+* **What makes the shrink provable rather than asserted:** before `6e1d76fd`, an allowlist entry
+  could sit at count 0 for ever, or survive the deletion of its file, with every gate green —
+  `checkFilesystemSurface` emitted nothing for a path with no matches. Both shapes are now
+  violations, and `rust:surface:check` passes `--check-allowlist-residency`, so the two removals
+  are enforced by the gate rather than described in a commit message.
+* **Decisions:** `d-20260905-01` (shrink rather than empty, and why the residue is six entries
+  and not one), `d-20260905-02` (the closed-enum shape and the three rejected alternatives),
+  `d-20260905-03` (why the dialog callers keep refusing an absent directory),
+  `d-20260905-05` (why the outermost triplication stays).
 
 ---
 
@@ -5249,7 +5277,7 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
 
 ### `issue_puzzle_download_destination_blocking` is untested, and the puzzle path cannot be unit-tested without a `Runtime` generic
 
-* **ID:** f-20260903-03 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260903-03 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/puzzle.rs` — `issue_puzzle_download_destination_blocking` (~:318) and
   `active_or_default_puzzle_workspace` (~:236).
 * **Defect:** the command conversions in `a47d9066` added new production code on the puzzle-workspace
@@ -5283,6 +5311,38 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
 * **Related:** `f-20260830-38`, whose command conversions introduced it; `d-20260903-06` for the
   shape those wrappers have and why a pass-through is not one.
 * **Found by:** Claude Code, running `pnpm gate:ensure backend-coverage` on its own diff, 2026-09-03.
+
+* **Handled:** 2026-09-05, commit `fb85ed36`.
+  `active_or_default_puzzle_workspace`, `issue_puzzle_download_destination_blocking` and
+  `list_puzzle_databases_blocking` are now generic over `R: tauri::Runtime`, so the
+  puzzle-workspace path is reachable from `tauri::test::mock_app()` for the first time. The
+  three commands stay concrete and `pnpm bindings:check` is green, so `src/bindings/generated.ts`
+  is byte-identical — the IPC surface did not move.
+* **Four tests, and none of them is an `is_ok()`.** `puzzle_download_destination` returns
+  `root.path_ref().clone()` verbatim, so "the returned `PathRef` is under the seeded root" is
+  satisfied identically by a body that never asks the authority at all — the one mutation that
+  deletes the `DownloadFile` authorization. So: (1) the destination equals the seeded root's own
+  `PathRef` **and** resolves through `workspace_root` to the temp directory; (2) a second root
+  carrying `PuzzleRead` and `PuzzleDelete` but **not** `DownloadFile` activates — activation
+  gates on `PuzzleRead` alone — and only the download resolve errors; (3) the listing test seeds
+  a decoy `notes.txt` beside `lichess.db3` and asserts the exact list; (4) the absent-authority
+  arm is covered once.
+* **The hazard the tests had to be built around:** `mock_app()` still resolves `app_data_dir()`
+  against the **real** user directory, so a silently unseeded authority takes the default branch
+  and creates `~/.local/share/<identifier>/puzzles` on the machine running the tests. Every case
+  therefore asserts `active_puzzle_root()?.is_some()` **before** the call — scoped to its own
+  block, because `active_puzzle_root` takes `&mut self` and the call under test locks the same
+  mutex one line later, so a live guard turns the safety check into a deadlock. `XDG_DATA_HOME`
+  was considered and rejected: `std::env::set_var` is process-global, `cargo test` runs tests as
+  threads in one process, and an unwinding test would leak the mutated value into every test
+  that starts after it.
+* **Two deviations from the filed fix shape**, both recorded in `d-20260905-04`: three symbols
+  are genericised rather than four (`resolve_puzzle` is not on the tested path), and the test
+  module had none of the fixtures the finding assumed — all of it is new.
+* **Sliced together with `f-20260901-01`** per `d-20260904-23`, because `puzzle.rs`'s only
+  production filesystem reach sat inside the very function this finding needed generic.
+* The filed sequencing dependency on phase 3b of
+  `tasks/plans/2026-09-03-blocking-work-not-offloaded.md` was already cleared by `c5362e0d`.
 
 ---
 
@@ -5761,3 +5821,220 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   missing terminate caller.
 * **Found by:** the `review-engine-protocol` lens (confidence 88) over the cumulative diff of the
   progress-discriminator range, 2026-09-04. Pre-existing; the range did not touch `chess.rs`.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### A deleted default root directory is a permanent dead end with no way back
+
+* **ID:** f-20260905-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority.rs` — `refresh_entry` (`:3948`), the reuse
+  lookup inside `get_or_create_root` (the `self.persistent.values().find(...)` at `:2130`), and
+  `validate_target`; reached from `get_database_workspace_blocking` (`main.rs`),
+  `get_engine_workspace_blocking` (`main.rs`) and `active_or_default_puzzle_workspace`
+  (`puzzle.rs`).
+* **Defect:** if a user deletes one of the four app-owned default root directories, the
+  application cannot recover, and there is no user-facing way out. `refresh_entry` marks the
+  stale persistent entry `Unavailable` but never prunes it. The reuse lookup keys on
+  `stored.path` regardless of availability, so the entry is still found. The default branch
+  then recreates the directory — with a **new inode** — so `validate_target` mismatches the
+  stored identity and the call returns
+  `Conflict("<noun> root changed; select it again")`. There is no picker on this path to act
+  on that instruction: these are the *default* roots, materialised by
+  `ensure_app_owned_default_dir`, not chosen through a dialog.
+* **Why it matters:** it is a permanently wedged workspace produced by an ordinary user action
+  (cleaning out an app-data directory), and the error message tells the user to do something
+  the interface does not offer.
+* **Why it is filed rather than fixed here:** the answer is a design question, not an
+  extraction. Candidates, none of them free: prune an `Unavailable` persistent entry whose
+  path is an app-owned default leaf; make the reuse lookup skip unavailable entries and
+  re-register; or add a re-selection surface for default roots. Each changes what a stale
+  registry means, which the registry format and the dialog-caller contract both depend on.
+* **Evidence from this run:** the three dialog callers now have regression tests proving they
+  refuse an absent directory (`get_or_create_{database,engine,puzzle}_root_refuses_an_absent_directory`),
+  which is the *correct* behaviour for a user-picked path and the exact mechanism that leaves
+  the default path wedged. The two behaviours are now separated in code by
+  `ensure_app_owned_default_dir`, so this can be fixed for defaults without weakening the
+  dialog contract.
+* **Related:** `f-20260830-07` (deleting a workspace directory leaves an authority record for
+  every descendant behind) is the same class of registry rot; `d-20260904-*` from this run
+  records why the create-if-missing shortcut was rejected for the dialog callers.
+* **Found by:** Claude Code, plan review of `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### Credential initialisation runs before the path authority exists, so its five filesystem reaches cannot be routed
+
+* **ID:** f-20260905-02 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/credentials.rs` — five counted R3/R4 sites, including
+  `secure_directory` (`:612-621`) and `open_registry_file` (`:626-632`); ordering at
+  `src-tauri/src/main.rs`, where credential initialisation runs **before**
+  `PathAuthority::open`.
+* **Defect:** `credentials.rs` is one of the seven files still on
+  `INITIAL_FS_SURFACE_ALLOWLIST`, at five sites, and none of them can be routed through
+  `PathAuthority` as things stand: the credential store is materialised before the authority
+  exists. There is also an asymmetry inside the file — `secure_directory` opens with
+  `O_DIRECTORY|O_NOFOLLOW` while `open_registry_file` opens with `O_NOFOLLOW` alone.
+* **Why it matters:** this is one of the six design questions standing between the current
+  30-site allowlist and the empty one `f-20260901-01` asks for, and it is the one that touches
+  credentials.
+* **Fix shape (the decision, not the edit):** either a pre-authority bootstrap — a minimal,
+  explicitly-scoped descriptor-based primitive the credential store may use before
+  `PathAuthority::open`, with its own gate exemption stated as a rule rather than an allowlist
+  count — or moving credential initialisation after the authority, which changes startup
+  ordering and what happens when the registry itself is unreadable. Both are startup-ordering
+  decisions with a failure mode on first launch.
+* **Related:** `f-20260901-01`, which this splits out of; `d-20260901-03`, which recorded that
+  `PathRef` cannot represent a backend-chosen destination.
+* **Found by:** Claude Code, locate stage of `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### The repository is keyed on a normalised pathname, so its three filesystem reaches cannot be routed without re-keying it
+
+* **ID:** f-20260905-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/repository.rs` — `canonical_database_path` and the three counted
+  sites at `:610`, `:614`, `:635`; `RepositoryState.entries: HashMap<PathBuf, _>`.
+* **Defect:** three of `repository.rs`'s six allowlisted filesystem reaches exist only because
+  the repository is keyed on a normalised pathname. `canonical_database_path` turns a database
+  name into that key, so the reaches are not incidental IO — they compute the map key.
+* **Why it cannot be routed as an extraction:** replacing the pathname key with an identity
+  key means re-keying `entries` on `(dev, ino)` and moving LRU eviction, the tombstone set and
+  `DatabaseIdentity.path` with it. And `:635`'s case is a database that does **not yet exist**,
+  which has no `(dev, ino)` at all — so the key type would have to admit a second, pre-creation
+  shape, which is exactly the design question.
+* **Why it matters:** one of the six questions between the 30-site allowlist and the empty one.
+* **Related:** `f-20260901-01`, which this splits out of; the sibling entry filed in the same
+  run for `DatabaseIdentity.path` in the `.ecsi` provenance, which shares the "the pathname is
+  load-bearing data, not just an argument" cause.
+* **Found by:** Claude Code, locate stage of `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### `DatabaseIdentity.path` is archived into every `.ecsi` sidecar, and the entry lookup holds its lock across pool construction
+
+* **ID:** f-20260905-04 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/repository.rs:265`, `src-tauri/src/db/mod.rs:138`,
+  `src-tauri/src/db/search_index.rs:180-195` (the archived provenance) and `:20` (`VERSION`);
+  plus `repository.rs` `entry()` (`:411-446`).
+* **Defect, part one:** `DatabaseIdentity` carries a pathname, and that pathname is **archived
+  into every `.ecsi` search-index sidecar's provenance**. Dropping it is therefore not a
+  refactor of two call sites: it takes `search_index.rs`'s `VERSION` from 6 to 7 and
+  regenerates every existing index on every user's machine.
+* **Defect, part two — a lock held across IO, in the same function family:** in `entry()`, the
+  `state` binding taken at `:411` is still live across
+  `Pool::builder()…build(ConnectionManager::new(key))` at `:429`. Building the pool opens
+  SQLite connections, and every other database's entry lookup is blocked for the duration.
+  This is `.claude/rules/async-resource-invariants.md`'s "no lock is held across blocking
+  work" clause.
+* **What was nearly filed here instead, and why it is recorded:** an earlier draft of the plan
+  that produced this entry named `repository.rs:454-458`, claiming the `EntryState` guard is
+  held across `DatabaseSchemaIdentity::from_path`. That is **false** — in `a = b` Rust
+  evaluates the value operand first, so `from_path(path)?` completes, and can return early
+  through `?`, before `entry.state.lock()` is taken; the guard covers the field store alone.
+  Filing it as written would have put a non-defect into an append-only ledger and lost the
+  real site. Stated here so the next reader does not re-derive it.
+* **Why it matters:** part one is one of the six design questions between the 30-site
+  allowlist and the empty one. Part two is a live contention defect independent of the
+  allowlist, and it is filed here rather than separately because the fix opens the same
+  function family.
+* **Related:** `f-20260901-01`, which part one splits out of; the sibling `canonical_database_path`
+  re-keying entry filed in the same run.
+* **Found by:** Claude Code, plan review of `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### `PathAuthority` has no directory-enumeration capability, so `file_workspace.rs`'s five reaches have nowhere to go
+
+* **ID:** f-20260905-05 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/file_workspace.rs` — five counted R3/R4 sites;
+  `src-tauri/src/infra/fs.rs` (no primitive lists a directory);
+  `src-tauri/src/infra/path_authority.rs` — `workspace_mutation_target` (`:3501`), which is
+  `#[cfg(unix)]`.
+* **Defect:** all five of `file_workspace.rs`'s allowlisted reaches are directory
+  enumeration, and there is nothing in `infra/` to route them through: `infra/fs.rs` has no
+  primitive that lists a directory at all. Closing them needs a new capability on
+  `PathAuthority` — an `openat`-based iterator yielding `(name, identity, kind)` and **never a
+  pathname**, since handing back a pathname would recreate the reach it replaces.
+* **Why it is a design question, not an extraction:** the iterator's identity and lifetime
+  semantics are the decision (what a caller may hold across iterations, what happens when an
+  entry is replaced mid-walk), and **Windows is genuinely open**: the nearest existing
+  primitive, `workspace_mutation_target`, is `#[cfg(unix)]`, so a portable directory capability
+  has no in-tree precedent to copy.
+* **Why it matters:** one of the six questions between the 30-site allowlist and the empty one,
+  and the only one that requires new infrastructure rather than a change of key or ordering.
+* **Related:** `f-20260901-01`, which this splits out of; `f-20260830-09` (every removal in
+  `infra/fs.rs` unlinks by name) is the same descriptor-versus-pathname gap on the write side.
+* **Found by:** Claude Code, locate stage of `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### The temp-to-temp `atomic_install_dir` pair is counted by bare name and cannot use the download-directory route
+
+* **ID:** f-20260905-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs:1374` and `:1436` — the two `atomic_install_dir` call sites;
+  `src-tauri/src/infra/path_authority.rs` — `ResolvedPath::atomic_install_download_dir`.
+* **Defect:** these two sites are counted because `PATHNAME_FNS` matches by **bare name**, and
+  they are genuinely temp-to-temp: both operands are inside a staging directory the backend
+  itself created. The authority-mediated route cannot take them —
+  `ResolvedPath::atomic_install_download_dir` demands `PathOperation::DownloadArchive` and a
+  **registered** target, and a staging directory is neither registered nor a download target.
+* **Why it matters:** two of the 30 remaining counted sites, and the only pair where the
+  pathname reach is arguably already contained; deciding them is deciding whether the gate
+  should be able to express "both operands are backend-owned temporaries" at all, or whether
+  the authority grows a staging concept.
+* **Options, neither free:** teach the checker a narrow, named exemption for a staging-scoped
+  install (which weakens a bare-name rule that is deliberately blunt), or give `PathAuthority`
+  a staging-directory concept these two can register against (which adds a lifetime and a
+  cleanup path to the authority).
+* **Related:** `f-20260901-01`, which this splits out of.
+* **Found by:** Claude Code, locate stage of `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### Ten reaches write to a backend-chosen destination that `PathRef` cannot represent — and the engine-image write is still a live symlink window
+
+* **ID:** f-20260905-07 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs:484`, `:591`, `:592`, `:827`, `:1243`, `:1444`, `:1503`;
+  `src-tauri/src/main.rs:569` and `main.rs:1104` (the engine-image write);
+  `src-tauri/src/sound.rs:113`. Also `src-tauri/src/infra/path_authority.rs` —
+  `register_engine_image` (`:2367-2377`) and `ensure_app_owned_default_dir`;
+  `src-tauri/src/infra/fs.rs:864` (`atomic_replace_at`).
+* **Defect:** ten of the 30 remaining counted sites are one class — the backend picks the
+  destination itself, and `d-20260901-03` already recorded that `PathRef` cannot represent
+  such a destination. This is the `AuthorizedPath`-shaped token question, and it is the one
+  that actually gates emptying the allowlist: the other five residual questions together
+  account for fewer sites than this one does.
+* **The engine-image window, named explicitly because it is narrower than it now looks:**
+  `ensure_app_owned_default_dir` (added by this run) post-checks the `engine-images` leaf for a
+  symlink, which closes the *pre-planted* symlink. It does **not** close the window between
+  that check and the write: `main.rs:1104` then writes through
+  `atomic_replace(&image_dir.join(uuid))` **by pathname**, so a symlink swapped in afterwards
+  still redirects the bytes, and `register_engine_image` then registers the result for
+  `ImageRead` with **no containment check** back to the app-data directory.
+  `EngineImages` is the one `AppOwnedDefaultRoot` variant with no `get_or_create_*_root` — and
+  therefore no `validate_target` — behind it, which is exactly why it is the exposed one.
+* **Fix shape:** the close is a descriptor-relative write through `atomic_replace_at`
+  (`infra/fs.rs:864`) against a descriptor for the checked directory, plus a containment check
+  in `register_engine_image`. That is a subset of the token question and could be taken first.
+* **Why it matters:** ten sites, and one of them is a live TOCTOU on a file the renderer is
+  then handed a read capability for.
+* **Related:** `f-20260901-01`, which this splits out of; `d-20260901-03` (`PathRef` cannot
+  represent a backend-chosen destination); `f-20260830-32` (unbounded native reads, including
+  an engine image read after a TOCTOU window) is the read side of the same window;
+  `f-20260830-27` (the engine manifest supplies a path component).
+* **Found by:** Claude Code, locate stage and plan review of
+  `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
