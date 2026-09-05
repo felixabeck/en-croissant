@@ -81,6 +81,10 @@ mod verified_identity {
         pub(super) fn pair(self) -> (u64, u64) {
             self.0
         }
+
+        pub(super) fn agrees_with(self, validated: &super::Identity) -> bool {
+            self.pair() == (validated.a, validated.b)
+        }
     }
 
     impl super::AuthorizedDir {
@@ -125,9 +129,9 @@ mod verified_identity {
         validated: &super::Identity,
     ) -> Result<VerifiedIdentity, Error> {
         let pair = (validated.a, validated.b);
-        if resolved.pair() != pair {
+        if !resolved.agrees_with(validated) {
             return Err(Error::Conflict(
-                "resolved identity does not match registration target".into(),
+                super::VERIFIED_REGISTRATION_CONFLICT.into(),
             ));
         }
         Ok(VerifiedIdentity(pair))
@@ -138,11 +142,17 @@ pub(crate) use verified_identity::VerifiedIdentity;
 
 const VERIFIED_REGISTRATION_CONFLICT: &str = "verified identity does not match registration target";
 
-fn require_expected_identity(
+#[cfg(test)]
+std::thread_local! {
+    static DATABASE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn reject_disagreeing_expected_identity(
     validated: &Identity,
     expected: Option<VerifiedIdentity>,
 ) -> Result<(), Error> {
-    if expected.is_some_and(|expected| expected.pair() != (validated.a, validated.b)) {
+    if expected.is_some_and(|expected| !expected.agrees_with(validated)) {
         return Err(Error::Conflict(VERIFIED_REGISTRATION_CONFLICT.into()));
     }
     Ok(())
@@ -169,6 +179,7 @@ impl AuthorizedDir {
     ) -> Result<(), Error> {
         #[cfg(unix)]
         {
+            crate::infra::fs::single_leaf(leaf)?;
             crate::infra::fs::remove_entry_at(
                 self.directory.as_file(),
                 leaf,
@@ -884,6 +895,13 @@ impl ResourceDir {
 fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
     use std::os::unix::fs::MetadataExt;
     let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "app-owned default root is not a directory",
+        )
+        .into());
+    }
     let identity = (metadata.dev(), metadata.ino());
     let directory = crate::infra::fs::open_verified_directory(path, identity)?;
     Ok(AuthorizedDir {
@@ -907,11 +925,9 @@ fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
 /// not own, and in particular a user-picked path can never acquire create-if-missing semantics.
 /// Refuses a leaf that is a symlink or not a directory.
 ///
-/// The refusal is not belt-and-braces: `create_dir_all` returns `Ok` for a leaf that is a
-/// symlink to an existing directory, and `EngineImages` is the one variant no
-/// `get_or_create_*_root` follows, so `validate_target` never sees it. It narrows a
-/// pre-planted symlink to one planted between this check and the caller's write; closing that
-/// window means a descriptor-relative install and is a separate decision.
+/// The function returns its verified directory descriptor; subsequent writes must use the
+/// descriptor rather than reopening the pathname. The function's `create_dir_all` call still
+/// follows ancestor symlinks, which is tracked separately.
 ///
 /// The refusal is built as an `std::io::Error`, so it reaches the renderer as `Error::Io` —
 /// fixed text plus the MissingResource/Permission/Io discrimination. `Error::InvalidInput`
@@ -922,13 +938,6 @@ pub(crate) fn ensure_app_owned_default_dir(
 ) -> Result<AuthorizedDir, Error> {
     let path = app_data_dir.as_path().join(root.leaf());
     fs::create_dir_all(&path)?;
-    if !fs::symlink_metadata(&path)?.is_dir() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "app-owned default root is not a directory",
-        )
-        .into());
-    }
     authorize_existing_dir(&path)
 }
 
@@ -938,13 +947,6 @@ pub(crate) fn open_app_owned_resource_dir(
     resource_dir: &ResourceDir,
 ) -> Result<AuthorizedDir, Error> {
     let path = resource_dir.as_path().join(SOUND_ROOT_LEAF);
-    if !fs::symlink_metadata(&path)?.is_dir() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "app-owned default root is not a directory",
-        )
-        .into());
-    }
     authorize_existing_dir(&path)
 }
 
@@ -2367,7 +2369,7 @@ impl PathAuthority {
         }
         let path = PathBuf::from(path);
         let identity = validate_target(&path, class)?;
-        require_expected_identity(&identity, expected_identity)?;
+        reject_disagreeing_expected_identity(&identity, expected_identity)?;
         let id = PathRef::fresh();
         let stored = StoredEntry {
             id: id.clone(),
@@ -2429,7 +2431,7 @@ impl PathAuthority {
             ));
         }
         let expected = validate_target(path, PathClass::PersistentFile)?;
-        require_expected_identity(&expected, expected_identity)?;
+        reject_disagreeing_expected_identity(&expected, expected_identity)?;
         if let Some(entry) = self.persistent.values().find(|entry| {
             entry.stored.class == PathClass::PersistentFile
                 && entry.stored.operations == operations
@@ -2547,7 +2549,7 @@ impl PathAuthority {
                     .is_ok_and(|stored| stored == path)
         }) {
             let identity = validate_target(path, PathClass::PersistentCustomRoot)?;
-            require_expected_identity(&identity, expected_identity)?;
+            reject_disagreeing_expected_identity(&identity, expected_identity)?;
             if identity != entry.stored.identity {
                 return Err(Error::Conflict(format!(
                     "{changed_noun} root changed; select it again"
@@ -3067,6 +3069,12 @@ impl PathAuthority {
     ) -> Result<DatabaseHandle, Error> {
         let components = vec![filename.to_os_string()];
         let resolved = self.resolve(root.path_ref(), PathOperation::DatabaseRead, &components)?;
+        #[cfg(test)]
+        DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
         let root_path = self.database_root_path(root)?;
         let path = root_path.join(filename);
         let validated_identity = validate_target(&path, PathClass::PersistentFile)?;
@@ -4938,6 +4946,40 @@ mod tests {
         assert!(!message.contains("db"), "{message}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn register_database_child_identity_mismatch_is_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("databases");
+        fs::create_dir(&root_path).unwrap();
+        let child = root_path.join("child.db3");
+        let replacement = dir.path().join("replacement.db3");
+        fs::write(&child, b"original").unwrap();
+        fs::write(&replacement, b"replacement").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "Databases", None)
+            .unwrap();
+
+        DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(replacement, child).unwrap();
+                })))
+                .is_none());
+        });
+        let error = authority
+            .register_database_child(&root, OsStr::new("child.db3"), "child.db3")
+            .expect_err("the descriptor and joined pathname identities disagree");
+
+        let Error::Conflict(message) = error else {
+            panic!("unexpected refusal: {error:?}");
+        };
+        assert_eq!(message, VERIFIED_REGISTRATION_CONFLICT);
+        assert!(!message.contains('/'), "{message}");
+        assert!(!message.contains("child.db3"), "{message}");
+    }
+
     #[test]
     fn guarded_registrars_require_the_resolved_descriptor_identity() {
         let source = include_str!("path_authority.rs");
@@ -6717,6 +6759,33 @@ mod tests {
         assert!(!root.path().join("sound/track.mp3").exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn authorized_dir_remove_leaf_refuses_a_non_leaf_name() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("sound")).unwrap();
+        let directory = open_app_owned_resource_dir(&ResourceDir::for_test(root.path())).unwrap();
+        let leaf = OsStr::new("track.mp3");
+        let (_, installed) = directory
+            .atomic_replace_leaf_identified(leaf, |file| {
+                file.write_all(b"track").map_err(Error::from)
+            })
+            .unwrap();
+
+        for invalid in ["../outside", "", "nested/track.mp3", "/absolute"] {
+            assert!(
+                directory
+                    .remove_leaf_identified(OsStr::new(invalid), installed)
+                    .is_err(),
+                "{invalid} must be refused"
+            );
+            assert!(
+                root.path().join("sound/track.mp3").is_file(),
+                "the installed leaf must survive refusal of {invalid}"
+            );
+        }
+    }
+
     #[test]
     fn authorized_dir_has_no_arbitrary_path_constructor() {
         let source = include_str!("path_authority.rs");
@@ -6730,6 +6799,60 @@ mod tests {
                 "{implementation}"
             );
         }
+
+        let private_authorizer = ["authorize_existing", "_dir(path: &Path)"].concat();
+        let expected_authorizer_signature =
+            format!("fn {private_authorizer} -> Result<AuthorizedDir, Error> {{");
+        let authorize_signatures: Vec<_> = source
+            .lines()
+            .filter(|line| line.contains(&private_authorizer))
+            .collect();
+        assert_eq!(authorize_signatures.len(), 2, "{authorize_signatures:?}");
+        assert!(authorize_signatures
+            .iter()
+            .all(|line| *line == expected_authorizer_signature));
+
+        let mut signature = String::new();
+        let mut signature_is_public = false;
+        let mut public_producers = Vec::new();
+        for line in source.lines() {
+            if line.contains("fn ") {
+                signature.clear();
+                signature.push_str(line.trim());
+                signature_is_public = line.trim_start().starts_with("pub ")
+                    || line.trim_start().starts_with("pub(crate) ");
+            } else if !signature.is_empty() {
+                signature.push_str(line.trim());
+            }
+            if !line.contains("-> Result<AuthorizedDir") {
+                continue;
+            }
+            if signature_is_public {
+                let name = signature
+                    .split_once("fn ")
+                    .expect("function signature")
+                    .1
+                    .split_once('(')
+                    .expect("function parameters")
+                    .0;
+                let parameters_start = signature.find('(').expect("function parameters") + 1;
+                let parameters_end = signature.find("->").expect("function return");
+                let parameters = &signature[parameters_start..parameters_end];
+                assert!(!parameters.contains("&Path"), "{signature}");
+                assert!(!parameters.contains("PathBuf"), "{signature}");
+                public_producers.push(name.to_owned());
+            }
+        }
+        assert_eq!(
+            public_producers
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "ensure_app_owned_default_dir",
+                "open_app_owned_resource_dir"
+            ]
+        );
     }
 
     /// Tauri production path resolution cannot be exercised by a unit test. Keep the constructor
