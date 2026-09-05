@@ -13,8 +13,13 @@ use rkyv::{Archive, Deserialize, Serialize};
 use crate::{
     db::DatabaseIdentity,
     error::{DurabilityStage, Error},
-    infra::fs::{atomic_replace, atomic_replace_at, remove_optional_regular_at, AtomicFileOutcome},
+    infra::fs::{atomic_replace_at, remove_optional_regular_at, AtomicFileOutcome},
 };
+
+// Only the test-only helpers below still replace an index by pathname; production
+// writes go through the descriptor-relative `atomic_replace_at`.
+#[cfg(test)]
+use crate::infra::fs::atomic_replace;
 
 const MAGIC: &[u8; 4] = b"ECSI";
 const VERSION: u32 = 6;
@@ -160,6 +165,7 @@ pub struct IndexSource {
 }
 
 impl IndexSource {
+    #[cfg(test)]
     pub fn from_database(database: &Path, revision: u64) -> Result<Self, Error> {
         let database = database.canonicalize()?;
         let metadata = database.metadata()?;
@@ -218,6 +224,7 @@ impl SearchIndex {
         self.entries.push(entry);
     }
 
+    #[cfg(test)]
     pub fn write_to<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         match self.write_to_with_source(path, IndexSource::default())? {
             AtomicFileOutcome::DurableCommit => Ok(()),
@@ -230,6 +237,7 @@ impl SearchIndex {
         }
     }
 
+    #[cfg(test)]
     pub fn write_to_with_source<P: AsRef<Path>>(
         &self,
         path: P,
