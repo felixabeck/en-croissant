@@ -904,7 +904,7 @@ where
 pub(crate) fn single_leaf(leaf: &OsStr) -> Result<(), Error> {
     if leaf.is_empty() || Path::new(leaf).file_name() != Some(leaf) {
         return Err(Error::InvalidInput(
-            "atomic target must be one leaf name".into(),
+            "leaf name must be one component".into(),
         ));
     }
     Ok(())
@@ -1065,7 +1065,7 @@ pub(crate) fn open_regular_at(parent: &File, name: &OsStr) -> Result<File, Error
             rfs::openat(
                 parent,
                 name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
                 Mode::empty(),
             )
             .map_err(|error| Error::Io(Box::new(error.into())))?,
@@ -1076,6 +1076,9 @@ pub(crate) fn open_regular_at(parent: &File, name: &OsStr) -> Result<File, Error
                 "workspace entry must be a regular file".into(),
             ));
         }
+        let flags = rfs::fcntl_getfl(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
+        rfs::fcntl_setfl(&opened, flags - OFlags::NONBLOCK)
+            .map_err(|error| Error::Io(Box::new(error.into())))?;
         Ok(opened)
     }
     #[cfg(not(unix))]
@@ -1156,6 +1159,7 @@ pub(crate) fn remove_entry_at(
     is_dir: bool,
 ) -> Result<(), Error> {
     use rustix::fs::{self as rfs, AtFlags};
+    single_leaf(name)?;
     assert_entry_identity(parent, name, expected, is_dir)?;
     #[cfg(test)]
     unix::inject_removal(unix::RemovalFaultPoint::BeforeTopOpen)?;
@@ -1443,6 +1447,20 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn open_regular_at_refuses_a_fifo_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let fifo = temp.path().join("fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo failed with {status}");
+        let parent = File::open(temp.path()).expect("open parent");
+        assert!(open_regular_at(&parent, OsStr::new("fifo")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn open_regular_at_refuses_a_multicomponent_leaf() {
         let temp = tempfile::tempdir().expect("tempdir");
         let parent = File::open(temp.path()).expect("open parent");
@@ -1455,6 +1473,39 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let parent = File::open(temp.path()).expect("open parent");
         assert!(open_regular_at(&parent, OsStr::new("")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_entry_at_refuses_invalid_leaf_names() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = File::open(temp.path()).expect("open parent");
+        for name in ["", "nested/file"] {
+            assert!(matches!(
+                remove_entry_at(&parent, OsStr::new(name), (0, 0), false),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_entry_at_does_not_unlink_outside_parent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&root).expect("root");
+        std::fs::write(&outside, b"outside").expect("outside");
+        let parent = File::open(&root).expect("open parent");
+        let expected = inode(&outside);
+
+        for name in [OsStr::new("../outside"), outside.as_os_str()] {
+            assert!(matches!(
+                remove_entry_at(&parent, name, expected, false),
+                Err(Error::InvalidInput(_))
+            ));
+            assert_eq!(std::fs::read(&outside).expect("outside intact"), b"outside");
+        }
     }
 
     #[cfg(unix)]
@@ -2068,59 +2119,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn atomic_replace_at_refuses_an_empty_or_multicomponent_leaf() {
+    fn assert_atomic_entry_point_refuses_an_empty_or_multicomponent_leaf<T>(
+        entry_point: impl Fn(&File, &OsStr) -> Result<T, Error>,
+    ) {
         let temp = tempfile::tempdir().expect("tempdir");
         let parent = File::open(temp.path()).expect("open parent");
-        assert!(atomic_replace_at(&parent, OsStr::new(""), |_| Ok(())).is_err());
-        assert!(atomic_replace_at(&parent, OsStr::new("nested/file"), |_| Ok(())).is_err());
+        assert!(entry_point(&parent, OsStr::new("")).is_err());
+        assert!(entry_point(&parent, OsStr::new("nested/file")).is_err());
+    }
+
+    #[test]
+    fn atomic_replace_at_refuses_an_empty_or_multicomponent_leaf() {
+        assert_atomic_entry_point_refuses_an_empty_or_multicomponent_leaf(|parent, leaf| {
+            atomic_replace_at(parent, leaf, |_| Ok(()))
+        });
     }
 
     #[test]
     fn atomic_replace_at_with_precommit_refuses_an_empty_or_multicomponent_leaf() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let parent = File::open(temp.path()).expect("open parent");
-        assert!(
-            atomic_replace_at_with_precommit(&parent, OsStr::new(""), || Ok(()), |_| Ok(()))
-                .is_err()
-        );
-        assert!(atomic_replace_at_with_precommit(
-            &parent,
-            OsStr::new("nested/file"),
-            || Ok(()),
-            |_| Ok(())
-        )
-        .is_err());
+        assert_atomic_entry_point_refuses_an_empty_or_multicomponent_leaf(|parent, leaf| {
+            atomic_replace_at_with_precommit(parent, leaf, || Ok(()), |_| Ok(()))
+        });
     }
 
     #[test]
     fn atomic_replace_at_identified_refuses_an_empty_or_multicomponent_leaf() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let parent = File::open(temp.path()).expect("open parent");
-        assert!(atomic_replace_at_identified(&parent, OsStr::new(""), |_| Ok(())).is_err());
-        assert!(
-            atomic_replace_at_identified(&parent, OsStr::new("nested/file"), |_| Ok(())).is_err()
-        );
+        assert_atomic_entry_point_refuses_an_empty_or_multicomponent_leaf(|parent, leaf| {
+            atomic_replace_at_identified(parent, leaf, |_| Ok(()))
+        });
     }
 
     #[test]
     fn atomic_replace_at_identified_with_precommit_refuses_an_empty_or_multicomponent_leaf() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let parent = File::open(temp.path()).expect("open parent");
-        assert!(atomic_replace_at_identified_with_precommit(
-            &parent,
-            OsStr::new(""),
-            || Ok(()),
-            |_| Ok(())
-        )
-        .is_err());
-        assert!(atomic_replace_at_identified_with_precommit(
-            &parent,
-            OsStr::new("nested/file"),
-            || Ok(()),
-            |_| Ok(())
-        )
-        .is_err());
+        assert_atomic_entry_point_refuses_an_empty_or_multicomponent_leaf(|parent, leaf| {
+            atomic_replace_at_identified_with_precommit(parent, leaf, || Ok(()), |_| Ok(()))
+        });
     }
     #[cfg(unix)]
     fn assert_logical_parent_unchanged(parent: &File, logical: &Path) -> Result<(), Error> {
