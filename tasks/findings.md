@@ -6165,3 +6165,40 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   `review-code-quality` lens for the icon choice against neighbouring rows. No design question.
 * **Found by:** Felix's screenshot of the Files page after choosing the repertoire collection,
   session 2026-09-05.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### The Files page lost its file card in the audit commit, and double-click does not open a file in the real window
+
+* **ID:** f-20260905-14 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/files/FilesPage.tsx` (renders only `DirectoryTree`, with
+  `search=""` and `filter=""` hard-coded), `src/components/files/FileCard.tsx` (still in the
+  tree, imported by nothing), `src/components/files/DirectoryTree.tsx` (row `onDoubleClick` on a
+  `draggable` `Box`).
+* **Defect, part 1 — missing pane:** upstream's Files page is a two-column layout: the tree on the
+  left and `FileCard` on the right, which shows the selected file's name, its game list with
+  paging, a search box and a type filter, and the Open action. Commit `3afed031` ("audit
+  implementation for state, components, hooks and routes") dropped `FileCard` from the page and
+  froze the tree's search and filter props to empty strings, so the only way to open a file is the
+  row's double-click or Enter, and there is no way to see or pick a game inside a multi-game
+  file. Nothing in the audit plans or `tasks/decisions.md` records this as intended. Measured on
+  2026-09-05: after clicking a row the page shows only Rename / Move / Trash above the tree
+  (screenshot in the session).
+* **Defect, part 2 — double-click:** on the real WebKitGTK window, double-clicking a file row
+  opens nothing and shows no error. The PGN is not the cause: the Rust lexer and the renderer's
+  `parsePGN` were run on the first game of the very file (`Weiß_Pirc.pgn`, BOM + CRLF + ChessBase
+  `[%cal]`/`[%evp]` annotations) and both succeed. Renderer failures are not written to the log
+  file, so the failing step is not yet identified. Prime suspect is the `draggable` attribute on
+  the row `Box` (WebKit starts a drag on the second mousedown and swallows `dblclick`); second is
+  a rejected `readGames`/`createTab` promise, which `openEntry` discards with `void` and never
+  notifies.
+* **Fix shape:** restore the two-column layout with `FileCard` and wire search/filter to real
+  state; route `openEntry` through `notifyUnlessCancelled` (`edc8943a`) so a failure is visible;
+  prove double-click through `pnpm verify:app` on the real window, which is the only proof for
+  WebKitGTK event behaviour (`d-20260830-18`).
+* **Why `build`:** it restores a whole pane whose interaction with the tree, tabs and persisted
+  selection needs a plan, and the double-click cause must be measured before it is fixed.
+* **Related:** `f-20260905-13` (the clipped Move control in the same tree row).
+* **Found by:** Felix opening his imported repertoires, session 2026-09-05.
