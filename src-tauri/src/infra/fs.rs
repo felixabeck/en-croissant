@@ -11,6 +11,38 @@ use crate::error::Error;
 use std::sync::Arc;
 use std::{ffi::OsStr, fs::File, io::Write, path::Path};
 
+#[cfg(unix)]
+mod verified_directory {
+    use crate::error::Error;
+    use std::{fs::File, os::unix::fs::MetadataExt};
+
+    pub(crate) struct VerifiedDir(File);
+
+    impl VerifiedDir {
+        pub(crate) fn new(opened: File, expected: (u64, u64)) -> Result<Self, Error> {
+            let verified = Self(opened);
+            let metadata = verified.as_file().metadata()?;
+            if (metadata.dev(), metadata.ino()) != expected {
+                return Err(Error::Conflict(
+                    "workspace directory changed concurrently".into(),
+                ));
+            }
+            Ok(verified)
+        }
+
+        pub(crate) fn as_file(&self) -> &File {
+            &self.0
+        }
+
+        pub(crate) fn into_file(self) -> File {
+            self.0
+        }
+    }
+}
+
+#[cfg(unix)]
+pub(crate) use verified_directory::VerifiedDir;
+
 #[derive(Debug)]
 pub enum AtomicFileOutcome {
     DurableCommit,
@@ -946,10 +978,13 @@ pub(crate) fn open_verified_parent(
 }
 
 #[cfg(unix)]
-pub(crate) fn open_verified_directory(path: &Path, expected: (u64, u64)) -> Result<File, Error> {
+pub(crate) fn open_verified_directory(
+    path: &Path,
+    expected: (u64, u64),
+) -> Result<VerifiedDir, Error> {
     use rustix::fs::{self as rfs, Mode, OFlags};
     let (parent, leaf) = open_verified_parent(path, expected, true)?;
-    Ok(File::from(
+    let opened = File::from(
         rfs::openat(
             &parent,
             &leaf,
@@ -957,7 +992,8 @@ pub(crate) fn open_verified_directory(path: &Path, expected: (u64, u64)) -> Resu
             Mode::empty(),
         )
         .map_err(|error| Error::Io(Box::new(error.into())))?,
-    ))
+    );
+    VerifiedDir::new(opened, expected)
 }
 
 #[cfg(unix)]
@@ -1333,6 +1369,7 @@ pub fn atomic_install_dir(temp_path: &Path, target_path: &Path) -> Result<(), Er
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::blocking::source_scan::body_at_indent;
     use std::{
         io::Write,
         path::PathBuf,
@@ -1371,6 +1408,30 @@ mod tests {
             std::fs::read(outside.join("game.pgn")).expect("outside intact"),
             b"outside"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_directory_refuses_a_mismatched_identity() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let opened_path = temp.path().join("opened");
+        let expected_path = temp.path().join("expected");
+        std::fs::create_dir(&opened_path).expect("opened directory");
+        std::fs::create_dir(&expected_path).expect("expected directory");
+        let opened = File::open(&opened_path).expect("opened descriptor");
+
+        assert!(matches!(
+            VerifiedDir::new(opened, inode(&expected_path)),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_verified_directory_contains_exactly_one_openat() {
+        let source = include_str!("fs.rs");
+        let body = body_at_indent(source, "fn open_verified_directory(");
+        assert_eq!(body.matches("openat").count(), 1, "{body}");
     }
 
     #[cfg(unix)]

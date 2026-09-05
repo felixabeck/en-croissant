@@ -881,7 +881,7 @@ fn opened_file_change_nanos(file: &fs::File) -> Result<i128, Error> {
         "post-rename marker timestamps are unsupported on this platform".into(),
     ))
 }
-/// Stable identity for an already-opened regular file. This intentionally exposes no path and
+/// Stable identity for any already-opened object. This intentionally exposes no path and
 /// uses the Windows handle index instead of lossy metadata fallbacks.
 pub(crate) fn opened_file_identity(file: &fs::File) -> Result<(u64, u64), Error> {
     #[cfg(unix)]
@@ -3569,10 +3569,10 @@ impl PathAuthority {
     ) -> Result<WorkspaceMutationTarget, Error> {
         let target = self.retained_workspace_target(handle, PathOperation::WritePgn)?;
         let directory = if target.target_is_dir {
-            Some(crate::infra::fs::open_verified_directory(
-                &target.path,
-                target.identity,
-            )?)
+            Some(
+                crate::infra::fs::open_verified_directory(&target.path, target.identity)?
+                    .into_file(),
+            )
         } else {
             None
         };
@@ -5201,6 +5201,25 @@ mod tests {
                 .availability,
             PathAvailability::Unavailable
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opened_file_identity_retains_the_original_directory_after_pathname_swap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("directory");
+        let original_path = dir.path().join("directory-original");
+        fs::create_dir(&path).unwrap();
+        let opened = fs::File::open(&path).unwrap();
+        let original_identity = opened_file_identity(&opened).unwrap();
+
+        fs::rename(&path, &original_path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let replacement = fs::File::open(&path).unwrap();
+        let replacement_identity = opened_file_identity(&replacement).unwrap();
+
+        assert_ne!(original_identity, replacement_identity);
+        assert_eq!(opened_file_identity(&opened).unwrap(), original_identity);
     }
     #[test]
     fn unicode_promotion_consumes_the_exact_dialog_grant() {
