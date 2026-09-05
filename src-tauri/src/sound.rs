@@ -448,6 +448,13 @@ mod tests {
             sound_path.join("linked.mp3"),
         )
         .unwrap();
+        let outside_dir = dir.path().join("outside_dir");
+        tokio::fs::create_dir(&outside_dir).await.unwrap();
+        tokio::fs::write(outside_dir.join("x.mp3"), b"escaped nested")
+            .await
+            .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_dir, sound_path.join("link")).unwrap();
         let sound_dir = Arc::new(sound_dir);
 
         // Valid full response
@@ -572,6 +579,20 @@ mod tests {
             .into_response();
             assert_eq!(res.status(), StatusCode::NOT_FOUND);
             assert_ne!(read_body(res.into_body()).await, b"outside bytes");
+        }
+
+        // A symlinked intermediate directory cannot escape the retained descriptor.
+        #[cfg(unix)]
+        {
+            let res = server::serve_sound(
+                AxumPath("link/x.mp3".to_string()),
+                HeaderMap::new(),
+                Extension(sound_dir.clone()),
+            )
+            .await
+            .into_response();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND);
+            assert_ne!(read_body(res.into_body()).await, b"escaped nested");
         }
 
         // Nested request keeps the audio content type from the requested leaf.
