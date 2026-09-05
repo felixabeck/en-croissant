@@ -911,7 +911,7 @@ everything else to its existing arm with "Zip must contain a .pgn, .epd, or .bin
 
 ### Backend coverage hardcodes the x86_64 Linux target triple
 
-* **ID:** f-20260829-12 · **Status:** open · **Area:** gate-scripts · **Root:** machine-dependent-measurement · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260829-12 · **Status:** handled · **Area:** gate-scripts · **Root:** machine-dependent-measurement · **Entry:** inline · **Blocked:** none
 * **Where:** `scripts/rust-branch-coverage.mjs:59` —
   `resolve(sysroot, "lib/rustlib/x86_64-unknown-linux-gnu/bin")`.
 * **Defect:** the path to `llvm-profdata` and `llvm-cov` is built from a literal triple, so
@@ -926,6 +926,13 @@ everything else to its existing arm with "Zip must contain a .pgn, .epd, or .bin
   pass rather than fixing the triple and re-opening the file later.
 * **Found by:** the adjacent-defects lens (confidence 100) during the `$push` review of the
   2026-08-29 setup work.
+
+* **Entry revalidation (2026-09-05):** Retained `inline`. The current source still contains the literal LLVM host directory. `d-20260902-02` governs a separate coverage-scope change and does not change tool discovery. Bounded implementation queries the pinned compiler and tests host metadata; proof is `pnpm coverage:report:test`, `pnpm test:coverage:backend`, and `pnpm coverage:backend:check`.
+* **Adjacent source-trace findings:** The coverage executable matcher excludes `.exe` and the entrypoint builds a file URL from a native path. Both belong to the same script's host portability and are fixed in this change.
+
+* **Handled (2026-09-05):** Implementation commit `8dcbf294` derives LLVM tool paths from the pinned compiler's sysroot and host, handles Windows executable names, and compares native entrypoint paths. Technical choice and rejected alternatives: `d-20260905-17`.
+* **Proof:** `pnpm coverage:report:test` passed all 27 tests; `pnpm test:coverage:backend` passed 594 tests and exported 33 sources / 6250 branch records; `pnpm coverage:backend:check` passed unchanged floors and ratchets; `pnpm gates:contract:check` passed. ARM Linux, macOS, and Windows metadata are fixture-tested, not verified on those operating systems.
+* **Delivery:** Executed at `inline` tier, committed locally and not pushed as required by `next-finding`. No independent lens review; plan authorship and arbitration shared one context, and detection ran on the same model family as the code.
 
 ---
 
