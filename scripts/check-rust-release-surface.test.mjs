@@ -1,11 +1,12 @@
 import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   checkDeadCodeSurface,
   checkFaultInjectionSurface,
+  checkAllowlistResidency,
   checkFilesystemSurface,
   checkRustReleaseSurface,
   DEAD_CODE_ALLOWLIST,
@@ -23,6 +24,43 @@ function sources(...entries) {
 
 function allowedSource() {
   return "#![allow(dead_code)]\n";
+}
+
+// Spawns the checker over a throwaway git repository built from `files`. Each entry is
+// { path, contents, staged = true, removeAfterStage = false }: `staged` keeps untracked fixtures
+// untracked, and `removeAfterStage` leaves a tracked-but-absent file behind.
+async function runCheckerOver(files, args = []) {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "rust-release-surface-"));
+  try {
+    const staged = [];
+    const removed = [];
+    for (const { path, contents, staged: isStaged = true, removeAfterStage = false } of files) {
+      const absolutePath = join(fixtureRoot, path);
+      await mkdir(dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, contents);
+      if (isStaged) staged.push(path);
+      if (removeAfterStage) removed.push(absolutePath);
+    }
+    expect(spawnSync("git", ["init", "--quiet"], { cwd: fixtureRoot }).status).toBe(0);
+    const addStatus = staged.length
+      ? spawnSync("git", ["add", ...staged], { cwd: fixtureRoot }).status
+      : 0;
+    expect(addStatus).toBe(0);
+    for (const absolutePath of removed) await unlink(absolutePath);
+
+    const result = spawnSync(process.execPath, [CHECKER, ...args], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+    });
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      output: `${result.stdout}${result.stderr}`,
+    };
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
 }
 
 describe("Rust release-surface gate", () => {
@@ -128,26 +166,12 @@ pub(crate) trait AtomicWriterInjector {}
   });
 
   test("the checker exits non-zero when a tracked Rust input cannot be read", async () => {
-    const fixtureRoot = await mkdtemp(join(tmpdir(), "rust-release-surface-"));
-    try {
-      await mkdir(join(fixtureRoot, "src-tauri/src"), { recursive: true });
-      const missing = join(fixtureRoot, "src-tauri/src/missing.rs");
-      await writeFile(missing, "pub struct Gone;\n");
-      expect(spawnSync("git", ["init", "--quiet"], { cwd: fixtureRoot }).status).toBe(0);
-      expect(
-        spawnSync("git", ["add", "src-tauri/src/missing.rs"], { cwd: fixtureRoot }).status,
-      ).toBe(0);
-      await unlink(missing);
+    const result = await runCheckerOver([
+      { path: "src-tauri/src/missing.rs", contents: "pub struct Gone;\n", removeAfterStage: true },
+    ]);
 
-      const result = spawnSync(process.execPath, [CHECKER], {
-        cwd: fixtureRoot,
-        encoding: "utf8",
-      });
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("Cannot read Rust source src-tauri/src/missing.rs");
-    } finally {
-      await rm(fixtureRoot, { recursive: true, force: true });
-    }
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Cannot read Rust source src-tauri/src/missing.rs");
   });
 
   test("the checker rejects a failing git ls-files command", () => {
@@ -175,7 +199,7 @@ pub(crate) trait AtomicWriterInjector {}
   test("the release script is wired into package.json", async () => {
     const packageJson = JSON.parse(await readFileForWiring("package.json"));
     expect(packageJson.scripts["rust:surface:check"]).toBe(
-      "node scripts/check-rust-release-surface.mjs",
+      "node scripts/check-rust-release-surface.mjs --check-allowlist-residency",
     );
   });
 
@@ -196,6 +220,14 @@ pub(crate) trait AtomicWriterInjector {}
 
 describe("Rust filesystem-surface gate", () => {
   const chess = "src-tauri/src/chess.rs";
+  const LEAK_FIXTURE = [
+    { path: "src-tauri/src/infra/path_authority.rs", contents: "#![allow(dead_code)]\n" },
+    {
+      path: "src-tauri/src/leak.rs",
+      contents: 'fn f() { std::fs::write("x", b""); }\n',
+      staged: false,
+    },
+  ];
 
   function fsHits(source, allowlist = new Set(), counts = {}) {
     return checkFilesystemSurface(sources([chess, source]), allowlist, counts);
@@ -436,34 +468,88 @@ mod tests {
   });
 
   test("an untracked leak.rs with std::fs::write fails the CLI with an R3 diagnostic", async () => {
-    const fixtureRoot = await mkdtemp(join(tmpdir(), "rust-fs-surface-"));
-    try {
-      await mkdir(join(fixtureRoot, "src-tauri/src/infra"), { recursive: true });
-      await writeFile(
-        join(fixtureRoot, "src-tauri/src/infra/path_authority.rs"),
-        "#![allow(dead_code)]\n",
-      );
-      expect(spawnSync("git", ["init", "--quiet"], { cwd: fixtureRoot }).status).toBe(0);
-      expect(
-        spawnSync("git", ["add", "src-tauri/src/infra/path_authority.rs"], { cwd: fixtureRoot })
-          .status,
-      ).toBe(0);
-      await writeFile(
-        join(fixtureRoot, "src-tauri/src/leak.rs"),
-        'fn f() { std::fs::write("x", b""); }\n',
-      );
+    const result = await runCheckerOver(LEAK_FIXTURE);
 
-      const result = spawnSync(process.execPath, [CHECKER], {
-        cwd: fixtureRoot,
-        encoding: "utf8",
-      });
-      expect(result.status).not.toBe(0);
-      const output = `${result.stdout}${result.stderr}`;
-      expect(output).toContain("src-tauri/src/leak.rs");
-      expect(output).toContain("R3:");
-    } finally {
-      await rm(fixtureRoot, { recursive: true, force: true });
-    }
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain("src-tauri/src/leak.rs");
+    expect(result.output).toContain("R3:");
+  });
+
+  test("an allowlisted path with zero production matches must leave the allowlist", () => {
+    const path = "src-tauri/src/credentials.rs";
+    const violations = checkFilesystemSurface(
+      sources([path, "pub struct Credentials;\n"]),
+      new Set([path]),
+      { [path]: 3 },
+    );
+
+    expect(violations).toContain(
+      `R3: allowlist entry ${path} has no production filesystem reaches and must be removed from the allowlist`,
+    );
+  });
+
+  test("checkAllowlistResidency names an allowlisted path that left the working tree", () => {
+    const violations = checkAllowlistResidency(
+      ["src-tauri/src/main.rs"],
+      new Set(["src-tauri/src/main.rs", "src-tauri/src/gone.rs"]),
+    );
+
+    expect(violations).toContain(
+      "R3: allowlist entry src-tauri/src/gone.rs is not present in the working tree and must be removed from the allowlist",
+    );
+  });
+
+  test("checkAllowlistResidency stays silent about a path that is present", () => {
+    const violations = checkAllowlistResidency(
+      ["src-tauri/src/main.rs"],
+      new Set(["src-tauri/src/main.rs", "src-tauri/src/gone.rs"]),
+    );
+
+    expect(violations).not.toContain(
+      "R3: allowlist entry src-tauri/src/main.rs is not present in the working tree and must be removed from the allowlist",
+    );
+  });
+
+  test("an allowlisted path at its exact expected count raises neither stale-entry violation", () => {
+    const path = "src-tauri/src/credentials.rs";
+    const violations = checkFilesystemSurface(
+      sources([path, 'fn f() { std::fs::write("x", b""); }\n']),
+      new Set([path]),
+      { [path]: 1 },
+    );
+
+    expect(violations).not.toContain(
+      `R3: allowlist entry ${path} has no production filesystem reaches and must be removed from the allowlist`,
+    );
+    expect(violations).not.toContain(
+      `R3: allowlist entry ${path} is not present in the working tree and must be removed from the allowlist`,
+    );
+  });
+
+  test("an allowlisted file measuring fewer reaches than allowlisted fails", () => {
+    const path = "src-tauri/src/credentials.rs";
+    const violations = checkFilesystemSurface(
+      sources([path, 'fn f() { std::fs::write("x", b""); }\n']),
+      new Set([path]),
+      { [path]: 2 },
+    );
+
+    expect(
+      violations.some((line) =>
+        line.includes("has 1 production filesystem reaches, allowlisted for 2"),
+      ),
+    ).toBe(true);
+  });
+
+  test("the residency flag reports an absent allowlist entry alongside an R3 leak", async () => {
+    const result = await runCheckerOver(LEAK_FIXTURE, ["--check-allowlist-residency"]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain(
+      "R3: allowlist entry src-tauri/src/fs.rs is not present in the working tree and must be removed from the allowlist",
+    );
+    expect(result.output).toContain("src-tauri/src/leak.rs");
+    expect(result.output).toContain("R3:");
   });
 });
 

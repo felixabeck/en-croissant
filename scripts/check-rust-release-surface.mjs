@@ -584,7 +584,11 @@ export function checkFilesystemSurface(
     const matches = collectFilesystemMatches(path, contents);
     if (allowedPaths.has(path)) {
       const expected = counts[path] ?? 0;
-      if (matches.length !== expected) {
+      if (matches.length === 0) {
+        violations.push(
+          `R3: allowlist entry ${path} has no production filesystem reaches and must be removed from the allowlist`,
+        );
+      } else if (matches.length !== expected) {
         violations.push(
           `R3: ${path} has ${matches.length} production filesystem reaches, allowlisted for ${expected}`,
         );
@@ -598,6 +602,21 @@ export function checkFilesystemSurface(
     }
   }
 
+  return violations;
+}
+
+// An allowlist entry whose file has left the working tree is stale: without this rule the entry
+// survives the deletion for ever and every gate stays green.
+export function checkAllowlistResidency(paths, allowlist = FS_SURFACE_ALLOWLIST) {
+  const present = new Set(paths);
+  const violations = [];
+  for (const path of allowlist) {
+    if (!present.has(path)) {
+      violations.push(
+        `R3: allowlist entry ${path} is not present in the working tree and must be removed from the allowlist`,
+      );
+    }
+  }
   return violations;
 }
 
@@ -624,8 +643,8 @@ export function runReleaseSurfaceCheck({
   workspaceRoot = process.cwd(),
   listFiles = listTrackedRustSources,
   readFile = (path) => readFileSync(path, "utf8"),
+  paths = listFiles(workspaceRoot),
 } = {}) {
-  const paths = listFiles(workspaceRoot);
   const sources = new Map();
   for (const path of paths) {
     const absolutePath = resolve(workspaceRoot, path);
@@ -646,7 +665,20 @@ export function runReleaseSurfaceCheck({
 const scriptPath = fileURLToPath(import.meta.url);
 if (process.argv[1] && resolve(process.argv[1]) === resolve(scriptPath)) {
   try {
-    runReleaseSurfaceCheck();
+    const paths = listTrackedRustSources(process.cwd());
+    const residency = process.argv.includes("--check-allowlist-residency")
+      ? checkAllowlistResidency(paths)
+      : [];
+    let surfaceFailure = null;
+    try {
+      runReleaseSurfaceCheck({ paths });
+    } catch (error) {
+      surfaceFailure = error instanceof Error ? error.message : String(error);
+    }
+    if (surfaceFailure) console.error(surfaceFailure);
+    if (residency.length)
+      console.error(`Rust release-surface violations:\n${residency.join("\n")}`);
+    if (surfaceFailure || residency.length) process.exitCode = 1;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
