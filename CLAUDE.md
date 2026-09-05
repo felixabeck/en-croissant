@@ -53,6 +53,9 @@ Read it rather than reconstructing the mapping here; `.agents/skills/push/SKILL.
 to it, and both defer to `~/.claude/references/push-review-policy.md` for authorization, review,
 triage, and red-gate behavior.
 
+`pnpm gates:contract:check` is the unconditional pre-push gate and the single CI step for tooling
+checks. The path map in the push skill covers only the expensive gates.
+
 Gate scripts live in `package.json`; the path mapping and any direct tool invocations live in the
 canonical push contract. Two properties worth knowing before planning any change:
 

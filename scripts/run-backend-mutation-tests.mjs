@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { fencedBlocks } from "./check-gate-routing.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const runner = join(projectRoot, "scripts", "run-backend-mutation.mjs");
@@ -411,5 +412,11 @@ test("the push skill keeps the executable mutation guard preflight wired", async
     join(projectRoot, ".claude", "skills", "push", "SKILL.md"),
     "utf8",
   );
-  assert.match(pushSkill, /pnpm mutation:guard:check/);
+  const packageJson = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8"));
+  assert.match(packageJson.scripts["gates:contract:check"], /^pnpm mutation:guard:check\b/u);
+  assert.ok(
+    fencedBlocks(pushSkill).some((block) =>
+      block.contents.split(/\r?\n/u).includes("pnpm gates:contract:check"),
+    ),
+  );
 });

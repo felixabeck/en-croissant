@@ -15,6 +15,7 @@
     "skills:bridges:test": "node --test scripts/check-skill-bridges-tests.mjs",
     "gates:routing:check": "node scripts/check-gate-routing.mjs",
     "gates:routing:test": "node --test scripts/check-gate-routing-tests.mjs",
+    "gates:contract:check": "pnpm mutation:guard:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm hooks:check && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm findings:test && python3 scripts/findings.py check",
     "gate:ensure": "node scripts/gate-receipt.mjs ensure",
     "gate:run": "node scripts/gate-receipt.mjs run",
     "gate:check": "node scripts/gate-receipt.mjs check",

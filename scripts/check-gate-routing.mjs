@@ -1,12 +1,14 @@
 import { readFile, stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import { globToRegExp, matches } from "./coverage-scope.mjs";
+import { GATES } from "./gate-receipt.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 const PUSH_SKILL = ".claude/skills/push/SKILL.md";
 const PACKAGE_JSON = "package.json";
 const TEST_WORKFLOW = ".github/workflows/test.yml";
 const VITE_CONFIG = "vite.config.ts";
+const CONTRACT_GATE = "gates:contract:check";
 
 const ALLOWED_CARGO_COMMANDS = new Set(["fmt", "check", "clippy", "test"]);
 // This closed list mirrors the repository's deliberate test naming conventions:
@@ -72,7 +74,7 @@ const PNPM_SUBCOMMANDS = new Set([
   "why",
 ]);
 
-function pnpmReferences(command) {
+export function pnpmReferences(command) {
   const matches = [
     ...command.matchAll(/(?:^|[;&|]\s*|\s)pnpm((?:\s+-{1,2}[\w-]+)*)(?:\s+run)?\s+([\w:@.-]+)/gu),
   ];
@@ -81,28 +83,43 @@ function pnpmReferences(command) {
     .filter((name) => !PNPM_SUBCOMMANDS.has(name) && !name.startsWith("-"));
 }
 
-function workflowRunCommands(workflow) {
-  const commands = [];
+export function workflowSteps(workflow) {
+  const steps = [];
   const lines = workflow.split(/\r?\n/u);
   for (let index = 0; index < lines.length; index += 1) {
-    const match = /^(\s*)run:\s*(.*)$/u.exec(lines[index]);
-    if (!match) continue;
-    if (match[2] !== "|") {
-      commands.push(match[2]);
-      continue;
-    }
-    const indentation = match[1].length;
-    const block = [];
-    while (index + 1 < lines.length) {
-      const next = lines[index + 1];
+    const item = /^(\s*)-\s+(.*)$/u.exec(lines[index]);
+    if (!item) continue;
+    const indentation = item[1].length;
+    const block = [{ line: item[2], index }];
+    let end = index + 1;
+    while (end < lines.length) {
+      const next = lines[end];
       if (next.trim() && next.match(/^\s*/u)[0].length <= indentation) break;
-      block.push(next.trim());
-      index += 1;
+      block.push({ line: next.slice(indentation + 2), index: end });
+      end += 1;
     }
-    commands.push(block.join("\n"));
+
+    const name = block.find(({ line }) => /^name:\s*/u.test(line))?.line.replace(/^name:\s*/u, "");
+    const runEntry = block.find(({ line }) => /^run:\s*/u.test(line));
+    if (!runEntry) continue;
+    const runValue = runEntry.line.replace(/^run:\s*/u, "");
+    let run = runValue;
+    if (runValue === "|") {
+      const runLineIndentation = lines[runEntry.index].match(/^\s*/u)[0].length;
+      const commandLines = [];
+      for (let lineIndex = runEntry.index + 1; lineIndex < end; lineIndex += 1) {
+        const line = lines[lineIndex];
+        if (line.trim() && line.match(/^\s*/u)[0].length <= runLineIndentation) break;
+        commandLines.push(line.trim());
+      }
+      run = commandLines.join("\n");
+    }
+    steps.push({ name: name ?? "", run, hasIf: block.some(({ line }) => /^if:\s*/u.test(line)) });
   }
-  return commands;
+  return steps;
 }
+
+export const workflowRunCommands = (workflow) => workflowSteps(workflow).map((step) => step.run);
 
 function testIncludes(viteConfig) {
   const testBlock = /test\s*:\s*\{[\s\S]*?include\s*:\s*\[([\s\S]*?)\]/u.exec(viteConfig);
@@ -133,37 +150,30 @@ function reviewPathGlobPatterns(pushSkill) {
   );
 }
 
-function validateGateCommands(pushSkill, scripts, repoRoot) {
-  const findings = [];
-  const bashBlocks = fencedBlocks(pushSkill).filter((block) =>
-    ["bash", "sh", "shell"].includes(block.language),
-  );
+function receiptReferences(command) {
+  return [
+    ...command.matchAll(
+      /(?:^|[;&|]\s*|\s)pnpm(?:\s+-{1,2}[\w-]+)*(?:\s+run)?\s+(gate:(?:ensure|run|check))\s+([\w.-]+)/gu,
+    ),
+  ].map((match) => ({ script: match[1], gate: match[2] }));
+}
+
+function routeCommands(commands, scripts, findings) {
   const routed = new Set();
   const pending = [];
-  const directGateCommands = [];
-
-  for (const block of bashBlocks) {
-    for (const rawLine of block.contents.split(/\r?\n/u)) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith("#")) continue;
-      directGateCommands.push(line);
-      const pnpmScripts = pnpmReferences(line);
-      if (pnpmScripts.length > 0) {
-        pending.push(...pnpmScripts.map((name) => ({ name, source: PUSH_SKILL })));
+  const enqueue = (command, source) => {
+    pending.push(...pnpmReferences(command).map((name) => ({ name, source })));
+    for (const { gate } of receiptReferences(command)) {
+      if (!(gate in GATES)) {
+        findings.push(
+          `unknown receipt gate ${gate} in ${source}; register it in scripts/gate-receipt.mjs GATES or use a registered gate`,
+        );
         continue;
       }
-      const cargo = /^cargo\s+(\w+)/u.exec(line);
-      if (cargo && ALLOWED_CARGO_COMMANDS.has(cargo[1])) continue;
-      const python = /^python3\s+(scripts\/[^\s]+)/u.exec(line);
-      if (python) {
-        if (!resolve(repoRoot, python[1]).startsWith(resolve(repoRoot, "scripts"))) {
-          findings.push(`gate command escapes scripts/: ${line}`);
-        }
-        continue;
-      }
-      findings.push(`unresolved gate command in ${PUSH_SKILL}: ${line}`);
+      pending.push(...pnpmReferences(GATES[gate]).map((name) => ({ name, source })));
     }
-  }
+  };
+  for (const { command, source } of commands) enqueue(command, source);
 
   while (pending.length > 0) {
     const { name, source } = pending.shift();
@@ -173,11 +183,62 @@ function validateGateCommands(pushSkill, scripts, repoRoot) {
     }
     if (routed.has(name)) continue;
     routed.add(name);
-    for (const nested of pnpmReferences(scripts[name])) {
-      pending.push({ name: nested, source: `package script ${name}` });
+    enqueue(scripts[name], `package script ${name}`);
+  }
+  return routed;
+}
+
+function validateGateCommands(pushSkill, scripts, repoRoot) {
+  const findings = [];
+  const bashBlocks = fencedBlocks(pushSkill).filter((block) =>
+    ["bash", "sh", "shell"].includes(block.language),
+  );
+  const directGateCommands = [];
+  const routedCommands = [];
+
+  for (const block of bashBlocks) {
+    for (const rawLine of block.contents.split(/\r?\n/u)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      directGateCommands.push(line);
+      const pnpmScripts = pnpmReferences(line);
+      if (pnpmScripts.length > 0) {
+        routedCommands.push({ command: line, source: `${PUSH_SKILL}: ${line}` });
+        continue;
+      }
+      const cargo = /^cargo\s+(\w+)/u.exec(line);
+      if (cargo && ALLOWED_CARGO_COMMANDS.has(cargo[1])) continue;
+      const words = shellWords(line);
+      if (SCRIPT_RUNNERS.has(words[0]) && words[1]) {
+        const target = resolve(repoRoot, words[1]);
+        const scriptsDirectory = resolve(repoRoot, "scripts");
+        if (target !== scriptsDirectory && !target.startsWith(`${scriptsDirectory}${sep}`)) {
+          findings.push(`gate command escapes scripts/: ${line}; use a path inside scripts/`);
+        }
+        continue;
+      }
+      findings.push(`unresolved gate command in ${PUSH_SKILL}: ${line}`);
     }
   }
+
+  const routed = routeCommands(routedCommands, scripts, findings);
   return { directGateCommands, findings, routed };
+}
+
+function sectionTwoPreamble(pushSkill) {
+  const sectionStart = pushSkill.search(/^## 2\./mu);
+  if (sectionStart < 0) return "";
+  const section = pushSkill.slice(sectionStart);
+  const nextSection = section.slice(1).search(/^## /mu);
+  const bounded = nextSection < 0 ? section : section.slice(0, nextSection + 1);
+  const firstSubsection = bounded.search(/^### /mu);
+  if (firstSubsection < 0) return bounded;
+  const subsection = bounded.slice(firstSubsection);
+  if (!subsection.startsWith("### Unconditional contract gate")) {
+    return bounded.slice(0, firstSubsection);
+  }
+  const nextSubsection = subsection.slice(1).search(/^### /mu);
+  return nextSubsection < 0 ? bounded : bounded.slice(0, firstSubsection + nextSubsection + 1);
 }
 
 async function scriptFiles(repoRoot, listedPaths) {
@@ -239,17 +300,87 @@ export async function checkGateRouting(
     repoRoot,
   );
 
-  const workflowCommands = workflowRunCommands(workflow);
-  const pending = workflowCommands.flatMap((command) => pnpmReferences(command));
-  while (pending.length > 0) {
-    const name = pending.shift();
-    if (!(name in scripts) || routed.has(name)) continue;
-    routed.add(name);
-    pending.push(...pnpmReferences(scripts[name]));
+  if (!(CONTRACT_GATE in scripts)) {
+    findings.push(`package.json is missing ${CONTRACT_GATE}; add the shared contract chain`);
   }
 
+  const skillContractReferences = directGateCommands.flatMap((command) =>
+    pnpmReferences(command).filter((name) => name === CONTRACT_GATE),
+  );
+  const preambleContractReferences = fencedBlocks(sectionTwoPreamble(pushSkill))
+    .filter((block) => ["bash", "sh", "shell"].includes(block.language))
+    .flatMap((block) => pnpmReferences(block.contents))
+    .filter((name) => name === CONTRACT_GATE);
+  if (skillContractReferences.length !== 1 || preambleContractReferences.length !== 1) {
+    findings.push(
+      `${CONTRACT_GATE} must be fenced exactly once in the ${PUSH_SKILL} §2 preamble; add or move its sole fence there`,
+    );
+  }
+
+  const steps = workflowSteps(workflow);
+  const workflowContractSteps = steps.filter((step) =>
+    pnpmReferences(step.run).includes(CONTRACT_GATE),
+  );
+  if (workflowContractSteps.length !== 1) {
+    findings.push(
+      `${TEST_WORKFLOW} must run ${CONTRACT_GATE} exactly once; replace duplicate tooling steps with one contract-gate step`,
+    );
+  } else if (workflowContractSteps[0].hasIf) {
+    findings.push(
+      `${TEST_WORKFLOW} must run ${CONTRACT_GATE} in a step without if:; remove the step condition`,
+    );
+  }
+
+  const workflowCommands = workflowRunCommands(workflow);
+  const workflowFindings = [];
+  const workflowRouted = routeCommands(
+    workflowCommands.map((command) => ({ command, source: TEST_WORKFLOW })),
+    scripts,
+    workflowFindings,
+  );
+  findings.push(...workflowFindings);
+  for (const name of [...workflowRouted].sort()) {
+    if (!routed.has(name)) {
+      findings.push(
+        `workflow-routed package script ${name} is not reachable from ${PUSH_SKILL}; add it to ${CONTRACT_GATE} or to a path-routed fence in SKILL.md §2`,
+      );
+    }
+  }
+
+  const contractFindings = [];
+  const contractRouted =
+    CONTRACT_GATE in scripts
+      ? routeCommands(
+          [{ command: `pnpm ${CONTRACT_GATE}`, source: `package script ${CONTRACT_GATE}` }],
+          scripts,
+          contractFindings,
+        )
+      : new Set();
+  findings.push(...contractFindings);
+  contractRouted.delete(CONTRACT_GATE);
+  for (const command of directGateCommands) {
+    for (const name of pnpmReferences(command)) {
+      if (contractRouted.has(name)) {
+        findings.push(
+          `contract-gate member ${name} is also invoked directly by ${PUSH_SKILL}; keep it only in ${CONTRACT_GATE}`,
+        );
+      }
+    }
+  }
+  for (const step of steps) {
+    for (const name of pnpmReferences(step.run)) {
+      if (contractRouted.has(name)) {
+        findings.push(
+          `contract-gate member ${name} is also invoked directly by ${TEST_WORKFLOW}; keep it only in ${CONTRACT_GATE}`,
+        );
+      }
+    }
+  }
+
+  const allRouted = new Set([...routed, ...workflowRouted]);
+
   for (const name of Object.keys(scripts).sort()) {
-    if (/:(?:check|test)$/u.test(name) && !routed.has(name)) {
+    if (/:(?:check|test)$/u.test(name) && !allRouted.has(name)) {
       findings.push(
         `package script ${name} is not routed through ${PUSH_SKILL} or ${TEST_WORKFLOW}`,
       );
@@ -260,7 +391,7 @@ export async function checkGateRouting(
   const isRouted = (path) =>
     directGateCommands.some((command) => invokesScript(command, path)) ||
     Object.entries(scripts).some(
-      ([name, command]) => routed.has(name) && invokesScript(command, path),
+      ([name, command]) => allRouted.has(name) && invokesScript(command, path),
     );
   for (const { path } of files.filter((file) => matches(file.path, TEST_FILE_PATTERNS))) {
     if (!isRouted(path) && !matches(path, includes)) {

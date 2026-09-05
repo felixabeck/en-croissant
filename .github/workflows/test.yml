@@ -63,33 +63,8 @@ jobs:
       - name: Enforce the UI component boundary
         run: pnpm ui:boundary:check
 
-      - name: Test tooling routes and checkers
-        run: |
-          pnpm ui:boundary:report:test
-          pnpm skills:check
-          pnpm skills:bridges:test
-          pnpm gates:routing:check
-          pnpm gates:routing:test
-          pnpm tools:parity:check
-          pnpm tools:parity:test
-          pnpm workflows:check
-          pnpm workflows:permissions:test
-          pnpm hooks:check
-
-      - name: Test coverage report parser
-        run: pnpm coverage:report:test
-
-      - name: Test bundle budget parser
-        run: pnpm bundle:report:test
-
-      - name: Test backend mutation runner
-        run: pnpm mutation:runner:test
-
-      - name: Test findings ledger atomic write
-        run: pnpm findings:test
-
-      - name: Validate findings ledger
-        run: python3 scripts/findings.py check
+      - name: Run the contract gate
+        run: pnpm gates:contract:check
 
       - name: Run frontend tests and coverage
         run: pnpm test:coverage

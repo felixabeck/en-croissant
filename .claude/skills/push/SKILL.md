@@ -27,20 +27,26 @@ interrupted runs, and accumulated work from another session.
 - Every workflow-created commit sets `GIT_COMMITTER_NAME` to the acting agent per `~/.claude/references/push-review-policy.md` §1 (`Claude Code`, `Codex`, or `Grok`). Claude Code reads this file directly; Codex reaches it through `.agents/skills/push/SKILL.md`, which names its own committer. Leave the author untouched and add no co-author trailer.
 - Determine pushed files from `BASE=$(git merge-base HEAD @{u})` and both the committed and owned dirty diffs. Review `git diff "$BASE"..HEAD`, `git diff -- <owned tracked paths>`, `git diff --cached -- <owned tracked paths>`, plus each owned untracked file as a new-file diff. An explicit push includes already-ahead commits, so review their effective diff too.
 
-Markdown/planning-only changes need no build gate, but still require the shared review and clean-diff checks.
+Markdown/planning-only changes need no *build* gate; the contract gate still runs. They still require the shared review and clean-diff checks.
 
 ## 2. Run affected gates
 
 Run commands serially for readable failures. A failure is repaired and the affected gates rerun before review.
 
-Before any other gate, refuse a checkout whose interrupted in-place mutation run still owns the
-backend tree:
+**Gate on the exit code, never on a line of output.** `pnpm lint:ci && echo green || echo red` reports the failure and still leaves the shell at exit 0, so a `&&`-chained commit behind it proceeds over a red gate. Check `$?` (or `${PIPESTATUS[0]}` behind a pipe, with `set -o pipefail`) and stop. *Measured 2026-08-29: a formatting failure was printed as `lint:ci RED` and the same command committed and pushed anyway, which took a second commit to repair.*
+
+### Unconditional contract gate
+
+Run the contract gate on every push and every path, including Markdown and planning changes:
 
 ```bash
-pnpm mutation:guard:check
+pnpm gates:contract:check
 ```
 
-**Gate on the exit code, never on a line of output.** `pnpm lint:ci && echo green || echo red` reports the failure and still leaves the shell at exit 0, so a `&&`-chained commit behind it proceeds over a red gate. Check `$?` (or `${PIPESTATUS[0]}` behind a pipe, with `set -o pipefail`) and stop. *Measured 2026-08-29: a formatting failure was printed as `lint:ci RED` and the same command committed and pushed anyway, which took a second commit to repair.*
+The mutation guard is the chain's first member, so it refuses a checkout whose interrupted
+in-place mutation run still owns the backend tree before any other gate starts. In CI the guard is
+vacuous by construction because every job starts from a fresh checkout; locally it is the point
+(`f-20260829-09`).
 
 ### Rust/Tauri backend
 
@@ -65,8 +71,6 @@ Affected by `src/**`, `public/**`, `index.html`, `package.json`, `pnpm-lock.yaml
 pnpm lint:ci
 pnpm tauri:boundary:check
 pnpm ui:boundary:check
-pnpm coverage:report:test
-pnpm bundle:report:test
 pnpm gate:ensure frontend-coverage
 pnpm gate:ensure frontend-mutation
 pnpm gate:ensure frontend-build
@@ -96,7 +100,6 @@ pnpm gate:ensure e2e-container
 pnpm gate:ensure tauri-build
 pnpm gate:run frontend-build
 pnpm gate:check frontend-build
-pnpm gates:receipt:test
 ```
 
 Receipts are reusable only for a clean exact tree with the same command, platform, toolchain, and
@@ -105,7 +108,13 @@ propagate their own exit codes, and a tree change during a run refuses the recei
 
 ### Cross-layer contracts
 
-Changes to Specta commands/events/types, `src-tauri/src/main.rs`, or `src/bindings/generated.ts` require both backend and frontend gates plus `pnpm bindings:check`. That command runs the debug Specta exporter in export-only mode and then proves the checked-in binding is exact. Never hand-edit a generated binding to make the gate pass.
+Changes to Specta commands/events/types, `src-tauri/src/main.rs`, or `src/bindings/generated.ts` require both backend and frontend gates plus:
+
+```bash
+pnpm bindings:check
+```
+
+That command runs the debug Specta exporter in export-only mode and then proves the checked-in binding is exact. Never hand-edit a generated binding to make the gate pass.
 
 ### Findings ledger
 
@@ -117,41 +126,22 @@ this line fails if those bytes have drifted from `~/Projekte/agent-kit`.
 pnpm findings:kit:check
 ```
 
-`python3 scripts/findings.py check` and `pnpm findings:test` run **only** when `tasks/**` or
-`scripts/findings.py` changed:
+`python3 scripts/findings.py check` and `pnpm findings:test` are members of the unconditional
+contract gate. `check` validates the ledger: a malformed header or an area outside the closed
+vocabulary silently drops a finding out of the derived queue, which is exactly the loss the ledger
+exists to prevent. `tasks/findings.md` names this gate as `$push`'s job, so it runs here.
 
-```bash
-python3 scripts/findings.py check
-pnpm findings:test
-```
-
-`check` validates the ledger: a malformed header or an area outside the closed vocabulary silently
-drops a finding out of the derived queue, which is exactly the loss the ledger exists to prevent.
-`tasks/findings.md` names this gate as `$push`'s job, so it runs here.
-
-`findings:test` is the only test over `scripts/findings.py` itself, and it is deliberately narrow —
-it pins the failure reporting of `_atomic_write` (f-20260829-14), not the tool's behaviour at large.
+As a contract-gate member, `findings:test` is the only test over `scripts/findings.py` itself, and it
+is deliberately narrow — it pins the failure reporting of `_atomic_write` (f-20260829-14), not the
+tool's behaviour at large.
 `scripts/findings.py` is byte-identical across Felix's projects by contract, so **nothing
 repository-specific may be added to it**; a change there is a change to every copy, and the test
 lives beside it rather than inside it for that reason.
 
 ### CI, dependencies, and release mechanics
 
-Changes to `.claude/hooks/**` or `.claude/settings.json` run:
-
-```bash
-pnpm hooks:check
-```
-
-- Changes to `.github/workflows/**` run:
-
-```bash
-pnpm workflows:check
-pnpm workflows:permissions:test
-pnpm tools:parity:check
-```
-
-  Changes to those paths, `package.json`, `pnpm-lock.yaml`, `src-tauri/Cargo.toml`, or `src-tauri/Cargo.lock` also run every gate whose toolchain they can affect.
+Changes to workflows also run every gate whose toolchain they can affect. Changes to `package.json`,
+`pnpm-lock.yaml`, `src-tauri/Cargo.toml`, or `src-tauri/Cargo.lock` do the same.
 - `pnpm verify:app` is not a push gate either, and for a different reason: it drives the real Tauri window through `tauri-driver` under an off-screen compositor, so it needs a release build and a compositor that CI does not have. Run it by hand when a diff changes lifecycle, IPC or process teardown — it is the only check in this repository that observes the actual product. `d-20260830-18` and `.claude/skills/verify-ui/SKILL.md` carry the contract and the limits.
 - The frontend mutation suite is a receipt-backed frontend push gate: run it through `pnpm gate:ensure frontend-mutation` (measured 323 s on the runner). The backend suite remains only in `.github/workflows/mutation.yml` (dispatchable, weekly, one job per package) because the eight packages take about an hour. **Never start `pnpm mutation:backend` as part of a push:** it runs `cargo-mutants --in-place`, so it edits tracked source while it runs, every other gate would then measure mutated code, and an interruption leaves an injected mutant behind (`f-20260829-09`).
 - Exercise changed shell/workflow mechanics against their refusal/error case where locally possible.
@@ -238,7 +228,13 @@ Use the exact-string override keywords from
 - Commit only the remaining authorized paths with the attribution above.
 - Run ordinary non-force `git push` to the configured upstream.
 - Verify local `HEAD` equals `@{u}` and report commits, destination, gate results, review findings/verdicts, and that no release/deployment occurred.
-- On `master`, after that verification, run `bash scripts/install-local.sh` (a Tauri release build followed by an atomic swap of `~/.local/opt/chessfable/current`). This is how a pushed change reaches the application-menu entry Felix uses; nothing else updates it, and it is not a release or deployment. Report the installed short commit from `~/.local/opt/chessfable/current/VERSION`. If the build fails, the push stands and the failure is reported as its own blocker — the previous installed copy keeps running.
+- On `master`, after that verification, run the installer (a Tauri release build followed by an atomic swap of `~/.local/opt/chessfable/current`):
+
+```bash
+bash scripts/install-local.sh
+```
+
+  This is how a pushed change reaches the application-menu entry Felix uses; nothing else updates it, and it is not a release or deployment. Report the installed short commit from `~/.local/opt/chessfable/current/VERSION`. If the build fails, the push stands and the failure is reported as its own blocker — the previous installed copy keeps running.
 - On any persistent red gate, follow the shared policy: do not push and report the exact blocker.
 
 ChessFable override to shared policy §7: this workflow never performs a force push. A message containing `force push` requires a separate stop for the exact refspec and force-with-lease decision; it is not treated as an automatic gate-skip-and-push marker here.
