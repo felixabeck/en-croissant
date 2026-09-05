@@ -1662,7 +1662,7 @@ mod tests {
         std::fs::create_dir(&database_root).unwrap();
         let mut authority = test_path_authority(dir);
         let root = authority
-            .get_or_create_database_root(&database_root, "Databases")
+            .get_or_create_database_root(&database_root, "Databases", None)
             .unwrap();
         (authority, root.id)
     }

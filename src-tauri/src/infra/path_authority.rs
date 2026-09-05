@@ -2465,6 +2465,7 @@ impl PathAuthority {
         &mut self,
         path: &Path,
         display_name: impl Into<String>,
+        expected_identity: Option<VerifiedIdentity>,
     ) -> Result<DatabaseRootHandle, Error> {
         Ok(DatabaseRootHandle::new(self.get_or_create_root(
             path,
@@ -2477,6 +2478,7 @@ impl PathAuthority {
                 PathOperation::DownloadFile,
             ],
             "database",
+            expected_identity,
         )?))
     }
 
@@ -2487,6 +2489,7 @@ impl PathAuthority {
         &mut self,
         path: &Path,
         display_name: impl Into<String>,
+        expected_identity: Option<VerifiedIdentity>,
     ) -> Result<PuzzleRootHandle, Error> {
         Ok(PuzzleRootHandle::new(self.get_or_create_root(
             path,
@@ -2497,6 +2500,7 @@ impl PathAuthority {
                 PathOperation::DownloadFile,
             ],
             "puzzle",
+            expected_identity,
         )?))
     }
 
@@ -2504,6 +2508,7 @@ impl PathAuthority {
         &mut self,
         path: &Path,
         display_name: impl Into<String>,
+        expected_identity: Option<VerifiedIdentity>,
     ) -> Result<EngineRootHandle, Error> {
         Ok(EngineRootHandle::new(self.get_or_create_root(
             path,
@@ -2515,6 +2520,7 @@ impl PathAuthority {
                 PathOperation::EngineConfigure,
             ],
             "engine",
+            expected_identity,
         )?))
     }
 
@@ -2529,6 +2535,7 @@ impl PathAuthority {
         display_name: impl Into<String>,
         operations: Vec<PathOperation>,
         changed_noun: &str,
+        expected_identity: Option<VerifiedIdentity>,
     ) -> Result<PathRef, Error> {
         if let Some(entry) = self.persistent.values().find(|entry| {
             entry.stored.target_is_dir
@@ -2539,7 +2546,9 @@ impl PathAuthority {
                     .to_path()
                     .is_ok_and(|stored| stored == path)
         }) {
-            if validate_target(path, PathClass::PersistentCustomRoot)? != entry.stored.identity {
+            let identity = validate_target(path, PathClass::PersistentCustomRoot)?;
+            require_expected_identity(&identity, expected_identity)?;
+            if identity != entry.stored.identity {
                 return Err(Error::Conflict(format!(
                     "{changed_noun} root changed; select it again"
                 )));
@@ -2547,11 +2556,12 @@ impl PathAuthority {
             return Ok(entry.stored.id.clone());
         }
         Ok(self
-            .migrate_legacy_os_path(
+            .migrate_legacy_os_path_inner(
                 path.as_os_str().to_os_string(),
-                display_name,
+                display_name.into(),
                 PathClass::PersistentCustomRoot,
                 operations,
+                expected_identity,
             )?
             .id)
     }
@@ -6474,7 +6484,7 @@ mod tests {
         let clock = Arc::new(TestClock::new(1));
         let mut path_authority = authority(&dir, clock.clone());
         let handle = path_authority
-            .get_or_create_database_root(&root, "Databases")
+            .get_or_create_database_root(&root, "Databases", None)
             .unwrap();
         path_authority.set_active_database_root(&handle).unwrap();
         drop(path_authority);
@@ -6750,7 +6760,7 @@ mod tests {
         let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
         let absent = dir.path().join("absent-database-root");
         assert!(path_authority
-            .get_or_create_database_root(&absent, "Databases")
+            .get_or_create_database_root(&absent, "Databases", None)
             .is_err());
         assert!(!absent.exists(), "the absent root must not be created");
     }
@@ -6761,7 +6771,7 @@ mod tests {
         let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
         let absent = dir.path().join("absent-engine-root");
         assert!(path_authority
-            .get_or_create_engine_root(&absent, "Engines")
+            .get_or_create_engine_root(&absent, "Engines", None)
             .is_err());
         assert!(!absent.exists(), "the absent root must not be created");
     }
@@ -6772,9 +6782,112 @@ mod tests {
         let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
         let absent = dir.path().join("absent-puzzle-root");
         assert!(path_authority
-            .get_or_create_puzzle_root(&absent, "Puzzles")
+            .get_or_create_puzzle_root(&absent, "Puzzles", None)
             .is_err());
         assert!(!absent.exists(), "the absent root must not be created");
+    }
+
+    fn get_or_create_app_owned_test_root(
+        path_authority: &mut PathAuthority,
+        root: AppOwnedDefaultRoot,
+        directory: &AuthorizedDir,
+        expected_identity: VerifiedIdentity,
+    ) -> Result<PathRef, Error> {
+        match root {
+            AppOwnedDefaultRoot::Databases => path_authority
+                .get_or_create_database_root(directory.path(), "Databases", Some(expected_identity))
+                .map(|handle| handle.path_ref().clone()),
+            AppOwnedDefaultRoot::Engines => path_authority
+                .get_or_create_engine_root(directory.path(), "Engines", Some(expected_identity))
+                .map(|handle| handle.path_ref().clone()),
+            AppOwnedDefaultRoot::Puzzles => path_authority
+                .get_or_create_puzzle_root(directory.path(), "Puzzles", Some(expected_identity))
+                .map(|handle| handle.path_ref().clone()),
+            AppOwnedDefaultRoot::EngineImages => {
+                panic!("engine images do not have a persistent root entry")
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_app_owned_root_swap_is_refused(root: AppOwnedDefaultRoot) {
+        let dir = tempfile::tempdir().unwrap();
+        let directory =
+            ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
+        let original = dir.path().join(format!("{}-original", root.leaf()));
+        fs::rename(directory.path(), &original).unwrap();
+        fs::create_dir(directory.path()).unwrap();
+
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let error = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            root,
+            &directory,
+            directory.identity(),
+        )
+        .expect_err("a directory swapped after authorization must be refused");
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        assert!(!error.to_string().contains('/'), "{error:?}");
+        assert!(path_authority.persistent.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_owned_database_root_swap_before_registration_is_refused() {
+        assert_app_owned_root_swap_is_refused(AppOwnedDefaultRoot::Databases);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_owned_engine_root_swap_before_registration_is_refused() {
+        assert_app_owned_root_swap_is_refused(AppOwnedDefaultRoot::Engines);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_owned_puzzle_root_swap_before_registration_is_refused() {
+        assert_app_owned_root_swap_is_refused(AppOwnedDefaultRoot::Puzzles);
+    }
+
+    fn assert_app_owned_root_reuses_descriptor_identity_after_reload(root: AppOwnedDefaultRoot) {
+        let dir = tempfile::tempdir().unwrap();
+        let directory =
+            ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
+        let expected_identity = directory.identity();
+        let clock = Arc::new(TestClock::new(1));
+        let mut path_authority = authority(&dir, clock.clone());
+        let original = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            root,
+            &directory,
+            expected_identity,
+        )
+        .unwrap();
+        drop(path_authority);
+
+        let mut reloaded = authority(&dir, clock);
+        let reused =
+            get_or_create_app_owned_test_root(&mut reloaded, root, &directory, expected_identity)
+                .unwrap();
+        assert_eq!(reused, original);
+        assert_eq!(reloaded.persistent.len(), 1);
+    }
+
+    #[test]
+    fn app_owned_database_root_reuses_descriptor_identity_after_reload() {
+        assert_app_owned_root_reuses_descriptor_identity_after_reload(
+            AppOwnedDefaultRoot::Databases,
+        );
+    }
+
+    #[test]
+    fn app_owned_engine_root_reuses_descriptor_identity_after_reload() {
+        assert_app_owned_root_reuses_descriptor_identity_after_reload(AppOwnedDefaultRoot::Engines);
+    }
+
+    #[test]
+    fn app_owned_puzzle_root_reuses_descriptor_identity_after_reload() {
+        assert_app_owned_root_reuses_descriptor_identity_after_reload(AppOwnedDefaultRoot::Puzzles);
     }
 
     #[test]
@@ -6785,7 +6898,7 @@ mod tests {
         let clock = Arc::new(TestClock::new(1));
         let mut path_authority = authority(&dir, clock.clone());
         let handle = path_authority
-            .get_or_create_puzzle_root(&root, "Puzzles")
+            .get_or_create_puzzle_root(&root, "Puzzles", None)
             .unwrap();
         path_authority.set_active_puzzle_root(&handle).unwrap();
         drop(path_authority);
@@ -6814,7 +6927,7 @@ mod tests {
         let clock = Arc::new(TestClock::new(1));
         let mut path_authority = authority(&dir, clock.clone());
         let handle = path_authority
-            .get_or_create_engine_root(&root, "Engines")
+            .get_or_create_engine_root(&root, "Engines", None)
             .unwrap();
         path_authority.set_active_engine_root(&handle).unwrap();
         drop(path_authority);
@@ -6879,13 +6992,13 @@ mod tests {
         let clock = Arc::new(TestClock::new(1));
         let mut path_authority = authority(&dir, clock.clone());
         let original = path_authority
-            .get_or_create_engine_root(&root, "Engines")
+            .get_or_create_engine_root(&root, "Engines", None)
             .unwrap();
         drop(path_authority);
 
         let mut reloaded = authority(&dir, clock);
         let reused = reloaded
-            .get_or_create_engine_root(&root, "Engines")
+            .get_or_create_engine_root(&root, "Engines", None)
             .unwrap();
         assert_eq!(reused, original);
         assert_eq!(reloaded.persistent.len(), 1);
@@ -6913,13 +7026,13 @@ mod tests {
         let clock = Arc::new(TestClock::new(1));
         let mut path_authority = authority(&dir, clock.clone());
         let original = path_authority
-            .get_or_create_database_root(&root, "Databases")
+            .get_or_create_database_root(&root, "Databases", None)
             .unwrap();
         drop(path_authority);
 
         let mut reloaded = authority(&dir, clock);
         let reused = reloaded
-            .get_or_create_database_root(&root, "Databases")
+            .get_or_create_database_root(&root, "Databases", None)
             .unwrap();
         assert_eq!(reused, original);
         assert_eq!(reloaded.persistent.len(), 1);
@@ -6948,13 +7061,13 @@ mod tests {
         let clock = Arc::new(TestClock::new(1));
         let mut path_authority = authority(&dir, clock.clone());
         let original = path_authority
-            .get_or_create_puzzle_root(&root, "Puzzles")
+            .get_or_create_puzzle_root(&root, "Puzzles", None)
             .unwrap();
         drop(path_authority);
 
         let mut reloaded = authority(&dir, clock);
         let reused = reloaded
-            .get_or_create_puzzle_root(&root, "Puzzles")
+            .get_or_create_puzzle_root(&root, "Puzzles", None)
             .unwrap();
         assert_eq!(reused, original);
         assert_eq!(reloaded.persistent.len(), 1);
@@ -6995,12 +7108,12 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
         path_authority
-            .get_or_create_database_root(&root, "Databases")
+            .get_or_create_database_root(&root, "Databases", None)
             .unwrap();
         replace_root_directory(&dir, &root, "replacement-database-root");
 
         let error = path_authority
-            .get_or_create_database_root(&root, "Databases")
+            .get_or_create_database_root(&root, "Databases", None)
             .unwrap_err();
         assert!(
             matches!(&error, Error::Conflict(message)
@@ -7016,12 +7129,12 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
         path_authority
-            .get_or_create_puzzle_root(&root, "Puzzles")
+            .get_or_create_puzzle_root(&root, "Puzzles", None)
             .unwrap();
         replace_root_directory(&dir, &root, "replacement-puzzle-root");
 
         let error = path_authority
-            .get_or_create_puzzle_root(&root, "Puzzles")
+            .get_or_create_puzzle_root(&root, "Puzzles", None)
             .unwrap_err();
         assert!(
             matches!(&error, Error::Conflict(message)
@@ -7037,12 +7150,12 @@ mod tests {
         fs::create_dir(&root).unwrap();
         let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
         path_authority
-            .get_or_create_engine_root(&root, "Engines")
+            .get_or_create_engine_root(&root, "Engines", None)
             .unwrap();
         replace_root_directory(&dir, &root, "replacement-engine-root");
 
         let error = path_authority
-            .get_or_create_engine_root(&root, "Engines")
+            .get_or_create_engine_root(&root, "Engines", None)
             .unwrap_err();
         assert!(
             matches!(&error, Error::Conflict(message)
@@ -7262,7 +7375,7 @@ mod tests {
         fs::create_dir(&root_path).unwrap();
         let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
         let root = authority
-            .get_or_create_database_root(&root_path, "databases")
+            .get_or_create_database_root(&root_path, "databases", None)
             .unwrap();
         set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
         let error = authority
@@ -7414,13 +7527,13 @@ mod tests {
         }
         let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
         let database = authority
-            .get_or_create_database_root(&database_path, "databases")
+            .get_or_create_database_root(&database_path, "databases", None)
             .unwrap();
         let puzzle = authority
-            .get_or_create_puzzle_root(&puzzle_path, "puzzles")
+            .get_or_create_puzzle_root(&puzzle_path, "puzzles", None)
             .unwrap();
         let engine = authority
-            .get_or_create_engine_root(&engine_path, "engines")
+            .get_or_create_engine_root(&engine_path, "engines", None)
             .unwrap();
         set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
         authority.set_active_database_root(&database).unwrap();

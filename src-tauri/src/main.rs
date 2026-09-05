@@ -717,7 +717,7 @@ fn issue_database_workspace_blocking(
     let authority = authority_lock
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let root = authority.get_or_create_database_root(&path, display_name)?;
+    let root = authority.get_or_create_database_root(&path, display_name, None)?;
     authority.set_active_database_root(&root)?;
     Ok(root)
 }
@@ -753,7 +753,8 @@ fn get_database_workspace_blocking(
         &crate::infra::path_authority::AppDataDir::for_app(&app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Databases,
     )?;
-    let root = authority.get_or_create_database_root(path.path(), "Databases")?;
+    let root =
+        authority.get_or_create_database_root(path.path(), "Databases", Some(path.identity()))?;
     authority.set_active_database_root(&root)?;
     Ok(root)
 }
@@ -870,7 +871,7 @@ fn issue_engine_workspace_blocking(
     let authority = lock
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let root = authority.get_or_create_engine_root(&path, "Engines")?;
+    let root = authority.get_or_create_engine_root(&path, "Engines", None)?;
     authority.set_active_engine_root(&root)?;
     Ok(root)
 }
@@ -904,7 +905,8 @@ fn get_engine_workspace_blocking(
         &crate::infra::path_authority::AppDataDir::for_app(&app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Engines,
     )?;
-    let root = authority.get_or_create_engine_root(path.path(), "Engines")?;
+    let root =
+        authority.get_or_create_engine_root(path.path(), "Engines", Some(path.identity()))?;
     authority.set_active_engine_root(&root)?;
     Ok(root)
 }
@@ -2932,6 +2934,66 @@ mod blocking_offload_scans {
             assert!(
                 !body.contains(&quoted),
                 "{file}::{name} must not join {quoted} itself: {body}"
+            );
+        }
+
+        // Pin the descriptor identity as the third root-registration argument. Searching the
+        // whole body for `Some(` is insufficient because each helper already handles an active
+        // root option before reaching this call.
+        for (file, source, name, call) in [
+            (
+                "main.rs",
+                main,
+                "get_database_workspace_blocking",
+                "get_or_create_database_root(",
+            ),
+            (
+                "main.rs",
+                main,
+                "get_engine_workspace_blocking",
+                "get_or_create_engine_root(",
+            ),
+            (
+                "puzzle.rs",
+                puzzle,
+                "active_or_default_puzzle_workspace",
+                "get_or_create_puzzle_root(",
+            ),
+        ] {
+            let body = body_at_indent(source, &fn_signature(source, name));
+            assert_eq!(
+                body.matches(call).count(),
+                1,
+                "{file}::{name} must call {call} exactly once: {body}"
+            );
+            let call_at = body.find(call).unwrap();
+            let open = call_at + call.len() - 1;
+            let close = closing_paren(body, open)
+                .unwrap_or_else(|| panic!("{file}::{name} has an unbalanced {call} call: {body}"));
+            let arguments = &body[open + 1..close];
+            let mut depth = 0usize;
+            let mut commas = Vec::new();
+            for (offset, character) in arguments.char_indices() {
+                match character {
+                    '(' => depth += 1,
+                    ')' => depth = depth.saturating_sub(1),
+                    ',' if depth == 0 => commas.push(offset),
+                    _ => {}
+                }
+            }
+            let trailing_comma = arguments.trim_end().ends_with(',');
+            assert_eq!(
+                commas.len(),
+                if trailing_comma { 3 } else { 2 },
+                "{file}::{name} must pass exactly three arguments to {call}: {body}"
+            );
+            let third_end = commas.get(2).copied().unwrap_or(arguments.len());
+            let expected_identity: String = arguments[commas[1] + 1..third_end]
+                .split_whitespace()
+                .collect();
+            assert_eq!(
+                expected_identity, "Some(path.identity())",
+                "{file}::{name} must pass the descriptor identity third: {body}"
             );
         }
     }

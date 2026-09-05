@@ -270,7 +270,8 @@ fn active_or_default_puzzle_workspace<R: tauri::Runtime>(
         &crate::infra::path_authority::AppDataDir::for_app(app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Puzzles,
     )?;
-    let root = authority.get_or_create_puzzle_root(path.path(), "Puzzles")?;
+    let root =
+        authority.get_or_create_puzzle_root(path.path(), "Puzzles", Some(path.identity()))?;
     authority.set_active_puzzle_root(&root)?;
     authority
         .active_puzzle_root()?
@@ -314,7 +315,7 @@ fn issue_puzzle_workspace_blocking(
     let authority = authority_lock
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    let root = authority.get_or_create_puzzle_root(&path, display_name)?;
+    let root = authority.get_or_create_puzzle_root(&path, display_name, None)?;
     authority.set_active_puzzle_root(&root)?;
     authority
         .active_puzzle_root()?
@@ -899,7 +900,7 @@ mod tests {
         )
         .unwrap();
         let root = authority
-            .get_or_create_puzzle_root(root_path, "Puzzles")
+            .get_or_create_puzzle_root(root_path, "Puzzles", None)
             .unwrap();
         authority.set_active_puzzle_root(&root).unwrap();
         (std::sync::Mutex::new(Some(authority)), root)
