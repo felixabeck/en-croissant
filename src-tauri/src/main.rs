@@ -2599,7 +2599,7 @@ mod blocking_offload_scans {
             ("db/search.rs", search, "is_position_in_db"),
             ("db/mod.rs", db, "get_db_or_create"),
         ] {
-            let body = body_at_indent(source, &format!("fn {name}("));
+            let body = body_at_indent(source, &fn_signature(source, name));
             for token in ["BLOCKING_GATEWAY", "block_on", "Handle::current", ".await"] {
                 assert!(
                     !body.contains(token),
