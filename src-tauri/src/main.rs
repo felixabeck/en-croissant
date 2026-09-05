@@ -749,7 +749,7 @@ fn get_database_workspace_blocking(
         return Ok(root);
     }
     let path = crate::infra::path_authority::ensure_app_owned_default_dir(
-        &app.path().app_data_dir()?,
+        &crate::infra::path_authority::AppDataDir::for_app(&app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Databases,
     )?;
     let root = authority.get_or_create_database_root(&path, "Databases")?;
@@ -900,7 +900,7 @@ fn get_engine_workspace_blocking(
         return Ok(root);
     }
     let path = crate::infra::path_authority::ensure_app_owned_default_dir(
-        &app.path().app_data_dir()?,
+        &crate::infra::path_authority::AppDataDir::for_app(&app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Engines,
     )?;
     let root = authority.get_or_create_engine_root(&path, "Engines")?;
@@ -1103,7 +1103,7 @@ fn issue_engine_image_blocking(
     )?;
     engine_image_mime_type(&bytes)?;
     let image_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
-        &app.path().app_data_dir()?,
+        &crate::infra::path_authority::AppDataDir::for_app(&app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
     )?;
     let destination = image_dir.join(uuid::Uuid::new_v4().to_string());
@@ -1942,8 +1942,9 @@ mod blocking_offload_scans {
 
     /// `body_at_indent` panics when its needle is absent. Runtime-generic
     /// helpers are `fn name<R: …>(`, so the plain `fn {name}(` needle misses
-    /// them. Prefer the generic form when it exists. One copy for every scan,
-    /// `_blocking` helpers included: their callers pass `"{name}_blocking"`.
+    /// them. Prefer the generic form when it exists. One copy for every scan;
+    /// `_blocking` workers reach it through `blocking_fn_signature`, which adds
+    /// the suffix and the check that it survived resolution.
     fn fn_signature(source: &str, name: &str) -> String {
         let generic = format!("fn {name}<");
         if source.contains(&generic) {
@@ -1951,6 +1952,21 @@ mod blocking_offload_scans {
         } else {
             format!("fn {name}(")
         }
+    }
+
+    /// The `_blocking` needle for `name`, with the one rule that the resolved signature really
+    /// targets the worker rather than the command it wraps. Asserted here rather than at each
+    /// caller: at the 21-name loop below the name is a loop variable and the only other check
+    /// is that the body is non-empty, so a dropped suffix would resolve `fn get_db_info(`
+    /// against the command and silently retire that half of the scan for every name.
+    fn blocking_fn_signature(source: &str, name: &str) -> String {
+        let signature = fn_signature(source, &format!("{name}_blocking"));
+        assert!(
+            signature.ends_with("_blocking(") || signature.ends_with("_blocking<"),
+            "the resolved needle must target {name}_blocking, not the command it wraps: \
+             {signature}"
+        );
+        signature
     }
 
     /// Offset of the next `_blocking(` or `_blocking<` in `source[from..]`.
@@ -2307,13 +2323,7 @@ mod blocking_offload_scans {
             "preload_reference_db",
             "convert_pgn",
         ] {
-            let signature = fn_signature(db, &format!("{name}_blocking"));
-            assert!(
-                signature.ends_with("_blocking(") || signature.ends_with("_blocking<"),
-                "the resolved needle must target {name}_blocking, not the command it wraps: \
-                 {signature}"
-            );
-            let blocking = body_at_indent(db, &signature);
+            let blocking = body_at_indent(db, &blocking_fn_signature(db, name));
             assert!(
                 !blocking.trim().is_empty(),
                 "{name}_blocking must exist: {blocking}"
@@ -2336,12 +2346,7 @@ mod blocking_offload_scans {
         );
         let search_wrapper = body_at_indent(search, "pub async fn search_position(");
 
-        let convert_signature = fn_signature(db, "convert_pgn_blocking");
-        assert!(
-            convert_signature.ends_with("_blocking(") || convert_signature.ends_with("_blocking<"),
-            "the resolved needle must target convert_pgn_blocking: {convert_signature}"
-        );
-        let convert = body_at_indent(db, &convert_signature);
+        let convert = body_at_indent(db, &blocking_fn_signature(db, "convert_pgn"));
         assert!(
             convert.contains("ConvertProgress"),
             "convert_pgn_blocking must emit ConvertProgress: {convert}"
@@ -2351,14 +2356,7 @@ mod blocking_offload_scans {
             convert_wrapper.contains("description,\n                progress_id,"),
             "convert_pgn must forward progress_id into convert_pgn_blocking: {convert_wrapper}"
         );
-        let players_info_signature = fn_signature(db, "get_players_game_info_blocking");
-        assert!(
-            players_info_signature.ends_with("_blocking(")
-                || players_info_signature.ends_with("_blocking<"),
-            "the resolved needle must target get_players_game_info_blocking: \
-             {players_info_signature}"
-        );
-        let players_info = body_at_indent(db, &players_info_signature);
+        let players_info = body_at_indent(db, &blocking_fn_signature(db, "get_players_game_info"));
         assert!(
             players_info.contains("ProgressLease"),
             "get_players_game_info_blocking must take ProgressLease: {players_info}"
@@ -2715,21 +2713,25 @@ mod blocking_offload_scans {
     /// that matters: exchanging `Databases` and `Engines` between the two workspace helpers
     /// leaves every other check green — neither helper has a behavioural test, the surface
     /// counts do not move — and the application would then register the database root under
-    /// `engines`. So each call site is pinned to its own variant, to the bare `app_data_dir()`
-    /// argument (a residual `.join("db")`, or `app_config_dir()` eight lines away, would yield
-    /// `<app_data>/db/db` and pass everything else), and to no longer joining its own leaf.
-    /// The needle is the fully-qualified variant: three of these bodies already contain the
-    /// bare word as a `display_name` argument.
+    /// `engines`. So each call site is pinned to its own variant, to the exact parent argument
+    /// it passes (`AppDataDir::for_app` of its own handle: a residual `.join("db")` would yield
+    /// `<app_data>/db/db` and pass everything else), and to no longer joining its own leaf. The
+    /// argument is spelled out per site because `main.rs` owns its handle and `puzzle.rs`
+    /// borrows one. The needle is the fully-qualified variant: three of these bodies already
+    /// contain the bare word as a `display_name` argument.
     #[test]
     fn app_owned_default_roots_are_pinned_to_their_call_sites() {
         let main = include_str!("main.rs");
         let puzzle = include_str!("puzzle.rs");
-        for (file, source, name, variant, leaf) in [
+        let owned = "&crate::infra::path_authority::AppDataDir::for_app(&app)?,";
+        let borrowed = "&crate::infra::path_authority::AppDataDir::for_app(app)?,";
+        for (file, source, name, variant, parent, leaf) in [
             (
                 "main.rs",
                 main,
                 "get_database_workspace_blocking",
                 "AppOwnedDefaultRoot::Databases",
+                owned,
                 "db",
             ),
             (
@@ -2737,6 +2739,7 @@ mod blocking_offload_scans {
                 main,
                 "get_engine_workspace_blocking",
                 "AppOwnedDefaultRoot::Engines",
+                owned,
                 "engines",
             ),
             (
@@ -2744,6 +2747,7 @@ mod blocking_offload_scans {
                 main,
                 "issue_engine_image_blocking",
                 "AppOwnedDefaultRoot::EngineImages",
+                owned,
                 "engine-images",
             ),
             (
@@ -2751,6 +2755,7 @@ mod blocking_offload_scans {
                 puzzle,
                 "active_or_default_puzzle_workspace",
                 "AppOwnedDefaultRoot::Puzzles",
+                borrowed,
                 "puzzles",
             ),
         ] {
@@ -2771,8 +2776,8 @@ mod blocking_offload_scans {
                 .unwrap_or_else(|| panic!("{file}::{name} must pass {variant} second: {body}"));
             let argument: String = between[..=comma].split_whitespace().collect();
             assert_eq!(
-                argument, "&app.path().app_data_dir()?,",
-                "{file}::{name} must pass the bare app_data_dir(): {body}"
+                argument, parent,
+                "{file}::{name} must pass its app-data directory as {parent}: {body}"
             );
             let quoted = format!("{leaf:?}");
             assert!(

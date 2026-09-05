@@ -8,7 +8,6 @@ use std::{
 use diesel::{dsl::sql, sql_types::Bool, ExpressionMethods, QueryDsl, RunQueryDsl};
 use serde::Serialize;
 use specta::Type;
-use tauri::Manager;
 
 use crate::{
     db::{puzzle_themes, puzzles, themes, DatabaseIdentity, DatabaseRepository, Puzzle},
@@ -268,7 +267,7 @@ fn active_or_default_puzzle_workspace<R: tauri::Runtime>(
         return Ok(workspace);
     }
     let path = crate::infra::path_authority::ensure_app_owned_default_dir(
-        &app.path().app_data_dir()?,
+        &crate::infra::path_authority::AppDataDir::for_app(app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Puzzles,
     )?;
     let root = authority.get_or_create_puzzle_root(&path, "Puzzles")?;
@@ -883,41 +882,68 @@ mod tests {
         );
         assert!(!serialized.contains("no such table: themes"));
     }
+
+    /// The `Mutex<Option<PathAuthority>>` the workspace helpers take, with `root_path` already
+    /// registered as the **active** puzzle root. Its registry lives under `registry_dir`.
+    /// Returned rather than asserted here, because one caller needs the handle's `PathRef`.
+    fn puzzle_workspace_authority(
+        registry_dir: &Path,
+        root_path: &Path,
+    ) -> (
+        std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+        crate::infra::path_authority::PuzzleRootHandle,
+    ) {
+        let mut authority = crate::infra::path_authority::PathAuthority::open(
+            registry_dir.join("registry.json"),
+            vec![],
+        )
+        .unwrap();
+        let root = authority
+            .get_or_create_puzzle_root(root_path, "Puzzles")
+            .unwrap();
+        authority.set_active_puzzle_root(&root).unwrap();
+        (std::sync::Mutex::new(Some(authority)), root)
+    }
+
+    /// The seeding check every case below runs before calling. The guard is taken and dropped
+    /// inside this function on purpose: `active_puzzle_root` takes `&mut self` and the call
+    /// under test locks the same mutex, so a guard still alive at the call site deadlocks
+    /// rather than fails.
+    fn assert_active_puzzle_root(
+        authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+        message: &str,
+    ) {
+        let mut guard = authority.lock().unwrap();
+        assert!(
+            guard
+                .as_mut()
+                .unwrap()
+                .active_puzzle_root()
+                .unwrap()
+                .is_some(),
+            "{message}"
+        );
+        drop(guard);
+    }
+
     /// The three workspace helpers are generic over `R: tauri::Runtime` so this path is reachable
     /// from `tauri::test::mock_app()` at all. That handle still resolves `app_data_dir()` against
     /// the real user directory, so every case below seeds an **active** puzzle root under a
     /// temporary directory and asserts the seeding took *before* calling: a silently unseeded
     /// authority would otherwise take the default branch and create `<app data>/puzzles` on the
-    /// machine running the tests. The assertion is scoped, because `active_puzzle_root` takes
-    /// `&mut self` and the call under test locks the same mutex one line later.
+    /// machine running the tests. That assertion is `assert_active_puzzle_root`, which scopes
+    /// its guard for the reason recorded there.
     #[test]
     fn puzzle_download_destination_resolves_under_the_active_puzzle_root() {
         let directory = tempfile::tempdir().unwrap();
         let root_path = directory.path().join("puzzles");
         std::fs::create_dir(&root_path).unwrap();
-        let mut authority = crate::infra::path_authority::PathAuthority::open(
-            directory.path().join("registry.json"),
-            vec![],
-        )
-        .unwrap();
-        let root = authority
-            .get_or_create_puzzle_root(&root_path, "Puzzles")
-            .unwrap();
-        authority.set_active_puzzle_root(&root).unwrap();
-        let authority = std::sync::Mutex::new(Some(authority));
-        {
-            let mut guard = authority.lock().unwrap();
-            assert!(
-                guard
-                    .as_mut()
-                    .unwrap()
-                    .active_puzzle_root()
-                    .unwrap()
-                    .is_some(),
-                "the seeded puzzle root must be active before the call, or the default branch \
-                 would register a directory outside the temporary one"
-            );
-        }
+        let (authority, root) = puzzle_workspace_authority(directory.path(), &root_path);
+        assert_active_puzzle_root(
+            &authority,
+            "the seeded puzzle root must be active before the call, or the default branch \
+             would register a directory outside the temporary one",
+        );
 
         let app = tauri::test::mock_app();
         let destination =
@@ -972,18 +998,10 @@ mod tests {
         let root = crate::infra::path_authority::PuzzleRootHandle::new(commit.id);
         authority.set_active_puzzle_root(&root).unwrap();
         let authority = std::sync::Mutex::new(Some(authority));
-        {
-            let mut guard = authority.lock().unwrap();
-            assert!(
-                guard
-                    .as_mut()
-                    .unwrap()
-                    .active_puzzle_root()
-                    .unwrap()
-                    .is_some(),
-                "a root without DownloadFile must still be the active puzzle workspace"
-            );
-        }
+        assert_active_puzzle_root(
+            &authority,
+            "a root without DownloadFile must still be the active puzzle workspace",
+        );
 
         let app = tauri::test::mock_app();
         let error = issue_puzzle_download_destination_blocking(&authority, app.handle().clone())
@@ -1001,29 +1019,12 @@ mod tests {
         std::fs::create_dir(&root_path).unwrap();
         std::fs::write(root_path.join("lichess.db3"), b"puzzle database").unwrap();
         std::fs::write(root_path.join("notes.txt"), b"not a puzzle database").unwrap();
-        let mut authority = crate::infra::path_authority::PathAuthority::open(
-            directory.path().join("registry.json"),
-            vec![],
-        )
-        .unwrap();
-        let root = authority
-            .get_or_create_puzzle_root(&root_path, "Puzzles")
-            .unwrap();
-        authority.set_active_puzzle_root(&root).unwrap();
-        let authority = std::sync::Mutex::new(Some(authority));
-        {
-            let mut guard = authority.lock().unwrap();
-            assert!(
-                guard
-                    .as_mut()
-                    .unwrap()
-                    .active_puzzle_root()
-                    .unwrap()
-                    .is_some(),
-                "the seeded puzzle root must be active before the call, or the default branch \
-                 would list a directory outside the temporary one"
-            );
-        }
+        let (authority, _root) = puzzle_workspace_authority(directory.path(), &root_path);
+        assert_active_puzzle_root(
+            &authority,
+            "the seeded puzzle root must be active before the call, or the default branch \
+             would list a directory outside the temporary one",
+        );
 
         let app = tauri::test::mock_app();
         let databases = list_puzzle_databases_blocking(app.handle(), &authority).unwrap();

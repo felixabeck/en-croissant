@@ -659,10 +659,11 @@ impl AppOwnedRoot {
 }
 
 /// One of the application's own default root directories under its app-data directory.
-/// The set is closed on purpose: the leaf is the security property, so a caller can name
-/// only a directory the application itself defines. It is deliberately **not** exhaustive
-/// over the application's app-data directories — `credentials` is materialised before
-/// `PathAuthority::open` and stays outside this concept.
+/// The set is closed on purpose: the leaf is one half of the security property, so a caller
+/// can name only a directory the application itself defines. The other half is [`AppDataDir`],
+/// which fixes the parent. It is deliberately **not** exhaustive over the application's
+/// app-data directories — `credentials` is materialised before `PathAuthority::open` and stays
+/// outside this concept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AppOwnedDefaultRoot {
     Databases,
@@ -682,9 +683,41 @@ impl AppOwnedDefaultRoot {
     }
 }
 
+/// The application's own app-data directory: the only parent an [`AppOwnedDefaultRoot`] may
+/// be materialised under. The type is opaque and its only production constructor derives the
+/// path from the Tauri app handle, so no in-crate caller can produce one from a user-picked or
+/// dialog-derived directory. Without it the leaf was fixed and the parent was an arbitrary
+/// `&Path`, which left `<anywhere>/db` reachable — and `src-tauri/src/infra/**` is invisible to
+/// `check-rust-release-surface.mjs`, so such a caller would cost no counted site.
+pub(crate) struct AppDataDir(PathBuf);
+
+impl AppDataDir {
+    /// The production constructor, and the only one outside tests. Generic over
+    /// `R: tauri::Runtime`, matching how `puzzle.rs` and `db/mod.rs` spell that bound, so the
+    /// workspace helpers stay reachable from `tauri::test::mock_app()`.
+    pub(crate) fn for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Self, Error> {
+        use tauri::Manager as _;
+        Ok(Self(app.path().app_data_dir()?))
+    }
+
+    /// Test-only, and `#[cfg(test)]`-gated rather than merely private: a constructor from an
+    /// arbitrary path is precisely the escape hatch this type exists to remove, so it must not
+    /// compile into the shipped binary at all. The tests need it because a real
+    /// `app_data_dir()` resolves against the user directory of the machine running them.
+    #[cfg(test)]
+    pub(crate) fn for_test(path: &Path) -> Self {
+        Self(path.to_path_buf())
+    }
+
+    fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
 /// Materialise one of the application's own default root directories under `app_data_dir`.
-/// The leaf is fixed per variant, so no caller can name a directory the application does not
-/// own, and in particular a user-picked path can never acquire create-if-missing semantics.
+/// Both halves of the path are fixed by the types: the leaf per variant, the parent by
+/// [`AppDataDir`]'s constructor. No caller can therefore name a directory the application does
+/// not own, and in particular a user-picked path can never acquire create-if-missing semantics.
 /// Refuses a leaf that is a symlink or not a directory.
 ///
 /// The refusal is not belt-and-braces: `create_dir_all` returns `Ok` for a leaf that is a
@@ -697,10 +730,10 @@ impl AppOwnedDefaultRoot {
 /// fixed text plus the MissingResource/Permission/Io discrimination. `Error::InvalidInput`
 /// would render its string verbatim and put a native path on the wire.
 pub(crate) fn ensure_app_owned_default_dir(
-    app_data_dir: &Path,
+    app_data_dir: &AppDataDir,
     root: AppOwnedDefaultRoot,
 ) -> Result<PathBuf, Error> {
-    let path = app_data_dir.join(root.leaf());
+    let path = app_data_dir.as_path().join(root.leaf());
     fs::create_dir_all(&path)?;
     if !fs::symlink_metadata(&path)?.is_dir() {
         return Err(std::io::Error::new(
@@ -5861,7 +5894,8 @@ mod tests {
     fn ensure_app_owned_default_dir_creates_each_root_under_its_own_leaf() {
         let dir = tempfile::tempdir().unwrap();
         for (root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
-            let created = ensure_app_owned_default_dir(dir.path(), root).unwrap();
+            let created =
+                ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
             assert_eq!(created, dir.path().join(leaf));
             assert!(
                 created.is_dir(),
@@ -5873,10 +5907,16 @@ mod tests {
     #[test]
     fn ensure_app_owned_default_dir_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
-        let first = ensure_app_owned_default_dir(dir.path(), AppOwnedDefaultRoot::Databases)
-            .expect("first call creates the root");
-        let second = ensure_app_owned_default_dir(dir.path(), AppOwnedDefaultRoot::Databases)
-            .expect("second call accepts the existing root");
+        let first = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .expect("first call creates the root");
+        let second = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .expect("second call accepts the existing root");
         assert_eq!(first, second);
         assert!(second.is_dir());
     }
@@ -5885,8 +5925,11 @@ mod tests {
     fn ensure_app_owned_default_dir_rejects_a_regular_file_as_io() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("db"), b"not a directory").unwrap();
-        let error = ensure_app_owned_default_dir(dir.path(), AppOwnedDefaultRoot::Databases)
-            .expect_err("a regular file at the leaf must be refused");
+        let error = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .expect_err("a regular file at the leaf must be refused");
         assert!(
             matches!(error, Error::Io(_)),
             "the refusal must stay Error::Io, which renders fixed text: {error:?}"
@@ -5907,7 +5950,7 @@ mod tests {
             fs::create_dir(&elsewhere).unwrap();
             std::os::unix::fs::symlink(&elsewhere, app_data.join(leaf)).unwrap();
 
-            let error = ensure_app_owned_default_dir(&app_data, root)
+            let error = ensure_app_owned_default_dir(&AppDataDir::for_test(&app_data), root)
                 .expect_err("a symlinked leaf must be refused");
             assert!(
                 matches!(error, Error::Io(_)),
