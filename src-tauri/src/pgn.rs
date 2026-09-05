@@ -122,7 +122,7 @@ impl PgnRepository {
         }))
     }
 
-    fn insert(&self, key: CacheKey, games: Arc<[GameRange]>) -> Result<(), Error> {
+    fn retain_if_within_budget(&self, key: CacheKey, games: Arc<[GameRange]>) -> Result<(), Error> {
         let mut inner = self.inner()?;
         let now = Self::tick(&mut inner);
         if let Some(replaced) = inner.cache.remove(&key) {
@@ -369,7 +369,7 @@ async fn scan_current(
     let (key, games) = BLOCKING_GATEWAY
         .spawn_cancellable(cancellation, move |token| scan_file(snapshot, token))
         .await?;
-    repository.insert(key.clone(), games.clone())?;
+    repository.retain_if_within_budget(key.clone(), games.clone())?;
     Ok((key, games))
 }
 
@@ -575,7 +575,14 @@ pub async fn read_games_core(
     let end = start
         .checked_add(count)
         .ok_or_else(|| Error::InvalidInput("game range overflows".into()))?;
-    let requested = games.get(start..end).unwrap_or(&[]).to_vec();
+    let requested = if games.is_empty() && start == 0 && count == 1 {
+        Vec::new()
+    } else {
+        games
+            .get(start..end)
+            .ok_or_else(|| Error::InvalidInput("game index is out of bounds".into()))?
+            .to_vec()
+    };
     let cancellation = CancellationToken::new();
     let _cancel_on_drop = CancelOnDrop(cancellation.clone());
     BLOCKING_GATEWAY
@@ -713,6 +720,7 @@ mod tests {
         io::{BufWriter, Cursor},
         path::Path,
     };
+    use tauri::Manager;
 
     fn resolved_for(
         directory: &tempfile::TempDir,
@@ -753,6 +761,59 @@ mod tests {
                 ctime_nanos: key.revision.ctime_nanos,
             },
         }
+    }
+
+    fn mock_app() -> tauri::AppHandle<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_app();
+        app.manage(AppState::default());
+        app.handle().clone()
+    }
+
+    #[tokio::test]
+    async fn read_games_core_returns_complete_pages_and_rejects_missing_ranges() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("two-games.pgn");
+        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4\n[Event \"B\"]\n\n1. d4\n")
+            .expect("write PGN");
+        let app = mock_app();
+
+        let page = read_games_core(resolved_for(&directory, &path), 0, 1, app.state())
+            .await
+            .expect("read complete two-game page");
+        assert_eq!(page.len(), 2);
+        assert!(page[0].starts_with("[Event \"A\"]"));
+        assert!(page[1].starts_with("[Event \"B\"]"));
+
+        let partial = read_games_core(resolved_for(&directory, &path), 1, 2, app.state()).await;
+        assert!(matches!(
+            partial,
+            Err(Error::InvalidInput(message)) if message == "game index is out of bounds"
+        ));
+
+        let missing = read_games_core(resolved_for(&directory, &path), 2, 2, app.state()).await;
+        assert!(matches!(
+            missing,
+            Err(Error::InvalidInput(message)) if message == "game index is out of bounds"
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_games_core_preserves_only_the_empty_file_opening_range() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("empty.pgn");
+        std::fs::write(&path, b"").expect("write empty PGN");
+        let app = mock_app();
+
+        let opening = read_games_core(resolved_for(&directory, &path), 0, 0, app.state())
+            .await
+            .expect("empty opening range remains valid");
+        assert!(opening.is_empty());
+
+        let missing = read_games_core(resolved_for(&directory, &path), 1, 1, app.state()).await;
+        assert!(matches!(
+            missing,
+            Err(Error::InvalidInput(message)) if message == "game index is out of bounds"
+        ));
     }
 
     #[test]
@@ -968,17 +1029,17 @@ mod tests {
         let key_three = key_with_size(&base, 3);
         let two_ranges: Arc<[GameRange]> = vec![GameRange { start: 0, end: 1 }; 2].into();
         repository
-            .insert(key_one.clone(), two_ranges.clone())
+            .retain_if_within_budget(key_one.clone(), two_ranges.clone())
             .expect("insert first scan");
         repository
-            .insert(key_two.clone(), two_ranges.clone())
+            .retain_if_within_budget(key_two.clone(), two_ranges.clone())
             .expect("insert second scan");
         assert!(repository
             .get(&key_one)
             .expect("touch first scan")
             .is_some());
         repository
-            .insert(key_three.clone(), two_ranges)
+            .retain_if_within_budget(key_three.clone(), two_ranges)
             .expect("insert third scan");
         assert!(repository.get(&key_one).expect("read first scan").is_some());
         assert!(repository
@@ -992,7 +1053,7 @@ mod tests {
 
         let one_range: Arc<[GameRange]> = vec![GameRange { start: 0, end: 1 }].into();
         repository
-            .insert(key_one.clone(), one_range)
+            .retain_if_within_budget(key_one.clone(), one_range)
             .expect("replace first scan");
         assert_eq!(
             repository.inner().expect("inspect cache").retained_bytes,
