@@ -541,6 +541,18 @@ mod tests {
     ).toBe(true);
   });
 
+  test("the residency arm alone fails the CLI with no surface violation present", async () => {
+    const result = await runCheckerOver(
+      [{ path: "src-tauri/src/infra/path_authority.rs", contents: "#![allow(dead_code)]\n" }],
+      ["--check-allowlist-residency"],
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain(
+      "R3: allowlist entry src-tauri/src/fs.rs is not present in the working tree and must be removed from the allowlist",
+    );
+  });
+
   test("the residency flag reports an absent allowlist entry alongside an R3 leak", async () => {
     const result = await runCheckerOver(LEAK_FIXTURE, ["--check-allowlist-residency"]);
 
