@@ -236,6 +236,7 @@ Use the exact-string override keywords from
 - Commit only the remaining authorized paths with the attribution above.
 - Run ordinary non-force `git push` to the configured upstream.
 - Verify local `HEAD` equals `@{u}` and report commits, destination, gate results, review findings/verdicts, and that no release/deployment occurred.
+- On `master`, after that verification, run `bash scripts/install-local.sh` (a Tauri release build followed by an atomic copy to `~/.local/opt/chessfable/`). This is how a pushed change reaches the application-menu entry Felix uses; nothing else updates it, and it is not a release or deployment. Report the installed short commit from `~/.local/opt/chessfable/VERSION`. If the build fails, the push stands and the failure is reported as its own blocker — the previous installed copy keeps running.
 - On any persistent red gate, follow the shared policy: do not push and report the exact blocker.
 
 ChessFable override to shared policy §7: this workflow never performs a force push. A message containing `force push` requires a separate stop for the exact refspec and force-with-lease decision; it is not treated as an automatic gate-skip-and-push marker here.
