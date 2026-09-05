@@ -66,8 +66,10 @@ use self::encoding::{
     encode_comment, encode_move, encode_nag, VARIATION_END_MARKER, VARIATION_START_MARKER,
 };
 pub use self::repository::{DatabaseIdentity, DatabaseRepository};
+#[cfg(test)]
+pub use self::search_index::SearchIndex;
 pub use self::search_index::{
-    get_index_path, legacy_index_path, IndexSource, MmapSearchIndex, SearchGameEntry, SearchIndex,
+    get_index_path, legacy_index_path, IndexSource, MmapSearchIndex, SearchGameEntry,
 };
 
 pub use self::models::NormalizedGame;
@@ -721,7 +723,10 @@ fn generate_search_index_locked(
     info!("Generating search index for {:?}", db_path);
     let start = Instant::now();
 
-    let games: Vec<SearchIndexGameRecord> = games::table
+    let source = IndexSource::from_database_identity(
+        &repository.database_identity_expected(db_path, target.identity)?,
+    )?;
+    let rows = games::table
         .select((
             games::id,
             games::white_id,
@@ -736,30 +741,26 @@ fn generate_search_index_locked(
             games::white_elo,
             games::black_elo,
         ))
-        .load(db)?;
+        .load_iter::<SearchIndexGameRecord, DefaultLoadingMode>(db)?
+        .map(|row| {
+            let game = row.map_err(Error::from)?;
+            SearchGameEntry::from_game_data(crate::db::search_index::SearchGameData {
+                id: game.id,
+                white_id: game.white_id,
+                black_id: game.black_id,
+                date: game.date,
+                result: game.result,
+                moves: game.moves,
+                fen: game.fen,
+                pawn_home: game.pawn_home,
+                white_material: game.white_material,
+                black_material: game.black_material,
+                white_elo: game.white_elo,
+                black_elo: game.black_elo,
+            })
+        });
 
-    let mut writer = SearchIndex::with_capacity(games.len());
-    for game in games {
-        let entry = SearchGameEntry::from_game_data(crate::db::search_index::SearchGameData {
-            id: game.id,
-            white_id: game.white_id,
-            black_id: game.black_id,
-            date: game.date,
-            result: game.result,
-            moves: game.moves,
-            fen: game.fen,
-            pawn_home: game.pawn_home,
-            white_material: game.white_material,
-            black_material: game.black_material,
-            white_elo: game.white_elo,
-            black_elo: game.black_elo,
-        })?;
-        writer.push(entry);
-    }
-    let source = IndexSource::from_database_identity(
-        &repository.database_identity_expected(db_path, target.identity)?,
-    )?;
-    match writer.write_to_at(&target.parent, &index_leaf, source)? {
+    match search_index::write_entries_to_at(&target.parent, &index_leaf, source, rows)? {
         AtomicFileOutcome::DurableCommit => {}
         AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
             log::warn!("search index parent sync failed: {error}");
@@ -2354,64 +2355,30 @@ fn export_to_pgn_blocking(
     destination: FileWorkspaceHandle,
 ) -> Result<(), Error> {
     let file = resolve_database(authority, &file, PathOperation::DatabaseExport)?;
+    let (resolved, snapshot) = {
+        let mut authority = authority
+            .lock()
+            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+        let resolved = authority
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+            .resolve(destination.path_ref(), PathOperation::WritePgn, &[])?;
+        let snapshot = resolved.pgn_snapshot()?;
+        (resolved, snapshot)
+    };
 
     let mut database_connection = get_db_or_create(repository, &file)?;
     let db = &mut *database_connection;
 
-    let mut writer = BufWriter::new(Vec::new());
-
-    let (white_players, black_players) = diesel::alias!(players as white, players as black);
-    games::table
-        .inner_join(white_players.on(games::white_id.eq(white_players.field(players::id))))
-        .inner_join(black_players.on(games::black_id.eq(black_players.field(players::id))))
-        .inner_join(events::table.on(games::event_id.eq(events::id)))
-        .inner_join(sites::table.on(games::site_id.eq(sites::id)))
-        .load_iter::<(Game, Player, Player, Event, Site), DefaultLoadingMode>(db)?
-        .flatten()
-        .map(|(game, white, black, event, site)| {
-            let pgn = PgnGame {
-                event: event.name,
-                site: site.name,
-                date: game.date,
-                time: game.time,
-                round: game.round,
-                white: white.name,
-                black: black.name,
-                result: game.result,
-                time_control: game.time_control,
-                eco: game.eco,
-                white_elo: game.white_elo.map(|e| e.to_string()),
-                black_elo: game.black_elo.map(|e| e.to_string()),
-                ply_count: game.ply_count.map(|e| e.to_string()),
-                fen: game.fen.clone(),
-                moves: decode_game_to_movetext(
-                    &game.moves,
-                    if let Some(fen) = game.fen {
-                        Fen::from_ascii(fen.as_bytes()).unwrap_or_default()
-                    } else {
-                        Fen::default()
-                    },
-                )
-                .ok(),
-            };
-
-            pgn.write(&mut writer)?;
-
-            Ok(())
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    let bytes = writer
-        .into_inner()
-        .map_err(|error| Error::from(error.into_error()))?;
-    let resolved = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .resolve(destination.path_ref(), PathOperation::WritePgn, &[])?;
-    let snapshot = resolved.pgn_snapshot()?;
     let outcome = resolved.replace_pgn_atomic(&snapshot, |_, temporary| {
-        temporary.write_all(&bytes).map_err(Error::from)
+        let (white_players, black_players) = diesel::alias!(players as white, players as black);
+        let rows = games::table
+            .inner_join(white_players.on(games::white_id.eq(white_players.field(players::id))))
+            .inner_join(black_players.on(games::black_id.eq(black_players.field(players::id))))
+            .inner_join(events::table.on(games::event_id.eq(events::id)))
+            .inner_join(sites::table.on(games::site_id.eq(sites::id)))
+            .load_iter::<(Game, Player, Player, Event, Site), DefaultLoadingMode>(db)?;
+        write_pgn_rows(temporary, rows)
     })?;
     if let Some(stage) = crate::infra::fs::map_atomic_file_outcome(
         outcome,
@@ -2422,6 +2389,73 @@ fn export_to_pgn_blocking(
     } else {
         Ok(())
     }
+}
+
+fn write_pgn_rows<W, I>(destination: W, rows: I) -> Result<(), Error>
+where
+    W: Write,
+    I: IntoIterator<Item = diesel::QueryResult<(Game, Player, Player, Event, Site)>>,
+{
+    let mut writer = BufWriter::new(destination);
+    for row in rows {
+        #[cfg(test)]
+        if let Some(block) = take_export_write_block() {
+            block.entered.wait();
+            block.release.wait();
+        }
+        let (game, white, black, event, site) = row.map_err(Error::from)?;
+        let initial_fen = game
+            .fen
+            .as_deref()
+            .map(|fen| {
+                Fen::from_ascii(fen.as_bytes()).map_err(|error| {
+                    Error::InvalidInput(format!("game {} has invalid FEN: {error}", game.id))
+                })
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let moves = decode_game_to_movetext(&game.moves, initial_fen).map_err(|error| {
+            Error::InvalidInput(format!("game {} has invalid movetext: {error}", game.id))
+        })?;
+        PgnGame {
+            event: event.name,
+            site: site.name,
+            date: game.date,
+            time: game.time,
+            round: game.round,
+            white: white.name,
+            black: black.name,
+            result: game.result,
+            time_control: game.time_control,
+            eco: game.eco,
+            white_elo: game.white_elo.map(|elo| elo.to_string()),
+            black_elo: game.black_elo.map(|elo| elo.to_string()),
+            ply_count: game.ply_count.map(|count| count.to_string()),
+            fen: game.fen,
+            moves: Some(moves),
+        }
+        .write(&mut writer)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+#[cfg(test)]
+struct ExportWriteBlock {
+    entered: std::sync::Barrier,
+    release: std::sync::Barrier,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static EXPORT_WRITE_BLOCK: std::cell::RefCell<Option<Arc<ExportWriteBlock>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+fn take_export_write_block() -> Option<Arc<ExportWriteBlock>> {
+    EXPORT_WRITE_BLOCK.with(|block| block.borrow_mut().take())
 }
 
 #[tauri::command]
@@ -2962,7 +2996,9 @@ mod tests {
             .split("#[derive(Serialize, Type)]")
             .next()
             .unwrap();
-        assert!(body.contains("write_to_at"));
+        assert!(body.contains("write_entries_to_at"));
+        assert!(body.contains("load_iter"));
+        assert!(!body.contains("let games: Vec"));
         assert!(!body.contains("atomic_replace(&"));
         assert!(!body.contains("std::fs::remove_file"));
     }
@@ -3003,6 +3039,49 @@ mod tests {
             ))
         ));
         assert!(get_index_path(&database).exists());
+    }
+
+    #[test]
+    fn search_index_row_conversion_failure_preserves_previous_sidecar() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+        {
+            let state = app.state::<AppState>();
+            let mut db = state.database_repository.connection(&database).unwrap();
+            diesel::update(games::table.find(game_id))
+                .set(games::pawn_home.eq(-1))
+                .execute(&mut *db)
+                .unwrap();
+        }
+        let index_path = get_index_path(&database);
+        SearchIndex {
+            entries: vec![crate::db::search_index::SearchGameEntry {
+                id: 99,
+                white_id: 1,
+                black_id: 2,
+                date: None,
+                result: crate::db::search_index::GameResult::None,
+                pawn_home: 0,
+                white_material: 0,
+                black_material: 0,
+                white_elo: 0,
+                black_elo: 0,
+                fen: None,
+                moves: vec![],
+            }],
+        }
+        .write_to(&index_path)
+        .unwrap();
+        let previous = std::fs::read(&index_path).unwrap();
+        let state = app.state::<AppState>();
+        let result = generate_search_index(
+            &handle,
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+        );
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+        assert_eq!(std::fs::read(index_path).unwrap(), previous);
     }
 
     #[test]
@@ -3740,6 +3819,7 @@ mod tests {
             PathOperation::DatabaseRead,
             PathOperation::DatabaseMutate,
             PathOperation::DatabaseCreate,
+            PathOperation::DatabaseExport,
         ];
         let grant = authority
             .grant_dialog_operations(
@@ -3777,6 +3857,276 @@ mod tests {
         let event = create_event(&mut db, event).unwrap();
         let site = create_site(&mut db, site).unwrap();
         insert_test_game(&mut db, white.id, black.id, event.id, site.id).id
+    }
+
+    fn grant_pgn_destination(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        path: &Path,
+    ) -> FileWorkspaceHandle {
+        let state = app.state::<AppState>();
+        let mut guard = state.pgn_path_authority.lock().unwrap();
+        let authority = guard.as_mut().unwrap();
+        let operations = vec![PathOperation::WritePgn];
+        let grant = authority
+            .grant_dialog_operations(
+                path,
+                "export.pgn",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                std::time::Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let commit = authority
+            .promote_dialog(&grant, PathClass::PersistentFile, "export.pgn", operations)
+            .unwrap();
+        FileWorkspaceHandle::new(commit.id)
+    }
+
+    fn export_row(event_name: String) -> (Game, Player, Player, Event, Site) {
+        (
+            Game {
+                id: 1,
+                event_id: 1,
+                site_id: 1,
+                date: Some("2026.09.05".into()),
+                time: None,
+                round: Some("1".into()),
+                white_id: 1,
+                white_elo: Some(2_100),
+                black_id: 2,
+                black_elo: Some(2_000),
+                white_material: 0,
+                black_material: 0,
+                result: Some("1-0".into()),
+                time_control: None,
+                eco: None,
+                ply_count: Some(0),
+                fen: None,
+                moves: vec![],
+                pawn_home: 0,
+            },
+            Player {
+                id: 1,
+                name: Some("White".into()),
+                elo: None,
+            },
+            Player {
+                id: 2,
+                name: Some("Black".into()),
+                elo: None,
+            },
+            Event {
+                id: 1,
+                name: Some(event_name),
+            },
+            Site {
+                id: 1,
+                name: Some("Berlin".into()),
+            },
+        )
+    }
+
+    struct FailingWriter<W> {
+        inner: W,
+        remaining: usize,
+        fail_flush: bool,
+    }
+
+    impl<W: Write> Write for FailingWriter<W> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(std::io::Error::other("injected write failure"));
+            }
+            let count = bytes.len().min(self.remaining);
+            let written = self.inner.write(&bytes[..count])?;
+            self.remaining -= written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush()?;
+            if self.fail_flush {
+                Err(std::io::Error::other("injected flush failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct ObservingExportWriter {
+        produced: Arc<AtomicUsize>,
+        first_write_at: Arc<AtomicUsize>,
+    }
+
+    impl Write for ObservingExportWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let produced = self.produced.load(Ordering::Relaxed);
+            let _ = self.first_write_at.compare_exchange(
+                usize::MAX,
+                produced,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn export_streams_complete_pgn_through_atomic_destination() {
+        let (dir, app, handle, database) = blocking_database_case();
+        insert_named_game(&app, &database, "White", "Black", "Event", "Berlin");
+        let destination_path = dir.path().join("export.pgn");
+        std::fs::write(&destination_path, b"old").unwrap();
+        let destination = grant_pgn_destination(&app, &destination_path);
+        let state = app.state::<AppState>();
+        export_to_pgn_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            destination,
+        )
+        .unwrap();
+        let pgn = std::fs::read_to_string(destination_path).unwrap();
+        assert!(pgn.contains("[Event \"Event\"]"));
+        assert!(pgn.contains("[White \"White\"]"));
+        assert!(pgn.ends_with("*\n\n"));
+        assert_eq!(
+            BufferedReader::new(pgn.as_bytes())
+                .into_iter(&mut Importer::new(None))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn export_rejects_malformed_fen_and_moves_without_replacing_destination() {
+        for (column, value) in [("Fen", "'invalid fen'"), ("Moves", "X'ff'")] {
+            let (dir, app, handle, database) = blocking_database_case();
+            let game_id = insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+            {
+                let state = app.state::<AppState>();
+                let mut db = state.database_repository.connection(&database).unwrap();
+                sql_query(format!(
+                    "UPDATE Games SET {column} = {value} WHERE Id = {game_id}"
+                ))
+                .execute(&mut *db)
+                .unwrap();
+            }
+            let destination_path = dir.path().join("export.pgn");
+            std::fs::write(&destination_path, b"old").unwrap();
+            let destination = grant_pgn_destination(&app, &destination_path);
+            let state = app.state::<AppState>();
+            assert!(export_to_pgn_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                destination,
+            )
+            .is_err());
+            assert_eq!(std::fs::read(destination_path).unwrap(), b"old");
+        }
+    }
+
+    #[test]
+    fn export_row_decode_error_is_not_silently_skipped() {
+        let rows = vec![Err(diesel::result::Error::NotFound)];
+        let result = write_pgn_rows(std::io::sink(), rows);
+        assert!(matches!(result, Err(Error::Diesel(_))));
+    }
+
+    #[test]
+    fn export_row_decode_error_preserves_previous_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("export.pgn");
+        std::fs::write(&destination, b"old").unwrap();
+        let result = crate::infra::fs::atomic_replace(&destination, |file| {
+            write_pgn_rows(file, vec![Err(diesel::result::Error::NotFound)])
+        });
+        assert!(matches!(result, Err(Error::Diesel(_))));
+        assert_eq!(std::fs::read(destination).unwrap(), b"old");
+    }
+
+    #[test]
+    fn export_write_and_terminal_flush_failures_preserve_previous_file() {
+        for (remaining, fail_flush, event_size) in
+            [(32, false, 16 * 1024), (0, false, 1), (usize::MAX, true, 1)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("export.pgn");
+            std::fs::write(&path, b"old").unwrap();
+            let result = crate::infra::fs::atomic_replace(&path, |file| {
+                write_pgn_rows(
+                    FailingWriter {
+                        inner: file,
+                        remaining,
+                        fail_flush,
+                    },
+                    vec![Ok(export_row("E".repeat(event_size)))],
+                )
+            });
+            assert!(result.is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"old");
+        }
+    }
+
+    #[test]
+    fn export_consumes_large_row_sources_lazily() {
+        let total = 20_000;
+        let produced = Arc::new(AtomicUsize::new(0));
+        let first_write_at = Arc::new(AtomicUsize::new(usize::MAX));
+        let counter = Arc::clone(&produced);
+        let rows = (0..total).map(move |_| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            Ok(export_row("Event".into()))
+        });
+        write_pgn_rows(
+            ObservingExportWriter {
+                produced: Arc::clone(&produced),
+                first_write_at: Arc::clone(&first_write_at),
+            },
+            rows,
+        )
+        .unwrap();
+        assert_eq!(produced.load(Ordering::Relaxed), total);
+        assert!(first_write_at.load(Ordering::Relaxed) < total);
+    }
+
+    #[test]
+    fn export_releases_authority_mutex_before_streaming_rows() {
+        let (dir, app, handle, database) = blocking_database_case();
+        insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+        let destination_path = dir.path().join("export.pgn");
+        std::fs::write(&destination_path, b"old").unwrap();
+        let destination = grant_pgn_destination(&app, &destination_path);
+        let block = Arc::new(ExportWriteBlock {
+            entered: std::sync::Barrier::new(2),
+            release: std::sync::Barrier::new(2),
+        });
+        let worker_block = Arc::clone(&block);
+        let worker_app = app.clone();
+        let worker = std::thread::spawn(move || {
+            EXPORT_WRITE_BLOCK.with(|current| *current.borrow_mut() = Some(worker_block));
+            let state = worker_app.state::<AppState>();
+            export_to_pgn_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                destination,
+            )
+        });
+        block.entered.wait();
+        assert!(app
+            .state::<AppState>()
+            .pgn_path_authority
+            .try_lock()
+            .is_ok());
+        block.release.wait();
+        worker.join().unwrap().unwrap();
     }
 
     const REPLACEMENT_PGN: &str = r#"[Event "Candidates"]

@@ -933,6 +933,50 @@ mod tests {
     }
 
     #[test]
+    fn old_search_index_version_is_regenerated_when_mutation_is_authorized() {
+        let (_dir, app, handle, database) = loader_test_case(vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+        ]);
+        let path = get_index_path(&database);
+        let mut old_header = vec![0_u8; 32];
+        old_header[..4].copy_from_slice(b"ECSI");
+        old_header[4..8].copy_from_slice(&6_u32.to_le_bytes());
+        std::fs::write(&path, old_header).unwrap();
+
+        let loaded = {
+            let state = app.state::<AppState>();
+            load_search_index(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                &handle,
+            )
+        }
+        .unwrap();
+        assert_eq!(loaded.1.len(), 0);
+        assert!(MmapSearchIndex::open(path).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn operational_search_index_open_error_propagates() {
+        let (_dir, app, handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
+        std::fs::create_dir(get_index_path(&database)).unwrap();
+
+        let result = {
+            let state = app.state::<AppState>();
+            load_search_index(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                &handle,
+            )
+        };
+        assert!(matches!(result, Err(Error::Io(_))));
+    }
+
+    #[test]
     fn search_index_loader_uses_fd_relative_authority_boundaries() {
         let source = include_str!("search.rs");
         let loader = source
