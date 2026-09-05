@@ -6140,3 +6140,28 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   the event name ("rapid", "blitz", "Schnell", "bullet", "armageddon"). Add an "exclude rapid/blitz
   events" toggle implemented as a case-insensitive event-name predicate, and state in the panel
   that it is name-based. Felix's target set: classical only, rapid tolerated, nothing faster.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### The Files page's Move control renders the word "Move" inside an icon-sized button, showing as "1ov"
+
+* **ID:** f-20260905-13 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/files/DirectoryTree.tsx`, the second `IconAction` in the row actions
+  (`label={t("Files.Move")}` with `{t("Files.Move")}` as its *child*), next to the delete action
+  that correctly renders `<IconTrash size={16} aria-hidden />`.
+* **Defect:** `IconAction` wraps Mantine's `ActionIcon`, a fixed-size square button meant for a
+  glyph. Putting text in it clips the word to the button width: on the real window on
+  2026-09-05 every row shows a grey "1ov" after the trash icon (screenshot in the session). The
+  control is unrecognisable as "move" and looks like a rendering error.
+* **Fix:** render an icon child (`IconFolderSymlink` or `IconArrowsMove` from `@tabler/icons-react`,
+  `size={16} aria-hidden`) and keep `label` for the tooltip and `aria-label`, mirroring the delete
+  action. Update the `DirectoryTree.test.tsx` query that finds the button by text, if any, to
+  the accessible name. Verify through `verify-ui`: Files page pixels are pinned by the container
+  e2e run, so the snapshot changes and must be re-recorded **inside the container**, never on
+  the host (`d-20260829-01`).
+* **Why `lens`:** one mechanical change in one component plus its test and snapshot; the
+  `review-code-quality` lens for the icon choice against neighbouring rows. No design question.
+* **Found by:** Felix's screenshot of the Files page after choosing the repertoire collection,
+  session 2026-09-05.
