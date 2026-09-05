@@ -2111,38 +2111,18 @@ impl PathAuthority {
         path: &Path,
         display_name: impl Into<String>,
     ) -> Result<DatabaseRootHandle, Error> {
-        let operations = vec![
-            PathOperation::DatabaseRead,
-            PathOperation::DatabaseMutate,
-            PathOperation::DatabaseCreate,
-            PathOperation::DatabaseExport,
-            PathOperation::DownloadFile,
-        ];
-        if let Some(entry) = self.persistent.values().find(|entry| {
-            entry.stored.target_is_dir
-                && entry.stored.operations == operations
-                && entry
-                    .stored
-                    .path
-                    .to_path()
-                    .is_ok_and(|stored| stored == path)
-        }) {
-            if validate_target(path, PathClass::PersistentCustomRoot)? != entry.stored.identity {
-                return Err(Error::Conflict(
-                    "database root changed; select it again".into(),
-                ));
-            }
-            return Ok(DatabaseRootHandle::new(entry.stored.id.clone()));
-        }
-        Ok(DatabaseRootHandle::new(
-            self.migrate_legacy_os_path(
-                path.as_os_str().to_os_string(),
-                display_name,
-                PathClass::PersistentCustomRoot,
-                operations,
-            )?
-            .id,
-        ))
+        Ok(DatabaseRootHandle::new(self.get_or_create_root(
+            path,
+            display_name,
+            vec![
+                PathOperation::DatabaseRead,
+                PathOperation::DatabaseMutate,
+                PathOperation::DatabaseCreate,
+                PathOperation::DatabaseExport,
+                PathOperation::DownloadFile,
+            ],
+            "database",
+        )?))
     }
 
     /// Creates or reuses a persisted directory that contains exact puzzle
@@ -2153,36 +2133,16 @@ impl PathAuthority {
         path: &Path,
         display_name: impl Into<String>,
     ) -> Result<PuzzleRootHandle, Error> {
-        let operations = vec![
-            PathOperation::PuzzleRead,
-            PathOperation::PuzzleDelete,
-            PathOperation::DownloadFile,
-        ];
-        if let Some(entry) = self.persistent.values().find(|entry| {
-            entry.stored.target_is_dir
-                && entry.stored.operations == operations
-                && entry
-                    .stored
-                    .path
-                    .to_path()
-                    .is_ok_and(|stored| stored == path)
-        }) {
-            if validate_target(path, PathClass::PersistentCustomRoot)? != entry.stored.identity {
-                return Err(Error::Conflict(
-                    "puzzle root changed; select it again".into(),
-                ));
-            }
-            return Ok(PuzzleRootHandle::new(entry.stored.id.clone()));
-        }
-        Ok(PuzzleRootHandle::new(
-            self.migrate_legacy_os_path(
-                path.as_os_str().to_os_string(),
-                display_name,
-                PathClass::PersistentCustomRoot,
-                operations,
-            )?
-            .id,
-        ))
+        Ok(PuzzleRootHandle::new(self.get_or_create_root(
+            path,
+            display_name,
+            vec![
+                PathOperation::PuzzleRead,
+                PathOperation::PuzzleDelete,
+                PathOperation::DownloadFile,
+            ],
+            "puzzle",
+        )?))
     }
 
     pub(crate) fn get_or_create_engine_root(
@@ -2190,12 +2150,31 @@ impl PathAuthority {
         path: &Path,
         display_name: impl Into<String>,
     ) -> Result<EngineRootHandle, Error> {
-        let operations = vec![
-            PathOperation::DownloadArchive,
-            PathOperation::EngineInstall,
-            PathOperation::EngineExecute,
-            PathOperation::EngineConfigure,
-        ];
+        Ok(EngineRootHandle::new(self.get_or_create_root(
+            path,
+            display_name,
+            vec![
+                PathOperation::DownloadArchive,
+                PathOperation::EngineInstall,
+                PathOperation::EngineExecute,
+                PathOperation::EngineConfigure,
+            ],
+            "engine",
+        )?))
+    }
+
+    /// The one registration body behind the three root methods above: reuse the
+    /// persisted entry for this directory when its operations match, refuse it
+    /// when the directory behind it was replaced, and otherwise register it.
+    /// `changed_noun` names the root in that refusal, so each caller keeps
+    /// telling the renderer which root to select again.
+    fn get_or_create_root(
+        &mut self,
+        path: &Path,
+        display_name: impl Into<String>,
+        operations: Vec<PathOperation>,
+        changed_noun: &str,
+    ) -> Result<PathRef, Error> {
         if let Some(entry) = self.persistent.values().find(|entry| {
             entry.stored.target_is_dir
                 && entry.stored.operations == operations
@@ -2206,21 +2185,20 @@ impl PathAuthority {
                     .is_ok_and(|stored| stored == path)
         }) {
             if validate_target(path, PathClass::PersistentCustomRoot)? != entry.stored.identity {
-                return Err(Error::Conflict(
-                    "engine root changed; select it again".into(),
-                ));
+                return Err(Error::Conflict(format!(
+                    "{changed_noun} root changed; select it again"
+                )));
             }
-            return Ok(EngineRootHandle::new(entry.stored.id.clone()));
+            return Ok(entry.stored.id.clone());
         }
-        Ok(EngineRootHandle::new(
-            self.migrate_legacy_os_path(
+        Ok(self
+            .migrate_legacy_os_path(
                 path.as_os_str().to_os_string(),
                 display_name,
                 PathClass::PersistentCustomRoot,
                 operations,
             )?
-            .id,
-        ))
+            .id)
     }
 
     pub(crate) fn active_engine_root(&mut self) -> Result<Option<EngineRootHandle>, Error> {
@@ -5940,6 +5918,152 @@ mod tests {
                 PathOperation::EngineExecute,
                 PathOperation::EngineConfigure,
             ]
+        );
+    }
+
+    #[test]
+    fn database_root_is_not_backfilled_and_reuses_its_id_after_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("databases");
+        fs::create_dir(&root).unwrap();
+        let clock = Arc::new(TestClock::new(1));
+        let mut path_authority = authority(&dir, clock.clone());
+        let original = path_authority
+            .get_or_create_database_root(&root, "Databases")
+            .unwrap();
+        drop(path_authority);
+
+        let mut reloaded = authority(&dir, clock);
+        let reused = reloaded
+            .get_or_create_database_root(&root, "Databases")
+            .unwrap();
+        assert_eq!(reused, original);
+        assert_eq!(reloaded.persistent.len(), 1);
+        assert_eq!(
+            reloaded
+                .persistent
+                .get(&original.path_ref().id)
+                .unwrap()
+                .stored
+                .operations,
+            vec![
+                PathOperation::DatabaseRead,
+                PathOperation::DatabaseMutate,
+                PathOperation::DatabaseCreate,
+                PathOperation::DatabaseExport,
+                PathOperation::DownloadFile,
+            ]
+        );
+    }
+
+    #[test]
+    fn puzzle_root_is_not_backfilled_and_reuses_its_id_after_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("puzzles");
+        fs::create_dir(&root).unwrap();
+        let clock = Arc::new(TestClock::new(1));
+        let mut path_authority = authority(&dir, clock.clone());
+        let original = path_authority
+            .get_or_create_puzzle_root(&root, "Puzzles")
+            .unwrap();
+        drop(path_authority);
+
+        let mut reloaded = authority(&dir, clock);
+        let reused = reloaded
+            .get_or_create_puzzle_root(&root, "Puzzles")
+            .unwrap();
+        assert_eq!(reused, original);
+        assert_eq!(reloaded.persistent.len(), 1);
+        assert_eq!(
+            reloaded
+                .persistent
+                .get(&original.path_ref().id)
+                .unwrap()
+                .stored
+                .operations,
+            vec![
+                PathOperation::PuzzleRead,
+                PathOperation::PuzzleDelete,
+                PathOperation::DownloadFile,
+            ]
+        );
+    }
+
+    /// Replaces a registered root with a different directory of the same name,
+    /// so the reuse lookup still matches while the stored identity no longer
+    /// does. The noun in the message is asserted per root type: one shared noun
+    /// across the three methods would tell the renderer to re-select the wrong
+    /// root.
+    fn replace_root_directory(dir: &tempfile::TempDir, root: &Path, replacement_name: &str) {
+        let replacement = dir.path().join(replacement_name);
+        fs::create_dir(&replacement).unwrap();
+        // POSIX atomically replaces an empty directory, whereas Windows
+        // requires its target to be absent.
+        #[cfg(windows)]
+        fs::remove_dir(root).unwrap();
+        fs::rename(&replacement, root).unwrap();
+    }
+
+    #[test]
+    fn database_root_reuse_rejects_a_replaced_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("databases");
+        fs::create_dir(&root).unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        path_authority
+            .get_or_create_database_root(&root, "Databases")
+            .unwrap();
+        replace_root_directory(&dir, &root, "replacement-database-root");
+
+        let error = path_authority
+            .get_or_create_database_root(&root, "Databases")
+            .unwrap_err();
+        assert!(
+            matches!(&error, Error::Conflict(message)
+                if message == "database root changed; select it again"),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn puzzle_root_reuse_rejects_a_replaced_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("puzzles");
+        fs::create_dir(&root).unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        path_authority
+            .get_or_create_puzzle_root(&root, "Puzzles")
+            .unwrap();
+        replace_root_directory(&dir, &root, "replacement-puzzle-root");
+
+        let error = path_authority
+            .get_or_create_puzzle_root(&root, "Puzzles")
+            .unwrap_err();
+        assert!(
+            matches!(&error, Error::Conflict(message)
+                if message == "puzzle root changed; select it again"),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn engine_root_reuse_rejects_a_replaced_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("engines");
+        fs::create_dir(&root).unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        path_authority
+            .get_or_create_engine_root(&root, "Engines")
+            .unwrap();
+        replace_root_directory(&dir, &root, "replacement-engine-root");
+
+        let error = path_authority
+            .get_or_create_engine_root(&root, "Engines")
+            .unwrap_err();
+        assert!(
+            matches!(&error, Error::Conflict(message)
+                if message == "engine root changed; select it again"),
+            "unexpected error: {error:?}"
         );
     }
 
