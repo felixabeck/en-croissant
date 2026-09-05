@@ -396,6 +396,13 @@ test("coverage tools refuse invalid metadata and propagate command errors", () =
     );
   }
   assert.throws(() => coverageTools(() => ""), /Cannot determine sysroot and host/);
+  assert.throws(
+    () =>
+      coverageTools((_command, args) =>
+        args.at(-1) === "sysroot" ? "\n" : "host: x86_64-unknown-linux-gnu\n",
+      ),
+    /Cannot determine sysroot and host/,
+  );
   const failure = new Error("pinned toolchain missing");
   assert.throws(
     () =>
