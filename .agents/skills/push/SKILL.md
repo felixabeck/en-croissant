@@ -12,6 +12,6 @@ Codex runtime deltas:
 
 * Use `GIT_COMMITTER_NAME="Codex"` for every commit this workflow creates. Leave the author
   untouched and add no AI or co-author trailer.
-* Run the shared review-policy lenses and fixes with Codex's available subagents as directed by
-  `~/.claude/references/review-lens-contract.md`.
+* Run the shared review-policy lenses and fixes on the selected executor as directed by
+  `~/.claude/references/review-lens-contract.md` and `~/.claude/references/executor-profiles.md`.
 * Push only when Felix explicitly requests it. Push never releases or deploys.

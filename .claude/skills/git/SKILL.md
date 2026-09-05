@@ -10,8 +10,8 @@ This is the canonical ChessFable commit workflow.
 ## Authority
 
 * Follow the active workflow's commit authority; this skill adds no second approval gate. Verified
-  task-owned work is committed automatically (universal rule 13 for Claude Code, rule 13 of
-  `~/.claude/references/codex-interactive-workflow.md` for an interactive Codex session), so
+  task-owned work is committed automatically under `~/.claude/CLAUDE.md` for Claude Code and
+  `~/.claude/references/codex-interactive-workflow.md` for an interactive Codex session, so
   `/git` and `$git` are optional manual triggers, not prerequisites.
 * Delegated leaves never stage or commit; they hand unstaged work and proof to the orchestrator.
 

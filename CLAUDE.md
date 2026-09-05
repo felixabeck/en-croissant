@@ -103,9 +103,9 @@ untranslated JSX and missing locale keys (`pnpm i18n:jsx`, `pnpm i18n:check`), d
 
 ## Review lenses
 
-Adversarial review runs in two tiers, and names never collide between them. Six project-independent
-lenses live in `~/.claude/agents/review-*.md` (`plan`, `minimalism`, `root-cause`, `tests`,
-`code-quality`, `error-handling`); six ChessFable-specific ones live in `.claude/agents/` and
+Adversarial review runs in two tiers, and names never collide between them. Seven project-independent
+lenses live in `~/.claude/agents/review-*.md` (`plan`, `minimalism`, `root-cause`, `correctness`,
+`tests`, `code-quality`, `error-handling`); six ChessFable-specific ones live in `.claude/agents/` and
 carry this codebase's failure history:
 
 | Lens | Owns | Triggered by a diff touching |
@@ -144,7 +144,8 @@ session's context, and never only into a handoff message.
 - The universal contract — field meanings, ranking, the decision discipline, the lock protocol — is
   `~/.claude/references/findings-ledger-contract.md`. `scripts/findings.py` is the vendored copy
   of `~/Projekte/agent-kit/scripts/findings.py`, written by `kit sync` and verified byte-exact by
-  `kit sync --check` (since 2026-09-02; the former parity-test mesh is gone); nothing
+  `kit sync --check` apart from the `agent-kit-sha256` stamp line that `kit sync` itself inserts
+  after the shebang (since 2026-09-02; the former parity-test mesh is gone); nothing
   project-specific may be added to it — project specifics live in the ledger header.
 
 CI runs `python3 scripts/findings.py check` in `.github/workflows/test.yml`. Run it directly whenever
@@ -159,7 +160,7 @@ This repository is worked on by Claude Code, Codex, and Grok.
 (`~/.claude/skills/build/SKILL.md`) when its proportionality rule calls for it, and reads project
 gates from `.claude/skills/push/SKILL.md`. Executor selection and leaf launch belong to
 `~/.claude/references/executor-profiles.md`; Codex orchestration uses
-`~/.codex/skills/build/SKILL.md`. Delegated leaves never commit. An interactive Codex session
+`~/.codex/skills/build/SKILL.md`. An interactive Codex session
 follows `~/.claude/references/codex-interactive-workflow.md`, including its scoped commit
 authorization.
 
