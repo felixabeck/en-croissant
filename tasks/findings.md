@@ -30,14 +30,18 @@ En Croissant's own.
   only for a finding that is genuinely not a defect; it is never a quiet way to drop work.
 * **Area** — one of the closed set below. `check` fails on any other value, which is what stops a
   run inventing `engine-protocol` next to `engine-uci` and orphaning a finding from its siblings.
-  Adding an area is a deliberate edit to this list.
-* **Root** — optional slug shared by findings with one underlying cause, `-` when none. Ranked
-  *above* Area, because a shared root crosses area boundaries. Only assign a Root the ledger
-  actually asserts; do not infer one.
-* **Entry** — how it gets executed, decided by the run that *files* it: `inline` (fix it, no
+  Adding an area is a deliberate edit to this list. Area is a filter and report dimension,
+  never a work unit.
+* **Root** — optional slug shared by findings with one evidenced underlying cause, `-` when
+  none. Only Root groups work; rootless findings are singletons, ranked after roots by age.
+  A new slug needs a sentence naming the code or observation that establishes the shared cause,
+  as required by the universal contract; sharing an Area or file is not enough.
+* **Entry** — initial execution tier chosen by the run that *files* it: `inline` (fix it, no
   interview) · `lens` (inline plus one named review lens, run on Codex) · `build` (a real design
   question — the interview is the point). Universal rule 6b's three tiers. **When uncertain, write
-  `build`.** A cluster takes the highest tier of its members.
+  `build`.** Revalidate against current evidence before plan review under the universal contract
+  and `next-finding` skill. A cluster takes the highest current tier of its members, raised when
+  the combined scope requires it.
 * **Blocked** — `none`, or a slug naming what it waits on (`felix-decision`, `upstream-tauri`).
   A blocked finding is excluded from the queue; it is not "next".
   **`felix-decision` additionally requires a `**Decision:**` brief ending the entry, which
@@ -6096,3 +6100,37 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Why it matters:** `$push` on master now runs this script as its last step and CLAUDE.md tells Felix the daily app is a reviewed copy. A stale or concurrently-edited binary published as `reviewed` is the failure the script exists to prevent.
 * **Related:** foreign commits `24720681`, `56b171ae`, `bcd7c9e4`, `4c487d3b` (Claude session `01JAkRySrZTT3Xzew3Jv7uJk`) landed on master during the AuthorizedDir push review.
 * **Found by:** Codex `review-correctness` / `review-root-cause` / `review-error-handling` over `d25d12a6..56b171ae`, 2026-09-05; re-checked against `4c487d3b`. Confidence 99. Deferred because that session is still iterating the installer on the same branch; rewriting it here races them.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### The local opening explorer cannot filter by rating or restrict to recent games in one step
+
+* **ID:** f-20260905-12 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/panels/database/DatabasePanel.tsx` (`LocalOptions`),
+  `src/components/panels/database/options/LocalOptionsPanel.tsx`, `src-tauri/src/db/search.rs`
+  (`search_position` and the `PositionStats` aggregation), `src-tauri/src/db/mod.rs` (`GameQuery`
+  already carries `range1`/`range2` and `start_date`/`end_date`).
+* **Defect:** the local position explorer — the panel that answers "what is played here, how
+  often, with what score" from a local database — filters only by player, colour, date range and
+  result. There is no rating band and no "last N years" shortcut, so a reference database of
+  11 million games answers with club-level and historical noise mixed into the counts. The
+  `GameQuery` used by the games table already has `range1`/`range2` Elo bounds, but the position
+  aggregation does not take them and the explorer UI does not expose them.
+* **Why it matters (product, Felix, 2026-09-05):** this is the central preparation view. In
+  ChessBase Felix kept a materialised slice "Mega25_Elo_1850_2350" (6.8 M games) solely to get
+  this filter; the decision on 2026-09-05 was to *not* migrate that slice and to build the filter
+  live in ChessFable instead, so the same view follows every reference-database update. Until it
+  exists, the reference database is unusable for opponent-frequency work at his level.
+* **Scope:** Elo band (min/max, applied to the side to move or to both — the panel must say
+  which) and a date-from control with year presets, on the local explorer; the backend position
+  aggregation honours both, with the search index unchanged (the filter applies to the candidate
+  games after the position match). Time-control is deliberately *not* in scope: Mega/Gigabase
+  games carry no `TimeControl` tag, so it would match nothing.
+* **Why it is `build`:** it touches the aggregation contract on the Rust side and the explorer UI;
+  the open design question is whether the Elo band filters on the mover, the average, or both
+  players — a product-visible choice that must be stated in the panel, not guessed.
+* **Related:** `f-20260831-06` (large PGN import) — without it the reference database this
+  filter is for cannot be imported from PGN; the manifest downloads are unaffected.
+* **Found by:** Felix's preparation-workflow description, session 2026-09-05.
