@@ -658,6 +658,60 @@ impl AppOwnedRoot {
     }
 }
 
+/// One of the application's own default root directories under its app-data directory.
+/// The set is closed on purpose: the leaf is the security property, so a caller can name
+/// only a directory the application itself defines. It is deliberately **not** exhaustive
+/// over the application's app-data directories — `credentials` is materialised before
+/// `PathAuthority::open` and stays outside this concept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AppOwnedDefaultRoot {
+    Databases,
+    Engines,
+    EngineImages,
+    Puzzles,
+}
+
+impl AppOwnedDefaultRoot {
+    fn leaf(self) -> &'static str {
+        match self {
+            Self::Databases => "db",
+            Self::Engines => "engines",
+            Self::EngineImages => "engine-images",
+            Self::Puzzles => "puzzles",
+        }
+    }
+}
+
+/// Materialise one of the application's own default root directories under `app_data_dir`.
+/// The leaf is fixed per variant, so no caller can name a directory the application does not
+/// own, and in particular a user-picked path can never acquire create-if-missing semantics.
+/// Refuses a leaf that is a symlink or not a directory.
+///
+/// The refusal is not belt-and-braces: `create_dir_all` returns `Ok` for a leaf that is a
+/// symlink to an existing directory, and `EngineImages` is the one variant no
+/// `get_or_create_*_root` follows, so `validate_target` never sees it. It narrows a
+/// pre-planted symlink to one planted between this check and the caller's write; closing that
+/// window means a descriptor-relative install and is a separate decision.
+///
+/// The refusal is built as an `std::io::Error`, so it reaches the renderer as `Error::Io` —
+/// fixed text plus the MissingResource/Permission/Io discrimination. `Error::InvalidInput`
+/// would render its string verbatim and put a native path on the wire.
+pub(crate) fn ensure_app_owned_default_dir(
+    app_data_dir: &Path,
+    root: AppOwnedDefaultRoot,
+) -> Result<PathBuf, Error> {
+    let path = app_data_dir.join(root.leaf());
+    fs::create_dir_all(&path)?;
+    if !fs::symlink_metadata(&path)?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "app-owned default root is not a directory",
+        )
+        .into());
+    }
+    Ok(path)
+}
+
 pub trait Clock: Send + Sync {
     fn now(&self) -> SystemTime;
 }
@@ -5791,6 +5845,117 @@ mod tests {
         fs::remove_dir(&root).unwrap();
         fs::rename(&replacement, &root).unwrap();
         assert_eq!(reloaded.active_database_root().unwrap(), None);
+    }
+
+    const APP_OWNED_DEFAULT_ROOT_LEAVES: [(AppOwnedDefaultRoot, &str); 4] = [
+        (AppOwnedDefaultRoot::Databases, "db"),
+        (AppOwnedDefaultRoot::Engines, "engines"),
+        (AppOwnedDefaultRoot::EngineImages, "engine-images"),
+        (AppOwnedDefaultRoot::Puzzles, "puzzles"),
+    ];
+
+    /// The leaves are written out verbatim rather than read back from the enum. A leaf is the
+    /// identity of an existing user's app-data directory, so a test that asks the enum what
+    /// its leaf is would copy a mistyped one into its own assertion and stay green forever.
+    #[test]
+    fn ensure_app_owned_default_dir_creates_each_root_under_its_own_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        for (root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+            let created = ensure_app_owned_default_dir(dir.path(), root).unwrap();
+            assert_eq!(created, dir.path().join(leaf));
+            assert!(
+                created.is_dir(),
+                "{root:?} must create the directory {leaf}"
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_app_owned_default_dir_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = ensure_app_owned_default_dir(dir.path(), AppOwnedDefaultRoot::Databases)
+            .expect("first call creates the root");
+        let second = ensure_app_owned_default_dir(dir.path(), AppOwnedDefaultRoot::Databases)
+            .expect("second call accepts the existing root");
+        assert_eq!(first, second);
+        assert!(second.is_dir());
+    }
+
+    #[test]
+    fn ensure_app_owned_default_dir_rejects_a_regular_file_as_io() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("db"), b"not a directory").unwrap();
+        let error = ensure_app_owned_default_dir(dir.path(), AppOwnedDefaultRoot::Databases)
+            .expect_err("a regular file at the leaf must be refused");
+        assert!(
+            matches!(error, Error::Io(_)),
+            "the refusal must stay Error::Io, which renders fixed text: {error:?}"
+        );
+    }
+
+    /// Per variant, not once: `create_dir_all` succeeds on a symlink to an existing directory,
+    /// and `EngineImages` is the one variant no `get_or_create_*_root` — and therefore no
+    /// `validate_target` — ever follows.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_app_owned_default_dir_refuses_a_symlinked_leaf_for_every_root() {
+        for (root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+            let dir = tempfile::tempdir().unwrap();
+            let app_data = dir.path().join("app-data");
+            let elsewhere = dir.path().join("elsewhere");
+            fs::create_dir(&app_data).unwrap();
+            fs::create_dir(&elsewhere).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, app_data.join(leaf)).unwrap();
+
+            let error = ensure_app_owned_default_dir(&app_data, root)
+                .expect_err("a symlinked leaf must be refused");
+            assert!(
+                matches!(error, Error::Io(_)),
+                "{root:?} must be refused as Error::Io: {error:?}"
+            );
+            assert_eq!(
+                fs::read_dir(&elsewhere).unwrap().count(),
+                0,
+                "{root:?} must not write through the symlink"
+            );
+        }
+    }
+
+    /// The default callers materialise their directory before registering it; the dialog
+    /// callers must not. An absent user-picked folder means the disk changed under the user,
+    /// and the answer is an error rather than a silently recreated empty root. One test per
+    /// method, because with only one covered the other two could be converted quietly.
+    #[test]
+    fn get_or_create_database_root_refuses_an_absent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let absent = dir.path().join("absent-database-root");
+        assert!(path_authority
+            .get_or_create_database_root(&absent, "Databases")
+            .is_err());
+        assert!(!absent.exists(), "the absent root must not be created");
+    }
+
+    #[test]
+    fn get_or_create_engine_root_refuses_an_absent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let absent = dir.path().join("absent-engine-root");
+        assert!(path_authority
+            .get_or_create_engine_root(&absent, "Engines")
+            .is_err());
+        assert!(!absent.exists(), "the absent root must not be created");
+    }
+
+    #[test]
+    fn get_or_create_puzzle_root_refuses_an_absent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let absent = dir.path().join("absent-puzzle-root");
+        assert!(path_authority
+            .get_or_create_puzzle_root(&absent, "Puzzles")
+            .is_err());
+        assert!(!absent.exists(), "the absent root must not be created");
     }
 
     #[test]

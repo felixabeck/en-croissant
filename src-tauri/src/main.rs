@@ -748,8 +748,10 @@ fn get_database_workspace_blocking(
     if let Some(root) = authority.active_database_root()? {
         return Ok(root);
     }
-    let path = app.path().app_data_dir()?.join("db");
-    std::fs::create_dir_all(&path)?;
+    let path = crate::infra::path_authority::ensure_app_owned_default_dir(
+        &app.path().app_data_dir()?,
+        crate::infra::path_authority::AppOwnedDefaultRoot::Databases,
+    )?;
     let root = authority.get_or_create_database_root(&path, "Databases")?;
     authority.set_active_database_root(&root)?;
     Ok(root)
@@ -897,8 +899,10 @@ fn get_engine_workspace_blocking(
     if let Some(root) = authority.active_engine_root()? {
         return Ok(root);
     }
-    let path = app.path().app_data_dir()?.join("engines");
-    std::fs::create_dir_all(&path)?;
+    let path = crate::infra::path_authority::ensure_app_owned_default_dir(
+        &app.path().app_data_dir()?,
+        crate::infra::path_authority::AppOwnedDefaultRoot::Engines,
+    )?;
     let root = authority.get_or_create_engine_root(&path, "Engines")?;
     authority.set_active_engine_root(&root)?;
     Ok(root)
@@ -1098,8 +1102,10 @@ fn issue_engine_image_blocking(
         MAX_ENGINE_IMAGE_BYTES,
     )?;
     engine_image_mime_type(&bytes)?;
-    let image_dir = app.path().app_data_dir()?.join("engine-images");
-    std::fs::create_dir_all(&image_dir)?;
+    let image_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
+        &app.path().app_data_dir()?,
+        crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
+    )?;
     let destination = image_dir.join(uuid::Uuid::new_v4().to_string());
     crate::infra::fs::atomic_replace(&destination, |file| {
         file.write_all(&bytes).map_err(Error::from)
@@ -1934,22 +1940,16 @@ mod blocking_offload_scans {
         &rest[open + 1..close]
     }
 
-    /// Asserting that a converted command merely *mentions* `BLOCKING_GATEWAY` does not pin the
-    /// offload: moving the worker call back onto the command future and leaving a decoy
-    /// `BLOCKING_GATEWAY.spawn(|| Ok(()))` behind would keep such a scan green, which is exactly
-    /// the GTK-main-loop regression this range exists to prevent. So each command is paired with
-    /// the worker it offloads, and the worker call must appear exactly once, after the gateway
-    /// acquisition — i.e. inside the spawned closure.
     /// `body_at_indent` panics when its needle is absent. Runtime-generic
-    /// helpers are `fn name_blocking<R: …>(`, so the historical
-    /// `fn {name}_blocking(` needle misses them. Prefer the generic form when
-    /// it exists.
-    fn blocking_fn_signature(source: &str, name: &str) -> String {
-        let generic = format!("fn {name}_blocking<");
+    /// helpers are `fn name<R: …>(`, so the plain `fn {name}(` needle misses
+    /// them. Prefer the generic form when it exists. One copy for every scan,
+    /// `_blocking` helpers included: their callers pass `"{name}_blocking"`.
+    fn fn_signature(source: &str, name: &str) -> String {
+        let generic = format!("fn {name}<");
         if source.contains(&generic) {
             generic
         } else {
-            format!("fn {name}_blocking(")
+            format!("fn {name}(")
         }
     }
 
@@ -1968,6 +1968,12 @@ mod blocking_offload_scans {
         }
     }
 
+    /// Asserting that a converted command merely *mentions* `BLOCKING_GATEWAY` does not pin the
+    /// offload: moving the worker call back onto the command future and leaving a decoy
+    /// `BLOCKING_GATEWAY.spawn(|| Ok(()))` behind would keep such a scan green, which is exactly
+    /// the GTK-main-loop regression this range exists to prevent. So each command is paired with
+    /// the worker it offloads, and the worker call must appear exactly once, after the gateway
+    /// acquisition — i.e. inside the spawned closure.
     fn assert_offloads(source: &'static str, signature: &str, worker: &str) {
         let body = body_at_indent(source, signature);
         let call = format!("{worker}(");
@@ -2301,7 +2307,13 @@ mod blocking_offload_scans {
             "preload_reference_db",
             "convert_pgn",
         ] {
-            let blocking = body_at_indent(db, &blocking_fn_signature(db, name));
+            let signature = fn_signature(db, &format!("{name}_blocking"));
+            assert!(
+                signature.ends_with("_blocking(") || signature.ends_with("_blocking<"),
+                "the resolved needle must target {name}_blocking, not the command it wraps: \
+                 {signature}"
+            );
+            let blocking = body_at_indent(db, &signature);
             assert!(
                 !blocking.trim().is_empty(),
                 "{name}_blocking must exist: {blocking}"
@@ -2324,7 +2336,12 @@ mod blocking_offload_scans {
         );
         let search_wrapper = body_at_indent(search, "pub async fn search_position(");
 
-        let convert = body_at_indent(db, &blocking_fn_signature(db, "convert_pgn"));
+        let convert_signature = fn_signature(db, "convert_pgn_blocking");
+        assert!(
+            convert_signature.ends_with("_blocking(") || convert_signature.ends_with("_blocking<"),
+            "the resolved needle must target convert_pgn_blocking: {convert_signature}"
+        );
+        let convert = body_at_indent(db, &convert_signature);
         assert!(
             convert.contains("ConvertProgress"),
             "convert_pgn_blocking must emit ConvertProgress: {convert}"
@@ -2334,7 +2351,14 @@ mod blocking_offload_scans {
             convert_wrapper.contains("description,\n                progress_id,"),
             "convert_pgn must forward progress_id into convert_pgn_blocking: {convert_wrapper}"
         );
-        let players_info = body_at_indent(db, &blocking_fn_signature(db, "get_players_game_info"));
+        let players_info_signature = fn_signature(db, "get_players_game_info_blocking");
+        assert!(
+            players_info_signature.ends_with("_blocking(")
+                || players_info_signature.ends_with("_blocking<"),
+            "the resolved needle must target get_players_game_info_blocking: \
+             {players_info_signature}"
+        );
+        let players_info = body_at_indent(db, &players_info_signature);
         assert!(
             players_info.contains("ProgressLease"),
             "get_players_game_info_blocking must take ProgressLease: {players_info}"
@@ -2684,6 +2708,77 @@ mod blocking_offload_scans {
                 }
                 search_from = i + ".lock(".len();
             }
+        }
+    }
+
+    /// A one-directional "who calls `ensure_app_owned_default_dir`" scan cannot see the swap
+    /// that matters: exchanging `Databases` and `Engines` between the two workspace helpers
+    /// leaves every other check green — neither helper has a behavioural test, the surface
+    /// counts do not move — and the application would then register the database root under
+    /// `engines`. So each call site is pinned to its own variant, to the bare `app_data_dir()`
+    /// argument (a residual `.join("db")`, or `app_config_dir()` eight lines away, would yield
+    /// `<app_data>/db/db` and pass everything else), and to no longer joining its own leaf.
+    /// The needle is the fully-qualified variant: three of these bodies already contain the
+    /// bare word as a `display_name` argument.
+    #[test]
+    fn app_owned_default_roots_are_pinned_to_their_call_sites() {
+        let main = include_str!("main.rs");
+        let puzzle = include_str!("puzzle.rs");
+        for (file, source, name, variant, leaf) in [
+            (
+                "main.rs",
+                main,
+                "get_database_workspace_blocking",
+                "AppOwnedDefaultRoot::Databases",
+                "db",
+            ),
+            (
+                "main.rs",
+                main,
+                "get_engine_workspace_blocking",
+                "AppOwnedDefaultRoot::Engines",
+                "engines",
+            ),
+            (
+                "main.rs",
+                main,
+                "issue_engine_image_blocking",
+                "AppOwnedDefaultRoot::EngineImages",
+                "engine-images",
+            ),
+            (
+                "puzzle.rs",
+                puzzle,
+                "active_or_default_puzzle_workspace",
+                "AppOwnedDefaultRoot::Puzzles",
+                "puzzles",
+            ),
+        ] {
+            let body = body_at_indent(source, &fn_signature(source, name));
+            let call = "ensure_app_owned_default_dir(";
+            let call_at = body.find(call).unwrap_or_else(|| {
+                panic!("{file}::{name} must materialise its root through {call}: {body}")
+            });
+            let variant_at = body[call_at..]
+                .find(variant)
+                .map(|offset| call_at + offset)
+                .unwrap_or_else(|| panic!("{file}::{name} must pass {variant}: {body}"));
+            // The variant is written path-qualified at the call sites, so the argument ends at
+            // the last comma before it rather than at the needle itself.
+            let between = &body[call_at + call.len()..variant_at];
+            let comma = between
+                .rfind(',')
+                .unwrap_or_else(|| panic!("{file}::{name} must pass {variant} second: {body}"));
+            let argument: String = between[..=comma].split_whitespace().collect();
+            assert_eq!(
+                argument, "&app.path().app_data_dir()?,",
+                "{file}::{name} must pass the bare app_data_dir(): {body}"
+            );
+            let quoted = format!("{leaf:?}");
+            assert!(
+                !body.contains(&quoted),
+                "{file}::{name} must not join {quoted} itself: {body}"
+            );
         }
     }
 }

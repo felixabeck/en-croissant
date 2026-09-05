@@ -267,8 +267,10 @@ fn active_or_default_puzzle_workspace(
     if let Some(workspace) = authority.active_puzzle_root()? {
         return Ok(workspace);
     }
-    let path = app.path().app_data_dir()?.join("puzzles");
-    std::fs::create_dir_all(&path)?;
+    let path = crate::infra::path_authority::ensure_app_owned_default_dir(
+        &app.path().app_data_dir()?,
+        crate::infra::path_authority::AppOwnedDefaultRoot::Puzzles,
+    )?;
     let root = authority.get_or_create_puzzle_root(&path, "Puzzles")?;
     authority.set_active_puzzle_root(&root)?;
     authority
