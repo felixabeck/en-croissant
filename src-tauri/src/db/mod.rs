@@ -3970,6 +3970,42 @@ mod tests {
         FileWorkspaceHandle::new(commit.id)
     }
 
+    struct AtomicInjectorReset;
+
+    impl Drop for AtomicInjectorReset {
+        fn drop(&mut self) {
+            crate::infra::fs::set_test_atomic_file_injector(None);
+        }
+    }
+
+    struct FailAtomicExportAt(crate::infra::fs::AtomicFileFaultPoint);
+
+    impl crate::infra::fs::AtomicWriterInjector for FailAtomicExportAt {
+        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == self.0 {
+                Err(std::io::Error::other(format!("injected {point:?} failure")))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn install_atomic_export_failure(
+        point: crate::infra::fs::AtomicFileFaultPoint,
+    ) -> AtomicInjectorReset {
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(FailAtomicExportAt(point))));
+        AtomicInjectorReset
+    }
+
+    fn assert_no_atomic_export_residue(directory: &Path) {
+        let residue: Vec<_> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().starts_with(".atomic-"))
+            .collect();
+        assert!(residue.is_empty(), "atomic export residue: {residue:?}");
+    }
+
     fn export_row(event_name: String) -> (Game, Player, Player, Event, Site) {
         (
             Game {
@@ -4088,6 +4124,97 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_atomic_precommit_failures_preserve_destination_and_cleanup_temporary_file() {
+        use crate::infra::fs::AtomicFileFaultPoint;
+
+        for point in [
+            AtomicFileFaultPoint::TempfileCreate,
+            AtomicFileFaultPoint::Write,
+            AtomicFileFaultPoint::Flush,
+            AtomicFileFaultPoint::FileSync,
+            AtomicFileFaultPoint::PermissionCopy,
+            AtomicFileFaultPoint::PreCommitRevalidate,
+            AtomicFileFaultPoint::Rename,
+        ] {
+            let (dir, app, handle, database) = blocking_database_case();
+            insert_named_game(&app, &database, "White", "Black", "Event", "Berlin");
+            let destination_path = dir.path().join("export.pgn");
+            std::fs::write(&destination_path, b"old").unwrap();
+            let destination = grant_pgn_destination(&app, &destination_path);
+            let state = app.state::<AppState>();
+
+            let injector = install_atomic_export_failure(point);
+            let result = export_to_pgn_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                destination,
+            );
+            drop(injector);
+
+            assert!(
+                matches!(result, Err(Error::Io(_))),
+                "fault point: {point:?}"
+            );
+            assert_eq!(std::fs::read(&destination_path).unwrap(), b"old");
+            assert_no_atomic_export_residue(dir.path());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_atomic_postcommit_failures_return_uncertain_with_complete_parseable_destination() {
+        use crate::infra::fs::AtomicFileFaultPoint;
+
+        for point in [
+            AtomicFileFaultPoint::PostRenameMetadata,
+            AtomicFileFaultPoint::ParentSync,
+        ] {
+            let (dir, app, handle, database) = blocking_database_case();
+            insert_named_game(&app, &database, "White", "Black", "Event", "Berlin");
+            let destination_path = dir.path().join("export.pgn");
+            std::fs::write(&destination_path, b"old").unwrap();
+            let destination = grant_pgn_destination(&app, &destination_path);
+            let state = app.state::<AppState>();
+
+            let injector = install_atomic_export_failure(point);
+            let result = export_to_pgn_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                destination,
+            );
+            drop(injector);
+
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::CommittedDurabilityUncertain(
+                        crate::error::DurabilityStage::DatabasePgnReplacement
+                    ))
+                ),
+                "fault point: {point:?}"
+            );
+            let exported = std::fs::read(&destination_path).unwrap();
+            assert!(exported.ends_with(b"*\n\n"), "fault point: {point:?}");
+            let mut importer = Importer::new(None);
+            let mut parsed = BufferedReader::new(exported.as_slice()).into_iter(&mut importer);
+            let game = parsed
+                .next()
+                .expect("exported one game")
+                .expect("exported PGN parses")
+                .expect("exported game is retained");
+            assert!(parsed.next().is_none(), "exported more than one game");
+            assert_eq!(game.event_name.as_deref(), Some("Event"));
+            assert_eq!(game.site_name.as_deref(), Some("Berlin"));
+            assert_eq!(game.white_name.as_deref(), Some("White"));
+            assert_eq!(game.black_name.as_deref(), Some("Black"));
+            assert_no_atomic_export_residue(dir.path());
+        }
     }
 
     #[test]
