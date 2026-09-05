@@ -18,6 +18,7 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { identityForPid, identityIsLive } from "./process-identity.mjs";
 
 const fencePath = "mutants.out/backend/.mutation-in-progress";
 const mutationMarker = "~ changed by cargo-mutants ~";
@@ -105,26 +106,27 @@ function shellQuote(path) {
   return `'${path.replaceAll("'", `'\\''`)}'`;
 }
 
-function recordedPid() {
+function recordedIdentity() {
   try {
-    const match = readFileSync(fencePath, "utf8").match(/^pid=(\d+)$/m);
-    return match ? Number(match[1]) : undefined;
+    const record = readFileSync(fencePath, "utf8");
+    const pidMatch = record.match(/^pid=(\d+)$/m);
+    if (!pidMatch) return undefined;
+    const startTimeMatch = record.match(/^pidStartTime=(\S+)$/m);
+    return {
+      pid: Number(pidMatch[1]),
+      ...(startTimeMatch ? { startTime: startTimeMatch[1] } : {}),
+    };
   } catch {
     return undefined;
   }
 }
 
-function pidIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
+function pidIsAlive(identity) {
+  return identityIsLive(identity);
 }
 
 function printRecovery() {
-  const pid = recordedPid();
+  const identity = recordedIdentity();
   let markedFiles = [];
   let scanError;
   try {
@@ -136,9 +138,9 @@ function printRecovery() {
   console.error(`Backend mutation fence exists: ${fencePath}`);
   console.error("Recovery procedure:");
   console.error("1. Confirm no `cargo mutants` process is running, and terminate it if one is.");
-  if (pid !== undefined) {
+  if (identity !== undefined) {
     console.error(
-      `   Recorded cargo pid: ${pid}; currently alive: ${pidIsAlive(pid) ? "yes" : "no"}.`,
+      `   Recorded cargo pid: ${identity.pid}; currently alive: ${pidIsAlive(identity) ? "yes" : "no"}.`,
     );
   } else {
     console.error("   No cargo child pid was recorded; inspect the process list by command name.");
@@ -345,8 +347,14 @@ async function main() {
       child = spawn("cargo", cargoArguments(mutationPackage), { stdio: "inherit" });
       childDone = waitForChild(child);
       if (child.pid !== undefined) {
+        const childIdentity = identityForPid(child.pid);
         ftruncateSync(fenceFd, 0);
-        writeSync(fenceFd, `${fenceStarted}pid=${child.pid}\n`, 0, "utf8");
+        writeSync(
+          fenceFd,
+          `${fenceStarted}pid=${child.pid}\n${childIdentity ? `pidStartTime=${childIdentity.startTime}\n` : ""}`,
+          0,
+          "utf8",
+        );
         fsyncSync(fenceFd);
       }
       const result = await childDone;

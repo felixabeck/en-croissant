@@ -135,9 +135,9 @@ jobs:
           if-no-files-found: warn
 
       - name: Run targeted frontend mutation tests
-        # Stays in per-push CI (it has since 57b7ec27): ~21 seconds, and it is currently red
-        # with three survivors in gameSession.ts (f-20260829-08). Only the backend suite moved
-        # to `mutation.yml`, and only because of its runtime.
+        # Measured 323 seconds on 2026-09-04. All three packages have stayed at 0 survivors since
+        # 2026-08-30; f-20260829-08 is handled. The backend suite stays in `mutation.yml` because
+        # its runtime is too high for the per-push workflow.
         run: pnpm mutation:frontend
 
       - name: Upload frontend mutation report

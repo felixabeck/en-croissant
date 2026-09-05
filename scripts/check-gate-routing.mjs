@@ -22,7 +22,7 @@ const TEST_FILE_PATTERNS = [
 ];
 const SCRIPT_RUNNERS = new Set(["node", "python", "python3", "bash", "sh"]);
 
-function fencedBlocks(markdown) {
+export function fencedBlocks(markdown) {
   const blocks = [];
   const pattern = /^```([^\n]*)\n([\s\S]*?)^```\s*$/gmu;
   for (const match of markdown.matchAll(pattern)) {

@@ -43,7 +43,7 @@
     "bundle:report:test": "node --test scripts/check-bundle-budget-tests.mjs",
     "mutation:frontend": "node scripts/run-frontend-mutation.mjs",
     "mutation:backend": "node scripts/run-backend-mutation.mjs",
-    "mutation:runner:test": "node --test scripts/run-backend-mutation-tests.mjs",
+    "mutation:runner:test": "node --test scripts/run-backend-mutation-tests.mjs scripts/run-frontend-mutation-tests.mjs scripts/process-identity-tests.mjs",
     "mutation:guard:check": "node scripts/run-backend-mutation.mjs --check-guard",
     "findings:test": "python3 -B scripts/findings-atomic-write-tests.py",
     "findings:kit:check": "bash \"$HOME/Projekte/agent-kit/bin/kit\" sync --check .",

@@ -3,18 +3,22 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { fencedBlocks } from "./check-gate-routing.mjs";
 import { executeAction, GATES, REQUIRED_TOOLS, TOOL_PROBES } from "./gate-receipt.mjs";
 
 const EXPECTED_GATES = {
   "backend-test": "cargo test --manifest-path src-tauri/Cargo.toml --all-targets",
   "backend-coverage": "pnpm test:coverage:backend && pnpm coverage:backend:check",
   "frontend-coverage": "pnpm test:coverage && pnpm coverage:frontend:check",
+  "frontend-mutation": "pnpm mutation:frontend",
   "frontend-build": "pnpm build-vite",
   "e2e-container": "pnpm test:e2e:container",
   "tauri-build": "pnpm build",
 };
+const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function runGit(root, ...argumentsList) {
   const result = spawnSync("git", argumentsList, { cwd: root, encoding: "utf8" });
@@ -68,7 +72,7 @@ async function record(root, options = {}) {
   });
 }
 
-test("registry maps all six gates to their exact command strings", () => {
+test("registry maps all seven gates to their exact command strings", () => {
   assert.deepEqual(GATES, EXPECTED_GATES);
 });
 
@@ -78,6 +82,7 @@ test("every gate fingerprints a pinned tool set, and every listed tool has a pro
     "backend-test": ["rustc", "cargo"],
     "backend-coverage": ["rustc", "cargo", "nightly", "cargo-llvm-cov", "node", "pnpm"],
     "frontend-coverage": ["node", "pnpm"],
+    "frontend-mutation": ["node", "pnpm"],
     "frontend-build": ["node", "pnpm"],
     "e2e-container": ["node", "pnpm", "playwright-image"],
     "tauri-build": ["rustc", "cargo", "node", "pnpm"],
@@ -87,6 +92,32 @@ test("every gate fingerprints a pinned tool set, and every listed tool has a pro
       assert.equal(typeof TOOL_PROBES[tool], "function", `missing probe for ${tool}`);
     }
   }
+});
+
+test("the push skill receipt fence names every registered gate", async () => {
+  const skill = await readFile(join(projectRoot, ".claude", "skills", "push", "SKILL.md"), "utf8");
+  const receiptsSection = skill.slice(
+    skill.indexOf("### Exact-tree gate receipts"),
+    skill.indexOf("### Cross-layer contracts"),
+  );
+  const commands = fencedBlocks(receiptsSection)
+    .map(({ contents }) => contents)
+    .join("\n");
+  for (const gate of Object.keys(GATES)) {
+    assert.match(commands, new RegExp(`^pnpm gate:ensure ${gate}$`, "mu"));
+  }
+});
+
+test("the frontend push gate fence includes frontend mutation", async () => {
+  const skill = await readFile(join(projectRoot, ".claude", "skills", "push", "SKILL.md"), "utf8");
+  const frontendSection = skill.slice(
+    skill.indexOf("### TypeScript/React frontend"),
+    skill.indexOf("### Exact-tree gate receipts"),
+  );
+  const commands = fencedBlocks(frontendSection)
+    .map(({ contents }) => contents)
+    .join("\n");
+  assert.match(commands, /^pnpm gate:ensure frontend-mutation$/mu);
 });
 
 test("frontend-build records a real node and pnpm fingerprint", async () => {

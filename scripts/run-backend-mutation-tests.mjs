@@ -141,7 +141,10 @@ test("a normal clean run holds the fence for the run and removes it afterwards",
   const running = start(root, environment({ bin, state, mode: "block" }));
   await waitFor(join(state, "started"));
   await readFile(join(state, "fence-present-at-spawn"));
-  assert.match(await readFile(join(root, fence), "utf8"), /^started=.*\npid=\d+\n$/);
+  assert.match(
+    await readFile(join(root, fence), "utf8"),
+    /^started=.*\npid=\d+\npidStartTime=\d+\n$/,
+  );
   await writeFile(join(state, "release"), "");
   const result = await running.done;
   assert.equal(result.code, 0, result.stderr);
@@ -295,6 +298,21 @@ test("a pre-existing fence reports liveness and a per-file restore command", asy
       result.stderr.indexOf("2. Restore") < result.stderr.indexOf("3. Remove"),
   );
   assert.doesNotMatch(result.stderr, /git checkout -- src-tauri(?:\s|$)/);
+});
+
+test("--check-guard treats a reused live pid with the wrong start time as stale", async () => {
+  const { root, bin, state } = await fixture();
+  await mkdir(join(root, dirname(fence)), { recursive: true });
+  await writeFile(
+    join(root, fence),
+    `started=2026-08-30T00:00:00.000Z\npid=${process.pid}\npidStartTime=wrong\n`,
+  );
+  const result = run(root, environment({ bin, state }), ["--check-guard"]);
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    new RegExp(`Recorded cargo pid: ${process.pid}; currently alive: no`),
+  );
 });
 
 test("exclusive fence creation rejects a second concurrent runner", async () => {
