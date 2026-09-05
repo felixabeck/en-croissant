@@ -202,7 +202,7 @@ the Specta registry and generated bindings, and listener lifetimes remain owned 
 Repair every `Fix`, inspect each repair diff, and rerun every gate invalidated by the repair.
 Security and filesystem refusal paths must be exercised, not merely read.
 
-ChessFable runtime compatibility addition: the lens executor, its model rungs and the fallback switch are governed by `~/.claude/references/review-lens-contract.md`. Do not restate them here. If a runtime exposes none of the contract's model names, use independent typed reviewer agents with the smallest self-contained context and disclose that the review used the same model family as the author. Do not silently run the lenses inline while fan-out exists. AntiGravity reviews follow Felix's configured quota order: Gemini first, then Claude Opus at its second-highest reasoning level; never Sonnet or GPT there.
+The lens executor, its model rungs and the fallback switch are governed by `~/.claude/references/review-lens-contract.md` and `~/.claude/references/executor-profiles.md`. Do not restate them here; a fallback run is disclosed in the report as that contract requires.
 
 ## Project `Skip` catalog
 

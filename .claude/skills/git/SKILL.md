@@ -5,8 +5,15 @@ description: Create one explicit, well-scoped ChessFable commit without pushing 
 
 # Git — smart commit
 
-This is the canonical ChessFable commit workflow. It commits only when Felix explicitly asks to
-commit, invokes `/git`, or invokes `$git`.
+This is the canonical ChessFable commit workflow.
+
+## Authority
+
+* Follow the active workflow's commit authority; this skill adds no second approval gate. Verified
+  task-owned work is committed automatically (universal rule 13 for Claude Code, rule 13 of
+  `~/.claude/references/codex-interactive-workflow.md` for an interactive Codex session), so
+  `/git` and `$git` are optional manual triggers, not prerequisites.
+* Delegated leaves never stage or commit; they hand unstaged work and proof to the orchestrator.
 
 ## Inspect and scope
 
@@ -23,4 +30,6 @@ commit, invokes `/git`, or invokes `$git`.
 * Never bypass hooks with `--no-verify`.
 * Commit with `GIT_COMMITTER_NAME="Claude Code"`. Leave the author untouched and add no AI or
   co-author trailer.
+* Name the owned paths on the commit itself (`git commit -- <paths>`). Pass prose through `-F -`
+  with a quoted heredoc, never a double-quoted `-m` string containing backticks.
 * Do not push. Push requires a separate explicit request and the canonical push workflow.

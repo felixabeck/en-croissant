@@ -155,6 +155,14 @@ a diff touches `tasks/`.
 Shared contract: `/home/felixb/Projekte/agent-kit/references/multi-agent-coordination.md`.
 This repository is worked on by Claude Code, Codex, and Grok.
 
+**Division of labour.** The selected orchestrator uses the user-wide `build` skill
+(`~/.claude/skills/build/SKILL.md`) when its proportionality rule calls for it, and reads project
+gates from `.claude/skills/push/SKILL.md`. Executor selection and leaf launch belong to
+`~/.claude/references/executor-profiles.md`; Codex orchestration uses
+`~/.codex/skills/build/SKILL.md`. Delegated leaves never commit. An interactive Codex session
+follows `~/.claude/references/codex-interactive-workflow.md`, including its scoped commit
+authorization.
+
 * Claude Code reads `.claude/skills/push/SKILL.md` directly; Codex reaches it through
   `.agents/skills/push/SKILL.md`, whose Codex delta names its own committer; and
   `.grok/rules/grok-chessfable.md` points at the canonical file.
@@ -271,5 +279,6 @@ Defects found while getting the gates green are listed in `BACKEND_AUDIT_PLAN.md
 ## Commits
 
 Author stays Felix Beck, committer is the acting agent, and no co-author trailer is added. Commit
-atomically per cohesive area. Pushing to the fork requires an explicit request; `$push` never tags,
-releases, or deploys.
+atomically per cohesive area. Verified task-owned work is committed automatically under the active
+workflow's authority; delegated leaves never stage or commit. Pushing to the fork requires an
+explicit request; `$push` never tags, releases, or deploys.
