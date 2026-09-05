@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 14d4d541219265d27fa7d0132165d8548279d01852f7aeb23a8b9a8338c87d75
+# agent-kit-sha256: 8178a10107e6d0fcdfcdece415232927c635abcd780bb415f94f5458ceed0761
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 # Named so the formatter cannot rewrite them. `ruff format` at target-version py314
 # strips redundant parentheses from an explicit `except (A, B):` tuple literal, which
@@ -347,6 +348,14 @@ ID_RE = re.compile(rf"^f-(\d{{{ID_DATE_LEN}}})-\d{{{ID_SEQ_DIGITS}}}$")
 # `assign_pending_ids` for why choosing one itself cannot be made race-free.
 PENDING_ID = "f-PENDING"
 PENDING_DECISION_ID = "d-PENDING"
+LEDGER_META_PREFIX = "<!-- ledger-meta "
+LEDGER_META_SUFFIX = " -->"
+LEDGER_META_VERSION = 1
+MUTATION_RECEIPT_KIND = "mutation-receipt"
+CITATION_CONTEXT_KIND = "citation-context"
+RECEIPT_PLACEHOLDER = "<!-- ledger-meta receipt-placeholder -->"
+REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 # The decisions spool uses the same pending-token shape as the findings spool.
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 HEADER_RE = re.compile(
@@ -571,9 +580,25 @@ FENCED_URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 FENCED_TOKEN_LEADING_CHARS = "\"'`([{<*"
 FENCED_TOKEN_TRAILING_CHARS = "\"'`.,;:!?)]}>*"
 DECISION_RE = re.compile(r"^ {0,3}### (?P<id>d-\d{8}-\d{2}) — (?P<question>.+)$")
-DECISION_PENDING_RE = re.compile(r"^ {0,3}### (?P<id>d-PENDING) — (?P<question>.+)$")
 # Pending headings are recognized separately until the locked allocator mints an id.
-DECISION_ID_RE = re.compile(r"d-\d{8}-\d{2}")
+DECISION_PENDING_RE = re.compile(r"^ {0,3}### (?P<id>d-PENDING) — (?P<question>.+)$")
+# Match the complete would-be owner token before validating it as a slug. Keeping
+# punctuation and additional colons in that token prevents a malformed owner such
+# as ``repo.slug:`` or ``repo:slug:`` from being reinterpreted at a valid suffix.
+QUALIFIER_TOKEN_RE = r"[^\s`\"'“”‘’()\[\]{}<>,;|*–—]+"
+QUALIFIER_LEFT_BOUNDARY_RE = r"(?<![^\s`\"'“”‘’()\[\]{}<>,;|*–—])"
+QUALIFIED_DECISION_RE = re.compile(
+    QUALIFIER_LEFT_BOUNDARY_RE + rf"(?:(?P<owner>{QUALIFIER_TOKEN_RE}):)?"
+    r"(?P<id>d-\d{8}-\d{2})(?![A-Za-z0-9_-])"
+)
+QUALIFIED_FINDING_RE = re.compile(
+    QUALIFIER_LEFT_BOUNDARY_RE + rf"(?:(?P<owner>{QUALIFIER_TOKEN_RE}):)?"
+    r"(?P<id>f-\d{8}-\d{2})(?![A-Za-z0-9_-])"
+)
+INLINE_REFERENCE_RE = re.compile(
+    r"\s*(?:(?:(?:[a-z0-9]+(?:-[a-z0-9]+)*):)?"
+    r"[df]-\d{8}-\d{2}|-)\s*"
+)
 # Deliberately looser than the strict form above: it has to CATCH a near-miss
 # so validation can reject it. Requiring a digit after `d-` excludes the format
 # template in the decisions ledger's own header.
@@ -593,7 +618,8 @@ DECISION_FIELD_RE = {
 GOVERNS_RE = re.compile(r"\*\*Governs:\*\*(?P<ids>.+)")
 SUPERSEDED_BY_RE = re.compile(
     r"\*\*Superseded-by:\*\*\s*(?P<quote>`)?"
-    r"(?P<id>d-\d{8}-\d{2}|-)(?(quote)`)[.,;:!?]?(?:\s*$|\s+·)"
+    r"(?P<ref>(?:(?:[a-z0-9]+(?:-[a-z0-9]+)*):)?d-\d{8}-\d{2}|-)"
+    r"(?(quote)`)[.,;:!?]?(?:\s*$|\s+·)"
 )
 # Deliberately looser than the strict form above: it has to CATCH a near-miss
 # so validation can reject it. A trailer with an unparseable id must not vanish
@@ -612,8 +638,336 @@ SUPERSEDED_BY_MARKER_RE = re.compile(
 GOVERNED_BY_MARKER_RE = re.compile(r"^\s*[*-]\s+\*\*Governed-by:\*\*")
 GOVERNED_BY_RE = re.compile(
     r"^\* \*\*Governed-by:\*\* "
-    r"(?P<ids>d-\d{8}-\d{2}(?:,\s*d-\d{8}-\d{2})*)\s*$"
+    r"(?P<ids>(?:[a-z0-9]+(?:-[a-z0-9]+)*:)?d-\d{8}-\d{2}"
+    r"(?:,\s*(?:[a-z0-9]+(?:-[a-z0-9]+)*:)?d-\d{8}-\d{2})*)\s*$"
 )
+
+
+@dataclass(frozen=True)
+class LedgerMeta:
+    line: int
+    data: dict[str, object]
+
+
+class DuplicateLedgerMetadataKey(ValueError):
+    """A ledger metadata object repeated one JSON key."""
+
+
+@dataclass(frozen=True)
+class CitationOccurrence:
+    source: str
+    entry: str
+    cited_id: str
+    owner: str | None
+    line: int
+    line_text: str
+    occurrence: int
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _sha256_text(value: str) -> str:
+    return _sha256_bytes(value.encode("utf-8"))
+
+
+def _metadata_line(data: dict[str, object]) -> str:
+    return LEDGER_META_PREFIX + json.dumps(
+        data, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ) + LEDGER_META_SUFFIX
+
+
+def _metadata_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build a metadata object while rejecting ambiguous duplicate JSON keys."""
+    data: dict[str, object] = {}
+    for key, value in pairs:
+        if key in data:
+            raise DuplicateLedgerMetadataKey
+        data[key] = value
+    return data
+
+
+def _has_ledger_meta_comment(line: str) -> bool:
+    """Recognize reserved metadata comment syntax without banning prose names."""
+    marker = line.find("<!--")
+    if marker < 0:
+        return False
+    remainder = line[marker + 4 :].lstrip()
+    name = "ledger-meta"
+    return remainder.startswith(name) and (
+        len(remainder) == len(name)
+        or not (remainder[len(name)].isalnum() or remainder[len(name)] in "_-")
+    )
+
+
+def _metadata_schema_issues(meta: LedgerMeta, path: Path) -> list[str]:
+    data = meta.data
+    where = f"{path}:{meta.line}: ledger-meta"
+    kind = data.get("kind")
+    version = data.get("v")
+    if type(version) is not int or version != LEDGER_META_VERSION:
+        return [f"{where}: invalid field 'v' (expected {LEDGER_META_VERSION})"]
+    common = {"v", "kind"}
+    if kind == MUTATION_RECEIPT_KIND:
+        expected = common | {
+            "command", "operation", "request_id_sha256", "target",
+            "input_sha256", "options", "results", "effect_lines",
+            "effect_sha256",
+        }
+        issues: list[str] = []
+        if set(data) != expected:
+            issues.append(
+                f"{where}: invalid fields for kind {kind}: "
+                f"{sorted(set(data) ^ expected)}"
+            )
+        command = data.get("command")
+        if not isinstance(command, str) or command not in (
+            "annotate", "record-decision"
+        ):
+            issues.append(f"{where}: invalid field 'command'")
+        for field_name in ("operation", "input_sha256", "effect_sha256"):
+            value = data.get(field_name)
+            if not isinstance(value, str) or SHA256_RE.fullmatch(value) is None:
+                issues.append(f"{where}: invalid field {field_name!r}")
+        request_hash = data.get("request_id_sha256")
+        if request_hash is not None and (
+            not isinstance(request_hash, str)
+            or SHA256_RE.fullmatch(request_hash) is None
+        ):
+            issues.append(f"{where}: invalid field 'request_id_sha256'")
+        if not isinstance(data.get("target"), str):
+            issues.append(f"{where}: invalid field 'target'")
+        options = data.get("options")
+        if not isinstance(options, dict) or set(options) != {"section"}:
+            issues.append(f"{where}: invalid field 'options'")
+        elif options["section"] is not None and not isinstance(options["section"], str):
+            issues.append(f"{where}: invalid field 'options.section'")
+        results = data.get("results")
+        results_invalid = (
+            not isinstance(results, list)
+            or not results
+            or not all(isinstance(value, str) for value in results)
+        )
+        if isinstance(results, list) and results:
+            if command == "annotate":
+                results_invalid = results_invalid or not all(
+                    isinstance(value, str) and ID_RE.fullmatch(value)
+                    for value in results
+                )
+            elif command == "record-decision":
+                results_invalid = results_invalid or not all(
+                    isinstance(value, str)
+                    and DECISION_RE.fullmatch(f"### {value} — x")
+                    for value in results
+                )
+        if results_invalid:
+            issues.append(f"{where}: invalid field 'results'")
+        effect_lines = data.get("effect_lines")
+        if (
+            not isinstance(effect_lines, int)
+            or isinstance(effect_lines, bool)
+            or effect_lines <= 0
+        ):
+            issues.append(f"{where}: invalid field 'effect_lines'")
+        if not issues:
+            options = cast(dict[str, str | None], data["options"])
+            operation_source = (
+                {
+                    "command": data["command"],
+                    "request_id_sha256": data["request_id_sha256"],
+                }
+                if data["request_id_sha256"] is not None
+                else {
+                    "command": data["command"],
+                    "target": data["target"],
+                    "input_sha256": data["input_sha256"],
+                    "section": options["section"],
+                }
+            )
+            expected_operation = _sha256_text(
+                json.dumps(operation_source, sort_keys=True, separators=(",", ":"))
+            )
+            if data["operation"] != expected_operation:
+                issues.append(f"{where}: invalid field 'operation'")
+        return issues
+    if kind == CITATION_CONTEXT_KIND:
+        base = common | {
+            "source", "entry", "cited", "line_sha256", "occurrence", "status"
+        }
+        status = data.get("status")
+        expected = base | (
+            {"owner"} if status == "external" else {"corrections", "reason"}
+        )
+        issues = []
+        if set(data) != expected:
+            issues.append(
+                f"{where}: invalid fields for kind {kind}: "
+                f"{sorted(set(data) ^ expected)}"
+            )
+        source = data.get("source")
+        if not isinstance(source, str) or source not in ("findings", "decisions"):
+            issues.append(f"{where}: invalid field 'source'")
+        entry = data.get("entry")
+        if not isinstance(entry, str) or re.fullmatch(
+            r"[fd]-\d{8}-\d{2}", entry
+        ) is None:
+            issues.append(f"{where}: invalid field 'entry'")
+        cited = data.get("cited")
+        if not isinstance(cited, str) or re.fullmatch(
+            r"d-\d{8}-\d{2}", cited
+        ) is None:
+            issues.append(f"{where}: invalid field 'cited'")
+        line_hash = data.get("line_sha256")
+        if not isinstance(line_hash, str) or SHA256_RE.fullmatch(line_hash) is None:
+            issues.append(f"{where}: invalid field 'line_sha256'")
+        occurrence = data.get("occurrence")
+        if (
+            not isinstance(occurrence, int)
+            or isinstance(occurrence, bool)
+            or occurrence <= 0
+        ):
+            issues.append(f"{where}: invalid field 'occurrence'")
+        if status == "external":
+            owner = data.get("owner")
+            if (
+                not isinstance(owner, str)
+                or owner == "local"
+                or SLUG_RE.fullmatch(owner) is None
+            ):
+                issues.append(f"{where}: invalid field 'owner'")
+        elif status == "historical-error":
+            corrections = data.get("corrections")
+            if (
+                not isinstance(corrections, list)
+                or not corrections
+                or not all(
+                    isinstance(value, str)
+                    and re.fullmatch(r"d-\d{8}-\d{2}", value)
+                    for value in corrections
+                )
+            ):
+                issues.append(f"{where}: invalid field 'corrections'")
+            reason = data.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                issues.append(f"{where}: invalid field 'reason'")
+        else:
+            issues.append(f"{where}: invalid field 'status'")
+        return issues
+    return [f"{where}: unknown metadata kind"]
+
+
+def _scan_ledger_metadata(text: str, path: Path) -> tuple[list[LedgerMeta], list[str]]:
+    lines = text.splitlines()
+    mask = _fence_mask(lines)
+    found: list[LedgerMeta] = []
+    issues: list[str] = []
+    for index, line in enumerate(lines):
+        if (
+            mask[index] is not FenceState.OUTSIDE
+            or not _has_ledger_meta_comment(line)
+        ):
+            continue
+        where = f"{path}:{index + 1}"
+        if not (line.startswith(LEDGER_META_PREFIX) and line.endswith(LEDGER_META_SUFFIX)):
+            issues.append(f"{where}: malformed reserved ledger-meta marker")
+            continue
+        payload = line[len(LEDGER_META_PREFIX) : -len(LEDGER_META_SUFFIX)]
+        try:
+            data = json.loads(payload, object_pairs_hook=_metadata_object)
+        except DuplicateLedgerMetadataKey:
+            issues.append(f"{where}: duplicate ledger-meta JSON key")
+            continue
+        except (json.JSONDecodeError, UnicodeError):
+            issues.append(f"{where}: malformed ledger-meta JSON")
+            continue
+        if not isinstance(data, dict):
+            issues.append(f"{where}: ledger-meta payload must be an object")
+            continue
+        meta = LedgerMeta(index + 1, data)
+        found.append(meta)
+        issues.extend(_metadata_schema_issues(meta, path))
+    return found, issues
+
+
+def _receipt_effect_issues(
+    text: str, path: Path, metadata: list[LedgerMeta]
+) -> list[str]:
+    lines = text.splitlines()
+    fence_states = _fence_mask(lines)
+    issues: list[str] = []
+    seen: dict[tuple[str, str], int] = {}
+    finding_at_line: dict[int, str] = {}
+    if "**Area vocabulary:**" in text.split("### ", 1)[0]:
+        _found_lines, headers, _orphans = _unfenced_header_matches(
+            text, fence_states
+        )
+        for heading_index, header_index, match in headers:
+            end = _find_entry_span(lines, fence_states, header_index)
+            for index in range(heading_index, end):
+                finding_at_line[index + 1] = match.group("id")
+    for meta in metadata:
+        data = meta.data
+        if (
+            data.get("kind") != MUTATION_RECEIPT_KIND
+            or _metadata_schema_issues(meta, path)
+        ):
+            continue
+        command = str(data["command"])
+        operation = str(data["operation"])
+        duplicate = seen.get((command, operation))
+        if duplicate is not None:
+            issues.append(
+                f"{path}:{meta.line}: duplicate mutation receipt identity; "
+                f"first seen at line {duplicate}"
+            )
+        else:
+            seen[(command, operation)] = meta.line
+        count = cast(int, data["effect_lines"])
+        start = meta.line - 1 - count
+        if start < 0:
+            issues.append(
+                f"{path}:{meta.line}: mutation receipt effect_lines exceeds "
+                "preceding content"
+            )
+            continue
+        effect = lines[start : meta.line - 1]
+        if _sha256_text("\n".join(effect)) != data["effect_sha256"]:
+            issues.append(
+                f"{path}:{meta.line}: mutation receipt effect_sha256 does not "
+                "match its preceding effect block"
+            )
+            continue
+        results = cast(list[str], data["results"])
+        target = str(data["target"])
+        if command == "annotate":
+            if results != [target] or ID_RE.fullmatch(target) is None:
+                issues.append(
+                    f"{path}:{meta.line}: annotate receipt has inconsistent "
+                    "target/results"
+                )
+            effect_lines = range(start + 1, meta.line + 1)
+            if any(finding_at_line.get(number) != target for number in effect_lines):
+                issues.append(
+                    f"{path}:{meta.line}: annotate receipt/effect is outside "
+                    f"target finding {target}"
+                )
+        else:
+            if target != "decisions-ledger" or not results:
+                issues.append(
+                    f"{path}:{meta.line}: record-decision receipt has "
+                    "inconsistent target/results"
+                )
+            headings = [
+                match.group("id")
+                for _index, match in _decision_heading_matches(chr(10).join(effect))[1]
+            ]
+            if headings != results:
+                issues.append(
+                    f"{path}:{meta.line}: record-decision receipt results do "
+                    "not match effect headings"
+                )
+    return issues
 
 
 # Suffixes that make a path-shaped token a real source file. `Finding.paths()` is
@@ -902,9 +1256,10 @@ def _mask_inline_code_spans(line: str) -> str:
     Backtick runs delimit spans only when their opening and closing lengths match.
     Process longer runs first so a double-backtick span containing single
     backticks is masked as one quoted span rather than split into inner spans.
-    A span containing only a decision id stays visible because that id can be
-    part of an otherwise visible near-miss marker. Unclosed spans remain visible
-    to the caller and never consume a later line.
+    A span containing only a valid local or qualified ledger reference, or the
+    ``-`` sentinel, stays visible because it can be part of an otherwise visible
+    near-miss marker. Unclosed spans remain visible to the caller and never
+    consume a later line.
     """
     masked = line
     run_lengths = sorted(
@@ -918,7 +1273,7 @@ def _mask_inline_code_spans(line: str) -> str:
 
         def replace(match: re.Match[str], run_length: int = run_length) -> str:
             content = match.group()[run_length:-run_length]
-            if re.fullmatch(r"\s*d-\d{8}-\d{2}\s*", content):
+            if INLINE_REFERENCE_RE.fullmatch(content):
                 return match.group()
             return " " * len(match.group())
 
@@ -948,6 +1303,7 @@ def _ledger_header_text(lines: list[str], fence_states: list[FenceState]) -> str
     for line, fence_state in zip(lines, fence_states, strict=True):
         if fence_state is not FenceState.OUTSIDE:
             continue
+
         if line.startswith("### "):
             break
         header.append(line)
@@ -1078,7 +1434,11 @@ def parse(path: Path = LEDGER) -> tuple[list[Finding], list[str], frozenset[str]
                 )
             else:
                 pending.governed_by.update(
-                    re.findall(r"d-\d{8}-\d{2}", governed_by.group("ids"))
+                    match.group("id")
+                    for match in QUALIFIED_DECISION_RE.finditer(
+                        governed_by.group("ids")
+                    )
+                    if match.group("owner") in {None, "local"}
                 )
         if HEADER_MARKER in line and line.startswith("* "):
             # The first header was consumed above; any further one is a second
@@ -1148,7 +1508,8 @@ def validate(
             if GOVERNED_BY_RE.fullmatch(line) is None:
                 issues.append(
                     f"{where}: '**Governed-by:**' must be a top-level '* ' bullet "
-                    "listing one or more d-YYYYMMDD-nn decision ids, comma-separated"
+                    "listing one or more d-YYYYMMDD-nn, local:d-YYYYMMDD-nn, or "
+                    "repo-slug:d-YYYYMMDD-nn decision references, comma-separated"
                 )
 
         joined = _unfenced_body(f)
@@ -1273,10 +1634,14 @@ def load_decisions(path: Path) -> list[Decision]:
         pending.body_fenced.append(False)
         governs = GOVERNS_RE.search(line)
         if governs:
-            pending.governs.update(re.findall(r"f-\d{8}-\d{2}", governs.group("ids")))
+            pending.governs.update(
+                match.group("id")
+                for match in QUALIFIED_FINDING_RE.finditer(governs.group("ids"))
+                if match.group("owner") in {None, "local"}
+            )
         superseded_by = SUPERSEDED_BY_RE.search(line)
-        if superseded_by and superseded_by.group("id") != "-":
-            pending.superseded_by = superseded_by.group("id")
+        if superseded_by and superseded_by.group("ref") != "-":
+            pending.superseded_by = superseded_by.group("ref")
     return decisions
 
 
@@ -1361,30 +1726,13 @@ def malformed_superseded_trailers(decisions_path: Path) -> list[str]:
         ):
             issues.append(
                 f"{decisions_path}:{number}: malformed Superseded-by trailer. "
-                "Expected '**Superseded-by:** d-YYYYMMDD-nn' or "
-                "'**Superseded-by:** -', optionally backtick-quoted and followed "
-                "by punctuation."
+                "Expected '**Superseded-by:** d-YYYYMMDD-nn', "
+                "'**Superseded-by:** local:d-YYYYMMDD-nn', "
+                "'**Superseded-by:** repo-slug:d-YYYYMMDD-nn', or "
+                "'**Superseded-by:** -', optionally backtick-quoted and "
+                "followed by punctuation."
             )
     return issues
-
-
-def _warn_missing_governing_decisions(
-    findings: list[Finding], decisions_path: Path
-) -> None:
-    """Warn about finding-side links whose decision heading is absent.
-
-    The decisions file is optional, so a missing heading is a warning rather than
-    a validation error: a repository without decisions must still validate.
-    """
-    known = {decision.id for decision in load_decisions(decisions_path)}
-    for finding in findings:
-        for decision_id in sorted(finding.governed_by - known):
-            print(
-                f"WARN {finding.id} (line {finding.line}): Governed-by decision "
-                f"{decision_id} has no matching '### {decision_id} —' heading in "
-                f"{decisions_path}; the decisions file is optional.",
-                file=sys.stderr,
-            )
 
 
 def cluster_members(findings: list[Finding], key: tuple[str, str]) -> list[Finding]:
@@ -1594,16 +1942,278 @@ def _json_requested(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "json", False))
 
 
+def _citation_line_ordinal(
+    entry: str,
+    cited: str,
+    line: str,
+    duplicate_lines: dict[tuple[str, str, str], int],
+    ordinals_on_line: dict[str, int],
+) -> int:
+    """Allocate one ordinal per identical source line and cited id."""
+    ordinal = ordinals_on_line.get(cited)
+    if ordinal is None:
+        key = (entry, cited, line)
+        ordinal = duplicate_lines.get(key, 0) + 1
+        duplicate_lines[key] = ordinal
+        ordinals_on_line[cited] = ordinal
+    return ordinal
+
+
+def _append_citation_occurrences(
+    occurrences: list[CitationOccurrence],
+    issues: list[str],
+    pattern: re.Pattern[str],
+    *,
+    path: Path,
+    source: str,
+    entry: str,
+    line_number: int,
+    line: str,
+    duplicate_lines: dict[tuple[str, str, str], int],
+    ordinals_on_line: dict[str, int],
+) -> None:
+    """Append valid references while rejecting their complete malformed owners."""
+    for match in pattern.finditer(line):
+        owner = match.group("owner")
+        cited = match.group("id")
+        if owner is not None and SLUG_RE.fullmatch(owner) is None:
+            issues.append(
+                f"{path}:{line_number}: malformed citation qualifier for {cited}"
+            )
+            continue
+        occurrences.append(
+            CitationOccurrence(
+                source,
+                entry,
+                cited,
+                owner,
+                line_number,
+                line,
+                _citation_line_ordinal(
+                    entry, cited, line, duplicate_lines, ordinals_on_line
+                ),
+            )
+        )
+
+
+def _citation_occurrences(path: Path, source: str) -> tuple[list[CitationOccurrence], list[str]]:
+    if not path.exists():
+        return [], []
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    mask = _fence_mask(lines)
+    occurrences: list[CitationOccurrence] = []
+    issues: list[str] = []
+    current_entry = ""
+    pending_finding_heading = False
+    duplicate_lines: dict[tuple[str, str, str], int] = {}
+    for index, line in enumerate(lines):
+        if mask[index] is not FenceState.OUTSIDE:
+            continue
+        if line.startswith(LEDGER_META_PREFIX):
+            continue
+        if source == "decisions":
+            heading = DECISION_RE.match(line)
+            if heading is not None:
+                current_entry = heading.group("id")
+                continue
+            if line.startswith(("# ", "## ")):
+                current_entry = ""
+                continue
+        else:
+            if line.startswith("### "):
+                pending_finding_heading = True
+                current_entry = ""
+                continue
+            if pending_finding_heading:
+                header_match = HEADER_RE.match(line)
+                if header_match is not None:
+                    current_entry = header_match.group("id")
+                    pending_finding_heading = False
+                    continue
+            if line.startswith(("# ", "## ")):
+                current_entry = ""
+                continue
+        if not current_entry:
+            continue
+        ordinals_on_line: dict[str, int] = {}
+
+        _append_citation_occurrences(
+            occurrences,
+            issues,
+            QUALIFIED_DECISION_RE,
+            path=path,
+            source=source,
+            entry=current_entry,
+            line_number=index + 1,
+            line=line,
+            duplicate_lines=duplicate_lines,
+            ordinals_on_line=ordinals_on_line,
+        )
+        if GOVERNS_RE.search(line) is not None:
+            _append_citation_occurrences(
+                occurrences,
+                issues,
+                QUALIFIED_FINDING_RE,
+                path=path,
+                source=source,
+                entry=current_entry,
+                line_number=index + 1,
+                line=line,
+                duplicate_lines=duplicate_lines,
+                ordinals_on_line=ordinals_on_line,
+            )
+    return occurrences, issues
+
+
+def _citation_context_key(data: dict[str, object]) -> tuple[object, ...]:
+    return (
+        data.get("source"),
+        data.get("entry"),
+        data.get("cited"),
+        data.get("line_sha256"),
+        data.get("occurrence"),
+    )
+
+
+def _citation_resolution(
+    ledger_path: Path, decisions_path: Path
+) -> tuple[dict[str, set[str]], list[str]]:
+    finding_occurrences, issues = _citation_occurrences(ledger_path, "findings")
+    decision_occurrences, decision_scan_issues = _citation_occurrences(
+        decisions_path, "decisions"
+    )
+    issues.extend(decision_scan_issues)
+    decision_text = (
+        decisions_path.read_text(encoding="utf-8") if decisions_path.exists() else ""
+    )
+    decision_metadata, metadata_issues = _scan_ledger_metadata(
+        decision_text, decisions_path
+    )
+    issues.extend(metadata_issues)
+    ledger_text = ledger_path.read_text(encoding="utf-8")
+    ledger_metadata, ledger_metadata_issues = _scan_ledger_metadata(
+        ledger_text, ledger_path
+    )
+    issues.extend(ledger_metadata_issues)
+    for meta in ledger_metadata:
+        if meta.data.get("kind") == CITATION_CONTEXT_KIND:
+            issues.append(
+                f"{ledger_path}:{meta.line}: citation-context declarations are "
+                "allowed only in decisions.md"
+            )
+    contexts: dict[tuple[object, ...], LedgerMeta] = {}
+    decision_lines = decision_text.splitlines()
+    decision_mask = _fence_mask(decision_lines)
+    decision_entry_at_line: dict[int, str] = {}
+    current_decision = ""
+    for index, line in enumerate(decision_lines):
+        if decision_mask[index] is not FenceState.OUTSIDE:
+            continue
+        if (heading := DECISION_RE.match(line)) is not None:
+            current_decision = heading.group("id")
+        elif line.startswith(("# ", "## ")):
+            current_decision = ""
+        decision_entry_at_line[index + 1] = current_decision
+    for meta in decision_metadata:
+        if meta.data.get("kind") != CITATION_CONTEXT_KIND:
+            continue
+        if not decision_entry_at_line.get(meta.line):
+            issues.append(
+                f"{decisions_path}:{meta.line}: citation-context declaration "
+                "must be inside a decision entry"
+            )
+            continue
+        if _metadata_schema_issues(meta, decisions_path):
+            continue
+        key = _citation_context_key(meta.data)
+        if key in contexts:
+            issues.append(
+                f"{decisions_path}:{meta.line}: duplicate or conflicting "
+                "citation-context declaration"
+            )
+        else:
+            contexts[key] = meta
+    local_decisions = {decision.id for decision in load_decisions(decisions_path)}
+    local_findings = {finding.id for finding in parse(ledger_path)[0]}
+    resolved: dict[str, set[str]] = {}
+    used_contexts: set[tuple[object, ...]] = set()
+    for occurrence in finding_occurrences + decision_occurrences:
+        if occurrence.cited_id.startswith("f-"):
+            if occurrence.owner not in {None, "local"}:
+                continue
+            if occurrence.cited_id not in local_findings:
+                issues.append(
+                    f"{(ledger_path if occurrence.source == 'findings' else decisions_path)}:"
+                    f"{occurrence.line}: unknown local finding citation "
+                    f"{occurrence.cited_id}"
+                )
+            continue
+        if occurrence.owner not in {None, "local"}:
+            continue
+        key = (
+            occurrence.source,
+            occurrence.entry,
+            occurrence.cited_id,
+            _sha256_text(occurrence.line_text),
+            occurrence.occurrence,
+        )
+        context = contexts.get(key)
+        if context is not None and occurrence.owner is None:
+            used_contexts.add(key)
+            if context.data.get("status") == "historical-error":
+                corrections = cast(list[str], context.data["corrections"])
+                missing = [value for value in corrections if value not in local_decisions]
+                if missing:
+                    issues.append(
+                        f"{decisions_path}:{context.line}: citation-context has "
+                        f"nonexistent correction ids {missing}"
+                    )
+                resolved.setdefault(occurrence.entry, set()).update(corrections)
+            continue
+        if occurrence.cited_id not in local_decisions:
+            source_path = ledger_path if occurrence.source == "findings" else decisions_path
+            issues.append(
+                f"{source_path}:{occurrence.line}: unknown local decision citation "
+                f"{occurrence.cited_id}"
+            )
+        else:
+            resolved.setdefault(occurrence.entry, set()).add(occurrence.cited_id)
+    for key, meta in contexts.items():
+        if key not in used_contexts:
+            issues.append(
+                f"{decisions_path}:{meta.line}: unused citation-context declaration"
+            )
+    return resolved, issues
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
-    # The sibling decisions ledger is optional, so its ABSENCE is not a problem —
-    # but when it exists its ids are load-bearing for this file, and nothing else
-    # validated them. Counted separately so the summary names the file the reader
-    # actually has to open; its messages carry their own path for the same reason.
+    ledger_text = args.ledger.read_text(encoding="utf-8")
+    ledger_metadata, _ledger_meta_issues = _scan_ledger_metadata(
+        ledger_text, args.ledger
+    )
+    issues += _receipt_effect_issues(ledger_text, args.ledger, ledger_metadata)
+    # The sibling decisions ledger may be absent only while no local decision is
+    # cited. When present, its ids and metadata are load-bearing for this file.
+    # Counted separately so the summary names the file the reader has to open;
+    # each message carries its own path for the same reason.
     decision_issues = malformed_decision_headings(args.decisions)
     decision_issues += malformed_superseded_trailers(args.decisions)
     decision_issues += duplicate_decision_ids(args.decisions)
+    if args.decisions.exists():
+        decision_text = args.decisions.read_text(encoding="utf-8")
+        decision_metadata, _decision_meta_issues = _scan_ledger_metadata(
+            decision_text, args.decisions
+        )
+        decision_issues += _receipt_effect_issues(
+            decision_text, args.decisions, decision_metadata
+        )
+    _resolved_citations, citation_issues = _citation_resolution(
+        args.ledger, args.decisions
+    )
+    decision_issues += citation_issues
     build_ledger = args.ledger.parent / "build-ledger.md"
     build_issues = validate_plan_adopted_column(build_ledger)
     if issues or decision_issues or build_issues:
@@ -1624,7 +2234,6 @@ def cmd_check(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    _warn_missing_governing_decisions(findings, args.decisions)
     pickable = sum(1 for f in findings if f.pickable)
     blocked = sum(
         1
@@ -1703,7 +2312,9 @@ def _unfenced_text(text: str) -> str:
     )
 
 
-def _print_related_decisions(members: list[Finding], decisions_path: Path) -> None:
+def _print_related_decisions(
+    members: list[Finding], decisions_path: Path, ledger_path: Path
+) -> None:
     """Surface settled decisions BEFORE the session forms its own view.
 
     This is the anti-oscillation mechanism: findings are worked in fresh contexts, so
@@ -1720,9 +2331,14 @@ def _print_related_decisions(members: list[Finding], decisions_path: Path) -> No
     ids = {f.id for f in members}
     # Both hand-written directions: the decision naming the finding, and the finding
     # naming the decision in its `Governed-by:` field or anywhere in its prose.
-    governed_by = {decision_id for f in members for decision_id in f.governed_by}
-    for f in members:
-        governed_by.update(DECISION_ID_RE.findall(_unfenced_body(f)))
+    resolved, citation_issues = _citation_resolution(ledger_path, decisions_path)
+    for issue in citation_issues:
+        print(f"WARN {issue}", file=sys.stderr)
+    governed_by = {
+        decision_id
+        for finding in members
+        for decision_id in resolved.get(finding.id, set())
+    }
 
     # The files the cluster is about. This is the only arm that fires without one side
     # already knowing the other exists -- see the note above the second block below.
@@ -1892,7 +2508,7 @@ def cmd_next(args: argparse.Namespace) -> int:
     for f in members:
         print(f.summary())
         print(f"    section: {f.section}")
-    _print_related_decisions(members, args.decisions)
+    _print_related_decisions(members, args.decisions, args.ledger)
     return 0
 
 
@@ -2438,18 +3054,20 @@ def _sweep_scratch(directory: Path) -> None:
 
 def _validate_text(candidate: str, near: Path) -> list[str]:
     """Validate ledger text without a scratch path two runs could collide on."""
+    metadata, metadata_issues = _scan_ledger_metadata(candidate, near)
+    metadata_issues += _receipt_effect_issues(candidate, near, metadata)
     try:
         with _candidate_scratch(candidate, near) as scratch:
             if "**Area vocabulary:**" not in candidate.split("### ", 1)[0]:
-                return (
+                return metadata_issues + (
                     malformed_decision_headings(scratch)
                     + malformed_superseded_trailers(scratch)
                     + duplicate_decision_ids(scratch)
                 )
             findings, problems, vocabulary = parse(scratch)
-            return validate(findings, problems, vocabulary)
+            return metadata_issues + validate(findings, problems, vocabulary)
     except LedgerError as exc:
-        return [str(exc)]
+        return [*metadata_issues, str(exc)]
 
 
 def _parse_text(
@@ -2917,8 +3535,9 @@ def _write_if_unchanged(
     _atomic_write(path, candidate, durable_directory=durable_directory)
 
 
-def _locked_ledger_mutation(path: Path, build: Callable[[str], str]) -> None:
-    """Run one validated, compare-and-swap mutation under the ledger lock."""
+@contextmanager
+def _ledger_mutation_scope(path: Path) -> Iterator[str]:
+    """Own one ledger lock and translate its read/write failures consistently."""
     lock = ledger_lock_path(path)
     try:
         acquired, waited_seconds = acquire_ledger_lock(lock)
@@ -2930,14 +3549,7 @@ def _locked_ledger_mutation(path: Path, build: Callable[[str], str]) -> None:
             f"{waited_seconds:.2f}s of retries"
         )
     try:
-        original = path.read_text(encoding="utf-8")
-        candidate = build(original)
-        issues = _validate_text(candidate, path)
-        if issues:
-            raise LedgerError(
-                "the mutation would leave the ledger invalid:\n" + "\n".join(issues)
-            )
-        _write_if_unchanged(path, original, candidate)
+        yield path.read_text(encoding="utf-8")
     except LedgerError:
         raise
     except OSError as exc:
@@ -2946,6 +3558,154 @@ def _locked_ledger_mutation(path: Path, build: Callable[[str], str]) -> None:
         raise LedgerError(f"could not read ledger {path}: {exc}") from exc
     finally:
         release_ledger_lock(lock)
+
+
+def _locked_ledger_mutation(path: Path, build: Callable[[str], str]) -> None:
+    """Run one validated, compare-and-swap mutation under the ledger lock."""
+    with _ledger_mutation_scope(path) as original:
+        candidate = build(original)
+        issues = _validate_text(candidate, path)
+        if issues:
+            raise LedgerError(
+                "the mutation would leave the ledger invalid:\n" + "\n".join(issues)
+            )
+        _write_if_unchanged(path, original, candidate)
+
+
+@dataclass(frozen=True)
+class MutationRequest:
+    command: str
+    target: str
+    input_sha256: str
+    section: str | None
+    request_id_sha256: str | None
+    operation: str
+
+
+def _mutation_request(
+    command: str,
+    target: str,
+    raw_input: bytes,
+    section: str | None,
+    request_id: str | None,
+) -> MutationRequest:
+    if request_id is not None and REQUEST_ID_RE.fullmatch(request_id) is None:
+        raise LedgerError(
+            "--request-id must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}"
+        )
+    input_sha256 = _sha256_bytes(raw_input)
+    request_hash = _sha256_text(request_id) if request_id is not None else None
+    identity = {
+        "command": command,
+        "target": target,
+        "input_sha256": input_sha256,
+        "section": section,
+    }
+    operation_source = (
+        {"command": command, "request_id_sha256": request_hash}
+        if request_hash is not None
+        else identity
+    )
+    operation = _sha256_text(
+        json.dumps(operation_source, sort_keys=True, separators=(",", ":"))
+    )
+    return MutationRequest(
+        command,
+        target,
+        input_sha256,
+        section,
+        request_hash,
+        operation,
+    )
+
+
+def _receipt_for(
+    request: MutationRequest, results: list[str], effect: list[str]
+) -> dict[str, object]:
+    return {
+        "v": LEDGER_META_VERSION,
+        "kind": MUTATION_RECEIPT_KIND,
+        "command": request.command,
+        "operation": request.operation,
+        "request_id_sha256": request.request_id_sha256,
+        "target": request.target,
+        "input_sha256": request.input_sha256,
+        "options": {"section": request.section},
+        "results": results,
+        "effect_lines": len(effect),
+        "effect_sha256": _sha256_text("\n".join(effect)),
+    }
+
+
+def _receipt_matches_request(data: dict[str, object], request: MutationRequest) -> bool:
+    return (
+        data.get("command") == request.command
+        and data.get("target") == request.target
+        and data.get("input_sha256") == request.input_sha256
+        and data.get("options") == {"section": request.section}
+        and data.get("request_id_sha256") == request.request_id_sha256
+    )
+
+
+def _place_receipt(candidate: str, receipt_line: str) -> str:
+    """Replace the single unfenced receipt anchor and leave quoted examples intact."""
+    lines = candidate.splitlines()
+    mask = _fence_mask(lines)
+    anchors = [
+        index
+        for index, line in enumerate(lines)
+        if mask[index] is FenceState.OUTSIDE and line == RECEIPT_PLACEHOLDER
+    ]
+    if len(anchors) != 1:
+        raise LedgerError("receipt-bearing mutation misplaced its receipt anchor")
+    lines[anchors[0]] = receipt_line
+    return chr(10).join(lines) + (chr(10) if candidate.endswith(chr(10)) else "")
+
+
+def _locked_receipted_mutation(
+    path: Path,
+    request: MutationRequest,
+    build: Callable[[str], tuple[str, list[str], list[str]]],
+) -> list[str]:
+    """Run or replay one receipt-bearing ledger mutation under its lock."""
+    with _ledger_mutation_scope(path) as original:
+        metadata, metadata_issues = _scan_ledger_metadata(original, path)
+        metadata_issues += _receipt_effect_issues(original, path, metadata)
+        if metadata_issues:
+            raise LedgerError(
+                "the ledger contains invalid metadata:\n"
+                + "\n".join(metadata_issues)
+            )
+        matching = [
+            meta
+            for meta in metadata
+            if meta.data.get("kind") == MUTATION_RECEIPT_KIND
+            and meta.data.get("command") == request.command
+            and meta.data.get("operation") == request.operation
+        ]
+        if matching:
+            receipt = matching[0].data
+            if not _receipt_matches_request(receipt, request):
+                raise LedgerError(
+                    "--request-id was already used for different input, target, "
+                    "or options in this ledger command"
+                )
+            _fsync_directory(path.parent)
+            return list(cast(list[str], receipt["results"]))
+        candidate, results, effect = build(original)
+        if not effect:
+            raise LedgerError("receipt-bearing mutation produced an empty effect")
+        receipt_line = _metadata_line(_receipt_for(request, results, effect))
+        candidate = _place_receipt(candidate, receipt_line)
+        issues = _validate_text(candidate, path)
+        if issues:
+            raise LedgerError(
+                "the mutation would leave the ledger invalid:\n" + "\n".join(issues)
+            )
+        _write_if_unchanged(
+            path, original, candidate, durable_directory=True
+        )
+        return results
 
 
 def _locate_finding_header(text: str, identifier: str) -> tuple[list[str], int]:
@@ -4488,10 +5248,11 @@ def _decision_clause_one_issues(entry: str) -> list[str]:
     return issues
 
 
-def _read_mutation_input(path: Path) -> str:
-    """Read a command input file and turn filesystem failures into ledger errors."""
+def _read_mutation_input(path: Path) -> tuple[bytes, str]:
+    """Read exact input bytes and decode UTF-8 without normalising newlines."""
     try:
-        return path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        return raw, raw.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise LedgerError(f"could not read input file {path}: {exc}") from exc
 
@@ -4517,22 +5278,39 @@ def _checked_header_value(header_field: str, value: str) -> str:
     return value
 
 
+def _answerable_header_change_refusal(
+    findings: list[Finding],
+    finding_id: str,
+    *,
+    blocked: str | None,
+    status: str | None,
+) -> str | None:
+    """Refuse a set-header change that would bypass an answerable blocker."""
+    target = next((finding for finding in findings if finding.id == finding_id), None)
+    if target is None or target.blocked not in ANSWERABLE_BLOCKERS:
+        return None
+    blocked_change = blocked is not None and blocked not in ANSWERABLE_BLOCKERS
+    status_close = status in {"handled", "rejected"}
+    if not (blocked_change or status_close):
+        return None
+    return (
+        f"cannot clear answerable blocker {target.blocked} with set-header; "
+        "answer it through /decide"
+    )
+
+
 def cmd_set_header(args: argparse.Namespace) -> int:
     """Update selected fields on one real finding header under the ledger lock."""
     findings, _problems, _vocabulary = parse(args.ledger)
-    target = next((finding for finding in findings if finding.id == args.id), None)
-    if target is not None and target.blocked in ANSWERABLE_BLOCKERS:
-        blocked_change = (
-            args.blocked is not None and args.blocked not in ANSWERABLE_BLOCKERS
-        )
-        status_close = args.status in {"handled", "rejected"}
-        if blocked_change or status_close:
-            print(
-                f"cannot clear answerable blocker {target.blocked} with set-header; "
-                "answer it through /decide",
-                file=sys.stderr,
-            )
-            return 1
+    refusal = _answerable_header_change_refusal(
+        findings,
+        args.id,
+        blocked=args.blocked,
+        status=args.status,
+    )
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 1
 
     changes = {
         "Status": args.status,
@@ -4542,6 +5320,15 @@ def cmd_set_header(args: argparse.Namespace) -> int:
     }
 
     def build(text: str) -> str:
+        current_findings, _problems, _vocabulary = _parse_text(text, args.ledger)
+        current_refusal = _answerable_header_change_refusal(
+            current_findings,
+            args.id,
+            blocked=args.blocked,
+            status=args.status,
+        )
+        if current_refusal is not None:
+            raise LedgerError(current_refusal)
         lines, index = _locate_finding_header(text, args.id)
         line = lines[index]
         for header_field, value in changes.items():
@@ -4586,6 +5373,12 @@ def _annotation_refusal(annotation: str, target: Finding, source: Path) -> str |
         if fence_state is not FenceState.OUTSIDE:
             continue
 
+        if _has_ledger_meta_comment(line):
+            return (
+                f"{source} contains reserved ledger-meta syntax; refusing it "
+                "because mutation inputs cannot supply ledger metadata"
+            )
+
         if line.startswith("# "):
             boundary = "a top-level '# ' heading"
         elif line.startswith("## "):
@@ -4625,11 +5418,14 @@ def _annotation_refusal(annotation: str, target: Finding, source: Path) -> str |
 
 def cmd_annotate(args: argparse.Namespace) -> int:
     """Insert a file's lines into one finding entry under the ledger lock."""
-    annotation = _read_mutation_input(args.file)
+    raw_annotation, annotation = _read_mutation_input(args.file)
     if not any(line.strip() for line in annotation.splitlines()):
         raise LedgerError(f"{args.file} contains no content to annotate")
+    request = _mutation_request(
+        "annotate", args.id, raw_annotation, None, getattr(args, "request_id", None)
+    )
 
-    def build(text: str) -> str:
+    def build(text: str) -> tuple[str, list[str], list[str]]:
         lines, index = _locate_finding_header(text, args.id)
         findings, _problems, _vocabulary = _parse_text(text, args.ledger)
         target = next((finding for finding in findings if finding.id == args.id), None)
@@ -4640,7 +5436,8 @@ def cmd_annotate(args: argparse.Namespace) -> int:
             raise LedgerError(refusal)
         fence_states = _fence_mask(lines)
         end = _find_entry_span(lines, fence_states, index)
-        block = annotation.splitlines()
+        effect = annotation.splitlines()
+        block = list(effect)
         # Separate the annotation from the entry body it lands after. Without
         # this the appended block is joined to the preceding paragraph and
         # renders as part of it -- every hand-written closure note in the
@@ -4648,10 +5445,11 @@ def cmd_annotate(args: argparse.Namespace) -> int:
         # different shape than the file's own convention.
         if end > 0 and lines[end - 1].strip() and block and block[0].strip():
             block.insert(0, "")
+        block.append(RECEIPT_PLACEHOLDER)
         lines[end:end] = block
-        return _with_final_newline(text, lines)
+        return _with_final_newline(text, lines), [args.id], effect
 
-    _locked_ledger_mutation(args.ledger, build)
+    _locked_receipted_mutation(args.ledger, request, build)
     print(f"annotated {args.id} from {args.file}")
     return 0
 
@@ -4678,9 +5476,32 @@ def _append_decision_entry(ledger_text: str, entry: str, section: str | None) ->
     return base + "\n\n" + f"## {label}" + "\n\n" + entry.strip() + "\n"
 
 
+SECTION_LINE_SEPARATOR_RE = re.compile(r"[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
+
+
+def _check_decision_section(section: str | None) -> None:
+    """Reject section labels that could inject another ledger line."""
+    if section is not None and SECTION_LINE_SEPARATOR_RE.search(section) is not None:
+        raise LedgerError(
+            "--section must be a single-line label without control line separators"
+        )
+
+
 def cmd_record_decision(args: argparse.Namespace) -> int:
     """Append pending decisions through the decisions ledger's writer lock."""
-    entry = _read_mutation_input(args.file)
+    _check_decision_section(args.section)
+    raw_entry, entry = _read_mutation_input(args.file)
+    input_metadata, input_meta_issues = _scan_ledger_metadata(entry, args.file)
+    if input_meta_issues:
+        raise LedgerError("invalid ledger metadata in decision input:\n" + "\n".join(input_meta_issues))
+    if any(
+        meta.data.get("kind") == MUTATION_RECEIPT_KIND
+        for meta in input_metadata
+    ):
+        raise LedgerError(
+            f"{args.file} contains reserved mutation-receipt metadata; "
+            "mutation inputs cannot supply replay evidence"
+        )
     _lines, pending = _decision_heading_matches(entry, include_pending=True)
     if not any(match.group("id") == PENDING_DECISION_ID for _, match in pending):
         raise LedgerError(
@@ -4694,17 +5515,22 @@ def cmd_record_decision(args: argparse.Namespace) -> int:
             + chr(10)
             + chr(10).join(clause_one_issues)
         )
-    allocated: list[str] = []
+    request = _mutation_request(
+        "record-decision",
+        "decisions-ledger",
+        raw_entry,
+        args.section,
+        getattr(args, "request_id", None),
+    )
     date = f"{datetime.now().astimezone():%Y%m%d}"
 
-    def build(text: str) -> str:
-        candidate = _append_decision_entry(text, entry, args.section)
+    def build(text: str) -> tuple[str, list[str], list[str]]:
         taken = {
             match.group("id")
-            for _index, match in _decision_heading_matches(candidate)[1]
+            for _index, match in _decision_heading_matches(text)[1]
         }
         rewritten, minted = _allocate_pending(
-            candidate,
+            entry,
             "d",
             date,
             taken,
@@ -4713,17 +5539,13 @@ def cmd_record_decision(args: argparse.Namespace) -> int:
         )
         if PENDING_DECISION_ID in rewritten:
             raise LedgerError(f"{PENDING_DECISION_ID} survived decision id allocation")
-        allocated.extend(minted)
-        # `_allocate_pending` rebuilds the text with `"\n".join(splitlines())`,
-        # which drops the trailing newline. `set-header` and `annotate` already
-        # go through `_with_final_newline` for exactly this reason; this path did
-        # not, so every `record-decision` wrote a file with no final newline and
-        # this repo's `end-of-file-fixer` rewrote it -- meaning the first commit
-        # attempt after any recorded decision always failed. Measured
-        # 2026-08-24, on this run's own decisions commit.
-        return _with_final_newline(candidate, rewritten.splitlines())
+        effect = rewritten.strip().splitlines()
+        candidate = _append_decision_entry(
+            text, rewritten.strip() + "\n" + RECEIPT_PLACEHOLDER, args.section
+        )
+        return candidate, minted, effect
 
-    _locked_ledger_mutation(args.decisions, build)
+    allocated = _locked_receipted_mutation(args.decisions, request, build)
     print(f"recorded decision(s) as {' '.join(allocated)}")
     return 0
 
@@ -5188,6 +6010,9 @@ def main(argv: list[str] | None = None) -> int:
     p_annotate = sub.add_parser("annotate", help="append file contents to a finding")
     p_annotate.add_argument("id")
     p_annotate.add_argument("file", type=Path)
+    p_annotate.add_argument(
+        "--request-id", help="stable caller identity for one intentional repeat"
+    )
     p_annotate.set_defaults(func=cmd_annotate)
 
     p_record = sub.add_parser(
@@ -5195,6 +6020,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_record.add_argument("file", type=Path)
     p_record.add_argument("--section")
+    p_record.add_argument(
+        "--request-id", help="stable caller identity for one intentional repeat"
+    )
     p_record.set_defaults(func=cmd_record_decision)
 
     args = parser.parse_args(argv)
@@ -5203,7 +6031,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.ledger is None:
         args.ledger = LEDGER
     if args.decisions is None:
-        args.decisions = DECISIONS
+        # The two ledgers are a pair: an explicit ``--ledger`` pairs with the
+        # decisions file beside it, never with the repository's own. Mixing a
+        # fixture findings ledger with the real decisions ledger made every
+        # cross-ledger citation check report the real ledger's ids as missing.
+        args.decisions = args.ledger.parent / "decisions.md"
     if getattr(args, "inbox", None) is None and hasattr(args, "inbox"):
         args.inbox = INBOX
     if getattr(args, "answers", None) is None and hasattr(args, "answers"):
