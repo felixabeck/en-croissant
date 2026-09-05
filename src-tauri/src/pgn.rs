@@ -229,10 +229,27 @@ fn is_tag_header(line: &str, in_brace_comment: bool) -> bool {
 }
 
 fn update_brace_comment(line: &str, in_brace_comment: &mut bool) {
+    let mut in_quoted_string = false;
+    let mut escaped = false;
     for character in line.chars() {
+        if *in_brace_comment {
+            if character == '}' {
+                *in_brace_comment = false;
+            }
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_quoted_string && character == '\\' {
+            escaped = true;
+            continue;
+        }
         match character {
-            '{' => *in_brace_comment = true,
-            '}' => *in_brace_comment = false,
+            '"' => in_quoted_string = !in_quoted_string,
+            ';' if !in_quoted_string => break,
+            '{' if !in_quoted_string => *in_brace_comment = true,
             _ => {}
         }
     }
@@ -790,6 +807,32 @@ mod tests {
     fn braces_in_quoted_tag_values_do_not_start_comments() {
         let data = b"[Event \"{literal\"]\n\n1. e4\n[Event \"B\"]\n\n1. d4\n";
         assert_eq!(scan_games(Cursor::new(data)).expect("scan PGN").len(), 2);
+    }
+
+    #[test]
+    fn inline_semicolon_comments_cannot_open_brace_comments() {
+        let data = b"[Event \"A\"]\n\n1. e4 ; { ignored\n[Event \"B\"]\n\n1. d4\n";
+        let ranges = scan_games(Cursor::new(data)).expect("scan PGN");
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(
+            &data[ranges[0].start as usize..ranges[0].end as usize],
+            b"[Event \"A\"]\n\n1. e4 ; { ignored\n"
+        );
+        assert_eq!(
+            &data[ranges[1].start as usize..ranges[1].end as usize],
+            b"[Event \"B\"]\n\n1. d4\n"
+        );
+    }
+
+    #[test]
+    fn semicolons_and_braces_inside_comments_and_quoted_movetext_keep_their_context() {
+        let data = b"[Event \"A\"]\n\n1. e4 { ; remains a brace comment\n} \"quoted ; { ignored\" e5\n[Event \"B\"]\n\n1. d4\n";
+        let ranges = scan_games(Cursor::new(data)).expect("scan PGN");
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(
+            &data[ranges[0].start as usize..ranges[0].end as usize],
+            b"[Event \"A\"]\n\n1. e4 { ; remains a brace comment\n} \"quoted ; { ignored\" e5\n"
+        );
     }
 
     #[test]

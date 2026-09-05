@@ -2256,8 +2256,22 @@ struct PgnGame {
     moves: Option<String>,
 }
 
+fn write_decoded_pgn_tag(writer: &mut impl Write, name: &str, value: &str) -> Result<(), Error> {
+    write!(writer, "[{name} \"")?;
+    for character in value.chars() {
+        if character == '\\' || character == '"' {
+            writer.write_all(b"\\")?;
+        }
+        write!(writer, "{character}")?;
+    }
+    writeln!(writer, "\"]")?;
+    Ok(())
+}
+
 impl PgnGame {
     fn write(&self, writer: &mut impl Write) -> Result<(), Error> {
+        // Event, Site, Date, UTCTime, and Result retain RawHeader's escaped spelling in existing
+        // databases. The fields written through write_decoded_pgn_tag were decoded on import.
         writeln!(
             writer,
             "[Event \"{}\"]",
@@ -2270,31 +2284,19 @@ impl PgnGame {
                 writeln!(writer, "[UTCTime \"{}\"]", time)?;
             }
         }
-        writeln!(
-            writer,
-            "[Round \"{}\"]",
-            self.round.as_deref().unwrap_or("")
-        )?;
-        writeln!(
-            writer,
-            "[White \"{}\"]",
-            self.white.as_deref().unwrap_or("")
-        )?;
-        writeln!(
-            writer,
-            "[Black \"{}\"]",
-            self.black.as_deref().unwrap_or("")
-        )?;
+        write_decoded_pgn_tag(writer, "Round", self.round.as_deref().unwrap_or(""))?;
+        write_decoded_pgn_tag(writer, "White", self.white.as_deref().unwrap_or(""))?;
+        write_decoded_pgn_tag(writer, "Black", self.black.as_deref().unwrap_or(""))?;
         writeln!(
             writer,
             "[Result \"{}\"]",
             self.result.as_deref().unwrap_or("*")
         )?;
         if let Some(time_control) = self.time_control.as_deref() {
-            writeln!(writer, "[TimeControl \"{}\"]", time_control)?;
+            write_decoded_pgn_tag(writer, "TimeControl", time_control)?;
         }
         if let Some(eco) = self.eco.as_deref() {
-            writeln!(writer, "[ECO \"{}\"]", eco)?;
+            write_decoded_pgn_tag(writer, "ECO", eco)?;
         }
         if let Some(white_elo) = self.white_elo.as_deref() {
             if white_elo == "0" {
@@ -2315,7 +2317,7 @@ impl PgnGame {
         }
         if let Some(fen) = self.fen.as_deref() {
             writeln!(writer, "[SetUp \"1\"]")?;
-            writeln!(writer, "[FEN \"{}\"]", fen)?;
+            write_decoded_pgn_tag(writer, "FEN", fen)?;
         }
         writeln!(writer)?;
         if let Some(moves) = self.moves.as_deref() {
@@ -4001,6 +4003,78 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn imported_escaped_tags_roundtrip_through_production_export() {
+        let source = r#"[Event "Open \"A\" \\ Cup"]
+[Site "Hall \"B\" \\ Wing"]
+[Date "2026.09.05"]
+[Round "R\"1\\A"]
+[White "Ada \"Ace\" \\ Labs"]
+[Black "Bob \\ \"B\""]
+[Result "*"]
+[TimeControl "40/7200\"bonus\\"]
+[ECO "C\"20\\"]
+[SetUp "1"]
+[FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"]
+
+*
+"#;
+        let mut source_importer = Importer::new(None);
+        let imported = BufferedReader::new(source.as_bytes())
+            .into_iter(&mut source_importer)
+            .flatten()
+            .flatten()
+            .next()
+            .expect("import source game");
+        assert_eq!(imported.event_name.as_deref(), Some(r#"Open \"A\" \\ Cup"#));
+        assert_eq!(imported.site_name.as_deref(), Some(r#"Hall \"B\" \\ Wing"#));
+        assert_eq!(imported.round.as_deref(), Some("R\"1\\A"));
+        assert_eq!(imported.white_name.as_deref(), Some("Ada \"Ace\" \\ Labs"));
+        assert_eq!(imported.black_name.as_deref(), Some("Bob \\ \"B\""));
+        assert_eq!(imported.time_control.as_deref(), Some("40/7200\"bonus\\"));
+        assert_eq!(imported.eco.as_deref(), Some("C\"20\\"));
+
+        let (dir, app, handle, database) = blocking_database_case();
+        {
+            let state = app.state::<AppState>();
+            let mut db = state.database_repository.connection(&database).unwrap();
+            imported.insert_to_db(&mut db).unwrap();
+        }
+        let destination_path = dir.path().join("escaped-export.pgn");
+        std::fs::write(&destination_path, b"old").unwrap();
+        let destination = grant_pgn_destination(&app, &destination_path);
+        let state = app.state::<AppState>();
+        export_to_pgn_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            destination,
+        )
+        .unwrap();
+
+        let exported = std::fs::read_to_string(destination_path).unwrap();
+        assert!(exported.contains(r#"[Event "Open \"A\" \\ Cup"]"#));
+        assert!(exported.contains(r#"[Site "Hall \"B\" \\ Wing"]"#));
+        assert!(exported.contains(r#"[White "Ada \"Ace\" \\ Labs"]"#));
+        assert!(exported.contains(r#"[Black "Bob \\ \"B\""]"#));
+
+        let mut roundtrip_importer = Importer::new(None);
+        let roundtrip = BufferedReader::new(exported.as_bytes())
+            .into_iter(&mut roundtrip_importer)
+            .flatten()
+            .flatten()
+            .next()
+            .expect("reimport exported game");
+        assert_eq!(roundtrip.event_name, imported.event_name);
+        assert_eq!(roundtrip.site_name, imported.site_name);
+        assert_eq!(roundtrip.round, imported.round);
+        assert_eq!(roundtrip.white_name, imported.white_name);
+        assert_eq!(roundtrip.black_name, imported.black_name);
+        assert_eq!(roundtrip.time_control, imported.time_control);
+        assert_eq!(roundtrip.eco, imported.eco);
+        assert_eq!(roundtrip.fen, imported.fen);
     }
 
     #[test]
