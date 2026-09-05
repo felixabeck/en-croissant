@@ -31,7 +31,7 @@ export const INITIAL_FS_SURFACE_COUNTS = Object.freeze({
   "src-tauri/src/db/repository.rs": 6,
   "src-tauri/src/file_workspace.rs": 5,
   "src-tauri/src/fs.rs": 10,
-  "src-tauri/src/main.rs": 2,
+  "src-tauri/src/main.rs": 1,
   "src-tauri/src/sound.rs": 1,
 });
 

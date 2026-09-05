@@ -104,9 +104,49 @@ mod verified_identity {
             Ok((installed.outcome, VerifiedIdentity(installed.identity)))
         }
     }
+
+    impl super::ResolvedPath {
+        pub(crate) fn identity(&self) -> Result<VerifiedIdentity, Error> {
+            if let Some(file) = self.file.as_ref() {
+                return super::opened_file_identity(file).map(VerifiedIdentity);
+            }
+            #[cfg(unix)]
+            if let Some(directory) = self.directory.as_ref() {
+                return super::opened_file_identity(directory).map(VerifiedIdentity);
+            }
+            Err(Error::Conflict(
+                "resolved capability has no retained descriptor".into(),
+            ))
+        }
+    }
+
+    pub(super) fn database_child_identity(
+        resolved: VerifiedIdentity,
+        validated: &super::Identity,
+    ) -> Result<VerifiedIdentity, Error> {
+        let pair = (validated.a, validated.b);
+        if resolved.pair() != pair {
+            return Err(Error::Conflict(
+                "resolved identity does not match registration target".into(),
+            ));
+        }
+        Ok(VerifiedIdentity(pair))
+    }
 }
 
 pub(crate) use verified_identity::VerifiedIdentity;
+
+const VERIFIED_REGISTRATION_CONFLICT: &str = "verified identity does not match registration target";
+
+fn require_expected_identity(
+    validated: &Identity,
+    expected: Option<VerifiedIdentity>,
+) -> Result<(), Error> {
+    if expected.is_some_and(|expected| expected.pair() != (validated.a, validated.b)) {
+        return Err(Error::Conflict(VERIFIED_REGISTRATION_CONFLICT.into()));
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 pub(crate) struct AuthorizedDir {
@@ -2301,6 +2341,17 @@ impl PathAuthority {
         class: PathClass,
         operations: Vec<PathOperation>,
     ) -> Result<PathCommit, Error> {
+        self.migrate_legacy_os_path_inner(path, display_name.into(), class, operations, None)
+    }
+
+    fn migrate_legacy_os_path_inner(
+        &mut self,
+        path: OsString,
+        display_name: String,
+        class: PathClass,
+        operations: Vec<PathOperation>,
+        expected_identity: Option<VerifiedIdentity>,
+    ) -> Result<PathCommit, Error> {
         if !matches!(
             class,
             PathClass::PersistentCustomRoot | PathClass::PersistentFile
@@ -2315,14 +2366,16 @@ impl PathAuthority {
             ));
         }
         let path = PathBuf::from(path);
+        let identity = validate_target(&path, class)?;
+        require_expected_identity(&identity, expected_identity)?;
         let id = PathRef::fresh();
         let stored = StoredEntry {
             id: id.clone(),
-            display_name: display_name.into(),
+            display_name,
             class,
             operations,
             path: NativePath::from_path(&path),
-            identity: validate_target(&path, class)?,
+            identity,
             target_is_dir: class == PathClass::PersistentCustomRoot,
         };
         let mut candidate = self.persistent.clone();
@@ -2345,12 +2398,38 @@ impl PathAuthority {
         display_name: impl Into<String>,
         operations: Vec<PathOperation>,
     ) -> Result<PathCommit, Error> {
+        self.get_or_create_persistent_file_inner(path, display_name.into(), operations, None)
+    }
+
+    pub(crate) fn get_or_create_persistent_file_verified(
+        &mut self,
+        path: &Path,
+        display_name: impl Into<String>,
+        operations: Vec<PathOperation>,
+        expected: VerifiedIdentity,
+    ) -> Result<PathCommit, Error> {
+        self.get_or_create_persistent_file_inner(
+            path,
+            display_name.into(),
+            operations,
+            Some(expected),
+        )
+    }
+
+    fn get_or_create_persistent_file_inner(
+        &mut self,
+        path: &Path,
+        display_name: String,
+        operations: Vec<PathOperation>,
+        expected_identity: Option<VerifiedIdentity>,
+    ) -> Result<PathCommit, Error> {
         if operations.is_empty() {
             return Err(Error::InvalidInput(
                 "persistent operations cannot be empty".into(),
             ));
         }
         let expected = validate_target(path, PathClass::PersistentFile)?;
+        require_expected_identity(&expected, expected_identity)?;
         if let Some(entry) = self.persistent.values().find(|entry| {
             entry.stored.class == PathClass::PersistentFile
                 && entry.stored.operations == operations
@@ -2370,11 +2449,12 @@ impl PathAuthority {
                 durability: CommitDurability::Durable,
             });
         }
-        self.migrate_legacy_os_path(
+        self.migrate_legacy_os_path_inner(
             path.as_os_str().to_os_string(),
             display_name,
             PathClass::PersistentFile,
             operations,
+            expected_identity,
         )
     }
 
@@ -2529,13 +2609,36 @@ impl PathAuthority {
         path: &Path,
         display_name: impl Into<String>,
     ) -> Result<EngineHandle, Error> {
+        self.register_engine_file_inner(path, display_name.into(), None)
+    }
+
+    pub(crate) fn register_engine_file_verified(
+        &mut self,
+        path: &Path,
+        display_name: impl Into<String>,
+        expected: VerifiedIdentity,
+    ) -> Result<EngineHandle, Error> {
+        self.register_engine_file_inner(path, display_name.into(), Some(expected))
+    }
+
+    fn register_engine_file_inner(
+        &mut self,
+        path: &Path,
+        display_name: String,
+        expected_identity: Option<VerifiedIdentity>,
+    ) -> Result<EngineHandle, Error> {
         let operations = vec![
             PathOperation::EngineExecute,
             PathOperation::EngineConfigure,
             PathOperation::EngineInstall,
             PathOperation::EngineBinaryInspect,
         ];
-        let commit = self.get_or_create_persistent_file(path, display_name, operations)?;
+        let commit = self.get_or_create_persistent_file_inner(
+            path,
+            display_name,
+            operations,
+            expected_identity,
+        )?;
         Ok(keep_adopted_handle(
             commit.durability,
             EngineHandle::new(commit.id),
@@ -2619,11 +2722,20 @@ impl PathAuthority {
     /// consumed before this point, so only the managed copy is persistent.
     pub(crate) fn register_engine_image(
         &mut self,
-        path: &Path,
-        display_name: impl Into<String>,
+        dir: &AuthorizedDir,
+        leaf: &OsStr,
+        installed: VerifiedIdentity,
+        display_name: String,
     ) -> Result<EngineImageHandle, Error> {
-        let commit =
-            self.get_or_create_persistent_file(path, display_name, vec![PathOperation::ImageRead])?;
+        crate::infra::fs::single_leaf(leaf)
+            .map_err(|_| Error::InvalidInput("engine image leaf must be one component".into()))?;
+        let path = dir.path().join(leaf);
+        let commit = self.get_or_create_persistent_file_verified(
+            &path,
+            display_name,
+            vec![PathOperation::ImageRead],
+            installed,
+        )?;
         Ok(keep_adopted_handle(
             commit.durability,
             EngineImageHandle::new(commit.id),
@@ -2703,7 +2815,7 @@ impl PathAuthority {
             return Err(Error::InvalidInput("engine path is required".into()));
         }
         validate_components(&components)?;
-        self.resolve(root.path_ref(), PathOperation::EngineInstall, &components)?;
+        let resolved = self.resolve(root.path_ref(), PathOperation::EngineInstall, &components)?;
         let base = self.workspace_root(
             &FileWorkspaceHandle::new(root.path_ref().clone()),
             PathOperation::EngineInstall,
@@ -2712,7 +2824,11 @@ impl PathAuthority {
             current.push(component);
             current
         });
-        self.register_engine_file(&path, components.last().unwrap().to_string_lossy())
+        self.register_engine_file_verified(
+            &path,
+            components.last().unwrap().to_string_lossy(),
+            resolved.identity()?,
+        )
     }
 
     pub(crate) fn engine_archive_destination(
@@ -2881,16 +2997,17 @@ impl PathAuthority {
         filename: &OsStr,
     ) -> Result<PathRef, Error> {
         validate_components(&[filename.to_os_string()])?;
-        let _ = self.resolve(
+        let resolved = self.resolve(
             root.path_ref(),
             PathOperation::PuzzleRead,
             &[filename.to_os_string()],
         )?;
         let path = self.puzzle_root_path(root)?.join(filename);
-        let commit = self.get_or_create_persistent_file(
+        let commit = self.get_or_create_persistent_file_verified(
             &path,
             filename.to_string_lossy(),
             vec![PathOperation::PuzzleRead, PathOperation::PuzzleDelete],
+            resolved.identity()?,
         )?;
         require_durable(commit.durability)?;
         Ok(commit.id)
@@ -2939,13 +3056,15 @@ impl PathAuthority {
         display_name: impl Into<String>,
     ) -> Result<DatabaseHandle, Error> {
         let components = vec![filename.to_os_string()];
-        self.resolve(root.path_ref(), PathOperation::DatabaseRead, &components)?;
+        let resolved = self.resolve(root.path_ref(), PathOperation::DatabaseRead, &components)?;
         let root_path = self.database_root_path(root)?;
         let path = root_path.join(filename);
-        let identity = validate_target(&path, PathClass::PersistentFile)?;
+        let validated_identity = validate_target(&path, PathClass::PersistentFile)?;
+        let verified_identity =
+            verified_identity::database_child_identity(resolved.identity()?, &validated_identity)?;
         if let Some(entry) = self.persistent.values().find(|entry| {
             entry.stored.path.to_path().ok().as_ref() == Some(&path)
-                && entry.stored.identity == identity
+                && entry.stored.identity == validated_identity
                 && !entry.stored.target_is_dir
                 && entry
                     .stored
@@ -2966,7 +3085,10 @@ impl PathAuthority {
                 PathOperation::DatabaseExport,
             ],
             path: NativePath::from_path(&path),
-            identity,
+            identity: {
+                let (a, b) = verified_identity.pair();
+                Identity { a, b }
+            },
             target_is_dir: false,
         };
         let mut candidate = self.persistent.clone();
@@ -4479,6 +4601,14 @@ mod tests {
         usize,
     ) -> Result<(VerifiedFile, u64), Error>;
     const _: EngineImageReaderForFn = engine_image_reader_for;
+    type RegisterEngineImageFn = fn(
+        &mut PathAuthority,
+        &AuthorizedDir,
+        &OsStr,
+        VerifiedIdentity,
+        String,
+    ) -> Result<EngineImageHandle, Error>;
+    const _: RegisterEngineImageFn = PathAuthority::register_engine_image;
     struct TestClock(AtomicU64);
     impl TestClock {
         fn new(v: u64) -> Self {
@@ -4501,13 +4631,316 @@ mod tests {
         dir: &tempfile::TempDir,
         contents: &[u8],
     ) -> (Mutex<Option<PathAuthority>>, EngineImageHandle, PathBuf) {
-        let image = dir.path().join("image.png");
-        fs::write(&image, contents).unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = OsStr::new("image.png");
+        let (_, installed) = image_dir
+            .atomic_replace_leaf_identified(leaf, |file| {
+                file.write_all(contents).map_err(Error::from)
+            })
+            .unwrap();
+        let image = image_dir.path().join(leaf);
         let mut authority = authority(dir, Arc::new(TestClock::new(0)));
         let handle = authority
-            .register_engine_image(&image, "image")
+            .register_engine_image(&image_dir, leaf, installed, "image".into())
             .expect("adopted image handle");
         (Mutex::new(Some(authority)), handle, image)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolved_path_identity_reads_the_descriptor_not_the_pathname() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("engine");
+        let original = dir.path().join("engine-original");
+        fs::write(&path, b"original").unwrap();
+        let original_identity = validate_target(&path, PathClass::PersistentFile).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let registered = authority
+            .migrate_legacy_os_path(
+                path.clone().into_os_string(),
+                "engine",
+                PathClass::PersistentFile,
+                vec![PathOperation::EngineInstall],
+            )
+            .unwrap();
+        let resolved = authority
+            .resolve(&registered.id, PathOperation::EngineInstall, &[])
+            .unwrap();
+
+        fs::rename(&path, &original).unwrap();
+        fs::write(&path, b"replacement").unwrap();
+        let replacement_identity = validate_target(&path, PathClass::PersistentFile).unwrap();
+
+        assert_ne!(original_identity, replacement_identity);
+        assert_eq!(
+            resolved.identity().unwrap().pair(),
+            (original_identity.a, original_identity.b)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_install_uses_the_authorized_directory_after_pathname_swap() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(dir.path());
+        let image_dir =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::EngineImages).unwrap();
+        let original = dir.path().join("engine-images-original");
+        fs::rename(image_dir.path(), &original).unwrap();
+        fs::create_dir(image_dir.path()).unwrap();
+
+        image_dir
+            .atomic_replace_leaf_identified(OsStr::new("image.png"), |file| {
+                file.write_all(b"descriptor bytes").map_err(Error::from)
+            })
+            .unwrap();
+
+        assert_eq!(
+            fs::read(original.join("image.png")).unwrap(),
+            b"descriptor bytes"
+        );
+        assert_eq!(fs::read_dir(image_dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn engine_image_registration_stores_the_installed_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = OsStr::new("image.png");
+        let (_, installed) = image_dir
+            .atomic_replace_leaf_identified(leaf, |file| {
+                file.write_all(b"image").map_err(Error::from)
+            })
+            .unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+
+        let handle = authority
+            .register_engine_image(&image_dir, leaf, installed, "image".into())
+            .unwrap();
+        let stored = &authority.persistent[&handle.id.id].stored.identity;
+
+        assert_eq!((stored.a, stored.b), installed.pair());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_registration_refuses_a_swap_and_stores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = OsStr::new("image.png");
+        let (_, installed) = image_dir
+            .atomic_replace_leaf_identified(leaf, |file| {
+                file.write_all(b"installed").map_err(Error::from)
+            })
+            .unwrap();
+        let original = dir.path().join("engine-images-original");
+        fs::rename(image_dir.path(), &original).unwrap();
+        fs::create_dir(image_dir.path()).unwrap();
+        fs::write(image_dir.path().join(leaf), b"impostor").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+
+        let error = authority
+            .register_engine_image(&image_dir, leaf, installed, "image".into())
+            .expect_err("the pathname replacement must not be registered");
+
+        let Error::Conflict(message) = error else {
+            panic!("unexpected refusal: {error:?}");
+        };
+        assert!(!message.contains('/'), "{message}");
+        assert!(!message.contains("image.png"), "{message}");
+        assert!(authority.persistent.is_empty());
+        image_dir.remove_leaf_identified(leaf, installed).unwrap();
+        assert!(!original.join(leaf).exists());
+        assert_eq!(fs::read(image_dir.path().join(leaf)).unwrap(), b"impostor");
+    }
+
+    #[test]
+    fn engine_image_inner_registration_refuses_mismatch_and_orphan_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let other_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .unwrap();
+        let leaf = OsStr::new("image.png");
+        let (_, installed) = image_dir
+            .atomic_replace_leaf_identified(leaf, |file| {
+                file.write_all(b"installed").map_err(Error::from)
+            })
+            .unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+
+        let error = authority
+            .register_engine_image(&image_dir, leaf, other_dir.identity(), "image".into())
+            .expect_err("a mismatched required identity must be refused");
+        image_dir.remove_leaf_identified(leaf, installed).unwrap();
+
+        let Error::Conflict(message) = error else {
+            panic!("unexpected refusal: {error:?}");
+        };
+        assert!(!message.contains('/'), "{message}");
+        assert!(!message.contains("image.png"), "{message}");
+        assert!(authority.persistent.is_empty());
+        assert!(!image_dir.path().join(leaf).exists());
+    }
+
+    #[test]
+    fn register_engine_image_refuses_non_leaf_names_without_disclosure() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        for leaf in [
+            OsStr::new("/private/image.png"),
+            OsStr::new("nested/image.png"),
+        ] {
+            let error = authority
+                .register_engine_image(&image_dir, leaf, image_dir.identity(), "image".into())
+                .expect_err("non-leaf names must be refused before joining");
+            let Error::InvalidInput(message) = error else {
+                panic!("unexpected refusal: {error:?}");
+            };
+            assert!(!message.contains('/'), "{message}");
+            assert!(
+                !message.contains(leaf.to_string_lossy().as_ref()),
+                "{message}"
+            );
+        }
+        assert!(authority.persistent.is_empty());
+    }
+
+    #[test]
+    fn persistent_file_reuse_refuses_a_disagreeing_expected_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        fs::write(&file, b"file").unwrap();
+        let other_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .unwrap();
+        let operations = vec![PathOperation::PuzzleRead];
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        authority
+            .get_or_create_persistent_file(&file, "file", operations.clone())
+            .unwrap();
+
+        let error = authority
+            .get_or_create_persistent_file_verified(&file, "file", operations, other_dir.identity())
+            .expect_err("the reuse arm must compare the required identity");
+
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        assert_eq!(authority.persistent.len(), 1);
+    }
+
+    #[test]
+    fn register_engine_file_verified_refuses_a_disagreeing_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = dir.path().join("engine");
+        fs::write(&engine, b"engine").unwrap();
+        let other_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+
+        let error = authority
+            .register_engine_file_verified(&engine, "engine", other_dir.identity())
+            .expect_err("the guarded engine registrar must require the matching identity");
+
+        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
+        assert!(authority.persistent.is_empty());
+    }
+
+    #[test]
+    fn migrate_legacy_verified_identity_mismatch_is_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        fs::write(&file, b"file").unwrap();
+        let other_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+
+        let error = authority
+            .migrate_legacy_os_path_inner(
+                file.into_os_string(),
+                "file".into(),
+                PathClass::PersistentFile,
+                vec![PathOperation::ReadPgn],
+                Some(other_dir.identity()),
+            )
+            .expect_err("the migrate arm must compare the required identity");
+
+        let Error::Conflict(message) = error else {
+            panic!("unexpected refusal: {error:?}");
+        };
+        assert!(!message.contains('/'), "{message}");
+        assert!(!message.contains("file"), "{message}");
+        assert!(authority.persistent.is_empty());
+    }
+
+    #[test]
+    fn database_child_identity_mismatch_is_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let databases = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        )
+        .unwrap();
+        let engines = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Engines,
+        )
+        .unwrap();
+        let validated = validate_target(databases.path(), PathClass::PersistentCustomRoot).unwrap();
+
+        let error = verified_identity::database_child_identity(engines.identity(), &validated)
+            .expect_err("the descriptor and pathname identities disagree");
+
+        let Error::Conflict(message) = error else {
+            panic!("unexpected refusal: {error:?}");
+        };
+        assert!(!message.contains('/'), "{message}");
+        assert!(!message.contains("db"), "{message}");
+    }
+
+    #[test]
+    fn guarded_registrars_require_the_resolved_descriptor_identity() {
+        let source = include_str!("path_authority.rs");
+        for signature in [
+            "pub(crate) fn register_installed_engine(",
+            "fn register_puzzle_child(",
+        ] {
+            let body = body_at_indent(source, signature);
+            assert!(body.contains("let resolved = self.resolve("), "{body}");
+            assert!(body.contains("resolved.identity()?"), "{body}");
+            assert!(!body.contains("let _ = self.resolve("), "{body}");
+            assert!(!body.contains("validate_target("), "{body}");
+        }
     }
 
     #[cfg(unix)]
@@ -6903,12 +7336,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
         let engine = dir.path().join("engine");
-        let image = dir.path().join("image.png");
         let book = dir.path().join("book.bin");
         let resource = dir.path().join("resource.nnue");
-        for path in [&engine, &image, &book, &resource] {
+        for path in [&engine, &book, &resource] {
             fs::write(path, b"data").unwrap();
         }
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let image_leaf = OsStr::new("image.png");
+        let (_, installed_image) = image_dir
+            .atomic_replace_leaf_identified(image_leaf, |file| {
+                file.write_all(b"data").map_err(Error::from)
+            })
+            .unwrap();
+        let image = image_dir.path().join(image_leaf);
         let grant = authority
             .grant_dialog(
                 &resource,
@@ -6924,7 +7368,7 @@ mod tests {
             .register_engine_file(&engine, "engine")
             .expect("adopted engine handle");
         let image_handle = authority
-            .register_engine_image(&image, "image")
+            .register_engine_image(&image_dir, image_leaf, installed_image, "image".into())
             .expect("adopted image handle");
         let book_handle = authority
             .register_opening_book(&book, "book")
@@ -6943,7 +7387,7 @@ mod tests {
             .register_engine_file(&engine, "engine")
             .expect("lookup of adopted engine");
         let image_again = authority
-            .register_engine_image(&image, "image")
+            .register_engine_image(&image_dir, image_leaf, installed_image, "image".into())
             .expect("lookup of adopted image");
         let book_again = authority
             .register_opening_book(&book, "book")

@@ -25,6 +25,7 @@ mod sound;
 
 use std::{
     collections::{HashMap, VecDeque},
+    ffi::OsStr,
     io,
     io::Write,
     path::{Path, PathBuf},
@@ -1106,16 +1107,50 @@ fn issue_engine_image_blocking(
         &crate::infra::path_authority::AppDataDir::for_app(&app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
     )?;
-    let destination = image_dir.path().join(uuid::Uuid::new_v4().to_string());
-    crate::infra::fs::atomic_replace(&destination, |file| {
-        file.write_all(&bytes).map_err(Error::from)
-    })?;
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .register_engine_image(&destination, display_name)
+    let leaf_name = uuid::Uuid::new_v4().to_string();
+    let leaf = OsStr::new(&leaf_name);
+    let (_, installed) = image_dir
+        .atomic_replace_leaf_identified(leaf, |file| file.write_all(&bytes).map_err(Error::from))?;
+    let mut lock = match authority.lock() {
+        Ok(lock) => lock,
+        Err(_) => {
+            return Err(engine_image_error_after_cleanup(
+                &image_dir,
+                leaf,
+                installed,
+                Error::Conflict("path authority lock was poisoned".into()),
+            ));
+        }
+    };
+    let authority = match lock.as_mut() {
+        Some(authority) => authority,
+        None => {
+            return Err(engine_image_error_after_cleanup(
+                &image_dir,
+                leaf,
+                installed,
+                Error::Conflict("path authority is not initialized".into()),
+            ));
+        }
+    };
+    match authority.register_engine_image(&image_dir, leaf, installed, display_name) {
+        Ok(handle) => Ok(handle),
+        Err(error) => Err(engine_image_error_after_cleanup(
+            &image_dir, leaf, installed, error,
+        )),
+    }
+}
+
+fn engine_image_error_after_cleanup(
+    image_dir: &crate::infra::path_authority::AuthorizedDir,
+    leaf: &OsStr,
+    installed: crate::infra::path_authority::VerifiedIdentity,
+    original: Error,
+) -> Error {
+    if let Err(cleanup) = image_dir.remove_leaf_identified(leaf, installed) {
+        log::error!("failed to remove an unregistered engine image: {cleanup}");
+    }
+    original
 }
 
 #[tauri::command]
@@ -2707,6 +2742,120 @@ mod blocking_offload_scans {
                 search_from = i + ".lock(".len();
             }
         }
+    }
+
+    #[test]
+    fn engine_image_install_and_post_install_cleanup_are_pinned_to_the_descriptor() {
+        let main = include_str!("main.rs");
+        let body = body_at_indent(main, "fn issue_engine_image_blocking(");
+        assert!(
+            body.contains("atomic_replace_leaf_identified("),
+            "engine-image installation must use the authorized directory descriptor: {body}"
+        );
+        assert!(!body.contains(".join("), "{body}");
+        assert!(
+            !body.contains("crate::infra::fs::atomic_replace("),
+            "{body}"
+        );
+        assert_eq!(
+            body.matches("engine_image_error_after_cleanup(").count(),
+            3,
+            "the poisoned, uninitialized, and registration errors must all remove the orphan: {body}"
+        );
+        let install_at = body
+            .find("atomic_replace_leaf_identified(")
+            .expect("install through the descriptor");
+        let after_install = &body[install_at..];
+        for refusal in [
+            "path authority lock was poisoned",
+            "path authority is not initialized",
+        ] {
+            let refusal_at = after_install.find(refusal).unwrap_or_else(|| {
+                panic!("the post-install lock must retain {refusal:?}: {after_install}")
+            });
+            let branch = &after_install[..refusal_at];
+            assert!(
+                branch.rfind("engine_image_error_after_cleanup(").is_some(),
+                "the post-install {refusal:?} branch must remove the installed orphan: {after_install}"
+            );
+        }
+        let cleanup = body_at_indent(main, "fn engine_image_error_after_cleanup(");
+        assert!(cleanup.contains("remove_leaf_identified("), "{cleanup}");
+        assert!(cleanup.contains("log::error!("), "{cleanup}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_orphan_removal_failure_preserves_the_original_error() {
+        use crate::infra::{
+            fs::{set_test_removal_injector, RemovalFault, RemovalFaultPoint},
+            path_authority::{ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot},
+        };
+        use crate::{engine_image_error_after_cleanup, Error};
+        use std::{ffi::OsStr, io::Write, sync::Arc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = OsStr::new("orphan.png");
+        let (_, installed) = image_dir
+            .atomic_replace_leaf_identified(leaf, |file| {
+                file.write_all(b"orphan").map_err(Error::from)
+            })
+            .unwrap();
+        set_test_removal_injector(Some(Arc::new(RemovalFault(
+            RemovalFaultPoint::BeforeTopOpen,
+        ))));
+
+        let error = engine_image_error_after_cleanup(
+            &image_dir,
+            leaf,
+            installed,
+            Error::Conflict("original registration failure".into()),
+        );
+        set_test_removal_injector(None);
+
+        assert!(matches!(
+            error,
+            Error::Conflict(message) if message == "original registration failure"
+        ));
+        assert!(image_dir.path().join(leaf).is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_image_post_install_error_removes_the_orphan() {
+        use crate::infra::path_authority::{
+            ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot,
+        };
+        use crate::{engine_image_error_after_cleanup, Error};
+        use std::{ffi::OsStr, io::Write};
+
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = OsStr::new("orphan.png");
+        let (_, installed) = image_dir
+            .atomic_replace_leaf_identified(leaf, |file| {
+                file.write_all(b"orphan").map_err(Error::from)
+            })
+            .unwrap();
+
+        let error = engine_image_error_after_cleanup(
+            &image_dir,
+            leaf,
+            installed,
+            Error::Conflict("registration failed".into()),
+        );
+
+        assert!(matches!(error, Error::Conflict(_)));
+        assert!(!image_dir.path().join(leaf).exists());
     }
 
     /// A one-directional "who calls `ensure_app_owned_default_dir`" scan cannot see the swap
