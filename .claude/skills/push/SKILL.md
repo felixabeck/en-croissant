@@ -53,7 +53,6 @@ vacuous by construction because every job starts from a fresh checkout; locally 
 Affected by `src-tauri/**` or root Rust/Tauri configuration:
 
 ```bash
-pnpm rust:surface:check
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo check --manifest-path src-tauri/Cargo.toml --all-targets
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
@@ -68,18 +67,16 @@ pnpm gate:ensure backend-coverage
 Affected by `src/**`, `public/**`, `index.html`, `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `vite.config.*`, `stryker.config.mjs`, `scripts/run-frontend-mutation.mjs`, `scripts/frontend-mutation-packages.mjs`, or i18n configuration/catalogs:
 
 ```bash
-pnpm lint:ci
-pnpm tauri:boundary:check
-pnpm ui:boundary:check
 pnpm gate:ensure frontend-coverage
 pnpm gate:ensure frontend-mutation
 pnpm gate:ensure frontend-build
 pnpm bundle:check
+pnpm gate:ensure e2e-container
 ```
 
 The order is not cosmetic: `coverage:frontend:check` reads `coverage/lcov.info` written by `test:coverage`, and `bundle:check` reads `dist/.vite/manifest.json` written by `build-vite`. `pnpm test` alone is not sufficient — it produces no LCOV, so the coverage ratchet then measures a stale or absent file.
 
-`ui:boundary:check` scans the whole tree, reading files from disk, so it sees committed and uncommitted content alike. It was diff-scoped for two of its rules until 2026-08-29, which made those two vacuous on any clean checkout — including every CI run.
+As a contract-gate member, `ui:boundary:check` scans the whole tree, reading files from disk, so it sees committed and uncommitted content alike. It was diff-scoped for two of its rules until 2026-08-29, which made those two vacuous on any clean checkout — including every CI run.
 
 The coverage floors in `coverage-areas.json` / `backend-coverage-areas.json` and the baselines in the two `*-baselines.json` files are ratchets, and `bundle-budgets.json` caps gzip bytes. A red ratchet is a finding about the diff. Never run `coverage:baseline:*` or edit a budget to make a gate pass.
 
@@ -142,7 +139,7 @@ lives beside it rather than inside it for that reason.
 
 Changes to workflows also run every gate whose toolchain they can affect. Changes to `package.json`,
 `pnpm-lock.yaml`, `src-tauri/Cargo.toml`, or `src-tauri/Cargo.lock` do the same.
-- `pnpm verify:app` is not a push gate either, and for a different reason: it drives the real Tauri window through `tauri-driver` under an off-screen compositor, so it needs a release build and a compositor that CI does not have. Run it by hand when a diff changes lifecycle, IPC or process teardown — it is the only check in this repository that observes the actual product. `d-20260830-18` and `.claude/skills/verify-ui/SKILL.md` carry the contract and the limits.
+- `pnpm verify:app` is not a push gate: it drives the real Tauri window through `tauri-driver` under an off-screen compositor, so it needs a release build and a compositor that CI does not have. Run it by hand when a diff changes lifecycle, IPC or process teardown — it is the only check in this repository that observes the actual product. `d-20260830-18` and `.claude/skills/verify-ui/SKILL.md` carry the contract and the limits.
 - The frontend mutation suite is a receipt-backed frontend push gate: run it through `pnpm gate:ensure frontend-mutation` (measured 323 s on the runner). The backend suite remains only in `.github/workflows/mutation.yml` (dispatchable, weekly, one job per package) because the eight packages take about an hour. **Never start `pnpm mutation:backend` as part of a push:** it runs `cargo-mutants --in-place`, so it edits tracked source while it runs, every other gate would then measure mutated code, and an interruption leaves an injected mutant behind (`f-20260829-09`).
 - Exercise changed shell/workflow mechanics against their refusal/error case where locally possible.
 - `$push` never tags, publishes a GitHub release, signs bundles, or deploys. Those require their own explicit workflow.

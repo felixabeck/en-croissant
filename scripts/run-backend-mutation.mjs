@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { installSignalForwarding, superviseChild } from "./child-supervisor.mjs";
+import { fsyncDirectory } from "./fsync-directory.mjs";
 import { identityForPid, identityIsLive } from "./process-identity.mjs";
 
 const fencePath = "mutants.out/backend/.mutation-in-progress";
@@ -117,17 +118,20 @@ function recordedIdentity() {
       pid: Number(pidMatch[1]),
       ...(startTimeMatch ? { startTime: startTimeMatch[1] } : {}),
     };
-  } catch {
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
     return undefined;
   }
 }
 
-function ownerIsLive(identity) {
-  return identityIsLive(identity);
-}
-
 function printRecovery() {
-  const identity = recordedIdentity();
+  let identity;
+  let identityError;
+  try {
+    identity = recordedIdentity();
+  } catch (error) {
+    identityError = error;
+  }
   let markedFiles = [];
   let scanError;
   try {
@@ -142,7 +146,7 @@ function printRecovery() {
   if (identity !== undefined) {
     try {
       console.error(
-        `   Recorded cargo pid: ${identity.pid}; currently alive: ${ownerIsLive(identity) ? "yes" : "no"}.`,
+        `   Recorded cargo pid: ${identity.pid}; currently alive: ${identityIsLive(identity) ? "yes" : "no"}.`,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -152,6 +156,11 @@ function printRecovery() {
     }
   } else {
     console.error("   No cargo child pid was recorded; inspect the process list by command name.");
+    if (identityError) {
+      console.error(
+        `   Fence owner record is unreadable: ${identityError instanceof Error ? identityError.message : String(identityError)}.`,
+      );
+    }
   }
   console.error(
     "2. Restore only tracked files that contain the literal `~ changed by cargo-mutants ~` marker.",
@@ -203,19 +212,10 @@ function assertCleanBackend() {
   }
 }
 
-function fsyncParentDirectory(path) {
-  const directoryFd = openSync(dirname(path), "r");
-  try {
-    fsyncSync(directoryFd);
-  } finally {
-    closeSync(directoryFd);
-  }
-}
-
 function discardUnspawnedFence(fd) {
   if (fd !== undefined) closeSync(fd);
   unlinkSync(fencePath);
-  fsyncParentDirectory(fencePath);
+  fsyncDirectory(dirname(fencePath));
 }
 
 function acquireFence() {
@@ -233,7 +233,7 @@ function acquireFence() {
   }
   writeSync(fenceFd, `started=${new Date().toISOString()}\n`);
   fsyncSync(fenceFd);
-  fsyncParentDirectory(fencePath);
+  fsyncDirectory(dirname(fencePath));
   return true;
 }
 
@@ -260,7 +260,7 @@ function cargoArguments(mutationPackage) {
 
 function clearFence() {
   unlinkSync(fencePath);
-  fsyncParentDirectory(fencePath);
+  fsyncDirectory(dirname(fencePath));
 }
 
 let fenceFd;
@@ -340,6 +340,7 @@ export async function runBackendMutation({ recordChild = recordSpawnedChild } = 
       console.log(`\nBackend mutation package: ${mutationPackage.id}`);
       const child = spawn("cargo", cargoArguments(mutationPackage), { stdio: "inherit" });
       supervisor = superviseChild(child, { terminationTimeoutMs });
+      signalForwarding.attach(supervisor);
       try {
         recordChild(child);
       } catch (error) {

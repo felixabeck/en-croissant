@@ -1,12 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
-  closeSync,
   existsSync,
-  fsyncSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -15,6 +12,7 @@ import {
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { installSignalForwarding, superviseChild } from "./child-supervisor.mjs";
+import { fsyncDirectory } from "./fsync-directory.mjs";
 import { mutationPackages } from "./frontend-mutation-packages.mjs";
 import {
   currentIdentity,
@@ -32,22 +30,14 @@ if (process.argv.includes("--list-packages")) {
   process.exit(0);
 }
 
-function fsyncDirectory(path) {
-  const fd = openSync(path, "r");
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-
 function readOwner() {
   try {
     const owner = JSON.parse(readFileSync(ownerPath, "utf8"));
     if (!owner || typeof owner !== "object" || !isCompleteIdentity(owner.runner)) return undefined;
     if (owner.child !== null && !isCompleteIdentity(owner.child)) return undefined;
     return owner;
-  } catch {
+  } catch (error) {
+    if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
     return undefined;
   }
 }
@@ -96,7 +86,13 @@ function acquireFence(runnerIdentity) {
       }
     }
 
-    const owner = readOwner();
+    let owner;
+    try {
+      owner = readOwner();
+    } catch (error) {
+      refuseFence(undefined, error instanceof Error ? error.message : String(error));
+      return false;
+    }
     if (!owner) {
       refuseFence(owner);
       return false;
@@ -173,6 +169,7 @@ async function main() {
         stdio: "inherit",
       });
       supervisor = superviseChild(child, { terminationTimeoutMs, killProcessGroup: true });
+      signalForwarding.attach(supervisor);
       const childIdentity = child.pid === undefined ? undefined : identityForPid(child.pid);
       writeOwner(runnerIdentity, childIdentity ?? null);
       const result = await supervisor.done;

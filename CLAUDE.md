@@ -54,8 +54,8 @@ to it, and both defer to `~/.claude/references/push-review-policy.md` for author
 triage, and red-gate behavior.
 
 `pnpm gates:contract:check` is the unconditional pre-push gate and the single CI step for tooling
-checks. The path map in the push skill covers the path-scoped gates (lint, boundaries, coverage,
-build, bundle, mutation, Rust).
+checks. The path map in the push skill covers the expensive path-scoped gates (coverage, build,
+bindings, bundle, container e2e, mutation, and the Rust compile, clippy and test gates).
 
 Gate scripts live in `package.json`; the path mapping and any direct tool invocations live in the
 canonical push contract. Two properties worth knowing before planning any change:

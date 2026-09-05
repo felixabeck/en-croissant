@@ -4,17 +4,19 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
+  readlink,
   readdir,
   rename,
   rm,
-  stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { arch as hostArch, platform as hostPlatform } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const SHELLCHECK_VERSION = "v0.11.0";
@@ -49,9 +51,9 @@ async function sha256File(path) {
   return sha256(await readFile(path));
 }
 
-async function cachedBinary(finalDirectory) {
-  const binaryPath = join(finalDirectory, "shellcheck");
-  const hashPath = join(finalDirectory, "shellcheck.sha256");
+async function cachedBinary(generationDirectory) {
+  const binaryPath = join(generationDirectory, "shellcheck");
+  const hashPath = join(generationDirectory, "shellcheck.sha256");
   try {
     const [recordedHash, actualHash] = await Promise.all([
       readFile(hashPath, "utf8"),
@@ -64,17 +66,46 @@ async function cachedBinary(finalDirectory) {
   }
 }
 
-async function reclaimStaleTemporaryDirectories(cacheDir) {
+async function currentGeneration(versionDirectory) {
+  let generationName;
+  try {
+    generationName = await readlink(join(versionDirectory, "current"));
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "EINVAL") return undefined;
+    throw new Error(`ShellCheck cache pointer could not be read: ${error.message}`, {
+      cause: error,
+    });
+  }
+  if (generationName !== basename(generationName) || !generationName.startsWith("gen-")) {
+    return undefined;
+  }
+  return { generationName, directory: join(versionDirectory, generationName) };
+}
+
+async function cachedCurrentBinary(versionDirectory) {
+  const current = await currentGeneration(versionDirectory);
+  return current ? cachedBinary(current.directory) : undefined;
+}
+
+async function reclaimStaleGenerations(versionDirectory) {
   const now = Date.now();
-  const entries = await readdir(cacheDir, { withFileTypes: true });
+  const current = await currentGeneration(versionDirectory);
+  const entries = await readdir(versionDirectory, { withFileTypes: true });
   await Promise.all(
     entries
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith(".tmp-"))
+      .filter((entry) => {
+        const reclaimableDirectory =
+          entry.isDirectory() && (entry.name.startsWith(".tmp-") || entry.name.startsWith("gen-"));
+        const reclaimablePointer = entry.isSymbolicLink() && entry.name.startsWith(".tmp-current-");
+        return (
+          (reclaimableDirectory || reclaimablePointer) && entry.name !== current?.generationName
+        );
+      })
       .map(async (entry) => {
-        const path = join(cacheDir, entry.name);
+        const path = join(versionDirectory, entry.name);
         let metadata;
         try {
-          metadata = await stat(path);
+          metadata = await lstat(path);
         } catch (error) {
           if (error?.code === "ENOENT") return;
           throw error;
@@ -157,30 +188,13 @@ export async function ensureShellcheck({
   }
 
   await mkdir(cacheDir, { recursive: true });
-  await reclaimStaleTemporaryDirectories(cacheDir);
-
-  const finalDirectory = join(cacheDir, version);
-  let finalDirectoryExisted = true;
-  try {
-    await stat(finalDirectory);
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-    finalDirectoryExisted = false;
-  }
-  const hit = await cachedBinary(finalDirectory);
+  const versionDirectory = join(cacheDir, version);
+  await mkdir(versionDirectory, { recursive: true });
+  await reclaimStaleGenerations(versionDirectory);
+  const hit = await cachedCurrentBinary(versionDirectory);
   if (hit) return hit;
 
-  if (finalDirectoryExisted) {
-    const staleDirectory = join(cacheDir, `.tmp-stale-${randomUUID()}`);
-    try {
-      await rename(finalDirectory, staleDirectory);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    await rm(staleDirectory, { recursive: true, force: true });
-  }
-
-  const temporaryDirectory = await mkdtemp(join(cacheDir, ".tmp-"));
+  const temporaryDirectory = await mkdtemp(join(versionDirectory, ".tmp-"));
   const archiveName = `shellcheck-${version}.${assetPlatform}.tar.xz`;
   const archivePath = join(temporaryDirectory, archiveName);
   const url = `${baseUrl}/${version}/${archiveName}`;
@@ -196,16 +210,20 @@ export async function ensureShellcheck({
     );
     await rm(archivePath, { force: true });
 
+    const generationName = `gen-${randomUUID()}`;
+    const generationDirectory = join(versionDirectory, generationName);
+    await rename(temporaryDirectory, generationDirectory);
+    ownsTemporaryDirectory = false;
+
+    const pointerPath = join(versionDirectory, `.tmp-current-${randomUUID()}`);
     try {
-      await rename(temporaryDirectory, finalDirectory);
-      ownsTemporaryDirectory = false;
-    } catch (error) {
-      if (error?.code !== "EEXIST" && error?.code !== "ENOTEMPTY") throw error;
-      await rm(temporaryDirectory, { recursive: true, force: true });
-      ownsTemporaryDirectory = false;
+      await symlink(generationName, pointerPath);
+      await rename(pointerPath, join(versionDirectory, "current"));
+    } finally {
+      await rm(pointerPath, { force: true });
     }
 
-    const installed = await cachedBinary(finalDirectory);
+    const installed = await cachedCurrentBinary(versionDirectory);
     if (!installed) {
       throw new Error(
         "ShellCheck installation disappeared or failed verification after publication",

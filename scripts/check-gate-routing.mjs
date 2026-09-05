@@ -9,6 +9,17 @@ const PACKAGE_JSON = "package.json";
 const TEST_WORKFLOW = ".github/workflows/test.yml";
 const VITE_CONFIG = "vite.config.ts";
 const CONTRACT_GATE = "gates:contract:check";
+const PATH_SCOPED_CI_SCRIPTS = Object.freeze({
+  "test:coverage": "### TypeScript/React frontend",
+  "coverage:frontend:check": "### TypeScript/React frontend",
+  "build-vite": "### TypeScript/React frontend",
+  "bindings:check": "### Cross-layer contracts",
+  "bundle:check": "### TypeScript/React frontend",
+  "test:e2e:container": "### TypeScript/React frontend",
+  "mutation:frontend": "### TypeScript/React frontend",
+  "test:coverage:backend": "### Rust/Tauri backend",
+  "coverage:backend:check": "### Rust/Tauri backend",
+});
 
 const ALLOWED_CARGO_COMMANDS = new Set(["fmt", "check", "clippy", "test"]);
 // This closed list mirrors the repository's deliberate test naming conventions:
@@ -104,7 +115,8 @@ export function workflowSteps(workflow) {
     if (!runEntry) continue;
     const runValue = runEntry.line.replace(/^run:\s*/u, "");
     let run = runValue;
-    if (runValue === "|") {
+    const scalar = /^([|>])[-+]?$/u.exec(runValue);
+    if (scalar) {
       const runLineIndentation = lines[runEntry.index].match(/^\s*/u)[0].length;
       const commandLines = [];
       for (let lineIndex = runEntry.index + 1; lineIndex < end; lineIndex += 1) {
@@ -112,7 +124,7 @@ export function workflowSteps(workflow) {
         if (line.trim() && line.match(/^\s*/u)[0].length <= runLineIndentation) break;
         commandLines.push(line.trim());
       }
-      run = commandLines.join("\n");
+      run = commandLines.join(scalar[1] === "|" ? "\n" : " ").trim();
     }
     steps.push({ name: name ?? "", run, hasIf: block.some(({ line }) => /^if:\s*/u.test(line)) });
   }
@@ -239,6 +251,16 @@ function sectionTwoPreamble(pushSkill) {
   return nextSubsection < 0 ? bounded : bounded.slice(0, firstSubsection + nextSubsection + 1);
 }
 
+function skillSubsection(pushSkill, heading) {
+  const start = pushSkill.indexOf(heading);
+  if (start < 0) return "";
+  const afterHeading = pushSkill.slice(start + heading.length);
+  const nextHeading = afterHeading.search(/^#{2,3} /mu);
+  return nextHeading < 0
+    ? pushSkill.slice(start)
+    : pushSkill.slice(start, start + heading.length + nextHeading);
+}
+
 async function scriptFiles(repoRoot, listedPaths) {
   const files = [];
   for (const path of listedPaths) {
@@ -269,6 +291,20 @@ function commandSegments(command) {
     .split(/&&|\|\||[;|\n]/u)
     .map((segment) => segment.trim())
     .filter(Boolean);
+}
+
+function invokesPnpmOrScript(command, repoRoot) {
+  if (pnpmReferences(command).length > 0) return true;
+  const scriptsDirectory = resolve(repoRoot, "scripts");
+  return commandSegments(command).some((segment) => {
+    const words = shellWords(segment);
+    if (words.length === 0) return false;
+    const executable = words[0].replace(/^\.\//u, "");
+    if (executable.startsWith("scripts/")) return true;
+    if (!SCRIPT_RUNNERS.has(executable) || !words[1]) return false;
+    const target = resolve(repoRoot, words[1]);
+    return target === scriptsDirectory || target.startsWith(`${scriptsDirectory}${sep}`);
+  });
 }
 
 function invokesScript(command, path) {
@@ -334,6 +370,8 @@ export async function checkGateRouting(
     findings.push(
       `${TEST_WORKFLOW} must run ${CONTRACT_GATE} in a step without if:; remove the step condition`,
     );
+  } else if (workflowContractSteps[0].run.trim() !== `pnpm ${CONTRACT_GATE}`) {
+    findings.push(`${TEST_WORKFLOW} contract-gate step must be exactly pnpm ${CONTRACT_GATE}`);
   }
 
   const workflowCommands = steps.map((step) => step.run);
@@ -344,31 +382,6 @@ export async function checkGateRouting(
     workflowFindings,
   );
   findings.push(...workflowFindings);
-  for (const name of [...workflowRouted].sort()) {
-    if (!routed.has(name)) {
-      findings.push(
-        `workflow-routed package script ${name} is not reachable from ${PUSH_SKILL}; add it to ${CONTRACT_GATE} or to a path-routed fence in SKILL.md §2`,
-      );
-    }
-  }
-
-  const scriptsDirectory = resolve(repoRoot, "scripts");
-  const fencedLines = new Set(directGateCommands);
-  const routedPackageSegments = new Set(
-    [...routed].flatMap((name) => commandSegments(scripts[name] ?? "")),
-  );
-  for (const step of steps) {
-    for (const segment of commandSegments(step.run)) {
-      const words = shellWords(segment);
-      if (!SCRIPT_RUNNERS.has(words[0]) || !words[1]) continue;
-      const target = resolve(repoRoot, words[1]);
-      if (target !== scriptsDirectory && !target.startsWith(`${scriptsDirectory}${sep}`)) continue;
-      if (fencedLines.has(segment) || routedPackageSegments.has(segment)) continue;
-      findings.push(
-        `workflow runs ${words[1]} directly (${segment}); route it through a package script that the push skill fences`,
-      );
-    }
-  }
 
   const contractFindings = [];
   const contractRouted =
@@ -381,6 +394,69 @@ export async function checkGateRouting(
       : new Set();
   findings.push(...contractFindings);
   contractRouted.delete(CONTRACT_GATE);
+
+  const directWorkflowScripts = new Set(steps.flatMap((step) => pnpmReferences(step.run)));
+  directWorkflowScripts.delete(CONTRACT_GATE);
+  const subsectionRoutes = new Map();
+  for (const heading of new Set(Object.values(PATH_SCOPED_CI_SCRIPTS))) {
+    const subsection = skillSubsection(pushSkill, heading);
+    const commands = fencedBlocks(subsection)
+      .filter((block) => ["bash", "sh", "shell"].includes(block.language))
+      .flatMap((block) =>
+        block.contents
+          .split(/\r?\n/u)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((command) => ({ command, source: `${PUSH_SKILL} ${heading}` })),
+      );
+    subsectionRoutes.set(heading, routeCommands(commands, scripts, findings));
+  }
+  for (const name of [...directWorkflowScripts].sort()) {
+    if (name === CONTRACT_GATE || contractRouted.has(name)) continue;
+    const heading = PATH_SCOPED_CI_SCRIPTS[name];
+    if (heading && subsectionRoutes.get(heading)?.has(name)) continue;
+    findings.push(
+      `workflow-routed package script ${name} is neither reachable from ${CONTRACT_GATE} nor declared in PATH_SCOPED_CI_SCRIPTS and fenced in its named ${PUSH_SKILL} subsection; add it to the contract gate or add both the map entry and subsection fence`,
+    );
+  }
+  for (const [name, heading] of Object.entries(PATH_SCOPED_CI_SCRIPTS)) {
+    if (!directWorkflowScripts.has(name)) {
+      findings.push(
+        `PATH_SCOPED_CI_SCRIPTS key ${name} is absent from ${TEST_WORKFLOW}; remove the stale map entry or restore the workflow step`,
+      );
+    } else if (!subsectionRoutes.get(heading)?.has(name)) {
+      findings.push(
+        `PATH_SCOPED_CI_SCRIPTS key ${name} must be fenced in ${heading}; move or add its route in that subsection`,
+      );
+    }
+  }
+
+  const fencedLines = new Set(directGateCommands);
+  const routedPackageSegments = new Set(
+    [...routed].flatMap((name) => commandSegments(scripts[name] ?? "")),
+  );
+  for (const command of directGateCommands) {
+    for (const { gate } of receiptReferences(command)) {
+      if (gate in GATES) {
+        for (const segment of commandSegments(GATES[gate])) routedPackageSegments.add(segment);
+      }
+    }
+  }
+  for (const step of steps) {
+    if (invokesPnpmOrScript(step.run, repoRoot) && /\|\||[;|]/u.test(step.run)) {
+      findings.push(
+        `${TEST_WORKFLOW} workflow step neutralises or chains gate exit codes: ${step.name || step.run}`,
+      );
+    }
+    for (const segment of commandSegments(step.run)) {
+      if (!invokesPnpmOrScript(segment, repoRoot)) continue;
+      if (fencedLines.has(segment) || routedPackageSegments.has(segment)) continue;
+      findings.push(
+        `workflow command must exactly match a fenced line or routed package-script segment: ${segment}`,
+      );
+    }
+  }
+
   for (const command of directGateCommands) {
     for (const name of pnpmReferences(command)) {
       if (contractRouted.has(name)) {

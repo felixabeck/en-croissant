@@ -132,29 +132,19 @@ test("an uncatchable mid-flight kill leaves the fence and makes the next run ref
   await waitFor(join(state, "terminated"));
 });
 
-test("SIGTERM terminates and reaps cargo before the finaliser clears the fence", async () => {
-  const { root, bin, state } = await fixture();
-  const running = start(root, environment({ bin, state, mode: "ignore-term" }));
-  await waitFor(join(state, "started"));
-  const cargoPid = Number(await readFile(join(state, "pid"), "utf8"));
-  running.child.kill("SIGTERM");
-  const result = await running.done;
-  assert.equal(result.code, 143, result.stderr);
-  assert.equal(isAlive(cargoPid), false, `cargo pid ${cargoPid} still exists after runner exit`);
-  assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
-});
-
-test("SIGINT terminates and reaps cargo before the finaliser clears the fence", async () => {
-  const { root, bin, state } = await fixture();
-  const running = start(root, environment({ bin, state, mode: "ignore-term" }));
-  await waitFor(join(state, "started"));
-  const cargoPid = Number(await readFile(join(state, "pid"), "utf8"));
-  running.child.kill("SIGINT");
-  const result = await running.done;
-  assert.equal(result.code, 130, result.stderr);
-  assert.equal(isAlive(cargoPid), false, `cargo pid ${cargoPid} still exists after runner exit`);
-  assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
-});
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  test(`${signal} terminates and reaps cargo before the finaliser clears the fence`, async () => {
+    const { root, bin, state } = await fixture();
+    const running = start(root, environment({ bin, state, mode: "ignore-term" }));
+    await waitFor(join(state, "started"));
+    const cargoPid = Number(await readFile(join(state, "pid"), "utf8"));
+    running.child.kill(signal);
+    const result = await running.done;
+    assert.equal(result.code, signal === "SIGINT" ? 130 : 143, result.stderr);
+    assert.equal(isAlive(cargoPid), false, `cargo pid ${cargoPid} still exists after runner exit`);
+    assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
+  });
+}
 
 test("cargo exiting non-zero still runs the finaliser", async () => {
   const { root, bin, state } = await fixture();
@@ -305,6 +295,22 @@ test("--check-guard treats a reused live pid with the wrong start time as stale"
     result.stderr,
     new RegExp(`Recorded cargo pid: ${process.pid}; currently alive: no`),
   );
+});
+
+test("--check-guard surfaces an unreadable fence record and still refuses", async (t) => {
+  if (process.getuid?.() === 0) {
+    t.skip("root bypasses the file permission this test relies on");
+    return;
+  }
+  const { root, bin, state } = await fixture();
+  await mkdir(join(root, dirname(fence)), { recursive: true });
+  const fencePath = join(root, fence);
+  await writeFile(fencePath, "started=2026-08-30T00:00:00.000Z\n");
+  await chmod(fencePath, 0o000);
+  const result = run(root, environment({ bin, state }), ["--check-guard"]);
+  await chmod(fencePath, 0o600);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Fence owner record is unreadable:.*(?:EACCES|permission denied)/su);
 });
 
 test("exclusive fence creation rejects a second concurrent runner", async () => {

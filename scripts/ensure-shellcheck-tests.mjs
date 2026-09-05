@@ -2,7 +2,18 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, watch } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,6 +34,23 @@ const expectedAssetPath = "/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz";
 
 function digest(contents) {
   return createHash("sha256").update(contents).digest("hex");
+}
+
+async function assertVerifiedBinary(binaryPath) {
+  assert.equal(existsSync(binaryPath), true);
+  const recordedHash = await readFile(join(dirname(binaryPath), "shellcheck.sha256"), "utf8");
+  assert.equal(recordedHash.trim(), digest(await readFile(binaryPath)));
+}
+
+async function assertNoPublishedGeneration(cacheDir) {
+  const versionDirectory = join(cacheDir, "v0.11.0");
+  assert.equal(existsSync(join(versionDirectory, "current")), false);
+  assert.deepEqual(
+    (await readdir(versionDirectory)).filter(
+      (name) => name.startsWith(".tmp-") || name.startsWith("gen-"),
+    ),
+    [],
+  );
 }
 
 async function fixtureArchive(t, contents = undefined) {
@@ -125,11 +153,7 @@ test("refuses a wrong archive hash and installs nothing", async (t) => {
     ensureShellcheck(options({ ...fixture, ...server, cacheDir, hash: "0".repeat(64) })),
     /archive hash mismatch/,
   );
-  assert.equal(existsSync(join(cacheDir, "v0.11.0")), false);
-  assert.deepEqual(
-    (await readdir(cacheDir)).filter((name) => name.startsWith(".tmp-")),
-    [],
-  );
+  await assertNoPublishedGeneration(cacheDir);
 });
 
 test("installs once and serves a verified cache hit without another request", async (t) => {
@@ -182,15 +206,24 @@ test("cliMain does not fall back to a releases/latest endpoint", async (t) => {
   assert.deepEqual(server.requests, [expectedAssetPath]);
 });
 
-test("reclaims only temporary directories older than one hour", async (t) => {
+test("reclaims stale temporary directories and unreferenced generations only", async (t) => {
   const fixture = await fixtureArchive(t);
   const cacheDir = await temporaryCache(t);
-  const oldDirectory = join(cacheDir, ".tmp-old");
-  const liveDirectory = join(cacheDir, ".tmp-live");
+  const versionDirectory = join(cacheDir, "v0.11.0");
+  await mkdir(versionDirectory);
+  const oldDirectory = join(versionDirectory, ".tmp-old");
+  const liveDirectory = join(versionDirectory, ".tmp-live");
+  const staleGeneration = join(versionDirectory, "gen-stale");
+  const referencedGeneration = join(versionDirectory, "gen-current");
   await mkdir(oldDirectory);
   await mkdir(liveDirectory);
+  await mkdir(staleGeneration);
+  await mkdir(referencedGeneration);
+  await symlink("gen-current", join(versionDirectory, "current"));
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1_000);
   await utimes(oldDirectory, twoHoursAgo, twoHoursAgo);
+  await utimes(staleGeneration, twoHoursAgo, twoHoursAgo);
+  await utimes(referencedGeneration, twoHoursAgo, twoHoursAgo);
   const server = await fixtureServer(t, (_request, response) => {
     response.end(fixture.archive);
   });
@@ -199,6 +232,8 @@ test("reclaims only temporary directories older than one hour", async (t) => {
 
   assert.equal(existsSync(oldDirectory), false);
   assert.equal(existsSync(liveDirectory), true);
+  assert.equal(existsSync(staleGeneration), false);
+  assert.equal(existsSync(referencedGeneration), true);
 });
 
 test("aborts a never-ending response and removes its temporary directory", async (t) => {
@@ -214,27 +249,34 @@ test("aborts a never-ending response and removes its temporary directory", async
     /download failed while reading the response/,
   );
   assert.deepEqual(
-    (await readdir(cacheDir)).filter((name) => name.startsWith(".tmp-")),
+    (await readdir(join(cacheDir, "v0.11.0"))).filter((name) => name.startsWith(".tmp-")),
     [],
   );
 });
 
-test("two cold-cache callers adopt one atomically published installation", async (t) => {
+test("two cold-cache callers publish stable verified generations behind current", async (t) => {
   const fixture = await fixtureArchive(t);
   const cacheDir = await temporaryCache(t);
   const server = await fixtureServer(t, (_request, response) => {
     setTimeout(() => response.end(fixture.archive), 20);
   });
-  const finalDirectory = join(cacheDir, "v0.11.0");
-  let finalWasPublished = false;
-  let finalWasAbsentAfterPublication = false;
-  let finalWasTouchedAfterPublication = false;
-  const cacheWatcher = watch(cacheDir, (_event, filename) => {
-    if (filename !== "v0.11.0") return;
-    if (finalWasPublished) {
-      finalWasTouchedAfterPublication = true;
-      if (!existsSync(finalDirectory)) finalWasAbsentAfterPublication = true;
-    } else if (existsSync(finalDirectory)) finalWasPublished = true;
+  const versionDirectory = join(cacheDir, "v0.11.0");
+  await mkdir(versionDirectory);
+  const currentPath = join(versionDirectory, "current");
+  let currentWasPublished = false;
+  let currentWasAbsentAfterPublication = false;
+  const pointerChecks = [];
+  const cacheWatcher = watch(versionDirectory, (_event, filename) => {
+    if (filename !== "current") return;
+    if (currentWasPublished && !existsSync(currentPath)) currentWasAbsentAfterPublication = true;
+    if (existsSync(currentPath)) {
+      currentWasPublished = true;
+      pointerChecks.push(
+        readlink(currentPath).then((generation) =>
+          assertVerifiedBinary(join(versionDirectory, generation, "shellcheck")),
+        ),
+      );
+    }
   });
   t.after(() => cacheWatcher.close());
   const fixtureOptions = options({ ...fixture, ...server, cacheDir });
@@ -244,18 +286,16 @@ test("two cold-cache callers adopt one atomically published installation", async
     ensureShellcheck(fixtureOptions),
   ]);
   await new Promise((resolve) => setTimeout(resolve, 30));
+  await Promise.all(pointerChecks);
 
-  assert.equal(first, second);
-  assert.equal(finalWasPublished, true);
-  assert.equal(finalWasAbsentAfterPublication, false);
-  assert.equal(finalWasTouchedAfterPublication, false);
+  await assertVerifiedBinary(first);
+  await assertVerifiedBinary(second);
+  assert.equal(currentWasPublished, true);
+  assert.equal(currentWasAbsentAfterPublication, false);
+  await assertVerifiedBinary(join(versionDirectory, await readlink(currentPath), "shellcheck"));
   assert.equal(server.requests.length, 2);
   assert.deepEqual(
-    (await readdir(cacheDir)).filter((name) => name === "v0.11.0"),
-    ["v0.11.0"],
-  );
-  assert.deepEqual(
-    (await readdir(cacheDir)).filter((name) => name.startsWith(".tmp-")),
+    (await readdir(versionDirectory)).filter((name) => name.startsWith(".tmp-")),
     [],
   );
 });
@@ -291,11 +331,7 @@ test("a connection closed mid-body rejects without leaving cache state", async (
     ensureShellcheck(options({ ...fixture, ...server, cacheDir })),
     /ShellCheck download failed/,
   );
-  assert.equal(existsSync(join(cacheDir, "v0.11.0")), false);
-  assert.deepEqual(
-    (await readdir(cacheDir)).filter((name) => name.startsWith(".tmp-")),
-    [],
-  );
+  await assertNoPublishedGeneration(cacheDir);
 });
 
 test("a well-hashed invalid archive fails extraction and leaves no cache", async (t) => {
@@ -310,11 +346,7 @@ test("a well-hashed invalid archive fails extraction and leaves no cache", async
     ensureShellcheck(options({ ...fixture, ...server, cacheDir })),
     /ShellCheck extraction failed/,
   );
-  assert.equal(existsSync(join(cacheDir, "v0.11.0")), false);
-  assert.deepEqual(
-    (await readdir(cacheDir)).filter((name) => name.startsWith(".tmp-")),
-    [],
-  );
+  await assertNoPublishedGeneration(cacheDir);
 });
 
 test("a truncated cached binary is replaced and never returned", async (t) => {
@@ -329,12 +361,13 @@ test("a truncated cached binary is replaced and never returned", async (t) => {
 
   const repaired = await ensureShellcheck(fixtureOptions);
 
-  assert.equal(repaired, first);
+  assert.notEqual(repaired, first);
+  assert.equal(existsSync(first), true);
   assert.notEqual(await readFile(repaired, "utf8"), "truncated");
   assert.equal(server.requests.length, 2);
 });
 
-test("two callers concurrently repair a truncated cache without removing the winner", async (t) => {
+test("two callers concurrently repair a truncated cache without invalidating returned paths", async (t) => {
   const fixture = await fixtureArchive(t);
   const cacheDir = await temporaryCache(t);
   const server = await fixtureServer(t, (_request, response) => {
@@ -345,13 +378,21 @@ test("two callers concurrently repair a truncated cache without removing the win
   await writeFile(binaryPath, "truncated");
   server.requests.length = 0;
 
-  const finalDirectory = join(cacheDir, "v0.11.0");
+  const versionDirectory = join(cacheDir, "v0.11.0");
+  const currentPath = join(versionDirectory, "current");
   let republished = false;
   let absentAfterRepublication = false;
-  const cacheWatcher = watch(cacheDir, (_event, filename) => {
-    if (filename !== "v0.11.0") return;
-    if (existsSync(finalDirectory)) republished = true;
-    else if (republished) absentAfterRepublication = true;
+  const pointerChecks = [];
+  const cacheWatcher = watch(versionDirectory, (_event, filename) => {
+    if (filename !== "current") return;
+    if (existsSync(currentPath)) {
+      republished = true;
+      pointerChecks.push(
+        readlink(currentPath).then((generation) =>
+          assertVerifiedBinary(join(versionDirectory, generation, "shellcheck")),
+        ),
+      );
+    } else if (republished) absentAfterRepublication = true;
   });
   t.after(() => cacheWatcher.close());
 
@@ -360,16 +401,14 @@ test("two callers concurrently repair a truncated cache without removing the win
     ensureShellcheck(fixtureOptions),
   ]);
   await new Promise((resolve) => setTimeout(resolve, 30));
+  await Promise.all(pointerChecks);
 
-  assert.equal(first, binaryPath);
-  assert.equal(second, binaryPath);
+  await assertVerifiedBinary(first);
+  await assertVerifiedBinary(second);
   assert.ok(server.requests.length <= 2, "a caller downloaded more than once");
   assert.equal(republished, true);
   assert.equal(absentAfterRepublication, false);
-  assert.equal(
-    await readFile(binaryPath, "utf8").then((contents) => contents === "truncated"),
-    false,
-  );
+  await assertVerifiedBinary(join(versionDirectory, await readlink(currentPath), "shellcheck"));
 });
 
 test("production constants and hooks wiring stay pinned", async () => {

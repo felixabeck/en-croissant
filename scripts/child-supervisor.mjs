@@ -28,7 +28,6 @@ export function superviseChild(child, { terminationTimeoutMs, killProcessGroup =
   let termination;
 
   return {
-    child,
     done,
     terminate() {
       if (termination) return termination;
@@ -82,6 +81,11 @@ export function installSignalForwarding(getSupervisor) {
     },
     get termination() {
       return termination;
+    },
+    attach(supervisor) {
+      if (!requestedSignal) return;
+      termination = supervisor.terminate();
+      termination.catch(() => {});
     },
     uninstall() {
       process.off("SIGINT", handler);

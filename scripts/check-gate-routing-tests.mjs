@@ -14,7 +14,7 @@ import { gitInit } from "./test-git-init.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_CHAIN =
-  "pnpm mutation:guard:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm hooks:check && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm findings:test && python3 scripts/findings.py check";
+  "pnpm mutation:guard:check && pnpm lint:ci && pnpm tauri:boundary:check && pnpm rust:surface:check && pnpm ui:boundary:check && pnpm skills:check && pnpm skills:bridges:test && pnpm gates:routing:check && pnpm gates:routing:test && pnpm tools:parity:check && pnpm tools:parity:test && pnpm workflows:check && pnpm workflows:permissions:test && pnpm hooks:check && pnpm ui:boundary:report:test && pnpm coverage:report:test && pnpm bundle:report:test && pnpm mutation:runner:test && pnpm gates:receipt:test && pnpm findings:test && python3 scripts/findings.py check";
 
 async function write(root, relativePath, contents) {
   const path = join(root, relativePath);
@@ -37,18 +37,27 @@ async function fixture() {
         "gate:ensure": "node scripts/gate-receipt.mjs ensure",
         "gate:run": "node scripts/gate-receipt.mjs run",
         "gate:check": "node scripts/gate-receipt.mjs check",
+        "test:coverage": "true",
+        "coverage:frontend:check": "true",
+        "build-vite": "true",
+        "bindings:check": "true",
+        "bundle:check": "true",
+        "test:e2e:container": "true",
+        "mutation:frontend": "true",
+        "test:coverage:backend": "true",
+        "coverage:backend:check": "true",
       },
     }),
   );
   await write(
     root,
     ".claude/skills/push/SKILL.md",
-    "## 2. Gates\n\n```bash\npnpm gates:contract:check\npnpm gate:check\ncargo fmt -- --check\ncargo check\ncargo clippy\ncargo test\npython3 scripts/tool.py check\n```\n\n## 3. Review\n\n```text\nscripts/**\n```\n\n## 4. Finish\n",
+    "## 2. Gates\n\n```bash\npnpm gates:contract:check\npnpm gate:check\ncargo fmt -- --check\ncargo check\ncargo clippy\ncargo test\npython3 scripts/tool.py check\n```\n\n### Rust/Tauri backend\n\n```bash\npnpm test:coverage:backend\npnpm coverage:backend:check\n```\n\n### TypeScript/React frontend\n\n```bash\npnpm test:coverage\npnpm coverage:frontend:check\npnpm build-vite\npnpm bundle:check\npnpm test:e2e:container\npnpm mutation:frontend\n```\n\n### Cross-layer contracts\n\n```bash\npnpm bindings:check\n```\n\n## 3. Review\n\n```text\nscripts/**\n```\n\n## 4. Finish\n",
   );
   await write(
     root,
     ".github/workflows/test.yml",
-    "steps:\n  - name: Contract\n    run: pnpm gates:contract:check\n",
+    "steps:\n  - name: Contract\n    run: pnpm gates:contract:check\n  - name: Frontend coverage\n    run: pnpm test:coverage\n  - name: Frontend ratchet\n    run: pnpm coverage:frontend:check\n  - name: Frontend build\n    run: pnpm build-vite\n  - name: Bindings\n    run: pnpm bindings:check\n  - name: Bundle\n    run: pnpm bundle:check\n  - name: Browser\n    run: pnpm test:e2e:container\n  - name: Mutation\n    run: pnpm mutation:frontend\n  - name: Backend coverage\n    run: pnpm test:coverage:backend\n  - name: Backend ratchet\n    run: pnpm coverage:backend:check\n",
   );
   await write(root, "vite.config.ts", 'test: { include: ["scripts/**/*.test.mjs"] },\n');
   await write(root, "scripts/check-example.mjs", "\n");
@@ -245,7 +254,7 @@ test("rejects a workflow-only script reached transitively", async () => {
   );
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),
-    /workflow-routed package script inner:run/u,
+    /workflow-routed package script outer:run/u,
   );
 });
 
@@ -258,7 +267,7 @@ test("rejects a direct workflow script command that has no push-skill route", as
   );
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),
-    /workflow runs scripts\/check-example\.mjs directly \(node scripts\/check-example\.mjs --strict\); route it through a package script that the push skill fences/u,
+    /workflow command must exactly match a fenced line or routed package-script segment/u,
   );
 });
 
@@ -518,6 +527,139 @@ test("requires an unconditional contract-gate workflow step", async () => {
   assert.match(
     (await checkGateRouting(root, { paths })).join("\n"),
     /must run gates:contract:check in a step without if:/u,
+  );
+});
+
+test("requires the contract workflow command to be exact", async () => {
+  const root = await fixture();
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  const workflow = await readFile(workflowPath, "utf8");
+  await writeFile(
+    workflowPath,
+    workflow.replace("run: pnpm gates:contract:check", "run: pnpm gates:contract:check --silent"),
+  );
+  assert.match((await checkGateRouting(root, { paths })).join("\n"), /must be exactly/u);
+});
+
+test("rejects workflow gate exit-code neutralisation and chaining", async () => {
+  for (const suffix of [" || true", "; true", " | cat"]) {
+    const root = await fixture();
+    const workflowPath = join(root, ".github/workflows/test.yml");
+    const workflow = await readFile(workflowPath, "utf8");
+    await writeFile(
+      workflowPath,
+      workflow.replace("run: pnpm gates:contract:check", `run: pnpm gates:contract:check${suffix}`),
+    );
+    assert.match(
+      (await checkGateRouting(root, { paths })).join("\n"),
+      /workflow step neutralises or chains gate exit codes/u,
+    );
+  }
+});
+
+test("rejects changed arguments on a routed workflow script", async () => {
+  const root = await fixture();
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  const workflow = await readFile(workflowPath, "utf8");
+  await writeFile(
+    workflowPath,
+    workflow.replace("run: pnpm mutation:frontend", "run: pnpm mutation:frontend --list-packages"),
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /workflow command must exactly match/u,
+  );
+});
+
+test("accepts the exact contract workflow command", async () => {
+  const root = await fixture();
+  assert.doesNotMatch(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /contract-gate step must be exactly/u,
+  );
+});
+
+test("accepts every YAML block scalar spelling and preserves folding semantics", () => {
+  for (const marker of ["|", "|-", "|+", ">", ">-", ">+"]) {
+    const [step] = workflowSteps(
+      `steps:\n  - name: Scalar\n    run: ${marker}\n      pnpm alpha\n      pnpm beta\n`,
+    );
+    assert.equal(
+      step.run,
+      marker.startsWith("|") ? "pnpm alpha\npnpm beta" : "pnpm alpha pnpm beta",
+    );
+  }
+});
+
+test("reports CI-only scripts hidden in literal and folded block scalars", async () => {
+  for (const marker of ["|-", ">-"]) {
+    const root = await fixture();
+    const packagePath = join(root, "package.json");
+    const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+    packageJson.scripts["ci-only:run"] = "node scripts/ci-only.mjs";
+    await writeFile(packagePath, JSON.stringify(packageJson));
+    const workflowPath = join(root, ".github/workflows/test.yml");
+    await writeFile(
+      workflowPath,
+      `${await readFile(workflowPath, "utf8")}  - name: Hidden\n    run: ${marker}\n      pnpm ci-only:run\n`,
+    );
+    assert.match(
+      (await checkGateRouting(root, { paths })).join("\n"),
+      /workflow-routed package script ci-only:run/u,
+    );
+  }
+});
+
+test("reports a path-scoped CI script fenced only under another subsection", async () => {
+  const root = await fixture();
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(
+    skillPath,
+    skill
+      .replace("pnpm mutation:frontend\n", "")
+      .replace("pnpm bindings:check\n", "pnpm bindings:check\npnpm mutation:frontend\n"),
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /must be fenced in ### TypeScript/u,
+  );
+});
+
+test("reports a CI script fenced under a path subsection but absent from the explicit map", async () => {
+  const root = await fixture();
+  const packagePath = join(root, "package.json");
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+  packageJson.scripts["path-only:run"] = "true";
+  await writeFile(packagePath, JSON.stringify(packageJson));
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  const skill = await readFile(skillPath, "utf8");
+  await writeFile(
+    skillPath,
+    skill.replace("pnpm mutation:frontend\n", "pnpm mutation:frontend\npnpm path-only:run\n"),
+  );
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  await writeFile(
+    workflowPath,
+    `${await readFile(workflowPath, "utf8")}  - name: Path only\n    run: pnpm path-only:run\n`,
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /workflow-routed package script path-only:run.*neither reachable/u,
+  );
+});
+
+test("reports a stale path-scoped CI map key absent from the workflow", async () => {
+  const root = await fixture();
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  const workflow = await readFile(workflowPath, "utf8");
+  await writeFile(
+    workflowPath,
+    workflow.replace("  - name: Mutation\n    run: pnpm mutation:frontend\n", ""),
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /PATH_SCOPED_CI_SCRIPTS key mutation:frontend is absent/u,
   );
 });
 
