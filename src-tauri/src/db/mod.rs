@@ -2968,6 +2968,44 @@ mod tests {
     }
 
     #[test]
+    fn search_index_generation_reports_uncertain_parent_sync() {
+        use crate::infra::fs::{
+            set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
+        };
+
+        struct ParentSyncFailure;
+        impl AtomicWriterInjector for ParentSyncFailure {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::ParentSync {
+                    Err(std::io::Error::other("injected parent sync failure"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let (_dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+
+        set_test_atomic_file_injector(Some(Arc::new(ParentSyncFailure)));
+        let result = generate_search_index(
+            &handle,
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+        );
+        set_test_atomic_file_injector(None);
+
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::SearchIndexReplacement
+            ))
+        ));
+        assert!(get_index_path(&database).exists());
+    }
+
+    #[test]
     fn pagination_limit_offset_validates_and_uses_i64_arithmetic() {
         struct Case {
             page: Option<i32>,
