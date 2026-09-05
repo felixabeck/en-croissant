@@ -27,7 +27,7 @@ export const RELEASE_BASE_URL = "https://github.com/koalaman/shellcheck/releases
 export const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const TEMPORARY_DIRECTORY_MAX_AGE_MS = 60 * 60 * 1000;
+const STALE_CACHE_ENTRY_MAX_AGE_MS = 60 * 60 * 1000;
 const PLATFORM_ASSETS = Object.freeze({
   "linux-x64": "linux.x86_64",
 });
@@ -110,7 +110,7 @@ async function reclaimStaleGenerations(versionDirectory) {
           if (error?.code === "ENOENT") return;
           throw error;
         }
-        if (now - metadata.mtimeMs > TEMPORARY_DIRECTORY_MAX_AGE_MS) {
+        if (now - metadata.mtimeMs > STALE_CACHE_ENTRY_MAX_AGE_MS) {
           await rm(path, { recursive: true, force: true });
         }
       }),
@@ -220,7 +220,13 @@ export async function ensureShellcheck({
       await symlink(generationName, pointerPath);
       await rename(pointerPath, join(versionDirectory, "current"));
     } finally {
-      await rm(pointerPath, { force: true });
+      try {
+        await rm(pointerPath, { force: true });
+      } catch (error) {
+        console.error(
+          `Secondary failure while cleaning ShellCheck publication pointer ${pointerPath}: ${error.message}`,
+        );
+      }
     }
 
     const installed = await cachedCurrentBinary(versionDirectory);

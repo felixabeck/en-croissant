@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -14,7 +13,6 @@ import {
   waitFor,
   writeShim,
 } from "./mutation-runner-test-harness.mjs";
-import { currentIdentity, identityForPid } from "./process-identity.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const runner = join(projectRoot, "scripts", "run-frontend-mutation.mjs");
@@ -38,6 +36,7 @@ async function fixture() {
     join(packageDirectory, "bin", "stryker.js"),
     [
       "#!/usr/bin/env node",
+      'import { spawn } from "node:child_process";',
       'import { appendFileSync, existsSync, writeFileSync } from "node:fs";',
       'import { join } from "node:path";',
       "const state = process.env.SHIM_STATE;",
@@ -48,6 +47,11 @@ async function fixture() {
       'appendFileSync(join(state, "packages"), `${process.env.STRYKER_PACKAGE}\\n`);',
       'writeFileSync(join(state, "pid"), `${process.pid}\\n`);',
       'writeFileSync(join(state, "started"), "");',
+      'if (["block", "grandchild-exit"].includes(process.env.SHIM_MODE)) {',
+      '  const grandchild = spawn("/bin/sleep", ["30"], { detached: false, stdio: "ignore" });',
+      '  writeFileSync(join(state, "grandchild-pid"), `${grandchild.pid}\\n`);',
+      "  grandchild.unref();",
+      "}",
       "function recordTermination() {",
       '  if (existsSync("mutants.out/frontend/.mutation-in-progress")) {',
       '    writeFileSync(join(state, "terminated-with-fence"), "");',
@@ -55,7 +59,9 @@ async function fixture() {
       '  writeFileSync(join(state, "terminated"), "");',
       "  process.exit(0);",
       "}",
-      'if (process.env.SHIM_MODE === "block") {',
+      'if (process.env.SHIM_MODE === "grandchild-exit") {',
+      "  process.exit(0);",
+      '} else if (process.env.SHIM_MODE === "block") {',
       '  process.on("SIGTERM", recordTermination);',
       '  process.on("SIGINT", recordTermination);',
       "  const timer = setInterval(() => {",
@@ -182,40 +188,16 @@ test("a concurrent runner refuses a live owner without touching its sandbox", as
   assert.equal((await first.done).code, 0);
 });
 
-test("a dead fence owner is taken over without leaving stale directories", async () => {
+test("a dead fence owner is reported as dead with recovery and refused", async () => {
   const { root, state } = await fixture();
   await seedFence(root, deadOwner());
   const result = run(root, environment({ state }));
-  assert.equal(result.status, 0, result.stderr);
-  const siblings = await readdir(join(root, "mutants.out", "frontend"));
-  assert.equal(
-    siblings.some((name) => name.startsWith(".mutation-in-progress.stale-")),
-    false,
-  );
-});
-
-test("a live reused pid with the wrong start time is taken over", async () => {
-  const { root, state } = await fixture();
-  const live = currentIdentity();
-  await seedFence(root, deadOwner({ runner: { ...live, startTime: `${live.startTime}-wrong` } }));
-  const result = run(root, environment({ state }));
-  assert.equal(result.status, 0, result.stderr);
-});
-
-test("only one concurrent runner can take over the same stale fence", async () => {
-  const { root, state } = await fixture();
-  await seedFence(root, deadOwner());
-  const env = environment({ state, mode: "block" });
-  const first = start(root, env);
-  const second = start(root, env);
-  await waitFor(join(state, "started"));
-  const loser = await Promise.race([
-    first.done.then((result) => ({ running: second, result })),
-    second.done.then((result) => ({ running: first, result })),
-  ]);
-  assert.equal(loser.result.code, 1, loser.result.stderr);
-  await writeFile(join(state, "release"), "");
-  assert.equal((await loser.running.done).code, 0);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Recorded runner pid 2000000000: dead/u);
+  assert.match(result.stderr, /Recorded child pid 2000000001: dead/u);
+  assert.match(result.stderr, /Only after confirming no stryker process is running\./u);
+  assert.match(result.stderr, /rm -rf mutants\.out\/frontend\/\.mutation-in-progress/u);
+  assert.equal(existsSync(join(root, fence)), true);
 });
 
 test("a missing owner record is treated as live and refused", async () => {
@@ -254,27 +236,35 @@ test("an unreadable owner record surfaces its cause and is refused", async (t) =
   );
 });
 
-test("a dead runner with no recorded child is refused, not taken over", async () => {
+test("a dead runner with no recorded child is refused with recovery", async () => {
   const { root, state } = await fixture();
   await seedFence(root, deadOwner({ child: null }));
   const result = run(root, environment({ state }));
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /1\. Confirm no stryker process is running/u);
+  assert.match(result.stderr, /Recorded child pid none: none/u);
+  assert.match(result.stderr, /rm -rf mutants\.out\/frontend\/\.mutation-in-progress/u);
   assert.equal(existsSync(join(root, fence)), true);
 });
 
-test("a live recorded child keeps a dead runner's fence live", async () => {
+test("the finaliser does not remove a fence it does not own", async () => {
   const { root, state } = await fixture();
-  const sleeper = spawn("/bin/sleep", ["30"]);
-  const childIdentity = identityForPid(sleeper.pid);
-  assert.ok(childIdentity);
-  await seedFence(root, deadOwner({ child: childIdentity }));
-  const refused = run(root, environment({ state }));
-  assert.equal(refused.status, 1);
-  sleeper.kill("SIGTERM");
-  await new Promise((resolve) => sleeper.once("close", resolve));
-  const takeover = run(root, environment({ state }));
-  assert.equal(takeover.status, 0, takeover.stderr);
+  const running = start(root, environment({ state, mode: "block" }));
+  await waitFor(join(state, "started"));
+  await writeFile(join(root, fence, "owner.json"), `${JSON.stringify(deadOwner())}\n`);
+  await writeFile(join(state, "release"), "");
+  const result = await running.done;
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /fence owner changed; leaving the fence in place/u);
+  assert.equal(existsSync(join(root, fence)), true);
+});
+
+test("a surviving grandchild is swept after the Stryker root exits", async () => {
+  const { root, state } = await fixture();
+  const result = run(root, environment({ state, mode: "grandchild-exit" }));
+  const grandchildPid = Number(await readFile(join(state, "grandchild-pid"), "utf8"));
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(isAlive(grandchildPid), false, `grandchild pid ${grandchildPid} still exists`);
+  assert.equal(existsSync(join(root, fence)), false);
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
@@ -283,12 +273,14 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     const running = start(root, environment({ state, mode: "block" }));
     await waitFor(join(state, "started"));
     const childPid = Number(await readFile(join(state, "pid"), "utf8"));
+    const grandchildPid = Number(await readFile(join(state, "grandchild-pid"), "utf8"));
     running.child.kill(signal);
     const result = await running.done;
     assert.equal(result.code, signal === "SIGINT" ? 130 : 143, result.stderr);
     assert.equal(existsSync(join(state, "terminated")), true);
     assert.equal(existsSync(join(state, "terminated-with-fence")), true);
     assert.equal(isAlive(childPid), false, `Stryker pid ${childPid} still exists`);
+    assert.equal(isAlive(grandchildPid), false, `grandchild pid ${grandchildPid} still exists`);
     assert.equal(existsSync(join(root, fence)), false);
   });
 }

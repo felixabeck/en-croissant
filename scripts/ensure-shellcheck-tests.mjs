@@ -81,6 +81,39 @@ async function temporaryCache(t) {
   return cacheDir;
 }
 
+async function observeConcurrentPublication(t, versionDirectory, fixtureOptions) {
+  const currentPath = join(versionDirectory, "current");
+  let published = false;
+  let absentAfterPublication = false;
+  const pointerChecks = [];
+  const cacheWatcher = watch(versionDirectory, (_event, filename) => {
+    if (filename !== "current") return;
+    if (published && !existsSync(currentPath)) absentAfterPublication = true;
+    if (existsSync(currentPath)) {
+      published = true;
+      pointerChecks.push(
+        readlink(currentPath).then((generation) =>
+          assertVerifiedBinary(join(versionDirectory, generation, "shellcheck")),
+        ),
+      );
+    }
+  });
+  t.after(() => cacheWatcher.close());
+
+  const binaries = await Promise.all([
+    ensureShellcheck(fixtureOptions),
+    ensureShellcheck(fixtureOptions),
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await Promise.all(pointerChecks);
+
+  for (const binary of binaries) await assertVerifiedBinary(binary);
+  assert.equal(published, true);
+  assert.equal(absentAfterPublication, false);
+  await assertVerifiedBinary(join(versionDirectory, await readlink(currentPath), "shellcheck"));
+  return binaries;
+}
+
 async function fixtureServer(t, handler) {
   const requests = [];
   const sockets = new Set();
@@ -262,37 +295,9 @@ test("two cold-cache callers publish stable verified generations behind current"
   });
   const versionDirectory = join(cacheDir, "v0.11.0");
   await mkdir(versionDirectory);
-  const currentPath = join(versionDirectory, "current");
-  let currentWasPublished = false;
-  let currentWasAbsentAfterPublication = false;
-  const pointerChecks = [];
-  const cacheWatcher = watch(versionDirectory, (_event, filename) => {
-    if (filename !== "current") return;
-    if (currentWasPublished && !existsSync(currentPath)) currentWasAbsentAfterPublication = true;
-    if (existsSync(currentPath)) {
-      currentWasPublished = true;
-      pointerChecks.push(
-        readlink(currentPath).then((generation) =>
-          assertVerifiedBinary(join(versionDirectory, generation, "shellcheck")),
-        ),
-      );
-    }
-  });
-  t.after(() => cacheWatcher.close());
   const fixtureOptions = options({ ...fixture, ...server, cacheDir });
 
-  const [first, second] = await Promise.all([
-    ensureShellcheck(fixtureOptions),
-    ensureShellcheck(fixtureOptions),
-  ]);
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  await Promise.all(pointerChecks);
-
-  await assertVerifiedBinary(first);
-  await assertVerifiedBinary(second);
-  assert.equal(currentWasPublished, true);
-  assert.equal(currentWasAbsentAfterPublication, false);
-  await assertVerifiedBinary(join(versionDirectory, await readlink(currentPath), "shellcheck"));
+  await observeConcurrentPublication(t, versionDirectory, fixtureOptions);
   assert.equal(server.requests.length, 2);
   assert.deepEqual(
     (await readdir(versionDirectory)).filter((name) => name.startsWith(".tmp-")),
@@ -379,36 +384,8 @@ test("two callers concurrently repair a truncated cache without invalidating ret
   server.requests.length = 0;
 
   const versionDirectory = join(cacheDir, "v0.11.0");
-  const currentPath = join(versionDirectory, "current");
-  let republished = false;
-  let absentAfterRepublication = false;
-  const pointerChecks = [];
-  const cacheWatcher = watch(versionDirectory, (_event, filename) => {
-    if (filename !== "current") return;
-    if (existsSync(currentPath)) {
-      republished = true;
-      pointerChecks.push(
-        readlink(currentPath).then((generation) =>
-          assertVerifiedBinary(join(versionDirectory, generation, "shellcheck")),
-        ),
-      );
-    } else if (republished) absentAfterRepublication = true;
-  });
-  t.after(() => cacheWatcher.close());
-
-  const [first, second] = await Promise.all([
-    ensureShellcheck(fixtureOptions),
-    ensureShellcheck(fixtureOptions),
-  ]);
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  await Promise.all(pointerChecks);
-
-  await assertVerifiedBinary(first);
-  await assertVerifiedBinary(second);
+  await observeConcurrentPublication(t, versionDirectory, fixtureOptions);
   assert.ok(server.requests.length <= 2, "a caller downloaded more than once");
-  assert.equal(republished, true);
-  assert.equal(absentAfterRepublication, false);
-  await assertVerifiedBinary(join(versionDirectory, await readlink(currentPath), "shellcheck"));
 });
 
 test("production constants and hooks wiring stay pinned", async () => {

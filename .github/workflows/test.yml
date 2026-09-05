@@ -136,7 +136,7 @@ jobs:
       - name: Upload backend coverage
         # `always()`: the measurement is the evidence needed to diagnose a RED ratchet, so
         # uploading it only on success withholds it exactly when it is wanted. The frontend
-        # coverage upload has the same problem and the same fix below.
+        # coverage upload above has the same problem and the same fix.
         if: always()
         uses: actions/upload-artifact@v4
         with:

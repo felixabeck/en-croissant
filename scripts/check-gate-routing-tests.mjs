@@ -271,6 +271,19 @@ test("rejects a direct workflow script command that has no push-skill route", as
   );
 });
 
+test("rejects an unfenced direct workflow script in a quoted run scalar", async () => {
+  const root = await fixture();
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  await writeFile(
+    workflowPath,
+    `${await readFile(workflowPath, "utf8")}  - name: Quoted direct script\n    run: "node scripts/check-example.mjs --strict"\n`,
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /workflow command must exactly match a fenced line or routed package-script segment/u,
+  );
+});
+
 test("accepts a direct workflow script command fenced verbatim in the push skill", async () => {
   const root = await fixture();
   const command = "node scripts/check-example.mjs --strict";
@@ -278,6 +291,22 @@ test("accepts a direct workflow script command fenced verbatim in the push skill
   await writeFile(
     workflowPath,
     `${await readFile(workflowPath, "utf8")}  - name: Direct script\n    run: ${command}\n`,
+  );
+  const skillPath = join(root, ".claude/skills/push/SKILL.md");
+  await writeFile(
+    skillPath,
+    `${await readFile(skillPath, "utf8")}\n\`\`\`bash\n${command}\n\`\`\`\n`,
+  );
+  assert.deepEqual(await checkGateRouting(root, { paths }), []);
+});
+
+test("accepts a quoted direct workflow script fenced verbatim in the push skill", async () => {
+  const root = await fixture();
+  const command = "node scripts/check-example.mjs --strict";
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  await writeFile(
+    workflowPath,
+    `${await readFile(workflowPath, "utf8")}  - name: Quoted direct script\n    run: "${command}"\n`,
   );
   const skillPath = join(root, ".claude/skills/push/SKILL.md");
   await writeFile(
@@ -530,6 +559,40 @@ test("requires an unconditional contract-gate workflow step", async () => {
   );
 });
 
+test("rejects continue-on-error on the contract-gate workflow step", async () => {
+  const root = await fixture();
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  const workflow = await readFile(workflowPath, "utf8");
+  await writeFile(
+    workflowPath,
+    workflow.replace(
+      "    run: pnpm gates:contract:check",
+      "    continue-on-error: true\n    run: pnpm gates:contract:check",
+    ),
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /workflow step ignores the gate's exit status: Contract/u,
+  );
+});
+
+test("rejects continue-on-error on another routed gate step", async () => {
+  const root = await fixture();
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  const workflow = await readFile(workflowPath, "utf8");
+  await writeFile(
+    workflowPath,
+    workflow.replace(
+      "    run: pnpm mutation:frontend",
+      "    continue-on-error: true\n    run: pnpm mutation:frontend",
+    ),
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /workflow step ignores the gate's exit status: Mutation/u,
+  );
+});
+
 test("requires the contract workflow command to be exact", async () => {
   const root = await fixture();
   const workflowPath = join(root, ".github/workflows/test.yml");
@@ -580,7 +643,7 @@ test("accepts the exact contract workflow command", async () => {
 });
 
 test("accepts every YAML block scalar spelling and preserves folding semantics", () => {
-  for (const marker of ["|", "|-", "|+", ">", ">-", ">+"]) {
+  for (const marker of ["|", "|-", "|+", "|2", "|2-", "|+2", ">", ">-", ">+"]) {
     const [step] = workflowSteps(
       `steps:\n  - name: Scalar\n    run: ${marker}\n      pnpm alpha\n      pnpm beta\n`,
     );
@@ -589,6 +652,14 @@ test("accepts every YAML block scalar spelling and preserves folding semantics",
       marker.startsWith("|") ? "pnpm alpha\npnpm beta" : "pnpm alpha pnpm beta",
     );
   }
+});
+
+test("unquotes YAML run scalars and their supported escapes", () => {
+  const steps = workflowSteps(
+    `steps:\n  - name: Double\n    run: "node scripts/check-example.mjs \\"quoted\\" \\\\path"\n  - name: Single\n    run: 'node scripts/check-example.mjs ''quoted'''\n`,
+  );
+  assert.equal(steps[0].run, 'node scripts/check-example.mjs "quoted" \\path');
+  assert.equal(steps[1].run, "node scripts/check-example.mjs 'quoted'");
 });
 
 test("reports CI-only scripts hidden in literal and folded block scalars", async () => {
@@ -608,6 +679,23 @@ test("reports CI-only scripts hidden in literal and folded block scalars", async
       /workflow-routed package script ci-only:run/u,
     );
   }
+});
+
+test("reports a CI-only script in an explicitly indented block scalar", async () => {
+  const root = await fixture();
+  const packagePath = join(root, "package.json");
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+  packageJson.scripts["ci-only:run"] = "node scripts/ci-only.mjs";
+  await writeFile(packagePath, JSON.stringify(packageJson));
+  const workflowPath = join(root, ".github/workflows/test.yml");
+  await writeFile(
+    workflowPath,
+    `${await readFile(workflowPath, "utf8")}  - name: Explicit indentation\n    run: |2-\n      pnpm ci-only:run\n`,
+  );
+  assert.match(
+    (await checkGateRouting(root, { paths })).join("\n"),
+    /workflow-routed package script ci-only:run/u,
+  );
 });
 
 test("reports a path-scoped CI script fenced only under another subsection", async () => {

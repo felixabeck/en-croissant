@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   existsSync,
@@ -48,9 +47,32 @@ function refuseFence(owner, reason = undefined) {
     : " (owner record missing or malformed)";
   console.error(`Frontend mutation fence exists: ${fencePath}${detail}`);
   if (reason) console.error(`Cannot determine whether the fence owner is alive: ${reason}`);
-  console.error("Recovery procedure:");
-  console.error("1. Confirm no stryker process is running, and terminate it if one is.");
-  console.error(`2. Remove ${fencePath} once nothing is running.`);
+  let runnerState = "unknown";
+  let childState = owner?.child === null ? "none" : "unknown";
+  if (owner) {
+    try {
+      runnerState = identityIsLive(owner.runner) ? "alive" : "dead";
+    } catch (error) {
+      runnerState = `unknown (${error instanceof Error ? error.message : String(error)})`;
+    }
+    if (owner.child !== null) {
+      try {
+        childState = identityIsLive(owner.child) ? "alive" : "dead";
+      } catch (error) {
+        childState = `unknown (${error instanceof Error ? error.message : String(error)})`;
+      }
+    }
+    console.error(`Recorded runner pid ${owner.runner.pid}: ${runnerState}`);
+    console.error(
+      owner.child === null
+        ? "Recorded child pid none: none"
+        : `Recorded child pid ${owner.child.pid}: ${childState}`,
+    );
+  }
+  if (!owner || (runnerState === "dead" && (childState === "dead" || childState === "none"))) {
+    console.error("Only after confirming no stryker process is running.");
+    console.error(`rm -rf ${fencePath}`);
+  }
 }
 
 function publishFence(runnerIdentity) {
@@ -69,7 +91,13 @@ function publishFence(runnerIdentity) {
     published = true;
     fsyncDirectory(parent);
   } catch (error) {
-    rmSync(published ? fencePath : pending, { recursive: true, force: true });
+    try {
+      rmSync(published ? fencePath : pending, { recursive: true, force: true });
+    } catch (cleanupError) {
+      console.error(
+        `Secondary failure while cleaning frontend mutation fence publication: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+      );
+    }
     throw error;
   }
 }
@@ -97,25 +125,16 @@ function acquireFence(runnerIdentity) {
       refuseFence(owner);
       return false;
     }
-    try {
-      if (identityIsLive(owner.runner) || owner.child === null || identityIsLive(owner.child)) {
-        refuseFence(owner);
-        return false;
-      }
-    } catch (error) {
-      refuseFence(owner, error instanceof Error ? error.message : String(error));
-      return false;
-    }
-
-    const stalePath = `${fencePath}.stale-${randomUUID()}`;
-    try {
-      renameSync(fencePath, stalePath);
-    } catch (error) {
-      if (error?.code === "ENOENT") continue;
-      throw error;
-    }
-    rmSync(stalePath, { recursive: true });
+    refuseFence(owner);
+    return false;
   }
+}
+
+function runnerOwnsFence(runnerIdentity) {
+  const owner = readOwner();
+  return (
+    owner?.runner.pid === runnerIdentity.pid && owner.runner.startTime === runnerIdentity.startTime
+  );
 }
 
 function writeOwner(runnerIdentity, childIdentity) {
@@ -161,6 +180,9 @@ async function main() {
 
     for (const mutationPackage of Object.keys(mutationPackages)) {
       if (signalForwarding.requestedSignal) break;
+      if (!runnerOwnsFence(runnerIdentity)) {
+        throw new Error("Frontend mutation fence owner changed during the run");
+      }
       console.log(`\nFrontend mutation package: ${mutationPackage}`);
       writeOwner(runnerIdentity, null);
       const child = spawn(process.execPath, [resolveStrykerEntry(process.cwd()), "run"], {
@@ -187,8 +209,20 @@ async function main() {
   } finally {
     if (supervisor) await supervisor.terminate();
     await signalForwarding.termination;
-    rmSync(fencePath, { recursive: true });
-    fsyncDirectory(dirname(fencePath));
+    try {
+      if (runnerOwnsFence(runnerIdentity)) {
+        rmSync(fencePath, { recursive: true });
+        fsyncDirectory(dirname(fencePath));
+      } else {
+        console.error("Frontend mutation fence owner changed; leaving the fence in place.");
+        exitCode = 1;
+      }
+    } catch (error) {
+      console.error(
+        `Cannot verify frontend mutation fence ownership; leaving the fence in place: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      exitCode = 1;
+    }
     signalForwarding.uninstall();
   }
 

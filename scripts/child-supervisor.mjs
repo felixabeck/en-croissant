@@ -17,14 +17,33 @@ function signalChild(child, signal, killProcessGroup) {
   }
 }
 
+async function sweepProcessGroup(child) {
+  if (child.pid === undefined) return;
+  signalChild(child, "SIGKILL", true);
+  while (true) {
+    try {
+      process.kill(-child.pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 export function superviseChild(child, { terminationTimeoutMs, killProcessGroup = false }) {
-  const done = new Promise((resolve) => {
+  const childDone = new Promise((resolve) => {
     let spawnError;
     child.once("error", (error) => {
       spawnError = error;
     });
     child.once("close", (code, signal) => resolve({ code, signal, error: spawnError }));
   });
+  const done = (async () => {
+    const result = await childDone;
+    if (killProcessGroup) await sweepProcessGroup(child);
+    return result;
+  })();
   let termination;
 
   return {
@@ -45,11 +64,6 @@ export function superviseChild(child, { terminationTimeoutMs, killProcessGroup =
           }, terminationTimeoutMs);
         });
         try {
-          if (killProcessGroup && child.pid !== undefined) {
-            const result = await done;
-            await escalation;
-            return result;
-          }
           await Promise.race([done, escalation]);
           return await done;
         } finally {

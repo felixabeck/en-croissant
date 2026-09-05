@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { fencedBlocks, pnpmReferences, workflowSteps } from "./check-gate-routing.mjs";
 import {
   checkDeadCodeSurface,
   checkFaultInjectionSurface,
@@ -205,16 +206,26 @@ pub(crate) trait AtomicWriterInjector {}
 
   test("the release script is invoked by the test workflow", async () => {
     const workflow = await readFileForWiring(".github/workflows/test.yml");
-    expect(workflow).toMatch(/run:\s*pnpm rust:surface:check/);
+    expect(
+      workflowSteps(workflow).some((step) =>
+        pnpmReferences(step.run).includes("gates:contract:check"),
+      ),
+    ).toBe(true);
+    const packageJson = JSON.parse(await readFileForWiring("package.json"));
+    expect(
+      packageJson.scripts["gates:contract:check"].split("&&").map((part) => part.trim()),
+    ).toContain("pnpm rust:surface:check");
   });
 
   test("the Rust/Tauri push gate list names the release script", async () => {
     const skill = await readFileForWiring(".claude/skills/push/SKILL.md");
-    const rustSection = skill.slice(
-      skill.indexOf("### Rust/Tauri backend"),
-      skill.indexOf("### TypeScript/React frontend"),
-    );
-    expect(rustSection).toContain("pnpm rust:surface:check");
+    const sectionTwo = skill.slice(skill.indexOf("## 2."), skill.indexOf("## 3."));
+    const contractGateHome = sectionTwo.slice(0, sectionTwo.indexOf("### Rust/Tauri backend"));
+    expect(
+      fencedBlocks(contractGateHome).some((block) =>
+        pnpmReferences(block.contents).includes("gates:contract:check"),
+      ),
+    ).toBe(true);
   });
 });
 

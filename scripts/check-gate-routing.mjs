@@ -94,6 +94,16 @@ export function pnpmReferences(command) {
     .filter((name) => !PNPM_SUBCOMMANDS.has(name) && !name.startsWith("-"));
 }
 
+function unquoteYamlScalar(value) {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1).replace(/\\(["\\])/gu, "$1");
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replaceAll("''", "'");
+  }
+  return value;
+}
+
 export function workflowSteps(workflow) {
   const steps = [];
   const lines = workflow.split(/\r?\n/u);
@@ -114,8 +124,8 @@ export function workflowSteps(workflow) {
     const runEntry = block.find(({ line }) => /^run:\s*/u.test(line));
     if (!runEntry) continue;
     const runValue = runEntry.line.replace(/^run:\s*/u, "");
-    let run = runValue;
-    const scalar = /^([|>])[-+]?$/u.exec(runValue);
+    let run = unquoteYamlScalar(runValue);
+    const scalar = /^([|>])(?:[0-9][-+]?|[-+]?[0-9]?)$/u.exec(runValue);
     if (scalar) {
       const runLineIndentation = lines[runEntry.index].match(/^\s*/u)[0].length;
       const commandLines = [];
@@ -126,7 +136,16 @@ export function workflowSteps(workflow) {
       }
       run = commandLines.join(scalar[1] === "|" ? "\n" : " ").trim();
     }
-    steps.push({ name: name ?? "", run, hasIf: block.some(({ line }) => /^if:\s*/u.test(line)) });
+    const continueOnError = block
+      .find(({ line }) => /^continue-on-error:\s*/u.test(line))
+      ?.line.replace(/^continue-on-error:\s*/u, "")
+      .trim();
+    steps.push({
+      name: name ?? "",
+      run,
+      hasIf: block.some(({ line }) => /^if:\s*/u.test(line)),
+      continueOnError: continueOnError === "true",
+    });
   }
   return steps;
 }
@@ -235,7 +254,9 @@ function validateGateCommands(pushSkill, scripts, repoRoot) {
   return { directGateCommands, findings, routed };
 }
 
-function sectionTwoPreamble(pushSkill) {
+// Returns the §2 text before the first path-scoped subsection. When the
+// "Unconditional contract gate" subsection comes first, it is included.
+function contractGateHome(pushSkill) {
   const sectionStart = pushSkill.search(/^## 2\./mu);
   if (sectionStart < 0) return "";
   const section = pushSkill.slice(sectionStart);
@@ -348,7 +369,7 @@ export async function checkGateRouting(
   const skillContractReferences = directGateCommands.flatMap((command) =>
     pnpmReferences(command).filter((name) => name === CONTRACT_GATE),
   );
-  const preambleContractReferences = fencedBlocks(sectionTwoPreamble(pushSkill))
+  const preambleContractReferences = fencedBlocks(contractGateHome(pushSkill))
     .filter((block) => ["bash", "sh", "shell"].includes(block.language))
     .flatMap((block) => pnpmReferences(block.contents))
     .filter((name) => name === CONTRACT_GATE);
@@ -443,6 +464,11 @@ export async function checkGateRouting(
     }
   }
   for (const step of steps) {
+    if (step.continueOnError && invokesPnpmOrScript(step.run, repoRoot)) {
+      findings.push(
+        `${TEST_WORKFLOW} workflow step ignores the gate's exit status: ${step.name || step.run}`,
+      );
+    }
     if (invokesPnpmOrScript(step.run, repoRoot) && /\|\||[;|]/u.test(step.run)) {
       findings.push(
         `${TEST_WORKFLOW} workflow step neutralises or chains gate exit codes: ${step.name || step.run}`,
