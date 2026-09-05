@@ -6070,3 +6070,16 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Why it matters:** the last counted reach in `main.rs` (the allowlist count is now 1). Emptying `main.rs` from the filesystem-surface allowlist waits on this.
 * **Related:** `f-20260905-07`, which this splits out of; `d-20260901-03`.
 * **Found by:** Grok, implementation of `tasks/plans/2026-09-05-authorized-directory-descriptors.md` phase 5, 2026-09-05.
+
+---
+
+## 2026-09-05 — filed through the inbox spool
+
+### `ensure_app_owned_default_dir` still uses pathname `create_dir_all`, so a swapped ancestor symlink can mkdir outside the Tauri app-data tree
+
+* **ID:** f-20260905-10 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority.rs:924` (`fs::create_dir_all(&path)` in `ensure_app_owned_default_dir`). `AppDataDir::for_app` at `:844` is still a `PathBuf` from `app.path().app_data_dir()`.
+* **Defect:** the AuthorizedDir conversion closed the *leaf* symlink window: after `create_dir_all`, `symlink_metadata` refuses a non-directory leaf and `authorize_existing_dir` opens a verified descriptor used for the subsequent write. `create_dir_all` itself still walks the pathname and follows ancestor symlinks. If an attacker replaces an ancestor of the Tauri-derived app-data path with a symlink before the first default-root materialisation, mkdir of `db` / `engines` / `engine-images` / `puzzles` happens in the symlink target. The later verified open then either rejects the swapped ancestor or adopts the directory that was created outside the intended tree, and the out-of-root directory is left behind. Closing it means retaining a descriptor on `AppDataDir` and using `mkdirat` for the leaf — a producer-shape question this run's plan did not settle (`d-20260905-02` kept `create_dir_all` on a closed enum of leaves).
+* **Why it matters:** the four default roots are created on first use. An ancestor swap is a different window from the leaf-symlink check the conversion added, and it is not covered by `credentials`'s "app-data directory itself is not a symlink" test, which looks at the last component.
+* **Related:** `f-20260905-07` (the conversion this residue survived; Root `-`, so the relation is named here rather than shared); `d-20260905-02`, `d-20260905-07`.
+* **Found by:** Codex `review-tauri-security` over `83376d74..HEAD`, 2026-09-05. Confidence 96. Same-area as this run; deferred because the fix is a design question (descriptor-backed `AppDataDir` + `mkdirat`) the frozen plan did not decide.
