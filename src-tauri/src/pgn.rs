@@ -29,8 +29,7 @@ const MAX_LINE_LEN: usize = 1024 * 1024;
 const MAX_PAGE_LEN: usize = 1_000;
 const MAX_PGN_BYTES: usize = 10 * 1024 * 1024;
 const MAX_CACHE_ENTRIES: usize = 128;
-const MAX_PGN_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_PGN_GAMES: usize = 100_000;
+const MAX_CACHE_BYTES: usize = 4 * 1024 * 1024;
 
 struct CancelOnDrop(CancellationToken);
 impl Drop for CancelOnDrop {
@@ -52,7 +51,7 @@ struct CacheKey {
     revision: FileRevision,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct GameRange {
     start: u64,
     end: u64,
@@ -60,7 +59,7 @@ struct GameRange {
 
 #[derive(Debug, Clone)]
 struct CachedScan {
-    games: Vec<GameRange>,
+    games: Arc<[GameRange]>,
     last_used: u64,
 }
 
@@ -69,18 +68,21 @@ struct PgnRepositoryInner {
     cache: HashMap<CacheKey, CachedScan>,
     locks: HashMap<crate::infra::path_authority::PgnSnapshotIdentity, Arc<Mutex<()>>>,
     clock: u64,
+    retained_bytes: usize,
 }
 
 /// Bounded PGN state. Cache entries are revision-specific; edit locks are retained only while
 /// another caller still owns an `Arc` for that exact canonical path.
 pub struct PgnRepository {
     inner: std::sync::Mutex<PgnRepositoryInner>,
+    cache_byte_limit: usize,
 }
 
 impl Default for PgnRepository {
     fn default() -> Self {
         Self {
             inner: std::sync::Mutex::new(PgnRepositoryInner::default()),
+            cache_byte_limit: MAX_CACHE_BYTES,
         }
     }
 }
@@ -111,7 +113,7 @@ impl PgnRepository {
         Ok(lock)
     }
 
-    fn get(&self, key: &CacheKey) -> Result<Option<Vec<GameRange>>, Error> {
+    fn get(&self, key: &CacheKey) -> Result<Option<Arc<[GameRange]>>, Error> {
         let mut inner = self.inner()?;
         let now = Self::tick(&mut inner);
         Ok(inner.cache.get_mut(key).map(|entry| {
@@ -120,19 +122,37 @@ impl PgnRepository {
         }))
     }
 
-    fn insert(&self, key: CacheKey, games: Vec<GameRange>) -> Result<(), Error> {
+    fn insert(&self, key: CacheKey, games: Arc<[GameRange]>) -> Result<(), Error> {
         let mut inner = self.inner()?;
         let now = Self::tick(&mut inner);
-        if !inner.cache.contains_key(&key) && inner.cache.len() >= MAX_CACHE_ENTRIES {
+        if let Some(replaced) = inner.cache.remove(&key) {
+            inner.retained_bytes = inner
+                .retained_bytes
+                .saturating_sub(std::mem::size_of_val(replaced.games.as_ref()));
+        }
+        let retained_bytes = std::mem::size_of_val(games.as_ref());
+        if retained_bytes > self.cache_byte_limit {
+            return Ok(());
+        }
+        while inner.cache.len() >= MAX_CACHE_ENTRIES
+            || inner.retained_bytes > self.cache_byte_limit - retained_bytes
+        {
             if let Some(oldest) = inner
                 .cache
                 .iter()
                 .min_by_key(|(_, entry)| entry.last_used)
                 .map(|(key, _)| key.clone())
             {
-                inner.cache.remove(&oldest);
+                if let Some(evicted) = inner.cache.remove(&oldest) {
+                    inner.retained_bytes = inner
+                        .retained_bytes
+                        .saturating_sub(std::mem::size_of_val(evicted.games.as_ref()));
+                }
+            } else {
+                break;
             }
         }
+        inner.retained_bytes += retained_bytes;
         inner.cache.insert(
             key,
             CachedScan {
@@ -148,7 +168,14 @@ impl PgnRepository {
         identity: &crate::infra::path_authority::PgnSnapshotIdentity,
     ) -> Result<(), Error> {
         let mut inner = self.inner()?;
+        let removed_bytes = inner
+            .cache
+            .iter()
+            .filter(|(key, _)| &key.identity == identity)
+            .map(|(_, entry)| std::mem::size_of_val(entry.games.as_ref()))
+            .sum::<usize>();
         inner.cache.retain(|key, _| &key.identity != identity);
+        inner.retained_bytes = inner.retained_bytes.saturating_sub(removed_bytes);
         inner.locks.retain(|_, value| Arc::strong_count(value) > 1);
         Ok(())
     }
@@ -225,13 +252,6 @@ fn read_bounded_line<R: Read>(reader: &mut BufReader<R>, line: &mut Vec<u8>) -> 
     Ok(bytes)
 }
 
-fn validate_game_count(game_count: usize) -> io::Result<()> {
-    if game_count > MAX_PGN_GAMES {
-        return Err(malformed("PGN game count exceeds configured limit"));
-    }
-    Ok(())
-}
-
 /// Strict, synchronous byte-range scanner. Every range excludes a UTF-8 BOM and is
 /// `[start, end)`, with `end` equal to the next game's first tag byte or EOF.
 #[cfg(test)]
@@ -286,7 +306,6 @@ fn scan_games_cancelled<R: Read + Seek>(
                 start: line_start,
                 end: line_start,
             });
-            validate_game_count(games.len())?;
         } else if non_whitespace && game_start.is_none() {
             game_start = Some(line_start.max(start));
             games.push(GameRange {
@@ -314,19 +333,16 @@ fn scan_games_cancelled<R: Read + Seek>(
 fn scan_file(
     snapshot: crate::infra::path_authority::PgnSnapshot,
     cancellation: &CancellationToken,
-) -> Result<(CacheKey, Vec<GameRange>), Error> {
-    if snapshot.revision.size > MAX_PGN_FILE_BYTES {
-        return Err(Error::ResourceLimit("PGN file exceeds 64 MiB".into()));
-    }
+) -> Result<(CacheKey, Arc<[GameRange]>), Error> {
     let key = snapshot_key(&snapshot);
-    let games = scan_games_cancelled(snapshot.file, cancellation)?;
+    let games = scan_games_cancelled(snapshot.file, cancellation)?.into();
     Ok((key, games))
 }
 
 async fn scan_current(
     snapshot: crate::infra::path_authority::PgnSnapshot,
     repository: &PgnRepository,
-) -> Result<(CacheKey, Vec<GameRange>), Error> {
+) -> Result<(CacheKey, Arc<[GameRange]>), Error> {
     let key = snapshot_key(&snapshot);
     if let Some(games) = repository.get(&key)? {
         return Ok((key, games));
@@ -676,7 +692,51 @@ pub async fn write_game_core(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::{
+        io::{BufWriter, Cursor},
+        path::Path,
+    };
+
+    fn resolved_for(
+        directory: &tempfile::TempDir,
+        path: &Path,
+    ) -> crate::infra::path_authority::ResolvedPath {
+        let mut authority = crate::infra::path_authority::PathAuthority::open(
+            directory.path().join("registry.json"),
+            vec![],
+        )
+        .expect("open path authority");
+        let descriptor = authority
+            .create_pgn_export_destination(path, "test PGN")
+            .expect("register PGN");
+        authority
+            .resolve(
+                descriptor.handle.path_ref(),
+                crate::infra::path_authority::PathOperation::ReadPgn,
+                &[],
+            )
+            .expect("resolve PGN")
+    }
+
+    fn snapshot_for(
+        directory: &tempfile::TempDir,
+        path: &Path,
+    ) -> crate::infra::path_authority::PgnSnapshot {
+        resolved_for(directory, path)
+            .pgn_snapshot()
+            .expect("snapshot PGN")
+    }
+
+    fn key_with_size(key: &CacheKey, size: u64) -> CacheKey {
+        CacheKey {
+            identity: key.identity.clone(),
+            revision: FileRevision {
+                size,
+                mtime_nanos: key.revision.mtime_nanos,
+                ctime_nanos: key.revision.ctime_nanos,
+            },
+        }
+    }
 
     #[test]
     fn ranges_preserve_bom_line_endings_and_comment_headers() {
@@ -767,10 +827,181 @@ mod tests {
     }
 
     #[test]
-    fn game_count_limit_accepts_exact_capacity_and_rejects_one_more() {
-        assert!(validate_game_count(MAX_PGN_GAMES - 1).is_ok());
-        assert!(validate_game_count(MAX_PGN_GAMES).is_ok());
-        assert!(validate_game_count(MAX_PGN_GAMES + 1).is_err());
+    fn scan_file_accepts_a_generated_300_mib_pgn() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("large.pgn");
+        let file = File::create(&path).expect("create large PGN");
+        let mut writer = BufWriter::new(file);
+        writer
+            .write_all(b"% generated without a corpus-sized fixture\n")
+            .expect("write PGN preface");
+        let mut comment_line = vec![b'a'; MAX_LINE_LEN - 1];
+        comment_line.push(b'\n');
+        for game in 0..301 {
+            writeln!(writer, "[Event \"{game}\"]\n\n1. e4 {{").expect("write game header");
+            writer
+                .write_all(&comment_line)
+                .expect("write bounded comment line");
+            writer.write_all(b"} e5 1/2-1/2\n\n").expect("finish game");
+        }
+        writer.flush().expect("flush large PGN");
+
+        let snapshot = snapshot_for(&directory, &path);
+        let read_file = snapshot.file.try_clone().expect("clone PGN descriptor");
+        assert!(snapshot.revision.size > 300 * 1024 * 1024);
+        let expected_size = snapshot.revision.size;
+        let (_, games) = scan_file(snapshot, &CancellationToken::new()).expect("scan large PGN");
+        assert_eq!(games.len(), 301);
+        assert_eq!(games[300].end, expected_size);
+        let late_page = read_ranges(read_file, games[300..].to_vec(), &CancellationToken::new())
+            .expect("read final game");
+        assert_eq!(late_page.len(), 1);
+        assert!(late_page[0].starts_with("[Event \"300\"]"));
+        assert!(late_page[0].ends_with("} e5 1/2-1/2\n\n"));
+    }
+
+    #[test]
+    fn scan_file_reads_a_late_page_beyond_100_000_games() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("many-games.pgn");
+        let file = File::create(&path).expect("create many-game PGN");
+        let mut writer = BufWriter::new(file);
+        for game in 0..100_005 {
+            writeln!(writer, "[Event \"{game}\"]\n\n1. e4\n").expect("write game");
+        }
+        writer.flush().expect("flush many-game PGN");
+
+        let snapshot = snapshot_for(&directory, &path);
+        let read_file = snapshot.file.try_clone().expect("clone PGN descriptor");
+        let (_, games) =
+            scan_file(snapshot, &CancellationToken::new()).expect("scan many-game PGN");
+        assert_eq!(games.len(), 100_005);
+        let late_page = read_ranges(
+            read_file,
+            games[100_000..100_005].to_vec(),
+            &CancellationToken::new(),
+        )
+        .expect("read late page");
+        assert_eq!(late_page.len(), 5);
+        assert!(late_page[0].contains("[Event \"100000\"]"));
+        assert!(late_page[4].contains("[Event \"100004\"]"));
+    }
+
+    #[tokio::test]
+    async fn cache_hits_share_range_storage() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("cache.pgn");
+        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4\n").expect("write PGN");
+        let resolved = resolved_for(&directory, &path);
+        let repository = PgnRepository::default();
+        let (_, scanned) = scan_current(
+            resolved.pgn_snapshot().expect("first snapshot"),
+            &repository,
+        )
+        .await
+        .expect("initial scan");
+        let (_, hit) = scan_current(
+            resolved.pgn_snapshot().expect("second snapshot"),
+            &repository,
+        )
+        .await
+        .expect("cached scan");
+        assert!(Arc::ptr_eq(&scanned, &hit));
+    }
+
+    #[test]
+    fn cache_byte_eviction_replacement_and_invalidation_account_exactly() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("cache-accounting.pgn");
+        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4\n").expect("write PGN");
+        let base = snapshot_key(&snapshot_for(&directory, &path));
+        let range_bytes = std::mem::size_of::<GameRange>();
+        let repository = PgnRepository {
+            inner: std::sync::Mutex::new(PgnRepositoryInner::default()),
+            cache_byte_limit: range_bytes * 4,
+        };
+        let key_one = key_with_size(&base, 1);
+        let key_two = key_with_size(&base, 2);
+        let key_three = key_with_size(&base, 3);
+        let two_ranges: Arc<[GameRange]> = vec![GameRange { start: 0, end: 1 }; 2].into();
+        repository
+            .insert(key_one.clone(), two_ranges.clone())
+            .expect("insert first scan");
+        repository
+            .insert(key_two.clone(), two_ranges.clone())
+            .expect("insert second scan");
+        assert!(repository
+            .get(&key_one)
+            .expect("touch first scan")
+            .is_some());
+        repository
+            .insert(key_three.clone(), two_ranges)
+            .expect("insert third scan");
+        assert!(repository.get(&key_one).expect("read first scan").is_some());
+        assert!(repository
+            .get(&key_two)
+            .expect("read evicted scan")
+            .is_none());
+        assert!(repository
+            .get(&key_three)
+            .expect("read third scan")
+            .is_some());
+
+        let one_range: Arc<[GameRange]> = vec![GameRange { start: 0, end: 1 }].into();
+        repository
+            .insert(key_one.clone(), one_range)
+            .expect("replace first scan");
+        assert_eq!(
+            repository.inner().expect("inspect cache").retained_bytes,
+            range_bytes * 3
+        );
+        repository
+            .invalidate(&base.identity)
+            .expect("invalidate identity");
+        let inner = repository.inner().expect("inspect invalidated cache");
+        assert!(inner.cache.is_empty());
+        assert_eq!(inner.retained_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn oversized_scan_is_returned_but_not_retained() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("oversized-cache.pgn");
+        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4\n[Event \"B\"]\n\n1. d4\n")
+            .expect("write PGN");
+        let resolved = resolved_for(&directory, &path);
+        let snapshot = resolved.pgn_snapshot().expect("snapshot PGN");
+        let read_file = snapshot.file.try_clone().expect("clone PGN descriptor");
+        let range_bytes = std::mem::size_of::<GameRange>();
+        let repository = PgnRepository {
+            inner: std::sync::Mutex::new(PgnRepositoryInner::default()),
+            cache_byte_limit: range_bytes,
+        };
+        let (key, ranges) = scan_current(snapshot, &repository)
+            .await
+            .expect("scan remains available to caller");
+        assert_eq!(ranges.len(), 2);
+        let games = read_ranges(read_file, ranges.to_vec(), &CancellationToken::new())
+            .expect("read returned ranges");
+        assert!(games[0].starts_with("[Event \"A\"]"));
+        assert!(games[1].starts_with("[Event \"B\"]"));
+        assert!(repository.get(&key).expect("read cache").is_none());
+        assert_eq!(repository.inner().expect("inspect cache").retained_bytes, 0);
+    }
+
+    #[test]
+    fn scan_file_observes_cancellation() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("cancelled.pgn");
+        std::fs::write(&path, b"[Event \"A\"]\n\n1. e4\n").expect("write PGN");
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let error = scan_file(snapshot_for(&directory, &path), &cancellation)
+            .expect_err("cancelled scan must fail");
+        assert!(matches!(
+            error,
+            Error::Io(ref source) if source.kind() == io::ErrorKind::Interrupted
+        ));
     }
 
     #[test]
