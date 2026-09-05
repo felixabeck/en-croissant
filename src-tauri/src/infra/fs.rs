@@ -11,23 +11,34 @@ use crate::error::Error;
 use std::sync::Arc;
 use std::{ffi::OsStr, fs::File, io::Write, path::Path};
 
-#[cfg(unix)]
 mod verified_directory {
     use crate::error::Error;
-    use std::{fs::File, os::unix::fs::MetadataExt};
+    use std::fs::File;
 
+    #[derive(Debug)]
     pub(crate) struct VerifiedDir(File);
 
     impl VerifiedDir {
         pub(crate) fn new(opened: File, expected: (u64, u64)) -> Result<Self, Error> {
-            let verified = Self(opened);
-            let metadata = verified.as_file().metadata()?;
-            if (metadata.dev(), metadata.ino()) != expected {
-                return Err(Error::Conflict(
-                    "workspace directory changed concurrently".into(),
-                ));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let verified = Self(opened);
+                let metadata = verified.as_file().metadata()?;
+                if (metadata.dev(), metadata.ino()) != expected {
+                    return Err(Error::Conflict(
+                        "workspace directory changed concurrently".into(),
+                    ));
+                }
+                Ok(verified)
             }
-            Ok(verified)
+            #[cfg(not(unix))]
+            {
+                let _ = (opened, expected);
+                Err(Error::Conflict(
+                    "verified directories are unsupported on this platform".into(),
+                ))
+            }
         }
 
         pub(crate) fn as_file(&self) -> &File {
@@ -40,7 +51,6 @@ mod verified_directory {
     }
 }
 
-#[cfg(unix)]
 pub(crate) use verified_directory::VerifiedDir;
 
 #[derive(Debug)]
@@ -891,6 +901,15 @@ where
     atomic_replace_with_precommit(target, || Ok(()), write_fn)
 }
 
+pub(crate) fn single_leaf(leaf: &OsStr) -> Result<(), Error> {
+    if leaf.is_empty() || Path::new(leaf).file_name() != Some(leaf) {
+        return Err(Error::InvalidInput(
+            "atomic target must be one leaf name".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Replaces one leaf below an already-authority-validated directory descriptor. No mutable
 /// parent pathname is reopened between capability resolution and the final `renameat`.
 pub fn atomic_replace_at<F>(
@@ -901,29 +920,7 @@ pub fn atomic_replace_at<F>(
 where
     F: FnOnce(&mut File) -> Result<(), Error>,
 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        if leaf.as_bytes().is_empty() || leaf.as_bytes().contains(&b'/') {
-            return Err(Error::InvalidInput(
-                "atomic target must be one leaf name".into(),
-            ));
-        }
-        unix::replace_at(
-            parent.try_clone()?,
-            leaf.to_os_string(),
-            || Ok(()),
-            write_fn,
-        )
-        .map(|installed| installed.outcome)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (parent, leaf, write_fn);
-        Err(Error::Conflict(
-            "fd-relative atomic replacement is unsupported on this platform".into(),
-        ))
-    }
+    atomic_replace_at_with_precommit(parent, leaf, || Ok(()), write_fn)
 }
 
 /// Mutating workspace primitives.  Each one accepts an already-opened parent directory and
@@ -1057,6 +1054,37 @@ pub(crate) fn open_directory_at(parent: &File, name: &OsStr) -> Result<File, Err
         )
         .map_err(|error| Error::Io(Box::new(error.into())))?,
     ))
+}
+
+pub(crate) fn open_regular_at(parent: &File, name: &OsStr) -> Result<File, Error> {
+    single_leaf(name)?;
+    #[cfg(unix)]
+    {
+        use rustix::fs::{self as rfs, FileType, Mode, OFlags};
+        let opened = File::from(
+            rfs::openat(
+                parent,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|error| Error::Io(Box::new(error.into())))?,
+        );
+        let stat = rfs::fstat(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+            return Err(Error::InvalidInput(
+                "workspace entry must be a regular file".into(),
+            ));
+        }
+        Ok(opened)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        Err(Error::Conflict(
+            "fd-relative regular-file opening is unsupported on this platform".into(),
+        ))
+    }
 }
 
 #[cfg(unix)]
@@ -1213,29 +1241,8 @@ where
     F: FnOnce(&mut File) -> Result<(), Error>,
     P: FnOnce() -> Result<(), Error>,
 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        if leaf.as_bytes().is_empty() || leaf.as_bytes().contains(&b'/') {
-            return Err(Error::InvalidInput(
-                "atomic target must be one leaf name".into(),
-            ));
-        }
-        unix::replace_at(
-            parent.try_clone()?,
-            leaf.to_os_string(),
-            precommit,
-            write_fn,
-        )
+    atomic_replace_at_identified_with_precommit(parent, leaf, precommit, write_fn)
         .map(|installed| installed.outcome)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (parent, leaf, precommit, write_fn);
-        Err(Error::Conflict(
-            "fd-relative atomic replacement is unsupported on this platform".into(),
-        ))
-    }
 }
 
 /// Same fd-relative commit, with the inode identity captured from the still-open temporary FD
@@ -1248,33 +1255,7 @@ pub fn atomic_replace_at_identified<F>(
 where
     F: FnOnce(&mut File) -> Result<(), Error>,
 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        if leaf.as_bytes().is_empty() || leaf.as_bytes().contains(&b'/') {
-            return Err(Error::InvalidInput(
-                "atomic target must be one leaf name".into(),
-            ));
-        }
-        unix::replace_at(
-            parent.try_clone()?,
-            leaf.to_os_string(),
-            || Ok(()),
-            write_fn,
-        )
-        .map(|installed| AtomicInstalledFile {
-            outcome: installed.outcome,
-            identity: installed.identity,
-            ctime_nanos: installed.ctime_nanos,
-        })
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (parent, leaf, write_fn);
-        Err(Error::Conflict(
-            "fd-relative atomic replacement is unsupported on this platform".into(),
-        ))
-    }
+    atomic_replace_at_identified_with_precommit(parent, leaf, || Ok(()), write_fn)
 }
 
 pub fn atomic_replace_at_identified_with_precommit<F, P>(
@@ -1287,14 +1268,9 @@ where
     F: FnOnce(&mut File) -> Result<(), Error>,
     P: FnOnce() -> Result<(), Error>,
 {
+    single_leaf(leaf)?;
     #[cfg(unix)]
     {
-        use std::os::unix::ffi::OsStrExt;
-        if leaf.as_bytes().is_empty() || leaf.as_bytes().contains(&b'/') {
-            return Err(Error::InvalidInput(
-                "atomic target must be one leaf name".into(),
-            ));
-        }
         unix::replace_at(
             parent.try_clone()?,
             leaf.to_os_string(),
@@ -1371,7 +1347,7 @@ mod tests {
     use super::*;
     use crate::infra::blocking::source_scan::body_at_indent;
     use std::{
-        io::Write,
+        io::{Read, Write},
         path::PathBuf,
         sync::{Arc, Mutex},
     };
@@ -1432,6 +1408,53 @@ mod tests {
         let source = include_str!("fs.rs");
         let body = body_at_indent(source, "fn open_verified_directory(");
         assert_eq!(body.matches("openat").count(), 1, "{body}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_at_opens_exact_regular_file_bytes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("track.mp3"), b"exact bytes").expect("write file");
+        let parent = File::open(temp.path()).expect("open parent");
+        let mut opened = open_regular_at(&parent, OsStr::new("track.mp3")).expect("open leaf");
+        let mut bytes = Vec::new();
+        opened.read_to_end(&mut bytes).expect("read leaf");
+        assert_eq!(bytes, b"exact bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_at_refuses_a_symlink_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("target"), b"target").expect("write target");
+        std::os::unix::fs::symlink("target", temp.path().join("link")).expect("link");
+        let parent = File::open(temp.path()).expect("open parent");
+        assert!(open_regular_at(&parent, OsStr::new("link")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_at_refuses_a_directory_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(temp.path().join("directory")).expect("directory");
+        let parent = File::open(temp.path()).expect("open parent");
+        assert!(open_regular_at(&parent, OsStr::new("directory")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_at_refuses_a_multicomponent_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = File::open(temp.path()).expect("open parent");
+        assert!(open_regular_at(&parent, OsStr::new("nested/file")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_at_refuses_an_empty_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = File::open(temp.path()).expect("open parent");
+        assert!(open_regular_at(&parent, OsStr::new("")).is_err());
     }
 
     #[cfg(unix)]
@@ -2043,6 +2066,61 @@ mod tests {
         assert!(
             atomic_replace_at(&parent, std::ffi::OsStr::new("nested/name"), |_| Ok(())).is_err()
         );
+    }
+
+    #[test]
+    fn atomic_replace_at_refuses_an_empty_or_multicomponent_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = File::open(temp.path()).expect("open parent");
+        assert!(atomic_replace_at(&parent, OsStr::new(""), |_| Ok(())).is_err());
+        assert!(atomic_replace_at(&parent, OsStr::new("nested/file"), |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn atomic_replace_at_with_precommit_refuses_an_empty_or_multicomponent_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = File::open(temp.path()).expect("open parent");
+        assert!(
+            atomic_replace_at_with_precommit(&parent, OsStr::new(""), || Ok(()), |_| Ok(()))
+                .is_err()
+        );
+        assert!(atomic_replace_at_with_precommit(
+            &parent,
+            OsStr::new("nested/file"),
+            || Ok(()),
+            |_| Ok(())
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn atomic_replace_at_identified_refuses_an_empty_or_multicomponent_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = File::open(temp.path()).expect("open parent");
+        assert!(atomic_replace_at_identified(&parent, OsStr::new(""), |_| Ok(())).is_err());
+        assert!(
+            atomic_replace_at_identified(&parent, OsStr::new("nested/file"), |_| Ok(())).is_err()
+        );
+    }
+
+    #[test]
+    fn atomic_replace_at_identified_with_precommit_refuses_an_empty_or_multicomponent_leaf() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = File::open(temp.path()).expect("open parent");
+        assert!(atomic_replace_at_identified_with_precommit(
+            &parent,
+            OsStr::new(""),
+            || Ok(()),
+            |_| Ok(())
+        )
+        .is_err());
+        assert!(atomic_replace_at_identified_with_precommit(
+            &parent,
+            OsStr::new("nested/file"),
+            || Ok(()),
+            |_| Ok(())
+        )
+        .is_err());
     }
     #[cfg(unix)]
     fn assert_logical_parent_unchanged(parent: &File, logical: &Path) -> Result<(), Error> {

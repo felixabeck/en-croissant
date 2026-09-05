@@ -752,7 +752,7 @@ fn get_database_workspace_blocking(
         &crate::infra::path_authority::AppDataDir::for_app(&app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Databases,
     )?;
-    let root = authority.get_or_create_database_root(&path, "Databases")?;
+    let root = authority.get_or_create_database_root(path.path(), "Databases")?;
     authority.set_active_database_root(&root)?;
     Ok(root)
 }
@@ -903,7 +903,7 @@ fn get_engine_workspace_blocking(
         &crate::infra::path_authority::AppDataDir::for_app(&app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Engines,
     )?;
-    let root = authority.get_or_create_engine_root(&path, "Engines")?;
+    let root = authority.get_or_create_engine_root(path.path(), "Engines")?;
     authority.set_active_engine_root(&root)?;
     Ok(root)
 }
@@ -1106,7 +1106,7 @@ fn issue_engine_image_blocking(
         &crate::infra::path_authority::AppDataDir::for_app(&app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
     )?;
-    let destination = image_dir.join(uuid::Uuid::new_v4().to_string());
+    let destination = image_dir.path().join(uuid::Uuid::new_v4().to_string());
     crate::infra::fs::atomic_replace(&destination, |file| {
         file.write_all(&bytes).map_err(Error::from)
     })?;

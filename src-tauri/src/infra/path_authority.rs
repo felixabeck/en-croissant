@@ -9,7 +9,7 @@
 
 use crate::{
     error::Error,
-    infra::fs::{atomic_replace, AtomicFileOutcome, AtomicInstalledFile},
+    infra::fs::{atomic_replace, AtomicFileOutcome, AtomicInstalledFile, VerifiedDir},
 };
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,7 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime},
 };
+use tauri::Manager as _;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -67,6 +68,111 @@ pub(crate) struct DatabaseFileTarget {
     pub(crate) parent: fs::File,
     pub(crate) leaf: OsString,
     pub(crate) identity: (u64, u64),
+}
+
+mod verified_identity {
+    use crate::{error::Error, infra::fs::AtomicFileOutcome};
+    use std::{ffi::OsStr, fs};
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) struct VerifiedIdentity((u64, u64));
+
+    impl VerifiedIdentity {
+        pub(super) fn pair(self) -> (u64, u64) {
+            self.0
+        }
+    }
+
+    impl super::AuthorizedDir {
+        pub(crate) fn identity(&self) -> VerifiedIdentity {
+            VerifiedIdentity(self.identity)
+        }
+
+        pub(crate) fn atomic_replace_leaf_identified<F>(
+            &self,
+            leaf: &OsStr,
+            write_fn: F,
+        ) -> Result<(AtomicFileOutcome, VerifiedIdentity), Error>
+        where
+            F: FnOnce(&mut fs::File) -> Result<(), Error>,
+        {
+            let installed = crate::infra::fs::atomic_replace_at_identified(
+                self.directory.as_file(),
+                leaf,
+                write_fn,
+            )?;
+            Ok((installed.outcome, VerifiedIdentity(installed.identity)))
+        }
+    }
+}
+
+pub(crate) use verified_identity::VerifiedIdentity;
+
+#[derive(Debug)]
+pub(crate) struct AuthorizedDir {
+    directory: VerifiedDir,
+    identity: (u64, u64),
+    path: PathBuf,
+}
+
+impl AuthorizedDir {
+    /// Returns the native directory retained for registry rebinding and display only. Filesystem
+    /// changes must use the retained descriptor and must never reopen this pathname.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn remove_leaf_identified(
+        &self,
+        leaf: &OsStr,
+        identity: VerifiedIdentity,
+    ) -> Result<(), Error> {
+        #[cfg(unix)]
+        {
+            crate::infra::fs::remove_entry_at(
+                self.directory.as_file(),
+                leaf,
+                identity.pair(),
+                false,
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (leaf, identity);
+            Err(Error::Conflict(
+                "fd-relative removal is unsupported on this platform".into(),
+            ))
+        }
+    }
+
+    pub(crate) fn open_regular_relative(&self, relative: &Path) -> Result<fs::File, Error> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::{OsStrExt, OsStringExt};
+            let components: Vec<OsString> = relative
+                .as_os_str()
+                .as_bytes()
+                .split(|byte| *byte == b'/')
+                .map(|component| OsString::from_vec(component.to_vec()))
+                .collect();
+            validate_components(&components)?;
+            let (leaf, directories) = components
+                .split_last()
+                .ok_or_else(|| Error::InvalidInput("invalid relative path component".into()))?;
+            let mut parent = self.directory.as_file().try_clone()?;
+            for directory in directories {
+                parent = crate::infra::fs::open_directory_at(&parent, directory)?;
+            }
+            crate::infra::fs::open_regular_at(&parent, leaf)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = relative;
+            Err(Error::Conflict(
+                "fd-relative regular-file opening is unsupported on this platform".into(),
+            ))
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -714,6 +820,47 @@ impl AppDataDir {
     }
 }
 
+/// Bundled resource directory whose production constructor fixes the parent directory.
+pub(crate) struct ResourceDir(PathBuf);
+
+impl ResourceDir {
+    pub(crate) fn for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Self, Error> {
+        Ok(Self(app.path().resource_dir()?))
+    }
+
+    /// Test-only for the same reason as [`AppDataDir::for_test`]: arbitrary resource roots must
+    /// not be constructible in the shipped binary.
+    #[cfg(test)]
+    pub(crate) fn for_test(path: &Path) -> Self {
+        Self(path.to_path_buf())
+    }
+
+    fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(unix)]
+fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)?;
+    let identity = (metadata.dev(), metadata.ino());
+    let directory = crate::infra::fs::open_verified_directory(path, identity)?;
+    Ok(AuthorizedDir {
+        directory,
+        identity,
+        path: path.to_path_buf(),
+    })
+}
+
+#[cfg(not(unix))]
+fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
+    let _ = path;
+    Err(Error::Conflict(
+        "authorized directories are unsupported on this platform".into(),
+    ))
+}
+
 /// Materialise one of the application's own default root directories under `app_data_dir`.
 /// Both halves of the path are fixed by the types: the leaf per variant, the parent by
 /// [`AppDataDir`]'s constructor. No caller can therefore name a directory the application does
@@ -732,7 +879,7 @@ impl AppDataDir {
 pub(crate) fn ensure_app_owned_default_dir(
     app_data_dir: &AppDataDir,
     root: AppOwnedDefaultRoot,
-) -> Result<PathBuf, Error> {
+) -> Result<AuthorizedDir, Error> {
     let path = app_data_dir.as_path().join(root.leaf());
     fs::create_dir_all(&path)?;
     if !fs::symlink_metadata(&path)?.is_dir() {
@@ -742,7 +889,23 @@ pub(crate) fn ensure_app_owned_default_dir(
         )
         .into());
     }
-    Ok(path)
+    authorize_existing_dir(&path)
+}
+
+const SOUND_ROOT_LEAF: &str = "sound";
+
+pub(crate) fn open_app_owned_resource_dir(
+    resource_dir: &ResourceDir,
+) -> Result<AuthorizedDir, Error> {
+    let path = resource_dir.as_path().join(SOUND_ROOT_LEAF);
+    if !fs::symlink_metadata(&path)?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "app-owned default root is not a directory",
+        )
+        .into());
+    }
+    authorize_existing_dir(&path)
 }
 
 pub trait Clock: Send + Sync {
@@ -1652,6 +1815,31 @@ pub struct PathAuthority {
     pending_artifacts: Vec<PendingArtifact>,
     pending_unpersisted_removals: BTreeSet<String>,
 }
+fn validate_components(components: &[OsString]) -> Result<(), Error> {
+    for name in components {
+        let component = name.as_os_str();
+        if component.is_empty()
+            || component == OsStr::new(".")
+            || component == OsStr::new("..")
+            || Path::new(component).components().count() != 1
+        {
+            return Err(Error::InvalidInput(
+                "invalid relative path component".into(),
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            if component.as_bytes().contains(&b'/') || component.as_bytes().contains(&0) {
+                return Err(Error::InvalidInput(
+                    "path component contains a separator or NUL".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl PathAuthority {
     /// Turns a native save-dialog choice into one persistent, exact PGN destination. The renderer
     /// receives only the resulting workspace handle; the selected native path never leaves this
@@ -1743,7 +1931,7 @@ impl PathAuthority {
         filename: &OsStr,
     ) -> Result<PathRef, Error> {
         let components = vec![filename.to_os_string()];
-        self.validate_components(&components)?;
+        validate_components(&components)?;
         // Resolve through the fd/handle-relative no-follow path before persisting identity.
         let _resolved = self.resolve(root, PathOperation::DownloadFile, &components)?;
         let root_entry =
@@ -2514,7 +2702,7 @@ impl PathAuthority {
         if components.is_empty() {
             return Err(Error::InvalidInput("engine path is required".into()));
         }
-        self.validate_components(&components)?;
+        validate_components(&components)?;
         self.resolve(root.path_ref(), PathOperation::EngineInstall, &components)?;
         let base = self.workspace_root(
             &FileWorkspaceHandle::new(root.path_ref().clone()),
@@ -2692,7 +2880,7 @@ impl PathAuthority {
         root: &PuzzleRootHandle,
         filename: &OsStr,
     ) -> Result<PathRef, Error> {
-        self.validate_components(&[filename.to_os_string()])?;
+        validate_components(&[filename.to_os_string()])?;
         let _ = self.resolve(
             root.path_ref(),
             PathOperation::PuzzleRead,
@@ -2801,7 +2989,7 @@ impl PathAuthority {
         root: &DatabaseRootHandle,
         filename: &OsStr,
     ) -> Result<DatabaseHandle, Error> {
-        self.validate_components(&[filename.to_os_string()])?;
+        validate_components(&[filename.to_os_string()])?;
         if std::path::Path::new(filename).extension() != Some(OsStr::new("db3")) {
             return Err(Error::InvalidInput(
                 "database filename must end in .db3".into(),
@@ -2937,7 +3125,7 @@ impl PathAuthority {
         operation: PathOperation,
         components: &[OsString],
     ) -> Result<ResolvedPath, Error> {
-        self.validate_components(components)?;
+        validate_components(components)?;
         if self.pending_unpersisted_removals.contains(&id.id) {
             return Err(Error::InvalidInput(
                 "workspace entry is not persistent".into(),
@@ -3037,7 +3225,7 @@ impl PathAuthority {
         components: &[OsString],
         display_name: impl Into<String>,
     ) -> Result<FileWorkspaceHandle, Error> {
-        self.validate_components(components)?;
+        validate_components(components)?;
         if components.is_empty() {
             return Err(Error::InvalidInput("workspace child is required".into()));
         }
@@ -3096,7 +3284,7 @@ impl PathAuthority {
         expected_identity: (u64, u64),
         is_dir: bool,
     ) -> Result<FileWorkspaceHandle, Error> {
-        self.validate_components(components)?;
+        validate_components(components)?;
         if components.is_empty() {
             return Err(Error::InvalidInput("workspace child is required".into()));
         }
@@ -3185,7 +3373,7 @@ impl PathAuthority {
         display_name: impl Into<String>,
         operations: Vec<PathOperation>,
     ) -> Result<FileWorkspaceHandle, Error> {
-        self.validate_components(std::slice::from_ref(&filename))?;
+        validate_components(std::slice::from_ref(&filename))?;
         if operations.is_empty() {
             return Err(Error::InvalidInput(
                 "download artifact requires operations".into(),
@@ -3254,7 +3442,7 @@ impl PathAuthority {
         display_name: impl Into<String>,
         operations: Vec<PathOperation>,
     ) -> Result<PendingArtifactReservation, Error> {
-        self.validate_components(std::slice::from_ref(&filename))?;
+        validate_components(std::slice::from_ref(&filename))?;
         if operations.is_empty() {
             return Err(Error::InvalidInput(
                 "download artifact requires operations".into(),
@@ -3752,30 +3940,6 @@ impl PathAuthority {
         for entry in self.persistent.values_mut() {
             refresh_entry(entry);
         }
-    }
-    fn validate_components(&self, components: &[OsString]) -> Result<(), Error> {
-        for name in components {
-            let s = name.as_os_str();
-            if s.is_empty()
-                || s == OsStr::new(".")
-                || s == OsStr::new("..")
-                || Path::new(s).components().count() != 1
-            {
-                return Err(Error::InvalidInput(
-                    "invalid relative path component".into(),
-                ));
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::ffi::OsStrExt;
-                if s.as_bytes().contains(&b'/') || s.as_bytes().contains(&0) {
-                    return Err(Error::InvalidInput(
-                        "path component contains a separator or NUL".into(),
-                    ));
-                }
-            }
-        }
-        Ok(())
     }
     fn save(&mut self) -> Result<CommitDurability, Error> {
         self.commit_registry(
@@ -5915,9 +6079,9 @@ mod tests {
         for (root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
             let created =
                 ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
-            assert_eq!(created, dir.path().join(leaf));
+            assert_eq!(created.path(), dir.path().join(leaf));
             assert!(
-                created.is_dir(),
+                created.path().is_dir(),
                 "{root:?} must create the directory {leaf}"
             );
         }
@@ -5936,8 +6100,8 @@ mod tests {
             AppOwnedDefaultRoot::Databases,
         )
         .expect("second call accepts the existing root");
-        assert_eq!(first, second);
-        assert!(second.is_dir());
+        assert_eq!(first.path(), second.path());
+        assert!(second.path().is_dir());
     }
 
     #[test]
@@ -5981,6 +6145,166 @@ mod tests {
                 "{root:?} must not write through the symlink"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_app_owned_default_dir_maps_descriptor_open_failure_to_io() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("db");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::Databases,
+        );
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let error = result.expect_err("opening a permissionless directory must fail");
+        assert!(matches!(error, Error::Io(_)), "{error:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_app_owned_resource_dir_distinguishes_missing_and_symlinked_sound() {
+        let missing_root = tempfile::tempdir().unwrap();
+        let before = fs::read_dir(missing_root.path()).unwrap().count();
+        let missing = open_app_owned_resource_dir(&ResourceDir::for_test(missing_root.path()))
+            .expect_err("missing sound must be refused");
+        let missing_kind = match missing {
+            Error::Io(error) => error.kind(),
+            other => panic!("missing sound must be Error::Io: {other:?}"),
+        };
+        assert_eq!(missing_kind, std::io::ErrorKind::NotFound);
+        assert_eq!(fs::read_dir(missing_root.path()).unwrap().count(), before);
+
+        let symlink_root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), symlink_root.path().join("sound")).unwrap();
+        let before = fs::read_dir(symlink_root.path()).unwrap().count();
+        let symlinked = open_app_owned_resource_dir(&ResourceDir::for_test(symlink_root.path()))
+            .expect_err("symlinked sound must be refused");
+        let symlink_kind = match symlinked {
+            Error::Io(error) => error.kind(),
+            other => panic!("symlinked sound must be Error::Io: {other:?}"),
+        };
+        assert_eq!(symlink_kind, std::io::ErrorKind::InvalidInput);
+        assert_eq!(fs::read_dir(symlink_root.path()).unwrap().count(), before);
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorized_dir_opens_nested_regular_file() {
+        use std::io::Read as _;
+        let root = tempfile::tempdir().unwrap();
+        let sound = root.path().join("sound");
+        fs::create_dir_all(sound.join("a")).unwrap();
+        fs::write(sound.join("a/b"), b"nested bytes").unwrap();
+        let directory = open_app_owned_resource_dir(&ResourceDir::for_test(root.path())).unwrap();
+
+        let mut opened = directory.open_regular_relative(Path::new("a/b")).unwrap();
+        let mut bytes = Vec::new();
+        opened.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"nested bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorized_dir_refuses_invalid_relative_components() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("sound")).unwrap();
+        let directory = open_app_owned_resource_dir(&ResourceDir::for_test(root.path())).unwrap();
+        for relative in ["../x", "./x", "a//b", "/absolute"] {
+            assert!(
+                directory
+                    .open_regular_relative(Path::new(relative))
+                    .is_err(),
+                "{relative} must be refused"
+            );
+        }
+        let nul = PathBuf::from(OsString::from_vec(b"name\0tail".to_vec()));
+        assert!(directory.open_regular_relative(&nul).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorized_dir_refuses_an_intermediate_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let sound = root.path().join("sound");
+        let outside = root.path().join("outside");
+        fs::create_dir(&sound).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("x.mp3"), b"outside").unwrap();
+        std::os::unix::fs::symlink(&outside, sound.join("link")).unwrap();
+        let directory = open_app_owned_resource_dir(&ResourceDir::for_test(root.path())).unwrap();
+
+        assert!(directory
+            .open_regular_relative(Path::new("link/x.mp3"))
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorized_dir_removes_only_a_matching_installed_leaf() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("sound")).unwrap();
+        let directory = open_app_owned_resource_dir(&ResourceDir::for_test(root.path())).unwrap();
+        let (_, installed) = directory
+            .atomic_replace_leaf_identified(OsStr::new("track.mp3"), |file| {
+                file.write_all(b"track").map_err(Error::from)
+            })
+            .unwrap();
+
+        let other_root = tempfile::tempdir().unwrap();
+        fs::create_dir(other_root.path().join("sound")).unwrap();
+        let other = open_app_owned_resource_dir(&ResourceDir::for_test(other_root.path())).unwrap();
+        assert!(directory
+            .remove_leaf_identified(OsStr::new("track.mp3"), other.identity())
+            .is_err());
+        assert!(root.path().join("sound/track.mp3").is_file());
+
+        directory
+            .remove_leaf_identified(OsStr::new("track.mp3"), installed)
+            .unwrap();
+        assert!(!root.path().join("sound/track.mp3").exists());
+    }
+
+    #[test]
+    fn authorized_dir_has_no_arbitrary_path_constructor() {
+        let source = include_str!("path_authority.rs");
+        for signature in ["impl AuthorizedDir {", "impl super::AuthorizedDir {"] {
+            let implementation = body_at_indent(source, signature);
+            assert!(!implementation.contains("for_test"), "{implementation}");
+            assert!(!implementation.contains("fn new("), "{implementation}");
+            assert!(!implementation.contains("path: &Path"), "{implementation}");
+            assert!(
+                !implementation.contains("path: PathBuf"),
+                "{implementation}"
+            );
+        }
+    }
+
+    /// Tauri production path resolution cannot be exercised by a unit test. Keep the constructor
+    /// expression pinned so it cannot append `sound` (or any other component) twice.
+    #[test]
+    fn resource_dir_for_app_is_exactly_the_resource_root() {
+        let source = include_str!("path_authority.rs");
+        let resource = source
+            .split_once("impl ResourceDir {")
+            .expect("ResourceDir implementation")
+            .1;
+        let body = body_at_indent(resource, "pub(crate) fn for_app<R: tauri::Runtime>(");
+        let expression = body.split_once('{').expect("constructor body").1;
+        let compact: String = expression.split_whitespace().collect();
+        assert_eq!(compact, "Ok(Self(app.path().resource_dir()?))", "{body}");
+        assert!(!body.contains(".join("), "{body}");
+        assert!(!body.contains("BaseDirectory::"), "{body}");
+        assert!(!body.contains('"'), "{body}");
     }
 
     /// The default callers materialise their directory before registering it; the dialog
@@ -6348,20 +6672,10 @@ mod tests {
 
     #[test]
     fn relative_components_reject_dot_and_nul_independently() {
-        let dir = tempfile::tempdir().unwrap();
-        let authority = authority(&dir, Arc::new(TestClock::new(1)));
-        assert!(authority
-            .validate_components(&[OsString::from(".")])
-            .is_err());
-        assert!(authority
-            .validate_components(&[OsString::from("..")])
-            .is_err());
-        assert!(authority
-            .validate_components(&[OsString::from_vec(b"name\0tail".to_vec())])
-            .is_err());
-        assert!(authority
-            .validate_components(&[OsString::from("regular")])
-            .is_ok());
+        assert!(validate_components(&[OsString::from(".")]).is_err());
+        assert!(validate_components(&[OsString::from("..")]).is_err());
+        assert!(validate_components(&[OsString::from_vec(b"name\0tail".to_vec())]).is_err());
+        assert!(validate_components(&[OsString::from("regular")]).is_ok());
     }
 
     #[test]

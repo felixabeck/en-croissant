@@ -270,7 +270,7 @@ fn active_or_default_puzzle_workspace<R: tauri::Runtime>(
         &crate::infra::path_authority::AppDataDir::for_app(app)?,
         crate::infra::path_authority::AppOwnedDefaultRoot::Puzzles,
     )?;
-    let root = authority.get_or_create_puzzle_root(&path, "Puzzles")?;
+    let root = authority.get_or_create_puzzle_root(path.path(), "Puzzles")?;
     authority.set_active_puzzle_root(&root)?;
     authority
         .active_puzzle_root()?
