@@ -5,6 +5,8 @@ pub struct SoundShutdownTx(pub std::sync::Mutex<Option<tokio::sync::oneshot::Sen
 
 #[cfg(target_os = "linux")]
 mod server {
+    use crate::error::Error;
+    use crate::infra::path_authority::AuthorizedDir;
     use axum::{
         body::StreamBody,
         extract::Path as AxumPath,
@@ -14,7 +16,7 @@ mod server {
         Extension, Router,
     };
     use std::net::TcpListener;
-    use std::path::PathBuf;
+    use std::{path::Path, sync::Arc};
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     use tokio_util::io::ReaderStream;
 
@@ -94,48 +96,51 @@ mod server {
     pub(crate) async fn serve_sound(
         AxumPath(path): AxumPath<String>,
         headers: HeaderMap,
-        Extension(sound_dir): Extension<PathBuf>,
+        Extension(sound_dir): Extension<Arc<AuthorizedDir>>,
     ) -> impl IntoResponse {
-        let file_path = sound_dir.join(&path);
-
-        let canonical = match file_path.canonicalize() {
-            Ok(p) => p,
-            Err(_) => return StatusCode::NOT_FOUND.into_response(),
-        };
-        let dir_canonical = match sound_dir.canonicalize() {
-            Ok(p) => p,
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        };
-        if !canonical.starts_with(&dir_canonical) {
-            return StatusCode::FORBIDDEN.into_response();
-        }
-
-        let mut file = match tokio::fs::File::open(&canonical).await {
-            Ok(f) => f,
-            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        let requested_path = Path::new(&path);
+        let directory = sound_dir.clone();
+        let relative = requested_path.to_path_buf();
+        let opened =
+            tokio::task::spawn_blocking(move || directory.open_regular_relative(&relative)).await;
+        let mut file = match opened {
+            Ok(Ok(file)) => tokio::fs::File::from_std(file),
+            Ok(Err(Error::InvalidInput(_))) => return StatusCode::NOT_FOUND.into_response(),
+            Ok(Err(Error::Io(error))) if error.kind() == std::io::ErrorKind::NotFound => {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            Ok(Err(error)) => {
+                log::warn!("sound request {:?} could not be opened: {}", path, error);
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            Err(error) => {
+                log::warn!("sound request {:?} filesystem task failed: {}", path, error);
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
         };
 
         let metadata = match file.metadata().await {
             Ok(m) => m,
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Err(error) => {
+                log::warn!("sound request {:?} metadata failed: {}", path, error);
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
         };
         if !metadata.is_file() {
             return StatusCode::NOT_FOUND.into_response();
         }
 
         let total_len = metadata.len() as usize;
-        let content_type = content_type_for(&canonical);
+        let content_type = content_type_for(requested_path);
 
         if let Some(range_val) = headers.get(header::RANGE) {
             if let Ok(range_str) = range_val.to_str() {
                 match parse_range(range_str, total_len) {
                     RangeParseResult::Valid(start, end) => {
                         let length = end - start + 1;
-                        if file
-                            .seek(std::io::SeekFrom::Start(start as u64))
-                            .await
-                            .is_err()
+                        if let Err(error) = file.seek(std::io::SeekFrom::Start(start as u64)).await
                         {
+                            log::warn!("sound request {:?} seek failed: {}", path, error);
                             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                         }
 
@@ -188,7 +193,7 @@ mod server {
     pub fn create_sound_server_with_seam<L, B, S, Fut>(
         bind_fn: B,
         server_fn: S,
-        sound_dir: PathBuf,
+        sound_dir: AuthorizedDir,
         shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     ) -> Result<(u16, impl std::future::Future<Output = ()>), std::io::Error>
     where
@@ -200,7 +205,7 @@ mod server {
 
         let app = Router::new()
             .route("/*path", get(serve_sound))
-            .layer(Extension(sound_dir));
+            .layer(Extension(Arc::new(sound_dir)));
 
         let server_future = server_fn(listener, app, shutdown_rx)?;
 
@@ -209,7 +214,7 @@ mod server {
     }
 
     pub fn create_sound_server(
-        sound_dir: PathBuf,
+        sound_dir: AuthorizedDir,
         shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     ) -> Result<(u16, impl std::future::Future<Output = ()>), std::io::Error> {
         create_sound_server_with_seam(
@@ -254,6 +259,19 @@ mod tests {
     use super::*;
 
     #[cfg(target_os = "linux")]
+    fn authorized_sound_dir() -> (
+        tempfile::TempDir,
+        crate::infra::path_authority::AuthorizedDir,
+    ) {
+        use crate::infra::path_authority::{open_app_owned_resource_dir, ResourceDir};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("sound")).unwrap();
+        let directory = open_app_owned_resource_dir(&ResourceDir::for_test(root.path())).unwrap();
+        (root, directory)
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_sound_range_matrix() {
         use server::RangeParseResult::*;
@@ -278,6 +296,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn test_sound_server_ephemeral_startup() {
+        let (_root, sound_dir) = authorized_sound_dir();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let (port, server_future) = server::create_sound_server_with_seam(
             || Ok((42, ())),
@@ -286,7 +305,7 @@ mod tests {
                     let _ = rx.await;
                 })
             },
-            std::path::PathBuf::from("/nonexistent"),
+            sound_dir,
             rx,
         )
         .unwrap();
@@ -299,6 +318,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn test_sound_server_bind_failure() {
+        let (_root, sound_dir) = authorized_sound_dir();
         let (_tx, rx) = tokio::sync::oneshot::channel();
         let result = server::create_sound_server_with_seam(
             || {
@@ -308,7 +328,7 @@ mod tests {
                 ))
             },
             |_: (), _, _| -> Result<std::future::Ready<()>, std::io::Error> { unreachable!() },
-            std::path::PathBuf::from("/nonexistent"),
+            sound_dir,
             rx,
         );
         let err = match result {
@@ -321,13 +341,14 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn test_sound_server_construction_failure() {
+        let (_root, sound_dir) = authorized_sound_dir();
         let (_tx, rx) = tokio::sync::oneshot::channel();
         let result = server::create_sound_server_with_seam(
             || Ok((42, ())),
             |(), _, _| -> Result<std::future::Ready<()>, std::io::Error> {
                 Err(std::io::Error::other("from_tcp failed"))
             },
-            std::path::PathBuf::from("/nonexistent"),
+            sound_dir,
             rx,
         );
         let err = match result {
@@ -346,11 +367,47 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_real_sound_server_binds_without_an_ambient_runtime() {
+        let (_root, sound_dir) = authorized_sound_dir();
         let (_tx, rx) = tokio::sync::oneshot::channel();
-        let (port, _server_future) =
-            server::create_sound_server(std::path::PathBuf::from("/nonexistent"), rx)
-                .expect("sound server must be constructible outside a Tokio runtime");
+        let (port, _server_future) = server::create_sound_server(sound_dir, rx)
+            .expect("sound server must be constructible outside a Tokio runtime");
         assert_ne!(port, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn sound_server_keeps_serving_from_the_authorized_descriptor_after_a_root_swap() {
+        let (root, sound_dir) = authorized_sound_dir();
+        tokio::fs::write(root.path().join("sound/test.mp3"), b"authorized bytes")
+            .await
+            .unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (port, server) = server::create_sound_server(sound_dir, shutdown_rx).unwrap();
+
+        tokio::fs::rename(
+            root.path().join("sound"),
+            root.path().join("sound-original"),
+        )
+        .await
+        .unwrap();
+        tokio::fs::create_dir(root.path().join("sound"))
+            .await
+            .unwrap();
+        tokio::fs::write(root.path().join("sound/test.mp3"), b"impostor bytes")
+            .await
+            .unwrap();
+
+        let join = tokio::spawn(server);
+        let response = reqwest::get(format!("http://127.0.0.1:{port}/test.mp3"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            response.bytes().await.unwrap().as_ref(),
+            b"authorized bytes"
+        );
+        shutdown_tx.send(()).unwrap();
+        join.await.unwrap();
     }
 
     #[cfg(target_os = "linux")]
@@ -361,6 +418,7 @@ mod tests {
         use axum::http::{header, HeaderMap, StatusCode};
         use axum::response::IntoResponse;
         use axum::Extension;
+        use std::sync::Arc;
 
         async fn read_body(mut body: axum::body::BoxBody) -> Vec<u8> {
             let mut bytes = Vec::new();
@@ -370,19 +428,34 @@ mod tests {
             bytes
         }
 
-        let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("test.mp3");
+        let (dir, sound_dir) = authorized_sound_dir();
+        let sound_path = dir.path().join("sound");
+        let file_path = sound_path.join("test.mp3");
         tokio::fs::write(&file_path, b"1234567890").await.unwrap();
 
-        let empty_path = dir.path().join("empty.mp3");
+        let empty_path = sound_path.join("empty.mp3");
         tokio::fs::write(&empty_path, b"").await.unwrap();
+        tokio::fs::create_dir(sound_path.join("a")).await.unwrap();
+        tokio::fs::write(sound_path.join("a/b.mp3"), b"nested")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("outside.mp3"), b"outside bytes")
+            .await
+            .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            dir.path().join("outside.mp3"),
+            sound_path.join("linked.mp3"),
+        )
+        .unwrap();
+        let sound_dir = Arc::new(sound_dir);
 
         // Valid full response
         let headers = HeaderMap::new();
         let res = server::serve_sound(
             AxumPath("test.mp3".to_string()),
             headers,
-            Extension(dir.path().to_path_buf()),
+            Extension(sound_dir.clone()),
         )
         .await
         .into_response();
@@ -396,11 +469,21 @@ mod tests {
         let res = server::serve_sound(
             AxumPath("test.mp3".to_string()),
             headers,
-            Extension(dir.path().to_path_buf()),
+            Extension(sound_dir.clone()),
         )
         .await
         .into_response();
         assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            res.headers().get(header::CONTENT_TYPE).unwrap(),
+            "audio/mpeg"
+        );
+        assert_eq!(res.headers().get(header::ACCEPT_RANGES).unwrap(), "bytes");
+        assert_eq!(res.headers().get(header::CONTENT_LENGTH).unwrap(), "3");
+        assert_eq!(
+            res.headers().get(header::CONTENT_RANGE).unwrap(),
+            "bytes 2-4/10"
+        );
         let body_bytes = read_body(res.into_body()).await;
         assert_eq!(body_bytes, b"345");
 
@@ -410,7 +493,7 @@ mod tests {
         let res = server::serve_sound(
             AxumPath("test.mp3".to_string()),
             headers,
-            Extension(dir.path().to_path_buf()),
+            Extension(sound_dir.clone()),
         )
         .await
         .into_response();
@@ -424,7 +507,7 @@ mod tests {
         let res = server::serve_sound(
             AxumPath("test.mp3".to_string()),
             headers,
-            Extension(dir.path().to_path_buf()),
+            Extension(sound_dir.clone()),
         )
         .await
         .into_response();
@@ -442,7 +525,7 @@ mod tests {
         let res = server::serve_sound(
             AxumPath("empty.mp3".to_string()),
             headers,
-            Extension(dir.path().to_path_buf()),
+            Extension(sound_dir.clone()),
         )
         .await
         .into_response();
@@ -459,29 +542,59 @@ mod tests {
         let res = server::serve_sound(
             AxumPath("".to_string()),
             headers,
-            Extension(dir.path().to_path_buf()),
+            Extension(sound_dir.clone()),
         )
         .await
         .into_response();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
-        // Traversal rejection
+        // Traversal rejection even when the escaped-to target exists
         let headers = HeaderMap::new();
         let res = server::serve_sound(
-            AxumPath("../test.mp3".to_string()),
+            AxumPath("../outside.mp3".to_string()),
             headers,
-            Extension(dir.path().to_path_buf()),
+            Extension(sound_dir.clone()),
         )
         .await
         .into_response();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_ne!(read_body(res.into_body()).await, b"outside bytes");
+
+        // A symlinked leaf cannot escape the retained descriptor.
+        #[cfg(unix)]
+        {
+            let res = server::serve_sound(
+                AxumPath("linked.mp3".to_string()),
+                HeaderMap::new(),
+                Extension(sound_dir.clone()),
+            )
+            .await
+            .into_response();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND);
+            assert_ne!(read_body(res.into_body()).await, b"outside bytes");
+        }
+
+        // Nested request keeps the audio content type from the requested leaf.
+        let res = server::serve_sound(
+            AxumPath("a/b.mp3".to_string()),
+            HeaderMap::new(),
+            Extension(sound_dir.clone()),
+        )
+        .await
+        .into_response();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(header::CONTENT_TYPE).unwrap(),
+            "audio/mpeg"
+        );
+        assert_eq!(read_body(res.into_body()).await, b"nested");
 
         // Missing file without loading full audio
         let headers = HeaderMap::new();
         let res = server::serve_sound(
             AxumPath("missing.mp3".to_string()),
             headers,
-            Extension(dir.path().to_path_buf()),
+            Extension(sound_dir.clone()),
         )
         .await
         .into_response();
@@ -492,12 +605,67 @@ mod tests {
         let res = server::serve_sound(
             AxumPath("empty.mp3".to_string()),
             headers,
-            Extension(dir.path().to_path_buf()),
+            Extension(sound_dir.clone()),
         )
         .await
         .into_response();
         assert_eq!(res.status(), StatusCode::OK);
         let body_bytes = read_body(res.into_body()).await;
         assert!(body_bytes.is_empty());
+
+        // A non-ENOENT open failure retains the public 404 mapping.
+        #[cfg(unix)]
+        if unsafe { libc::geteuid() } != 0 {
+            use std::os::unix::fs::PermissionsExt;
+            let denied_path = sound_path.join("denied.mp3");
+            tokio::fs::write(&denied_path, b"denied bytes")
+                .await
+                .unwrap();
+            std::fs::set_permissions(&denied_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let res = server::serve_sound(
+                AxumPath("denied.mp3".to_string()),
+                HeaderMap::new(),
+                Extension(sound_dir),
+            )
+            .await
+            .into_response();
+            std::fs::set_permissions(&denied_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn serve_sound_error_paths_keep_diagnostics_and_never_panic() {
+        use crate::infra::blocking::source_scan::body_at_indent;
+
+        let source = include_str!("sound.rs");
+        let body = body_at_indent(source, "pub(crate) async fn serve_sound(");
+        assert!(!body.contains("unwrap("), "{body}");
+        assert!(!body.contains("expect("), "{body}");
+        assert!(body.contains("tokio::task::spawn_blocking"), "{body}");
+
+        for needle in [
+            "could not be opened",
+            "filesystem task failed",
+            "metadata failed",
+            "seek failed",
+        ] {
+            let line = body
+                .lines()
+                .find(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("missing diagnostic for {needle}: {body}"));
+            assert!(line.contains("log::warn!"), "{line}");
+            assert!(line.contains("path, error"), "{line}");
+        }
+
+        let join_arm = body
+            .split_once("filesystem task failed")
+            .expect("JoinError diagnostic")
+            .1;
+        assert!(
+            join_arm.contains("StatusCode::INTERNAL_SERVER_ERROR"),
+            "{join_arm}"
+        );
     }
 }

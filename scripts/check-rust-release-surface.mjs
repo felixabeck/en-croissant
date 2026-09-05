@@ -19,7 +19,6 @@ const INITIAL_FS_SURFACE_ALLOWLIST = Object.freeze([
   "src-tauri/src/file_workspace.rs",
   "src-tauri/src/fs.rs",
   "src-tauri/src/main.rs",
-  "src-tauri/src/sound.rs",
 ]);
 
 export const FS_SURFACE_ALLOWLIST = new Set(INITIAL_FS_SURFACE_ALLOWLIST);
@@ -32,7 +31,6 @@ export const INITIAL_FS_SURFACE_COUNTS = Object.freeze({
   "src-tauri/src/file_workspace.rs": 5,
   "src-tauri/src/fs.rs": 10,
   "src-tauri/src/main.rs": 1,
-  "src-tauri/src/sound.rs": 1,
 });
 
 const INJECTION_NAME = /(?:FaultPoint|Injector|_with_injector)/i;
