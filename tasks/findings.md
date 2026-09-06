@@ -6467,3 +6467,6 @@ Correction: the "Handled structurally …" annotation above and the earlier stat
   identical bytes still refuses the receipt (documents the mtime rule that (1) then satisfies).
 * **Found by:** Claude, agent-kit run of 2026-09-06 (executor tooling), measuring the
   refusal mechanism the chessfable handoff had asserted.
+
+Precision, from the Codex review-correctness lens over ea65d4b1: the refusal is possible, not guaranteed. `gate:ensure` returns from a valid receipt without running the gate, and a cache miss refuses only when the rewrite lands between the receipt's two metadata snapshots. The defect stands: a tracked-file rewriter running beside a gate can refuse its receipt, and did twice on 2026-09-06.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7b4e0553a758f03a2a18bc7c95ca59cd8afe7d81aca131def13d2a653d42c242","input_sha256":"b81e949c84adb75dc314dec4defa906cbd78c7504f140917a7b8d9f2de2001c3","kind":"mutation-receipt","operation":"1a63ce7f44898fef52f711f7ac43246ca4f509a1c5f0b7b0c66dc81352fee137","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-06"],"target":"f-20260906-06","v":1} -->
