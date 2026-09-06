@@ -2201,6 +2201,9 @@ Handled by `69682c14`. `AtomicFileOutcome` is `#[must_use]`; the compiler then n
 Correction after the Gemini 3.8 Flash review round: the handling commit is `73ba0db2` (the earlier `69682c14` was amended into it), the archive and gzip extraction and the database PGN dump are routed through `require_durable` as well, three rename tests replace the single one, a `PgnEdit` fault test was added, and the decision is d-20260906-03.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b9279cdf3de241fc46133f840119d9ba476db4094cd0c5f5f43eb9d8486df5b9","input_sha256":"b7bebe2f1783200d5aec14d553cbfacf0debdd424765769294854093bfd563a1","kind":"mutation-receipt","operation":"afa009901dd7bd7db6bc13cbd9eab7e3e2ad00d545f555415dacdd144189e43e","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-21"],"target":"f-20260830-21","v":1} -->
 
+Final hashes after the committer rewrite before push: fix `fbf519cb` (was 73ba0db2), ledger `21c32825`, second-round tests `9d450dc5`, kit vendoring `305c82bd`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"ab64734387652a9aa73e2bbd96f8eeadec2a72549a13066665383c35cd82749b","input_sha256":"b4082d007c7378b168e9485b51d02adf2234cea260c81873207acae1437ad31f","kind":"mutation-receipt","operation":"8d1df05ff75e9555a6a073282903627e60fb274456c0c4d61bf92d046a826514","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-21"],"target":"f-20260830-21","v":1} -->
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
