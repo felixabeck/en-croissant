@@ -1664,7 +1664,7 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
 
 ### Below Linux 5.8 the recursive delete cannot see a same-filesystem bind mount
 
-* **ID:** f-20260830-10 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-10 · **Status:** handled · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/fs.rs`, the mount check in `remove_tree_at` added while handling
   `f-20260830-05`.
 * **Defect:** the walk refuses to cross a mount using two checks — `statx` with
@@ -1696,6 +1696,11 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
 
 * **Pickup evidence (2026-09-06):** In a fresh user/mount namespace, a real bind mount made by `mount --bind` produced equal parent/child `st_dev` values but distinct mount IDs in the held descriptors under `/proc/self/fdinfo`: `same device: True`, `different descriptor mount IDs: True`. Linux documents this descriptor field since 3.15 (https://www.man7.org/linux/man-pages/man5/proc_pid_fdinfo.5.html). This is new evidence beyond the pathname mountinfo parser considered in d-20260830-03. The build plan evaluates a bounded descriptor-based fallback without changing platform declarations. Entry remains build.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c92b4b56093b7201241d3c12bf4bb7a84fd1a62ce122ed04d7ef17adab5eb11c","input_sha256":"e19a572d9c09e4e812407eaf67ae94b44b297161db28b20c6da10b460c426f60","kind":"mutation-receipt","operation":"ff14af83456ff55ea98391c0a35c8ec90aae3ea9500a05f9faefdf3a388be96d","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-10"],"target":"f-20260830-10","v":1} -->
+
+* **Handled 2026-09-06 — 5f2a3dc5, governed by d-20260906-02.** The recursive walk now compares mount IDs from bounded fdinfo records on held parent/child descriptors when statx returns NOSYS or lacks MOUNT_ROOT support. Missing, malformed, duplicate, oversized or unreadable evidence refuses descent; supported statx and the device backstop retain their behavior. No platform declaration or minimum-kernel comparison was added.
+* **Proof:** the root reran `cargo test --manifest-path src-tauri/Cargo.toml --locked infra::fs::tests` (46 passed, one explicitly ignored namespace test), `unshare --user --map-root-user --mount sh -c 'mount --make-rprivate / && cargo test --manifest-path src-tauri/Cargo.toml --locked recursive_delete_refuses_bind_mount_without_mount_root -- --ignored --nocapture'` (one passed, testing both fallback forms at top-level and nested bind mounts), and the partial-delete authority regression (one passed). Formatting, all-target check and clippy also passed. Temporarily reverting only the comparison to the old false result deleted the mounted regular fixture file and failed with ENOENT; restoring it passed. Logs: `/run/user/1000/chessfable-phase-fs-20260906/` and `/tmp/build-e7cf229e-c8c7-4977-b54f-e2fe3a77f1fb/root-proof.log`.
+* **Limits and rejected alternatives:** no old-kernel machine was used; test injection supplies raw unsupported statx outcomes while fdinfo and bind mounts are real. The pathname mountinfo parser and a new Linux 5.8 support floor were rejected. The sibling f-20260830-09 remains open at build tier with its separate technical blocker; this change does not claim to close final name-based unlink races.
+<!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"8e3dfdb05b771cec42d51597d0c2e9845db58958b72d49a2ebfea701215afed8","input_sha256":"e7fe3ee46d9594ecc9a31fb66413a08c69f0bab246eb8dd2b559d7a6913f60bf","kind":"mutation-receipt","operation":"e603688f28ea191df9ae204b1c3aa40811279c315f0ed13044aa9b284c3af518","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-10"],"target":"f-20260830-10","v":1} -->
 
 ### Every confirmation-error message is English in all 16 locales, because its key is built dynamically
 
