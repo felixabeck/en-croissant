@@ -2293,7 +2293,7 @@ anchor, correctly.
 
 ### The renderer's native reach is wider than the capability model claims: unmediated asset scope over `$APPDATA`, and unscoped `core:path:resolve`
 
-* **ID:** f-20260830-24 · **Status:** open · **Area:** bindings-ipc · **Root:** capability-surface-wider-than-claimed · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-24 · **Status:** handled · **Area:** bindings-ipc · **Root:** capability-surface-wider-than-claimed · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/tauri.conf.json:75-82`, `src-tauri/capabilities/main.json:15-16`, against the
   invariant stated at `src-tauri/src/infra/path_authority.rs:1-6`.
 * **Defect 1 — the asset protocol is enabled over `$APPDATA/**` and is not capability-mediated.**
@@ -2336,13 +2336,16 @@ anchor, correctly.
   entries in the form this fork uses, so Defect 2 is not directly comparable.
   **Upstream-reportable:** yes, and it is the most serious of the inherited defects found so far.
 
+* **Handled (2026-09-06).** Defect 1: `assetProtocol.scope` is exactly `["$RESOURCE/**"]` (`e7445a8b`). Defect 2: both `core:path` grants are gone; the non-Linux sound route asks the backend for the one bundled file through `sound_resource_path(collection, kind)` — `collection` validated against the eight bundled directories with per-collection kind availability, `kind` a three-variant `SoundKind` — and the `path_authority.rs` header now states that single exception instead of an absolute that was false (`48720827`, `c3da4be4`). Guard: `check-tauri-command-boundary.mjs` refuses `core:path:allow-resolve*` and any `assetProtocol` other than enabled with scope exactly `$RESOURCE/**`; `pnpm verify:app` exercises the refusal in the real window (`plugin:path|resolve_directory` is "not allowed") and the replacement end to end. The CSP is untouched. **Rejected:** one loopback sound server on every platform — measured `#[cfg(not(unix))]` stubs would silence Windows and the platform question is `f-20260830-06`, parked on Felix (`d-20260906-04`); bytes-over-IPC with `blob:` audio — measured `MEDIA_ERR_SRC_NOT_SUPPORTED` for `asset://` media under WebKitGTK; keeping the unscoped grant with an honest header. The measured `blob:` blocking of engine images is `f-20260906-09`. Plan review: eleven rounds (two on the Claude fallback, the rest on Codex and Gemini); diff review on Codex.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"93967a39ca6f84760e5687c8c7100bdcf544fe15a315d4cbed587bab4cc1a70b","input_sha256":"82bded6bcb75e1e5608dd9cd8e81d0ff5ca3d8674f8bd55700ed73ad19888526","kind":"mutation-receipt","operation":"7424c1a472e6442c79c843bdaf422a27b5ad378c489fd02ea025ff1227e11cb3","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-24"],"target":"f-20260830-24","v":1} -->
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### The path-capability migration was never finished: five dead entry points and three unreferenced IPC commands, all invisible behind `allow(dead_code)`
 
-* **ID:** f-20260830-25 · **Status:** open · **Area:** bindings-ipc · **Root:** capability-surface-wider-than-claimed · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-25 · **Status:** handled · **Area:** bindings-ipc · **Root:** capability-surface-wider-than-claimed · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority.rs:8` (the file-level suppression), the five
   functions below, and `src-tauri/src/main.rs:1072,1086,1101` with their bindings at
   `src/bindings/generated.ts:303,311,319`.
@@ -2376,6 +2379,9 @@ anchor, correctly.
   finding.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30, caller counts verified by
   whole-crate grep separating production from test regions.
+
+* **Handled (2026-09-06).** The file-level `#![allow(dead_code)]` is gone (`48720827`), and with it the checker's shrink-only dead-code allowlist entry (now empty; any new one is an R1 violation). Deleted: `register_downloaded_pgn`, `register_download_artifact`, `read_bounded_bytes`, `write_bytes`, `revoke_dialog`, and the three capability-management commands with their bindings. Test-only: `save`, `read_bytes`, `file_mut`, `descriptors`, `descriptor`, `PathDescriptor`. `allows_delete_sharing_for_operation` keeps a `cfg_attr(not(windows), allow(dead_code))` naming its only production caller and keeps its test everywhere. `READ_TOKENS` keeps its `"read_bounded_bytes"` needle (it still guards `read_bounded_bytes_cancellable`). The `DownloadFile` refusal on a registered artifact moved onto the `reserve_download_artifact` recovery test. Oracle: `cargo clippy --all-targets -- --force-warn dead_code` reports exactly the Windows helper (`d-20260906-05`). Of the five other unreferenced commands: `cancel_download` → `f-20260906-07`, `set_file_as_executable` → `f-20260906-08` (real, never-wired consumers, left registered); the three superseded ones → `f-20260906-11`; a syntactic command-consumer gate → `f-20260906-12` (`d-20260906-06`). **Rejected:** a narrower file-level allow; gating the Windows sealing test; a lexical command-consumer checker (a comment or mock satisfies it).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"e89b2ec0d2c159f39d98e034c1a2411a869caaf38912121913dd9d90d395e321","input_sha256":"291ddf3cae84a435a5b740468e51b430a686541f7af9d2c1181733aa4b724860","kind":"mutation-receipt","operation":"3809896c4dd2c15df62efd8751cac1237c33f486cacfffac83cbe265e9d6539b","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-25"],"target":"f-20260830-25","v":1} -->
 
 ---
 
