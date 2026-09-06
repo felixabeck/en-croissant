@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 9aaf4a6b6a9e2fa096e442ca91da43462aa8c36b893c878ec5428916fc4332de
+# agent-kit-sha256: 7bd8fa822c0b0f01075f7e92e90030d69813e29b654a723d815420d8bf9a6439
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -259,6 +259,38 @@ CLAIM = (
 # A filer publishes first and only then checks this lock. The environment override
 # keeps that branch testable without ever consulting the real drain lock.
 DRAIN_LOCK_ENV = "FINDINGS_DRAIN_LOCK"
+
+
+def append_drain_breadcrumb(label: str, detail: str) -> None:
+    step_file = os.environ.get("DRAIN_STEP_FILE")
+    if not step_file:
+        return
+    library = os.environ.get(
+        "DRAIN_BREADCRUMB_LIB",
+        str(Path.home() / ".claude" / "scripts" / "lib" / "drain-breadcrumb.sh"),
+    )
+    try:
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1" && drain_breadcrumb "$2" "$3"',
+                "_",
+                library,
+                label,
+                detail,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        print(f"breadcrumb not written: {step_file}", file=sys.stderr)
+    else:
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+
+
 # Keyed by the RESOLVED PATH, not the basename. Two checkouts of one repo — a
 # worktree, a /tmp clone — used to share one `drain-lock-<repo>` name, so a
 # drain in either made a filer in the other believe its entry would be merged by
@@ -5438,6 +5470,8 @@ def cmd_set_header(args: argparse.Namespace) -> int:
     }:
         dropped.add(args.id)
     _locked_ledger_mutation(args.ledger, build, dropped or None)
+    if args.status in {"handled", "rejected"}:
+        append_drain_breadcrumb(f"step 10 finding closed {args.id}", args.status)
     print(f"updated header for {args.id}")
     return 0
 
