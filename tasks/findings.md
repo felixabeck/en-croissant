@@ -2170,7 +2170,7 @@ Handled by `d1c2fb34`. `pagination_limit_offset` rejects non-positive and >1000 
 
 ### `AtomicFileOutcome` is discarded at four call sites, and one of them deletes the only durable copy
 
-* **ID:** f-20260830-21 · **Status:** open · **Area:** native-fs · **Root:** durability-outcome-contract · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-21 · **Status:** handled · **Area:** native-fs · **Root:** durability-outcome-contract · **Entry:** build · **Blocked:** none
 * **Where:** producer `src-tauri/src/infra/fs.rs:383,395`; enum declared at `infra/fs.rs:12-13`.
   Eleven consumers disagree. Hard error: `fs.rs:523`, `fs.rs:1225`, `pgn.rs:419`,
   `db/mod.rs:2013`. Treated as success: `credentials.rs:200-205`, `file_workspace.rs:154`,
@@ -2194,6 +2194,12 @@ Handled by `d1c2fb34`. `pagination_limit_offset` rejects non-positive and >1000 
   and the absent `#[must_use]` were both read directly.
 
 The overlapping promotion site (`search_index.rs` `atomic_replace` then unlink of the legacy sidecar) was fixed under f-20260830-33 / `eb3ddf82`: `promote_legacy_index_sidecar_at` now inspects `AtomicFileOutcome` and leaves the legacy file on `CommittedDurabilityUncertain`. `#[must_use]` and the other ten callers remain this finding.
+
+Handled by `69682c14`. `AtomicFileOutcome` is `#[must_use]`; the compiler then named the remaining silent discards on the current tree: two production sites (native export in `main.rs`, the workspace rename's sidecar rewrite in `file_workspace.rs`) and 19 test sites. Both production sites keep the landed file and return `Error::CommittedDurabilityUncertain` with new stages `NativeExport` / `WorkspaceSidecarReplacement`; the rename rebinds the registry before reporting. The "nothing left to do after the replacement" contract is one function, `infra::fs::require_durable`, routed through by the PGN edit, search-index generation and `SearchIndexChunk::write_to`. Tests assert via test-only `expect_durable`; eight local parent-sync injectors became `infra::fs::ParentSyncFault`. Contract per site recorded in d-20260906-01. Rejected: treating uncertain durability as success at the export site (the user is promised a saved file); erroring without rebinding on rename (the rename landed, so the registry must follow).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"e2fd57c5be3efa0a7a5f12ffad555a142bcd602e7ea8e34a52bccede00adec11","input_sha256":"95fdbfca4b2c022b9f7c5cab6ac36d62439a6d9c8d6a6c82fa8b1a93abe42ea9","kind":"mutation-receipt","operation":"59a32223735ce9e97fcb0ca25de93ce279eb18615d65830476eb36c82d29e35c","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-21"],"target":"f-20260830-21","v":1} -->
+
+Correction after the Gemini 3.8 Flash review round: the handling commit is `73ba0db2` (the earlier `69682c14` was amended into it), the archive and gzip extraction and the database PGN dump are routed through `require_durable` as well, three rename tests replace the single one, a `PgnEdit` fault test was added, and the decision is d-20260906-03.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b9279cdf3de241fc46133f840119d9ba476db4094cd0c5f5f43eb9d8486df5b9","input_sha256":"b7bebe2f1783200d5aec14d553cbfacf0debdd424765769294854093bfd563a1","kind":"mutation-receipt","operation":"afa009901dd7bd7db6bc13cbd9eab7e3e2ad00d545f555415dacdd144189e43e","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-21"],"target":"f-20260830-21","v":1} -->
 
 ---
 
