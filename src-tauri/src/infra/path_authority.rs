@@ -155,6 +155,9 @@ pub(crate) use verified_identity::VerifiedIdentity;
 const VERIFIED_REGISTRATION_CONFLICT: &str = "verified identity does not match registration target";
 
 #[cfg(test)]
+type WorkspaceMetadataPostOpenHook = Box<dyn FnOnce(&fs::File)>;
+
+#[cfg(test)]
 std::thread_local! {
     static DATABASE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -162,7 +165,7 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
     static RESOLVE_PRE_REGULAR_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
-    static WORKSPACE_METADATA_POST_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&fs::File)>>> =
+    static WORKSPACE_METADATA_POST_OPEN_HOOK: std::cell::RefCell<Option<WorkspaceMetadataPostOpenHook>> =
         const { std::cell::RefCell::new(None) };
     static WORKSPACE_METADATA_PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -179,7 +182,7 @@ fn reject_disagreeing_expected_identity(
 }
 
 #[cfg(test)]
-pub(crate) fn set_workspace_metadata_post_open_hook(hook: Option<Box<dyn FnOnce(&fs::File)>>) {
+pub(crate) fn set_workspace_metadata_post_open_hook(hook: Option<WorkspaceMetadataPostOpenHook>) {
     WORKSPACE_METADATA_POST_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
@@ -1230,7 +1233,7 @@ fn open_windows_child(
             Storage::FileSystem::{NtCreateFile, FILE_OPEN},
         },
         Win32::{
-            Foundation::{HANDLE, UNICODE_STRING},
+            Foundation::{RtlNtStatusToDosError, HANDLE, UNICODE_STRING},
             Storage::FileSystem::{
                 FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
             },
@@ -1288,7 +1291,8 @@ fn open_windows_child(
         )
     };
     if result != 0 {
-        return Err(std::io::Error::from_raw_os_error(result).into());
+        let error = unsafe { RtlNtStatusToDosError(result) };
+        return Err(std::io::Error::from_raw_os_error(error as i32).into());
     }
     let file = unsafe { fs::File::from_raw_handle(handle as RawHandle) };
     if is_reparse_point(&file.metadata()?) {
@@ -2442,7 +2446,7 @@ impl PathAuthority {
         }) {
             if entry.stored.identity != identity {
                 return Err(Error::Conflict(
-                    "persistent puzzle database changed; acquire a new capability".into(),
+                    "persistent file changed; acquire a new capability".into(),
                 ));
             }
             return Ok(PathCommit {
@@ -2637,31 +2641,9 @@ impl PathAuthority {
         path: &Path,
         display_name: impl Into<String>,
     ) -> Result<EngineHandle, Error> {
-        self.register_engine_file_inner(path, display_name.into(), None)
-    }
-
-    pub(crate) fn register_engine_file_verified(
-        &mut self,
-        path: &Path,
-        display_name: impl Into<String>,
-        expected: VerifiedIdentity,
-    ) -> Result<EngineHandle, Error> {
-        self.register_engine_file_inner(path, display_name.into(), Some(expected))
-    }
-
-    fn register_engine_file_inner(
-        &mut self,
-        path: &Path,
-        display_name: String,
-        expected_identity: Option<VerifiedIdentity>,
-    ) -> Result<EngineHandle, Error> {
         let operations = engine_file_operations();
-        let commit = self.get_or_create_persistent_file_inner(
-            path,
-            display_name,
-            operations,
-            expected_identity,
-        )?;
+        let commit =
+            self.get_or_create_persistent_file_inner(path, display_name.into(), operations, None)?;
         Ok(keep_adopted_handle(
             commit.durability,
             EngineHandle::new(commit.id),
@@ -4304,8 +4286,8 @@ pub(crate) fn engine_image_reader_for(
     authority.open_engine_image(image, max_bytes)
 }
 
-/// Consumes the no-follow descriptor. `declared` sizes the allocation;
-/// `max_bytes` is the post-read bound, and they are different numbers.
+/// Consumes the no-follow descriptor. `declared` is capped before it sizes the allocation, and
+/// each read is limited to the remaining allowance plus one byte used to detect excess.
 pub(crate) fn read_engine_image_bytes(
     file: VerifiedFile,
     declared: u64,
@@ -4673,6 +4655,24 @@ mod tests {
         PathAuthority::open_with_clock(dir.path().join("registry.json"), vec![], clock, 2).unwrap()
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_child_open_maps_absence_and_refuses_wrong_target_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = open_windows_nofollow(dir.path(), false).unwrap();
+        let absent = open_windows_child(&parent, OsStr::new("missing"), false, false, true)
+            .expect_err("an absent child must fail");
+        assert!(matches!(
+            absent,
+            Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+
+        fs::create_dir(dir.path().join("directory")).unwrap();
+        fs::write(dir.path().join("file"), b"file").unwrap();
+        assert!(open_windows_child(&parent, OsStr::new("directory"), false, false, true).is_err());
+        assert!(open_windows_child(&parent, OsStr::new("file"), false, true, true).is_err());
+    }
+
     fn registered_engine_image(
         dir: &tempfile::TempDir,
         contents: &[u8],
@@ -4902,26 +4902,6 @@ mod tests {
     }
 
     #[test]
-    fn register_engine_file_verified_refuses_a_disagreeing_identity() {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = dir.path().join("engine");
-        fs::write(&engine, b"engine").unwrap();
-        let other_dir = ensure_app_owned_default_dir(
-            &AppDataDir::for_test(dir.path()),
-            AppOwnedDefaultRoot::Databases,
-        )
-        .unwrap();
-        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
-
-        let error = authority
-            .register_engine_file_verified(&engine, "engine", other_dir.identity())
-            .expect_err("the guarded engine registrar must require the matching identity");
-
-        assert!(matches!(error, Error::Conflict(_)), "{error:?}");
-        assert!(authority.persistent.is_empty());
-    }
-
-    #[test]
     fn migrate_legacy_verified_identity_mismatch_is_conflict() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("file");
@@ -5063,9 +5043,10 @@ mod tests {
         drop(authority);
 
         let mut reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let reopened_identity = &reopened.persistent[&id].stored.identity;
         assert_eq!(
-            reopened.persistent[&id].stored.identity.a,
-            original_identity.0
+            (reopened_identity.a, reopened_identity.b),
+            original_identity
         );
         assert!(reopened
             .resolve(handle.path_ref(), PathOperation::EngineExecute, &[])
@@ -5105,6 +5086,21 @@ mod tests {
         let mut reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
         let after_restart = reopened.register_installed_engine(&root, "engine").unwrap();
         assert_eq!(first.id, after_restart.id);
+
+        let replacement = root_path.join("replacement");
+        fs::write(&replacement, b"replacement").unwrap();
+        fs::remove_file(root_path.join("engine")).unwrap();
+        fs::rename(replacement, root_path.join("engine")).unwrap();
+        let entries_before_refusal = reopened.persistent.len();
+        let error = reopened
+            .register_installed_engine(&root, "engine")
+            .expect_err("a replaced engine must not reuse its stored capability");
+        assert!(matches!(
+            error,
+            Error::Conflict(message)
+                if message == "persistent file changed; acquire a new capability"
+        ));
+        assert_eq!(reopened.persistent.len(), entries_before_refusal);
     }
 
     #[test]

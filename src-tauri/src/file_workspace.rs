@@ -1587,7 +1587,11 @@ mod tests {
         let pgn = root.join("game.pgn");
         let sidecar = root.join("game.info");
         fs::write(&pgn, "*").unwrap();
-        fs::write(root.join("target"), b"{}").unwrap();
+        fs::write(
+            root.join("target"),
+            serialize_metadata(&WorkspaceMetadata::default()).unwrap(),
+        )
+        .unwrap();
 
         std::os::unix::fs::symlink("target", &sidecar).unwrap();
         assert!(metadata_from(&state.pgn_path_authority, &workspace, &pgn).is_err());
@@ -1603,7 +1607,45 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        assert!(metadata_from(&state.pgn_path_authority, &workspace, &pgn).is_err());
+        use std::os::unix::fs::OpenOptionsExt;
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        let fifo = sidecar.clone();
+        let watchdog = std::thread::spawn(move || {
+            match completed_rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(()) => return false,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("FIFO completion channel disconnected")
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            let release_started = std::time::Instant::now();
+            loop {
+                match fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&fifo)
+                {
+                    Ok(mut writer) => {
+                        writer
+                            .write_all(&serialize_metadata(&WorkspaceMetadata::default()).unwrap())
+                            .unwrap();
+                        return true;
+                    }
+                    Err(error)
+                        if error.raw_os_error() == Some(libc::ENXIO)
+                            && release_started.elapsed() < Duration::from_secs(1) =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("FIFO watchdog failed: {error}"),
+                }
+            }
+        });
+        let result = metadata_from(&state.pgn_path_authority, &workspace, &pgn);
+        let _ = completed_tx.send(());
+        let released_regression = watchdog.join().unwrap();
+        assert!(result.is_err());
+        assert!(!released_regression, "metadata opener blocked on the FIFO");
     }
 
     #[cfg(unix)]
