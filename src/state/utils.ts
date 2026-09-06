@@ -1,4 +1,5 @@
 import { warn } from "@/platform/native";
+import i18n from "@/i18n";
 import equal from "fast-deep-equal";
 import type {
     AsyncStorage,
@@ -12,14 +13,44 @@ import {
     deserializeStorageValue,
     serializeStorageValue,
 } from "./store/debouncedStorage";
+import { reportPersistError } from "./persistError";
+import { storageErrorCause } from "./storageError";
+
+function reportPreferenceStorageFailure(operation: "read" | "repair" | "save", cause: unknown) {
+    const safeCause = storageErrorCause(cause);
+    const message =
+        operation === "read"
+            ? i18n.t("Common.PreferenceReadFailed", { cause: safeCause })
+            : operation === "repair"
+              ? i18n.t("Common.PreferenceRepairFailed", { cause: safeCause })
+              : i18n.t("Common.PreferenceSaveFailed", { cause: safeCause });
+    reportPersistError(new Error(message, { cause }));
+}
 
 export function createZodStorage<Value>(
-    schema: z.ZodType<Value>,
+    schema: z.ZodType<Value, z.ZodTypeDef, unknown>,
     storage: SyncStringStorage,
 ): SyncStorage<Value> {
+    const write = (key: string, value: Value, operation: "repair" | "save") => {
+        try {
+            storage.setItem(key, JSON.stringify(value));
+            return true;
+        } catch (error) {
+            reportPreferenceStorageFailure(operation, error);
+            return false;
+        }
+    };
+
     return {
         getItem(key, initialValue) {
-            const storedValue = storage.getItem(key);
+            let storedValue: string | null;
+            try {
+                storedValue = storage.getItem(key);
+            } catch (error) {
+                warn(`Unable to read persisted value for ${key}`);
+                reportPreferenceStorageFailure("read", error);
+                return initialValue;
+            }
             if (storedValue === null) {
                 return initialValue;
             }
@@ -27,20 +58,24 @@ export function createZodStorage<Value>(
                 const rawValue = JSON.parse(storedValue);
                 const parsedValue = schema.parse(rawValue);
                 if (!equal(rawValue, parsedValue)) {
-                    this.setItem(key, parsedValue);
+                    write(key, parsedValue, "repair");
                 }
                 return parsedValue;
             } catch {
                 warn(`Invalid persisted value for ${key}`);
-                this.setItem(key, initialValue);
+                write(key, initialValue, "repair");
                 return initialValue;
             }
         },
         setItem(key, value) {
-            storage.setItem(key, JSON.stringify(value));
+            write(key, value, "save");
         },
         removeItem(key) {
-            storage.removeItem(key);
+            try {
+                storage.removeItem(key);
+            } catch (error) {
+                reportPreferenceStorageFailure("save", error);
+            }
         },
     };
 }
@@ -73,7 +108,10 @@ export function createPreferenceStorage<Value>(
     initialValue: Value,
     storage: SyncStringStorage = localStorage,
 ): SyncStorage<Value> {
-    return createZodStorage(schemaForDefault(initialValue) as z.ZodType<Value>, storage);
+    return createZodStorage(
+        schemaForDefault(initialValue) as z.ZodType<Value, z.ZodTypeDef, unknown>,
+        storage,
+    );
 }
 
 export function createAsyncZodStorage<Input, Output>(

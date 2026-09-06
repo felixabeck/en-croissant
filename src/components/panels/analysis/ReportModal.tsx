@@ -10,16 +10,54 @@ import { tauri } from "@/platform/tauri";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import AppModal from "../../common/AppModal";
 import { enginesAtom, referenceDbAtom } from "@/state/atoms";
-import type { LocalEngine } from "@/utils/engines";
+import { createZodStorage } from "@/state/utils";
+import { goModeSchema, type LocalEngine } from "@/utils/engines";
+import { z } from "zod";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 
-const reportSettingsAtom = atomWithStorage("report-settings", {
+type ReportGoMode = Extract<GoMode, { t: "Depth" | "Time" | "Nodes" }>;
+
+const reportGoModeSchema = goModeSchema.superRefine((mode, context): mode is ReportGoMode => {
+  if (mode.t === "Infinite" || mode.t === "PlayersTime") {
+    context.addIssue({ code: z.ZodIssueCode.custom });
+    return false;
+  }
+  if (!Number.isFinite(mode.c)) {
+    context.addIssue({ code: z.ZodIssueCode.custom });
+    return false;
+  }
+  return true;
+});
+
+type ReportSettings = {
+  novelty: boolean;
+  reversed: boolean;
+  variations: boolean;
+  goMode: ReportGoMode;
+  engine: string;
+};
+
+const defaultReportSettings: ReportSettings = {
   novelty: true,
   reversed: true,
   variations: true,
-  goMode: { t: "Time", c: 500 } as Exclude<GoMode, { t: "Infinite" }>,
+  goMode: { t: "Time", c: 500 },
   engine: "",
+};
+
+const reportSettingsSchema: z.ZodType<ReportSettings, z.ZodTypeDef, unknown> = z.object({
+  novelty: z.boolean().catch(defaultReportSettings.novelty),
+  reversed: z.boolean().catch(defaultReportSettings.reversed),
+  variations: z.boolean().catch(defaultReportSettings.variations),
+  goMode: reportGoModeSchema.catch(defaultReportSettings.goMode),
+  engine: z.string().catch(defaultReportSettings.engine),
 });
+
+const reportSettingsAtom = atomWithStorage(
+  "report-settings",
+  defaultReportSettings,
+  createZodStorage(reportSettingsSchema, localStorage),
+);
 
 function ReportModal({
   tab,
