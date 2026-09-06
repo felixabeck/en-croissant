@@ -162,7 +162,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
   a case already covered on every kernel since August 2020.
 * **Note for whoever answers the supported-platform question:** if Linux 5.8 is declared the floor,
   `MOUNT_ROOT` becomes unconditional and both the backstop and the filed residual disappear.
-* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** -
+* **Decided by:** Claude Code, autonomously under `full auto` while Felix was away · **Superseded-by:** d-20260906-02
+* **Scope of supersession:** only the device-only older-kernel fallback; the primary MOUNT_ROOT check and device backstop remain. The newer decision records descriptor-mount evidence absent from this decision.
 
 ### d-20260830-04 — What happens to the authority record when a recursive delete fails partway, and when it completes but the parent sync fails?
 
@@ -2088,3 +2089,25 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The final tests/root-cause lenses demonstrated that collecting all rows before invoking the tested writer, or transiently deserializing all mapped entries, would preserve existing test success. Thread-local Rust heap peaks catch that class deterministically while avoiding unrelated concurrent tests, native SQLite allocations and mapped-page residency. Production allocation behavior remains unchanged. Reversal path: replace the shared test probe with an equally direct production-path allocation instrument; keep the large-corpus regression assertions.
 * **Decided by:** Codex autonomously during final review, 2026-09-05 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"97118146829ff8787fed1b96142acdf8a0e987fd262edf1c2292384dff81cefc","input_sha256":"dd206939ea51e686be5bf89e3238f78ebd58de1339aba201bf2eafed69df1e2a","kind":"mutation-receipt","operation":"3aa35800d9df0e086537c09ecb6ca20d82cdd45c0dae7e13e61f827dcc109767","options":{"section":null},"request_id_sha256":null,"results":["d-20260905-22"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-06 — recorded through the decisions lock
+
+### d-20260906-01 — Can private rename staging close the final inode-to-name unlink race?
+
+* **Question:** Can private rename staging close the final inode-to-name unlink race?
+* **Governs:** f-20260830-09
+* **Chosen:** retain the existing identity and descriptor guards, document the final name-resolution residual, and keep the defect open with `Blocked: inode-conditional-unlink-unavailable`. Revisit when Linux offers inode-conditional removal or evidence establishes genuinely exclusive writer authority over the whole tree.
+* **Rejected:** moving a directory into a private staging parent as if that revoked existing writer access; calling the real race rejected or handled merely because that repair is inadequate; advisory application locks as protection against external writers.
+* **Reason:** a local probe opened a directory before moving it under a 0700 private parent and then successfully created a file through the retained descriptor. The same writer can keep handles at every level, so staging does not reduce this adversarial case to one window. Linux rename explicitly preserves open descriptors (https://www.man7.org/linux/man-pages/man2/rename.2.html). The current inode checks narrow the race but no current primitive atomically unlinks only the inode they checked. This is a technical precondition, not a question for Felix, and no false claim of repair is recorded.
+* **Decided by:** Codex, drain e7cf229e-c8c7-4977-b54f-e2fe3a77f1fb, full auto · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"43de18177de600ceed9c1d8d94cc968936a1c5ca879e60f55a84570e5e3e425d","input_sha256":"e9a0acb3106f6f55a8f5af060c93e1ff6d373d77fe876b0e64766717e23fa2e1","kind":"mutation-receipt","operation":"c99b4b33fdf481bfa6eff3be729b93e59afdad0f77d170f8e3c5558e6a9b070b","options":{"section":null},"request_id_sha256":null,"results":["d-20260906-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20260906-02 — How can recursive deletion detect bind mounts without statx MOUNT_ROOT?
+
+* **Question:** How can recursive deletion detect bind mounts without statx MOUNT_ROOT?
+* **Governs:** f-20260830-10
+* **Chosen:** preserve the device backstop and supported statx MOUNT_ROOT check; on NOSYS or missing attribute support, compare mount IDs from bounded `/proc/self/fdinfo/<fd>` records for the held parent and child descriptors before enumeration. Unavailable or malformed mount evidence refuses descent. No kernel version check or platform declaration is introduced.
+* **Rejected:** device-only acceptance, a Linux 5.8 minimum, and the pathname `/proc/self/mountinfo` scan rejected by d-20260830-03. Also rejected: treating unavailable descriptor evidence as proof of no mount.
+* **Reason:** this refines the older-kernel clause of d-20260830-03 using new evidence it did not consider: fdinfo exposes mount IDs for held descriptors since Linux 3.15 (https://www.man7.org/linux/man-pages/man5/proc_pid_fdinfo.5.html). A real bind mount in a fresh user/mount namespace measured equal st_dev values and different descriptor mount IDs. The held descriptors retain the compared mount references, avoiding a pathname mount-table snapshot race. Unlike blanket refusal below 5.8, the fallback permits ordinary deletion with usable fdinfo. Systems lacking both mechanisms now refuse this destructive operation. The prior primary/backstop decision remains; only its device-only fallback is superseded. Reversal requires new compatibility or security evidence.
+* **Decided by:** Codex, drain e7cf229e-c8c7-4977-b54f-e2fe3a77f1fb, full auto · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"d4947e8abb2d1ca19bd8ca4ce625522e0b0ec57df08e79669d03154c426118af","input_sha256":"039287c152011b4415300d81a4f2d681a4ad997a6c779dd2c4f5a4524373fd58","kind":"mutation-receipt","operation":"c509c3a6f6d9d8bfd0af6f262fc51626d366150831e0f7b0606c8f059d9e4e82","options":{"section":null},"request_id_sha256":null,"results":["d-20260906-02"],"target":"decisions-ledger","v":1} -->

@@ -1624,7 +1624,7 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
 
 ### Every removal in `infra/fs.rs` unlinks by name, and Linux offers no way to unlink by descriptor
 
-* **ID:** f-20260830-09 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-09 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** inode-conditional-unlink-unavailable
 * **Where:** `src-tauri/src/infra/fs.rs` — every `unlinkat` call site: the two arms of
   `remove_tree_at` (`fs.rs:394`, `fs.rs:416`), `remove_entry_at` (`fs.rs:840`),
   `remove_optional_regular_at` (`fs.rs:859`) and `remove_regular_at`.
@@ -1658,6 +1658,9 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
 
 * **Pickup evidence (2026-09-06):** A local Python probe opened a directory, renamed it beneath a 0700 private parent, then created a file with `os.open(..., dir_fd=retained_fd)`. Output: `retained descriptor can create after private staging: True`. Private staging does not revoke previously opened directory descriptors and therefore does not reduce an adversarial retained-handle writer to a single top-level race. The final unlink race remains; the build plan evaluates rejection of the proposed staging fix rather than claiming inode-conditional deletion. Entry remains build.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c3500d5b31db22dbbda0539af2dfd855ecc33c6424814641b2316e3931c06a9d","input_sha256":"ff990757ff52b93dfa371241e1eda2e9d82fd6bce17ee814e3567e2532952367","kind":"mutation-receipt","operation":"41136ea7b263586b602c906996213699e25d4afaa44a3f02883ae1b50a4dd92b","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-09"],"target":"f-20260830-09","v":1} -->
+
+* **Disposition (2026-09-06):** remains open, blocked on `inode-conditional-unlink-unavailable`, governed by d-20260906-01. Rejecting private staging does not reject the real defect. The retained-descriptor probe disproves its claimed isolation; no implementation in this run claims to close the final identity-check-to-unlink window. Reopen for a proven inode-conditional removal primitive or truly exclusive writer authority. This is a technical precondition, not a request for a product decision. Evidence was committed in 3044dc2b; the accompanying filesystem documentation will state the residual explicitly.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"a0dd0c2357a197a726f39ecabaf1da8997829c090e0d30b77561a7f4ff50dda9","input_sha256":"0f8ac2faa4de7b0bbdb192f750bb40f4e04d601eba98931d5572798cb02b725c","kind":"mutation-receipt","operation":"8914d50b896e3b91ad1d721109705f58db0743932cdd9c8aecb464492b4f0bd4","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-09"],"target":"f-20260830-09","v":1} -->
 
 ### Below Linux 5.8 the recursive delete cannot see a same-filesystem bind mount
 
