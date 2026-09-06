@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 7bd8fa822c0b0f01075f7e92e90030d69813e29b654a723d815420d8bf9a6439
+# agent-kit-sha256: 574e86e3728deaf5c63bd16bdf92613ba3892c881188bfed2997e6be0be4b9ec
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -284,7 +284,7 @@ def append_drain_breadcrumb(label: str, detail: str) -> None:
             capture_output=True,
             text=True,
         )
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         print(f"breadcrumb not written: {step_file}", file=sys.stderr)
     else:
         if result.stderr:
