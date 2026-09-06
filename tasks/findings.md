@@ -6389,7 +6389,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### A failed position query is indistinguishable from a fully covered position
 
-* **ID:** f-20260906-04 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260906-04 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/utils/repertoire.ts:52-54` — the bare `catch { return { moves: [], total: 0 }; }`
   in `fetchPositionMoves`, consumed at `src/utils/repertoire.ts:119`.
 * **Defect:** any failure of `searchPosition` — unreadable database, lock contention, a dropped
@@ -6409,6 +6409,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 Handled structurally rather than by a Bash allowlist: `scripts/leaf-launch.sh` runs the Claude read-only leaf through `scripts/agy-worktree-leaf.sh`, a throwaway detached worktree of HEAD carrying the checkout's uncommitted tracked diff and untracked files, so the `--restricted` file tools and every cwd-relative shell command (`pnpm bindings:check`, `cargo test`) land in a copy that is removed when the leaf ends. Measured on chessfable: `pwd` was the worktree, `git status` there showed the checkout's dirty file, the worktree was gone afterwards, the checkout unchanged; `leaf-launch.test.sh` pins it for Claude and agy. Residual, stated in `executor-profiles.md` §6: an absolute path into the checkout is still reachable from Bash, so it remains a policy boundary, now confined to a leaf that names the parent on purpose. Rejected: sandbox settings under `--restricted` (ignores settings files), a Bash allowlist (removes `git diff`), bubblewrap (more software; rule 6d). Decision d-20260906-01 in this ledger; commit named in the completion message.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"329802c0229032f6b429f32c22091baf073a160da31245c57f3effcb3b45157c","input_sha256":"a0bdabd19a40009dd5f8fc1bcf6ee752733d5550251e25b65870dc3f24552888","kind":"mutation-receipt","operation":"98f07e1bfda175a21494fe4d31f71725a081da97a57a7d3120e75bb099197d25","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-04"],"target":"f-20260906-04","v":1} -->
+
+Correction: the "Handled structurally …" annotation above and the earlier status flip to handled were misdirected. They describe agent-kit's f-20260906-04 (the Claude read-only leaf) and were written by a session whose shell stood in this checkout while it meant the kit's ledger. This finding, fetchPositionMoves swallowing a failed query, is untouched and stays open; nothing in it was investigated or fixed. Status restored to open in the same commit.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"f5545ae603a033e70828dff2ad83b8fc267fa6eca63f91292645096094c06a41","input_sha256":"6886cb0b11a83ecd6d8ed1a0ab38e089d11b6d066d7708054808862c18762678","kind":"mutation-receipt","operation":"f5291d2ab216659b3c60a384f9b278569a9b058df8ee60bdcba38090892b47ca","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-04"],"target":"f-20260906-04","v":1} -->
 
 ---
 
