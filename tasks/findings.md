@@ -6389,7 +6389,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### A failed position query is indistinguishable from a fully covered position
 
-* **ID:** f-20260906-04 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260906-04 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/utils/repertoire.ts:52-54` — the bare `catch { return { moves: [], total: 0 }; }`
   in `fetchPositionMoves`, consumed at `src/utils/repertoire.ts:119`.
 * **Defect:** any failure of `searchPosition` — unreadable database, lock contention, a dropped
@@ -6406,6 +6406,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Found by:** an Antigravity CLI (`agy`) lens evaluation on 2026-09-06, reported only by
   `gemini-3.8-flash-high` (confidence 95); the catch and the `total < minGames` branch were then
   verified by reading the source.
+
+Handled structurally rather than by a Bash allowlist: `scripts/leaf-launch.sh` runs the Claude read-only leaf through `scripts/agy-worktree-leaf.sh`, a throwaway detached worktree of HEAD carrying the checkout's uncommitted tracked diff and untracked files, so the `--restricted` file tools and every cwd-relative shell command (`pnpm bindings:check`, `cargo test`) land in a copy that is removed when the leaf ends. Measured on chessfable: `pwd` was the worktree, `git status` there showed the checkout's dirty file, the worktree was gone afterwards, the checkout unchanged; `leaf-launch.test.sh` pins it for Claude and agy. Residual, stated in `executor-profiles.md` §6: an absolute path into the checkout is still reachable from Bash, so it remains a policy boundary, now confined to a leaf that names the parent on purpose. Rejected: sandbox settings under `--restricted` (ignores settings files), a Bash allowlist (removes `git diff`), bubblewrap (more software; rule 6d). Decision d-20260906-01 in this ledger; commit named in the completion message.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"329802c0229032f6b429f32c22091baf073a160da31245c57f3effcb3b45157c","input_sha256":"a0bdabd19a40009dd5f8fc1bcf6ee752733d5550251e25b65870dc3f24552888","kind":"mutation-receipt","operation":"98f07e1bfda175a21494fe4d31f71725a081da97a57a7d3120e75bb099197d25","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-04"],"target":"f-20260906-04","v":1} -->
 
 ---
 
@@ -6430,3 +6433,34 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   and a game with no moves genuinely has one empty line. "Variations: 1, TotalMoves: 0"
   (`InfoPanel.tsx:67-75`) is a defensible reading, not a demonstrable defect. Three lens cells
   agreeing on it is evidence of a shared prior about what "variations" ought to mean, not of a bug.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### `pnpm bindings:check` rewrites `src/bindings/generated.ts` and refuses any receipt-backed gate running beside it
+
+* **ID:** f-20260906-06 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `scripts/check-bindings.mjs` (runs the exporter, which writes the file unconditionally);
+  `scripts/gate-receipt.mjs` `trackedFileMetadata` (snapshots size and mtime_ns of every tracked
+  file); `.claude/skills/push/SKILL.md` "Cross-layer contracts" (names `pnpm bindings:check` with
+  no ordering constraint against the receipt-backed gates).
+* **Defect:** measured 2026-09-06 on atlas: after `pnpm bindings:check` on a clean tree,
+  `src/bindings/generated.ts` has the same size and a new mtime; `cargo test` and
+  `pnpm gates:contract:check` change no tracked file. So `bindings:check` running concurrently
+  with any `pnpm gate:ensure <gate>` makes the receipt refuse with "tree changed during the
+  gate" although the gate passed and the tree is byte-identical. That is exactly what happened
+  twice on 2026-09-06 (session 546d8a14): the first refusal of `frontend-mutation` coincided
+  with the session's own parallel backend gate script, whose last step was `bindings:check`
+  (its log ended 08:08:52 while the frontend script was inside the mutation gate); in both
+  rounds the agy lenses of that push also reported running `pnpm bindings:check` inside the
+  checkout. The handoff blamed `cargo test` and the contract check; both are innocent.
+* **Fix shape:** two parts. (1) `check-bindings.mjs` exports to a temporary path and compares,
+  writing the tracked file only when it differs — then the check is read-only on a green tree
+  and can never disturb a receipt. (2) The push skill states that no command that rewrites a
+  tracked file (`bindings:check`, `bindings:generate`, `i18n:extract`, `format`) may run
+  concurrently with a receipt-backed gate, and that the seven `gate:ensure` gates run
+  serially against one another. Add a `gates:receipt:test` case: a tracked-file rewrite with
+  identical bytes still refuses the receipt (documents the mtime rule that (1) then satisfies).
+* **Found by:** Claude, agent-kit run of 2026-09-06 (executor tooling), measuring the
+  refusal mechanism the chessfable handoff had asserted.
