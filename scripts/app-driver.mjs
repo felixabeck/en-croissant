@@ -48,6 +48,7 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const started = [];
 let profileDirectory;
 let shutdownPromise;
+let driverOutput;
 
 function launch(command, args, options = {}) {
   const child = spawn(command, args, {
@@ -157,6 +158,7 @@ export async function startCompositor({ width = 1400, height = 900 } = {}) {
  */
 export async function startDriver({ waylandDisplay }) {
   const output = outputBuffer();
+  driverOutput = output;
   const env = {
     ...process.env,
     WAYLAND_DISPLAY: waylandDisplay,
@@ -201,6 +203,10 @@ export async function startDriver({ waylandDisplay }) {
   return { output: output.text(), profileDirectory };
 }
 
+export function driverDiagnostics() {
+  return driverOutput?.text() ?? "";
+}
+
 /** Minimal WebDriver client. The wire protocol is JSON over HTTP, so this needs no dependency. */
 export class Session {
   constructor(id) {
@@ -208,13 +214,21 @@ export class Session {
   }
 
   static async open(application = APP_BINARY, tauriOptions = {}) {
-    const response = await fetchWithTimeout(`http://127.0.0.1:${DRIVER_PORT}/session`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        capabilities: { alwaysMatch: { "tauri:options": { application, ...tauriOptions } } },
-      }),
-    });
+    let response;
+    try {
+      response = await fetchWithTimeout(`http://127.0.0.1:${DRIVER_PORT}/session`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          capabilities: { alwaysMatch: { "tauri:options": { application, ...tauriOptions } } },
+        }),
+      });
+    } catch (error) {
+      throw new Error(
+        `WebDriver session creation failed: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
     const body = await response.json();
     if (!response.ok) throw new Error(`session failed: ${JSON.stringify(body)}`);
     return new Session(body.value.sessionId);
@@ -241,8 +255,17 @@ export class Session {
     return this.call("GET", "/screenshot");
   }
 
-  quit() {
-    return fetchWithTimeout(this.base, { method: "DELETE" }).catch(() => {});
+  async quit() {
+    try {
+      const response = await fetchWithTimeout(this.base, { method: "DELETE" });
+      if (!response.ok) return { released: false, error: `HTTP ${response.status}` };
+      return { released: true };
+    } catch (error) {
+      return {
+        released: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 }
 

@@ -21,6 +21,7 @@ import {
   APP_BINARY,
   Session,
   appProcesses,
+  driverDiagnostics,
   processExists,
   requirePrerequisites,
   shutdown,
@@ -143,6 +144,7 @@ try {
     filename: "fixture-engine",
     imageHandle: { id: { id: imageId }, kind: "engineImage" },
   });
+  console.log("  .. opening seed WebDriver session");
   const seedSession = await Session.open(APP_BINARY);
   await waitFor("the seed renderer to expose Tauri", () =>
     seedSession.execute("return typeof window.__TAURI_INTERNALS__ === 'object'").catch(() => false),
@@ -157,6 +159,11 @@ try {
   if (!seedClose.gone || seedClose.survivors.length > 0) {
     throw new Error(`seed processes survived close: ${seedClose.survivors.join(", ")}`);
   }
+  const seedQuit = await seedSession.quit();
+  if (!seedQuit.released) {
+    console.log(`  .. seed WebDriver session release returned: ${seedQuit.error}`);
+  }
+  console.log("  .. seed app and WebKit processes are gone; reusing WebDriver after session quit");
 
   const fixtureDirectory = join(profileDirectory, "path-owner-fixture");
   const ownedRoot = join(fixtureDirectory, "owned-database-root");
@@ -221,7 +228,7 @@ try {
           "Retained engine image",
           retainedImage,
           "engineImage",
-          ["engineImageRead"],
+          ["imageRead"],
           false,
         ),
         await storedEntry(
@@ -229,7 +236,7 @@ try {
           "Shutdown engine image",
           retiredImage,
           "engineImage",
-          ["engineImageRead"],
+          ["imageRead"],
           false,
         ),
         await storedEntry(
@@ -237,7 +244,7 @@ try {
           "Orphan engine image",
           orphanImage,
           "engineImage",
-          ["engineImageRead"],
+          ["imageRead"],
           false,
         ),
       ],
@@ -259,7 +266,17 @@ try {
       .then((bytes) => bytes.subarray(assertedLogStart).toString("utf8"))
       .catch(() => "");
 
-  const session = await Session.open(APP_BINARY);
+  console.log("  .. opening assertion WebDriver session with the preserved profile");
+  let session;
+  try {
+    session = await Session.open(APP_BINARY);
+  } catch (error) {
+    console.error(`  .. assertion WebDriver session failed: ${error.message}`);
+    console.error(`  .. tauri-driver output:\n${driverDiagnostics() || "(empty)"}`);
+    const startupLog = await readLog();
+    console.error(`  .. preserved-profile application log:\n${startupLog || "(empty)"}`);
+    throw error;
+  }
   const reconciledRegistry = await waitFor(
     "production startup to reconcile the seeded path registry",
     async () => {
