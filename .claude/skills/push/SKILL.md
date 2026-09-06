@@ -115,7 +115,8 @@ That command runs the debug Specta exporter in export-only mode and then proves 
 
 ### Findings ledger
 
-`pnpm findings:kit:check` runs `bash "$HOME/Projekte/agent-kit/bin/kit" sync --check .` and is local-only
+`pnpm findings:kit:check` wraps the required `kit sync --check .` gate. It runs
+`bash "$HOME/Projekte/agent-kit/bin/kit" sync --check .` and is local-only
 (CI has no kit). Invoke it with `env -u KIT_ROOT` below so an inherited value cannot point the check
 at another kit tree. It runs on **every** push: `scripts/findings.py` is the kit's vendored copy, and
 this line fails if those bytes have drifted from `~/Projekte/agent-kit`.
