@@ -52,6 +52,7 @@ export default function EngineForm({
         label={t("Engines.Add.BinaryFile")}
         description={t("Engines.Add.BinaryFile.Desc")}
         filename={form.values.filename}
+        error={form.errors?.filename}
         withAsterisk
         onClick={() => {
           const generation = ++pickerGeneration.current.value;

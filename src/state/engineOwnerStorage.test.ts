@@ -1,7 +1,11 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { engineSchema } from "@/utils/engines";
-import { opponentSettingsSchema } from "@/utils/opponentSettings";
+import {
+    opponentSettingsSchema,
+    switchOpponentType,
+    type OpponentSettings,
+} from "@/utils/opponentSettings";
 import { serializeStorageValue } from "./store/debouncedStorage";
 
 const mocks = vi.hoisted(() => ({
@@ -13,7 +17,12 @@ vi.mock("@/platform/tauri", () => ({
 }));
 vi.mock("@/platform/native", () => ({ warn: vi.fn() }));
 vi.mock("./persistError", () => ({ reportPersistError: mocks.report }));
-vi.mock("@/i18n", () => ({ default: { t: () => "save failed" } }));
+vi.mock("@/i18n", () => ({
+    default: {
+        t: (key: string) =>
+            key === "Common.StorageQuotaExceeded" ? "translated quota" : "save failed",
+    },
+}));
 
 import {
     collectAttachmentIds,
@@ -72,13 +81,29 @@ test("prepares before storage and reconciles the shared owner union afterwards",
 
 test("quota failure resolves unsuccessful and never retires", async () => {
     mocks.reconcile.mockResolvedValue(undefined);
+    const quota = new DOMException(
+        "Storage quota exceeded at /home/felix/secret.pgn",
+        "QuotaExceededError",
+    );
     vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
-        throw new DOMException("full", "QuotaExceededError");
+        throw quota;
     });
-    const receipt = await saveEngineOwnerValue("engines", serializeStorageValue([engine]));
+    const storage = createEngineOwnerStorage("engines", z.array(engineSchema), []);
+    const receipt = (await storage.setItem("engines", [engine])) as unknown as {
+        saved: boolean;
+        synchronized: boolean;
+        error?: Error;
+    };
     expect(receipt.saved).toBe(false);
+    expect(receipt.synchronized).toBe(false);
+    expect(localStorage.getItem("engines")).toBeNull();
     expect(mocks.reconcile).toHaveBeenCalledTimes(1);
     expect(mocks.report).toHaveBeenCalledOnce();
+    expect((mocks.report.mock.calls[0][0] as Error).message).toContain("translated quota");
+    expect((mocks.report.mock.calls[0][0] as Error).message).not.toContain(
+        "/home/felix/secret.pgn",
+    );
+    expect((mocks.report.mock.calls[0][0] as Error).cause).toBe(quota);
     vi.restoreAllMocks();
 });
 
@@ -129,6 +154,32 @@ test("a delayed startup snapshot completes before a newer durable owner save", a
     ]);
 });
 
+test("the real engines atom hydrates and restarts duplicate identities", async () => {
+    const duplicate = { ...engine, name: "Twin" };
+    const raw = serializeStorageValue([engine, duplicate]);
+    localStorage.setItem("engines", raw);
+    const { createStore } = await import("jotai");
+    const { enginesAtom } = await import("./atoms");
+    const store = createStore();
+    const unsubscribe = store.sub(enginesAtom, () => undefined);
+
+    await vi.waitFor(() => {
+        const hydrated = store.get(enginesAtom) ?? [];
+        expect(hydrated).toHaveLength(2);
+        expect(hydrated.map(({ id }) => id)).toEqual([engine.id, expect.any(String)]);
+        expect(hydrated[1].id).not.toBe(engine.id);
+    });
+    const hydrated = store.get(enginesAtom) ?? [];
+    expect(localStorage.getItem("engines")).not.toBe(raw);
+
+    resetEngineOwnerCoordinatorForTests();
+    const restarted = createStore();
+    const unsubscribeRestarted = restarted.sub(enginesAtom, () => undefined);
+    await vi.waitFor(() => expect(restarted.get(enginesAtom)).toEqual(hydrated));
+    unsubscribeRestarted();
+    unsubscribe();
+});
+
 test("real overlapping atom writes preserve updates and return their own receipts", async () => {
     mocks.reconcile.mockRejectedValueOnce(new Error("ordinary write failed"));
     const { createStore } = await import("jotai");
@@ -167,6 +218,204 @@ test("lossy hydration does not repair or authorize from a filtered record", asyn
     await expect(storage.getItem("engines", [])).resolves.toEqual([]);
     expect(localStorage.getItem("engines")).toBe(raw);
     expect(mocks.reconcile).not.toHaveBeenCalled();
+});
+
+test("hydrates and durably stabilizes a legacy engine identity across restart", async () => {
+    const { id: _legacyId, ...legacyEngine } = engine;
+    const raw = serializeStorageValue([legacyEngine]);
+    localStorage.setItem("engines", raw);
+    const storage = createEngineOwnerStorage("engines", z.array(engineSchema), []);
+
+    const hydrated = (await storage.getItem("engines", [])) as (typeof engine)[];
+    expect(hydrated[0].id).toEqual(expect.any(String));
+    const migratedRaw = localStorage.getItem("engines");
+    expect(migratedRaw).not.toBe(raw);
+    expect(mocks.report.mock.calls ?? []).toHaveLength(0);
+
+    resetEngineOwnerCoordinatorForTests();
+    const restarted = createEngineOwnerStorage("engines", z.array(engineSchema), []);
+    await expect(restarted.getItem("engines", [])).resolves.toEqual(hydrated);
+});
+
+test("repairs duplicate legacy engine identities through the real engines schema", async () => {
+    const { enginesSchema } = await import("./atoms");
+    const duplicate = { ...engine, name: "Twin" };
+    const raw = serializeStorageValue([engine, duplicate]);
+    localStorage.setItem("engines", raw);
+    const storage = createEngineOwnerStorage("engines", enginesSchema, []);
+
+    const hydrated = (await storage.getItem("engines", [])) as (typeof engine)[];
+    expect(hydrated.map(({ id }) => id)).toEqual([engine.id, expect.any(String)]);
+    expect(hydrated[1].id).not.toBe(engine.id);
+    expect(new Set(hydrated.map(({ id }) => id)).size).toBe(2);
+    expect(localStorage.getItem("engines")).not.toBe(raw);
+
+    resetEngineOwnerCoordinatorForTests();
+    const restarted = createEngineOwnerStorage("engines", enginesSchema, []);
+    await expect(restarted.getItem("engines", [])).resolves.toEqual(hydrated);
+});
+
+test("stabilizes a legacy identity nested in a player owner", async () => {
+    const { id: _legacyId, ...legacyEngine } = engine;
+    const legacyPlayer = {
+        type: "engine" as const,
+        engine: legacyEngine,
+        go: { t: "Depth" as const, c: 24 },
+    };
+    const raw = serializeStorageValue(legacyPlayer);
+    localStorage.setItem("game-player1-settings", raw);
+    const storage = createEngineOwnerStorage("game-player1-settings", opponentSettingsSchema, {
+        type: "human" as const,
+    });
+
+    const hydrated = (await storage.getItem("game-player1-settings", { type: "human" })) as Extract<
+        OpponentSettings,
+        { type: "engine" }
+    >;
+    expect(hydrated.engine?.id).toEqual(expect.any(String));
+    const migratedRaw = localStorage.getItem("game-player1-settings");
+    expect(migratedRaw).not.toBe(raw);
+
+    resetEngineOwnerCoordinatorForTests();
+    const restarted = createEngineOwnerStorage("game-player1-settings", opponentSettingsSchema, {
+        type: "human" as const,
+    });
+    await expect(restarted.getItem("game-player1-settings", { type: "human" })).resolves.toEqual(
+        hydrated,
+    );
+});
+
+test("legacy identity migration preserves raw bytes and reports a write failure", async () => {
+    const { id: _legacyId, ...legacyEngine } = engine;
+    const raw = serializeStorageValue([legacyEngine]);
+    localStorage.setItem("engines", raw);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+        throw new DOMException("Storage quota exceeded", "QuotaExceededError");
+    });
+    const storage = createEngineOwnerStorage("engines", z.array(engineSchema), []);
+
+    const hydrated = (await storage.getItem("engines", [])) as (typeof engine)[];
+    expect(hydrated[0].id).toEqual(expect.any(String));
+    expect(localStorage.getItem("engines")).toBe(raw);
+    expect(mocks.report).toHaveBeenCalledOnce();
+    vi.restoreAllMocks();
+});
+
+test("legacy identity migration reloads newer raw bytes instead of overwriting them", async () => {
+    const { id: _legacyId, ...legacyEngine } = engine;
+    const raw = serializeStorageValue([legacyEngine]);
+    const newerRaw = serializeStorageValue([engine]);
+    localStorage.setItem("engines", raw);
+    mocks.reconcile.mockImplementationOnce(async () => {
+        localStorage.setItem("engines", newerRaw);
+    });
+    const storage = createEngineOwnerStorage("engines", z.array(engineSchema), []);
+
+    await expect(storage.getItem("engines", [])).resolves.toEqual([engine]);
+    expect(localStorage.getItem("engines")).toBe(newerRaw);
+});
+
+test("a second legacy conflict returns the latest display value without retrying forever", async () => {
+    const { id: _legacyId, ...legacyEngine } = engine;
+    const latestLegacy = { ...legacyEngine, name: "Latest" };
+    const raw = serializeStorageValue([legacyEngine]);
+    const latestRaw = serializeStorageValue([latestLegacy]);
+    localStorage.setItem("engines", raw);
+    mocks.reconcile.mockImplementationOnce(async () => {
+        localStorage.setItem("engines", latestRaw);
+    });
+    const storage = createEngineOwnerStorage("engines", z.array(engineSchema), []);
+
+    await expect(storage.getItem("engines", [])).resolves.toMatchObject([
+        { name: "Latest", id: expect.any(String) },
+    ]);
+    expect(mocks.reconcile).toHaveBeenCalledOnce();
+    expect(localStorage.getItem("engines")).toBe(latestRaw);
+});
+
+test("owner branch transitions persist exact unions, retain siblings, and report failures", async () => {
+    const attachment = { id: { id: "sibling-image" }, kind: "engineImage" as const };
+    const siblingEngine = { ...engine, imageHandle: attachment };
+    const sibling = {
+        type: "engine" as const,
+        engine: siblingEngine,
+        go: { t: "Depth" as const, c: 18 },
+    };
+    const human: OpponentSettings = {
+        type: "human",
+        name: "Former human",
+        timeControl: { seconds: 30, increment: 2 },
+        timeUnit: "s",
+        incrementUnit: "s",
+    };
+    localStorage.setItem("game-player2-settings", serializeStorageValue(sibling));
+    localStorage.setItem("game-player1-settings", serializeStorageValue(human));
+    const storage = createEngineOwnerStorage("game-player1-settings", opponentSettingsSchema, {
+        type: "human" as const,
+    });
+    const enginePlayer = switchOpponentType(human, "engine");
+    expect(enginePlayer).toEqual({
+        type: "engine",
+        engine: null,
+        go: { t: "Depth", c: 24 },
+        timeControl: human.timeControl,
+        timeUnit: human.timeUnit,
+        incrementUnit: human.incrementUnit,
+    });
+
+    const failure = new Error("prepare failed");
+    mocks.reconcile.mockRejectedValueOnce(failure);
+    const failed = (await storage.setItem("game-player1-settings", enginePlayer)) as unknown as {
+        saved: boolean;
+        synchronized: boolean;
+        error: unknown;
+    };
+    expect(failed).toEqual(
+        expect.objectContaining({ saved: false, synchronized: false, error: failure }),
+    );
+    expect(localStorage.getItem("game-player1-settings")).toBe(serializeStorageValue(human));
+
+    mocks.reconcile.mockReset().mockResolvedValue(undefined);
+    const saved = (await storage.setItem("game-player1-settings", enginePlayer)) as unknown as {
+        saved: boolean;
+        synchronized: boolean;
+    };
+    expect(saved).toEqual(expect.objectContaining({ saved: true, synchronized: true }));
+    expect(mocks.reconcile.mock.calls[0][0].retained_ids).toContainEqual({ id: "sibling-image" });
+
+    resetEngineOwnerCoordinatorForTests();
+    const reloadedEngine = createEngineOwnerStorage(
+        "game-player1-settings",
+        opponentSettingsSchema,
+        { type: "human" as const },
+    );
+    const hydratedEngine = await reloadedEngine.getItem("game-player1-settings", {
+        type: "human",
+    });
+    expect(hydratedEngine).toEqual(enginePlayer);
+    const humanPlayer = switchOpponentType(hydratedEngine, "human");
+    expect(humanPlayer).toEqual({
+        type: "human",
+        name: "Player",
+        timeControl: human.timeControl,
+        timeUnit: human.timeUnit,
+        incrementUnit: human.incrementUnit,
+    });
+    const humanReceipt = (await reloadedEngine.setItem(
+        "game-player1-settings",
+        humanPlayer,
+    )) as unknown as { saved: boolean; synchronized: boolean };
+    expect(humanReceipt).toEqual(expect.objectContaining({ saved: true, synchronized: true }));
+
+    resetEngineOwnerCoordinatorForTests();
+    const reloadedHuman = createEngineOwnerStorage(
+        "game-player1-settings",
+        opponentSettingsSchema,
+        { type: "human" as const },
+    );
+    await expect(
+        reloadedHuman.getItem("game-player1-settings", { type: "human" }),
+    ).resolves.toEqual(humanPlayer);
 });
 
 test("legacy player owner round trip preserves go image and resource settings", async () => {

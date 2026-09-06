@@ -12,7 +12,11 @@ import { useTranslation } from "react-i18next";
 import GoModeInput from "@/components/common/GoModeInput";
 import TimeInput from "@/components/common/TimeInput";
 import EngineSettingsForm from "@/components/panels/analysis/EngineSettingsForm";
-import { DEFAULT_TIME_CONTROL, type OpponentSettings } from "@/utils/opponentSettings";
+import {
+  DEFAULT_TIME_CONTROL,
+  switchOpponentType,
+  type OpponentSettings,
+} from "@/utils/opponentSettings";
 import { EnginesSelect } from "./EnginesSelect";
 
 export { DEFAULT_TIME_CONTROL, type OpponentSettings } from "@/utils/opponentSettings";
@@ -31,20 +35,7 @@ export function OpponentForm({
   const { t } = useTranslation();
 
   function updateType(type: "engine" | "human") {
-    if (type === "human") {
-      setOpponent((prev) => ({
-        ...prev,
-        type: "human",
-        name: "Player",
-      }));
-    } else {
-      setOpponent((prev) => ({
-        ...prev,
-        type: "engine",
-        engine: null,
-        go: ("go" in prev && prev.go) || { t: "Depth", c: 24 },
-      }));
-    }
+    setOpponent((prev) => switchOpponentType(prev, type));
   }
 
   return (

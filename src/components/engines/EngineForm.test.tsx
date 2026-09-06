@@ -46,10 +46,21 @@ vi.mock("@mantine/core", () => ({
   TextInput: () => <input />,
 }));
 vi.mock("../common/FileInput", () => ({
-  default: ({ onClick, label }: { onClick: () => void; label?: string }) => (
-    <button type="button" onClick={onClick}>
-      {label}
-    </button>
+  default: ({
+    onClick,
+    label,
+    error,
+  }: {
+    onClick: () => void;
+    label?: string;
+    error?: React.ReactNode;
+  }) => (
+    <>
+      <button type="button" onClick={onClick}>
+        {label}
+      </button>
+      {error && <span role="alert">{error}</span>}
+    </>
   ),
 }));
 
@@ -143,6 +154,22 @@ test("ordinary submission preserves existing scalar and resource settings", asyn
     await Promise.resolve();
   });
   expect(submit).toHaveBeenCalledWith(expect.objectContaining({ settings }));
+});
+
+test("passes the filename validation error to the binary picker", async () => {
+  const form = {
+    values: { filename: "", imageHandle: undefined },
+    errors: { filename: "Common.RequirePath" },
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: () => () => undefined,
+  };
+
+  await act(async () =>
+    root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />),
+  );
+
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe("Common.RequirePath");
 });
 
 test("only the current binary detection applies fields and required defaults", async () => {

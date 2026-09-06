@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { GoMode } from "@/bindings";
 import type { TimeType } from "@/components/common/TimeInput";
 import type { TimeControlField } from "@/utils/clock";
 import {
@@ -64,3 +65,24 @@ export const defaultPlayerSettings: OpponentSettings = {
     timeUnit: "m",
     incrementUnit: "s",
 };
+
+const DEFAULT_ENGINE_GO: GoMode = { t: "Depth", c: 24 };
+
+/** Switches discriminated branches without carrying fields owned by the previous branch. */
+export function switchOpponentType(
+    opponent: OpponentSettings,
+    type: "engine" | "human",
+): OpponentSettings {
+    const shared = {
+        ...(opponent.timeControl ? { timeControl: opponent.timeControl } : {}),
+        ...(opponent.timeUnit ? { timeUnit: opponent.timeUnit } : {}),
+        ...(opponent.incrementUnit ? { incrementUnit: opponent.incrementUnit } : {}),
+    };
+    if (type === "human") return { type: "human", ...shared, name: "Player" };
+    return {
+        type: "engine",
+        ...shared,
+        engine: null,
+        go: opponent.type === "engine" ? opponent.go : { ...DEFAULT_ENGINE_GO },
+    };
+}

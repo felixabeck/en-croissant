@@ -8,11 +8,6 @@ export type EngineAttachmentSubmission = ReadonlyArray<{
     generation: number;
 }>;
 
-async function abandon(ids: PathRef[]) {
-    if (ids.length === 0) return;
-    await abandonEngineAttachments(ids);
-}
-
 /** Owns picker results from issuance through correlated durable adoption or draft disposal. */
 export class EngineAttachmentDraft {
     private generations = new Map<string, number>();
@@ -49,7 +44,7 @@ export class EngineAttachmentDraft {
             );
             if (!shared) ids.set(attachment.id.id, attachment.id);
         }
-        await abandon([...ids.values()]);
+        await abandonEngineAttachments([...ids.values()]);
         for (const token of selected) this.outstanding.delete(token);
     }
 

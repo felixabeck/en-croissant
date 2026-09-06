@@ -10,11 +10,8 @@ import {
     pathRefKey,
     pathRefSchema,
 } from "@/utils/pathCapabilities";
-import { engineSchema } from "@/utils/engines";
-import { opponentSettingsSchema } from "@/utils/opponentSettings";
 import {
-    collectAttachmentIds,
-    ENGINE_OWNER_KEYS,
+    collectOriginalEngineOwnerSnapshot,
     reconcileStartupEngineAttachments,
 } from "./engineOwnerStorage";
 
@@ -41,16 +38,6 @@ function readCompressed(storage: Storage, key: string): StorageRead {
     }
 }
 
-function collectEngineIds(value: z.output<typeof engineSchema>, ids: Set<string>) {
-    if (value.imageHandle) ids.add(pathRefKey(value.imageHandle.id));
-    for (const setting of value.settings ?? []) {
-        if (setting.type === "resource") {
-            for (const resource of setting.resources) ids.add(pathRefKey(resource.id));
-        }
-    }
-    if (value.type === "local") ids.add(pathRefKey(value.handle.id));
-}
-
 function collectOne<T>(
     read: StorageRead,
     schema: z.ZodType<T, z.ZodTypeDef, unknown>,
@@ -64,7 +51,12 @@ function collectOne<T>(
     return true;
 }
 
-export function collectOriginalPathOwners(local?: Storage, session?: Storage): StartupPathOwners {
+type OriginalOwnerSnapshots = {
+    pathOwners: StartupPathOwners;
+    engineAttachmentIds: PathRef[] | null;
+};
+
+function collectOriginalSnapshots(local?: Storage, session?: Storage): OriginalOwnerSnapshots {
     const ids = new Set<string>();
     const trusted = new Set<PathOwnerFamily>();
     const trust = (family: PathOwnerFamily, ok: boolean) => {
@@ -75,7 +67,10 @@ export function collectOriginalPathOwners(local?: Storage, session?: Storage): S
         local ??= globalThis.localStorage;
         session ??= globalThis.sessionStorage;
     } catch {
-        return { retainedIds: [], trustedFamilies: [] };
+        return {
+            pathOwners: { retainedIds: [], trustedFamilies: [] },
+            engineAttachmentIds: null,
+        };
     }
 
     trust(
@@ -127,27 +122,9 @@ export function collectOriginalPathOwners(local?: Storage, session?: Storage): S
         ),
     );
 
-    let enginesTrusted = true;
-    const enginesRead = readCompressed(local, "engines");
-    enginesTrusted =
-        collectOne(enginesRead, z.array(engineSchema), (values) =>
-            values.forEach((value) => collectEngineIds(value, ids)),
-        ) && enginesTrusted;
-    for (const key of ["game-player1-settings", "game-player2-settings"]) {
-        enginesTrusted =
-            collectOne(readCompressed(local, key), opponentSettingsSchema, (value) => {
-                if (value.type === "engine") {
-                    if (value.engine) collectEngineIds(value.engine, ids);
-                    for (const setting of value.engineSettings ?? []) {
-                        if (setting.type === "resource") {
-                            for (const resource of setting.resources)
-                                ids.add(pathRefKey(resource.id));
-                        }
-                    }
-                }
-            }) && enginesTrusted;
-    }
-    trust("engines", enginesTrusted);
+    const engineOwners = collectOriginalEngineOwnerSnapshot(local);
+    engineOwners.capabilityIds.forEach((id) => ids.add(id));
+    trust("engines", engineOwners.trusted);
 
     const workspaceSchema = z.object({ tabs: z.array(tabSchema) }).passthrough();
     const tabsSchema = z.array(tabSchema);
@@ -216,32 +193,21 @@ export function collectOriginalPathOwners(local?: Storage, session?: Storage): S
     trust("practiceDeck", deckTrusted);
 
     return {
-        retainedIds: [...ids].sort().map((id) => ({ id })),
-        trustedFamilies: [...trusted].sort(),
+        pathOwners: {
+            retainedIds: [...ids].sort().map((id) => ({ id })),
+            trustedFamilies: [...trusted].sort(),
+        },
+        engineAttachmentIds: engineOwners.attachmentIds?.map((id) => ({ id })) ?? null,
     };
 }
 
-export const originalPathOwnersSnapshot = collectOriginalPathOwners();
-
-export function collectOriginalEngineAttachmentIds(local?: Storage): PathRef[] | null {
-    try {
-        local ??= globalThis.localStorage;
-    } catch {
-        return null;
-    }
-    const ids = new Set<string>();
-    for (const key of ENGINE_OWNER_KEYS) {
-        const read = readCompressed(local, key);
-        if ("failed" in read) return null;
-        if (!read.present) continue;
-        const found = collectAttachmentIds(key, read.value);
-        if (found === null) return null;
-        found.forEach((id) => ids.add(id));
-    }
-    return [...ids].sort().map((id) => ({ id }));
+export function collectOriginalPathOwners(local?: Storage, session?: Storage): StartupPathOwners {
+    return collectOriginalSnapshots(local, session).pathOwners;
 }
 
-export const originalEngineAttachmentIds = collectOriginalEngineAttachmentIds();
+const originalSnapshots = collectOriginalSnapshots();
+export const originalPathOwnersSnapshot = originalSnapshots.pathOwners;
+export const originalEngineAttachmentIds = originalSnapshots.engineAttachmentIds;
 
 let initialization: Promise<void> | undefined;
 export function initializePathOwners(): Promise<void> {

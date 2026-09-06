@@ -9,7 +9,9 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   notifyUnlessCancelled: vi.fn(),
   retireEngine: vi.fn(),
+  getEngineConfig: vi.fn(),
   issueEngineImage: vi.fn(),
+  issueEngineResource: vi.fn(),
   reconcileEngineAttachments: vi.fn(),
   saveEngines: vi.fn(),
   selected: 0,
@@ -18,15 +20,25 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/platform/tauri", () => ({
   tauri: {
     fileExists: mocks.fileExists,
-    getEngineConfig: vi.fn().mockResolvedValue(undefined),
+    getEngineConfig: mocks.getEngineConfig,
     retireEngine: mocks.retireEngine,
     issueEngineImage: mocks.issueEngineImage,
+    issueEngineResource: mocks.issueEngineResource,
     reconcileEngineAttachments: mocks.reconcileEngineAttachments,
   },
 }));
 vi.mock("@/components/files/notifyError", () => ({
   notifyUnlessCancelled: mocks.notifyUnlessCancelled,
-  runUnlessCancelled: async (_title: string, action: () => Promise<unknown>) => action(),
+  runUnlessCancelled: async (title: string, action: () => Promise<unknown>) => {
+    try {
+      return await action();
+    } catch (error) {
+      if (!(error instanceof Error && error.message === "Cancellation")) {
+        mocks.notifyUnlessCancelled(title, error);
+      }
+      return undefined;
+    }
+  },
 }));
 import EnginesPage, { EngineName } from "./EnginesPage";
 
@@ -118,6 +130,11 @@ function makeEngine(handleId: string): LocalEngine {
     version: "17",
     handle: { id: { id: handleId }, kind: "engine" },
     filename: "stockfish",
+    settings: [
+      { type: "string", name: "MultiPV", value: "1" },
+      { type: "string", name: "Threads", value: "1" },
+      { type: "string", name: "Hash", value: "16" },
+    ],
   };
 }
 
@@ -136,9 +153,38 @@ async function render(engine: Engine) {
   });
 }
 
+async function renderSettings() {
+  await act(async () => {
+    root.render(
+      <SWRConfig value={{ shouldRetryOnError: false }}>
+        <EnginesPage />
+      </SWRConfig>,
+    );
+  });
+  await vi.waitFor(() => expect(mocks.getEngineConfig).toHaveBeenCalled());
+}
+
+function resource(id: string, kind: "file" | "directory") {
+  return { id: { id }, kind, displayName: id } as const;
+}
+
+function resourceButton(label: string) {
+  return [...host.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent === label,
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.reconcileEngineAttachments.mockResolvedValue(undefined);
+  mocks.issueEngineResource.mockReset();
+  mocks.getEngineConfig.mockResolvedValue({
+    name: "Stockfish",
+    options: [
+      { type: "string", value: { name: "SyzygyPath", default: null } },
+      { type: "string", value: { name: "EvalFile", default: null } },
+    ],
+  });
   mocks.selected = 0;
   mocks.saveEngines.mockImplementation(async (update) => {
     atomEngines = update(atomEngines);
@@ -192,6 +238,146 @@ describe("EngineName binary inspection state", () => {
     expect(host.textContent).not.toContain("(file missing)");
     expect(host.querySelector('[data-color="red"]')).not.toBeNull();
   });
+});
+
+test("directory resource picker stores a real path option", async () => {
+  const engine = makeEngine("engine-resource-directory");
+  const selected = resource("tables", "directory");
+  atomEngines = [engine];
+  mocks.issueEngineResource.mockResolvedValue(selected);
+  await renderSettings();
+
+  await act(async () => {
+    resourceButton("Common.Open")?.click();
+    await vi.waitFor(() => expect(mocks.issueEngineResource).toHaveBeenCalledOnce());
+  });
+
+  expect(mocks.issueEngineResource).toHaveBeenCalledWith(true);
+  expect(atomEngines[0].settings).toEqual(
+    expect.arrayContaining([{ type: "resource", name: "SyzygyPath", resources: [selected] }]),
+  );
+});
+
+test("file resource picker stores a replacement resource", async () => {
+  const engine = makeEngine("engine-resource-file");
+  const first = resource("eval-a", "file");
+  const replacement = resource("eval-b", "file");
+  atomEngines = [engine];
+  mocks.issueEngineResource.mockResolvedValueOnce(first).mockResolvedValueOnce(replacement);
+  await renderSettings();
+
+  await act(async () => {
+    resourceButton("EvalFile")?.click();
+    await vi.waitFor(() => expect(mocks.issueEngineResource).toHaveBeenCalledOnce());
+  });
+  await act(async () => {
+    root.render(
+      <SWRConfig value={{ shouldRetryOnError: false }}>
+        <EnginesPage />
+      </SWRConfig>,
+    );
+    await Promise.resolve();
+  });
+  await act(async () => {
+    resourceButton("EvalFile")?.click();
+    await vi.waitFor(() => expect(mocks.issueEngineResource).toHaveBeenCalledTimes(2));
+  });
+
+  expect(mocks.issueEngineResource).toHaveBeenNthCalledWith(1, false);
+  expect(mocks.issueEngineResource).toHaveBeenNthCalledWith(2, false);
+  expect(atomEngines[0].settings).toEqual(
+    expect.arrayContaining([{ type: "resource", name: "EvalFile", resources: [replacement] }]),
+  );
+});
+
+test("path resource picker appends multiple directory handles", async () => {
+  const engine = makeEngine("engine-resource-append");
+  const first = resource("tables-a", "directory");
+  const second = resource("tables-b", "directory");
+  atomEngines = [engine];
+  mocks.issueEngineResource.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+  await renderSettings();
+
+  await act(async () => {
+    resourceButton("Common.Open")?.click();
+    await vi.waitFor(() => expect(mocks.issueEngineResource).toHaveBeenCalledOnce());
+  });
+  await act(async () => {
+    root.render(
+      <SWRConfig value={{ shouldRetryOnError: false }}>
+        <EnginesPage />
+      </SWRConfig>,
+    );
+    await Promise.resolve();
+  });
+  await act(async () => {
+    resourceButton("Common.Open")?.click();
+    await vi.waitFor(() => expect(mocks.issueEngineResource).toHaveBeenCalledTimes(2));
+  });
+
+  expect(mocks.issueEngineResource).toHaveBeenNthCalledWith(1, true);
+  expect(mocks.issueEngineResource).toHaveBeenNthCalledWith(2, true);
+  expect(atomEngines[0].settings).toEqual(
+    expect.arrayContaining([{ type: "resource", name: "SyzygyPath", resources: [first, second] }]),
+  );
+});
+
+test("resource picker errors and cancellation do not adopt handles", async () => {
+  const engine = makeEngine("engine-resource-errors");
+  atomEngines = [engine];
+  mocks.issueEngineResource.mockRejectedValueOnce(new Error("permission denied"));
+  await renderSettings();
+
+  await act(async () => {
+    resourceButton("Common.Open")?.click();
+    await vi.waitFor(() => expect(mocks.notifyUnlessCancelled).toHaveBeenCalledOnce());
+  });
+  expect(atomEngines[0].settings).toEqual(
+    expect.arrayContaining([
+      { type: "string", name: "MultiPV", value: "1" },
+      { type: "string", name: "Threads", value: "1" },
+      { type: "string", name: "Hash", value: "16" },
+    ]),
+  );
+
+  mocks.notifyUnlessCancelled.mockReset();
+  mocks.issueEngineResource.mockRejectedValueOnce(new Error("Cancellation"));
+  await act(async () => {
+    resourceButton("Common.Open")?.click();
+    await Promise.resolve();
+  });
+  expect(mocks.notifyUnlessCancelled).not.toHaveBeenCalled();
+  expect(atomEngines[0].settings).toEqual(
+    expect.arrayContaining([
+      { type: "string", name: "MultiPV", value: "1" },
+      { type: "string", name: "Threads", value: "1" },
+      { type: "string", name: "Hash", value: "16" },
+    ]),
+  );
+});
+
+test("stale directory resource picker result is abandoned after unmount", async () => {
+  let resolveResource!: (value: ReturnType<typeof resource>) => void;
+  atomEngines = [makeEngine("engine-resource-stale")];
+  mocks.issueEngineResource.mockReturnValue(
+    new Promise((resolve) => {
+      resolveResource = resolve;
+    }),
+  );
+  await renderSettings();
+  resourceButton("Common.Open")?.click();
+  await vi.waitFor(() => expect(mocks.issueEngineResource).toHaveBeenCalledOnce());
+
+  await act(async () => root.unmount());
+  await act(async () => {
+    resolveResource(resource("late-directory", "directory"));
+    await vi.waitFor(() =>
+      expect(mocks.reconcileEngineAttachments).toHaveBeenCalledWith(
+        expect.objectContaining({ abandoned_ids: [{ id: "late-directory" }] }),
+      ),
+    );
+  });
+  expect(setAtomEngines).not.toHaveBeenCalled();
 });
 
 test("local removal retires by id and drops persisted state even when retirement fails", async () => {

@@ -38,6 +38,8 @@ const tauriBootstrap = () => {
 
     const defaultCommands: Record<string, Response> = {
         close_splashscreen: { result: null },
+        reconcile_startup_path_owners: { result: null },
+        reconcile_engine_attachments: { result: null },
         list_lichess_accounts: { result: [] },
         get_puzzle_workspace: {
             result: {

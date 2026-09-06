@@ -6,7 +6,7 @@ import type { SetStateAction } from "react";
 import { atom, type PrimitiveAtom } from "jotai";
 import { atomFamily, atomWithStorage, unwrap } from "jotai/utils";
 import type { AtomFamily } from "jotai/vanilla/utils/atomFamily";
-import type { AsyncStringStorage, SyncStorage } from "jotai/vanilla/utils/atomWithStorage";
+import type { SyncStorage } from "jotai/vanilla/utils/atomWithStorage";
 import type { ReviewLog } from "ts-fsrs";
 import { z } from "zod";
 import type {
@@ -42,11 +42,7 @@ import { createPreferenceStorage, createZodStorage } from "./utils";
 import { createWorkspaceStorage, defaultWorkspace, type Workspace } from "./workspace";
 import { tabStorage } from "./store/tabStorage";
 import { originalPathOwnersSnapshot } from "./pathOwners";
-import {
-    createEngineOwnerStorage,
-    createEngineOwnerStringStorage,
-    type EngineOwnerSaveReceipt,
-} from "./engineOwnerStorage";
+import { createEngineOwnerStorage, type EngineOwnerSaveReceipt } from "./engineOwnerStorage";
 import { defaultPlayerSettings, opponentSettingsSchema } from "@/utils/opponentSettings";
 
 // Capture durable capability owners before any persisted atom can hydrate, normalize, or repair
@@ -174,20 +170,6 @@ export const enginesSchema = zodArray(engineSchema).transform((engines) => {
         return engine;
     });
 });
-
-// Engine metadata contains only opaque native handles and display data. Keeping the async
-// adapter preserves the existing atom update contract without granting a renderer directory.
-export const enginesStorage: AsyncStringStorage = {
-    async getItem(key) {
-        return createEngineOwnerStringStorage("engines").getItem(key);
-    },
-    async setItem(key, value) {
-        await createEngineOwnerStringStorage("engines").setItem(key, value);
-    },
-    async removeItem(key) {
-        await createEngineOwnerStringStorage("engines").removeItem(key);
-    },
-};
 
 const storedEnginesAtom = unwrap(
     atomWithStorage<Engine[]>(

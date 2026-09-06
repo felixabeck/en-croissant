@@ -14,6 +14,7 @@ import {
     initializePathOwners,
     resetPathOwnerInitializationForTests,
 } from "./pathOwners";
+import { resetEngineOwnerCoordinatorForTests, saveEngineOwnerValue } from "./engineOwnerStorage";
 
 const path = (id: string) => ({ id });
 const fileHandle = (id: string) => ({ id: path(id), kind: "fileWorkspace" as const });
@@ -30,6 +31,7 @@ beforeEach(() => {
     mocks.reconcile.mockReset().mockResolvedValue(null);
     mocks.reconcileAttachments.mockReset().mockResolvedValue(null);
     resetPathOwnerInitializationForTests();
+    resetEngineOwnerCoordinatorForTests();
 });
 
 describe("collectOriginalPathOwners", () => {
@@ -54,6 +56,35 @@ describe("collectOriginalPathOwners", () => {
 
         expect(ownerReads).toBeGreaterThan(1);
         expect(originalPathOwnersSnapshot.retainedIds).toContainEqual(path("raw-download"));
+    });
+
+    test("captures each engine owner key once for both startup snapshots", async () => {
+        vi.resetModules();
+        const reads = new Map<string, number>();
+        const originalGetItem = Storage.prototype.getItem;
+        const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (
+            this: Storage,
+            key: string,
+        ) {
+            if (
+                this === localStorage &&
+                ["engines", "game-player1-settings", "game-player2-settings"].includes(key)
+            ) {
+                reads.set(key, (reads.get(key) ?? 0) + 1);
+            }
+            return originalGetItem.call(this, key);
+        });
+
+        await import("./pathOwners");
+        getItem.mockRestore();
+
+        expect(reads).toEqual(
+            new Map([
+                ["engines", 1],
+                ["game-player1-settings", 1],
+                ["game-player2-settings", 1],
+            ]),
+        );
     });
 
     test("collects every known owner location before storage repair", () => {
@@ -322,4 +353,31 @@ test("initialization shares one native reconciliation promise", async () => {
     resolve();
     await first;
     expect(mocks.reconcileAttachments).toHaveBeenCalledOnce();
+});
+
+test("a failed first add leaves absent storage trusted for fresh startup reclamation", async () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
+        throw new DOMException("Storage quota exceeded", "QuotaExceededError");
+    });
+    const receipt = await saveEngineOwnerValue("engines", serializeStorageValue([]));
+    setItem.mockRestore();
+
+    expect(receipt).toEqual(expect.objectContaining({ saved: false, synchronized: false }));
+    expect(localStorage.getItem("engines")).toBeNull();
+
+    vi.resetModules();
+    const fresh = await import("./pathOwners");
+    const snapshot = fresh.collectOriginalPathOwners(localStorage, sessionStorage);
+    expect(snapshot.trustedFamilies).toContain("engines");
+
+    await fresh.initializePathOwners();
+    expect(mocks.reconcile).toHaveBeenCalledWith(
+        expect.objectContaining({ trustedFamilies: expect.arrayContaining(["engines"]) }),
+    );
+    expect(mocks.reconcileAttachments).toHaveBeenLastCalledWith({
+        action: "reconcile",
+        retained_ids: [],
+        abandoned_ids: [],
+        startup: true,
+    });
 });
