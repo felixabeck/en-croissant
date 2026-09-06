@@ -6556,3 +6556,18 @@ Precision, from the Codex review-correctness lens over ea65d4b1: the refusal is 
 * **Defect:** a Rust command stays registered, Specta-exported and renderer-reachable after its last caller is deleted, and nothing flags it: `f-20260830-25` counted eight such commands on 2026-08-30 (three deleted by the capability-surface run, two filed as unwired consumers `f-20260906-07`/`-08`, three filed as superseded). The class regrows silently with every renderer refactor.
 * **Fix shape:** a checker rule that proves a *call*, not a mention — six review lenses in the capability-surface run measured that whole-word counting over `src/**` is satisfied by a comment, a mock key (`analyzeGame: vi.fn()`), a string or a type name. The honest shape is syntactic: parse `src/**/*.{ts,tsx}` for member accesses on the `tauri` facade (`tauri.<name>(`, or a destructured/aliased form the parser can resolve) and for `commands.<name>` in `src/platform/`, compare against the `async <name>(` methods of the generated `commands` object, and report each command with zero call sites unless an allowlist entry names the finding that owns the exception (`cancelDownload: f-20260906-07`, `setFileAsExecutable: f-20260906-08`); an allowlist entry whose command has gained a caller, or no longer exists, is itself a violation so the list cannot rot. Tests: an unreferenced command; a command referenced only in a comment / a mock / a string; a stale allowlist entry; the real tree clean. Filed rather than built in the capability-surface run because it is its own design (parser choice, facade shapes) and the lens contract asks that a plan review not absorb a separate design question.
 * **Found by:** review-root-cause (Claude Opus fallback, round 2, and Codex, round 3) over the capability-surface plan, 2026-09-06; carried by Claude Code.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### Findings breadcrumb failure discards the captured cause
+* **ID:** f-20260906-13 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+
+* **Where:** `scripts/findings.py:272-288`, canonical `~/Projekte/agent-kit/scripts/findings.py`, introduced here by vendored sync `33559689`.
+* **Defect:** `append_drain_breadcrumb` captures subprocess stderr but catches every exception without retaining its cause. A missing/unreadable helper and a failed shell invocation both emit only `breadcrumb not written: <step-file>`. The successful ledger update is intentional; losing its auxiliary failure diagnosis is unnecessary.
+* **Evidence:** On 2026-09-06, called the real vendored function through runpy with DRAIN_STEP_FILE pointing to a scratch path and DRAIN_BREADCRUMB_LIB pointing to a nonexistent scratch file. It exited 0 and emitted only `breadcrumb not written: /tmp/chessfable-native-reads-20260906/nonexistent-step`, with no missing-library cause. Error-handling lens confidence 96.
+* **Fix direction:** Preserve nonfatal ledger success and exactly one useful warning while retaining a safe failure reason or captured helper diagnostic. Change the canonical kit producer and its missing-helper tests, commit it, then guarded-sync the vendored copy. Never edit this generated copy independently.
+* **Related:** f-20260829-14 also concerned lost failure context, but in the separate atomic-write cleanup mechanism; no shared Root is established. f-20260830-15 governs canonical-copy parity and is already handled.
+* **Why deferred:** This run implements the native-fs descriptor-read cluster. Breadcrumb diagnostics belong to shared agent-kit tooling and its separate test/propagation contract; the native correction does not depend on changing them.
+* **Handoff:** `tasks/handoffs/2026-09-06-breadcrumb-failure-context.md`.
