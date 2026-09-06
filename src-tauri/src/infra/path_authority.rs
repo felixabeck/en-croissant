@@ -4715,7 +4715,9 @@ mod tests {
             .atomic_replace_leaf_identified(OsStr::new("image.png"), |file| {
                 file.write_all(b"descriptor bytes").map_err(Error::from)
             })
-            .unwrap();
+            .unwrap()
+            .0
+            .expect_durable();
 
         assert_eq!(
             fs::read(original.join("image.png")).unwrap(),
@@ -5102,7 +5104,8 @@ mod tests {
             .unwrap();
         destination
             .atomic_replace_download(|file| file.write_all(b"download").map_err(Error::from))
-            .unwrap();
+            .unwrap()
+            .expect_durable();
         assert_eq!(fs::read(dir.path().join("new.pgn")).unwrap(), b"download");
     }
 
@@ -5382,19 +5385,9 @@ mod tests {
             installed_ctime_nanos: None,
         });
 
-        struct ParentSync;
-        impl AtomicWriterInjector for ParentSync {
-            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-                if point == AtomicFileFaultPoint::ParentSync {
-                    Err(std::io::Error::other(
-                        "/private/registry: injected sync failure",
-                    ))
-                } else {
-                    Ok(())
-                }
-            }
-        }
-        set_test_atomic_file_injector(Some(Arc::new(ParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "/private/registry: injected sync failure",
+        ))));
         let mut dropped_engine_executables = Vec::new();
         let durability = authority
             .remove_workspace_entry(
@@ -6284,17 +6277,9 @@ mod tests {
                 availability: PathAvailability::Available,
             },
         );
-        struct ParentSync;
-        impl AtomicWriterInjector for ParentSync {
-            fn inject(&self, p: AtomicFileFaultPoint) -> std::io::Result<()> {
-                if p == AtomicFileFaultPoint::ParentSync {
-                    Err(std::io::Error::other("uncertain"))
-                } else {
-                    Ok(())
-                }
-            }
-        }
-        set_test_atomic_file_injector(Some(Arc::new(ParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
         assert!(matches!(
             a.commit_candidate(candidate, Some(&dialog)).unwrap(),
             CommitDurability::DurabilityUncertain(_)
@@ -6326,7 +6311,8 @@ mod tests {
             .unwrap();
         resolved
             .atomic_replace_download(|file| file.write_all(b"1. e4 e5").map_err(Error::from))
-            .unwrap();
+            .unwrap()
+            .expect_durable();
         let artifact = authority
             .register_downloaded_pgn(&root_id, OsStr::new("games.pgn"))
             .unwrap();
@@ -6370,7 +6356,8 @@ mod tests {
                 )
                 .unwrap()
                 .atomic_replace_download(|file| file.write_all(b"1. e4").map_err(Error::from))
-                .unwrap();
+                .unwrap()
+                .expect_durable();
             authority
                 .mark_download_artifact_committed(
                     &reservation,
@@ -7433,18 +7420,6 @@ mod tests {
         assert!(file_reader.into_read_file().is_err());
     }
 
-    struct AlwaysParentSync;
-
-    impl AtomicWriterInjector for AlwaysParentSync {
-        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point == AtomicFileFaultPoint::ParentSync {
-                Err(std::io::Error::other("uncertain"))
-            } else {
-                Ok(())
-            }
-        }
-    }
-
     fn writable_root(
         dir: &tempfile::TempDir,
         operations: Vec<PathOperation>,
@@ -7475,7 +7450,9 @@ mod tests {
         let (mut authority, root) =
             writable_root(&dir, vec![PathOperation::ReadPgn, PathOperation::WritePgn]);
         fs::write(dir.path().join("root/game.pgn"), b"*").unwrap();
-        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
         let error = authority
             .register_workspace_child(
                 &FileWorkspaceHandle::new(root),
@@ -7500,7 +7477,9 @@ mod tests {
         let root = authority
             .get_or_create_database_root(&root_path, "databases", None)
             .unwrap();
-        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
         let error = authority
             .create_database_child(&root, OsStr::new("created.db3"))
             .expect_err("uncertain registry durability must be surfaced");
@@ -7528,7 +7507,9 @@ mod tests {
         let root = app.id.clone();
         let mut authority =
             PathAuthority::open(dir.path().join("registry.json"), vec![app]).unwrap();
-        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
         let error = authority
             .register_downloaded_pgn(&root, OsStr::new("games.pgn"))
             .expect_err("uncertain registry durability must be surfaced");
@@ -7550,7 +7531,9 @@ mod tests {
         let root = app.id.clone();
         let mut authority =
             PathAuthority::open(dir.path().join("registry.json"), vec![app]).unwrap();
-        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
         let error = authority
             .register_download_artifact(
                 &root,
@@ -7599,7 +7582,9 @@ mod tests {
                 1,
             )
             .unwrap();
-        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
         let engine_handle = authority
             .register_engine_file(&engine, "engine")
             .expect("adopted engine handle");
@@ -7658,7 +7643,9 @@ mod tests {
         let engine = authority
             .get_or_create_engine_root(&engine_path, "engines", None)
             .unwrap();
-        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
         authority.set_active_database_root(&database).unwrap();
         authority.set_active_puzzle_root(&puzzle).unwrap();
         authority.set_active_engine_root(&engine).unwrap();
@@ -7690,7 +7677,9 @@ mod tests {
             )
             .unwrap();
         fs::rename(&old, &new).unwrap();
-        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
         let error = authority
             .rebind_workspace_entry(&handle, &new, "new")
             .expect_err("uncertain registry durability must be surfaced");
@@ -7720,7 +7709,9 @@ mod tests {
             )
             .unwrap();
         fs::rename(&old, &new).unwrap();
-        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
         let error = authority
             .rebase_workspace_entries(&old, &new)
             .expect_err("uncertain registry durability must be surfaced");
@@ -7754,7 +7745,9 @@ mod tests {
                 vec![PathOperation::ReadPgn],
             )
             .unwrap();
-        set_test_atomic_file_injector(Some(Arc::new(AlwaysParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
         authority.abandon_download_artifact(&first);
         set_test_atomic_file_injector(None);
         assert!(authority.pending_artifacts.is_empty());

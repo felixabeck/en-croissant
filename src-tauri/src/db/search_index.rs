@@ -269,15 +269,10 @@ impl SearchIndexChunk {
     }
 
     pub fn write_to<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
-        match self.write_to_with_source(path, IndexSource::default())? {
-            AtomicFileOutcome::DurableCommit => Ok(()),
-            AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
-                log::warn!("search index parent sync failed: {error}");
-                Err(Error::CommittedDurabilityUncertain(
-                    DurabilityStage::SearchIndexReplacement,
-                ))
-            }
-        }
+        crate::infra::fs::require_durable(
+            self.write_to_with_source(path, IndexSource::default())?,
+            DurabilityStage::SearchIndexReplacement,
+        )
     }
 
     pub fn write_to_with_source<P: AsRef<Path>>(
@@ -921,22 +916,8 @@ fn legacy_file_identity_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infra::fs::{
-        open_verified_parent, set_test_atomic_file_injector, AtomicFileFaultPoint,
-        AtomicWriterInjector,
-    };
+    use crate::infra::fs::{open_verified_parent, set_test_atomic_file_injector};
     use tempfile::tempdir;
-
-    struct ParentSyncFailure;
-    impl AtomicWriterInjector for ParentSyncFailure {
-        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point == AtomicFileFaultPoint::ParentSync {
-                Err(std::io::Error::other("injected parent sync failure"))
-            } else {
-                Ok(())
-            }
-        }
-    }
 
     #[test]
     fn test_roundtrip() {
@@ -1480,7 +1461,8 @@ mod tests {
         let source = IndexSource::from_database(&database, 0).unwrap();
         SearchIndexChunk::default()
             .write_to_with_source(&legacy, source)
-            .unwrap();
+            .unwrap()
+            .expect_durable();
         let preferred = get_index_path(&database);
         assert_eq!(
             promote_legacy_index_sidecar(&database).unwrap(),
@@ -1498,7 +1480,8 @@ mod tests {
                 &collision_legacy,
                 IndexSource::from_database(&collision_database, 0).unwrap(),
             )
-            .unwrap();
+            .unwrap()
+            .expect_durable();
         std::fs::write(&collision_preferred, b"preferred").unwrap();
         assert_eq!(
             promote_legacy_index_sidecar(&collision_database).unwrap(),
@@ -1531,12 +1514,15 @@ mod tests {
                 &legacy,
                 IndexSource::from_database_identity(&identity).unwrap(),
             )
-            .unwrap();
+            .unwrap()
+            .expect_durable();
         let (parent, database_leaf) = open_verified_parent(&database, object, false).unwrap();
         let preferred_leaf = preferred_sidecar_leaf(&database_leaf);
         let legacy_leaf = legacy_sidecar_leaf(&database_leaf);
 
-        set_test_atomic_file_injector(Some(Arc::new(ParentSyncFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "injected parent sync failure",
+        ))));
         let result =
             promote_legacy_index_sidecar_at(&parent, &preferred_leaf, &legacy_leaf, &identity);
         set_test_atomic_file_injector(None);
@@ -1555,7 +1541,9 @@ mod tests {
     fn search_index_write_to_reports_uncertain_parent_sync() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("uncertain.ecsi");
-        set_test_atomic_file_injector(Some(Arc::new(ParentSyncFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "injected parent sync failure",
+        ))));
         let result = SearchIndexChunk::default().write_to(&path);
         set_test_atomic_file_injector(None);
 
@@ -1596,7 +1584,8 @@ mod tests {
         assert_eq!(shared_legacy, legacy_index_path(&sqlite));
         SearchIndexChunk::default()
             .write_to_with_source(&shared_legacy, IndexSource::from_database(&db3, 0).unwrap())
-            .unwrap();
+            .unwrap()
+            .expect_durable();
 
         assert_eq!(promote_legacy_index_sidecar(&sqlite).unwrap(), None);
         assert!(shared_legacy.exists());
@@ -1639,7 +1628,8 @@ mod tests {
         let path = get_index_path(&database);
         SearchIndexChunk::default()
             .write_to_with_source(&path, source.clone())
-            .unwrap();
+            .unwrap()
+            .expect_durable();
         assert_eq!(MmapSearchIndex::open(&path).unwrap().source(), &source);
     }
 
@@ -1688,10 +1678,12 @@ mod tests {
         let second_index = get_index_path(&second_database);
         SearchIndexChunk::default()
             .write_to_with_source(&first_index, first_source.clone())
-            .unwrap();
+            .unwrap()
+            .expect_durable();
         SearchIndexChunk::default()
             .write_to_with_source(&second_index, second_source.clone())
-            .unwrap();
+            .unwrap()
+            .expect_durable();
 
         assert_eq!(
             MmapSearchIndex::open(first_index).unwrap().source(),

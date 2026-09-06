@@ -567,11 +567,11 @@ fn save_native_export_blocking(
             "export must use .{extension} extension"
         )));
     }
-    crate::infra::fs::atomic_replace(&path, |file| {
+    let outcome = crate::infra::fs::atomic_replace(&path, |file| {
         file.write_all(&bytes).map_err(Error::from)?;
         Ok(())
     })?;
-    Ok(())
+    crate::infra::fs::require_durable(outcome, crate::error::DurabilityStage::NativeExport)
 }
 
 /// Native save dialog and atomic export for a renderer-produced board image.
@@ -1964,6 +1964,24 @@ mod tests {
         );
         guard.finish();
         assert!(matches!(guard.request(), ExitDecision::AllowExit));
+    }
+
+    #[test]
+    fn native_export_keeps_the_file_and_reports_uncertain_durability() {
+        let directory = tempfile::tempdir().expect("export directory");
+        let path = directory.path().join("board.png");
+        crate::infra::fs::set_test_atomic_file_injector(Some(std::sync::Arc::new(
+            crate::infra::fs::ParentSyncFault("uncertain"),
+        )));
+        let error = save_native_export_blocking(path.clone(), "png".into(), b"png".to_vec())
+            .expect_err("uncertain durability must be surfaced");
+        crate::infra::fs::set_test_atomic_file_injector(None);
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::NativeExport)
+        ));
+        assert_eq!(std::fs::read(&path).expect("exported file"), b"png");
+        assert!(save_native_export_blocking(path, "png".into(), b"png".to_vec()).is_ok());
     }
 
     #[tokio::test]

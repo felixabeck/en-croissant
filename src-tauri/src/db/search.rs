@@ -776,10 +776,7 @@ mod tests {
             ops::{create_event, create_game, create_player, create_site},
             SearchIndexChunk,
         },
-        infra::{
-            fs::{set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector},
-            path_authority::PathClass,
-        },
+        infra::{fs::set_test_atomic_file_injector, path_authority::PathClass},
     };
     use diesel::Connection;
     use std::sync::Arc;
@@ -846,7 +843,8 @@ mod tests {
         let (_dir, app, handle, database) = loader_test_case(vec![PathOperation::DatabaseRead]);
         SearchIndexChunk::default()
             .write_to_with_source(get_index_path(&database), loader_source(&app, &database))
-            .unwrap();
+            .unwrap()
+            .expect_durable();
 
         let loaded = {
             let state = app.state::<AppState>();
@@ -867,7 +865,8 @@ mod tests {
         let legacy = legacy_index_path(&legacy_database);
         SearchIndexChunk::default()
             .write_to_with_source(&legacy, loader_source(&legacy_app, &legacy_database))
-            .unwrap();
+            .unwrap()
+            .expect_durable();
         let result = {
             let state = legacy_app.state::<AppState>();
             load_search_index(
@@ -899,22 +898,13 @@ mod tests {
 
     #[test]
     fn search_index_generation_parent_sync_loads_committed_index() {
-        struct ParentSyncFailure;
-        impl AtomicWriterInjector for ParentSyncFailure {
-            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-                if point == AtomicFileFaultPoint::ParentSync {
-                    Err(std::io::Error::other("injected parent sync failure"))
-                } else {
-                    Ok(())
-                }
-            }
-        }
-
         let (_dir, app, handle, database) = loader_test_case(vec![
             PathOperation::DatabaseRead,
             PathOperation::DatabaseMutate,
         ]);
-        set_test_atomic_file_injector(Some(Arc::new(ParentSyncFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "injected parent sync failure",
+        ))));
         let result = {
             let state = app.state::<AppState>();
             load_search_index(

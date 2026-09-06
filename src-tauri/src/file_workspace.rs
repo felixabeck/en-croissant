@@ -770,14 +770,29 @@ fn rename_workspace_file_blocking(
     let target_leaf = std::ffi::OsString::from(&filename);
     paired_rename(&source, &source.parent, &target_leaf)?;
     let info_leaf = sidecar_leaf(&target_leaf)?;
-    crate::infra::fs::atomic_replace_at(&source.parent, &info_leaf, |file| {
-        use std::io::Write;
-        file.write_all(
-            &serde_json::to_vec(&metadata).map_err(|e| Error::InvalidInput(e.to_string()))?,
-        )
-        .map_err(Error::from)
-    })?;
-    rebind_after_move(pgn_path_authority, &entry, &source, &target)
+    let sidecar_outcome =
+        crate::infra::fs::atomic_replace_at(&source.parent, &info_leaf, |file| {
+            use std::io::Write;
+            file.write_all(
+                &serde_json::to_vec(&metadata).map_err(|e| Error::InvalidInput(e.to_string()))?,
+            )
+            .map_err(Error::from)
+        })?;
+    // The PGN rename and the sidecar rename both landed; the registry must follow them even
+    // when the sidecar's parent sync is uncertain, so the rebind happens before reporting. The
+    // first uncertain stage is the one reported, as in `create_workspace_file_blocking`; a
+    // rebind failure that is not an uncertainty outranks it.
+    let sidecar_uncertainty = durability_uncertainty(
+        sidecar_outcome,
+        crate::error::DurabilityStage::WorkspaceSidecarReplacement,
+    );
+    let rebind = rebind_after_move(pgn_path_authority, &entry, &source, &target);
+    match (sidecar_uncertainty, rebind) {
+        (Some(stage), Ok(()) | Err(Error::CommittedDurabilityUncertain(_))) => {
+            Err(Error::CommittedDurabilityUncertain(stage))
+        }
+        (_, result) => result,
+    }
 }
 
 #[tauri::command]
@@ -1608,23 +1623,125 @@ mod tests {
         );
     }
 
+    /// Creates `before.pgn` with an empty tag list, renames it to `after.pgn` with the tag
+    /// `renamed` under `injector`, and returns the workspace root, the entry handle and the
+    /// rename result.
+    fn rename_under_injector(
+        injector: Option<Arc<dyn AtomicWriterInjector + Send + Sync>>,
+    ) -> (
+        TempDir,
+        AppState,
+        PathBuf,
+        FileWorkspaceHandle,
+        Result<(), Error>,
+    ) {
+        let (directory, state, workspace) = workspace_state();
+        let created = create_workspace_file_blocking(
+            workspace.clone(),
+            workspace.clone(),
+            "before".into(),
+            WorkspaceMetadata {
+                file_type: WorkspaceFileType::Game,
+                tags: vec![],
+            },
+            "*".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+        )
+        .expect("created file");
+        let root = mutation_target(&state.pgn_path_authority, &workspace)
+            .expect("workspace target")
+            .path()
+            .to_path_buf();
+        set_test_atomic_file_injector(injector);
+        let result = rename_workspace_file_blocking(
+            workspace,
+            created.handle.clone(),
+            "after".into(),
+            WorkspaceMetadata {
+                file_type: WorkspaceFileType::Game,
+                tags: vec!["renamed".into()],
+            },
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+        );
+        set_test_atomic_file_injector(None);
+        (directory, state, root, created.handle, result)
+    }
+
+    /// The rename, the sidecar rewrite and the registry rebind all landed, whatever the result.
+    fn assert_rename_landed(state: &AppState, root: &Path, handle: &FileWorkspaceHandle) {
+        assert!(root.join("after.pgn").is_file());
+        assert!(!root.join("before.pgn").exists());
+        assert!(!root.join("before.info").exists());
+        let sidecar: WorkspaceMetadata =
+            serde_json::from_slice(&fs::read(root.join("after.info")).expect("renamed sidecar"))
+                .expect("sidecar is the metadata JSON");
+        assert_eq!(sidecar.tags, vec!["renamed".to_string()]);
+        let rebound = mutation_target(&state.pgn_path_authority, handle)
+            .expect("renamed entry stays registered");
+        assert_eq!(rebound.path(), root.join("after.pgn"));
+    }
+
     #[test]
-    fn create_workspace_directory_parent_sync_keeps_completed_directory() {
-        struct ParentSync;
-        impl AtomicWriterInjector for ParentSync {
+    fn rename_workspace_file_moves_pgn_sidecar_and_registry_entry() {
+        let (_directory, state, root, handle, result) = rename_under_injector(None);
+        result.expect("durable rename");
+        assert_rename_landed(&state, &root, &handle);
+    }
+
+    #[test]
+    fn rename_workspace_file_reports_uncertain_sidecar_after_a_durable_rebind() {
+        // Fails only the first parent sync, which is the sidecar rewrite; the registry rebind
+        // that follows commits durably, so the `(Some(stage), Ok(()))` arm is the one exercised.
+        struct FirstParentSyncFault(std::sync::atomic::AtomicBool);
+        impl AtomicWriterInjector for FirstParentSyncFault {
             fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-                if point == AtomicFileFaultPoint::ParentSync {
+                if point == AtomicFileFaultPoint::ParentSync
+                    && !self.0.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
                     Err(std::io::Error::other("uncertain"))
                 } else {
                     Ok(())
                 }
             }
         }
+        let (_directory, state, root, handle, result) = rename_under_injector(Some(Arc::new(
+            FirstParentSyncFault(std::sync::atomic::AtomicBool::new(false)),
+        )));
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceSidecarReplacement
+            ))
+        ));
+        assert_rename_landed(&state, &root, &handle);
+    }
 
+    #[test]
+    fn rename_workspace_file_reports_the_sidecar_stage_over_a_registry_uncertainty() {
+        // Every parent sync fails: the sidecar rewrite and the registry rebind are both
+        // uncertain, and the first stage is the one reported.
+        let (_directory, state, root, handle, result) = rename_under_injector(Some(Arc::new(
+            crate::infra::fs::ParentSyncFault("uncertain"),
+        )));
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceSidecarReplacement
+            ))
+        ));
+        assert_rename_landed(&state, &root, &handle);
+    }
+
+    #[test]
+    fn create_workspace_directory_parent_sync_keeps_completed_directory() {
         let (_directory, state, workspace) = workspace_state();
         let root =
             mutation_target(&state.pgn_path_authority, &workspace).expect("workspace target");
-        set_test_atomic_file_injector(Some(Arc::new(ParentSync)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
         let error = create_workspace_directory_inner(
             workspace.clone(),
             workspace,

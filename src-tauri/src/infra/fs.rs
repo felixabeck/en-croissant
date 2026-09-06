@@ -57,9 +57,23 @@ mod verified_directory {
 pub(crate) use verified_directory::VerifiedDir;
 
 #[derive(Debug)]
+#[must_use = "the rename may have landed without a durable parent; decide what CommittedDurabilityUncertain means at this site"]
 pub enum AtomicFileOutcome {
     DurableCommit,
     CommittedDurabilityUncertain(std::io::Error),
+}
+
+impl AtomicFileOutcome {
+    /// Test assertion: a replacement inside a fresh temporary directory has no reason to lose
+    /// its parent sync, so a test that only needs the file placed asserts that rather than
+    /// discarding the outcome.
+    #[cfg(test)]
+    #[track_caller]
+    pub(crate) fn expect_durable(self) {
+        if let Self::CommittedDurabilityUncertain(error) = self {
+            panic!("atomic replacement lost its parent sync: {error}");
+        }
+    }
 }
 
 pub(crate) fn map_atomic_file_outcome(
@@ -73,6 +87,21 @@ pub(crate) fn map_atomic_file_outcome(
             on_uncertain(&error);
             Some(stage)
         }
+    }
+}
+
+/// The contract for a caller that has nothing left to do after the replacement: the rename
+/// landed either way, so the state is kept and uncertain durability is reported as
+/// `Error::CommittedDurabilityUncertain(stage)` after logging the cause.
+pub(crate) fn require_durable(
+    outcome: AtomicFileOutcome,
+    stage: crate::error::DurabilityStage,
+) -> Result<(), Error> {
+    match map_atomic_file_outcome(outcome, stage, |error| {
+        log::warn!("{stage} parent sync failed: {error}");
+    }) {
+        None => Ok(()),
+        Some(stage) => Err(Error::CommittedDurabilityUncertain(stage)),
     }
 }
 
@@ -103,6 +132,22 @@ pub(crate) enum AtomicFileFaultPoint {
 pub(crate) trait AtomicWriterInjector {
     fn inject(&self, _: AtomicFileFaultPoint) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+/// Test injector that fails only the parent-directory sync, producing
+/// `AtomicFileOutcome::CommittedDurabilityUncertain` with the given cause.
+#[cfg(test)]
+pub(crate) struct ParentSyncFault(pub(crate) &'static str);
+
+#[cfg(test)]
+impl AtomicWriterInjector for ParentSyncFault {
+    fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+        if point == AtomicFileFaultPoint::ParentSync {
+            Err(std::io::Error::other(self.0))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -2721,7 +2766,8 @@ mod tests {
         atomic_replace_at(&parent, std::ffi::OsStr::new("artifact.pgn"), |file| {
             file.write_all(b"exact").map_err(io)
         })
-        .expect("fd-relative replace");
+        .expect("fd-relative replace")
+        .expect_durable();
         assert_eq!(
             std::fs::read(dir.path().join("artifact.pgn")).expect("read"),
             b"exact"
@@ -2842,7 +2888,9 @@ mod tests {
             std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640))
                 .expect("mode");
         }
-        atomic_replace(&target, |file| file.write_all(b"new").map_err(io)).expect("replace");
+        atomic_replace(&target, |file| file.write_all(b"new").map_err(io))
+            .expect("replace")
+            .expect_durable();
         assert_eq!(std::fs::read(&target).expect("read"), b"new");
         #[cfg(unix)]
         {
@@ -2878,7 +2926,8 @@ mod tests {
             },
             |file| file.write_all(b"new").map_err(io),
         )
-        .expect("replace");
+        .expect("replace")
+        .expect_durable();
         set_test_atomic_file_injector(None);
         assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(std::fs::read(&target).expect("target"), b"new");
@@ -3053,7 +3102,8 @@ mod tests {
             atomic_replace(&root.path().join("target"), |f| {
                 f.write_all(b"new").map_err(io)
             })
-            .expect("retry");
+            .expect("retry")
+            .expect_durable();
             assert_eq!(
                 std::fs::read(root.path().join("target")).expect("target"),
                 b"new"

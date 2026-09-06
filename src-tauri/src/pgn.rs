@@ -449,18 +449,6 @@ fn copy_range(
     Ok(())
 }
 
-fn outcome(result: crate::infra::fs::AtomicFileOutcome) -> Result<(), Error> {
-    if let Some(stage) = crate::infra::fs::map_atomic_file_outcome(
-        result,
-        crate::error::DurabilityStage::PgnEdit,
-        |error| log::warn!("PGN edit parent sync failed: {error}"),
-    ) {
-        Err(Error::CommittedDurabilityUncertain(stage))
-    } else {
-        Ok(())
-    }
-}
-
 fn edit_existing(
     resolved: &crate::infra::path_authority::ResolvedPath,
     expected: CacheKey,
@@ -472,7 +460,7 @@ fn edit_existing(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    outcome(resolved.replace_pgn_atomic(&snapshot, |source, temporary| {
+    let outcome = resolved.replace_pgn_atomic(&snapshot, |source, temporary| {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
@@ -511,7 +499,8 @@ fn edit_existing(
             cancellation,
         )?;
         Ok(())
-    })?)
+    })?;
+    crate::infra::fs::require_durable(outcome, crate::error::DurabilityStage::PgnEdit)
 }
 
 #[tauri::command]
@@ -750,6 +739,63 @@ mod tests {
         resolved_for(directory, path)
             .pgn_snapshot()
             .expect("snapshot PGN")
+    }
+
+    fn writable_for(
+        directory: &tempfile::TempDir,
+        path: &Path,
+    ) -> crate::infra::path_authority::ResolvedPath {
+        let mut authority = crate::infra::path_authority::PathAuthority::open(
+            directory.path().join("registry.json"),
+            vec![],
+        )
+        .expect("open path authority");
+        let descriptor = authority
+            .create_pgn_export_destination(path, "test PGN")
+            .expect("register PGN");
+        authority
+            .resolve(
+                descriptor.handle.path_ref(),
+                crate::infra::path_authority::PathOperation::WritePgn,
+                &[],
+            )
+            .expect("resolve writable PGN")
+    }
+
+    #[test]
+    fn edit_existing_keeps_the_replacement_and_reports_uncertain_pgn_edit() {
+        let directory = tempfile::tempdir().expect("PGN directory");
+        let path = directory.path().join("games.pgn");
+        std::fs::write(&path, "[Event \"before\"]\n\n1. e4 *\n").expect("PGN");
+        let resolved = writable_for(&directory, &path);
+        let snapshot = resolved.pgn_snapshot().expect("snapshot");
+        let key = snapshot_key(&snapshot);
+        let range = GameRange {
+            start: 0,
+            end: snapshot.revision.size,
+        };
+        crate::infra::fs::set_test_atomic_file_injector(Some(std::sync::Arc::new(
+            crate::infra::fs::ParentSyncFault("uncertain"),
+        )));
+        let result = edit_existing(
+            &resolved,
+            key,
+            snapshot,
+            range,
+            Some(b"[Event \"after\"]\n\n1. d4 *\n".to_vec()),
+            &CancellationToken::new(),
+        );
+        crate::infra::fs::set_test_atomic_file_injector(None);
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::PgnEdit
+            ))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("edited PGN"),
+            "[Event \"after\"]\n\n1. d4 *\n"
+        );
     }
 
     fn key_with_size(key: &CacheKey, size: u64) -> CacheKey {

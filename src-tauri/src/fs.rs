@@ -593,13 +593,10 @@ where
                     std::io::copy(&mut file, target_file)?;
                     Ok(())
                 })?;
-                if let Some(stage) = crate::infra::fs::map_atomic_file_outcome(
+                crate::infra::fs::require_durable(
                     outcome,
                     crate::error::DurabilityStage::ArchiveFileReplacement,
-                    |error| log::warn!("archive file replacement parent sync failed: {error}"),
-                ) {
-                    return Err(Error::CommittedDurabilityUncertain(stage));
-                }
+                )?;
             }
             if cancellation.is_cancelled() {
                 return Err(Error::Cancellation);
@@ -1460,14 +1457,7 @@ fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) ->
         }
         Ok(())
     })?;
-    if let Some(stage) = crate::infra::fs::map_atomic_file_outcome(
-        outcome,
-        crate::error::DurabilityStage::GzipFileReplacement,
-        |error| log::warn!("gzip file replacement parent sync failed: {error}"),
-    ) {
-        return Err(Error::CommittedDurabilityUncertain(stage));
-    }
-    Ok(())
+    crate::infra::fs::require_durable(outcome, crate::error::DurabilityStage::GzipFileReplacement)
 }
 
 fn bounded_copy(

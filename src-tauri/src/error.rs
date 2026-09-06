@@ -11,6 +11,7 @@ pub enum DurabilityStage {
     DirectoryInstall,
     DownloadTargetReplacement,
     GzipFileReplacement,
+    NativeExport,
     OldDirectoryCleanup,
     OldDirectoryCleanupSync,
     PgnEdit,
@@ -19,6 +20,7 @@ pub enum DurabilityStage {
     WorkspacePgnCreation,
     WorkspaceRemoval,
     WorkspaceSidecarCreation,
+    WorkspaceSidecarReplacement,
 }
 
 impl std::fmt::Display for DurabilityStage {
@@ -35,6 +37,7 @@ impl std::fmt::Display for DurabilityStage {
             Self::DirectoryInstall => "directory installation",
             Self::DownloadTargetReplacement => "download target replacement",
             Self::GzipFileReplacement => "gzip file replacement",
+            Self::NativeExport => "native export",
             Self::OldDirectoryCleanup => "old directory cleanup",
             Self::OldDirectoryCleanupSync => "old directory cleanup sync",
             Self::PgnEdit => "PGN edit",
@@ -43,6 +46,7 @@ impl std::fmt::Display for DurabilityStage {
             Self::WorkspacePgnCreation => "workspace PGN creation",
             Self::WorkspaceRemoval => "workspace removal",
             Self::WorkspaceSidecarCreation => "workspace sidecar creation",
+            Self::WorkspaceSidecarReplacement => "workspace sidecar replacement",
         })
     }
 }
@@ -497,11 +501,14 @@ mod tests {
     #[test]
     fn every_durability_label_serializes_without_native_diagnostics() {
         let stages = [
+            DurabilityStage::ArchiveCommitMarker,
             DurabilityStage::ArchiveFileReplacement,
+            DurabilityStage::ArchiveReservationJournal,
             DurabilityStage::DatabasePgnReplacement,
             DurabilityStage::DirectoryInstall,
             DurabilityStage::DownloadTargetReplacement,
             DurabilityStage::GzipFileReplacement,
+            DurabilityStage::NativeExport,
             DurabilityStage::OldDirectoryCleanup,
             DurabilityStage::OldDirectoryCleanupSync,
             DurabilityStage::PgnEdit,
@@ -510,6 +517,7 @@ mod tests {
             DurabilityStage::WorkspacePgnCreation,
             DurabilityStage::WorkspaceRemoval,
             DurabilityStage::WorkspaceSidecarCreation,
+            DurabilityStage::WorkspaceSidecarReplacement,
         ];
         for stage in stages {
             let serialized = serde_json::to_string(&Error::CommittedDurabilityUncertain(stage))
@@ -551,17 +559,6 @@ mod tests {
             .expect("captured log mutex poisoned")
             .clear();
 
-        struct ParentSyncFailure;
-        impl crate::infra::fs::AtomicWriterInjector for ParentSyncFailure {
-            fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
-                if point == crate::infra::fs::AtomicFileFaultPoint::ParentSync {
-                    Err(std::io::Error::other(CAUSE))
-                } else {
-                    Ok(())
-                }
-            }
-        }
-
         struct ResetAtomicInjector;
         impl Drop for ResetAtomicInjector {
             fn drop(&mut self) {
@@ -578,7 +575,7 @@ mod tests {
         )
         .expect("path authority");
         crate::infra::fs::set_test_atomic_file_injector(Some(std::sync::Arc::new(
-            ParentSyncFailure,
+            crate::infra::fs::ParentSyncFault(CAUSE),
         )));
         let _reset = ResetAtomicInjector;
         let commit = authority

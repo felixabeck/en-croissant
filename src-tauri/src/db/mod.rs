@@ -19,7 +19,7 @@ use crate::{
     error::Error,
     infra::{
         blocking::BLOCKING_GATEWAY,
-        fs::{remove_optional_regular_at, AtomicFileOutcome},
+        fs::remove_optional_regular_at,
         path_authority::{
             DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathAuthority, PathOperation,
         },
@@ -762,15 +762,10 @@ fn generate_search_index_locked(
             })
         });
 
-    match search_index::write_entries_to_at(&target.parent, &index_leaf, source, rows)? {
-        AtomicFileOutcome::DurableCommit => {}
-        AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
-            log::warn!("search index parent sync failed: {error}");
-            return Err(Error::CommittedDurabilityUncertain(
-                crate::error::DurabilityStage::SearchIndexReplacement,
-            ));
-        }
-    }
+    crate::infra::fs::require_durable(
+        search_index::write_entries_to_at(&target.parent, &index_leaf, source, rows)?,
+        crate::error::DurabilityStage::SearchIndexReplacement,
+    )?;
     search_cache.invalidate_database(db_path);
 
     info!("Search index generated in {:?}", start.elapsed());
@@ -2384,15 +2379,10 @@ fn export_to_pgn_blocking(
             .load_iter::<(Game, Player, Player, Event, Site), DefaultLoadingMode>(db)?;
         write_pgn_rows(temporary, rows)
     })?;
-    if let Some(stage) = crate::infra::fs::map_atomic_file_outcome(
+    crate::infra::fs::require_durable(
         outcome,
         crate::error::DurabilityStage::DatabasePgnReplacement,
-        |error| log::warn!("database PGN replacement parent sync failed: {error}"),
-    ) {
-        Err(Error::CommittedDurabilityUncertain(stage))
-    } else {
-        Ok(())
-    }
+    )
 }
 
 fn write_pgn_rows<W, I>(destination: W, rows: I) -> Result<(), Error>
@@ -2867,7 +2857,8 @@ mod tests {
                 &shared_sidecar,
                 IndexSource::from_database(&collision_owner, 0).unwrap(),
             )
-            .unwrap();
+            .unwrap()
+            .expect_durable();
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
         let (parent, leaf) =
             crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
@@ -2894,7 +2885,8 @@ mod tests {
         assert_eq!(preferred, legacy_index_path(&database));
         SearchIndexChunk::default()
             .write_to_with_source(&preferred, expected_source.clone())
-            .unwrap();
+            .unwrap()
+            .expect_durable();
         let (parent, leaf) =
             crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
                 .unwrap();
@@ -3044,25 +3036,14 @@ mod tests {
 
     #[test]
     fn search_index_generation_reports_uncertain_parent_sync() {
-        use crate::infra::fs::{
-            set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
-        };
-
-        struct ParentSyncFailure;
-        impl AtomicWriterInjector for ParentSyncFailure {
-            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-                if point == AtomicFileFaultPoint::ParentSync {
-                    Err(std::io::Error::other("injected parent sync failure"))
-                } else {
-                    Ok(())
-                }
-            }
-        }
+        use crate::infra::fs::set_test_atomic_file_injector;
 
         let (_dir, app, handle, database) = blocking_database_case();
         let state = app.state::<AppState>();
 
-        set_test_atomic_file_injector(Some(Arc::new(ParentSyncFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "injected parent sync failure",
+        ))));
         let result = generate_search_index(
             &handle,
             &state.pgn_path_authority,
