@@ -1,11 +1,13 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import type { UseFormReturnType } from "@mantine/form";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { defaultEngineProgressId } from "@/utils/engines";
+import { defaultEngineProgressId, type LocalEngine } from "@/utils/engines";
 import AddEngine from "./AddEngine";
 
 const mocks = vi.hoisted(() => ({
   engines: [] as Array<{
+    id: string;
     type: "local";
     name: string;
     downloadLink?: string;
@@ -14,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   saveEngines: vi.fn(),
   submitLocal: undefined as undefined | ((value: unknown) => Promise<unknown>),
   localSaved: undefined as undefined | (() => void),
+  form: undefined as UseFormReturnType<LocalEngine> | undefined,
   defaultEngines: [
     {
       type: "local" as const,
@@ -66,7 +69,12 @@ vi.mock("@/components/files/notifyError", () => ({
   notifyUnlessCancelled: mocks.notifyUnlessCancelled,
 }));
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string) =>
+      key.startsWith("Common.Require") || key === "Common.NameAlreadyUsed"
+        ? `translated:${key}`
+        : key,
+  }),
 }));
 vi.mock("../common/AppModal", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -90,22 +98,25 @@ vi.mock("./EngineForm", () => ({
   default: ({
     onSubmit,
     onSaved,
+    form,
   }: {
     onSubmit: (value: unknown) => Promise<unknown>;
     onSaved?: () => void;
+    form: UseFormReturnType<LocalEngine>;
   }) => {
     mocks.submitLocal = onSubmit;
     mocks.localSaved = onSaved;
-    return null;
+    mocks.form = form;
+    return (
+      <form onSubmit={form.onSubmit(() => undefined)}>
+        <input aria-label="name" {...form.getInputProps("name")} />
+        <input aria-label="filename" {...form.getInputProps("filename")} />
+        <output data-testid="name-error">{form.errors.name}</output>
+        <output data-testid="filename-error">{form.errors.filename}</output>
+        <button type="submit">submit</button>
+      </form>
+    );
   },
-}));
-vi.mock("@mantine/form", () => ({
-  useForm: () => ({
-    values: {},
-    getInputProps: () => ({}),
-    setFieldValue: vi.fn(),
-    validate: {},
-  }),
 }));
 vi.mock("@mantine/core", () => ({
   Alert: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -144,6 +155,7 @@ beforeEach(() => {
   mocks.progressButtonProps = null;
   mocks.submitLocal = undefined;
   mocks.localSaved = undefined;
+  mocks.form = undefined;
   mocks.clearProgress.mockResolvedValue(1n);
   host = document.createElement("div");
   document.body.append(host);
@@ -158,6 +170,7 @@ afterEach(async () => {
 test("wires installed state and progress id from the download URL", async () => {
   mocks.engines = [
     {
+      id: "existing",
       type: "local",
       name: "My Fish",
       downloadLink: mocks.defaultEngines[0].downloadLink,
@@ -173,6 +186,33 @@ test("wires installed state and progress id from the download URL", async () => 
   expect(mocks.progressButtonProps?.id).not.toBe("engine_0");
   expect(mocks.progressButtonProps?.initInstalled).toBe(true);
   expect(mocks.progressButtonProps?.completeOnProgressSuccess).toBe(false);
+});
+
+test("renders translated validation errors from actual local form validation", async () => {
+  mocks.engines = [{ id: "existing", type: "local", name: "Stockfish" }];
+  await act(async () => root.render(<AddEngine opened setOpened={() => undefined} />));
+
+  const form = host.querySelector("form")!;
+  await act(async () => {
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  expect(host.querySelector('[data-testid="name-error"]')?.textContent).toBe(
+    "translated:Common.RequireName",
+  );
+  expect(host.querySelector('[data-testid="filename-error"]')?.textContent).toBe(
+    "translated:Common.RequirePath",
+  );
+
+  await act(async () => {
+    mocks.form?.setValues({ name: "Stockfish", filename: "stockfish" });
+  });
+  await act(async () => {
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  expect(host.querySelector('[data-testid="name-error"]')?.textContent).toBe(
+    "translated:Common.NameAlreadyUsed",
+  );
+  expect(host.querySelector('[data-testid="filename-error"]')?.textContent).toBe("");
 });
 
 test("a succeeded download that fails to register is not treated as installed", async () => {

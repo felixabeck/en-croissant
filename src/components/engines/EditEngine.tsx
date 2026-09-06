@@ -5,6 +5,7 @@ import { enginesAtom } from "@/state/atoms";
 import { replaceEngineById } from "@/utils/engineAttachments";
 import type { LocalEngine } from "@/utils/engines";
 import EngineForm from "./EngineForm";
+import { createEngineFormValidation } from "./engineFormValidation";
 
 export default function EditEngine({ initialEngine }: { initialEngine: LocalEngine }) {
   const { t } = useTranslation();
@@ -13,16 +14,7 @@ export default function EditEngine({ initialEngine }: { initialEngine: LocalEngi
   const form = useForm<LocalEngine>({
     initialValues: initialEngine,
 
-    validate: {
-      name: (value) => {
-        if (!value) return "Name is required";
-        if ((engines ?? []).find((e) => e.name === value && e !== initialEngine))
-          return "Name already used";
-      },
-      filename: (value) => {
-        if (!value) return "Path is required";
-      },
-    },
+    validate: createEngineFormValidation(engines ?? [], t, initialEngine.id),
   });
 
   return (
@@ -30,7 +22,12 @@ export default function EditEngine({ initialEngine }: { initialEngine: LocalEngi
       submitLabel={t("Common.Save")}
       form={form}
       onSubmit={async (values) => {
-        return setEngines((prev) => replaceEngineById(prev, initialEngine.id, values));
+        let targetPresent = false;
+        const receipt = await setEngines((prev) => {
+          targetPresent = prev.some((engine) => engine.id === initialEngine.id);
+          return targetPresent ? replaceEngineById(prev, initialEngine.id, values) : prev;
+        });
+        return targetPresent ? receipt : { ...receipt, saved: false, synchronized: false };
       }}
     />
   );

@@ -33,6 +33,7 @@ import { usePlatform } from "@/utils/files";
 import { formatBytes } from "@/utils/format";
 import ProgressButton from "../common/ProgressButton";
 import EngineForm from "./EngineForm";
+import { createEngineFormValidation } from "./engineFormValidation";
 
 function AddEngine({
   opened,
@@ -62,15 +63,7 @@ function AddEngine({
       elo: undefined,
     },
 
-    validate: {
-      name: (value) => {
-        if (!value) return t("Common.RequireName");
-        if (engines.find((e) => e.name === value)) return t("Common.NameAlreadyUsed");
-      },
-      filename: (value) => {
-        if (!value) return t("Common.RequirePath");
-      },
-    },
+    validate: createEngineFormValidation(engines, t),
   });
 
   return (
