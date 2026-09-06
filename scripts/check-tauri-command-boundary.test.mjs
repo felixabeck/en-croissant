@@ -216,7 +216,7 @@ describe("capability and CSP boundaries", () => {
 });
 
 describe("native-location and asset-protocol boundaries", () => {
-  function runFixture({ permissions = [], assetProtocol } = {}) {
+  function fixtureCase({ permissions = [], assetProtocol } = {}) {
     const config = JSON.parse(VALID_SECURITY_CONFIG);
     if (assetProtocol === null) {
       delete config.app.security.assetProtocol;
@@ -238,22 +238,23 @@ describe("native-location and asset-protocol boundaries", () => {
   test.each(["core:path:allow-resolve", "core:path:allow-resolve-directory"])(
     "rejects %s through the full boundary runner",
     (permission) => {
-      expect(runFixture({ permissions: [permission] })).toThrow(
+      expect(fixtureCase({ permissions: [permission] })).toThrow(
         /renderer native-location authority is forbidden/,
       );
     },
   );
 
   test("allows core:path:allow-join through the full boundary runner", () => {
-    expect(runFixture({ permissions: ["core:path:allow-join"] })).not.toThrow();
+    expect(fixtureCase({ permissions: ["core:path:allow-join"] })).not.toThrow();
   });
 
   test.each([
     ["a wider scope", { enable: true, scope: ["$APPDATA/**", "$RESOURCE/**"] }],
+    ["a wrong scope", { enable: true, scope: ["$APPDATA/**"] }],
     ["a disabled protocol", { enable: false, scope: ["$RESOURCE/**"] }],
     ["an absent block", null],
   ])("rejects %s through the full boundary runner", (_name, assetProtocol) => {
-    expect(runFixture({ assetProtocol })).toThrow(
+    expect(fixtureCase({ assetProtocol })).toThrow(
       /asset protocol must be enabled with scope exactly \$RESOURCE\/\*\*/,
     );
   });

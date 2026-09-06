@@ -4,12 +4,13 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts five things that no other gate in this repository can:
+// It asserts six things that no other gate in this repository can:
 //   1. the real binary starts, renders and answers script under WebKitGTK,
 //   2. the renderer cannot resolve a native base directory,
 //   3. the bounded sound-resource command names the bundled file,
-//   4. closing it through its own control runs the shutdown sequence to completion,
-//   5. nothing — app or WebKit service process — outlives that close.
+//   4. the bounded sound-resource command refuses an outside collection,
+//   5. closing it through its own control runs the shutdown sequence to completion,
+//   6. nothing — app or WebKit service process — outlives that close.
 
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
@@ -29,6 +30,7 @@ import {
 const screenshotIndex = process.argv.indexOf("--screenshot");
 const screenshotPath = screenshotIndex === -1 ? undefined : process.argv[screenshotIndex + 1];
 const BASE_DIRECTORY_APP_DATA = 14; // @tauri-apps/api BaseDirectory.AppData
+const IPC_PROBE_TIMEOUT_MS = 5_000;
 const closeControlProbe = `
   const labelled = document.querySelector('button[aria-label="Close window"]');
   const controls = document.querySelector('[class*="windowControls"]');
@@ -44,6 +46,32 @@ const check = (condition, description, detail) => {
     if (detail) console.log(`      ${detail}`);
   }
 };
+
+async function invokeAndWait(session, label, globalName, invokeExpression, successKey = "value") {
+  const starterError = await session
+    .execute(`
+      window[${JSON.stringify(globalName)}] = null;
+      (${invokeExpression}).then(
+        value => { window[${JSON.stringify(globalName)}] = { [${JSON.stringify(successKey)}]: String(value) }; },
+        error => { window[${JSON.stringify(globalName)}] = { rejected: String(error) }; },
+      );
+      return true;
+    `)
+    .then(
+      () => null,
+      (error) => ({ error: error.message }),
+    );
+  if (starterError) return starterError;
+
+  return await waitFor(
+    label,
+    () =>
+      session
+        .execute(`return window[${JSON.stringify(globalName)}] || false`)
+        .catch((error) => ({ error: error.message })),
+    { timeoutMs: IPC_PROBE_TIMEOUT_MS },
+  ).catch((error) => ({ error: error.message }));
+}
 
 process.on("exit", () => void shutdown());
 let signalShutdown;
@@ -81,34 +109,16 @@ try {
     "the real Tauri IPC bridge is present (not a test mock)",
   );
 
-  const resolveDirectoryStarterError = await session
-    .execute(`
-      window.__verifyAppResolveDirectory = null;
-      window.__TAURI_INTERNALS__
-        .invoke("plugin:path|resolve_directory", {
-          directory: ${BASE_DIRECTORY_APP_DATA},
-          path: "x",
-        })
-        .then(
-          value => { window.__verifyAppResolveDirectory = { resolved: String(value) }; },
-          error => { window.__verifyAppResolveDirectory = { rejected: String(error) }; },
-        );
-      return true;
-    `)
-    .then(
-      () => null,
-      (error) => ({ error: error.message }),
-    );
-  const resolveDirectoryResult =
-    resolveDirectoryStarterError ??
-    (await waitFor(
-      "the core:path resolve-directory refusal",
-      () =>
-        session
-          .execute("return window.__verifyAppResolveDirectory || false")
-          .catch((error) => ({ error: error.message })),
-      { timeoutMs: 5_000 },
-    ).catch((error) => ({ error: error.message })));
+  const resolveDirectoryResult = await invokeAndWait(
+    session,
+    "the core:path resolve-directory refusal",
+    "__verifyAppResolveDirectory",
+    `window.__TAURI_INTERNALS__.invoke("plugin:path|resolve_directory", {
+      directory: ${BASE_DIRECTORY_APP_DATA},
+      path: "x",
+    })`,
+    "resolved",
+  );
   check(
     typeof resolveDirectoryResult.rejected === "string" &&
       /not allowed/i.test(resolveDirectoryResult.rejected),
@@ -116,37 +126,34 @@ try {
     resolveDirectoryResult.resolved ?? resolveDirectoryResult.error,
   );
 
-  const soundPathStarterError = await session
-    .execute(`
-      window.__verifyAppSoundPath = null;
-      window.__TAURI_INTERNALS__
-        .invoke("sound_resource_path", { collection: "standard", kind: "Move" })
-        .then(
-          value => { window.__verifyAppSoundPath = { path: String(value) }; },
-          error => { window.__verifyAppSoundPath = { rejected: String(error) }; },
-        );
-      return true;
-    `)
-    .then(
-      () => null,
-      (error) => ({ error: error.message }),
-    );
-  const soundPathResult =
-    soundPathStarterError ??
-    (await waitFor(
-      "sound_resource_path to settle",
-      () =>
-        session
-          .execute("return window.__verifyAppSoundPath || false")
-          .catch((error) => ({ error: error.message })),
-      { timeoutMs: 5_000 },
-    ).catch((error) => ({ error: error.message })));
+  const soundPathResult = await invokeAndWait(
+    session,
+    "sound_resource_path to settle",
+    "__verifyAppSoundPath",
+    `window.__TAURI_INTERNALS__.invoke("sound_resource_path", {
+      collection: "standard",
+      kind: "Move",
+    })`,
+    "path",
+  );
   check(
     typeof soundPathResult.path === "string" &&
       soundPathResult.path.endsWith("/sound/standard/Move.mp3") &&
       existsSync(soundPathResult.path),
     "sound_resource_path names the bundled file",
     soundPathResult.rejected ?? soundPathResult.error ?? soundPathResult.path,
+  );
+
+  const invalidSoundPathResult = await invokeAndWait(
+    session,
+    "sound_resource_path to refuse an outside collection",
+    "__verifyAppInvalidSoundPath",
+    `window.__TAURI_INTERNALS__.invoke("sound_resource_path", { collection: "../x", kind: "Move" })`,
+  );
+  check(
+    typeof invalidSoundPathResult.rejected === "string",
+    "sound_resource_path refuses a collection outside the bundled set",
+    invalidSoundPathResult.value ?? invalidSoundPathResult.error,
   );
 
   check(

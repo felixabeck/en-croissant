@@ -744,7 +744,7 @@ pub enum PathAvailability {
     Unavailable,
 }
 
-/// The only path metadata intentionally exposed to the renderer.
+/// Test-only snapshot of a path registry entry.
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -909,9 +909,17 @@ impl ResourceDir {
         collection: &str,
         kind: SoundKind,
     ) -> Result<PathBuf, Error> {
-        if !BUNDLED_SOUND_COLLECTIONS.contains(&collection) {
+        let Some((_, has_check)) = BUNDLED_SOUND_COLLECTIONS
+            .iter()
+            .find(|(name, _)| *name == collection)
+        else {
             return Err(Error::InvalidInput(
                 "unknown bundled sound collection".into(),
+            ));
+        };
+        if matches!(kind, SoundKind::Check) && !has_check {
+            return Err(Error::InvalidInput(
+                "no bundled check sound in that collection".into(),
             ));
         }
         Ok(self
@@ -977,15 +985,15 @@ pub(crate) fn ensure_app_owned_default_dir(
 }
 
 const SOUND_ROOT_LEAF: &str = "sound";
-const BUNDLED_SOUND_COLLECTIONS: [&str; 8] = [
-    "futuristic",
-    "lisp",
-    "nes",
-    "piano",
-    "robot",
-    "sfx",
-    "standard",
-    "woodland",
+const BUNDLED_SOUND_COLLECTIONS: [(&str, bool); 8] = [
+    ("futuristic", true),
+    ("lisp", true),
+    ("nes", true),
+    ("piano", true),
+    ("robot", true),
+    ("sfx", true),
+    ("standard", false),
+    ("woodland", true),
 ];
 
 pub(crate) fn open_app_owned_resource_dir(
@@ -1268,7 +1276,7 @@ fn open_windows_child(
     Ok(file)
 }
 
-#[cfg_attr(not(windows), allow(dead_code))] // called only by the Windows resolver
+#[cfg_attr(not(windows), allow(dead_code))] // the only production caller is the Windows resolver; the test runs everywhere
 fn allows_delete_sharing_for_operation(operation: PathOperation, is_final_leaf: bool) -> bool {
     !is_final_leaf
         || !matches!(
@@ -6705,18 +6713,29 @@ mod tests {
     fn bundled_sound_paths_cover_every_collection_and_kind() {
         let root = PathBuf::from("resource-root");
         let resource_dir = ResourceDir::for_test(&root);
-        for collection in BUNDLED_SOUND_COLLECTIONS {
+        let mut resolved_pairs = 0;
+        for (collection, has_check) in BUNDLED_SOUND_COLLECTIONS {
             for (kind, file_name) in [
                 (SoundKind::Move, "Move.mp3"),
                 (SoundKind::Capture, "Capture.mp3"),
                 (SoundKind::Check, "Check.mp3"),
             ] {
+                if matches!(kind, SoundKind::Check) && !has_check {
+                    assert!(matches!(
+                        resource_dir.bundled_sound_path(collection, kind),
+                        Err(Error::InvalidInput(message))
+                            if message == "no bundled check sound in that collection"
+                    ));
+                    continue;
+                }
                 assert_eq!(
                     resource_dir.bundled_sound_path(collection, kind).unwrap(),
                     root.join("sound").join(collection).join(file_name)
                 );
+                resolved_pairs += 1;
             }
         }
+        assert_eq!(resolved_pairs, 23);
     }
 
     #[test]

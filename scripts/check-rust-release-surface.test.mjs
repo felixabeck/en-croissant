@@ -15,7 +15,7 @@ import {
   listTrackedRustSources,
 } from "./check-rust-release-surface.mjs";
 
-const ALLOWED_FILE = "src-tauri/src/infra/path_authority.rs";
+const LEGACY_ALLOWED_FILE = "src-tauri/src/infra/path_authority.rs";
 const CHECKER = join(process.cwd(), "scripts/check-rust-release-surface.mjs");
 
 function sources(...entries) {
@@ -67,10 +67,10 @@ describe("Rust release-surface gate", () => {
   test("R1 rejects a new file-level dead-code suppression", () => {
     const violations = checkDeadCodeSurface(
       sources(
-        [ALLOWED_FILE, allowedSource()],
+        [LEGACY_ALLOWED_FILE, allowedSource()],
         ["src-tauri/src/infra/new_authority.rs", allowedSource()],
       ),
-      new Set([...DEAD_CODE_ALLOWLIST, ALLOWED_FILE]),
+      new Set([...DEAD_CODE_ALLOWLIST, LEGACY_ALLOWED_FILE]),
     );
 
     expect(violations).toContain(
@@ -81,8 +81,8 @@ describe("Rust release-surface gate", () => {
   test("R1 rejects an added allowlist entry", () => {
     const added = "src-tauri/src/infra/new_authority.rs";
     const violations = checkDeadCodeSurface(
-      sources([ALLOWED_FILE, allowedSource()], [added, allowedSource()]),
-      new Set([...DEAD_CODE_ALLOWLIST, ALLOWED_FILE, added]),
+      sources([LEGACY_ALLOWED_FILE, allowedSource()], [added, allowedSource()]),
+      new Set([...DEAD_CODE_ALLOWLIST, LEGACY_ALLOWED_FILE, added]),
     );
 
     expect(violations).toContain(
@@ -92,12 +92,12 @@ describe("Rust release-surface gate", () => {
 
   test("R1 rejects an allowlist entry whose file no longer carries the attribute", () => {
     const violations = checkDeadCodeSurface(
-      sources([ALLOWED_FILE, "pub struct PathAuthority;"]),
-      new Set([...DEAD_CODE_ALLOWLIST, ALLOWED_FILE]),
+      sources([LEGACY_ALLOWED_FILE, "pub struct PathAuthority;"]),
+      new Set([...DEAD_CODE_ALLOWLIST, LEGACY_ALLOWED_FILE]),
     );
 
     expect(violations).toContain(
-      `R1: allowlist entry ${ALLOWED_FILE} no longer carries #![allow(dead_code)]`,
+      `R1: allowlist entry ${LEGACY_ALLOWED_FILE} no longer carries #![allow(dead_code)]`,
     );
   });
 

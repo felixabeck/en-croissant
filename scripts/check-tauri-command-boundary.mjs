@@ -221,34 +221,29 @@ export function inspectCapability(capabilityJson) {
   if (broadPermissions.length) {
     violations.push(`capability must use exact permissions: ${broadPermissions.join(", ")}`);
   }
-  const rendererFileAuthority = permissions.filter((permission) => {
-    const identifier = typeof permission === "string" ? permission : permission?.identifier;
-    return (
-      typeof identifier === "string" &&
-      (identifier.startsWith("fs:") ||
-        identifier === "opener:allow-open-path" ||
-        identifier === "opener:allow-open-url")
-    );
-  });
-  if (rendererFileAuthority.length) {
-    violations.push(
-      `renderer filesystem/opener authority is forbidden: ${rendererFileAuthority
-        .map((permission) => (typeof permission === "string" ? permission : permission.identifier))
-        .join(", ")}`,
-    );
-  }
-  const rendererLocationAuthority = permissions.filter((permission) => {
-    const identifier = typeof permission === "string" ? permission : permission?.identifier;
-    return (
-      identifier === "core:path:allow-resolve" || identifier === "core:path:allow-resolve-directory"
-    );
-  });
-  if (rendererLocationAuthority.length) {
-    violations.push(
-      `renderer native-location authority is forbidden: ${rendererLocationAuthority
-        .map((permission) => (typeof permission === "string" ? permission : permission.identifier))
-        .join(", ")}`,
-    );
+  const rendererAuthorityChecks = [
+    {
+      predicate: (identifier) =>
+        typeof identifier === "string" &&
+        (identifier.startsWith("fs:") ||
+          identifier === "opener:allow-open-path" ||
+          identifier === "opener:allow-open-url"),
+      message: "renderer filesystem/opener authority is forbidden",
+    },
+    {
+      predicate: (identifier) =>
+        identifier === "core:path:allow-resolve" ||
+        identifier === "core:path:allow-resolve-directory",
+      message: "renderer native-location authority is forbidden",
+    },
+  ];
+  for (const { predicate, message } of rendererAuthorityChecks) {
+    const authorities = permissions
+      .map((permission) => (typeof permission === "string" ? permission : permission?.identifier))
+      .filter(predicate);
+    if (authorities.length) {
+      violations.push(`${message}: ${authorities.join(", ")}`);
+    }
   }
   return violations;
 }
@@ -311,10 +306,10 @@ export function runTauriBoundaryCheck({
   const capabilityPath = resolve(workspaceRoot, "src-tauri/capabilities/main.json");
   const configPath = resolve(workspaceRoot, "src-tauri/tauri.conf.json");
   const capability = readJsonFile(readFile, capabilityPath);
-  const securityConfig = readJsonFile(readFile, configPath);
+  const tauriConfig = readJsonFile(readFile, configPath);
   violations.push(...inspectCapability(capability));
-  violations.push(...inspectCsp(securityConfig?.app?.security?.csp));
-  violations.push(...inspectAssetProtocol(securityConfig?.app?.security?.assetProtocol));
+  violations.push(...inspectCsp(tauriConfig?.app?.security?.csp));
+  violations.push(...inspectAssetProtocol(tauriConfig?.app?.security?.assetProtocol));
 
   if (violations.length) {
     throw new Error(

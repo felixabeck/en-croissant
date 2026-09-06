@@ -280,26 +280,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sound_path_string_rejects_invalid_utf8_and_preserves_plain_paths() {
+    fn sound_path_string_preserves_plain_paths() {
         let plain = PathBuf::from("sound/standard/Move.mp3");
         assert_eq!(
             sound_path_string(plain.clone()).unwrap(),
             plain.to_str().unwrap()
         );
+    }
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStringExt;
+    #[cfg(unix)]
+    #[test]
+    fn sound_path_string_rejects_invalid_utf8() {
+        use std::os::unix::ffi::OsStringExt;
 
-            let error = sound_path_string(PathBuf::from(std::ffi::OsString::from_vec(vec![
-                0x66, 0xff,
-            ])))
-            .unwrap_err();
-            assert!(matches!(
-                error,
-                Error::Io(error) if error.kind() == std::io::ErrorKind::InvalidData
-            ));
-        }
+        let error = sound_path_string(PathBuf::from(std::ffi::OsString::from_vec(vec![
+            0x66, 0xff,
+        ])))
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Io(error) if error.kind() == std::io::ErrorKind::InvalidData
+        ));
     }
 
     #[cfg(target_os = "linux")]

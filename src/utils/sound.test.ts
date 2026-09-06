@@ -69,36 +69,24 @@ afterEach(() => {
 
 describe("playSound", () => {
     test.each([
-        ["move", false, false, "Move"],
-        ["capture", true, false, "Capture"],
+        ["move", "standard", false, false, "Move"],
+        ["capture", "standard", true, false, "Capture"],
+        ["check in a persisted non-standard collection", "piano", false, true, "Check"],
     ] as const)(
         "uses the bounded resource path for a %s sound",
-        async (_name, capture, check, kind) => {
-            const returnedPath = `/resource/sound/standard/${kind}.mp3`;
+        async (_name, collection, capture, check, kind) => {
+            const returnedPath = `/resource/sound/${collection}/${kind}.mp3`;
             mocks.soundResourcePath.mockResolvedValue(returnedPath);
-            const { playSound } = await loadSound();
+            const { playSound } = await loadSound({ collection });
 
             playSound(capture, check);
             await settle();
 
-            expect(mocks.soundResourcePath).toHaveBeenCalledWith("standard", kind);
+            expect(mocks.soundResourcePath).toHaveBeenCalledWith(collection, kind);
             expect(mocks.convertFileSrc).toHaveBeenCalledWith(returnedPath);
             expect(audioInstances[0].src).toBe(`asset://localhost/${returnedPath}`);
         },
     );
-
-    test("uses the persisted collection and check kind", async () => {
-        const returnedPath = "/resource/sound/piano/Check.mp3";
-        mocks.soundResourcePath.mockResolvedValue(returnedPath);
-        const { playSound } = await loadSound({ collection: "piano" });
-
-        playSound(false, true);
-        await settle();
-
-        expect(mocks.soundResourcePath).toHaveBeenCalledWith("piano", "Check");
-        expect(mocks.convertFileSrc).toHaveBeenCalledWith(returnedPath);
-        expect(audioInstances[0].src).toBe(`asset://localhost/${returnedPath}`);
-    });
 
     test("does not play or throw when the backend rejects the resource path", async () => {
         mocks.soundResourcePath.mockRejectedValue(new Error("invalid collection"));
