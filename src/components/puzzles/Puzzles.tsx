@@ -53,7 +53,7 @@ import { positionFromFen } from "@/utils/chessops";
 import { puzzleDatabaseExtension } from "@/utils/db";
 import { formatThemeLabel, formatTime } from "@/utils/format";
 import { capabilityKey } from "@/utils/pathCapabilities";
-import { normalizeError } from "@/platform/errors";
+import { normalizeError, runDestructiveWithRefresh } from "@/platform/errors";
 import { type Completion, getPuzzleDatabases, type Puzzle } from "@/utils/puzzles";
 import { createTab } from "@/utils/tabs";
 import { defaultTree } from "@/utils/treeReducer";
@@ -87,51 +87,65 @@ function Puzzles({ id }: { id: string }) {
   const [puzzleDbs, setPuzzleDbs] = useState<PuzzleDatabaseInfo[]>([]);
   const [selectedDb, setSelectedDb] = useAtom(selectedPuzzleDbAtom);
   const [workspaceGeneration, setWorkspaceGeneration] = useAtom(puzzleWorkspaceGenerationAtom);
+  const [listedWorkspaceGeneration, setListedWorkspaceGeneration] = useState<number | null>(null);
 
   const [settingsOpened, setSettingsOpened] = useState(false);
   const requestGeneration = useRef(0);
   const puzzleRequest = useRef<AbortController | null>(null);
   const resetWorkspaceRef = useRef<() => void>(() => {});
   const workspaceRef = useRef<string | null>(null);
+  const workspaceRequest = useRef(0);
   const selectedDbRef = useRef(selectedDb);
   selectedDbRef.current = selectedDb;
+
+  const effectiveSelectedDb =
+    listedWorkspaceGeneration === workspaceGeneration &&
+    selectedDb &&
+    puzzleDbs.some((database) => capabilityKey(database.path) === capabilityKey(selectedDb))
+      ? selectedDb
+      : null;
+  const effectiveSelectedDbRef = useRef(effectiveSelectedDb);
+  effectiveSelectedDbRef.current = effectiveSelectedDb;
 
   useEffect(() => () => puzzleRequest.current?.abort(), []);
 
   useEffect(() => {
     let active = true;
+    const listingRequest = ++workspaceRequest.current;
+    requestGeneration.current++;
+    puzzleRequest.current?.abort();
     void Promise.all([tauri.getPuzzleWorkspace(), getPuzzleDatabases()])
       .then(([workspace, databases]) => {
-        if (!active) return;
+        if (!active || listingRequest !== workspaceRequest.current) return;
         const workspaceKey = capabilityKey(workspace.root);
         const workspaceChanged =
           workspaceRef.current !== null && workspaceRef.current !== workspaceKey;
         workspaceRef.current = workspaceKey;
         setPuzzleDbs(databases);
-        if (workspaceChanged) {
-          requestGeneration.current++;
-          puzzleRequest.current?.abort();
-          setSelectedDb(null);
-          resetWorkspaceRef.current();
-          return;
-        }
+        setListedWorkspaceGeneration(workspaceGeneration);
+        const currentSelection = selectedDbRef.current;
         if (
-          selectedDb &&
-          !databases.some((database) => capabilityKey(database.path) === capabilityKey(selectedDb))
+          workspaceChanged ||
+          (currentSelection &&
+            !databases.some(
+              (database) => capabilityKey(database.path) === capabilityKey(currentSelection),
+            ))
         ) {
           requestGeneration.current++;
           puzzleRequest.current?.abort();
-          setSelectedDb(null);
           resetWorkspaceRef.current();
         }
       })
       .catch(() => {
-        if (active) setPuzzleDbs([]);
+        if (active && listingRequest === workspaceRequest.current) {
+          setPuzzleDbs([]);
+          setListedWorkspaceGeneration(null);
+        }
       });
     return () => {
       active = false;
     };
-  }, [selectedDb, setSelectedDb, workspaceGeneration]);
+  }, [workspaceGeneration]);
 
   const [ratingRange, setRatingRange] = useAtom(puzzleRatingRangeAtom);
 
@@ -146,13 +160,13 @@ function Puzzles({ id }: { id: string }) {
     let cancelled = false;
     setThemesTableMissing(false);
 
-    if (!selectedDb) {
+    if (!effectiveSelectedDb) {
       setAvailableThemes([]);
       return;
     }
 
     void tauri
-      .getPuzzleThemes(selectedDb)
+      .getPuzzleThemes(effectiveSelectedDb)
       .then((themes) => {
         if (cancelled || generation !== requestGeneration.current) return;
         setAvailableThemes(themes);
@@ -167,7 +181,7 @@ function Puzzles({ id }: { id: string }) {
     return () => {
       cancelled = true;
     };
-  }, [selectedDb]);
+  }, [effectiveSelectedDb]);
 
   const [jumpToNextPuzzleImmediately, setJumpToNextPuzzleImmediately] =
     useAtom(jumpToNextPuzzleAtom);
@@ -238,8 +252,8 @@ function Puzzles({ id }: { id: string }) {
     if (
       request.signal.aborted ||
       generation !== requestGeneration.current ||
-      !selectedDbRef.current ||
-      capabilityKey(selectedDbRef.current) !== capabilityKey(db)
+      !effectiveSelectedDbRef.current ||
+      capabilityKey(effectiveSelectedDbRef.current) !== capabilityKey(db)
     ) {
       return;
     }
@@ -269,9 +283,18 @@ function Puzzles({ id }: { id: string }) {
     });
     setTimerStart(null);
 
-    if (selectedDb && puzzle?.id) {
+    if (effectiveSelectedDb && puzzle?.id) {
+      const database = effectiveSelectedDb;
+      const generation = requestGeneration.current;
       try {
-        const themes = await tauri.getThemesForPuzzle(selectedDb, puzzle.id);
+        const themes = await tauri.getThemesForPuzzle(database, puzzle.id);
+        if (
+          generation !== requestGeneration.current ||
+          !effectiveSelectedDbRef.current ||
+          capabilityKey(effectiveSelectedDbRef.current) !== capabilityKey(database)
+        ) {
+          return;
+        }
         setPuzzles((puzzles) => {
           puzzles[currentPuzzle].themes = themes;
           return [...puzzles];
@@ -381,7 +404,7 @@ function Puzzles({ id }: { id: string }) {
           currentPuzzle={currentPuzzle}
           changeCompletion={changeCompletion}
           generatePuzzle={generatePuzzle}
-          db={selectedDb}
+          db={effectiveSelectedDb}
         />
       </Portal>
       <Portal target="#topRight" style={{ height: "100%" }}>
@@ -406,20 +429,27 @@ function Puzzles({ id }: { id: string }) {
             opened={deleteModalOpened}
             onClose={() => setDeleteModalOpened(false)}
             onConfirm={async () => {
-              if (selectedDb) {
+              if (effectiveSelectedDb) {
+                const deletedDb = effectiveSelectedDb;
                 try {
-                  await tauri.deletePuzzleDatabase(selectedDb);
-                  requestGeneration.current++;
-                  puzzleRequest.current?.abort();
-                  setPuzzleDbs((dbs) =>
-                    dbs.filter((db) => capabilityKey(db.path) !== capabilityKey(selectedDb)),
+                  await runDestructiveWithRefresh(
+                    () => tauri.deletePuzzleDatabase(deletedDb),
+                    () => {
+                      setPuzzleDbs((dbs) =>
+                        dbs.filter((db) => capabilityKey(db.path) !== capabilityKey(deletedDb)),
+                      );
+                      if (
+                        selectedDbRef.current &&
+                        capabilityKey(selectedDbRef.current) === capabilityKey(deletedDb)
+                      ) {
+                        requestGeneration.current++;
+                        puzzleRequest.current?.abort();
+                        setSelectedDb(null);
+                        resetWorkspaceRef.current();
+                      }
+                      setDeleteModalOpened(false);
+                    },
                   );
-                  setSelectedDb(null);
-                  setPuzzles([]);
-                  reset();
-                  setTimerStart(null);
-                  setIsPlayingSolution(false);
-                  setDeleteModalOpened(false);
                 } catch (error) {
                   notifications.show({
                     color: "red",
@@ -439,7 +469,7 @@ function Puzzles({ id }: { id: string }) {
                   value: capabilityKey(p.path),
                 }))
                 .concat({ label: addOptionLabel(t("Common.AddNew")), value: "add" })}
-              value={selectedDb ? capabilityKey(selectedDb) : null}
+              value={effectiveSelectedDb ? capabilityKey(effectiveSelectedDb) : null}
               clearable={false}
               placeholder={t("Puzzle.SelectDatabase")}
               onChange={(v) => {
@@ -458,7 +488,7 @@ function Puzzles({ id }: { id: string }) {
               <IconAction
                 label={t("Puzzle.DeleteDatabase")}
                 color="red"
-                disabled={!selectedDb}
+                disabled={!effectiveSelectedDb}
                 onClick={() => setDeleteModalOpened(true)}
               >
                 <IconTrash size={20} />
@@ -634,14 +664,14 @@ function Puzzles({ id }: { id: string }) {
             <Group gap="xs">
               <IconAction
                 label={t("Puzzle.NewPuzzle")}
-                disabled={!selectedDb}
-                onClick={() => generatePuzzle(selectedDb!, true)}
+                disabled={!effectiveSelectedDb}
+                onClick={() => generatePuzzle(effectiveSelectedDb!, true)}
               >
                 <IconPlus />
               </IconAction>
               <IconAction
                 label={t("Puzzle.AnalyzePosition")}
-                disabled={!selectedDb}
+                disabled={!effectiveSelectedDb}
                 onClick={() =>
                   createTab({
                     tab: {

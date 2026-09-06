@@ -3,9 +3,19 @@ import { Provider, createStore } from "jotai";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ErrorCategory, PuzzleDatabaseInfo, PuzzleRootDescriptor } from "@/bindings";
+import type {
+  ErrorCategory,
+  Puzzle as NativePuzzle,
+  PuzzleDatabaseInfo,
+  PuzzleRootDescriptor,
+} from "@/bindings";
 import { TreeStateProvider } from "@/components/common/TreeStateContext";
-import { selectedPuzzleDbAtom } from "@/state/atoms";
+import {
+  currentPuzzleTimerAtom,
+  puzzleWorkspaceGenerationAtom,
+  selectedPuzzleDbAtom,
+  trackPuzzleTimeAtom,
+} from "@/state/atoms";
 import { TauriCommandError } from "@/platform/tauri";
 import Puzzles from "./Puzzles";
 
@@ -13,6 +23,10 @@ const mocks = vi.hoisted(() => ({
   getPuzzleWorkspace: vi.fn(),
   listPuzzleDatabases: vi.fn(),
   getPuzzleThemes: vi.fn(),
+  getPuzzle: vi.fn(),
+  soundResourcePath: vi.fn(),
+  deletePuzzleDatabase: vi.fn(),
+  notificationShow: vi.fn(),
 }));
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -24,12 +38,33 @@ vi.mock("@/platform/tauri", async () => {
       getPuzzleWorkspace: mocks.getPuzzleWorkspace,
       listPuzzleDatabases: mocks.listPuzzleDatabases,
       getPuzzleThemes: mocks.getPuzzleThemes,
+      getPuzzle: mocks.getPuzzle,
+      soundResourcePath: mocks.soundResourcePath,
+      deletePuzzleDatabase: mocks.deletePuzzleDatabase,
     },
   };
 });
-vi.mock("./PuzzleBoard", () => ({ default: () => null }));
-vi.mock("./AddPuzzle", () => ({ default: () => null }));
-vi.mock("../common/ConfirmModal", () => ({ default: () => null }));
+vi.mock("@mantine/notifications", () => ({
+  notifications: { show: mocks.notificationShow },
+}));
+vi.mock("./PuzzleBoard", () => ({
+  default: ({ puzzles, db }: { puzzles: unknown[]; db: { id: string } | null }) => (
+    <div data-testid="puzzle-state" data-count={puzzles.length} data-database={db?.id ?? "none"} />
+  ),
+}));
+vi.mock("./AddPuzzle", () => ({
+  default: ({ puzzleDbs }: { puzzleDbs: unknown[] }) => (
+    <div data-testid="puzzle-database-count">{puzzleDbs.length}</div>
+  ),
+}));
+vi.mock("../common/ConfirmModal", () => ({
+  default: ({ opened, onConfirm }: { opened: boolean; onConfirm: () => Promise<void> }) =>
+    opened ? (
+      <button type="button" data-testid="confirm-delete" onClick={() => void onConfirm()}>
+        confirm
+      </button>
+    ) : null,
+}));
 vi.mock("../common/GameNotation", () => ({ default: () => null }));
 vi.mock("../common/MoveControls", () => ({ default: () => null }));
 vi.mock("../common/ChallengeHistory", () => ({ default: () => null }));
@@ -66,9 +101,19 @@ const selectedDatabase: PuzzleDatabaseInfo = {
   storageSize: 1n,
   path: selectedDb,
 };
+const otherDb = { id: "puzzle-db-2" };
+const otherDatabase: PuzzleDatabaseInfo = {
+  ...selectedDatabase,
+  title: "Other.db3",
+  path: otherDb,
+};
 const workspace: PuzzleRootDescriptor = {
   root: { id: { id: "puzzle-root" }, kind: "puzzleRoot" },
   displayName: "Puzzles",
+};
+const otherWorkspace: PuzzleRootDescriptor = {
+  root: { id: { id: "other-puzzle-root" }, kind: "puzzleRoot" },
+  displayName: "Other puzzles",
 };
 
 function commandError(category: ErrorCategory, message: string) {
@@ -96,6 +141,8 @@ beforeEach(() => {
   localStorage.setItem("puzzle-db", JSON.stringify(selectedDb));
   mocks.getPuzzleWorkspace.mockResolvedValue(workspace);
   mocks.listPuzzleDatabases.mockResolvedValue([selectedDatabase]);
+  mocks.deletePuzzleDatabase.mockResolvedValue(undefined);
+  mocks.soundResourcePath.mockRejectedValue(new Error("sound disabled in test"));
   host = document.createElement("div");
   portals = document.createElement("div");
   portals.innerHTML = `<div id="left"></div><div id="topRight"></div><div id="bottomRight"></div>`;
@@ -129,6 +176,17 @@ async function renderPuzzles() {
   await act(async () => {
     const settings = document.querySelector<HTMLButtonElement>('[aria-label="SideBar.Settings"]');
     settings?.click();
+  });
+  return store;
+}
+
+async function openAndConfirmDeletion() {
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.DeleteDatabase"]')?.click();
+  });
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-delete"]')?.click();
+    await Promise.resolve();
   });
 }
 
@@ -168,4 +226,275 @@ test("does not show the alert when puzzle themes load", async () => {
     expect(mocks.getPuzzleThemes).toHaveBeenCalled();
   });
   expect(outdatedAlert()).toBeUndefined();
+});
+
+test("retains a stored database across workspace switches and restores it on return", async () => {
+  const store = await renderPuzzles();
+  await vi.waitFor(() => {
+    expect(
+      document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-database"),
+    ).toBe(selectedDb.id);
+  });
+
+  mocks.getPuzzleWorkspace.mockResolvedValue(otherWorkspace);
+  mocks.listPuzzleDatabases.mockResolvedValue([otherDatabase]);
+  await act(async () => {
+    store.set(puzzleWorkspaceGenerationAtom, store.get(puzzleWorkspaceGenerationAtom) + 1);
+  });
+
+  expect(
+    document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-database"),
+  ).toBe("none");
+  await vi.waitFor(() => {
+    expect(document.querySelector('[data-testid="puzzle-database-count"]')?.textContent).toBe("1");
+  });
+  expect(store.get(selectedPuzzleDbAtom)).toEqual(selectedDb);
+  expect(mocks.getPuzzleThemes).toHaveBeenCalledTimes(1);
+
+  mocks.getPuzzleWorkspace.mockResolvedValue(workspace);
+  mocks.listPuzzleDatabases.mockResolvedValue([selectedDatabase]);
+  await act(async () => {
+    store.set(puzzleWorkspaceGenerationAtom, store.get(puzzleWorkspaceGenerationAtom) + 1);
+  });
+
+  await vi.waitFor(() => {
+    expect(
+      document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-database"),
+    ).toBe(selectedDb.id);
+  });
+  expect(store.get(selectedPuzzleDbAtom)).toEqual(selectedDb);
+  expect(mocks.getPuzzleThemes).toHaveBeenCalledTimes(2);
+});
+
+test.each([
+  ["missing", () => mocks.listPuzzleDatabases.mockResolvedValue([])],
+  ["offline", () => mocks.listPuzzleDatabases.mockRejectedValue(new Error("offline"))],
+])("keeps the stored database but does not use it when the listing is %s", async (_case, setup) => {
+  setup();
+  const store = await renderPuzzles();
+
+  await vi.waitFor(() => expect(mocks.listPuzzleDatabases).toHaveBeenCalled());
+  expect(store.get(selectedPuzzleDbAtom)).toEqual(selectedDb);
+  expect(
+    document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-database"),
+  ).toBe("none");
+  expect(mocks.getPuzzleThemes).not.toHaveBeenCalled();
+  expect(
+    document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')?.disabled,
+  ).toBe(true);
+});
+
+test("ignores a stale workspace listing after a newer generation restores the selection", async () => {
+  const store = await renderPuzzles();
+  await vi.waitFor(() => expect(mocks.getPuzzleThemes).toHaveBeenCalledTimes(1));
+
+  let finishStaleListing: (databases: PuzzleDatabaseInfo[]) => void = () => undefined;
+  mocks.getPuzzleWorkspace.mockResolvedValue(otherWorkspace);
+  mocks.listPuzzleDatabases.mockImplementation(
+    () =>
+      new Promise<PuzzleDatabaseInfo[]>((resolve) => {
+        finishStaleListing = resolve;
+      }),
+  );
+  await act(async () => {
+    store.set(puzzleWorkspaceGenerationAtom, store.get(puzzleWorkspaceGenerationAtom) + 1);
+  });
+  expect(
+    document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-database"),
+  ).toBe("none");
+
+  mocks.getPuzzleWorkspace.mockResolvedValue(workspace);
+  mocks.listPuzzleDatabases.mockResolvedValue([selectedDatabase]);
+  await act(async () => {
+    store.set(puzzleWorkspaceGenerationAtom, store.get(puzzleWorkspaceGenerationAtom) + 1);
+  });
+  await vi.waitFor(() => {
+    expect(
+      document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-database"),
+    ).toBe(selectedDb.id);
+  });
+
+  await act(async () => finishStaleListing([otherDatabase]));
+  expect(
+    document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-database"),
+  ).toBe(selectedDb.id);
+  expect(store.get(selectedPuzzleDbAtom)).toEqual(selectedDb);
+});
+
+test("successful deletion clears the selected puzzle session and closes the modal", async () => {
+  sessionStorage.setItem(
+    "puzzles-test-puzzles",
+    JSON.stringify([{ id: "puzzle", fen: "8/8/8/8/8/8/8/K6k w - - 0 1", moves: [] }]),
+  );
+  const store = await renderPuzzles();
+  await act(async () => {
+    store.set(trackPuzzleTimeAtom, true);
+    store.set(currentPuzzleTimerAtom, 123);
+  });
+
+  await openAndConfirmDeletion();
+
+  await vi.waitFor(() => {
+    expect(mocks.deletePuzzleDatabase).toHaveBeenCalledWith(selectedDb);
+    expect(store.get(selectedPuzzleDbAtom)).toBeNull();
+    expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
+      "0",
+    );
+  });
+  expect(store.get(currentPuzzleTimerAtom)).toBeNull();
+  expect(document.querySelector('[data-testid="puzzle-database-count"]')?.textContent).toBe("0");
+  expect(document.querySelector('[data-testid="confirm-delete"]')).toBeNull();
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test("pre-delete failure preserves selection, list, session, timer and modal", async () => {
+  const failure = commandError("io", "delete failed before removal");
+  mocks.deletePuzzleDatabase.mockRejectedValue(failure);
+  sessionStorage.setItem(
+    "puzzles-test-puzzles",
+    JSON.stringify([{ id: "puzzle", fen: "8/8/8/8/8/8/8/K6k w - - 0 1", moves: [] }]),
+  );
+  const store = await renderPuzzles();
+  await act(async () => {
+    store.set(trackPuzzleTimeAtom, true);
+    store.set(currentPuzzleTimerAtom, 123);
+  });
+
+  await openAndConfirmDeletion();
+
+  await vi.waitFor(() => expect(mocks.notificationShow).toHaveBeenCalled());
+  expect(store.get(selectedPuzzleDbAtom)).toEqual(selectedDb);
+  expect(store.get(currentPuzzleTimerAtom)).toBe(123);
+  expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
+    "1",
+  );
+  expect(document.querySelector('[data-testid="puzzle-database-count"]')?.textContent).toBe("1");
+  expect(document.querySelector('[data-testid="confirm-delete"]')).toBeTruthy();
+});
+
+test("applied deletion converges state, closes the modal and still reports cleanup failure", async () => {
+  const applied = commandError(
+    "partial-removal",
+    "Partially removed: 1 entries were deleted before failing: conflict",
+  );
+  mocks.deletePuzzleDatabase.mockRejectedValue(applied);
+  sessionStorage.setItem(
+    "puzzles-test-puzzles",
+    JSON.stringify([{ id: "puzzle", fen: "8/8/8/8/8/8/8/K6k w - - 0 1", moves: [] }]),
+  );
+  const store = await renderPuzzles();
+  await act(async () => {
+    store.set(trackPuzzleTimeAtom, true);
+    store.set(currentPuzzleTimerAtom, 123);
+  });
+
+  await openAndConfirmDeletion();
+
+  await vi.waitFor(() => {
+    expect(store.get(selectedPuzzleDbAtom)).toBeNull();
+    expect(mocks.notificationShow).toHaveBeenCalledWith(
+      expect.objectContaining({ color: "red", message: applied.message }),
+    );
+  });
+  expect(store.get(currentPuzzleTimerAtom)).toBeNull();
+  expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
+    "0",
+  );
+  expect(document.querySelector('[data-testid="puzzle-database-count"]')?.textContent).toBe("0");
+  expect(document.querySelector('[data-testid="confirm-delete"]')).toBeNull();
+});
+
+test("landed deletion does not clear a concurrently selected different database", async () => {
+  mocks.listPuzzleDatabases.mockResolvedValue([selectedDatabase, otherDatabase]);
+  let finishDeletion: () => void = () => undefined;
+  mocks.deletePuzzleDatabase.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finishDeletion = resolve;
+      }),
+  );
+  const store = await renderPuzzles();
+
+  await openAndConfirmDeletion();
+  await act(async () => store.set(selectedPuzzleDbAtom, otherDb));
+  await vi.waitFor(() => {
+    expect(
+      document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-database"),
+    ).toBe(otherDb.id);
+  });
+
+  let finishPuzzle: (puzzle: NativePuzzle) => void = () => undefined;
+  mocks.getPuzzle.mockImplementation(
+    () =>
+      new Promise<NativePuzzle>((resolve) => {
+        finishPuzzle = (puzzle) => resolve(puzzle);
+      }),
+  );
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')?.click();
+  });
+  await vi.waitFor(() =>
+    expect(mocks.getPuzzle).toHaveBeenCalledWith(
+      otherDb,
+      expect.any(Number),
+      expect.any(Number),
+      null,
+    ),
+  );
+
+  await act(async () => {
+    finishDeletion();
+    finishPuzzle({
+      id: 7,
+      fen: "8/8/8/8/8/8/8/K6k w - - 0 1",
+      moves: "a1a2",
+      rating: 1200,
+      rating_deviation: 50,
+      popularity: 1,
+      nb_plays: 1,
+    });
+    await Promise.resolve();
+  });
+
+  await vi.waitFor(() => {
+    expect(store.get(selectedPuzzleDbAtom)).toEqual(otherDb);
+    expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
+      "1",
+    );
+  });
+  expect(
+    document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-database"),
+  ).toBe(otherDb.id);
+  expect(document.querySelector('[data-testid="puzzle-database-count"]')?.textContent).toBe("1");
+  expect(document.querySelector('[data-testid="confirm-delete"]')).toBeNull();
+});
+
+test("landed deletion clears its retained selection after the workspace view switches", async () => {
+  let finishDeletion: () => void = () => undefined;
+  mocks.deletePuzzleDatabase.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finishDeletion = resolve;
+      }),
+  );
+  const store = await renderPuzzles();
+  await openAndConfirmDeletion();
+
+  mocks.getPuzzleWorkspace.mockResolvedValue(otherWorkspace);
+  mocks.listPuzzleDatabases.mockResolvedValue([otherDatabase]);
+  await act(async () => {
+    store.set(puzzleWorkspaceGenerationAtom, store.get(puzzleWorkspaceGenerationAtom) + 1);
+  });
+  await vi.waitFor(() => {
+    expect(store.get(selectedPuzzleDbAtom)).toEqual(selectedDb);
+    expect(
+      document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-database"),
+    ).toBe("none");
+  });
+
+  await act(async () => finishDeletion());
+
+  await vi.waitFor(() => expect(store.get(selectedPuzzleDbAtom)).toBeNull());
+  expect(document.querySelector('[data-testid="puzzle-database-count"]')?.textContent).toBe("1");
+  expect(document.querySelector('[data-testid="confirm-delete"]')).toBeNull();
 });

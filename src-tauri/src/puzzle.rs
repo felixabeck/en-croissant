@@ -508,7 +508,14 @@ async fn delete_puzzle_database_resolved(
         Err(error) => return Err(error),
     };
     puzzle_cache.lock().await.invalidate_database(&deleted_path);
-    registry_cleanup
+    match registry_cleanup {
+        Ok(()) => Ok(()),
+        Err(error @ Error::CommittedDurabilityUncertain(_)) => Err(error),
+        Err(error) => Err(Error::PartialRemoval {
+            removed_entries: 1,
+            cause: Box::new(error),
+        }),
+    }
 }
 
 #[tauri::command]
@@ -817,7 +824,13 @@ mod tests {
             Arc::clone(&cache),
         ));
 
-        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert!(matches!(
+            result,
+            Err(Error::PartialRemoval {
+                removed_entries: 1,
+                cause,
+            }) if matches!(*cause, Error::Conflict(_))
+        ));
         assert!(!path.exists(), "physical deletion must remain committed");
         assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
         let mut authority = authority
