@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 574e86e3728deaf5c63bd16bdf92613ba3892c881188bfed2997e6be0be4b9ec
+# agent-kit-sha256: cf995d8cf0b6e3cca3f640bee100660ce62352692632dcff09dd8101a640e270
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -66,6 +66,14 @@ from typing import cast
 # single expression with nothing to strip, so it survives the formatter AND parses on
 # pre-3.14 interpreters -- both halves are required for the version guard below.
 _READ_ERRORS = (OSError, UnicodeError)
+
+# Keep one failed breadcrumb report, including its final newline, within this
+# fixed width so a helper cannot flood the drain's stderr. The beginning of the
+# cause is retained because it is usually the useful part of the diagnostic.
+DRAIN_BREADCRUMB_DIAGNOSTIC_MAX_CHARS = 4096
+DRAIN_BREADCRUMB_FAILURE_MARKER = "breadcrumb not written:"
+DRAIN_BREADCRUMB_TRUNCATION_MARKER = "... [truncated]"
+_DRAIN_BREADCRUMB_ERRORS = (OSError, subprocess.SubprocessError)
 
 
 def _probe_git_toplevel() -> tuple[Path | None, str]:
@@ -261,6 +269,20 @@ CLAIM = (
 DRAIN_LOCK_ENV = "FINDINGS_DRAIN_LOCK"
 
 
+def _bounded_drain_breadcrumb_failure(context: str, cause: object = "") -> str:
+    """Return one bounded, newline-terminated breadcrumb failure diagnostic."""
+    diagnostic = context
+    if cause:
+        diagnostic += f": {cause}"
+    if not diagnostic.endswith("\n"):
+        diagnostic += "\n"
+    if len(diagnostic) <= DRAIN_BREADCRUMB_DIAGNOSTIC_MAX_CHARS:
+        return diagnostic
+    suffix = DRAIN_BREADCRUMB_TRUNCATION_MARKER + "\n"
+    available = DRAIN_BREADCRUMB_DIAGNOSTIC_MAX_CHARS - len(suffix)
+    return diagnostic[:available] + suffix
+
+
 def append_drain_breadcrumb(label: str, detail: str) -> None:
     step_file = os.environ.get("DRAIN_STEP_FILE")
     if not step_file:
@@ -284,11 +306,33 @@ def append_drain_breadcrumb(label: str, detail: str) -> None:
             capture_output=True,
             text=True,
         )
-    except (OSError, subprocess.SubprocessError):
-        print(f"breadcrumb not written: {step_file}", file=sys.stderr)
+    except subprocess.CalledProcessError as exc:
+        context = (
+            f"{DRAIN_BREADCRUMB_FAILURE_MARKER} {step_file} "
+            f"(helper {library}, exit {exc.returncode})"
+        )
+        sys.stderr.write(_bounded_drain_breadcrumb_failure(context, exc.stderr))
+    except _DRAIN_BREADCRUMB_ERRORS as exc:
+        context = (
+            f"{DRAIN_BREADCRUMB_FAILURE_MARKER} {step_file} "
+            f"(helper {library})"
+        )
+        sys.stderr.write(_bounded_drain_breadcrumb_failure(context, exc))
     else:
         if result.stderr:
-            sys.stderr.write(result.stderr)
+            if DRAIN_BREADCRUMB_FAILURE_MARKER in result.stderr:
+                context = (
+                    f"{DRAIN_BREADCRUMB_FAILURE_MARKER} {step_file} "
+                    f"(helper {library})"
+                )
+                sys.stderr.write(
+                    _bounded_drain_breadcrumb_failure(
+                        context,
+                        result.stderr.replace(DRAIN_BREADCRUMB_FAILURE_MARKER, "", 1),
+                    )
+                )
+            else:
+                sys.stderr.write(result.stderr)
 
 
 # Keyed by the RESOLVED PATH, not the basename. Two checkouts of one repo — a
