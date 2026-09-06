@@ -43,6 +43,7 @@ import { useDocumentLanguage } from "@/hooks/useDocumentLanguage";
 import { initUserAgent } from "@/utils/http";
 import { routeTree } from "./routeTree.gen";
 import { appCssVariablesResolver, createAppTheme } from "./styles/theme";
+import { initializePathOwners } from "./state/pathOwners";
 
 const router = createRouter({
   routeTree,
@@ -83,6 +84,10 @@ export function useAppStartup() {
     let detachFn: (() => void) | undefined;
     const startupSequence = async () => {
       try {
+        await initializePathOwners().catch((error) =>
+          warn(`Path owner reconciliation failed: ${String(error)}`),
+        );
+        if (signal.aborted) return;
         await initUserAgent();
         if (signal.aborted) return;
 

@@ -32,6 +32,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const SCHEMA_VERSION: u32 = 1;
+const MAX_PERSISTENT_IDS: usize = 4_096;
+const MAX_PENDING_ARTIFACTS: usize = 256;
+const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
+const MAX_LEGACY_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
 
 fn engine_file_operations() -> Vec<PathOperation> {
     vec![
@@ -156,6 +160,8 @@ const VERIFIED_REGISTRATION_CONFLICT: &str = "verified identity does not match r
 
 #[cfg(test)]
 type WorkspaceMetadataPostOpenHook = Box<dyn FnOnce(&fs::File)>;
+#[cfg(test)]
+type RefreshEntryHook = Box<dyn Fn(&str)>;
 
 #[cfg(test)]
 std::thread_local! {
@@ -165,9 +171,13 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
     static RESOLVE_PRE_REGULAR_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static RESOLVE_PRE_DIRECTORY_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
     static WORKSPACE_METADATA_POST_OPEN_HOOK: std::cell::RefCell<Option<WorkspaceMetadataPostOpenHook>> =
         const { std::cell::RefCell::new(None) };
     static WORKSPACE_METADATA_PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static REFRESH_ENTRY_HOOK: std::cell::RefCell<Option<RefreshEntryHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -746,6 +756,161 @@ pub enum PathOperation {
     OpenShell,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum EntryPurpose {
+    PgnWorkspace,
+    PgnFile,
+    PgnReadOnlyFile,
+    DownloadDestination,
+    DatabaseRoot,
+    DatabaseFile,
+    PuzzleRoot,
+    PuzzleFile,
+    EngineRoot,
+    EngineExecutable,
+    EngineResource,
+    OpeningBook,
+    EngineImage,
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum PathOwnerFamily {
+    Engines,
+    DownloadDestination,
+    FileWorkspace,
+    RecentFiles,
+    ReferenceDatabase,
+    PuzzleDatabase,
+    OpeningBook,
+    SessionWorkspace,
+    ExpandedDirectories,
+    DatabaseView,
+    PracticeDeck,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupPathOwners {
+    pub retained_ids: Vec<PathRef>,
+    pub trusted_families: Vec<PathOwnerFamily>,
+}
+
+fn same_operation_set(actual: &[PathOperation], expected: &[PathOperation]) -> bool {
+    actual.len() == expected.len() && expected.iter().all(|operation| actual.contains(operation))
+}
+
+fn canonical_operations(purpose: EntryPurpose) -> Vec<PathOperation> {
+    match purpose {
+        EntryPurpose::PgnWorkspace | EntryPurpose::PgnFile => {
+            vec![PathOperation::ReadPgn, PathOperation::WritePgn]
+        }
+        EntryPurpose::PgnReadOnlyFile => vec![PathOperation::ReadPgn],
+        EntryPurpose::DownloadDestination => vec![PathOperation::DownloadFile],
+        EntryPurpose::DatabaseRoot => vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseExport,
+            PathOperation::DownloadFile,
+        ],
+        EntryPurpose::DatabaseFile => vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseExport,
+        ],
+        EntryPurpose::PuzzleRoot => vec![
+            PathOperation::PuzzleRead,
+            PathOperation::PuzzleDelete,
+            PathOperation::DownloadFile,
+        ],
+        EntryPurpose::PuzzleFile => {
+            vec![PathOperation::PuzzleRead, PathOperation::PuzzleDelete]
+        }
+        EntryPurpose::EngineRoot => vec![
+            PathOperation::DownloadArchive,
+            PathOperation::EngineInstall,
+            PathOperation::EngineExecute,
+            PathOperation::EngineConfigure,
+        ],
+        EntryPurpose::EngineExecutable => engine_file_operations(),
+        EntryPurpose::EngineResource => vec![PathOperation::EngineResourceRead],
+        EntryPurpose::OpeningBook => vec![PathOperation::OpeningBookRead],
+        EntryPurpose::EngineImage => vec![PathOperation::ImageRead],
+    }
+}
+
+fn purpose_matches_shape(purpose: EntryPurpose, class: PathClass, target_is_dir: bool) -> bool {
+    let expected_dir = matches!(
+        purpose,
+        EntryPurpose::PgnWorkspace
+            | EntryPurpose::DownloadDestination
+            | EntryPurpose::DatabaseRoot
+            | EntryPurpose::PuzzleRoot
+            | EntryPurpose::EngineRoot
+    ) || (purpose == EntryPurpose::EngineResource && target_is_dir);
+    let expected_class = if expected_dir {
+        PathClass::PersistentCustomRoot
+    } else {
+        PathClass::PersistentFile
+    };
+    class == expected_class && target_is_dir == expected_dir
+}
+
+fn purpose_for_shape(
+    class: PathClass,
+    target_is_dir: bool,
+    operations: &[PathOperation],
+) -> Option<EntryPurpose> {
+    let candidates = [
+        EntryPurpose::PgnWorkspace,
+        EntryPurpose::PgnFile,
+        EntryPurpose::PgnReadOnlyFile,
+        EntryPurpose::DownloadDestination,
+        EntryPurpose::DatabaseRoot,
+        EntryPurpose::DatabaseFile,
+        EntryPurpose::PuzzleRoot,
+        EntryPurpose::PuzzleFile,
+        EntryPurpose::EngineRoot,
+        EntryPurpose::EngineExecutable,
+        EntryPurpose::EngineResource,
+        EntryPurpose::OpeningBook,
+        EntryPurpose::EngineImage,
+    ];
+    candidates.into_iter().find(|purpose| {
+        purpose_matches_shape(*purpose, class, target_is_dir)
+            && same_operation_set(operations, &canonical_operations(*purpose))
+    })
+}
+
+fn owner_families_for_purpose(purpose: EntryPurpose) -> Option<Vec<PathOwnerFamily>> {
+    use PathOwnerFamily as Family;
+    Some(match purpose {
+        EntryPurpose::PgnWorkspace | EntryPurpose::PgnFile | EntryPurpose::PgnReadOnlyFile => vec![
+            Family::FileWorkspace,
+            Family::RecentFiles,
+            Family::SessionWorkspace,
+            Family::ExpandedDirectories,
+            Family::PracticeDeck,
+        ],
+        EntryPurpose::DownloadDestination => vec![Family::DownloadDestination],
+        EntryPurpose::DatabaseRoot | EntryPurpose::PuzzleRoot | EntryPurpose::EngineRoot => vec![],
+        EntryPurpose::DatabaseFile => vec![
+            Family::ReferenceDatabase,
+            Family::SessionWorkspace,
+            Family::DatabaseView,
+        ],
+        EntryPurpose::PuzzleFile => vec![Family::PuzzleDatabase],
+        EntryPurpose::EngineExecutable => vec![Family::Engines],
+        EntryPurpose::OpeningBook => vec![Family::OpeningBook],
+        EntryPurpose::EngineResource | EntryPurpose::EngineImage => return None,
+    })
+}
+
 #[derive(Serialize, Deserialize, Type, Clone, Copy)]
 pub enum SoundKind {
     Move,
@@ -789,7 +954,7 @@ pub enum CommitDurability {
     DurabilityUncertain(crate::error::DurabilityStage),
 }
 
-fn require_durable(durability: CommitDurability) -> Result<(), Error> {
+pub(crate) fn require_durable(durability: CommitDurability) -> Result<(), Error> {
     match durability {
         CommitDurability::Durable => Ok(()),
         CommitDurability::DurabilityUncertain(stage) => {
@@ -1379,6 +1544,8 @@ struct StoredEntry {
     identity: Identity,
     #[serde(default)]
     target_is_dir: bool,
+    #[serde(default)]
+    purpose: Option<EntryPurpose>,
 }
 #[derive(Serialize, Deserialize)]
 struct Registry {
@@ -1900,6 +2067,11 @@ pub struct PathAuthority {
     active_engine_root: Option<PathRef>,
     pending_artifacts: Vec<PendingArtifact>,
     pending_unpersisted_removals: BTreeSet<String>,
+    loaded_candidate_ids: BTreeSet<String>,
+    session_protected_ids: BTreeSet<String>,
+    completed_owner_families: BTreeSet<PathOwnerFamily>,
+    startup_retained_ids: BTreeSet<String>,
+    startup_unowned_roots_reconciled: bool,
 }
 fn validate_components(components: &[OsString]) -> Result<(), Error> {
     for name in components {
@@ -1983,12 +2155,13 @@ impl PathAuthority {
         };
 
         let display_name = display_name.into();
+        let operations = canonical_operations(EntryPurpose::PgnFile);
         let result = (|| {
             let grant = self.grant_dialog_operations(
                 path,
                 display_name.clone(),
                 PathClass::BoundedDialogGrant,
-                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                operations.clone(),
                 Duration::from_secs(30 * 60),
                 128,
             )?;
@@ -1996,7 +2169,7 @@ impl PathAuthority {
                 &grant,
                 PathClass::PersistentFile,
                 display_name.clone(),
-                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                operations,
             )?;
             require_durable(commit.durability)?;
             Ok(FileWorkspaceDescriptor {
@@ -2036,7 +2209,8 @@ impl PathAuthority {
             active_engine_root,
             pending_artifacts,
         ) = if registry_path.exists() {
-            let bytes = fs::read(&registry_path)?;
+            let file = fs::File::open(&registry_path)?;
+            let bytes = read_registry_bytes(file)?;
             let registry: Registry = serde_json::from_slice(&bytes)
                 .map_err(|e| Error::InvalidInput(format!("invalid path registry: {e}")))?;
             if registry.schema_version != SCHEMA_VERSION {
@@ -2048,18 +2222,43 @@ impl PathAuthority {
             let mut loaded = BTreeMap::new();
             for mut stored in registry.entries {
                 validate_persisted_shape(&stored)?;
+                let needs_purpose_backfill = stored.purpose.is_none();
                 let legacy_engine_file_operations = [
                     PathOperation::EngineExecute,
                     PathOperation::EngineConfigure,
                     PathOperation::EngineInstall,
                 ];
                 if stored.class == PathClass::PersistentFile
-                    && stored.operations == legacy_engine_file_operations
+                    && same_operation_set(&stored.operations, &legacy_engine_file_operations)
                 {
                     // This exact, class-restricted backfill is idempotent, so the registry schema
                     // does not need to change. Engine roots are PersistentCustomRoot and must keep
                     // their exact operation vector for stable reuse across restarts.
                     stored.operations.push(PathOperation::EngineBinaryInspect);
+                }
+                if needs_purpose_backfill {
+                    stored.purpose =
+                        purpose_for_shape(stored.class, stored.target_is_dir, &stored.operations);
+                }
+                if needs_purpose_backfill {
+                    if let Some(purpose) = stored.purpose {
+                        stored.operations = canonical_operations(purpose);
+                    }
+                } else if stored.purpose == Some(EntryPurpose::EngineExecutable)
+                    && same_operation_set(
+                        &stored.operations,
+                        &[
+                            PathOperation::EngineExecute,
+                            PathOperation::EngineConfigure,
+                            PathOperation::EngineInstall,
+                            PathOperation::EngineBinaryInspect,
+                        ],
+                    )
+                {
+                    // Explicitly tagged registries written during the engine-inspection
+                    // transition may contain the historical install bit. Treat it as recognized
+                    // history, but leave other purpose-tagged subsets for their issuer to upgrade.
+                    stored.operations = canonical_operations(EntryPurpose::EngineExecutable);
                 }
                 let mut entry = Entry {
                     stored,
@@ -2106,12 +2305,14 @@ impl PathAuthority {
         } else {
             (BTreeMap::new(), None, None, None, Vec::new())
         };
+        let loaded_candidate_ids = persistent.keys().cloned().collect();
         for root in app_roots {
             fs::create_dir_all(&root.path)?;
             let stored = StoredEntry {
                 id: root.id.clone(),
                 display_name: root.display_name,
                 class: PathClass::AppOwnedRoot,
+                purpose: None,
                 operations: root.operations,
                 path: NativePath::from_path(&root.path),
                 identity: validate_target(&root.path, PathClass::AppOwnedRoot)?,
@@ -2137,6 +2338,11 @@ impl PathAuthority {
             active_engine_root,
             pending_artifacts,
             pending_unpersisted_removals: BTreeSet::new(),
+            loaded_candidate_ids,
+            session_protected_ids: BTreeSet::new(),
+            completed_owner_families: BTreeSet::new(),
+            startup_retained_ids: BTreeSet::new(),
+            startup_unowned_roots_reconciled: false,
         };
         authority.recover_pending_artifacts()?;
         Ok(authority)
@@ -2251,6 +2457,7 @@ impl PathAuthority {
             id: id.clone(),
             display_name: display_name.into(),
             class,
+            purpose: None,
             operations,
             path: NativePath::from_path(path),
             identity,
@@ -2315,15 +2522,40 @@ impl PathAuthority {
                 "dialog target changed before promotion".into(),
             ));
         }
+        let target_is_dir = persistent_class == PathClass::PersistentCustomRoot;
+        let purpose = purpose_for_shape(persistent_class, target_is_dir, &operations);
+        if let Some(purpose) = purpose {
+            if let Some(existing) = self.persistent.values().find(|entry| {
+                entry.stored.class == persistent_class
+                    && entry.stored.purpose == Some(purpose)
+                    && entry.stored.path.to_path().ok().as_ref() == Some(&path)
+            }) {
+                if existing.stored.identity != expected {
+                    return Err(Error::Conflict(
+                        "persistent target changed; acquire a new capability".into(),
+                    ));
+                }
+                let id = existing.stored.id.clone();
+                let mut candidate = self.persistent.clone();
+                if let Some(entry) = candidate.get_mut(&id.id) {
+                    entry.stored.operations = canonical_operations(purpose);
+                }
+                let durability = self.commit_candidate(candidate, Some(dialog))?;
+                self.session_protected_ids.insert(id.id.clone());
+                return Ok(PathCommit { id, durability });
+            }
+        }
         let id = PathRef::fresh();
+        let operations = purpose.map(canonical_operations).unwrap_or(operations);
         let stored = StoredEntry {
             id: id.clone(),
             display_name: display_name.into(),
             class: persistent_class,
+            purpose,
             operations,
             path: grant.entry.stored.path,
             identity: expected,
-            target_is_dir: persistent_class == PathClass::PersistentCustomRoot,
+            target_is_dir,
         };
         let mut candidate = self.persistent.clone();
         candidate.insert(
@@ -2334,6 +2566,7 @@ impl PathAuthority {
             },
         );
         let durability = self.commit_candidate(candidate, Some(dialog))?;
+        self.session_protected_ids.insert(id.id.clone());
         Ok(PathCommit { id, durability })
     }
     /// One-time backend migration escape hatch. New operational code must use dialog promotion.
@@ -2371,14 +2604,18 @@ impl PathAuthority {
         let path = PathBuf::from(path);
         let identity = validate_target(&path, class)?;
         reject_disagreeing_expected_identity(&identity, expected_identity)?;
+        let target_is_dir = class == PathClass::PersistentCustomRoot;
+        let purpose = purpose_for_shape(class, target_is_dir, &operations);
+        let operations = purpose.map(canonical_operations).unwrap_or(operations);
         let stored = StoredEntry {
             id: PathRef::fresh(),
             display_name,
             class,
+            purpose,
             operations,
             path: NativePath::from_path(&path),
             identity,
-            target_is_dir: class == PathClass::PersistentCustomRoot,
+            target_is_dir,
         };
         self.persist_new_entry(stored)
     }
@@ -2435,9 +2672,16 @@ impl PathAuthority {
         operations: Vec<PathOperation>,
         identity: Identity,
     ) -> Result<PathCommit, Error> {
+        let purpose = purpose_for_shape(PathClass::PersistentFile, false, &operations);
+        let desired_operations = purpose
+            .map(canonical_operations)
+            .unwrap_or_else(|| operations.clone());
         if let Some(entry) = self.persistent.values().find(|entry| {
             entry.stored.class == PathClass::PersistentFile
-                && entry.stored.operations == operations
+                && match purpose {
+                    Some(purpose) => entry.stored.purpose == Some(purpose),
+                    None => entry.stored.purpose.is_none() && entry.stored.operations == operations,
+                }
                 && entry
                     .stored
                     .path
@@ -2449,8 +2693,20 @@ impl PathAuthority {
                     "persistent file changed; acquire a new capability".into(),
                 ));
             }
+            let id = entry.stored.id.clone();
+            let needs_update = purpose.is_some() && entry.stored.operations != desired_operations;
+            if needs_update {
+                let mut candidate = self.persistent.clone();
+                if let Some(candidate_entry) = candidate.get_mut(&id.id) {
+                    candidate_entry.stored.operations = desired_operations.clone();
+                }
+                let durability = self.commit_candidate(candidate, None)?;
+                self.session_protected_ids.insert(id.id.clone());
+                return Ok(PathCommit { id, durability });
+            }
+            self.session_protected_ids.insert(id.id.clone());
             return Ok(PathCommit {
-                id: entry.stored.id.clone(),
+                id,
                 durability: CommitDurability::Durable,
             });
         }
@@ -2458,7 +2714,8 @@ impl PathAuthority {
             id: PathRef::fresh(),
             display_name,
             class: PathClass::PersistentFile,
-            operations,
+            purpose,
+            operations: desired_operations,
             path: NativePath::from_path(path),
             identity,
             target_is_dir: false,
@@ -2477,6 +2734,7 @@ impl PathAuthority {
             },
         );
         let durability = self.commit_candidate(candidate, None)?;
+        self.session_protected_ids.insert(id.id.clone());
         Ok(PathCommit { id, durability })
     }
 
@@ -2492,13 +2750,7 @@ impl PathAuthority {
         Ok(DatabaseRootHandle::new(self.get_or_create_root(
             path,
             display_name,
-            vec![
-                PathOperation::DatabaseRead,
-                PathOperation::DatabaseMutate,
-                PathOperation::DatabaseCreate,
-                PathOperation::DatabaseExport,
-                PathOperation::DownloadFile,
-            ],
+            canonical_operations(EntryPurpose::DatabaseRoot),
             "database",
             expected_identity,
         )?))
@@ -2516,11 +2768,7 @@ impl PathAuthority {
         Ok(PuzzleRootHandle::new(self.get_or_create_root(
             path,
             display_name,
-            vec![
-                PathOperation::PuzzleRead,
-                PathOperation::PuzzleDelete,
-                PathOperation::DownloadFile,
-            ],
+            canonical_operations(EntryPurpose::PuzzleRoot),
             "puzzle",
             expected_identity,
         )?))
@@ -2535,12 +2783,7 @@ impl PathAuthority {
         Ok(EngineRootHandle::new(self.get_or_create_root(
             path,
             display_name,
-            vec![
-                PathOperation::DownloadArchive,
-                PathOperation::EngineInstall,
-                PathOperation::EngineExecute,
-                PathOperation::EngineConfigure,
-            ],
+            canonical_operations(EntryPurpose::EngineRoot),
             "engine",
             expected_identity,
         )?))
@@ -2559,9 +2802,14 @@ impl PathAuthority {
         changed_noun: &str,
         expected_identity: Option<VerifiedIdentity>,
     ) -> Result<PathRef, Error> {
+        let purpose = purpose_for_shape(PathClass::PersistentCustomRoot, true, &operations);
         if let Some(entry) = self.persistent.values().find(|entry| {
-            entry.stored.target_is_dir
-                && entry.stored.operations == operations
+            entry.stored.class == PathClass::PersistentCustomRoot
+                && entry.stored.target_is_dir
+                && match purpose {
+                    Some(purpose) => entry.stored.purpose == Some(purpose),
+                    None => entry.stored.purpose.is_none() && entry.stored.operations == operations,
+                }
                 && entry
                     .stored
                     .path
@@ -2575,9 +2823,21 @@ impl PathAuthority {
                     "{changed_noun} root changed; select it again"
                 )));
             }
-            return Ok(entry.stored.id.clone());
+            let id = entry.stored.id.clone();
+            if let Some(purpose) = purpose {
+                let canonical = canonical_operations(purpose);
+                if entry.stored.operations != canonical {
+                    let mut candidate = self.persistent.clone();
+                    if let Some(candidate_entry) = candidate.get_mut(&id.id) {
+                        candidate_entry.stored.operations = canonical;
+                    }
+                    require_durable(self.commit_candidate(candidate, None)?)?;
+                }
+            }
+            self.session_protected_ids.insert(id.id.clone());
+            return Ok(id);
         }
-        Ok(self
+        let id = self
             .migrate_legacy_os_path_inner(
                 path.as_os_str().to_os_string(),
                 display_name.into(),
@@ -2585,14 +2845,16 @@ impl PathAuthority {
                 operations,
                 expected_identity,
             )?
-            .id)
+            .id;
+        self.session_protected_ids.insert(id.id.clone());
+        Ok(id)
     }
 
     pub(crate) fn active_engine_root(&mut self) -> Result<Option<EngineRootHandle>, Error> {
-        self.refresh_persistent();
         let Some(id) = self.active_engine_root.clone() else {
             return Ok(None);
         };
+        self.refresh_persistent_id(&id);
         match self.persistent.get(&id.id) {
             Some(entry)
                 if entry.availability == PathAvailability::Available
@@ -2691,7 +2953,7 @@ impl PathAuthority {
             grant,
             class,
             display_name.clone(),
-            vec![PathOperation::EngineResourceRead],
+            canonical_operations(EntryPurpose::EngineResource),
         )?;
         Ok(keep_adopted_handle(
             commit.durability,
@@ -2761,7 +3023,7 @@ impl PathAuthority {
         let commit = self.get_or_create_persistent_file_verified(
             &path,
             display_name,
-            vec![PathOperation::ImageRead],
+            canonical_operations(EntryPurpose::EngineImage),
             installed,
         )?;
         Ok(keep_adopted_handle(
@@ -2803,7 +3065,7 @@ impl PathAuthority {
         let commit = self.get_or_create_persistent_file(
             path,
             display_name,
-            vec![PathOperation::OpeningBookRead],
+            canonical_operations(EntryPurpose::OpeningBook),
         )?;
         Ok(keep_adopted_handle(
             commit.durability,
@@ -2912,10 +3174,10 @@ impl PathAuthority {
     }
 
     pub(crate) fn active_database_root(&mut self) -> Result<Option<DatabaseRootHandle>, Error> {
-        self.refresh_persistent();
         let Some(id) = self.active_database_root.clone() else {
             return Ok(None);
         };
+        self.refresh_persistent_id(&id);
         match self.persistent.get(&id.id) {
             Some(entry)
                 if entry.availability == PathAvailability::Available
@@ -2932,10 +3194,10 @@ impl PathAuthority {
     }
 
     pub(crate) fn active_puzzle_root(&mut self) -> Result<Option<PuzzleRootDescriptor>, Error> {
-        self.refresh_persistent();
         let Some(id) = self.active_puzzle_root.clone() else {
             return Ok(None);
         };
+        self.refresh_persistent_id(&id);
         match self.persistent.get(&id.id) {
             Some(entry)
                 if entry.availability == PathAvailability::Available
@@ -3044,7 +3306,7 @@ impl PathAuthority {
         let commit = self.get_or_create_persistent_file_verified(
             &path,
             filename.to_string_lossy(),
-            vec![PathOperation::PuzzleRead, PathOperation::PuzzleDelete],
+            canonical_operations(EntryPurpose::PuzzleFile),
             resolved.identity()?,
         )?;
         require_durable(commit.durability)?;
@@ -3107,27 +3369,37 @@ impl PathAuthority {
         let verified_identity =
             verified_identity::database_child_identity(resolved.identity()?, &validated_identity)?;
         if let Some(entry) = self.persistent.values().find(|entry| {
-            entry.stored.path.to_path().ok().as_ref() == Some(&path)
+            entry.stored.class == PathClass::PersistentFile
+                && entry.stored.path.to_path().ok().as_ref() == Some(&path)
                 && entry.stored.identity == validated_identity
                 && !entry.stored.target_is_dir
+                && entry.stored.purpose == Some(EntryPurpose::DatabaseFile)
                 && entry
                     .stored
                     .operations
                     .contains(&PathOperation::DatabaseRead)
         }) {
-            return Ok(DatabaseHandle::new(entry.stored.id.clone()));
+            let id = entry.stored.id.clone();
+            let canonical = canonical_operations(EntryPurpose::DatabaseFile);
+            if entry.stored.operations != canonical {
+                let mut candidate = self.persistent.clone();
+                candidate
+                    .get_mut(&id.id)
+                    .expect("selected database entry remains in the cloned registry")
+                    .stored
+                    .operations = canonical;
+                require_durable(self.commit_candidate(candidate, None)?)?;
+            }
+            self.session_protected_ids.insert(id.id.clone());
+            return Ok(DatabaseHandle::new(id));
         }
         let id = PathRef::fresh();
         let stored = StoredEntry {
             id: id.clone(),
             display_name: display_name.into(),
             class: PathClass::PersistentFile,
-            operations: vec![
-                PathOperation::DatabaseRead,
-                PathOperation::DatabaseMutate,
-                PathOperation::DatabaseCreate,
-                PathOperation::DatabaseExport,
-            ],
+            purpose: Some(EntryPurpose::DatabaseFile),
+            operations: canonical_operations(EntryPurpose::DatabaseFile),
             path: NativePath::from_path(&path),
             identity: {
                 let (a, b) = verified_identity.pair();
@@ -3144,6 +3416,7 @@ impl PathAuthority {
             },
         );
         require_durable(self.commit_candidate(candidate, None)?)?;
+        self.session_protected_ids.insert(id.id.clone());
         Ok(DatabaseHandle::new(id))
     }
 
@@ -3247,6 +3520,15 @@ impl PathAuthority {
         )?)
     }
 
+    pub(crate) fn remove_puzzle_database(&mut self, handle: &PathRef) -> Result<(), Error> {
+        let mut dropped_engine_executables = Vec::new();
+        require_durable(self.remove_workspace_entry(
+            &FileWorkspaceHandle::new(handle.clone()),
+            WorkspaceRemovalStatus::Complete,
+            &mut dropped_engine_executables,
+        )?)
+    }
+
     fn database_root_path(&mut self, root: &DatabaseRootHandle) -> Result<PathBuf, Error> {
         self.workspace_root(
             &FileWorkspaceHandle::new(root.path_ref().clone()),
@@ -3274,15 +3556,89 @@ impl PathAuthority {
                 "workspace entry is not persistent".into(),
             ));
         }
-        self.persistent
+        if let Some(operations) = self
+            .persistent
             .get(&id.id)
             .map(|entry| entry.stored.operations.clone())
-            .or_else(|| {
-                self.dialogs
-                    .get(&id.id)
-                    .map(|grant| grant.entry.stored.operations.clone())
-            })
+        {
+            self.session_protected_ids.insert(id.id.clone());
+            return Ok(operations);
+        }
+        self.dialogs
+            .get(&id.id)
+            .map(|grant| grant.entry.stored.operations.clone())
             .ok_or_else(|| Error::InvalidInput("unknown, revoked, or expired path grant".into()))
+    }
+
+    pub(crate) fn reconcile_startup_owners(
+        &mut self,
+        owners: StartupPathOwners,
+    ) -> Result<CommitDurability, Error> {
+        if owners.retained_ids.len() > MAX_PERSISTENT_IDS || owners.trusted_families.len() > 32 {
+            return Err(Error::ResourceLimit(
+                "startup path owner input exceeds its limit".into(),
+            ));
+        }
+        let retained: BTreeSet<_> = owners
+            .retained_ids
+            .into_iter()
+            .map(|path_ref| path_ref.id)
+            .filter(|id| self.persistent.contains_key(id))
+            .collect();
+        let trusted: BTreeSet<_> = owners.trusted_families.into_iter().collect();
+        let effective_trusted: BTreeSet<_> = trusted
+            .union(&self.completed_owner_families)
+            .copied()
+            .collect();
+        let active_roots = [
+            self.active_database_root.as_ref(),
+            self.active_puzzle_root.as_ref(),
+            self.active_engine_root.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|path_ref| path_ref.id.as_str())
+        .collect::<BTreeSet<_>>();
+        let pending_ids = self
+            .pending_artifacts
+            .iter()
+            .flat_map(|pending| [pending.id.id.as_str(), pending.root.id.as_str()])
+            .collect::<BTreeSet<_>>();
+        let mut candidate = self.persistent.clone();
+        candidate.retain(|id, entry| {
+            if !self.loaded_candidate_ids.contains(id)
+                || self.session_protected_ids.contains(id)
+                || retained.contains(id)
+                || self.startup_retained_ids.contains(id)
+                || active_roots.contains(id.as_str())
+                || pending_ids.contains(id.as_str())
+            {
+                return true;
+            }
+            let Some(purpose) = entry.stored.purpose else {
+                return true;
+            };
+            let Some(families) = owner_families_for_purpose(purpose) else {
+                return true;
+            };
+            if families.is_empty() && self.startup_unowned_roots_reconciled {
+                return true;
+            }
+            !families
+                .iter()
+                .all(|family| effective_trusted.contains(family))
+        });
+        let durability = if candidate.len() == self.persistent.len() {
+            CommitDurability::Durable
+        } else {
+            self.commit_candidate(candidate, None)?
+        };
+        if durability == CommitDurability::Durable {
+            self.completed_owner_families.extend(trusted);
+            self.startup_retained_ids.extend(retained);
+            self.startup_unowned_roots_reconciled = true;
+        }
+        Ok(durability)
     }
 
     pub fn resolve(
@@ -3322,36 +3678,39 @@ impl PathAuthority {
             ));
         }
         #[cfg(unix)]
-        {
-            resolve_unix(
-                &root,
-                &entry.stored.identity,
-                entry.stored.target_is_dir,
-                components,
-                operation,
-            )
-        }
+        let resolved = resolve_unix(
+            &root,
+            &entry.stored.identity,
+            entry.stored.target_is_dir,
+            components,
+            operation,
+        );
         #[cfg(windows)]
-        {
-            resolve_windows(
-                &root,
-                &entry.stored.identity,
-                entry.stored.target_is_dir,
-                components,
-                operation,
-            )
+        let resolved = resolve_windows(
+            &root,
+            &entry.stored.identity,
+            entry.stored.target_is_dir,
+            components,
+            operation,
+        );
+        if resolved.is_ok() && self.persistent.contains_key(&id.id) {
+            self.session_protected_ids.insert(id.id.clone());
         }
+        resolved
     }
 
     /// Renderer-safe display metadata for a capability.  This is deliberately
     /// a label, not a path or component list.
     pub(crate) fn display_name(&mut self, id: &PathRef) -> Result<String, Error> {
-        self.refresh_persistent();
-        self.persistent
+        self.refresh_persistent_id(id);
+        let display_name = self
+            .persistent
             .get(&id.id)
             .filter(|entry| entry.availability == PathAvailability::Available)
             .map(|entry| entry.stored.display_name.clone())
-            .ok_or_else(|| Error::InvalidInput("unknown or unavailable path capability".into()))
+            .ok_or_else(|| Error::InvalidInput("unknown or unavailable path capability".into()))?;
+        self.session_protected_ids.insert(id.id.clone());
+        Ok(display_name)
     }
 
     /// Returns the native root for a persistent, directory-backed workspace after checking its
@@ -3379,6 +3738,8 @@ impl PathAuthority {
                 "workspace is unavailable because its root changed".into(),
             ));
         }
+        self.session_protected_ids
+            .insert(workspace.path_ref().id.clone());
         Ok(root)
     }
 
@@ -3545,19 +3906,46 @@ impl PathAuthority {
         identity: Identity,
         is_dir: bool,
     ) -> Result<FileWorkspaceHandle, Error> {
-        if let Some((id, _)) = self.persistent.iter().find(|(_, entry)| {
-            entry.stored.path.to_path().ok().as_ref() == Some(&path)
+        let purpose =
+            (root_entry.stored.purpose == Some(EntryPurpose::PgnWorkspace)).then_some(if is_dir {
+                EntryPurpose::PgnWorkspace
+            } else {
+                EntryPurpose::PgnFile
+            });
+        if let Some((id, entry)) = self.persistent.iter().find(|(_, entry)| {
+            entry.stored.class == class
+                && entry.stored.path.to_path().ok().as_ref() == Some(&path)
                 && entry.stored.identity == identity
                 && entry.stored.target_is_dir == is_dir
+                && entry.stored.purpose == purpose
+                && (purpose.is_some()
+                    || same_operation_set(&entry.stored.operations, &root_entry.stored.operations))
         }) {
-            return Ok(FileWorkspaceHandle::new(PathRef { id: id.clone() }));
+            let id = PathRef { id: id.clone() };
+            if let Some(purpose) = purpose {
+                let canonical = canonical_operations(purpose);
+                if entry.stored.operations != canonical {
+                    let mut candidate = self.persistent.clone();
+                    candidate
+                        .get_mut(&id.id)
+                        .expect("selected workspace entry remains in the cloned registry")
+                        .stored
+                        .operations = canonical;
+                    require_durable(self.commit_candidate(candidate, None)?)?;
+                }
+            }
+            self.session_protected_ids.insert(id.id.clone());
+            return Ok(FileWorkspaceHandle::new(id));
         }
         let id = PathRef::fresh();
         let stored = StoredEntry {
             id: id.clone(),
             display_name,
             class,
-            operations: root_entry.stored.operations,
+            purpose,
+            operations: purpose
+                .map(canonical_operations)
+                .unwrap_or(root_entry.stored.operations),
             path: NativePath::from_path(&path),
             identity,
             target_is_dir: is_dir,
@@ -3571,6 +3959,7 @@ impl PathAuthority {
             },
         );
         require_durable(self.commit_candidate(candidate, None)?)?;
+        self.session_protected_ids.insert(id.id.clone());
         Ok(FileWorkspaceHandle::new(id))
     }
 
@@ -3733,11 +4122,16 @@ impl PathAuthority {
                 "download artifact target was not replaced before activation".into(),
             ));
         }
+        let purpose = purpose_for_shape(PathClass::PersistentFile, false, &pending.operations);
+        let operations = purpose
+            .map(canonical_operations)
+            .unwrap_or(pending.operations);
         let stored = StoredEntry {
             id: pending.id.clone(),
             display_name: pending.display_name,
             class: PathClass::PersistentFile,
-            operations: pending.operations,
+            purpose,
+            operations,
             path: NativePath::from_path(&path),
             identity: current,
             target_is_dir: false,
@@ -3889,6 +4283,8 @@ impl PathAuthority {
                 "workspace entry is unavailable because its object changed".into(),
             ));
         }
+        self.session_protected_ids
+            .insert(handle.path_ref().id.clone());
         Ok(path)
     }
 
@@ -3938,6 +4334,8 @@ impl PathAuthority {
         let expected = (entry.stored.identity.a, entry.stored.identity.b);
         let (parent, leaf) =
             crate::infra::fs::open_verified_parent(&path, expected, entry.stored.target_is_dir)?;
+        self.session_protected_ids
+            .insert(handle.path_ref().id.clone());
         Ok(RetainedWorkspaceTarget {
             parent,
             leaf,
@@ -4080,8 +4478,14 @@ impl PathAuthority {
         let now = self.clock.now();
         self.dialogs.retain(|_, g| g.expires_at > now);
     }
+    #[cfg(test)]
     fn refresh_persistent(&mut self) {
         for entry in self.persistent.values_mut() {
+            refresh_entry(entry);
+        }
+    }
+    fn refresh_persistent_id(&mut self, id: &PathRef) {
+        if let Some(entry) = self.persistent.get_mut(&id.id) {
             refresh_entry(entry);
         }
     }
@@ -4212,6 +4616,12 @@ impl PathAuthority {
             self.active_engine_root = active_engine_root;
             self.pending_artifacts = pending_artifacts;
             self.pending_unpersisted_removals.clear();
+            self.loaded_candidate_ids
+                .retain(|id| self.persistent.contains_key(id));
+            self.session_protected_ids
+                .retain(|id| self.persistent.contains_key(id));
+            self.startup_retained_ids
+                .retain(|id| self.persistent.contains_key(id));
             if let Some(dialog) = consumed_dialog {
                 self.dialogs.remove(&dialog.id);
             }
@@ -4233,20 +4643,73 @@ impl PathAuthority {
             Box<dyn FnOnce(&mut fs::File) -> Result<(), Error>>,
         ) -> Result<AtomicFileOutcome, Error>,
     {
-        let entries = source
+        let entries: Vec<_> = source
             .values()
             .filter(|e| e.stored.class != PathClass::AppOwnedRoot)
             .map(|e| e.stored.clone())
             .collect();
         let bytes = serde_json::to_vec(&Registry {
             schema_version: SCHEMA_VERSION,
-            entries,
+            entries: entries.clone(),
             active_database_root: active_database_root.clone(),
             active_puzzle_root: active_puzzle_root.clone(),
             active_engine_root: active_engine_root.clone(),
             pending_artifacts: pending_artifacts.to_vec(),
         })
         .map_err(|e| Error::InvalidInput(e.to_string()))?;
+        let unique_ids = entries
+            .iter()
+            .map(|entry| entry.id.id.as_str())
+            .chain(
+                pending_artifacts
+                    .iter()
+                    .map(|pending| pending.id.id.as_str()),
+            )
+            .collect::<BTreeSet<_>>()
+            .len();
+        let current_entries: Vec<_> = self
+            .persistent
+            .values()
+            .filter(|entry| entry.stored.class != PathClass::AppOwnedRoot)
+            .map(|entry| entry.stored.clone())
+            .collect();
+        let current_unique_ids = current_entries
+            .iter()
+            .map(|entry| entry.id.id.as_str())
+            .chain(
+                self.pending_artifacts
+                    .iter()
+                    .map(|pending| pending.id.id.as_str()),
+            )
+            .collect::<BTreeSet<_>>()
+            .len();
+        let current_bytes = serde_json::to_vec(&Registry {
+            schema_version: SCHEMA_VERSION,
+            entries: current_entries,
+            active_database_root: self.active_database_root.clone(),
+            active_puzzle_root: self.active_puzzle_root.clone(),
+            active_engine_root: self.active_engine_root.clone(),
+            pending_artifacts: self.pending_artifacts.clone(),
+        })
+        .map_err(|error| Error::InvalidInput(error.to_string()))?
+        .len();
+        if unique_ids > MAX_PERSISTENT_IDS && unique_ids > current_unique_ids {
+            return Err(Error::ResourceLimit(
+                "path registry identifier limit reached".into(),
+            ));
+        }
+        if pending_artifacts.len() > MAX_PENDING_ARTIFACTS
+            && pending_artifacts.len() > self.pending_artifacts.len()
+        {
+            return Err(Error::ResourceLimit(
+                "pending path artifact limit reached".into(),
+            ));
+        }
+        if bytes.len() > MAX_REGISTRY_BYTES && bytes.len() > current_bytes {
+            return Err(Error::ResourceLimit(
+                "path registry serialized size limit reached".into(),
+            ));
+        }
         let mut attempt = || {
             let bytes = bytes.clone();
             replace(
@@ -4316,9 +4779,50 @@ fn validate_persisted_shape(entry: &StoredEntry) -> Result<(), Error> {
             "invalid persistent path registry entry".into(),
         ));
     }
+    if let Some(purpose) = entry.purpose {
+        let legacy_engine = purpose == EntryPurpose::EngineExecutable
+            && same_operation_set(
+                &entry.operations,
+                &[
+                    PathOperation::EngineExecute,
+                    PathOperation::EngineConfigure,
+                    PathOperation::EngineInstall,
+                ],
+            );
+        let canonical = canonical_operations(purpose);
+        let historical_subset = entry
+            .operations
+            .iter()
+            .all(|operation| canonical.contains(operation));
+        if !purpose_matches_shape(purpose, entry.class, entry.target_is_dir)
+            || (!legacy_engine && !historical_subset)
+        {
+            return Err(Error::InvalidInput(
+                "persistent path purpose does not match its authority shape".into(),
+            ));
+        }
+    }
     Ok(())
 }
+fn read_registry_bytes(reader: impl Read) -> Result<Vec<u8>, Error> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_LEGACY_REGISTRY_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_LEGACY_REGISTRY_BYTES {
+        return Err(Error::ResourceLimit(
+            "path registry exceeds the legacy read limit".into(),
+        ));
+    }
+    Ok(bytes)
+}
 fn refresh_entry(entry: &mut Entry) {
+    #[cfg(test)]
+    REFRESH_ENTRY_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow().as_ref() {
+            hook(&entry.stored.id.id);
+        }
+    });
     let path = match entry.stored.path.to_path() {
         Ok(path) => path,
         Err(_) => {
@@ -4463,7 +4967,13 @@ fn resolve_unix(
             }
             exact_file = Some(file);
         }
-        if !last {
+        if ty == FileType::Directory {
+            #[cfg(test)]
+            RESOLVE_PRE_DIRECTORY_OPEN_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    hook();
+                }
+            });
             handle = fs::File::from(
                 rfs::openat(
                     &handle,
@@ -4473,6 +4983,14 @@ fn resolve_unix(
                 )
                 .map_err(|e| Error::from(std::io::Error::from(e)))?,
             );
+            let opened_identity = file_identity(&handle.metadata()?);
+            let stat_identity = Identity {
+                a: stat.st_dev,
+                b: stat.st_ino,
+            };
+            if opened_identity != stat_identity {
+                return Err(Error::Conflict("directory changed while resolving".into()));
+            }
         }
     }
     let parent = exact_file
@@ -6450,6 +6968,7 @@ mod tests {
             id: id.clone(),
             display_name: "a".into(),
             class: PathClass::PersistentFile,
+            purpose: None,
             operations: vec![PathOperation::ReadPgn],
             path: NativePath::from_path(&file),
             identity: identity(&file).unwrap(),
@@ -6537,6 +7056,123 @@ mod tests {
             .resolve(&reservation.id, PathOperation::DownloadFile, &[])
             .is_err());
         assert!(recovered.pending_artifacts.is_empty());
+    }
+
+    fn install_read_only_download_fixture(
+        authority: &mut PathAuthority,
+        root: &PathRef,
+        filename: &str,
+        staged: &Path,
+    ) -> PathRef {
+        let reservation = authority
+            .reserve_download_artifact(
+                root,
+                OsString::from(filename),
+                sha256_file(staged).unwrap(),
+                filename,
+                canonical_operations(EntryPurpose::PgnReadOnlyFile),
+            )
+            .unwrap();
+        let resolved = authority
+            .resolve(
+                root,
+                PathOperation::DownloadFile,
+                &[OsString::from(filename)],
+            )
+            .unwrap();
+        let installed = resolved
+            .atomic_install_reserved_download(&reservation, staged)
+            .unwrap();
+        authority
+            .mark_download_artifact_committed(
+                &reservation,
+                installed.identity,
+                installed.ctime_nanos,
+            )
+            .unwrap();
+        authority
+            .activate_download_artifact(&reservation)
+            .unwrap()
+            .handle
+            .id
+    }
+
+    #[test]
+    fn finalized_read_only_pgn_downloads_reload_and_follow_startup_ownership() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("downloads");
+        fs::create_dir(&root_path).unwrap();
+        let app_root = AppOwnedRoot::new(
+            "downloads",
+            root_path.clone(),
+            vec![PathOperation::DownloadFile],
+        );
+        let root = app_root.id.clone();
+        let registry = dir.path().join("registry.json");
+        let orphan_staged = dir.path().join("orphan-staged.pgn");
+        let retained_staged = dir.path().join("retained-staged.pgn");
+        fs::write(&orphan_staged, b"1. e4").unwrap();
+        fs::write(&retained_staged, b"1. d4").unwrap();
+        let (orphan, retained) = {
+            let mut authority =
+                PathAuthority::open(registry.clone(), vec![app_root.clone()]).unwrap();
+            let orphan = install_read_only_download_fixture(
+                &mut authority,
+                &root,
+                "orphan.pgn",
+                &orphan_staged,
+            );
+            let retained = install_read_only_download_fixture(
+                &mut authority,
+                &root,
+                "retained.pgn",
+                &retained_staged,
+            );
+            (orphan, retained)
+        };
+
+        let mut authority = PathAuthority::open(registry, vec![app_root]).unwrap();
+        for id in [&orphan, &retained] {
+            assert_eq!(
+                authority.persistent[&id.id].stored.purpose,
+                Some(EntryPurpose::PgnReadOnlyFile)
+            );
+            assert_eq!(
+                authority.persistent[&id.id].stored.operations,
+                canonical_operations(EntryPurpose::PgnReadOnlyFile)
+            );
+            assert!(authority.resolve(id, PathOperation::ReadPgn, &[]).is_ok());
+            assert!(authority.resolve(id, PathOperation::WritePgn, &[]).is_err());
+        }
+        // Resolve marks successful use as session-owned. Reload once more so the ownership sweep
+        // observes both records strictly as startup candidates.
+        let registry = authority.registry_path.clone();
+        drop(authority);
+        let mut authority = PathAuthority::open(
+            registry,
+            vec![AppOwnedRoot::new(
+                "downloads",
+                root_path.clone(),
+                vec![PathOperation::DownloadFile],
+            )],
+        )
+        .unwrap();
+        authority
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: vec![retained.clone()],
+                trusted_families: vec![
+                    PathOwnerFamily::FileWorkspace,
+                    PathOwnerFamily::RecentFiles,
+                    PathOwnerFamily::SessionWorkspace,
+                    PathOwnerFamily::ExpandedDirectories,
+                    PathOwnerFamily::PracticeDeck,
+                ],
+            })
+            .unwrap();
+        assert!(!authority.persistent.contains_key(&orphan.id));
+        assert!(authority.persistent.contains_key(&retained.id));
+        assert_eq!(fs::read(root_path.join("orphan.pgn")).unwrap(), b"1. e4");
+        assert_eq!(fs::read(root_path.join("retained.pgn")).unwrap(), b"1. d4");
     }
 
     #[test]
@@ -7539,6 +8175,7 @@ mod tests {
             id: PathRef::fresh(),
             display_name: "file.pgn".into(),
             class: PathClass::PersistentFile,
+            purpose: None,
             operations: vec![PathOperation::ReadPgn],
             path: NativePath::from_path(&file),
             identity: identity(&file).unwrap(),
@@ -8283,5 +8920,1051 @@ mod tests {
         drop(extra);
         let bytes = read_engine_image_bytes(file, declared, max_bytes).unwrap();
         assert_eq!(bytes, b"01234567grown");
+    }
+
+    #[test]
+    fn semantic_file_reuse_survives_operation_reordering() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("study.pgn");
+        fs::write(&file, b"pgn").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let first = authority
+            .get_or_create_persistent_file(
+                &file,
+                "study",
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            )
+            .unwrap();
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        let second = authority
+            .get_or_create_persistent_file(
+                &file,
+                "study",
+                vec![PathOperation::WritePgn, PathOperation::ReadPgn],
+            )
+            .unwrap();
+        set_test_atomic_file_injector(None);
+        assert_eq!(first.id, second.id);
+        assert_eq!(
+            authority.persistent[&first.id.id].stored.operations,
+            canonical_operations(EntryPurpose::PgnFile)
+        );
+    }
+
+    #[test]
+    fn startup_reconciliation_preserves_retained_evidence_across_partial_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("owned.pgn");
+        let book = dir.path().join("orphan.bin");
+        fs::write(&file, b"pgn").unwrap();
+        fs::write(&book, b"book").unwrap();
+        let registry = dir.path().join("registry.json");
+        let (owned, orphan) = {
+            let mut initial = PathAuthority::open(registry.clone(), vec![]).unwrap();
+            let owned = initial
+                .get_or_create_persistent_file(
+                    &file,
+                    "owned",
+                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                )
+                .unwrap()
+                .id;
+            let orphan = initial.register_opening_book(&book, "book").unwrap();
+            (owned, orphan)
+        };
+        let mut reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        reloaded
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: vec![owned.clone()],
+                trusted_families: vec![PathOwnerFamily::FileWorkspace],
+            })
+            .unwrap();
+        reloaded
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: vec![PathRef {
+                    id: "unknown-stale-reference".into(),
+                }],
+                trusted_families: vec![
+                    PathOwnerFamily::RecentFiles,
+                    PathOwnerFamily::SessionWorkspace,
+                    PathOwnerFamily::ExpandedDirectories,
+                    PathOwnerFamily::PracticeDeck,
+                ],
+            })
+            .unwrap();
+        assert!(reloaded
+            .resolve(&owned, PathOperation::ReadPgn, &[])
+            .is_ok());
+        reloaded
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: vec![],
+                trusted_families: vec![PathOwnerFamily::OpeningBook],
+            })
+            .unwrap();
+        assert!(reloaded
+            .resolve(orphan.path_ref(), PathOperation::OpeningBookRead, &[])
+            .is_err());
+        assert_eq!(fs::read(book).unwrap(), b"book");
+        reloaded
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: vec![],
+                trusted_families: vec![PathOwnerFamily::FileWorkspace],
+            })
+            .unwrap();
+        assert!(reloaded
+            .resolve(&owned, PathOperation::ReadPgn, &[])
+            .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_directory_resolution_retains_the_child_descriptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("child");
+        fs::create_dir(&child).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .migrate_legacy_os_path(
+                dir.path().as_os_str().to_os_string(),
+                "root",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            )
+            .unwrap();
+        let resolved = authority
+            .resolve(&root.id, PathOperation::ReadPgn, &[OsString::from("child")])
+            .unwrap();
+        let descriptor = resolved.directory.unwrap();
+        assert_eq!(
+            file_identity(&descriptor.metadata().unwrap()),
+            identity(&child).unwrap()
+        );
+    }
+
+    fn stored_entry_for(
+        path: &Path,
+        id: impl Into<String>,
+        purpose: Option<EntryPurpose>,
+        operations: Vec<PathOperation>,
+    ) -> StoredEntry {
+        let target_is_dir = path.is_dir();
+        StoredEntry {
+            id: PathRef { id: id.into() },
+            display_name: "fixture".into(),
+            class: if target_is_dir {
+                PathClass::PersistentCustomRoot
+            } else {
+                PathClass::PersistentFile
+            },
+            operations,
+            path: NativePath::from_path(path),
+            identity: identity(path).unwrap(),
+            target_is_dir,
+            purpose,
+        }
+    }
+
+    #[test]
+    fn schema_one_backfills_every_exact_legacy_purpose_and_preserves_unknown_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry_path = dir.path().join("registry.json");
+        let purposes = [
+            EntryPurpose::PgnWorkspace,
+            EntryPurpose::PgnFile,
+            EntryPurpose::PgnReadOnlyFile,
+            EntryPurpose::DownloadDestination,
+            EntryPurpose::DatabaseRoot,
+            EntryPurpose::DatabaseFile,
+            EntryPurpose::PuzzleRoot,
+            EntryPurpose::PuzzleFile,
+            EntryPurpose::EngineRoot,
+            EntryPurpose::EngineExecutable,
+            EntryPurpose::EngineResource,
+            EntryPurpose::OpeningBook,
+            EntryPurpose::EngineImage,
+        ];
+        let mut entries = Vec::new();
+        for (index, purpose) in purposes.into_iter().enumerate() {
+            let path = dir.path().join(format!("purpose-{index}"));
+            let is_dir = matches!(
+                purpose,
+                EntryPurpose::PgnWorkspace
+                    | EntryPurpose::DownloadDestination
+                    | EntryPurpose::DatabaseRoot
+                    | EntryPurpose::PuzzleRoot
+                    | EntryPurpose::EngineRoot
+            );
+            if is_dir {
+                fs::create_dir(&path).unwrap();
+            } else {
+                fs::write(&path, b"fixture").unwrap();
+            }
+            let operations = if purpose == EntryPurpose::EngineExecutable {
+                vec![
+                    PathOperation::EngineExecute,
+                    PathOperation::EngineConfigure,
+                    PathOperation::EngineInstall,
+                ]
+            } else {
+                canonical_operations(purpose)
+            };
+            entries.push(stored_entry_for(
+                &path,
+                format!("purpose-{index}"),
+                None,
+                operations,
+            ));
+        }
+        let unknown_path = dir.path().join("unknown");
+        fs::write(&unknown_path, b"unknown").unwrap();
+        entries.push(stored_entry_for(
+            &unknown_path,
+            "unknown",
+            None,
+            vec![PathOperation::SnapshotWrite],
+        ));
+        let mut json = serde_json::to_value(Registry {
+            schema_version: SCHEMA_VERSION,
+            entries,
+            active_database_root: None,
+            active_puzzle_root: None,
+            active_engine_root: None,
+            pending_artifacts: vec![],
+        })
+        .unwrap();
+        for entry in json["entries"].as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("purpose");
+        }
+        fs::write(&registry_path, serde_json::to_vec(&json).unwrap()).unwrap();
+
+        let mut authority = PathAuthority::open(registry_path.clone(), vec![]).unwrap();
+        for (index, purpose) in purposes.into_iter().enumerate() {
+            let entry = &authority.persistent[&format!("purpose-{index}")].stored;
+            assert_eq!(entry.purpose, Some(purpose));
+            assert_eq!(entry.operations, canonical_operations(purpose));
+        }
+        assert_eq!(authority.persistent["unknown"].stored.purpose, None);
+        authority.save().unwrap();
+        let reloaded = PathAuthority::open(registry_path, vec![]).unwrap();
+        assert_eq!(reloaded.persistent["unknown"].stored.purpose, None);
+        for (index, purpose) in purposes.into_iter().enumerate() {
+            assert_eq!(
+                reloaded.persistent[&format!("purpose-{index}")]
+                    .stored
+                    .purpose,
+                Some(purpose)
+            );
+        }
+    }
+
+    #[test]
+    fn tagged_historical_operation_subsets_upgrade_under_same_root_and_file_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry_path = dir.path().join("registry.json");
+        let root_path = dir.path().join("database-root");
+        let file_path = dir.path().join("study.pgn");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(&file_path, b"*").unwrap();
+        let root_id = PathRef {
+            id: "root-id".into(),
+        };
+        let file_id = PathRef {
+            id: "file-id".into(),
+        };
+        let registry = Registry {
+            schema_version: SCHEMA_VERSION,
+            entries: vec![
+                stored_entry_for(
+                    &root_path,
+                    root_id.id.clone(),
+                    Some(EntryPurpose::DatabaseRoot),
+                    vec![PathOperation::DatabaseRead],
+                ),
+                stored_entry_for(
+                    &file_path,
+                    file_id.id.clone(),
+                    Some(EntryPurpose::PgnFile),
+                    vec![PathOperation::ReadPgn],
+                ),
+            ],
+            active_database_root: None,
+            active_puzzle_root: None,
+            active_engine_root: None,
+            pending_artifacts: vec![],
+        };
+        fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
+        let mut authority = PathAuthority::open(registry_path.clone(), vec![]).unwrap();
+        let root = authority
+            .get_or_create_database_root(&root_path, "root", None)
+            .unwrap();
+        let file = authority
+            .get_or_create_persistent_file(
+                &file_path,
+                "study",
+                vec![PathOperation::WritePgn, PathOperation::ReadPgn],
+            )
+            .unwrap();
+        assert_eq!(root.path_ref(), &root_id);
+        assert_eq!(file.id, file_id);
+        assert_eq!(
+            authority.persistent[&root_id.id].stored.operations,
+            canonical_operations(EntryPurpose::DatabaseRoot)
+        );
+        assert_eq!(
+            authority.persistent[&file_id.id].stored.operations,
+            canonical_operations(EntryPurpose::PgnFile)
+        );
+        drop(authority);
+        let reloaded = PathAuthority::open(registry_path, vec![]).unwrap();
+        assert_eq!(
+            reloaded.persistent[&root_id.id].stored.operations,
+            canonical_operations(EntryPurpose::DatabaseRoot)
+        );
+        assert_eq!(
+            reloaded.persistent[&file_id.id].stored.operations,
+            canonical_operations(EntryPurpose::PgnFile)
+        );
+    }
+
+    #[test]
+    fn semantic_reuse_does_not_broaden_an_unrelated_same_file_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("shared.bin");
+        fs::write(&file, b"shared").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let book = authority.register_opening_book(&file, "book").unwrap();
+        let pgn = authority
+            .get_or_create_persistent_file(
+                &file,
+                "pgn",
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            )
+            .unwrap();
+        assert_ne!(book.path_ref(), &pgn.id);
+        assert_eq!(
+            authority.persistent[&book.path_ref().id].stored.operations,
+            canonical_operations(EntryPurpose::OpeningBook)
+        );
+    }
+
+    #[test]
+    fn registry_admission_bounds_ids_pending_bytes_and_allow_non_growing_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("entry");
+        fs::write(&file, b"entry").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let template = Entry {
+            stored: stored_entry_for(
+                &file,
+                "template",
+                Some(EntryPurpose::OpeningBook),
+                canonical_operations(EntryPurpose::OpeningBook),
+            ),
+            availability: PathAvailability::Available,
+        };
+        for index in 0..=MAX_PERSISTENT_IDS {
+            let mut entry = template.clone();
+            entry.stored.id.id = format!("id-{index}");
+            authority
+                .persistent
+                .insert(entry.stored.id.id.clone(), entry);
+        }
+        let same = authority.persistent.clone();
+        assert!(authority
+            .save_entries_with(&same, &None, &None, &None, &[], |_path, _write| {
+                Ok(AtomicFileOutcome::DurableCommit)
+            })
+            .is_ok());
+        let mut growth = same.clone();
+        let mut extra = template.clone();
+        extra.stored.id.id = "one-more".into();
+        growth.insert(extra.stored.id.id.clone(), extra);
+        let mut called = false;
+        assert!(matches!(
+            authority.save_entries_with(&growth, &None, &None, &None, &[], |_path, _write| {
+                called = true;
+                Ok(AtomicFileOutcome::DurableCommit)
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert!(!called);
+
+        authority.persistent.clear();
+        let mut oversized = template;
+        oversized.stored.id.id = "oversized".into();
+        oversized.stored.display_name = "x".repeat(MAX_REGISTRY_BYTES + 1);
+        let source = BTreeMap::from([(oversized.stored.id.id.clone(), oversized)]);
+        assert!(matches!(
+            authority.save_entries_with(&source, &None, &None, &None, &[], |_path, _write| {
+                panic!("oversized bytes must be refused before replacement")
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        authority.persistent = source.clone();
+        assert!(authority
+            .save_entries_with(&source, &None, &None, &None, &[], |_path, _write| {
+                Ok(AtomicFileOutcome::DurableCommit)
+            })
+            .is_ok());
+        let mut byte_growth = source;
+        byte_growth
+            .values_mut()
+            .next()
+            .unwrap()
+            .stored
+            .display_name
+            .push('x');
+        assert!(matches!(
+            authority.save_entries_with(
+                &byte_growth,
+                &None,
+                &None,
+                &None,
+                &[],
+                |_path, _write| panic!("legacy byte growth must be refused"),
+            ),
+            Err(Error::ResourceLimit(_))
+        ));
+
+        let pending_template = PendingArtifact {
+            id: PathRef {
+                id: "pending".into(),
+            },
+            root: PathRef { id: "root".into() },
+            filename: NativePath::from_path(Path::new("leaf")),
+            display_name: "pending".into(),
+            operations: vec![PathOperation::ReadPgn],
+            baseline: None,
+            root_identity: None,
+            payload_size: 0,
+            payload_sha256: String::new(),
+            payload_bound: false,
+            installed_identity: None,
+            installed_ctime_nanos: None,
+        };
+        authority.pending_artifacts = (0..=MAX_PENDING_ARTIFACTS)
+            .map(|index| {
+                let mut pending = pending_template.clone();
+                pending.id.id = format!("pending-{index}");
+                pending
+            })
+            .collect();
+        assert!(authority
+            .save_entries_with(
+                &BTreeMap::new(),
+                &None,
+                &None,
+                &None,
+                &authority.pending_artifacts,
+                |_path, _write| Ok(AtomicFileOutcome::DurableCommit),
+            )
+            .is_ok());
+        let mut pending_growth = authority.pending_artifacts.clone();
+        let mut extra_pending = pending_template;
+        extra_pending.id.id = "pending-more".into();
+        pending_growth.push(extra_pending);
+        assert!(matches!(
+            authority.save_entries_with(
+                &BTreeMap::new(),
+                &None,
+                &None,
+                &None,
+                &pending_growth,
+                |_path, _write| panic!("pending growth must be refused"),
+            ),
+            Err(Error::ResourceLimit(_))
+        ));
+    }
+
+    #[test]
+    fn unique_id_limit_counts_the_union_and_failed_promotion_preserves_its_dialog() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("entry");
+        fs::write(&file, b"entry").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let template = Entry {
+            stored: stored_entry_for(
+                &file,
+                "template",
+                Some(EntryPurpose::OpeningBook),
+                canonical_operations(EntryPurpose::OpeningBook),
+            ),
+            availability: PathAvailability::Available,
+        };
+        for index in 0..MAX_PERSISTENT_IDS {
+            let mut entry = template.clone();
+            entry.stored.id.id = format!("union-{index}");
+            authority
+                .persistent
+                .insert(entry.stored.id.id.clone(), entry);
+        }
+        let duplicate_pending = PendingArtifact {
+            id: PathRef {
+                id: "union-0".into(),
+            },
+            root: PathRef {
+                id: "union-1".into(),
+            },
+            filename: NativePath::from_path(Path::new("leaf")),
+            display_name: "pending".into(),
+            operations: vec![PathOperation::ReadPgn],
+            baseline: None,
+            root_identity: None,
+            payload_size: 0,
+            payload_sha256: String::new(),
+            payload_bound: false,
+            installed_identity: None,
+            installed_ctime_nanos: None,
+        };
+        assert!(authority
+            .save_entries_with(
+                &authority.persistent,
+                &None,
+                &None,
+                &None,
+                std::slice::from_ref(&duplicate_pending),
+                |_path, _write| Ok(AtomicFileOutcome::DurableCommit),
+            )
+            .is_ok());
+        let mut unique_pending = duplicate_pending;
+        unique_pending.id.id = "union-new".into();
+        assert!(matches!(
+            authority.save_entries_with(
+                &authority.persistent,
+                &None,
+                &None,
+                &None,
+                &[unique_pending],
+                |_path, _write| panic!("union growth must be refused"),
+            ),
+            Err(Error::ResourceLimit(_))
+        ));
+
+        let dialog_file = dir.path().join("dialog.pgn");
+        fs::write(&dialog_file, b"*").unwrap();
+        let dialog = authority
+            .grant_dialog(
+                &dialog_file,
+                "dialog",
+                PathClass::SingleDialogGrant,
+                PathOperation::ReadPgn,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        assert!(matches!(
+            authority.promote_dialog(
+                &dialog,
+                PathClass::PersistentFile,
+                "dialog",
+                vec![PathOperation::ReadPgn],
+            ),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert!(authority.dialogs.contains_key(&dialog.id));
+        assert_eq!(authority.persistent.len(), MAX_PERSISTENT_IDS);
+    }
+
+    #[test]
+    fn oversized_startup_input_and_unknown_ids_do_not_mutate_or_accumulate() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let oversized = (0..=MAX_PERSISTENT_IDS)
+            .map(|index| PathRef {
+                id: format!("unknown-{index}"),
+            })
+            .collect();
+        assert!(matches!(
+            authority.reconcile_startup_owners(StartupPathOwners {
+                retained_ids: oversized,
+                trusted_families: vec![],
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        for index in 0..20 {
+            authority
+                .reconcile_startup_owners(StartupPathOwners {
+                    retained_ids: vec![PathRef {
+                        id: format!("missing-{index}"),
+                    }],
+                    trusted_families: vec![],
+                })
+                .unwrap();
+        }
+        assert!(authority.startup_retained_ids.is_empty());
+    }
+
+    #[test]
+    fn registry_reader_consumes_only_ceiling_plus_detection_byte() {
+        struct CountingReader(u64);
+        impl Read for CountingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if buffer.is_empty() {
+                    return Ok(0);
+                }
+                self.0 += buffer.len() as u64;
+                buffer.fill(0);
+                Ok(buffer.len())
+            }
+        }
+        let mut reader = CountingReader(0);
+        assert!(matches!(
+            read_registry_bytes(&mut reader),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_eq!(reader.0, MAX_LEGACY_REGISTRY_BYTES + 1);
+    }
+
+    #[test]
+    fn single_id_getter_refreshes_only_the_queried_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        fs::write(&first, b"first").unwrap();
+        fs::write(&second, b"second").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let first = authority.register_opening_book(&first, "first").unwrap();
+        authority.register_opening_book(&second, "second").unwrap();
+        let observed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = observed.clone();
+        REFRESH_ENTRY_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move |id| captured.lock().unwrap().push(id.into())))
+        });
+        assert_eq!(authority.display_name(first.path_ref()).unwrap(), "first");
+        REFRESH_ENTRY_HOOK.with(|slot| *slot.borrow_mut() = None);
+        assert_eq!(
+            observed.lock().unwrap().as_slice(),
+            &[first.path_ref().id.clone()]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_directory_resolution_rejects_a_swap_between_stat_and_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("child");
+        let original = dir.path().join("original");
+        fs::create_dir(&child).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .migrate_legacy_os_path(
+                dir.path().as_os_str().to_os_string(),
+                "root",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            )
+            .unwrap();
+        let child_for_hook = child.clone();
+        RESOLVE_PRE_DIRECTORY_OPEN_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&child_for_hook, &original).unwrap();
+                fs::create_dir(&child_for_hook).unwrap();
+            }))
+        });
+        assert!(matches!(
+            authority.resolve(&root.id, PathOperation::ReadPgn, &[OsString::from("child")]),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn startup_sweep_reclaims_each_non_attachment_purpose_but_preserves_native_owners_and_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let purposes = [
+            EntryPurpose::PgnWorkspace,
+            EntryPurpose::PgnFile,
+            EntryPurpose::PgnReadOnlyFile,
+            EntryPurpose::DownloadDestination,
+            EntryPurpose::DatabaseFile,
+            EntryPurpose::PuzzleFile,
+            EntryPurpose::EngineExecutable,
+            EntryPurpose::OpeningBook,
+            EntryPurpose::DatabaseRoot,
+            EntryPurpose::PuzzleRoot,
+            EntryPurpose::EngineRoot,
+        ];
+        let mut entries = Vec::new();
+        let mut paths = Vec::new();
+        for (index, purpose) in purposes.into_iter().enumerate() {
+            let path = dir.path().join(format!("stale-{index}"));
+            if purpose_matches_shape(purpose, PathClass::PersistentCustomRoot, true) {
+                fs::create_dir(&path).unwrap();
+            } else {
+                fs::write(&path, b"file").unwrap();
+            }
+            paths.push(path.clone());
+            entries.push(stored_entry_for(
+                &path,
+                format!("stale-{index}"),
+                Some(purpose),
+                canonical_operations(purpose),
+            ));
+        }
+        let active_path = dir.path().join("active-root");
+        fs::create_dir(&active_path).unwrap();
+        entries.push(stored_entry_for(
+            &active_path,
+            "active-root",
+            Some(EntryPurpose::DatabaseRoot),
+            canonical_operations(EntryPurpose::DatabaseRoot),
+        ));
+        let pending_path = dir.path().join("pending-root");
+        fs::create_dir(&pending_path).unwrap();
+        entries.push(stored_entry_for(
+            &pending_path,
+            "pending-root",
+            Some(EntryPurpose::PgnWorkspace),
+            canonical_operations(EntryPurpose::PgnWorkspace),
+        ));
+        let resource_path = dir.path().join("resource");
+        fs::write(&resource_path, b"resource").unwrap();
+        entries.push(stored_entry_for(
+            &resource_path,
+            "resource",
+            Some(EntryPurpose::EngineResource),
+            canonical_operations(EntryPurpose::EngineResource),
+        ));
+        let pending = PendingArtifact {
+            id: PathRef {
+                id: "pending-id".into(),
+            },
+            root: PathRef {
+                id: "pending-root".into(),
+            },
+            filename: NativePath::from_path(Path::new("pending.pgn")),
+            display_name: "pending".into(),
+            operations: vec![PathOperation::ReadPgn],
+            baseline: None,
+            root_identity: None,
+            payload_size: 0,
+            payload_sha256: String::new(),
+            payload_bound: false,
+            installed_identity: None,
+            installed_ctime_nanos: None,
+        };
+        fs::write(
+            &registry,
+            serde_json::to_vec(&Registry {
+                schema_version: SCHEMA_VERSION,
+                entries,
+                active_database_root: Some(PathRef {
+                    id: "active-root".into(),
+                }),
+                active_puzzle_root: None,
+                active_engine_root: None,
+                pending_artifacts: vec![pending],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        authority
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: vec![PathRef {
+                    id: "unrecognized-renderer-id".into(),
+                }],
+                trusted_families: vec![
+                    PathOwnerFamily::Engines,
+                    PathOwnerFamily::DownloadDestination,
+                    PathOwnerFamily::FileWorkspace,
+                    PathOwnerFamily::RecentFiles,
+                    PathOwnerFamily::ReferenceDatabase,
+                    PathOwnerFamily::PuzzleDatabase,
+                    PathOwnerFamily::OpeningBook,
+                    PathOwnerFamily::SessionWorkspace,
+                    PathOwnerFamily::ExpandedDirectories,
+                    PathOwnerFamily::DatabaseView,
+                    PathOwnerFamily::PracticeDeck,
+                ],
+            })
+            .unwrap();
+        for index in 0..purposes.len() {
+            assert!(!authority.persistent.contains_key(&format!("stale-{index}")));
+        }
+        for kept in ["active-root", "pending-root", "resource"] {
+            assert!(authority.persistent.contains_key(kept), "{kept}");
+        }
+        for path in paths
+            .iter()
+            .chain([&active_path, &pending_path, &resource_path])
+        {
+            assert!(path.exists(), "reclamation removed {}", path.display());
+        }
+        drop(authority);
+        let reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        assert!(reloaded.persistent.contains_key("active-root"));
+        assert!(reloaded.persistent.contains_key("pending-root"));
+        assert!(reloaded.persistent.contains_key("resource"));
+    }
+
+    #[test]
+    fn referenced_offline_record_survives_a_trusted_startup_sweep() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let path = dir.path().join("offline.book");
+        fs::write(&path, b"book").unwrap();
+        let handle = {
+            let mut initial = PathAuthority::open(registry.clone(), vec![]).unwrap();
+            initial.register_opening_book(&path, "offline").unwrap()
+        };
+        fs::remove_file(&path).unwrap();
+        let mut authority = PathAuthority::open(registry, vec![]).unwrap();
+        authority
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: vec![handle.id.clone()],
+                trusted_families: vec![PathOwnerFamily::OpeningBook],
+            })
+            .unwrap();
+        assert!(authority.persistent.contains_key(&handle.path_ref().id));
+        assert_eq!(
+            authority.persistent[&handle.path_ref().id].availability,
+            PathAvailability::Unavailable
+        );
+    }
+
+    #[test]
+    fn workspace_and_database_child_reuse_upgrade_canonical_operations_under_the_same_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut authority, workspace_root) =
+            writable_root(&dir, canonical_operations(EntryPurpose::PgnWorkspace));
+        let workspace_file = dir.path().join("root/study.pgn");
+        fs::write(&workspace_file, b"*").unwrap();
+        let workspace = FileWorkspaceHandle::new(workspace_root);
+        let child = authority
+            .register_workspace_child(&workspace, &[OsString::from("study.pgn")], "study")
+            .unwrap();
+        authority
+            .persistent
+            .get_mut(&child.path_ref().id)
+            .unwrap()
+            .stored
+            .operations = vec![PathOperation::ReadPgn];
+        authority.save().unwrap();
+        let reused = authority
+            .register_workspace_child(&workspace, &[OsString::from("study.pgn")], "study")
+            .unwrap();
+        assert_eq!(reused, child);
+        assert_eq!(
+            authority.persistent[&child.path_ref().id].stored.operations,
+            canonical_operations(EntryPurpose::PgnFile)
+        );
+
+        let database_root_path = dir.path().join("databases");
+        fs::create_dir(&database_root_path).unwrap();
+        let database_path = database_root_path.join("child.db3");
+        fs::write(&database_path, b"database").unwrap();
+        let database_root = authority
+            .get_or_create_database_root(&database_root_path, "databases", None)
+            .unwrap();
+        let database = authority
+            .register_database_child(&database_root, OsStr::new("child.db3"), "child")
+            .unwrap();
+        authority
+            .persistent
+            .get_mut(&database.path_ref().id)
+            .unwrap()
+            .stored
+            .operations = vec![PathOperation::DatabaseRead];
+        authority.save().unwrap();
+        let database_again = authority
+            .register_database_child(&database_root, OsStr::new("child.db3"), "child")
+            .unwrap();
+        assert_eq!(database_again, database);
+        assert_eq!(
+            authority.persistent[&database.path_ref().id]
+                .stored
+                .operations,
+            canonical_operations(EntryPurpose::DatabaseFile)
+        );
+    }
+
+    #[test]
+    fn unknown_workspace_child_reuse_requires_the_parent_operation_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("unknown-root");
+        let child_path = root_path.join("study.pgn");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(&child_path, b"*").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .migrate_legacy_os_path(
+                root_path.into_os_string(),
+                "unknown root",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::ReadPgn, PathOperation::SnapshotWrite],
+            )
+            .unwrap()
+            .id;
+        let unrelated = StoredEntry {
+            id: PathRef {
+                id: "unrelated-unknown".into(),
+            },
+            display_name: "unrelated".into(),
+            class: PathClass::PersistentFile,
+            operations: vec![PathOperation::ReadPgn, PathOperation::LogWrite],
+            path: NativePath::from_path(&child_path),
+            identity: identity(&child_path).unwrap(),
+            target_is_dir: false,
+            purpose: None,
+        };
+        authority.persistent.insert(
+            unrelated.id.id.clone(),
+            Entry {
+                stored: unrelated,
+                availability: PathAvailability::Available,
+            },
+        );
+        authority.save().unwrap();
+
+        let registered = authority
+            .register_workspace_child(
+                &FileWorkspaceHandle::new(root),
+                &[OsString::from("study.pgn")],
+                "study",
+            )
+            .unwrap();
+        assert_ne!(registered.path_ref().id, "unrelated-unknown");
+        assert_eq!(
+            authority.persistent["unrelated-unknown"].stored.operations,
+            vec![PathOperation::ReadPgn, PathOperation::LogWrite]
+        );
+        assert_eq!(
+            authority.persistent[&registered.path_ref().id]
+                .stored
+                .operations,
+            vec![PathOperation::ReadPgn, PathOperation::SnapshotWrite]
+        );
+    }
+
+    #[test]
+    fn repeated_create_remove_cycles_prune_session_tracking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("study.pgn");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        for _ in 0..20 {
+            fs::write(&path, b"*").unwrap();
+            let handle = authority
+                .get_or_create_persistent_file(
+                    &path,
+                    "study",
+                    canonical_operations(EntryPurpose::PgnFile),
+                )
+                .unwrap();
+            fs::remove_file(&path).unwrap();
+            let mut dropped = Vec::new();
+            authority
+                .remove_workspace_entry(
+                    &FileWorkspaceHandle::new(handle.id),
+                    WorkspaceRemovalStatus::Complete,
+                    &mut dropped,
+                )
+                .unwrap();
+            assert!(authority.persistent.is_empty());
+            assert!(authority.session_protected_ids.is_empty());
+            assert!(authority.loaded_candidate_ids.is_empty());
+            assert!(authority.startup_retained_ids.is_empty());
+        }
+    }
+
+    #[test]
+    fn delayed_sweep_preserves_fresh_reissued_and_successfully_used_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let paths: Vec<_> = (0..4)
+            .map(|index| dir.path().join(format!("book-{index}")))
+            .collect();
+        for path in &paths {
+            fs::write(path, b"book").unwrap();
+        }
+        let loaded: Vec<_> = {
+            let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+            paths[..3]
+                .iter()
+                .map(|path| authority.register_opening_book(path, "book").unwrap())
+                .collect()
+        };
+        let mut authority = PathAuthority::open(registry, vec![]).unwrap();
+        let fresh = authority.register_opening_book(&paths[3], "fresh").unwrap();
+        let reissued = authority
+            .register_opening_book(&paths[0], "reissued")
+            .unwrap();
+        assert_eq!(reissued, loaded[0]);
+        authority
+            .resolve(loaded[1].path_ref(), PathOperation::OpeningBookRead, &[])
+            .unwrap();
+        authority
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: vec![],
+                trusted_families: vec![PathOwnerFamily::OpeningBook],
+            })
+            .unwrap();
+        for kept in [&fresh, &loaded[0], &loaded[1]] {
+            assert!(authority.persistent.contains_key(&kept.path_ref().id));
+        }
+        assert!(!authority.persistent.contains_key(&loaded[2].path_ref().id));
+        assert!(authority.session_protected_ids.len() <= authority.persistent.len());
+    }
+
+    #[test]
+    fn startup_sweep_failure_is_retryable_and_uncertain_replacement_is_adopted_but_incomplete() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let first = dir.path().join("first.book");
+        let second = dir.path().join("second.book");
+        fs::write(&first, b"first").unwrap();
+        fs::write(&second, b"second").unwrap();
+        let (first_id, second_id) = {
+            let mut initial = PathAuthority::open(registry.clone(), vec![]).unwrap();
+            let first = initial.register_opening_book(&first, "first").unwrap();
+            let second = initial.register_opening_book(&second, "second").unwrap();
+            (first.id, second.id)
+        };
+        let disk_before = fs::read(&registry).unwrap();
+        let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        assert!(authority
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: vec![first_id.clone()],
+                trusted_families: vec![PathOwnerFamily::OpeningBook],
+            })
+            .is_err());
+        set_test_atomic_file_injector(None);
+        assert!(authority.persistent.contains_key(&second_id.id));
+        assert_eq!(fs::read(&registry).unwrap(), disk_before);
+        assert!(!authority
+            .completed_owner_families
+            .contains(&PathOwnerFamily::OpeningBook));
+
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
+        let durability = authority
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: vec![first_id],
+                trusted_families: vec![PathOwnerFamily::OpeningBook],
+            })
+            .unwrap();
+        set_test_atomic_file_injector(None);
+        assert!(matches!(
+            durability,
+            CommitDurability::DurabilityUncertain(_)
+        ));
+        assert!(!authority.persistent.contains_key(&second_id.id));
+        assert!(!authority
+            .completed_owner_families
+            .contains(&PathOwnerFamily::OpeningBook));
+        assert_eq!(
+            authority
+                .reconcile_startup_owners(StartupPathOwners {
+                    retained_ids: vec![],
+                    trusted_families: vec![PathOwnerFamily::OpeningBook],
+                })
+                .unwrap(),
+            CommitDurability::Durable
+        );
+        assert!(authority
+            .completed_owner_families
+            .contains(&PathOwnerFamily::OpeningBook));
     }
 }

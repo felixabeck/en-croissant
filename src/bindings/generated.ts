@@ -13,6 +13,14 @@ async closeSplashscreen() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async reconcileStartupPathOwners(owners: StartupPathOwners) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reconcile_startup_path_owners", { owners }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async issuePgnWorkspace() : Promise<Result<FileWorkspaceDescriptor, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("issue_pgn_workspace") };
@@ -1077,6 +1085,7 @@ export type OpeningBookHandleKind = "openingBook"
 export type OutOpening = { name: string; fen: string }
 export type Outcome = "1-0" | "0-1" | "1/2-1/2" | "*"
 export type PathAvailability = "available" | "unavailable"
+export type PathOwnerFamily = "engines" | "downloadDestination" | "fileWorkspace" | "recentFiles" | "referenceDatabase" | "puzzleDatabase" | "openingBook" | "sessionWorkspace" | "expandedDirectories" | "databaseView" | "practiceDeck"
 /**
  * Opaque renderer-safe identifier. It deliberately has no path parsing API.
  */
@@ -1125,6 +1134,7 @@ export type Sides = "BlackWhite" | "WhiteBlack" | "Any"
 export type SiteStatsData = { site: string; player: string; data: StatsData[] }
 export type SortDirection = "asc" | "desc"
 export type SoundKind = "Move" | "Capture" | "Check"
+export type StartupPathOwners = { retainedIds: PathRef[]; trustedFamilies: PathOwnerFamily[] }
 export type StatsData = { date: string; is_player_white: boolean; player_elo: number; result: GameOutcome; time_control: string; opening: string }
 export type TimeControl = { initialTime: bigint; increment: bigint }
 export type Token = { type: "ParenOpen" } | { type: "ParenClose" } | { type: "Comment"; value: string } | { type: "San"; value: string } | { type: "Header"; value: { tag: string; value: string } } | { type: "Nag"; value: string } | { type: "Outcome"; value: string }

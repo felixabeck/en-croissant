@@ -463,22 +463,52 @@ pub async fn delete_puzzle_database(
     )?;
     let path = resolved.puzzle_database_path()?;
     let repository = state.database_repository.clone();
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    delete_puzzle_database_resolved(
+        resolved,
+        path,
+        file,
+        repository,
+        authority,
+        Arc::clone(&state.puzzle_cache),
+    )
+    .await
+}
+
+async fn delete_puzzle_database_resolved(
+    resolved: crate::infra::path_authority::ResolvedPath,
+    path: PathBuf,
+    file: crate::infra::path_authority::PathRef,
+    repository: Arc<DatabaseRepository>,
+    authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+    puzzle_cache: Arc<tokio::sync::Mutex<PuzzleCache>>,
+) -> Result<(), Error> {
     let deleted_path = path.clone();
-    BLOCKING_GATEWAY
+    let deletion_and_cleanup = BLOCKING_GATEWAY
         .spawn(move || {
             repository.delete_exclusive(&path, || match resolved.delete_puzzle_database() {
                 Ok(()) => Ok(()),
                 Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(error),
-            })
+            })?;
+            let cleanup = authority
+                .lock()
+                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))
+                .and_then(|mut authority| {
+                    authority
+                        .as_mut()
+                        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+                        .remove_puzzle_database(&file)
+                });
+            Ok::<Result<(), Error>, Error>(cleanup)
         })
-        .await?;
-    state
-        .puzzle_cache
-        .lock()
-        .await
-        .invalidate_database(&deleted_path);
-    Ok(())
+        .await;
+    let registry_cleanup = match deletion_and_cleanup {
+        Ok(cleanup) => cleanup,
+        Err(error) => return Err(error),
+    };
+    puzzle_cache.lock().await.invalidate_database(&deleted_path);
+    registry_cleanup
 }
 
 #[tauri::command]
@@ -711,6 +741,94 @@ mod tests {
         assert!(reopened
             .get_or_create_persistent_file(&path, "Persistent puzzle database", operations)
             .is_err());
+    }
+
+    #[test]
+    fn confirmed_puzzle_deletion_releases_authority_for_same_path_recreation() {
+        let (directory, path, _repository) = puzzle_database("recreated.db3", 1200);
+        let registry = directory.path().join("registry.json");
+        let operations = vec![
+            crate::infra::path_authority::PathOperation::PuzzleRead,
+            crate::infra::path_authority::PathOperation::PuzzleDelete,
+        ];
+        let mut authority =
+            crate::infra::path_authority::PathAuthority::open(registry, vec![]).unwrap();
+        let original = authority
+            .get_or_create_persistent_file(&path, "Puzzle database", operations.clone())
+            .unwrap()
+            .id;
+        std::fs::remove_file(&path).unwrap();
+        authority.remove_puzzle_database(&original).unwrap();
+        std::fs::write(&path, b"replacement database bytes").unwrap();
+        let replacement = authority
+            .get_or_create_persistent_file(&path, "Puzzle database", operations)
+            .unwrap()
+            .id;
+        assert_ne!(original, replacement);
+    }
+
+    #[test]
+    fn command_flow_invalidates_cache_after_delete_even_when_authority_cleanup_fails() {
+        let (directory, path, repository) = puzzle_database("cleanup-failure.db3", 1200);
+        let registry = directory.path().join("registry.json");
+        let mut authority =
+            crate::infra::path_authority::PathAuthority::open(registry, vec![]).unwrap();
+        let handle = authority
+            .get_or_create_persistent_file(
+                &path,
+                "Puzzle database",
+                vec![
+                    crate::infra::path_authority::PathOperation::PuzzleRead,
+                    crate::infra::path_authority::PathOperation::PuzzleDelete,
+                ],
+            )
+            .unwrap()
+            .id;
+        let resolved = authority
+            .resolve(
+                &handle,
+                crate::infra::path_authority::PathOperation::PuzzleDelete,
+                &[],
+            )
+            .unwrap();
+        let cache_key = PuzzleCacheKey {
+            database: repository.database_identity(&path).unwrap(),
+            min_rating: 0,
+            max_rating: u16::MAX,
+            theme: None,
+        };
+        let mut cache = PuzzleCache::new();
+        cache.replace(cache_key, vec![]);
+        let cache = Arc::new(tokio::sync::Mutex::new(cache));
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let poison = Arc::clone(&authority);
+        assert!(std::thread::spawn(move || {
+            let _guard = poison.lock().unwrap();
+            panic!("poison authority cleanup lock");
+        })
+        .join()
+        .is_err());
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            resolved,
+            path.clone(),
+            handle.clone(),
+            Arc::new(repository),
+            Arc::clone(&authority),
+            Arc::clone(&cache),
+        ));
+
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert!(!path.exists(), "physical deletion must remain committed");
+        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
+        let mut authority = authority
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(authority
+            .as_mut()
+            .unwrap()
+            .descriptors()
+            .iter()
+            .any(|descriptor| descriptor.id == handle));
     }
 
     #[test]

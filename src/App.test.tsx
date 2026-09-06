@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => {
     info: vi.fn(),
     initUserAgent: vi.fn(),
     preloadReferenceDb: vi.fn(),
+    reconcileStartupPathOwners: vi.fn(),
     warn: vi.fn(),
     referenceDbAtom,
     telemetryEnabledAtom,
@@ -38,6 +39,7 @@ vi.mock("@/platform/tauri", () => ({
   tauri: {
     closeSplashscreen: mocks.closeSplashscreen,
     preloadReferenceDb: mocks.preloadReferenceDb,
+    reconcileStartupPathOwners: mocks.reconcileStartupPathOwners,
   },
 }));
 vi.mock("@/platform/analytics", () => ({ analytics: mocks.analytics }));
@@ -76,6 +78,7 @@ vi.mock("./styles/theme", () => ({
 }));
 
 import { useAppStartup } from "./App";
+import { resetPathOwnerInitializationForTests } from "./state/pathOwners";
 
 let root: Root;
 let container: HTMLDivElement;
@@ -95,6 +98,8 @@ beforeEach(() => {
   mocks.getVersion.mockReset();
   mocks.info.mockReset();
   mocks.initUserAgent.mockReset();
+  mocks.reconcileStartupPathOwners.mockReset().mockResolvedValue(null);
+  resetPathOwnerInitializationForTests();
   mocks.preloadReferenceDb.mockReset();
   mocks.warn.mockReset();
 
@@ -115,6 +120,44 @@ afterEach(async () => {
 });
 
 describe("useAppStartup", () => {
+  test("shares path reconciliation across simultaneous and remounted startup callers", async () => {
+    let resolveOwners: () => void = () => {};
+    mocks.reconcileStartupPathOwners.mockImplementation(
+      () =>
+        new Promise<null>((resolve) => {
+          resolveOwners = () => resolve(null);
+        }),
+    );
+
+    await act(async () =>
+      root.render(
+        <>
+          <Probe />
+          <Probe />
+        </>,
+      ),
+    );
+    expect(mocks.reconcileStartupPathOwners).toHaveBeenCalledOnce();
+    await act(async () => resolveOwners());
+    expect(mocks.initUserAgent).toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => root.render(<Probe />));
+    expect(mocks.reconcileStartupPathOwners).toHaveBeenCalledOnce();
+  });
+
+  test("reports reconciliation failure and still tears down the splash", async () => {
+    mocks.reconcileStartupPathOwners.mockRejectedValue(new Error("registry unavailable"));
+    mocks.attachConsole.mockResolvedValue(vi.fn());
+    mocks.getMatches.mockResolvedValue({ args: { file: { occurrences: 0, value: "" } } });
+
+    await act(async () => root.render(<Probe />));
+
+    expect(mocks.warn).toHaveBeenCalledWith(expect.stringContaining("registry unavailable"));
+    expect(mocks.closeSplashscreen).toHaveBeenCalledOnce();
+  });
+
   test("detaches the console listener when unmounted during startup", async () => {
     const detach = vi.fn();
     let resolveMatches: (matches: {

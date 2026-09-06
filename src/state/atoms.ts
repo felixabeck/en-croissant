@@ -46,6 +46,11 @@ import { createAsyncZodStorage, createPreferenceStorage, createZodStorage } from
 import { createWorkspaceStorage, defaultWorkspace, type Workspace } from "./workspace";
 import { tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
+import { originalPathOwnersSnapshot } from "./pathOwners";
+
+// Capture durable capability owners before any persisted atom can hydrate, normalize, or repair
+// its source record. App startup consumes this immutable snapshot.
+void originalPathOwnersSnapshot;
 
 const zodArray = <Input, Output>(itemSchema: z.ZodType<Output, z.ZodTypeDef, Input>) => {
     const catchValue = {} as never;

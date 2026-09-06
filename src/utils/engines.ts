@@ -35,12 +35,12 @@ const goModeSchema: z.ZodSchema<GoMode> = z.union([
     }),
 ]);
 
-const engineResourceHandleSchema: z.ZodType<EngineResourceHandle> = z.object({
+export const engineResourceHandleSchema: z.ZodType<EngineResourceHandle> = z.object({
     id: z.object({ id: z.string().min(1) }),
     kind: z.enum(["file", "directory"]),
     displayName: z.string().min(1),
 });
-const engineSettingsSchema: z.ZodType<EngineOption[]> = z.array(
+export const engineSettingsSchema: z.ZodType<EngineOption[]> = z.array(
     z.discriminatedUnion("type", [
         z.object({ type: z.literal("string"), name: z.string(), value: z.string() }),
         z.object({

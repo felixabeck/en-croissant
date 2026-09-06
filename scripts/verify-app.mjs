@@ -4,16 +4,18 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts six things that no other gate in this repository can:
+// It asserts eight things that no other gate in this repository can:
 //   1. the real binary starts, renders and answers script under WebKitGTK,
-//   2. the renderer cannot resolve a native base directory,
-//   3. the bounded sound-resource command names the bundled file,
-//   4. the bounded sound-resource command refuses an outside collection,
-//   5. closing it through its own control runs the shutdown sequence to completion,
-//   6. nothing — app or WebKit service process — outlives that close.
+//   2. production startup reclaims unowned authority but preserves owned authority,
+//   3. startup authority reconciliation deletes no user files,
+//   4. the renderer cannot resolve a native base directory,
+//   5. the bounded sound-resource command names the bundled file,
+//   6. the bounded sound-resource command refuses an outside collection,
+//   7. closing it through its own control runs the shutdown sequence to completion,
+//   8. nothing — app or WebKit service process — outlives that close.
 
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   APP_BINARY,
@@ -88,6 +90,60 @@ try {
 
   const { socket } = await startCompositor();
   const { profileDirectory } = await startDriver({ waylandDisplay: socket });
+  const fixtureDirectory = join(profileDirectory, "path-owner-fixture");
+  const ownedRoot = join(fixtureDirectory, "owned-database-root");
+  const orphanFile = join(fixtureDirectory, "orphan-opening-book.bin");
+  await mkdir(ownedRoot, { recursive: true });
+  await writeFile(orphanFile, "do not delete registry fixture bytes");
+  const registryFile = join(
+    profileDirectory,
+    ".config/com.chessriddle.encroissant/path-authority.json",
+  );
+  await mkdir(join(profileDirectory, ".config/com.chessriddle.encroissant"), { recursive: true });
+  const storedEntry = async (id, displayName, nativePath, purpose, operations, targetIsDir) => {
+    const metadata = await stat(nativePath, { bigint: true });
+    return {
+      id: { id },
+      display_name: displayName,
+      class: targetIsDir ? "persistentCustomRoot" : "persistentFile",
+      operations,
+      path: {
+        platform: "unix",
+        bytes: Buffer.from(nativePath).toString("base64").replace(/=+$/, ""),
+      },
+      identity: { a: Number(metadata.dev), b: Number(metadata.ino) },
+      target_is_dir: targetIsDir,
+      purpose,
+    };
+  };
+  await writeFile(
+    registryFile,
+    JSON.stringify({
+      schema_version: 1,
+      entries: [
+        await storedEntry(
+          "verify-owned-root",
+          "Owned fixture root",
+          ownedRoot,
+          "databaseRoot",
+          ["databaseRead", "databaseMutate", "databaseCreate", "databaseExport", "downloadFile"],
+          true,
+        ),
+        await storedEntry(
+          "verify-unowned-book",
+          "Unowned fixture book",
+          orphanFile,
+          "openingBook",
+          ["openingBookRead"],
+          false,
+        ),
+      ],
+      active_database_root: { id: "verify-owned-root" },
+      active_puzzle_root: null,
+      active_engine_root: null,
+      pending_artifacts: [],
+    }),
+  );
   const logFile = join(
     profileDirectory,
     ".local/share/com.chessriddle.encroissant/logs/en-croissant.log",
@@ -95,6 +151,23 @@ try {
   const readLog = () => readFile(logFile, "utf8").catch(() => "");
 
   const session = await Session.open(APP_BINARY);
+  const reconciledRegistry = await waitFor(
+    "production startup to reconcile the seeded path registry",
+    async () => {
+      const registry = JSON.parse(await readFile(registryFile, "utf8"));
+      return registry.entries.some(({ id }) => id.id === "verify-unowned-book") ? false : registry;
+    },
+    { timeoutMs: IPC_PROBE_TIMEOUT_MS },
+  );
+  check(
+    reconciledRegistry.entries.some(({ id }) => id.id === "verify-owned-root") &&
+      !reconciledRegistry.entries.some(({ id }) => id.id === "verify-unowned-book"),
+    "production startup reclaims unowned authority and preserves native-owned authority",
+  );
+  check(
+    existsSync(ownedRoot) && existsSync(orphanFile),
+    "startup authority reconciliation deletes no user files",
+  );
   const closeControl = await waitFor("the renderer to mount its window controls", async () =>
     session.execute(closeControlProbe).catch(() => false),
   ).catch((error) => {

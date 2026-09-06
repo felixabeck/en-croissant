@@ -2789,6 +2789,12 @@ Handled by `eb3ddf82`. load_search_index keeps DatabaseRead for a valid preferre
   first caller that resolves a subdirectory gets the wrong directory silently.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
 
+Source revalidation during plan review, 2026-09-06: database deletion now calls PathAuthority::remove_database and prunes its entry, so the original all-classes no-removal wording is partly historical. Remaining live production gaps include single PGN/export grants, old workspace/active-root selections, executable/opening-book grants, completed download grants and puzzle deletion. In particular puzzle.rs:453-481 physically deletes via ResolvedPath and invalidates its cache without removing the persistent PathAuthority entry; get_or_create_persistent_file then conflicts when the same path is recreated with a new inode. These are the same missing persistent-owner/release mechanism, not reasons to close this finding with a hard admission cap alone. The plan is being revised for typed owner reachability and explicit known-removal cleanup. No source implementation or handled status yet.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"f0d463134eaa9d5120d023e066e3b7001d0a2cb8f3ed4b4664db93b312e297a7","input_sha256":"7da5dbdd226605eca1b2dd42cd1026d415510dd4b3c81628c2047fa96cee0971","kind":"mutation-receipt","operation":"19b196ccde517f68c5c4b62b2192d8ef2b24a8cdab70d1b16e21dde76af3e3b5","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-35"],"target":"f-20260830-35","v":1} -->
+
+Root phase-1 integration traced both production download/provider artifact reservations in src-tauri/src/fs.rs (ReadPgn-only vectors at lines 794 and 947 on the task base). They require their own read-only PGN purpose in the reclaimable owner map; mapping only ReadPgn+WritePgn leaves finalized downloaded artifacts permanently unknown/unreclaimable. Preserve read-only rights and test reserve/finalize/reload/trusted-sweep plus retained survival. This is a required sibling of the selected registry accumulation cause, not a new feature or authority widening.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"f1a3a66a2fa82b9ff802e82021319fa40caf7bb916c21e7d2265cf7759d2a804","input_sha256":"04aa3ddd6bc253b98a20f56b0086fdf11f19a3cd5c11df1567b80462262440de","kind":"mutation-receipt","operation":"1bac7aaaf3a4b11a3f704e346fd80d52d9be4a2361faf69c3113f3b09324a3cc","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-35"],"target":"f-20260830-35","v":1} -->
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
@@ -6571,3 +6577,46 @@ Precision, from the Codex review-correctness lens over ea65d4b1: the refusal is 
 * **Related:** f-20260829-14 also concerned lost failure context, but in the separate atomic-write cleanup mechanism; no shared Root is established. f-20260830-15 governs canonical-copy parity and is already handled.
 * **Why deferred:** This run implements the native-fs descriptor-read cluster. Breadcrumb diagnostics belong to shared agent-kit tooling and its separate test/propagation contract; the native correction does not depend on changing them.
 * **Handoff:** `tasks/handoffs/2026-09-06-breadcrumb-failure-context.md`.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### Saved engine-player settings hydrate through a human-only default schema and lose the selected engine
+
+* **ID:** f-20260906-14 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/state/atoms.ts:453-469`, `src/state/utils.ts:48-73`, `src/components/boards/OpponentForm.tsx:20-36`.
+* **Defect:** Both game-player setting atoms use `createPreferenceStorage(defaultPlayerSettings)`. Its generated object schema contains only the human default fields: it strips engine/go/engineSettings from stored engine-player records, or rejects a valid engine record lacking the default human name and repairs it to the human default. The next app start loses the selected engine and resource settings.
+* **Proof:** Round-trip a valid engine OpponentSettings record through the two actual storage adapters, then pass it through toPlayerConfig; engine handle, go mode and resource handles must survive. Use a dedicated union schema rather than inferring the domain from the human default.
+* **Review lens:** persisted-state.
+* **Relation:** f-20260831-18 governs the separate engine-list storage adapter; no shared root is asserted. Found while tracing durable attachment owners for f-20260830-35/f-20260901-13. The owner-aware storage integration must preserve these existing persisted owner records, so the required domain-schema correction is included in that plan revision rather than left as a destructive ownership precondition.
+* **Found by:** Codex root source trace after the engine-protocol plan lens identified game-player settings as additional durable attachment owners, 2026-09-06.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### Saved game-player selection still submits an engine ID after that engine is permanently retired
+
+* **ID:** f-20260906-15 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/engines/EnginesPage.tsx:620-626`, `src/components/boards/EnginesSelect.tsx:17-27`, `src/components/boards/BoardGame.tsx:359-397`, `src-tauri/src/engine/process.rs:629-630`.
+* **Defect:** Select local engine A as a game player, remove A in Engines, then start the game in the same session. Removal permanently tombstones application ID A, but EnginesSelect leaves an absent selected ID intact and BoardGame forwards it. The supervisor correctly rejects the retired ID, so the saved selection offers a game configuration that cannot start.
+* **Fix direction:** Revalidate game-player selection against current engine identities; preserve the native retirement barrier from d-20260901-17 rather than unretiring a removed ID. Cover deletion with zero/other remaining engines and delete-then-start-game.
+* **Review lens:** engine-protocol.
+* **Related:** handled f-20260831-11 and f-20260901-07 established native termination on engine identity removal. Root remains absent: this is a missed renderer selection reconciliation, not unbounded native path authority.
+* **Deferral:** Reported during plan review for f-20260830-35/f-20260901-13. Preserving attachment capabilities referenced by durable player records does not make a deleted executable identity runnable. This pre-existing engine-retirement/selection contract is separate from attachment release and remains its own file-set task; no native unretirement or game selection behavior is added to the attachment mandate.
+* **Found by:** Codex engine-protocol plan lens, round 2, confidence 93; root verified the cited call chain, 2026-09-06.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### A saved download destination that is absent from native authority has no re-selection recovery
+
+* **ID:** f-20260906-16 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/state/atoms.ts:142-148`, `src/components/home/AccountCard.tsx:205-210`.
+* **Defect:** Persist a shape-valid download-destination-capability such as an ID whose native registry record is missing after registry loss/partial recovery. ensureDownloadDestination returns that ID solely because its shape is valid; subsequent native download resolution fails and the normal picker branch is never reached. This already occurs before any startup reclamation change.
+* **Needed:** A bounded native-validity/re-selection recovery contract that distinguishes missing authority from offline/permission/other download failures; do not silently discard a valid offline destination or turn every backend error into a new picker. Prove reload with an unknown ID can recover, while a valid owned/offline destination is preserved.
+* **Related:** handled f-20260831-15 covers picker rejection, not stale authority recovery. No shared root is asserted with unbounded-path-registry: that task preserves a known destination but cannot reconstruct a native path for an ID whose registry record is already absent.
+* **Deferral:** Separate recovery design outside f-20260830-35/f-20260901-13. The startup sweep ignores already-unknown references to avoid blocking unrelated reclamation; it does not create this pre-existing invalid-reference state and will retain every known saved destination. AccountCard is not an implementation owner in that task.
+* **Found by:** Codex persisted-state plan lens, round 4, confidence 96; main verified the stored-key/consumer chain, 2026-09-06.

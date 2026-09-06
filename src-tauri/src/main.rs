@@ -416,6 +416,28 @@ async fn close_splashscreen(window: Window) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
+async fn reconcile_startup_path_owners<'a>(
+    owners: crate::infra::path_authority::StartupPathOwners,
+    state: tauri::State<'a, AppState>,
+) -> Result<(), Error> {
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            let mut guard = authority
+                .lock()
+                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+            let authority = guard
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+            crate::infra::path_authority::require_durable(
+                authority.reconcile_startup_owners(owners)?,
+            )
+        })
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn issue_pgn_workspace(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -1458,6 +1480,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let specta_builder = tauri_specta::Builder::new()
         .commands(tauri_specta::collect_commands!(
             close_splashscreen,
+            reconcile_startup_path_owners,
             issue_pgn_workspace,
             issue_pgn_export_destination,
             save_board_snapshot,
