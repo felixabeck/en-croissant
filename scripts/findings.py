@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 48df42aa253f5687f0e7033dcd3a697a9322f878177c320c96745931593d1cdc
+# agent-kit-sha256: 199bae53789dfc1d21492736617a125bd9f930e4d20fd2f3f2031bc7cf300974
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -405,6 +405,8 @@ ORPHAN_PART_GRACE_SECONDS = 60.0
 # for an hour is outside the supported write window, and a swept candidate makes
 # the failed write visible rather than silently losing it.
 SCRATCH_GRACE_SECONDS = 3600.0
+_GENERATED_SCRATCH_RE = re.compile(r"^(?P<target>.+)\.(?:tmp|candidate)-\d+-\d+-\d+$")
+_GENERATED_INBOX_PART_RE = re.compile(r"^\.\d{8}-\d{6}-\d+-\d+-\d+\.part$")
 MERGE_INTENT_NAME = ".merge-intent.json"
 # Set by the test harness. `decisions` is a query, and a query run in a suite
 # must not put real popups on Felix's screen.
@@ -3146,15 +3148,18 @@ def _remove_consumed_published_twin(spool: Path, published: Path) -> None:
         ) from exc
 
 
-def _sweep_scratch(directory: Path) -> None:
-    """Remove expired atomic-write scratch files without failing a merge."""
+def _sweep_scratch(
+    directory: Path, owns_target: Callable[[str], bool]
+) -> None:
+    """Remove expired generated scratch for targets owned by the caller."""
     try:
         entries = list(directory.iterdir())
     except OSError:
         return
     cutoff = time.time() - SCRATCH_GRACE_SECONDS
     for path in entries:
-        if ".tmp-" not in path.name and ".candidate-" not in path.name:
+        match = _GENERATED_SCRATCH_RE.fullmatch(path.name)
+        if match is None or not owns_target(match.group("target")):
             continue
         try:
             if path.stat().st_mtime > cutoff:
@@ -3661,7 +3666,7 @@ def _ledger_mutation_scope(path: Path) -> Iterator[str]:
             f"{waited_seconds:.2f}s of retries"
         )
     try:
-        _sweep_scratch(path.parent)
+        _sweep_scratch(path.parent, lambda target: target == path.name)
         yield path.read_text(encoding="utf-8")
     except LedgerError:
         raise
@@ -4408,8 +4413,10 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
     legacy = inbox.with_suffix(".md")
     claim = inbox.with_name(f"{inbox.name}.claim")
 
-    _sweep_scratch(ledger.parent)
-    _sweep_scratch(inbox)
+    _sweep_scratch(ledger.parent, lambda target: target == ledger.name)
+    _sweep_scratch(
+        inbox, lambda target: _GENERATED_INBOX_PART_RE.fullmatch(target) is not None
+    )
     _recover_claim(claim, inbox, ledger, publish_locked=True)
     try:
         receipt_index = _receipt_index(inbox, _merge_receipt_digests(inbox, legacy))
@@ -5969,7 +5976,6 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         nonlocal claimed
         with _publish_lock(publish_lock_path(spool)):
             _refuse_unapplied_answers(spool)
-            _sweep_scratch(spool)
             if not _adopt_orphan_parts(spool):
                 raise LedgerError(
                     f"could not adopt every orphan in answers spool {spool}"
