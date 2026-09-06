@@ -2,7 +2,7 @@ import { useForm } from "@mantine/form";
 import { useAtom } from "jotai";
 import { useTranslation } from "react-i18next";
 import { enginesAtom } from "@/state/atoms";
-import { replaceEngineById } from "@/utils/engineAttachments";
+import { replaceEngineById } from "./engineAttachments";
 import type { LocalEngine } from "@/utils/engines";
 import EngineForm from "./EngineForm";
 import { createEngineFormValidation } from "./engineFormValidation";

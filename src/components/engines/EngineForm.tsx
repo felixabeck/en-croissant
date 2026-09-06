@@ -5,7 +5,7 @@ import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { type LocalEngine, requiredEngineSettings } from "@/utils/engines";
-import { EngineAttachmentDraft } from "@/utils/engineAttachments";
+import { EngineAttachmentDraft } from "./engineAttachments";
 import type { EngineOwnerSaveReceipt } from "@/state/engineOwnerStorage";
 import FileInput from "../common/FileInput";
 

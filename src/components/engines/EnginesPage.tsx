@@ -42,7 +42,7 @@ import { Route } from "@/routes/engines";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { enginesAtom } from "@/state/atoms";
-import { EngineAttachmentDraft, replaceEngineById } from "@/utils/engineAttachments";
+import { EngineAttachmentDraft, replaceEngineById } from "./engineAttachments";
 import {
   isEngineResourceFileOptionName,
   isEngineResourcePathOptionName,

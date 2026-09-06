@@ -16,10 +16,10 @@ import {
   DEFAULT_TIME_CONTROL,
   switchOpponentType,
   type OpponentSettings,
-} from "@/utils/opponentSettings";
+} from "@/state/opponentSettings";
 import { EnginesSelect } from "./EnginesSelect";
 
-export { DEFAULT_TIME_CONTROL, type OpponentSettings } from "@/utils/opponentSettings";
+export { DEFAULT_TIME_CONTROL, type OpponentSettings } from "@/state/opponentSettings";
 
 export function OpponentForm({
   sameTimeControl,

@@ -5,7 +5,7 @@ import {
     opponentSettingsSchema,
     switchOpponentType,
     type OpponentSettings,
-} from "@/utils/opponentSettings";
+} from "@/state/opponentSettings";
 import { serializeStorageValue } from "./store/debouncedStorage";
 
 const mocks = vi.hoisted(() => ({

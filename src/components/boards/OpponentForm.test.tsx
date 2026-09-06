@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { OpponentSettings } from "@/utils/opponentSettings";
+import type { OpponentSettings } from "@/state/opponentSettings";
 import { OpponentForm } from "./OpponentForm";
 
 vi.mock("react-i18next", () => ({

@@ -5,7 +5,7 @@ import i18n from "@/i18n";
 import { tauri } from "@/platform/tauri";
 import { warn } from "@/platform/native";
 import { engineSchema, type Engine } from "@/utils/engines";
-import { opponentSettingsSchema, type OpponentSettings } from "@/utils/opponentSettings";
+import { opponentSettingsSchema, type OpponentSettings } from "@/state/opponentSettings";
 import { pathRefKey } from "@/utils/pathCapabilities";
 import { reportPersistError } from "./persistError";
 import { decodeCompressedOrJson, serializeStorageValue } from "./store/debouncedStorage";

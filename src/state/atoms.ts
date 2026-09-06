@@ -17,7 +17,7 @@ import type {
     OpeningBookHandle,
     PathRef,
 } from "@/bindings";
-import type { OpponentSettings } from "@/utils/opponentSettings";
+import type { OpponentSettings } from "@/state/opponentSettings";
 import { type Position, positionSchema } from "@/components/files/opening";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import { positionFromFen, swapMove } from "@/utils/chessops";
@@ -43,7 +43,7 @@ import { createWorkspaceStorage, defaultWorkspace, type Workspace } from "./work
 import { tabStorage } from "./store/tabStorage";
 import { originalPathOwnersSnapshot } from "./pathOwners";
 import { createEngineOwnerStorage, type EngineOwnerSaveReceipt } from "./engineOwnerStorage";
-import { defaultPlayerSettings, opponentSettingsSchema } from "@/utils/opponentSettings";
+import { defaultPlayerSettings, opponentSettingsSchema } from "@/state/opponentSettings";
 
 // Capture durable capability owners before any persisted atom can hydrate, normalize, or repair
 // its source record. App startup consumes this immutable snapshot.
