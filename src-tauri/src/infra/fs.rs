@@ -1,10 +1,13 @@
 //! Crash consistency note: a successful `DurableCommit` means the replacement and its parent
 //! directory entry were synced. A process or power failure before that point may leave either
-//! version present. Existing file and directory replacement is optimistic: Unix has no inode-CAS
-//! rename, so an uncooperative writer can still win the final revalidation-to-syscall window.
-//! Staging and target parents must not be externally mutated through commit and cleanup. The
-//! injected tests prove detection before that window, not compare-and-swap semantics. Commits
-//! never follow a target link or leave the opened parent directory.
+//! version present. Existing file replacement and recursive removal are optimistic: on Linux, no
+//! available syscall conditionally renames or unlinks only a previously checked inode, so an
+//! uncooperative writer can still win the final revalidation-to-syscall window.
+//! Parent-descriptor-relative operations keep pathname resolution confined, but neither identity
+//! guards nor private rename staging revoke already-open writer descriptors. Staging and target
+//! parents must not be externally mutated through commit and cleanup. The injected tests prove
+//! detection before that window, not compare-and-swap semantics. Commits never follow a target
+//! link or leave the opened parent directory.
 
 use crate::error::Error;
 #[cfg(test)]
@@ -141,10 +144,12 @@ mod unix {
     };
     use std::{
         ffi::OsStr,
+        io::Read,
         mem::MaybeUninit,
         os::unix::{
             ffi::{OsStrExt, OsStringExt},
             fs::MetadataExt,
+            io::AsRawFd,
         },
         path::Component,
     };
@@ -159,6 +164,8 @@ mod unix {
     /// `RawDir` buffer per open level. The worst-case stack contribution is this value times
     /// `MAX_REMOVE_TREE_DEPTH` (512 KiB), against a Tokio worker's 2 MiB stack.
     const REMOVE_TREE_DIR_BUFFER_BYTES: usize = 8192;
+    /// Maximum accepted size of one `/proc/self/fdinfo` record.
+    const FDINFO_RECORD_BYTES: u64 = 4096;
 
     #[cfg(test)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +181,19 @@ mod unix {
     pub(crate) trait RemovalInjector {
         fn inject(&self, _: RemovalFaultPoint) -> std::io::Result<Option<u64>> {
             Ok(None)
+        }
+
+        /// Supplies raw `statx` attribute-mask and attribute bits to the production decision.
+        fn statx_mount_attributes(
+            &self,
+            _: std::os::fd::RawFd,
+        ) -> Option<std::io::Result<(u64, u64)>> {
+            None
+        }
+
+        /// Supplies a raw fdinfo record to the production bounded parser.
+        fn fdinfo_record(&self, _: std::os::fd::RawFd) -> Option<std::io::Result<Vec<u8>>> {
+            None
         }
     }
 
@@ -213,9 +233,133 @@ mod unix {
     }
 
     #[cfg(test)]
+    pub(crate) struct TestRemovalInjectorGuard(Option<Arc<dyn RemovalInjector + Send + Sync>>);
+
+    #[cfg(test)]
+    impl Drop for TestRemovalInjectorGuard {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            set_test_removal_injector(previous);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scoped_test_removal_injector(
+        injector: Arc<dyn RemovalInjector + Send + Sync>,
+    ) -> TestRemovalInjectorGuard {
+        let previous = current_test_removal_injector();
+        set_test_removal_injector(Some(injector));
+        TestRemovalInjectorGuard(previous)
+    }
+
+    #[cfg(test)]
     pub(super) fn inject_removal(point: RemovalFaultPoint) -> Result<Option<u64>, Error> {
         current_test_removal_injector()
             .map_or(Ok(None), |injector| injector.inject(point).map_err(io))
+    }
+
+    pub(super) fn parse_fdinfo_mount_id(record: &[u8]) -> Result<u64, Error> {
+        if record.len() > FDINFO_RECORD_BYTES as usize {
+            return Err(Error::InvalidInput(
+                "directory cleanup cannot establish mount identity: fdinfo record is oversized"
+                    .into(),
+            ));
+        }
+        let mut mount_id = None;
+        for line in record.split(|byte| *byte == b'\n') {
+            let Some(value) = line.strip_prefix(b"mnt_id:") else {
+                continue;
+            };
+            if mount_id.is_some() {
+                return Err(Error::InvalidInput(
+                    "directory cleanup cannot establish mount identity: duplicate fdinfo mnt_id"
+                        .into(),
+                ));
+            }
+            let value = value
+                .strip_prefix(b"\t")
+                .or_else(|| value.strip_prefix(b" "))
+                .ok_or_else(|| {
+                    Error::InvalidInput(
+                        "directory cleanup cannot establish mount identity: malformed fdinfo mnt_id"
+                            .into(),
+                    )
+                })?;
+            if value.is_empty() || !value.iter().all(u8::is_ascii_digit) {
+                return Err(Error::InvalidInput(
+                    "directory cleanup cannot establish mount identity: malformed fdinfo mnt_id"
+                        .into(),
+                ));
+            }
+            let parsed = std::str::from_utf8(value)
+                .ok()
+                .and_then(|digits| digits.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    Error::InvalidInput(
+                        "directory cleanup cannot establish mount identity: malformed fdinfo mnt_id"
+                            .into(),
+                    )
+                })?;
+            mount_id = Some(parsed);
+        }
+        mount_id.ok_or_else(|| {
+            Error::InvalidInput(
+                "directory cleanup cannot establish mount identity: fdinfo mnt_id is missing"
+                    .into(),
+            )
+        })
+    }
+
+    pub(super) fn read_fdinfo_mount_id(file: &File) -> Result<u64, Error> {
+        #[cfg(test)]
+        if let Some(record) = current_test_removal_injector()
+            .and_then(|injector| injector.fdinfo_record(file.as_raw_fd()))
+        {
+            return parse_fdinfo_mount_id(&record.map_err(io)?);
+        }
+        let path = format!("/proc/self/fdinfo/{}", file.as_raw_fd());
+        let mut record = Vec::with_capacity(FDINFO_RECORD_BYTES as usize + 1);
+        File::open(path)
+            .map_err(io)?
+            .take(FDINFO_RECORD_BYTES + 1)
+            .read_to_end(&mut record)
+            .map_err(io)?;
+        parse_fdinfo_mount_id(&record)
+    }
+
+    fn statx_mount_attributes(file: &File) -> Result<(u64, u64), Error> {
+        #[cfg(test)]
+        if let Some(attributes) = current_test_removal_injector()
+            .and_then(|injector| injector.statx_mount_attributes(file.as_raw_fd()))
+        {
+            return attributes.map_err(io);
+        }
+        fs::statx(
+            file,
+            "",
+            AtFlags::EMPTY_PATH | AtFlags::NO_AUTOMOUNT,
+            fs::StatxFlags::empty(),
+        )
+        .map(|statx| {
+            (
+                statx.stx_attributes_mask.bits(),
+                statx.stx_attributes.bits(),
+            )
+        })
+        .map_err(|error| io(error.into()))
+    }
+
+    fn mount_crossing(parent: &File, child: &File) -> Result<bool, Error> {
+        let mount_root = fs::StatxAttributes::MOUNT_ROOT.bits();
+        match statx_mount_attributes(child) {
+            Ok((mask, attributes)) if mask & mount_root != 0 => {
+                return Ok(attributes & mount_root != 0);
+            }
+            Ok(_) => {}
+            Err(Error::Io(error)) if error.raw_os_error() == Some(Errno::NOSYS.raw_os_error()) => {}
+            Err(error) => return Err(error),
+        }
+        Ok(read_fdinfo_mount_id(parent)? != read_fdinfo_mount_id(child)?)
     }
 
     fn name(path: &Path) -> Result<&OsStr, Error> {
@@ -613,7 +757,7 @@ mod unix {
                         "directory cleanup entry changed concurrently".into(),
                     ));
                 }
-                // Linux has no descriptor-relative unlink: a final name substitution can only
+                // There is no inode-conditional unlink here: a final name substitution can only
                 // reach the kernel's type-confined `unlinkat` behavior, never an outside target.
                 fs::unlinkat(parent, name, AtFlags::empty()).map_err(|e| io(e.into()))?;
                 *removed_entries += 1;
@@ -646,28 +790,12 @@ mod unix {
                     ));
                 }
                 // `MOUNT_ROOT` requires Linux 5.8. When the bit is unavailable, or `statx`
-                // returns `NOSYS`, the device check is the fallback; a same-filesystem bind mount
-                // is therefore invisible below that kernel floor.
+                // returns `NOSYS`, descriptor mount IDs provide the required evidence. Failure to
+                // read or strictly parse either bounded fdinfo record refuses destructive descent.
                 let is_mount = if opened.st_dev != compared_parent_dev {
                     true
                 } else {
-                    match fs::statx(
-                        &child,
-                        "",
-                        AtFlags::EMPTY_PATH | AtFlags::NO_AUTOMOUNT,
-                        fs::StatxFlags::empty(),
-                    ) {
-                        Ok(statx) => {
-                            statx
-                                .stx_attributes_mask
-                                .contains(fs::StatxAttributes::MOUNT_ROOT)
-                                && statx
-                                    .stx_attributes
-                                    .contains(fs::StatxAttributes::MOUNT_ROOT)
-                        }
-                        Err(Errno::NOSYS) => false,
-                        Err(error) => return Err(io(error.into())),
-                    }
+                    mount_crossing(parent, &child)?
                 };
                 if is_mount {
                     return Err(Error::InvalidInput(
@@ -697,8 +825,10 @@ mod unix {
                         )?;
                     }
                 }
-                // The descriptor pins the traversed directory, but Linux has no `funlinkat`;
-                // the terminal name lookup remains confined by `REMOVEDIR` semantics.
+                // The descriptor pins the traversed directory, but this walk has no
+                // inode-conditional unlink. The parent-relative terminal lookup remains
+                // type-confined by `REMOVEDIR`; it can still name a concurrently substituted
+                // directory.
                 fs::unlinkat(parent, name, AtFlags::REMOVEDIR).map_err(|e| io(e.into()))?;
                 *removed_entries += 1;
                 #[cfg(test)]
@@ -1677,6 +1807,90 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[derive(Clone, Copy)]
+    enum InjectedStatx {
+        Nosys,
+        MissingMountRootMask,
+        MountRoot(bool),
+        Error(i32),
+    }
+
+    #[cfg(unix)]
+    enum InjectedFdinfo {
+        Real,
+        Unreadable,
+        Records(Mutex<std::collections::VecDeque<Vec<u8>>>),
+    }
+
+    #[cfg(unix)]
+    struct MountEvidenceInjector {
+        statx: InjectedStatx,
+        fdinfo: InjectedFdinfo,
+    }
+
+    #[cfg(unix)]
+    impl MountEvidenceInjector {
+        fn real_fdinfo(statx: InjectedStatx) -> Self {
+            Self {
+                statx,
+                fdinfo: InjectedFdinfo::Real,
+            }
+        }
+
+        fn unreadable_fdinfo(statx: InjectedStatx) -> Self {
+            Self {
+                statx,
+                fdinfo: InjectedFdinfo::Unreadable,
+            }
+        }
+
+        fn records(statx: InjectedStatx, records: &[&[u8]]) -> Self {
+            Self {
+                statx,
+                fdinfo: InjectedFdinfo::Records(Mutex::new(
+                    records.iter().map(|record| record.to_vec()).collect(),
+                )),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl unix::RemovalInjector for MountEvidenceInjector {
+        fn statx_mount_attributes(
+            &self,
+            _: std::os::fd::RawFd,
+        ) -> Option<std::io::Result<(u64, u64)>> {
+            use rustix::{fs::StatxAttributes, io::Errno};
+            let mount_root = StatxAttributes::MOUNT_ROOT.bits();
+            Some(match self.statx {
+                InjectedStatx::Nosys => Err(std::io::Error::from_raw_os_error(
+                    Errno::NOSYS.raw_os_error(),
+                )),
+                InjectedStatx::MissingMountRootMask => Ok((0, 0)),
+                InjectedStatx::MountRoot(is_mount) => {
+                    Ok((mount_root, if is_mount { mount_root } else { 0 }))
+                }
+                InjectedStatx::Error(code) => Err(std::io::Error::from_raw_os_error(code)),
+            })
+        }
+
+        fn fdinfo_record(&self, _: std::os::fd::RawFd) -> Option<std::io::Result<Vec<u8>>> {
+            match &self.fdinfo {
+                InjectedFdinfo::Real => None,
+                InjectedFdinfo::Unreadable => Some(Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected unreadable fdinfo",
+                ))),
+                InjectedFdinfo::Records(records) => Some(Ok(records
+                    .lock()
+                    .expect("fdinfo records")
+                    .pop_front()
+                    .expect("one injected record per descriptor read"))),
+            }
+        }
+    }
+
+    #[cfg(unix)]
     fn removal_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, (u64, u64), File) {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join("root");
@@ -1694,10 +1908,326 @@ mod tests {
         expected: (u64, u64),
         injector: Arc<dyn unix::RemovalInjector + Send + Sync>,
     ) -> Result<(), Error> {
-        unix::set_test_removal_injector(Some(injector));
-        let result = remove_entry_at(parent, name, expected, true);
-        unix::set_test_removal_injector(None);
-        result
+        let _guard = unix::scoped_test_removal_injector(injector);
+        remove_entry_at(parent, name, expected, true)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fdinfo_mount_id_parser_accepts_one_decimal_field() {
+        assert_eq!(
+            unix::parse_fdinfo_mount_id(b"pos:\t0\nflags:\t0100000\nmnt_id:\t4294967297\n")
+                .expect("valid mount id"),
+            4_294_967_297
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fdinfo_mount_id_parser_rejects_missing_duplicate_malformed_and_boundedness_failures() {
+        let oversized = vec![b'x'; 4097];
+        for record in [
+            b"pos:\t0\n".as_slice(),
+            b"mnt_id:\t1\nmnt_id:\t1\n".as_slice(),
+            b"mnt_id: 12x\n".as_slice(),
+            b"mnt_id:\t18446744073709551616\n".as_slice(),
+            oversized.as_slice(),
+        ] {
+            assert!(matches!(
+                unix::parse_fdinfo_mount_id(record),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fdinfo_mount_id_reads_real_descriptor_records() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let left = File::open(temp.path()).expect("left descriptor");
+        let right = File::open(temp.path()).expect("right descriptor");
+        assert_eq!(
+            unix::read_fdinfo_mount_id(&left).expect("left mount id"),
+            unix::read_fdinfo_mount_id(&right).expect("right mount id")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_succeeds_with_same_mount_fdinfo_for_both_statx_unavailable_forms() {
+        for statx in [InjectedStatx::Nosys, InjectedStatx::MissingMountRootMask] {
+            let (_temp, _root, victim, expected, parent) = removal_fixture();
+            std::fs::create_dir(victim.join("child")).expect("child");
+            std::fs::write(victim.join("child/removed"), b"content").expect("content");
+            remove_entry_with_injector(
+                &parent,
+                OsStr::new("victim"),
+                expected,
+                Arc::new(MountEvidenceInjector::real_fdinfo(statx)),
+            )
+            .expect("same-mount recursive deletion");
+            assert!(!victim.exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_propagates_non_nosys_statx_errors_before_deletion() {
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
+        std::fs::write(victim.join("keep"), b"content").expect("content");
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Arc::new(MountEvidenceInjector::real_fdinfo(InjectedStatx::Error(
+                rustix::io::Errno::ACCESS.raw_os_error(),
+            ))),
+        )
+        .expect_err("statx error must propagate");
+        assert!(matches!(error, Error::Io(_)));
+        assert_eq!(
+            std::fs::read(victim.join("keep")).expect("intact"),
+            b"content"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_refuses_unreadable_fdinfo_before_deletion() {
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
+        std::fs::write(victim.join("keep"), b"content").expect("content");
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Arc::new(MountEvidenceInjector::unreadable_fdinfo(
+                InjectedStatx::Nosys,
+            )),
+        )
+        .expect_err("unreadable fdinfo must refuse descent");
+        assert!(matches!(error, Error::Io(_)));
+        assert_eq!(
+            std::fs::read(victim.join("keep")).expect("intact"),
+            b"content"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_refuses_unequal_mount_ids_even_when_devices_match() {
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
+        std::fs::write(victim.join("keep"), b"content").expect("content");
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Arc::new(MountEvidenceInjector::records(
+                InjectedStatx::MissingMountRootMask,
+                &[b"mnt_id:\t41\n", b"mnt_id:\t42\n"],
+            )),
+        )
+        .expect_err("different descriptor mount ids must refuse descent");
+        assert!(matches!(error, Error::InvalidInput(_)));
+        assert_eq!(
+            std::fs::read(victim.join("keep")).expect("intact"),
+            b"content"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_uses_supported_statx_mount_root_without_fdinfo() {
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
+        std::fs::write(victim.join("keep"), b"content").expect("content");
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Arc::new(MountEvidenceInjector::unreadable_fdinfo(
+                InjectedStatx::MountRoot(true),
+            )),
+        )
+        .expect_err("mount root must refuse descent");
+        assert!(matches!(error, Error::InvalidInput(_)));
+        assert_eq!(
+            std::fs::read(victim.join("keep")).expect("intact"),
+            b"content"
+        );
+
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
+        std::fs::write(victim.join("removed"), b"content").expect("content");
+        remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Arc::new(MountEvidenceInjector::unreadable_fdinfo(
+                InjectedStatx::MountRoot(false),
+            )),
+        )
+        .expect("clear supported mount-root attribute permits deletion");
+        assert!(!victim.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    struct BindMountFixture {
+        temp: Option<tempfile::TempDir>,
+        root: PathBuf,
+        victim: PathBuf,
+        source: PathBuf,
+        mounted: Vec<PathBuf>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl BindMountFixture {
+        fn new(mount_below_target: bool) -> std::io::Result<Self> {
+            let temp = tempfile::tempdir()?;
+            let root = temp.path().join("root");
+            let victim = root.join("victim");
+            let source = temp.path().join("source");
+            std::fs::create_dir_all(&victim)?;
+            std::fs::create_dir(&source)?;
+            std::fs::write(source.join("keep"), b"mounted content")?;
+            let target = if mount_below_target {
+                let target = victim.join("mounted");
+                std::fs::create_dir(&target)?;
+                target
+            } else {
+                victim.clone()
+            };
+            // Own and disarm cleanup before starting `mount`: even a command error is uncertain
+            // until an explicit unmount attempt proves the target is clear.
+            let mut fixture = Self {
+                temp: Some(temp),
+                root,
+                victim,
+                source,
+                mounted: vec![target.clone()],
+            };
+            let output = std::process::Command::new("mount")
+                .args(["--bind"])
+                .arg(&fixture.source)
+                .arg(&target)
+                .output();
+            match output {
+                Ok(output) if output.status.success() => Ok(fixture),
+                Ok(output) => {
+                    let primary = format!(
+                        "bind mount failed with {}: {}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    if let Err(cleanup) = fixture.cleanup() {
+                        return Err(std::io::Error::other(format!(
+                            "{primary}; cleanup also failed: {cleanup}"
+                        )));
+                    }
+                    Err(std::io::Error::other(primary))
+                }
+                Err(primary) => {
+                    if let Err(cleanup) = fixture.cleanup() {
+                        return Err(std::io::Error::other(format!(
+                            "bind mount command failed: {primary}; cleanup also failed: {cleanup}"
+                        )));
+                    }
+                    Err(primary)
+                }
+            }
+        }
+
+        fn cleanup(&mut self) -> std::io::Result<()> {
+            let mut failures = Vec::new();
+            for target in self.mounted.iter().rev() {
+                match std::process::Command::new("umount").arg(target).output() {
+                    Ok(output) if output.status.success() => {}
+                    Ok(output) => failures.push(format!(
+                        "{}: {}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stderr)
+                    )),
+                    Err(error) => failures.push(error.to_string()),
+                }
+            }
+            if failures.is_empty() {
+                self.mounted.clear();
+                drop(self.temp.take());
+                Ok(())
+            } else {
+                let retained = self
+                    .temp
+                    .take()
+                    .expect("mounted fixture owns its temporary directory")
+                    .keep();
+                Err(std::io::Error::other(format!(
+                    "failed to unmount bind fixture; retained {}: {}",
+                    retained.display(),
+                    failures.join("; ")
+                )))
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for BindMountFixture {
+        fn drop(&mut self) {
+            if self.mounted.is_empty() || self.temp.is_none() {
+                return;
+            }
+            if let Err(error) = self.cleanup() {
+                eprintln!("bind-mount fixture cleanup failed during unwind: {error}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bind_mount_fixture_retains_tempdir_when_unmount_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let retained = temp.path().to_path_buf();
+        let nonexistent_target = retained.join("not-mounted");
+        let mut fixture = BindMountFixture {
+            temp: Some(temp),
+            root: retained.join("root"),
+            victim: retained.join("victim"),
+            source: retained.join("source"),
+            mounted: vec![nonexistent_target],
+        };
+        fixture.cleanup().expect_err("unmount must fail");
+        assert!(retained.exists(), "failed cleanup retains the fixture");
+        drop(fixture);
+        std::fs::remove_dir_all(retained).expect("remove known-unmounted retained test fixture");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated user and mount namespace"]
+    fn recursive_delete_refuses_bind_mount_without_mount_root() {
+        for mount_below_target in [false, true] {
+            for statx in [InjectedStatx::Nosys, InjectedStatx::MissingMountRootMask] {
+                let mut fixture = BindMountFixture::new(mount_below_target)
+                    .expect("create real same-filesystem bind mount fixture");
+                let parent = File::open(&fixture.root).expect("parent descriptor");
+                let expected = inode(&fixture.victim);
+                let error = remove_entry_with_injector(
+                    &parent,
+                    OsStr::new("victim"),
+                    expected,
+                    Arc::new(MountEvidenceInjector::real_fdinfo(statx)),
+                )
+                .expect_err("descriptor mount-id mismatch must refuse recursive deletion");
+                assert_eq!(
+                    std::fs::read(fixture.source.join("keep")).expect("source content survives"),
+                    b"mounted content"
+                );
+                assert!(matches!(
+                    error,
+                    Error::InvalidInput(message)
+                        if message == "directory cleanup refuses to cross a mount"
+                ));
+                fixture
+                    .cleanup()
+                    .expect("unmount bind fixture before temporary-directory cleanup");
+            }
+        }
     }
 
     #[cfg(unix)]
