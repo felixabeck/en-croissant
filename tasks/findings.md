@@ -6296,3 +6296,128 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 * **Handled, 2026-09-05:** 0b386735 rejects partial/wholly unavailable PGN ranges through the existing typed error while preserving empty-file (0,0) opening. Production-core tests cover all five cases. Root reran all 19 PGN tests and 133 database tests, cargo fmt and clippy successfully.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"363829c6fdf280dc2ec61f3288e3d4b0be939039ac59505068528b3936e67c01","input_sha256":"0f819d60309434eccb0b3f0a5b3a7988cc648626da772b2d7910418871322f63","kind":"mutation-receipt","operation":"37ec84c333c2f3ba40f555c02d317210c0db5cacb6af85bc5f57df08d43ff62b","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-16"],"target":"f-20260905-16","v":1} -->
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### `computeCoverageForFen` has no in-progress guard, so a repetition line recurses until the stack overflows
+
+* **ID:** f-20260906-01 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/utils/repertoire.ts:104-185`, specifically the `memo.get(fen)` read at line 112.
+* **Defect:** `memo.set(fen, res)` runs only *after* the recursive calls return (lines 148, 181 and
+  the early-return branches). While a FEN is still on the call stack its memo entry does not exist,
+  so `memo.get(fen)` returns `undefined` for it. `stateMoves` is keyed by FEN, not by tree node, and
+  the keys come from `getBoardState` — the first four FEN fields, with the clocks stripped. A
+  repertoire containing a repetition (1. Nf3 Nf6 2. Ng1 Ng8, or any perpetual-check line) therefore
+  produces `stateMoves[A] -> B` and `stateMoves[B] -> A` with *identical* keys on both visits, and
+  `computeCoverageForFen` recurses between them until the runtime throws
+  `RangeError: Maximum call stack size exceeded`.
+* **Why it matters:** the throw is not caught anywhere on the coverage path, so it takes down the
+  repertoire panel rather than degrading one position's number. Stripping the clocks is what makes
+  the cycle reachable — it is correct for position identity (`.claude/rules/chess-tree-semantics.md`)
+  and is exactly what closes the loop here.
+* **Fix shape:** mark the FEN as in-progress before recursing and treat a re-entry as coverage 1 /
+  missing 0 (the same neutral value the `total < minGames` branch already returns), then overwrite
+  with the real result on the way out.
+* **Found by:** an Antigravity CLI (`agy`) lens evaluation on 2026-09-06, reported independently by
+  `gemini-3.8-flash-medium` (confidence 98) and `gemini-3.8-flash-high` (confidence 100); the memo
+  ordering and the `getBoardState` key shape were then verified by reading the source.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### The repertoire gap finders can never report the position the user is standing on
+
+* **ID:** f-20260906-02 · **Status:** rejected · **Area:** chess-tree · **Root:** repertoire-gap-selection · **Entry:** inline · **Blocked:** none
+* **Where:** `src/utils/repertoire.ts:292` (`findNextGap`) and `src/utils/repertoire.ts:343` (`findBiggestGap`).
+* **Defect:** both traversals begin at `startNode` with `path = startPath`
+  (`return findNextInSubtree(startNode, startPath)`), then gate acceptance on
+  `if (path.length > startPath.length)`. The start node itself therefore fails the gate on every
+  call and can never be returned. For a brand-new repertoire — `startPath = []`, `root.children`
+  empty — the traversal has nothing else to visit and returns `null`.
+* **Why it matters:** `null` is rendered as "no gaps found", so an empty repertoire, and any
+  position the user has navigated to and prepared nothing from, reports itself as complete. That is
+  the exact case a repertoire tool exists to flag, and it is silent.
+* **Found by:** an Antigravity CLI (`agy`) lens evaluation on 2026-09-06, reported by
+  `gemini-3.8-flash-medium` (confidence 95) and `gemini-3.8-flash-high` (confidence 100 and 95);
+  the `findNextInSubtree(startNode, startPath)` call site was then verified by reading the source.
+* **Why rejected:** rejected 2026-09-06, same session, by the `$push` `review-correctness` lens
+  (Codex, confidence 94), verified against the source before accepting. the exclusion is deliberate and the
+  user-visible consequence asserted above does not occur. `root.san` is `null`
+  (`src/utils/treeReducer.ts:88-92`), and both gap labels return `null` without a `san`
+  (`RepertoireInfo.tsx:530-539`), so the start node could not name a navigable move even if it were
+  returned. The "no gaps found - your repertoire is complete" banner is additionally gated on
+  `(isUserTurn ? hasResponses : positionMoves.length > 0)` (`RepertoireInfo.tsx:747`), so an empty
+  repertoire renders no completeness claim at all. The filing over-read `null` as "reads as
+  complete". Left in the ledger rather than deleted so the next session does not re-derive it.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### `findBiggestGap` discards a large opponent gap whenever any descendant has a smaller one
+
+* **ID:** f-20260906-03 · **Status:** open · **Area:** chess-tree · **Root:** repertoire-gap-selection · **Entry:** inline · **Blocked:** none
+* **Where:** `src/utils/repertoire.ts:347` — `else if (!isUserTurn && !childHasGap)`.
+* **Defect:** on an opponent node the position is only eligible to be a gap when **no** child
+  subtree reported one. `childHasGap` is set by the loop above from any descendant at any depth. So
+  an opponent move that is missing from the repertoire entirely, carrying the whole weight of
+  `missing` for that node, is suppressed the moment one already-prepared sibling line has any
+  unfinished continuation further down.
+* **Why it matters:** the function's entire purpose is to rank gaps by how many games they
+  represent. This inverts that ranking in the common case: a 500 000-game hole at move 1 is
+  discarded in favour of a 10-game hole fifteen plies inside a line the user already knows. The
+  `maxMissing` comparison below it never sees the larger candidate.
+* **Found by:** an Antigravity CLI (`agy`) lens evaluation on 2026-09-06, reported by
+  `gemini-3.8-flash-medium` (confidence 95) and `gemini-3.8-flash-high` (confidence 100); the
+  branch was then verified by reading `src/utils/repertoire.ts:343-350`.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### A failed position query is indistinguishable from a fully covered position
+
+* **ID:** f-20260906-04 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/utils/repertoire.ts:52-54` — the bare `catch { return { moves: [], total: 0 }; }`
+  in `fetchPositionMoves`, consumed at `src/utils/repertoire.ts:119`.
+* **Defect:** any failure of `searchPosition` — unreadable database, lock contention, a dropped
+  handle — is swallowed and returned as a legitimate empty result. `computeCoverageForFen` then
+  reads `total = 0`, takes the `total < minGames` branch and returns `{ coverage: 1, missing: 0 }`,
+  which is the value meaning "nothing left to prepare here".
+* **Why it matters:** the failure mode is silent and inverted. A database that cannot be read makes
+  the whole repertoire report as complete, which is the most reassuring possible answer and the
+  least true one. `.claude/rules/async-resource-invariants.md` requires typed errors mapped at the
+  facade and failing the one item rather than fabricating a success value; a bare `catch` returning
+  a neutral-looking literal is the shape that rule exists to prevent.
+* **Fix shape:** distinguish "queried, no games" from "query failed" in the return type and let the
+  caller mark coverage unknown rather than complete.
+* **Found by:** an Antigravity CLI (`agy`) lens evaluation on 2026-09-06, reported only by
+  `gemini-3.8-flash-high` (confidence 95); the catch and the `total < minGames` branch were then
+  verified by reading the source.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### `getTreeStats` counts the root of an empty tree as a variation
+
+* **ID:** f-20260906-05 · **Status:** rejected · **Area:** frontend-ui · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/utils/repertoire.ts:373-374`.
+* **Defect:** `total` is `tree.length - 1`, which correctly excludes the root, but `leafs` filters
+  the same array for `children.length === 0` without that exclusion. On a tree with no moves
+  `treeIterator` yields the root alone, so `total` is 0 while `leafs` is 1.
+* **Why it matters:** cosmetic but wrong and user-visible — the panel reports "Variations: 1" for a
+  game or repertoire that contains no moves at all. The two numbers are derived from one array and
+  disagree about whether the root counts.
+* **Found by:** an Antigravity CLI (`agy`) lens evaluation on 2026-09-06, reported independently at
+  all three effort levels (`low` 92, `medium` 95, `high` 95); verified by reading the source.
+* **Why rejected:** rejected 2026-09-06, same session, by the `$push` `review-correctness` lens
+  (Codex, confidence 91), verified against the source before accepting. `total` and `leafs` answer different
+  questions and are not required to agree. `treeIterator` yields the root deliberately
+  (`src/utils/treeReducer.ts:36-43`); `total` counts move nodes while `leafs` counts terminal paths,
+  and a game with no moves genuinely has one empty line. "Variations: 1, TotalMoves: 0"
+  (`InfoPanel.tsx:67-75`) is a defensible reading, not a demonstrable defect. Three lens cells
+  agreeing on it is evidence of a shared prior about what "variations" ought to mean, not of a bug.
