@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 996d01bcb9ce6af81292ac6f10d8e70449f695c6d2aac08aa2823407c39b68c3
+# agent-kit-sha256: 05402ca193c345e09b57d1cd25a44f05723459a1e37a90bdb606e3fc213c5606
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -52,7 +52,7 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -3590,16 +3590,43 @@ def _ledger_mutation_scope(path: Path) -> Iterator[str]:
         release_ledger_lock(lock)
 
 
-def _locked_ledger_mutation(path: Path, build: Callable[[str], str]) -> None:
-    """Run one validated, compare-and-swap mutation under the ledger lock."""
-    with _ledger_mutation_scope(path) as original:
-        candidate = build(original)
-        issues = _validate_text(candidate, path)
-        if issues:
-            raise LedgerError(
-                "the mutation would leave the ledger invalid:\n" + "\n".join(issues)
-            )
-        _write_if_unchanged(path, original, candidate)
+def _locked_ledger_mutation(
+    path: Path,
+    build: Callable[[str], str],
+    clear_announcement_ids: Collection[str] | None = None,
+) -> None:
+    """Run one validated, compare-and-swap mutation under the required locks.
+
+    ``None`` selects a ledger-only mutation. Any supplied collection, including
+    an empty one, selects announcement-first locking and a durable state prune.
+    The collection is read after ``build`` returns so builders such as
+    ``apply-answers`` may populate a shared mutable list while constructing the
+    candidate.
+    """
+
+    def mutate() -> None:
+        with _ledger_mutation_scope(path) as original:
+            candidate = build(original)
+            issues = _validate_text(candidate, path)
+            if issues:
+                raise LedgerError(
+                    "the mutation would leave the ledger invalid:\n"
+                    + "\n".join(issues)
+                )
+            if clear_announcement_ids is not None:
+                _prune_announcement_state_strict(path, clear_announcement_ids)
+            _write_if_unchanged(path, original, candidate)
+
+    if clear_announcement_ids is None:
+        mutate()
+        return
+
+    # Notification readers own only the announcement lock. Taking it before
+    # the ledger lock prevents a clear waiting behind notifier I/O from
+    # convoying unrelated ledger writers, and keeps every two-lock operation in
+    # one order.
+    with _announcement_lock(path, strict=True):
+        mutate()
 
 
 @dataclass(frozen=True)
@@ -4999,6 +5026,11 @@ def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None
     if posted != 0:
         # Left unrecorded on purpose: a failed post (no session bus, headless)
         # should be retried on the next named look, not counted as delivered.
+        print(
+            f"warning: notifier exited with status {posted}; blockers remain "
+            "unannounced.",
+            file=sys.stderr,
+        )
         return
 
     try:
@@ -5019,29 +5051,40 @@ def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None
     _persist_announcement_state(state_path, kept)
 
 
-def _forget_announced_ids_unlocked(ledger: Path, ids: set[str]) -> None:
-    """Drop stamps for ids that just left the waiting set, without a ledger parse."""
-    if not ids:
-        return
+def _prune_announcement_state_strict(
+    ledger: Path, ids: Collection[str]
+) -> None:
+    """Durably invalidate stamps before a protected ledger mutation commits."""
     state_path = ledger.with_name(ANNOUNCED_STATE)
     try:
         announced = _read_announcement_state(state_path) or {}
-    except LedgerError as exc:
-        print(f"warning: {exc}; skipping announcement prune.", file=sys.stderr)
-        return
-    kept = {key: value for key, value in announced.items() if key not in ids}
-    if kept != announced:
-        _persist_announcement_state(state_path, kept)
+        kept = {key: value for key, value in announced.items() if key not in ids}
+        # Always replace and fsync the directory, even when the ids are already
+        # absent. A previous failed directory fsync can leave the visible map
+        # ahead of its durable state, so equality is not proof of durability.
+        _atomic_write(
+            state_path,
+            json.dumps(kept, indent=2, sort_keys=True) + "\n",
+            durable_directory=True,
+        )
+    except LedgerError:
+        raise
+    except OSError as exc:
+        raise LedgerError(
+            f"could not durably prune announcement state {state_path}: {exc}"
+        ) from exc
 
 
-def _forget_announced_ids(ledger: Path, ids: set[str]) -> None:
-    """Forget announcement stamps while holding the state lock."""
-    if not ids:
-        return
-    _with_announcement_lock(ledger, lambda: _forget_announced_ids_unlocked(ledger, ids))
+@contextmanager
+def _announcement_lock(
+    ledger: Path, *, strict: bool = False
+) -> Iterator[bool]:
+    """Own announcement state for a reader or strict ledger mutation.
 
-
-def _with_announcement_lock(ledger: Path, body: Callable[[], None]) -> None:
+    Reader acquisition failures are diagnosed and yield ``False`` so the query
+    still succeeds. Strict mutations instead raise ``LedgerError`` and never
+    enter the context without the state lock.
+    """
     state_lock = ledger_lock_path(ledger.with_name(ANNOUNCED_STATE))
     try:
         acquired, waited_seconds = acquire_ledger_lock(
@@ -5049,31 +5092,36 @@ def _with_announcement_lock(ledger: Path, body: Callable[[], None]) -> None:
             wait_window_seconds=NOTIFY_POST_TIMEOUT_S + NOTIFY_STATE_WRITE_GRACE_S,
         )
     except (LedgerError, OSError) as exc:
-        print(
-            f"warning: LOCK ACQUISITION failed for announcement state lock "
-            f"{state_lock} ({type(exc).__name__}: {exc}); skipping announcement.",
-            file=sys.stderr,
+        message = (
+            f"LOCK ACQUISITION failed for announcement state lock {state_lock} "
+            f"({type(exc).__name__}: {exc})"
         )
+        if strict:
+            raise LedgerError(message) from exc
+        print(f"warning: {message}; skipping announcement.", file=sys.stderr)
+        yield False
         return
     if not acquired:
-        print(
-            f"warning: LOCK ACQUISITION could not acquire announcement state lock "
-            f"{state_lock} after {waited_seconds:.2f}s; skipping announcement.",
-            file=sys.stderr,
+        message = (
+            f"LOCK ACQUISITION could not acquire announcement state lock {state_lock} "
+            f"after {waited_seconds:.2f}s"
         )
+        if strict:
+            raise LedgerError(message)
+        print(f"warning: {message}; skipping announcement.", file=sys.stderr)
+        yield False
         return
     try:
-        body()
+        yield True
     finally:
         release_ledger_lock(state_lock)
 
 
 def _announce_felix_blockers(shown: list[Finding], ledger: Path) -> None:
     """Announce current Felix-facing blockers while holding the state lock."""
-    _with_announcement_lock(
-        ledger,
-        lambda: _announce_felix_blockers_unlocked({f.id for f in shown}, ledger),
-    )
+    with _announcement_lock(ledger) as acquired:
+        if acquired:
+            _announce_felix_blockers_unlocked({f.id for f in shown}, ledger)
 
 
 def cmd_decisions(args: argparse.Namespace) -> int:
@@ -5378,7 +5426,6 @@ def cmd_set_header(args: argparse.Namespace) -> int:
         lines[index] = line
         return _with_final_newline(text, lines)
 
-    _locked_ledger_mutation(args.ledger, build)
     dropped: set[str] = set()
     if args.status in {"handled", "rejected"}:
         dropped.add(args.id)
@@ -5387,7 +5434,7 @@ def cmd_set_header(args: argparse.Namespace) -> int:
         BLOCKER_PRECONDITION,
     }:
         dropped.add(args.id)
-    _forget_announced_ids(args.ledger, dropped)
+    _locked_ledger_mutation(args.ledger, build, dropped or None)
     print(f"updated header for {args.id}")
     return 0
 
@@ -5926,8 +5973,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             )
         return _with_final_newline(text, result_lines)
 
-    _locked_ledger_mutation(args.ledger, build)
-    _forget_announced_ids(args.ledger, set(applied))
+    _locked_ledger_mutation(args.ledger, build, applied)
     if claimed:
         release_spool(claim, spool, claimed)
     if applied:
