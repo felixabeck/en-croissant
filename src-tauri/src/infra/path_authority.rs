@@ -24,15 +24,22 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Duration, SystemTime},
 };
 use tauri::Manager as _;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const SCHEMA_VERSION: u32 = 1;
-const MAX_PERSISTENT_IDS: usize = 4_096;
+/// Maximum number of distinct authority identifiers admitted in a normal registry.
+/// Retained legacy registries may temporarily exceed it while they are being shrunk.
+const MAX_AUTHORITY_IDS: usize = 4_096;
+const MAX_TRUSTED_OWNER_FAMILIES: usize = 32;
 const MAX_PENDING_ARTIFACTS: usize = 256;
 const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LEGACY_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
@@ -819,8 +826,13 @@ pub struct StartupPathOwners {
     pub trusted_families: Vec<PathOwnerFamily>,
 }
 
-const MAX_ATTACHMENT_ACTION_IDS: usize = 4096;
+/// Maximum number of IDs accepted in one trusted attachment-owner request in normal state.
+const MAX_AUTHORITY_REQUEST_IDS: usize = MAX_AUTHORITY_IDS;
 
+/// Prepare marks the supplied current-session attachments as prepared without retiring omitted
+/// IDs; an empty list is an explicit prepare with no retained attachments.
+/// Reconcile with `Some([])` is a trusted complete owner snapshot and permits retirement of
+/// omitted IDs. `None` is abandon-only: only explicitly abandoned provisional IDs are retired.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "action", rename_all = "camelCase")]
 pub enum EngineAttachmentAction {
@@ -1594,7 +1606,7 @@ struct Registry {
     active_engine_root: Option<PathRef>,
     #[serde(default)]
     pending_artifacts: Vec<PendingArtifact>,
-    /// Attachment IDs first issued in a prior session but not yet durably adopted by renderer
+    /// Attachment IDs issued in this or a prior session but not yet durably adopted by renderer
     /// storage. Missing lifecycle metadata is deliberately interpreted as owned legacy state.
     #[serde(default)]
     provisional_attachments: BTreeSet<String>,
@@ -2097,6 +2109,54 @@ fn is_write_operation(op: PathOperation) -> bool {
     )
 }
 
+/// Counts complete blocking image issuances so shutdown cannot clean up before they settle.
+pub(crate) struct ActiveImageIssuances {
+    active: AtomicUsize,
+    notify: Notify,
+}
+
+impl ActiveImageIssuances {
+    fn new() -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            notify: Notify::new(),
+        }
+    }
+
+    pub(crate) async fn wait_for_zero(&self) {
+        loop {
+            // Arm the notification before observing the count. Otherwise a release between
+            // the check and `notified().await` can leave shutdown asleep forever.
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+pub(crate) struct ActiveImageIssuanceLease {
+    tracker: Arc<ActiveImageIssuances>,
+}
+
+impl Drop for ActiveImageIssuanceLease {
+    fn drop(&mut self) {
+        self.tracker.active.fetch_sub(1, Ordering::AcqRel);
+        self.tracker.notify.notify_waiters();
+    }
+}
+
+#[derive(Clone)]
+struct RegistryAdmissionSnapshot {
+    bytes: usize,
+    serialized: Vec<u8>,
+    unique_ids: usize,
+    pending_count: usize,
+}
+
 /// Backend-only authority registry. Its public methods never parse renderer-provided raw paths.
 pub struct PathAuthority {
     registry_path: PathBuf,
@@ -2119,7 +2179,8 @@ pub struct PathAuthority {
     retired_attachments: BTreeMap<String, Entry>,
     image_cleanup: BTreeMap<String, StoredEntry>,
     attachments_sealed: bool,
-    attachment_durability_pending: bool,
+    registry_durability_pending: bool,
+    active_image_issuances: Arc<ActiveImageIssuances>,
 }
 fn validate_components(components: &[OsString]) -> Result<(), Error> {
     for name in components {
@@ -2418,7 +2479,8 @@ impl PathAuthority {
             retired_attachments: BTreeMap::new(),
             image_cleanup,
             attachments_sealed: false,
-            attachment_durability_pending: false,
+            registry_durability_pending: false,
+            active_image_issuances: Arc::new(ActiveImageIssuances::new()),
         };
         authority.recover_pending_artifacts()?;
         Ok(authority)
@@ -3693,7 +3755,9 @@ impl PathAuthority {
         &mut self,
         owners: StartupPathOwners,
     ) -> Result<CommitDurability, Error> {
-        if owners.retained_ids.len() > MAX_PERSISTENT_IDS || owners.trusted_families.len() > 32 {
+        if owners.retained_ids.len() > self.authority_id_input_limit()
+            || owners.trusted_families.len() > MAX_TRUSTED_OWNER_FAMILIES
+        {
             return Err(Error::ResourceLimit(
                 "startup path owner input exceeds its limit".into(),
             ));
@@ -3748,6 +3812,9 @@ impl PathAuthority {
                 .all(|family| effective_trusted.contains(family))
         });
         let durability = if candidate.len() == self.persistent.len() {
+            if self.registry_durability_pending {
+                self.retry_registry_durability()?;
+            }
             CommitDurability::Durable
         } else {
             self.commit_candidate(candidate, None)?
@@ -3768,7 +3835,37 @@ impl PathAuthority {
         self.attachments_sealed = true;
     }
 
-    fn retry_attachment_durability(&mut self) -> Result<(), Error> {
+    pub(crate) fn begin_engine_image_issuance(
+        &mut self,
+    ) -> Result<ActiveImageIssuanceLease, Error> {
+        if self.attachments_sealed {
+            return Err(Error::Conflict(
+                "engine attachment mutations are sealed".into(),
+            ));
+        }
+        self.active_image_issuances
+            .active
+            .fetch_add(1, Ordering::AcqRel);
+        Ok(ActiveImageIssuanceLease {
+            tracker: Arc::clone(&self.active_image_issuances),
+        })
+    }
+
+    pub(crate) fn active_image_issuances(&self) -> Arc<ActiveImageIssuances> {
+        Arc::clone(&self.active_image_issuances)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn engine_attachments_are_sealed(&self) -> bool {
+        self.attachments_sealed
+    }
+
+    fn authority_id_input_limit(&self) -> usize {
+        self.registry_unique_id_count()
+            .max(MAX_AUTHORITY_REQUEST_IDS)
+    }
+
+    fn retry_registry_durability(&mut self) -> Result<(), Error> {
         let durability = self.save_entries(
             &self.persistent,
             &self.active_database_root,
@@ -3778,11 +3875,11 @@ impl PathAuthority {
         )?;
         match durability {
             CommitDurability::Durable => {
-                self.attachment_durability_pending = false;
+                self.registry_durability_pending = false;
                 Ok(())
             }
             CommitDurability::DurabilityUncertain(stage) => {
-                self.attachment_durability_pending = true;
+                self.registry_durability_pending = true;
                 Err(Error::CommittedDurabilityUncertain(stage))
             }
         }
@@ -3811,8 +3908,8 @@ impl PathAuthority {
         };
         if retained
             .as_ref()
-            .is_some_and(|ids| ids.len() > MAX_ATTACHMENT_ACTION_IDS)
-            || abandoned.len() > MAX_ATTACHMENT_ACTION_IDS
+            .is_some_and(|ids| ids.len() > self.authority_id_input_limit())
+            || abandoned.len() > self.authority_id_input_limit()
             || (startup && retained.is_none())
         {
             return Err(Error::ResourceLimit(
@@ -3854,6 +3951,16 @@ impl PathAuthority {
         let old_provisional = self.provisional_attachments.clone();
         let old_cleanup = self.image_cleanup.clone();
         let old_retired = self.retired_attachments.clone();
+        let old_admission = self.registry_admission_snapshot(
+            &self.persistent,
+            &self.active_database_root,
+            &self.active_puzzle_root,
+            &self.active_engine_root,
+            &self.pending_artifacts,
+            &old_provisional,
+            &old_retired,
+            &old_cleanup,
+        )?;
         let mut candidate = self.persistent.clone();
         let mut readopted_retired_ids = Vec::new();
         for id in &retained_ids {
@@ -3903,34 +4010,28 @@ impl PathAuthority {
             && self.image_cleanup == old_cleanup
             && self.retired_attachments == old_retired
         {
-            if self.attachment_durability_pending {
-                return self.retry_attachment_durability();
+            if self.registry_durability_pending {
+                return self.retry_registry_durability();
             }
             return Ok(());
         }
-        if let Err(error) = self.validate_attachment_admission(
-            &candidate,
-            &old_provisional,
-            &old_cleanup,
-            &old_retired,
+        match self.commit_candidate_with_pending_baseline(
+            candidate,
+            self.pending_artifacts.clone(),
+            None,
+            Some(old_admission),
         ) {
-            self.provisional_attachments = old_provisional;
-            self.image_cleanup = old_cleanup;
-            self.retired_attachments = old_retired;
-            return Err(error);
-        }
-        match self.commit_candidate(candidate, None) {
             Ok(durability) => {
                 for id in readopted_retired_ids {
                     self.retired_attachments.remove(&id);
                 }
                 match durability {
                     CommitDurability::Durable => {
-                        self.attachment_durability_pending = false;
+                        self.registry_durability_pending = false;
                         Ok(())
                     }
                     CommitDurability::DurabilityUncertain(stage) => {
-                        self.attachment_durability_pending = true;
+                        self.registry_durability_pending = true;
                         Err(Error::CommittedDurabilityUncertain(stage))
                     }
                 }
@@ -3944,73 +4045,6 @@ impl PathAuthority {
         }
     }
 
-    fn validate_attachment_admission(
-        &self,
-        candidate: &BTreeMap<String, Entry>,
-        old_provisional: &BTreeSet<String>,
-        old_cleanup: &BTreeMap<String, StoredEntry>,
-        old_retired: &BTreeMap<String, Entry>,
-    ) -> Result<(), Error> {
-        let unique = unique_registry_id_count(
-            candidate.keys().map(String::as_str).collect(),
-            self.retired_attachments
-                .keys()
-                .map(String::as_str)
-                .collect(),
-            self.image_cleanup.keys().map(String::as_str).collect(),
-            self.pending_artifacts
-                .iter()
-                .map(|pending| pending.id.id.as_str())
-                .collect(),
-        );
-        let old_unique = unique_registry_id_count(
-            self.persistent.keys().map(String::as_str).collect(),
-            old_retired.keys().map(String::as_str).collect(),
-            old_cleanup.keys().map(String::as_str).collect(),
-            self.pending_artifacts
-                .iter()
-                .map(|pending| pending.id.id.as_str())
-                .collect(),
-        );
-        if unique > MAX_PERSISTENT_IDS && unique > old_unique {
-            return Err(Error::ResourceLimit(
-                "path registry identifier limit reached".into(),
-            ));
-        }
-        let encode = |entries: &BTreeMap<String, Entry>,
-                      provisional: &BTreeSet<String>,
-                      cleanup: &BTreeMap<String, StoredEntry>| {
-            serde_json::to_vec(&Registry {
-                schema_version: SCHEMA_VERSION,
-                entries: entries
-                    .values()
-                    .filter(|entry| entry.stored.class != PathClass::AppOwnedRoot)
-                    .map(|entry| entry.stored.clone())
-                    .collect(),
-                active_database_root: self.active_database_root.clone(),
-                active_puzzle_root: self.active_puzzle_root.clone(),
-                active_engine_root: self.active_engine_root.clone(),
-                pending_artifacts: self.pending_artifacts.clone(),
-                provisional_attachments: provisional.clone(),
-                image_cleanup: cleanup.values().cloned().collect(),
-            })
-            .map(|bytes| bytes.len())
-            .map_err(|error| Error::InvalidInput(error.to_string()))
-        };
-        let bytes = encode(
-            candidate,
-            &self.provisional_attachments,
-            &self.image_cleanup,
-        )?;
-        let old_bytes = encode(&self.persistent, old_provisional, old_cleanup)?;
-        if bytes > MAX_REGISTRY_BYTES && bytes > old_bytes {
-            return Err(Error::ResourceLimit(
-                "path registry serialized size limit reached".into(),
-            ));
-        }
-        Ok(())
-    }
-
     /// Seals attachment mutations before process teardown. Cleanup never follows a stored path:
     /// only UUID leaves beneath the caller-proven EngineImages directory are eligible.
     pub(crate) fn cleanup_engine_images(
@@ -4022,8 +4056,8 @@ impl PathAuthority {
             self.seal_engine_attachments();
         }
         if self.image_cleanup.is_empty() {
-            if self.attachment_durability_pending {
-                return self.retry_attachment_durability();
+            if self.registry_durability_pending {
+                return self.retry_registry_durability();
             }
             return Ok(());
         }
@@ -4095,13 +4129,13 @@ impl PathAuthority {
             );
             match durability {
                 Ok(CommitDurability::Durable) => {
-                    self.attachment_durability_pending = false;
+                    self.registry_durability_pending = false;
                 }
                 Ok(CommitDurability::DurabilityUncertain(stage)) => {
                     log::warn!(
                         "engine image cleanup registry sync is uncertain at {stage}; completed intents are adopted"
                     );
-                    self.attachment_durability_pending = true;
+                    self.registry_durability_pending = true;
                     durability_uncertain = Some(Error::CommittedDurabilityUncertain(stage));
                 }
                 Err(error) => {
@@ -5010,15 +5044,62 @@ impl PathAuthority {
             |target, write| atomic_replace(target, write),
         )
     }
+
+    #[allow(clippy::too_many_arguments)] // one complete persisted-state admission snapshot
+    fn registry_admission_snapshot(
+        &self,
+        entries: &BTreeMap<String, Entry>,
+        active_database_root: &Option<PathRef>,
+        active_puzzle_root: &Option<PathRef>,
+        active_engine_root: &Option<PathRef>,
+        pending_artifacts: &[PendingArtifact],
+        provisional: &BTreeSet<String>,
+        retired: &BTreeMap<String, Entry>,
+        cleanup: &BTreeMap<String, StoredEntry>,
+    ) -> Result<RegistryAdmissionSnapshot, Error> {
+        let bytes = serde_json::to_vec(&Registry {
+            schema_version: SCHEMA_VERSION,
+            entries: entries
+                .values()
+                .filter(|entry| entry.stored.class != PathClass::AppOwnedRoot)
+                .map(|entry| entry.stored.clone())
+                .collect(),
+            active_database_root: active_database_root.clone(),
+            active_puzzle_root: active_puzzle_root.clone(),
+            active_engine_root: active_engine_root.clone(),
+            pending_artifacts: pending_artifacts.to_vec(),
+            provisional_attachments: provisional.clone(),
+            image_cleanup: cleanup.values().cloned().collect(),
+        })
+        .map_err(|error| Error::InvalidInput(error.to_string()))?;
+        Ok(RegistryAdmissionSnapshot {
+            bytes: bytes.len(),
+            serialized: bytes,
+            unique_ids: unique_registry_id_count(
+                entries.keys().map(String::as_str).collect(),
+                retired.keys().map(String::as_str).collect(),
+                cleanup.keys().map(String::as_str).collect(),
+                pending_artifacts
+                    .iter()
+                    .map(|pending| pending.id.id.as_str())
+                    .collect(),
+            ),
+            // This is deliberately a separate admission dimension. A pending artifact can
+            // carry an already-counted ID; its number of recovery records is still bounded.
+            pending_count: pending_artifacts.len(),
+        })
+    }
+
     fn commit_candidate(
         &mut self,
         candidate: BTreeMap<String, Entry>,
         consumed_dialog: Option<&PathRef>,
     ) -> Result<CommitDurability, Error> {
-        self.commit_candidate_with_pending(
+        self.commit_candidate_with_pending_baseline(
             candidate,
             self.pending_artifacts.clone(),
             consumed_dialog,
+            None,
         )
     }
     fn commit_candidate_with_pending(
@@ -5026,6 +5107,21 @@ impl PathAuthority {
         candidate: BTreeMap<String, Entry>,
         pending_artifacts: Vec<PendingArtifact>,
         consumed_dialog: Option<&PathRef>,
+    ) -> Result<CommitDurability, Error> {
+        self.commit_candidate_with_pending_baseline(
+            candidate,
+            pending_artifacts,
+            consumed_dialog,
+            None,
+        )
+    }
+
+    fn commit_candidate_with_pending_baseline(
+        &mut self,
+        candidate: BTreeMap<String, Entry>,
+        pending_artifacts: Vec<PendingArtifact>,
+        consumed_dialog: Option<&PathRef>,
+        baseline: Option<RegistryAdmissionSnapshot>,
     ) -> Result<CommitDurability, Error> {
         let active_database_root = self
             .active_database_root
@@ -5039,13 +5135,14 @@ impl PathAuthority {
             .active_engine_root
             .clone()
             .filter(|id| candidate.contains_key(&id.id));
-        let durability = self.commit_state(
+        let durability = self.commit_state_with_baseline(
             candidate,
             active_database_root,
             active_puzzle_root,
             active_engine_root,
             pending_artifacts,
             consumed_dialog,
+            baseline,
         )?;
         Ok(durability)
     }
@@ -5058,7 +5155,29 @@ impl PathAuthority {
         pending_artifacts: Vec<PendingArtifact>,
         consumed_dialog: Option<&PathRef>,
     ) -> Result<CommitDurability, Error> {
-        self.commit_registry(
+        self.commit_state_with_baseline(
+            candidate,
+            active_database_root,
+            active_puzzle_root,
+            active_engine_root,
+            pending_artifacts,
+            consumed_dialog,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // one complete registry commit plus its old baseline
+    fn commit_state_with_baseline(
+        &mut self,
+        candidate: BTreeMap<String, Entry>,
+        active_database_root: Option<PathRef>,
+        active_puzzle_root: Option<PathRef>,
+        active_engine_root: Option<PathRef>,
+        pending_artifacts: Vec<PendingArtifact>,
+        consumed_dialog: Option<&PathRef>,
+        baseline: Option<RegistryAdmissionSnapshot>,
+    ) -> Result<CommitDurability, Error> {
+        self.commit_registry_with_baseline(
             candidate,
             active_database_root,
             active_puzzle_root,
@@ -5066,10 +5185,34 @@ impl PathAuthority {
             pending_artifacts,
             consumed_dialog,
             true,
+            baseline,
         )
     }
     #[allow(clippy::too_many_arguments)] // one registry snapshot plus adopt_uncertain
     fn commit_registry(
+        &mut self,
+        candidate: BTreeMap<String, Entry>,
+        active_database_root: Option<PathRef>,
+        active_puzzle_root: Option<PathRef>,
+        active_engine_root: Option<PathRef>,
+        pending_artifacts: Vec<PendingArtifact>,
+        consumed_dialog: Option<&PathRef>,
+        adopt_uncertain: bool,
+    ) -> Result<CommitDurability, Error> {
+        self.commit_registry_with_baseline(
+            candidate,
+            active_database_root,
+            active_puzzle_root,
+            active_engine_root,
+            pending_artifacts,
+            consumed_dialog,
+            adopt_uncertain,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_registry_with_baseline(
         &mut self,
         mut candidate: BTreeMap<String, Entry>,
         mut active_database_root: Option<PathRef>,
@@ -5078,6 +5221,7 @@ impl PathAuthority {
         mut pending_artifacts: Vec<PendingArtifact>,
         consumed_dialog: Option<&PathRef>,
         adopt_uncertain: bool,
+        baseline: Option<RegistryAdmissionSnapshot>,
     ) -> Result<CommitDurability, Error> {
         candidate.retain(|id, _| !self.pending_unpersisted_removals.contains(id));
         pending_artifacts
@@ -5094,16 +5238,16 @@ impl PathAuthority {
             !self.pending_unpersisted_removals.contains(&root.id)
                 && candidate.contains_key(&root.id)
         });
-        let durability = self.save_entries(
+        let durability = self.save_entries_with_baseline(
             &candidate,
             &active_database_root,
             &active_puzzle_root,
             &active_engine_root,
             &pending_artifacts,
+            baseline,
+            |target, write| atomic_replace(target, write),
         )?;
-        if durability == CommitDurability::Durable {
-            self.attachment_durability_pending = false;
-        }
+        self.registry_durability_pending = !matches!(durability, CommitDurability::Durable);
         if matches!(durability, CommitDurability::Durable) || adopt_uncertain {
             self.persistent = candidate;
             self.active_database_root = active_database_root;
@@ -5130,6 +5274,34 @@ impl PathAuthority {
         active_puzzle_root: &Option<PathRef>,
         active_engine_root: &Option<PathRef>,
         pending_artifacts: &[PendingArtifact],
+        replace: F,
+    ) -> Result<CommitDurability, Error>
+    where
+        F: FnMut(
+            &Path,
+            Box<dyn FnOnce(&mut fs::File) -> Result<(), Error>>,
+        ) -> Result<AtomicFileOutcome, Error>,
+    {
+        self.save_entries_with_baseline(
+            source,
+            active_database_root,
+            active_puzzle_root,
+            active_engine_root,
+            pending_artifacts,
+            None,
+            replace,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // one complete registry encoding plus its old baseline
+    fn save_entries_with_baseline<F>(
+        &self,
+        source: &BTreeMap<String, Entry>,
+        active_database_root: &Option<PathRef>,
+        active_puzzle_root: &Option<PathRef>,
+        active_engine_root: &Option<PathRef>,
+        pending_artifacts: &[PendingArtifact],
+        baseline: Option<RegistryAdmissionSnapshot>,
         mut replace: F,
     ) -> Result<CommitDurability, Error>
     where
@@ -5138,81 +5310,52 @@ impl PathAuthority {
             Box<dyn FnOnce(&mut fs::File) -> Result<(), Error>>,
         ) -> Result<AtomicFileOutcome, Error>,
     {
-        let entries: Vec<_> = source
-            .values()
-            .filter(|e| e.stored.class != PathClass::AppOwnedRoot)
-            .map(|e| e.stored.clone())
-            .collect();
-        let bytes = serde_json::to_vec(&Registry {
-            schema_version: SCHEMA_VERSION,
-            entries: entries.clone(),
-            active_database_root: active_database_root.clone(),
-            active_puzzle_root: active_puzzle_root.clone(),
-            active_engine_root: active_engine_root.clone(),
-            pending_artifacts: pending_artifacts.to_vec(),
-            provisional_attachments: self.provisional_attachments.clone(),
-            image_cleanup: self.image_cleanup.values().cloned().collect(),
-        })
-        .map_err(|e| Error::InvalidInput(e.to_string()))?;
-        let unique_ids = unique_registry_id_count(
-            source.keys().map(String::as_str).collect(),
-            self.retired_attachments
-                .keys()
-                .map(String::as_str)
-                .collect(),
-            self.image_cleanup.keys().map(String::as_str).collect(),
-            pending_artifacts
-                .iter()
-                .map(|pending| pending.id.id.as_str())
-                .collect(),
-        );
-        let current_unique_ids = unique_registry_id_count(
-            self.persistent.keys().map(String::as_str).collect(),
-            self.retired_attachments
-                .keys()
-                .map(String::as_str)
-                .collect(),
-            self.image_cleanup.keys().map(String::as_str).collect(),
-            self.pending_artifacts
-                .iter()
-                .map(|pending| pending.id.id.as_str())
-                .collect(),
-        );
-        let current_entries: Vec<_> = self
-            .persistent
-            .values()
-            .filter(|entry| entry.stored.class != PathClass::AppOwnedRoot)
-            .map(|entry| entry.stored.clone())
-            .collect();
-        let current_bytes = serde_json::to_vec(&Registry {
-            schema_version: SCHEMA_VERSION,
-            entries: current_entries,
-            active_database_root: self.active_database_root.clone(),
-            active_puzzle_root: self.active_puzzle_root.clone(),
-            active_engine_root: self.active_engine_root.clone(),
-            pending_artifacts: self.pending_artifacts.clone(),
-            provisional_attachments: self.provisional_attachments.clone(),
-            image_cleanup: self.image_cleanup.values().cloned().collect(),
-        })
-        .map_err(|error| Error::InvalidInput(error.to_string()))?
-        .len();
-        if unique_ids > MAX_PERSISTENT_IDS && unique_ids > current_unique_ids {
+        let candidate_snapshot = self.registry_admission_snapshot(
+            source,
+            active_database_root,
+            active_puzzle_root,
+            active_engine_root,
+            pending_artifacts,
+            &self.provisional_attachments,
+            &self.retired_attachments,
+            &self.image_cleanup,
+        )?;
+        let current_snapshot = if let Some(baseline) = baseline {
+            baseline
+        } else {
+            self.registry_admission_snapshot(
+                &self.persistent,
+                &self.active_database_root,
+                &self.active_puzzle_root,
+                &self.active_engine_root,
+                &self.pending_artifacts,
+                &self.provisional_attachments,
+                &self.retired_attachments,
+                &self.image_cleanup,
+            )?
+        };
+        if candidate_snapshot.unique_ids > MAX_AUTHORITY_IDS
+            && candidate_snapshot.unique_ids > current_snapshot.unique_ids
+        {
             return Err(Error::ResourceLimit(
                 "path registry identifier limit reached".into(),
             ));
         }
-        if pending_artifacts.len() > MAX_PENDING_ARTIFACTS
-            && pending_artifacts.len() > self.pending_artifacts.len()
+        if candidate_snapshot.pending_count > MAX_PENDING_ARTIFACTS
+            && candidate_snapshot.pending_count > current_snapshot.pending_count
         {
             return Err(Error::ResourceLimit(
                 "pending path artifact limit reached".into(),
             ));
         }
-        if bytes.len() > MAX_REGISTRY_BYTES && bytes.len() > current_bytes {
+        if candidate_snapshot.bytes > MAX_REGISTRY_BYTES
+            && candidate_snapshot.bytes > current_snapshot.bytes
+        {
             return Err(Error::ResourceLimit(
                 "path registry serialized size limit reached".into(),
             ));
         }
+        let bytes = candidate_snapshot.serialized;
         let mut attempt = || {
             let bytes = bytes.clone();
             replace(
@@ -5394,6 +5537,23 @@ fn unique_registry_id_count(
         .chain(pending)
         .collect::<BTreeSet<_>>()
         .len()
+}
+
+impl PathAuthority {
+    fn registry_unique_id_count(&self) -> usize {
+        unique_registry_id_count(
+            self.persistent.keys().map(String::as_str).collect(),
+            self.retired_attachments
+                .keys()
+                .map(String::as_str)
+                .collect(),
+            self.image_cleanup.keys().map(String::as_str).collect(),
+            self.pending_artifacts
+                .iter()
+                .map(|pending| pending.id.id.as_str())
+                .collect(),
+        )
+    }
 }
 
 fn read_registry_bytes(reader: impl Read) -> Result<Vec<u8>, Error> {
@@ -9858,7 +10018,7 @@ mod tests {
             ),
             availability: PathAvailability::Available,
         };
-        for index in 0..=MAX_PERSISTENT_IDS {
+        for index in 0..=MAX_AUTHORITY_IDS {
             let mut entry = template.clone();
             entry.stored.id.id = format!("id-{index}");
             authority
@@ -9987,7 +10147,7 @@ mod tests {
             ),
             availability: PathAvailability::Available,
         };
-        for index in 0..MAX_PERSISTENT_IDS {
+        for index in 0..MAX_AUTHORITY_IDS {
             let mut entry = template.clone();
             entry.stored.id.id = format!("union-{index}");
             authority
@@ -10058,14 +10218,14 @@ mod tests {
             Err(Error::ResourceLimit(_))
         ));
         assert!(authority.dialogs.contains_key(&dialog.id));
-        assert_eq!(authority.persistent.len(), MAX_PERSISTENT_IDS);
+        assert_eq!(authority.persistent.len(), MAX_AUTHORITY_IDS);
     }
 
     #[test]
     fn oversized_startup_input_and_unknown_ids_do_not_mutate_or_accumulate() {
         let dir = tempfile::tempdir().unwrap();
         let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
-        let oversized = (0..=MAX_PERSISTENT_IDS)
+        let oversized = (0..=MAX_AUTHORITY_IDS)
             .map(|index| PathRef {
                 id: format!("unknown-{index}"),
             })
@@ -10539,7 +10699,7 @@ mod tests {
         ))));
         let durability = authority
             .reconcile_startup_owners(StartupPathOwners {
-                retained_ids: vec![first_id],
+                retained_ids: vec![first_id.clone()],
                 trusted_families: vec![PathOwnerFamily::OpeningBook],
             })
             .unwrap();
@@ -10555,7 +10715,10 @@ mod tests {
         assert_eq!(
             authority
                 .reconcile_startup_owners(StartupPathOwners {
-                    retained_ids: vec![],
+                    // The candidate was already adopted before the uncertain parent sync. This
+                    // identical snapshot must retry the durability fence instead of reporting a
+                    // no-op as durable without another replacement.
+                    retained_ids: vec![first_id],
                     trusted_families: vec![PathOwnerFamily::OpeningBook],
                 })
                 .unwrap(),
@@ -10564,6 +10727,119 @@ mod tests {
         assert!(authority
             .completed_owner_families
             .contains(&PathOwnerFamily::OpeningBook));
+    }
+
+    #[test]
+    fn legacy_attachment_union_can_shrink_from_four_thousand_ninety_eight_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let resource = dir.path().join("resource.nnue");
+        fs::write(&resource, b"resource").unwrap();
+        let template = Entry {
+            stored: stored_entry_for(
+                &resource,
+                "legacy-0",
+                Some(EntryPurpose::EngineResource),
+                canonical_operations(EntryPurpose::EngineResource),
+            ),
+            availability: PathAvailability::Available,
+        };
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        for index in 0..(MAX_AUTHORITY_IDS + 2) {
+            let mut entry = template.clone();
+            entry.stored.id.id = format!("legacy-{index}");
+            authority
+                .persistent
+                .insert(entry.stored.id.id.clone(), entry);
+        }
+        authority.save().unwrap();
+        let mut reopened = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        let all = reopened
+            .persistent
+            .keys()
+            .map(|id| PathRef { id: id.clone() })
+            .collect::<Vec<_>>();
+        assert_eq!(all.len(), MAX_AUTHORITY_IDS + 2);
+        reopened
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: all.clone(),
+            })
+            .unwrap();
+        let retained = all[..MAX_AUTHORITY_IDS + 1].to_vec();
+        reopened
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(retained.clone()),
+                abandoned_ids: vec![],
+                startup: false,
+            })
+            .unwrap();
+        assert_eq!(reopened.persistent.len(), MAX_AUTHORITY_IDS + 1);
+        let reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        assert_eq!(reloaded.persistent.len(), MAX_AUTHORITY_IDS + 1);
+    }
+
+    #[test]
+    fn legacy_startup_owner_union_can_shrink_from_four_thousand_ninety_eight_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let executable = dir.path().join("engine");
+        fs::write(&executable, b"engine").unwrap();
+        let template = Entry {
+            stored: stored_entry_for(
+                &executable,
+                "legacy-engine-0",
+                Some(EntryPurpose::EngineExecutable),
+                canonical_operations(EntryPurpose::EngineExecutable),
+            ),
+            availability: PathAvailability::Available,
+        };
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        for index in 0..(MAX_AUTHORITY_IDS + 2) {
+            let mut entry = template.clone();
+            entry.stored.id.id = format!("legacy-engine-{index}");
+            authority
+                .persistent
+                .insert(entry.stored.id.id.clone(), entry);
+        }
+        authority.save().unwrap();
+        let mut reopened = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        let retained = reopened
+            .persistent
+            .keys()
+            .take(MAX_AUTHORITY_IDS + 1)
+            .map(|id| PathRef { id: id.clone() })
+            .collect::<Vec<_>>();
+        reopened
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: retained,
+                trusted_families: vec![PathOwnerFamily::Engines],
+            })
+            .unwrap();
+        assert_eq!(reopened.persistent.len(), MAX_AUTHORITY_IDS + 1);
+        let reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        assert_eq!(reloaded.persistent.len(), MAX_AUTHORITY_IDS + 1);
+    }
+
+    #[tokio::test]
+    async fn active_image_issuance_lease_drains_before_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let lease = authority.begin_engine_image_issuance().unwrap();
+        let tracker = authority.active_image_issuances();
+        authority.seal_engine_attachments();
+        assert!(matches!(
+            authority.begin_engine_image_issuance(),
+            Err(Error::Conflict(_))
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), tracker.wait_for_zero())
+                .await
+                .is_err()
+        );
+        drop(lease);
+        tokio::time::timeout(Duration::from_secs(1), tracker.wait_for_zero())
+            .await
+            .unwrap();
     }
 
     fn attachment_resource(authority: &mut PathAuthority, path: &Path) -> EngineResourceHandle {
@@ -10735,7 +11011,7 @@ mod tests {
         assert!(authority.persistent.contains_key(&image.id.id));
         assert!(!authority.retired_attachments.contains_key(&image.id.id));
         assert!(!authority.image_cleanup.contains_key(&image.id.id));
-        assert!(authority.attachment_durability_pending);
+        assert!(authority.registry_durability_pending);
 
         set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
         assert!(authority
@@ -10744,14 +11020,14 @@ mod tests {
             })
             .is_err());
         set_test_atomic_file_injector(None);
-        assert!(authority.attachment_durability_pending);
+        assert!(authority.registry_durability_pending);
 
         authority
             .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
                 retained_ids: vec![image.id.clone()],
             })
             .unwrap();
-        assert!(!authority.attachment_durability_pending);
+        assert!(!authority.registry_durability_pending);
         assert!(image_dir.path().join(&leaf).exists());
         let reopened = PathAuthority::open(registry, vec![]).unwrap();
         assert!(reopened.persistent.contains_key(&image.id.id));
@@ -10889,7 +11165,7 @@ mod tests {
             assert!(authority.retired_attachments == retired_before);
             assert_eq!(authority.image_cleanup, cleanup_before);
         };
-        let oversized = (0..=MAX_ATTACHMENT_ACTION_IDS)
+        let oversized = (0..=MAX_AUTHORITY_REQUEST_IDS)
             .map(|index| PathRef {
                 id: format!("oversized-{index}"),
             })
@@ -11157,6 +11433,102 @@ mod tests {
     }
 
     #[test]
+    fn quota_first_prepare_then_empty_owner_reload_reclaims_only_unowned_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let resource_prepared_path = dir.path().join("prepared.nnue");
+        let resource_owned_path = dir.path().join("owned.nnue");
+        let executable_prepared_path = dir.path().join("prepared-engine");
+        let executable_owned_path = dir.path().join("owned-engine");
+        fs::write(&executable_prepared_path, b"prepared").unwrap();
+        fs::write(&executable_owned_path, b"owned").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let prepared_resource = attachment_resource(&mut authority, &resource_prepared_path);
+        let owned_resource = attachment_resource(&mut authority, &resource_owned_path);
+        let prepared_leaf = uuid::Uuid::new_v4().to_string();
+        let owned_leaf = uuid::Uuid::new_v4().to_string();
+        let (_, prepared_identity) = image_dir
+            .atomic_replace_leaf_identified(OsStr::new(&prepared_leaf), |file| {
+                file.write_all(b"prepared image").map_err(Error::from)
+            })
+            .unwrap();
+        let (_, owned_identity) = image_dir
+            .atomic_replace_leaf_identified(OsStr::new(&owned_leaf), |file| {
+                file.write_all(b"owned image").map_err(Error::from)
+            })
+            .unwrap();
+        let prepared_image = authority
+            .register_engine_image(
+                &image_dir,
+                OsStr::new(&prepared_leaf),
+                prepared_identity,
+                "prepared image".into(),
+            )
+            .unwrap();
+        let owned_image = authority
+            .register_engine_image(
+                &image_dir,
+                OsStr::new(&owned_leaf),
+                owned_identity,
+                "owned image".into(),
+            )
+            .unwrap();
+        let prepared_executable = authority
+            .get_or_create_persistent_file(
+                &executable_prepared_path,
+                "prepared engine",
+                canonical_operations(EntryPurpose::EngineExecutable),
+            )
+            .unwrap();
+        let owned_executable = authority
+            .get_or_create_persistent_file(
+                &executable_owned_path,
+                "owned engine",
+                canonical_operations(EntryPurpose::EngineExecutable),
+            )
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![
+                    prepared_resource.id.clone(),
+                    owned_resource.id.clone(),
+                    prepared_image.id.clone(),
+                    owned_image.id.clone(),
+                ],
+            })
+            .unwrap();
+        let mut reopened = PathAuthority::open(registry, vec![]).unwrap();
+        reopened
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![owned_resource.id.clone(), owned_image.id.clone()]),
+                abandoned_ids: vec![],
+                startup: true,
+            })
+            .unwrap();
+        reopened
+            .reconcile_startup_owners(StartupPathOwners {
+                retained_ids: vec![owned_executable.id.clone()],
+                trusted_families: vec![PathOwnerFamily::Engines],
+            })
+            .unwrap();
+        reopened.cleanup_engine_images(&image_dir, false).unwrap();
+        assert!(!reopened.persistent.contains_key(&prepared_resource.id.id));
+        assert!(!reopened.persistent.contains_key(&prepared_image.id.id));
+        assert!(!reopened.persistent.contains_key(&prepared_executable.id.id));
+        assert!(reopened.persistent.contains_key(&owned_resource.id.id));
+        assert!(reopened.persistent.contains_key(&owned_image.id.id));
+        assert!(reopened.persistent.contains_key(&owned_executable.id.id));
+        assert!(resource_prepared_path.exists());
+        assert!(image_dir.path().join(&owned_leaf).exists());
+        assert!(!image_dir.path().join(&prepared_leaf).exists());
+    }
+
+    #[test]
     fn attachment_admission_counts_retired_ids_on_real_issue_and_abandon_paths() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("network.nnue");
@@ -11179,7 +11551,7 @@ mod tests {
             .next()
             .cloned()
             .expect("abandoning a real attachment must retain session resolution");
-        for index in authority.retired_attachments.len()..MAX_PERSISTENT_IDS {
+        for index in authority.retired_attachments.len()..MAX_AUTHORITY_IDS {
             let mut entry = template.clone();
             entry.stored.id.id = format!("retired-{index}");
             authority
@@ -11218,7 +11590,7 @@ mod tests {
             ),
             availability: PathAvailability::Available,
         };
-        for index in 0..MAX_PERSISTENT_IDS {
+        for index in 0..MAX_AUTHORITY_IDS {
             let mut entry = template.clone();
             entry.stored.id.id = format!("persistent-{index}");
             authority
@@ -11236,7 +11608,7 @@ mod tests {
                 retained_ids: vec![retired_id.clone()],
             })
             .unwrap();
-        assert_eq!(authority.persistent.len(), MAX_PERSISTENT_IDS + 1);
+        assert_eq!(authority.persistent.len(), MAX_AUTHORITY_IDS + 1);
         assert!(!authority.retired_attachments.contains_key(&retired_id.id));
     }
 
@@ -11472,7 +11844,7 @@ mod tests {
             })
             .unwrap();
         let template = authority.image_cleanup.values().next().cloned().unwrap();
-        for index in authority.image_cleanup.len()..MAX_PERSISTENT_IDS {
+        for index in authority.image_cleanup.len()..MAX_AUTHORITY_IDS {
             let mut entry = template.clone();
             entry.id.id = format!("cleanup-{index}");
             authority.image_cleanup.insert(entry.id.id.clone(), entry);

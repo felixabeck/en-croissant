@@ -1015,6 +1015,12 @@ export type DatabaseRootHandle = { id: PathRef; kind: DatabaseRootHandleKind }
 export type DatabaseRootHandleKind = "databaseRoot"
 export type DrawReason = "stalemate" | "insufficientMaterial" | "threefoldRepetition" | "fiftyMoveRule" | "agreement"
 export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveFileReplacement" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "GzipFileReplacement" | "NativeExport" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "RegistryReplacement" | "SearchIndexReplacement" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation" | "WorkspaceSidecarReplacement"
+/**
+ * Prepare marks the supplied current-session attachments as prepared without retiring omitted
+ * IDs; an empty list is an explicit prepare with no retained attachments.
+ * Reconcile with `Some([])` is a trusted complete owner snapshot and permits retirement of
+ * omitted IDs. `None` is abandon-only: only explicitly abandoned provisional IDs are retired.
+ */
 export type EngineAttachmentAction = { action: "prepare"; retained_ids: PathRef[] } | { action: "reconcile"; retained_ids: PathRef[] | null; abandoned_ids: PathRef[]; startup: boolean }
 export type EngineConfig = { name: string; options: UciOptionConfig[] }
 /**

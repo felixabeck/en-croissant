@@ -23,6 +23,8 @@ mod progress;
 mod puzzle;
 mod sound;
 
+#[cfg(test)]
+use std::sync::{Barrier, OnceLock};
 use std::{
     collections::{HashMap, VecDeque},
     ffi::OsStr,
@@ -108,6 +110,27 @@ const SEARCH_INDEX_CACHE_CAPACITY: usize = 8;
 const SEARCH_RESULT_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ENGINE_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 type SearchResult = (Vec<PositionStats>, Vec<NormalizedGame>);
+
+#[cfg(test)]
+struct ImageIssuanceTestGate {
+    entered: Arc<Barrier>,
+    release: Arc<Barrier>,
+}
+#[cfg(test)]
+static IMAGE_ISSUANCE_TEST_GATE: OnceLock<Mutex<Option<ImageIssuanceTestGate>>> = OnceLock::new();
+
+#[cfg(test)]
+fn pause_image_issuance_after_lease() {
+    let gate = IMAGE_ISSUANCE_TEST_GATE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("image issuance test gate")
+        .take();
+    if let Some(gate) = gate {
+        gate.entered.wait();
+        gate.release.wait();
+    }
+}
 
 #[derive(Clone)]
 struct CachedSearchResult {
@@ -1125,36 +1148,45 @@ async fn issue_engine_image(
     .await
     .map_err(map_picker_join)??;
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_engine_image_blocking(&authority, app, path))
-        .await
+    issue_engine_image_blocking_async(authority, app, path, None).await
 }
 
-fn issue_engine_image_blocking(
+fn issue_engine_image_blocking<R: tauri::Runtime>(
     authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     path: PathBuf,
+    app_data_override: Option<crate::infra::path_authority::AppDataDir>,
 ) -> Result<crate::infra::path_authority::EngineImageHandle, Error> {
     let display_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Engine image".into());
-    let grant = {
+    let (issuance_lease, grant) = {
         let mut lock = authority
             .lock()
             .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
         let authority = lock
             .as_mut()
             .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-        authority.grant_dialog(
+        let issuance_lease = authority.begin_engine_image_issuance()?;
+        let grant = authority.grant_dialog(
             &path,
             display_name.clone(),
             crate::infra::path_authority::PathClass::SingleDialogGrant,
             crate::infra::path_authority::PathOperation::ImageRead,
             Duration::from_secs(300),
             1,
-        )?
+        )?;
+        (issuance_lease, grant)
     };
+    // The lease intentionally spans descriptor reads, the complete blocking copy, registration,
+    // and error cleanup. A dropped command future cannot let shutdown unlink this image early.
+    let _issuance_lease = issuance_lease;
+    #[cfg(test)]
+    pause_image_issuance_after_lease();
+    let app_data = app_data_override
+        .map(Ok)
+        .unwrap_or_else(|| crate::infra::path_authority::AppDataDir::for_app(&app))?;
     let (file, declared) = crate::infra::path_authority::engine_image_reader_for(
         authority,
         &crate::infra::path_authority::EngineImageHandle::new(grant),
@@ -1167,7 +1199,7 @@ fn issue_engine_image_blocking(
     )?;
     engine_image_mime_type(&bytes)?;
     let image_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
-        &crate::infra::path_authority::AppDataDir::for_app(&app)?,
+        &app_data,
         crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
     )?;
     let leaf_name = uuid::Uuid::new_v4().to_string();
@@ -1210,6 +1242,19 @@ fn issue_engine_image_blocking(
             &image_dir, leaf, installed, error,
         )),
     }
+}
+
+async fn issue_engine_image_blocking_async<R: tauri::Runtime>(
+    authority: std::sync::Arc<
+        std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    >,
+    app: tauri::AppHandle<R>,
+    path: PathBuf,
+    app_data_override: Option<crate::infra::path_authority::AppDataDir>,
+) -> Result<crate::infra::path_authority::EngineImageHandle, Error> {
+    BLOCKING_GATEWAY
+        .spawn(move || issue_engine_image_blocking(&authority, app, path, app_data_override))
+        .await
 }
 
 fn engine_image_error_after_cleanup(
@@ -1459,17 +1504,6 @@ impl SoundServerLifecycle {
 /// Every teardown the process owns. Awaited before the event loop is allowed to
 /// exit, because tao exits the process from inside `run()` — no `Drop` runs
 /// afterwards and any child that was not reaped here is re-parented to init.
-#[cfg(test)]
-async fn shutdown_backend(
-    supervisor: &EngineSupervisor,
-    games: &GameManager,
-    sound: Option<&SoundServerLifecycle>,
-    budget: Duration,
-) -> bool {
-    shutdown_backend_with_attachments(supervisor, games, sound, std::future::ready(Ok(())), budget)
-        .await
-}
-
 async fn shutdown_backend_with_attachments<F>(
     supervisor: &EngineSupervisor,
     games: &GameManager,
@@ -1520,7 +1554,7 @@ where
         }
         Err(_) => {
             log::error!(
-                "Shutdown budget of {budget:?} elapsed while engine, game, or sound teardown was still running"
+                "Shutdown budget of {budget:?} elapsed while engine, game, sound, or attachment teardown was still running"
             );
             false
         }
@@ -1529,17 +1563,9 @@ where
 
 async fn shutdown_engine_attachments(app: tauri::AppHandle) -> Result<(), Error> {
     let authority = std::sync::Arc::clone(&app.state::<AppState>().pgn_path_authority);
+    seal_and_drain_engine_image_issuances(std::sync::Arc::clone(&authority)).await?;
     BLOCKING_GATEWAY
         .spawn(move || {
-            {
-                let mut guard = authority
-                    .lock()
-                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-                guard
-                    .as_mut()
-                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-                    .seal_engine_attachments();
-            }
             let app_data = crate::infra::path_authority::AppDataDir::for_app(&app)?;
             let mut guard = authority
                 .lock()
@@ -1554,6 +1580,28 @@ async fn shutdown_engine_attachments(app: tauri::AppHandle) -> Result<(), Error>
             authority.cleanup_engine_images(&image_dir, false)
         })
         .await
+}
+
+async fn seal_and_drain_engine_image_issuances(
+    authority: std::sync::Arc<
+        std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    >,
+) -> Result<(), Error> {
+    let authority_for_seal = std::sync::Arc::clone(&authority);
+    let active_issuances = BLOCKING_GATEWAY
+        .spawn(move || {
+            let mut guard = authority_for_seal
+                .lock()
+                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+            let authority = guard
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+            authority.seal_engine_attachments();
+            Ok::<_, Error>(authority.active_image_issuances())
+        })
+        .await?;
+    active_issuances.wait_for_zero().await;
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -2025,8 +2073,26 @@ mod tests {
     async fn shutdown_with_nothing_running_is_a_no_op_and_repeatable() {
         let supervisor = EngineSupervisor::default();
         let games = GameManager::new();
-        assert!(shutdown_backend(&supervisor, &games, None, Duration::from_secs(30)).await);
-        assert!(shutdown_backend(&supervisor, &games, None, Duration::from_secs(30)).await);
+        assert!(
+            shutdown_backend_with_attachments(
+                &supervisor,
+                &games,
+                None,
+                std::future::ready(Ok(())),
+                Duration::from_secs(30),
+            )
+            .await
+        );
+        assert!(
+            shutdown_backend_with_attachments(
+                &supervisor,
+                &games,
+                None,
+                std::future::ready(Ok(())),
+                Duration::from_secs(30),
+            )
+            .await
+        );
     }
 
     #[tokio::test]
@@ -2080,6 +2146,104 @@ mod tests {
             .await
         );
         assert!(sound_joined.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_drains_real_image_issue_before_seal_rejection_cleanup() {
+        let directory = tempfile::tempdir().unwrap();
+        let registry = directory.path().join("registry.json");
+        let app_data = directory.path().join("app-data");
+        let source = directory.path().join("source.png");
+        let late_source = directory.path().join("late.png");
+        let png = b"\x89PNG\r\n\x1a\n";
+        std::fs::write(&source, png).unwrap();
+        std::fs::write(&late_source, png).unwrap();
+        let authority = Arc::new(Mutex::new(Some(
+            crate::infra::path_authority::PathAuthority::open(registry, vec![]).unwrap(),
+        )));
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        *IMAGE_ISSUANCE_TEST_GATE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = Some(ImageIssuanceTestGate {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let app = tauri::test::mock_app();
+        let issuing_authority = Arc::clone(&authority);
+        let issuing_app = app.handle().clone();
+        let issuing = tokio::spawn(issue_engine_image_blocking_async(
+            issuing_authority,
+            issuing_app,
+            source,
+            Some(crate::infra::path_authority::AppDataDir::for_test(
+                &app_data,
+            )),
+        ));
+        // The production blocking issuer has acquired its RAII lease but has not copied bytes.
+        entered.wait();
+
+        let mut draining = tokio::spawn(seal_and_drain_engine_image_issuances(Arc::clone(
+            &authority,
+        )));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if authority
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .engine_attachments_are_sealed()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("shutdown seals while the real copy is paused");
+        assert!(!app_data.join("engine-images").exists());
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut draining)
+                .await
+                .is_err()
+        );
+        issuing.abort();
+        assert!(issuing
+            .await
+            .expect_err("issuer awaiter must be cancelled")
+            .is_cancelled());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut draining)
+                .await
+                .is_err(),
+            "cancelling the async caller must not release the blocking issuance lease"
+        );
+        let refusal = issue_engine_image_blocking_async(
+            Arc::clone(&authority),
+            app.handle().clone(),
+            late_source,
+            Some(crate::infra::path_authority::AppDataDir::for_test(
+                &app_data,
+            )),
+        )
+        .await
+        .expect_err("new image work must refuse before opening or copying after seal");
+        assert!(matches!(refusal, Error::Conflict(message) if message.contains("sealed")));
+        assert!(!app_data.join("engine-images").exists());
+
+        // Let the already-leased production issue finish. Registration now observes the seal,
+        // and its real orphan-cleanup path must remove the copied UUID leaf before the drain ends.
+        release.wait();
+        draining.await.unwrap().unwrap();
+        let image_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
+            &crate::infra::path_authority::AppDataDir::for_test(&app_data),
+            crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_dir(image_dir.path()).unwrap().count(), 0);
     }
 }
 
@@ -2272,10 +2436,6 @@ mod blocking_offload_scans {
                 "open_engine_workspace_blocking",
             ),
             (
-                "async fn issue_engine_image(",
-                "issue_engine_image_blocking",
-            ),
-            (
                 "async fn issue_pgn_workspace(",
                 "issue_pgn_workspace_blocking",
             ),
@@ -2310,6 +2470,26 @@ mod blocking_offload_scans {
         ] {
             assert_offloads(main, signature, worker);
         }
+        // The image command first completes the native picker and then forwards to the
+        // production async wrapper. Keep the gateway assertion on that wrapper so this scan
+        // follows the call chain when the offload is factored out of the command body.
+        let image_command = body_at_indent(main, "async fn issue_engine_image(");
+        assert_eq!(
+            image_command
+                .matches("issue_engine_image_blocking_async(")
+                .count(),
+            1,
+            "issue_engine_image must forward exactly once to its blocking wrapper: {image_command}"
+        );
+        assert!(
+            !image_command.contains("BLOCKING_GATEWAY"),
+            "{image_command}"
+        );
+        assert_offloads(
+            main,
+            "async fn issue_engine_image_blocking_async<R:",
+            "issue_engine_image_blocking",
+        );
         // `get_puzzle_workspace` is the documented exception: `active_or_default_puzzle_workspace`
         // already is the blocking body, so no `*_blocking` wrapper was added (`e770bcdb`).
         for (signature, worker) in [
@@ -2418,8 +2598,8 @@ mod blocking_offload_scans {
             .find("blocking_pick_file")
             .expect("issue_engine_image must call blocking_pick_file");
         let image_gateway = image
-            .find("BLOCKING_GATEWAY")
-            .expect("issue_engine_image must call BLOCKING_GATEWAY");
+            .find("issue_engine_image_blocking_async(")
+            .expect("issue_engine_image must forward to its blocking wrapper");
         assert!(
             picker < image_gateway,
             "issue_engine_image must run the picker before BLOCKING_GATEWAY: {image}"
@@ -2852,7 +3032,7 @@ mod blocking_offload_scans {
     fn s10_engine_image_call_sites_read_outside_the_authority_guard() {
         let main = include_str!("main.rs");
         for signature in [
-            "fn issue_engine_image_blocking(",
+            "fn issue_engine_image_blocking<R:",
             "fn read_engine_image_blocking(",
         ] {
             let body = body_at_indent(main, signature);
@@ -2925,7 +3105,7 @@ mod blocking_offload_scans {
     #[test]
     fn engine_image_install_and_post_install_cleanup_are_pinned_to_the_descriptor() {
         let main = include_str!("main.rs");
-        let body = body_at_indent(main, "fn issue_engine_image_blocking(");
+        let body = body_at_indent(main, "fn issue_engine_image_blocking<R:");
         assert!(
             body.contains("atomic_replace_leaf_identified("),
             "engine-image installation must use the authorized directory descriptor: {body}"
@@ -3079,7 +3259,7 @@ mod blocking_offload_scans {
                 main,
                 "issue_engine_image_blocking",
                 "AppOwnedDefaultRoot::EngineImages",
-                owned,
+                "&app_data,",
                 "engine-images",
             ),
             (
