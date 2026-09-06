@@ -604,6 +604,72 @@ mod tests {
         (directory, path, repository)
     }
 
+    struct PuzzleDeletionFixture {
+        _directory: tempfile::TempDir,
+        path: PathBuf,
+        repository: Arc<DatabaseRepository>,
+        authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
+        cache: Arc<tokio::sync::Mutex<PuzzleCache>>,
+        handle: crate::infra::path_authority::PathRef,
+        resolved: crate::infra::path_authority::ResolvedPath,
+    }
+
+    fn puzzle_deletion_fixture(name: &str) -> PuzzleDeletionFixture {
+        let (directory, path, repository) = puzzle_database(name, 1200);
+        let registry = directory.path().join("registry.json");
+        let mut authority =
+            crate::infra::path_authority::PathAuthority::open(registry, vec![]).unwrap();
+        let handle = authority
+            .get_or_create_persistent_file(
+                &path,
+                "Puzzle database",
+                vec![
+                    crate::infra::path_authority::PathOperation::PuzzleRead,
+                    crate::infra::path_authority::PathOperation::PuzzleDelete,
+                ],
+            )
+            .unwrap()
+            .id;
+        let resolved = authority
+            .resolve(
+                &handle,
+                crate::infra::path_authority::PathOperation::PuzzleDelete,
+                &[],
+            )
+            .unwrap();
+        let cache_key = PuzzleCacheKey {
+            database: repository.database_identity(&path).unwrap(),
+            min_rating: 0,
+            max_rating: u16::MAX,
+            theme: None,
+        };
+        let mut cache = PuzzleCache::new();
+        cache.replace(cache_key, vec![]);
+        PuzzleDeletionFixture {
+            _directory: directory,
+            path,
+            repository: Arc::new(repository),
+            authority: Arc::new(std::sync::Mutex::new(Some(authority))),
+            cache: Arc::new(tokio::sync::Mutex::new(cache)),
+            handle,
+            resolved,
+        }
+    }
+
+    fn authority_contains(
+        authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+        handle: &crate::infra::path_authority::PathRef,
+    ) -> bool {
+        authority
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+            .unwrap()
+            .descriptors()
+            .iter()
+            .any(|descriptor| descriptor.id == *handle)
+    }
+
     #[test]
     fn alternate_databases_and_short_sets_never_reuse_a_stale_puzzle() {
         let (_one_dir, one_path, one_repository) = puzzle_database("one.db", 1200);
@@ -668,8 +734,15 @@ mod tests {
             max_rating: u16::MAX,
             theme: None,
         };
+        let different_range = PuzzleCacheKey {
+            min_rating: 1000,
+            ..key.clone()
+        };
         let mut cache = PuzzleCache::new();
         cache.replace(key, vec![]);
+        assert!(cache.take(&different_range).is_none());
+        cache.invalidate_database(&path.with_file_name("other.db"));
+        assert!(cache.key.is_some());
         cache.invalidate_database(&path.canonicalize().unwrap());
         assert!(cache.key.is_none());
     }
@@ -775,39 +848,105 @@ mod tests {
     }
 
     #[test]
+    fn command_flow_deletes_file_invalidates_cache_and_prunes_authority() {
+        let PuzzleDeletionFixture {
+            _directory,
+            path,
+            repository,
+            authority,
+            cache,
+            handle,
+            resolved,
+        } = puzzle_deletion_fixture("ordinary-delete.db3");
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            resolved,
+            path.clone(),
+            handle.clone(),
+            repository,
+            Arc::clone(&authority),
+            Arc::clone(&cache),
+        ));
+
+        assert!(result.is_ok(), "ordinary deletion failed: {result:?}");
+        assert!(!path.exists());
+        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
+        assert!(!authority_contains(&authority, &handle));
+    }
+
+    #[test]
+    fn command_flow_pre_delete_identity_failure_preserves_file_cache_and_authority() {
+        let PuzzleDeletionFixture {
+            _directory,
+            path,
+            repository,
+            authority,
+            cache,
+            handle,
+            resolved,
+        } = puzzle_deletion_fixture("replaced-before-delete.db3");
+        let replacement = path.with_extension("replacement");
+        std::fs::write(&replacement, b"replacement puzzle database").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            resolved,
+            path.clone(),
+            handle.clone(),
+            repository,
+            Arc::clone(&authority),
+            Arc::clone(&cache),
+        ));
+
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"replacement puzzle database"
+        );
+        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_some());
+        assert!(authority_contains(&authority, &handle));
+    }
+
+    #[test]
+    fn command_flow_treats_already_missing_file_as_deleted() {
+        let PuzzleDeletionFixture {
+            _directory,
+            path,
+            repository,
+            authority,
+            cache,
+            handle,
+            resolved,
+        } = puzzle_deletion_fixture("already-missing.db3");
+        std::fs::remove_file(&path).unwrap();
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            resolved,
+            path.clone(),
+            handle.clone(),
+            repository,
+            Arc::clone(&authority),
+            Arc::clone(&cache),
+        ));
+
+        assert!(result.is_ok(), "idempotent deletion failed: {result:?}");
+        assert!(!path.exists());
+        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
+        assert!(!authority_contains(&authority, &handle));
+    }
+
+    #[test]
     fn command_flow_invalidates_cache_after_delete_even_when_authority_cleanup_fails() {
-        let (directory, path, repository) = puzzle_database("cleanup-failure.db3", 1200);
-        let registry = directory.path().join("registry.json");
-        let mut authority =
-            crate::infra::path_authority::PathAuthority::open(registry, vec![]).unwrap();
-        let handle = authority
-            .get_or_create_persistent_file(
-                &path,
-                "Puzzle database",
-                vec![
-                    crate::infra::path_authority::PathOperation::PuzzleRead,
-                    crate::infra::path_authority::PathOperation::PuzzleDelete,
-                ],
-            )
-            .unwrap()
-            .id;
-        let resolved = authority
-            .resolve(
-                &handle,
-                crate::infra::path_authority::PathOperation::PuzzleDelete,
-                &[],
-            )
-            .unwrap();
-        let cache_key = PuzzleCacheKey {
-            database: repository.database_identity(&path).unwrap(),
-            min_rating: 0,
-            max_rating: u16::MAX,
-            theme: None,
-        };
-        let mut cache = PuzzleCache::new();
-        cache.replace(cache_key, vec![]);
-        let cache = Arc::new(tokio::sync::Mutex::new(cache));
-        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let PuzzleDeletionFixture {
+            _directory,
+            path,
+            repository,
+            authority,
+            cache,
+            handle,
+            resolved,
+        } = puzzle_deletion_fixture("cleanup-failure.db3");
         let poison = Arc::clone(&authority);
         assert!(std::thread::spawn(move || {
             let _guard = poison.lock().unwrap();
@@ -819,7 +958,7 @@ mod tests {
             resolved,
             path.clone(),
             handle.clone(),
-            Arc::new(repository),
+            repository,
             Arc::clone(&authority),
             Arc::clone(&cache),
         ));
@@ -833,15 +972,7 @@ mod tests {
         ));
         assert!(!path.exists(), "physical deletion must remain committed");
         assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
-        let mut authority = authority
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(authority
-            .as_mut()
-            .unwrap()
-            .descriptors()
-            .iter()
-            .any(|descriptor| descriptor.id == handle));
+        assert!(authority_contains(&authority, &handle));
     }
 
     #[test]
