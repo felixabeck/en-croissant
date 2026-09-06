@@ -300,30 +300,6 @@ async permanentlyDeleteWorkspaceEntry(workspace: FileWorkspaceHandle, entry: Fil
     else return { status: "error", error: e  as any };
 }
 },
-async listPathCapabilities() : Promise<Result<PathDescriptor[], ErrorPayload>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("list_path_capabilities") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async revokePathCapability(id: PathRef) : Promise<Result<boolean, ErrorPayload>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("revoke_path_capability", { id }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async promotePathCapability(id: PathRef, pathClass: PathClass, displayName: string, operations: PathOperation[]) : Promise<Result<PathCommit, ErrorPayload>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("promote_path_capability", { id, pathClass, displayName, operations }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async getBestMoves(id: string, engine: EngineHandle, tab: string, goMode: GoMode, options: EngineOptions) : Promise<Result<[number, BestMoves[]] | null, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_best_moves", { id, engine, tab, goMode, options }) };
@@ -928,6 +904,14 @@ async getSoundServerPort() : Promise<Result<number, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
+async soundResourcePath(collection: string, kind: SoundKind) : Promise<Result<string, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sound_resource_path", { collection, kind }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async downloadChessComGames(destination: PathRef, filename: string, player: string, sinceMs: bigint | null, jobId: string) : Promise<Result<ArtifactPublication, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("download_chess_com_games", { destination, filename, player, sinceMs, jobId }) };
@@ -1094,19 +1078,6 @@ export type OutOpening = { name: string; fen: string }
 export type Outcome = "1-0" | "0-1" | "1/2-1/2" | "*"
 export type PathAvailability = "available" | "unavailable"
 /**
- * The lifetime and scope of a path capability.
- */
-export type PathClass = "appOwnedRoot" | "persistentCustomRoot" | "persistentFile" | "singleDialogGrant" | "boundedDialogGrant"
-export type PathCommit = { id: PathRef; durability: CommitDurability }
-/**
- * The only path metadata intentionally exposed to the renderer.
- */
-export type PathDescriptor = { id: PathRef; displayName: string; class: PathClass; availability: PathAvailability }
-/**
- * Exact least-privilege operation accepted by a capability.
- */
-export type PathOperation = "readPgn" | "writePgn" | "databaseRead" | "databaseMutate" | "databaseCreate" | "databaseExport" | "puzzleRead" | "puzzleDelete" | "engineExecute" | "engineConfigure" | "engineBinaryInspect" | "engineResourceRead" | "openingBookRead" | "imageRead" | "downloadFile" | "downloadArchive" | "engineInstall" | "snapshotWrite" | "logWrite" | "openShell"
-/**
  * Opaque renderer-safe identifier. It deliberately has no path parsing API.
  */
 export type PathRef = { id: string }
@@ -1153,6 +1124,7 @@ export type ScoreValue =
 export type Sides = "BlackWhite" | "WhiteBlack" | "Any"
 export type SiteStatsData = { site: string; player: string; data: StatsData[] }
 export type SortDirection = "asc" | "desc"
+export type SoundKind = "Move" | "Capture" | "Check"
 export type StatsData = { date: string; is_player_white: boolean; player_elo: number; result: GameOutcome; time_control: string; opening: string }
 export type TimeControl = { initialTime: bigint; increment: bigint }
 export type Token = { type: "ParenOpen" } | { type: "ParenClose" } | { type: "Comment"; value: string } | { type: "San"; value: string } | { type: "Header"; value: { tag: string; value: string } } | { type: "Nag"; value: string } | { type: "Outcome"; value: string }

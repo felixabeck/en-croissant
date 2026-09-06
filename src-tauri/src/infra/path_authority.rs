@@ -1,11 +1,11 @@
 //! Capability-based authority for native paths.
 //!
-//! Physical paths never cross the renderer boundary. A [`PathRef`] is an opaque capability
+//! Physical paths cross the renderer boundary in exactly one place: `sound_resource_path` returns
+//! the location of one bundled sound file under the resource directory, for the non-Linux
+//! asset-protocol route (`f-20260830-06`). Every other path is a [`PathRef`], an opaque capability
 //! identifier, and every operation is checked at resolution time. Persistent entries retain
 //! filesystem identity; replacement or disappearance makes them unavailable instead of granting
 //! authority to the object that happened to appear at the old location.
-
-#![allow(dead_code)] // Foundation API; command consumers are migrated separately.
 
 use crate::{
     error::Error,
@@ -720,6 +720,23 @@ pub enum PathOperation {
     OpenShell,
 }
 
+#[derive(Serialize, Deserialize, Type, Clone, Copy)]
+pub enum SoundKind {
+    Move,
+    Capture,
+    Check,
+}
+
+impl SoundKind {
+    fn file_name(&self) -> &str {
+        match self {
+            Self::Move => "Move.mp3",
+            Self::Capture => "Capture.mp3",
+            Self::Check => "Check.mp3",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum PathAvailability {
@@ -728,6 +745,7 @@ pub enum PathAvailability {
 }
 
 /// The only path metadata intentionally exposed to the renderer.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PathDescriptor {
@@ -886,6 +904,23 @@ impl ResourceDir {
         Self(path.to_path_buf())
     }
 
+    pub(crate) fn bundled_sound_path(
+        &self,
+        collection: &str,
+        kind: SoundKind,
+    ) -> Result<PathBuf, Error> {
+        if !BUNDLED_SOUND_COLLECTIONS.contains(&collection) {
+            return Err(Error::InvalidInput(
+                "unknown bundled sound collection".into(),
+            ));
+        }
+        Ok(self
+            .as_path()
+            .join(SOUND_ROOT_LEAF)
+            .join(collection)
+            .join(kind.file_name()))
+    }
+
     fn as_path(&self) -> &Path {
         &self.0
     }
@@ -942,6 +977,16 @@ pub(crate) fn ensure_app_owned_default_dir(
 }
 
 const SOUND_ROOT_LEAF: &str = "sound";
+const BUNDLED_SOUND_COLLECTIONS: [&str; 8] = [
+    "futuristic",
+    "lisp",
+    "nes",
+    "piano",
+    "robot",
+    "sfx",
+    "standard",
+    "woodland",
+];
 
 pub(crate) fn open_app_owned_resource_dir(
     resource_dir: &ResourceDir,
@@ -1223,6 +1268,7 @@ fn open_windows_child(
     Ok(file)
 }
 
+#[cfg_attr(not(windows), allow(dead_code))] // called only by the Windows resolver
 fn allows_delete_sharing_for_operation(operation: PathOperation, is_final_leaf: bool) -> bool {
     !is_final_leaf
         || !matches!(
@@ -1765,6 +1811,7 @@ impl ResolvedPath {
         )
     }
     /// Reads only the already-opened, identity-checked file; no directory or sibling handle is exposed.
+    #[cfg(test)]
     pub fn read_bytes(&mut self) -> Result<Vec<u8>, Error> {
         if !matches!(
             self.operation,
@@ -1782,45 +1829,7 @@ impl ResolvedPath {
         self.file_mut()?.read_to_end(&mut bytes)?;
         Ok(bytes)
     }
-    /// Bounded variant for untrusted assets. It checks descriptor metadata
-    /// before allocating and reads at most one sentinel byte beyond the limit,
-    /// so a sparse or concurrently growing file cannot force an allocation.
-    pub fn read_bounded_bytes(&mut self, max_bytes: usize) -> Result<Vec<u8>, Error> {
-        if !matches!(self.operation, PathOperation::OpeningBookRead) {
-            return Err(Error::InvalidInput(
-                "resolved capability is not a readable opening book".into(),
-            ));
-        }
-        let file = self.file_mut()?;
-        let declared = file.metadata()?.len();
-        if declared > max_bytes as u64 {
-            return Err(Error::ResourceLimit(
-                "opening book exceeds the configured size limit".into(),
-            ));
-        }
-        let mut bytes = Vec::with_capacity(usize::try_from(declared).unwrap_or(max_bytes));
-        let mut limited = file.take((max_bytes as u64).saturating_add(1));
-        limited.read_to_end(&mut bytes)?;
-        if bytes.len() > max_bytes {
-            return Err(Error::ResourceLimit(
-                "opening book exceeds the configured size limit".into(),
-            ));
-        }
-        Ok(bytes)
-    }
-    /// Replaces bytes in only the already-opened file. Atomic replacement remains a higher-level operation.
-    pub fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        if !is_write_operation(self.operation) {
-            return Err(Error::InvalidInput(
-                "resolved capability is not writable".into(),
-            ));
-        }
-        let file = self.file_mut()?;
-        file.set_len(0)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        Ok(())
-    }
+    #[cfg(test)]
     fn file_mut(&mut self) -> Result<&mut fs::File, Error> {
         self.file.as_mut().ok_or_else(|| {
             Error::InvalidInput(
@@ -1964,54 +1973,6 @@ impl PathAuthority {
         result
     }
 
-    /// Registers the exact regular PGN that was atomically written below a DownloadFile root.
-    /// This is intentionally native-only: it turns the just-created object into a distinct
-    /// opaque read capability without exposing its path or granting sibling access.
-    pub(crate) fn register_downloaded_pgn(
-        &mut self,
-        root: &PathRef,
-        filename: &OsStr,
-    ) -> Result<PathRef, Error> {
-        let components = vec![filename.to_os_string()];
-        validate_components(&components)?;
-        // Resolve through the fd/handle-relative no-follow path before persisting identity.
-        let _resolved = self.resolve(root, PathOperation::DownloadFile, &components)?;
-        let root_entry =
-            self.persistent.get(&root.id).cloned().ok_or_else(|| {
-                Error::InvalidInput("download destination must be persistent".into())
-            })?;
-        if !root_entry.stored.target_is_dir
-            || !root_entry
-                .stored
-                .operations
-                .contains(&PathOperation::DownloadFile)
-        {
-            return Err(Error::InvalidInput("invalid download destination".into()));
-        }
-        let root_path = root_entry.stored.path.to_path()?;
-        let path = root_path.join(filename);
-        let identity = validate_target(&path, PathClass::PersistentFile)?;
-        let id = PathRef::fresh();
-        let stored = StoredEntry {
-            id: id.clone(),
-            display_name: filename.to_string_lossy().into_owned(),
-            class: PathClass::PersistentFile,
-            operations: vec![PathOperation::ReadPgn],
-            path: NativePath::from_path(&path),
-            identity,
-            target_is_dir: false,
-        };
-        let mut candidate = self.persistent.clone();
-        candidate.insert(
-            id.id.clone(),
-            Entry {
-                stored,
-                availability: PathAvailability::Available,
-            },
-        );
-        require_durable(self.commit_candidate(candidate, None)?)?;
-        Ok(id)
-    }
     pub fn open(registry_path: PathBuf, app_roots: Vec<AppOwnedRoot>) -> Result<Self, Error> {
         Self::open_with_clock(registry_path, app_roots, Arc::new(SystemClock), 256)
     }
@@ -2138,6 +2099,7 @@ impl PathAuthority {
         authority.recover_pending_artifacts()?;
         Ok(authority)
     }
+    #[cfg(test)]
     pub fn descriptors(&mut self) -> Vec<PathDescriptor> {
         self.evict_dialogs();
         self.refresh_persistent();
@@ -2265,9 +2227,6 @@ impl PathAuthority {
             },
         );
         Ok(id)
-    }
-    pub fn revoke_dialog(&mut self, id: &PathRef) -> bool {
-        self.dialogs.remove(&id.id).is_some()
     }
     /// Consumes an exact live dialog grant and persists the same native object as a root or file.
     pub fn promote_dialog(
@@ -3504,72 +3463,6 @@ impl PathAuthority {
         Ok(FileWorkspaceHandle::new(id))
     }
 
-    /// Converts an authority-created download leaf into an opaque persistent file handle. Native
-    /// download code supplies only a validated single filename; no filesystem path crosses IPC.
-    pub(crate) fn register_download_artifact(
-        &mut self,
-        root: &PathRef,
-        filename: OsString,
-        display_name: impl Into<String>,
-        operations: Vec<PathOperation>,
-    ) -> Result<FileWorkspaceHandle, Error> {
-        validate_components(std::slice::from_ref(&filename))?;
-        if operations.is_empty() {
-            return Err(Error::InvalidInput(
-                "download artifact requires operations".into(),
-            ));
-        }
-        let root_entry = self
-            .persistent
-            .get(&root.id)
-            .cloned()
-            .ok_or_else(|| Error::InvalidInput("download root must be persistent".into()))?;
-        if !root_entry.stored.target_is_dir
-            || !root_entry
-                .stored
-                .operations
-                .contains(&PathOperation::DownloadFile)
-        {
-            return Err(Error::InvalidInput(
-                "capability is not a download root".into(),
-            ));
-        }
-        self.resolve(
-            root,
-            PathOperation::DownloadFile,
-            std::slice::from_ref(&filename),
-        )?;
-        let root_path = root_entry.stored.path.to_path()?;
-        let path = root_path.join(&filename);
-        let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(Error::InvalidInput(
-                "download artifact must be a regular file".into(),
-            ));
-        }
-        let identity = validate_target(&path, PathClass::PersistentFile)?;
-        let id = PathRef::fresh();
-        let stored = StoredEntry {
-            id: id.clone(),
-            display_name: display_name.into(),
-            class: PathClass::PersistentFile,
-            operations,
-            path: NativePath::from_path(&path),
-            identity,
-            target_is_dir: false,
-        };
-        let mut candidate = self.persistent.clone();
-        candidate.insert(
-            id.id.clone(),
-            Entry {
-                stored,
-                availability: PathAvailability::Available,
-            },
-        );
-        require_durable(self.commit_candidate(candidate, None)?)?;
-        Ok(FileWorkspaceHandle::new(id))
-    }
-
     /// Persists a recovery intent before the download target is mutated. It binds the root inode,
     /// single leaf, and the caller-supplied SHA-256/size of the already-complete staging payload.
     /// The reservation has no renderer-visible capability and cannot be used to access the target
@@ -4081,6 +3974,7 @@ impl PathAuthority {
             refresh_entry(entry);
         }
     }
+    #[cfg(test)]
     fn save(&mut self) -> Result<CommitDurability, Error> {
         self.commit_registry(
             self.persistent.clone(),
@@ -4336,6 +4230,7 @@ fn refresh_entry(entry: &mut Entry) {
             }
         });
 }
+#[cfg(test)]
 fn descriptor(stored: &StoredEntry, availability: PathAvailability) -> PathDescriptor {
     PathDescriptor {
         id: stored.id.clone(),
@@ -4618,7 +4513,6 @@ mod tests {
         &EngineImageHandle,
         usize,
     ) -> Result<(VerifiedFile, u64), Error>;
-    const _: EngineImageReaderForFn = engine_image_reader_for;
     type RegisterEngineImageFn = fn(
         &mut PathAuthority,
         &AuthorizedDir,
@@ -4626,7 +4520,15 @@ mod tests {
         VerifiedIdentity,
         String,
     ) -> Result<EngineImageHandle, Error>;
-    const _: RegisterEngineImageFn = PathAuthority::register_engine_image;
+    /// Compile-time arity pins for the engine-image split (`d-20260903-08`). A typed binding
+    /// inside a test body is what both the ordinary and the branch-coverage build count as a
+    /// use of the aliases; an anonymous `const _` did not, and inlining the types trips
+    /// `clippy::type_complexity`.
+    #[test]
+    fn engine_image_split_arities_are_pinned() {
+        let _: EngineImageReaderForFn = engine_image_reader_for;
+        let _: RegisterEngineImageFn = PathAuthority::register_engine_image;
+    }
     struct TestClock(AtomicU64);
     impl TestClock {
         fn new(v: u64) -> Self {
@@ -5038,7 +4940,7 @@ mod tests {
         ));
     }
     #[test]
-    fn dialog_grants_enforce_operation_expiry_revoke_and_uses() {
+    fn dialog_grants_enforce_operation_expiry_and_uses() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a");
         fs::write(&file, b"x").unwrap();
@@ -5069,18 +4971,6 @@ mod tests {
             .unwrap();
         clock.advance(1);
         assert!(a.resolve(&exp, PathOperation::ReadPgn, &[]).is_err());
-        let revoked = a
-            .grant_dialog(
-                &file,
-                "a",
-                PathClass::SingleDialogGrant,
-                PathOperation::ReadPgn,
-                Duration::from_secs(3),
-                1,
-            )
-            .unwrap();
-        assert!(a.revoke_dialog(&revoked));
-        assert!(a.resolve(&revoked, PathOperation::ReadPgn, &[]).is_err());
     }
 
     #[test]
@@ -6127,7 +6017,7 @@ mod tests {
         assert_eq!(resolved.read_bytes().unwrap(), b"old");
     }
     #[test]
-    fn read_capability_cannot_mutate_or_reach_a_sibling() {
+    fn read_capability_cannot_reach_a_sibling() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("readable");
         let sibling = dir.path().join("sibling");
@@ -6143,7 +6033,6 @@ mod tests {
             )
             .unwrap();
         let mut resolved = a.resolve(&id, PathOperation::ReadPgn, &[]).unwrap();
-        assert!(resolved.write_bytes(b"mutate").is_err());
         assert_eq!(resolved.read_bytes().unwrap(), b"read");
         assert_eq!(fs::read(sibling).unwrap(), b"sibling");
     }
@@ -6293,39 +6182,6 @@ mod tests {
     }
 
     #[test]
-    fn downloaded_pgn_becomes_an_exact_read_capability() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("downloads");
-        fs::create_dir(&root).unwrap();
-        let app_root =
-            AppOwnedRoot::new("downloads", root.clone(), vec![PathOperation::DownloadFile]);
-        let root_id = app_root.id.clone();
-        let mut authority =
-            PathAuthority::open(dir.path().join("registry.json"), vec![app_root]).unwrap();
-        let resolved = authority
-            .resolve(
-                &root_id,
-                PathOperation::DownloadFile,
-                &[OsString::from("games.pgn")],
-            )
-            .unwrap();
-        resolved
-            .atomic_replace_download(|file| file.write_all(b"1. e4 e5").map_err(Error::from))
-            .unwrap()
-            .expect_durable();
-        let artifact = authority
-            .register_downloaded_pgn(&root_id, OsStr::new("games.pgn"))
-            .unwrap();
-        let mut readable = authority
-            .resolve(&artifact, PathOperation::ReadPgn, &[])
-            .unwrap();
-        assert_eq!(readable.read_bytes().unwrap(), b"1. e4 e5");
-        assert!(authority
-            .resolve(&artifact, PathOperation::DownloadFile, &[])
-            .is_err());
-    }
-
-    #[test]
     fn pending_download_artifact_recovers_an_atomic_install_after_restart() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("downloads");
@@ -6380,6 +6236,9 @@ mod tests {
             .resolve(&reservation.id, PathOperation::ReadPgn, &[])
             .unwrap();
         assert_eq!(artifact.read_bytes().unwrap(), b"1. e4");
+        assert!(recovered
+            .resolve(&reservation.id, PathOperation::DownloadFile, &[])
+            .is_err());
         assert!(recovered.pending_artifacts.is_empty());
     }
 
@@ -6840,6 +6699,35 @@ mod tests {
                 "open_app_owned_resource_dir"
             ]
         );
+    }
+
+    #[test]
+    fn bundled_sound_paths_cover_every_collection_and_kind() {
+        let root = PathBuf::from("resource-root");
+        let resource_dir = ResourceDir::for_test(&root);
+        for collection in BUNDLED_SOUND_COLLECTIONS {
+            for (kind, file_name) in [
+                (SoundKind::Move, "Move.mp3"),
+                (SoundKind::Capture, "Capture.mp3"),
+                (SoundKind::Check, "Check.mp3"),
+            ] {
+                assert_eq!(
+                    resource_dir.bundled_sound_path(collection, kind).unwrap(),
+                    root.join("sound").join(collection).join(file_name)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_sound_paths_reject_unknown_and_traversal_collections() {
+        let resource_dir = ResourceDir::for_test(Path::new("resource-root"));
+        for collection in ["unknown", "../x"] {
+            assert!(matches!(
+                resource_dir.bundled_sound_path(collection, SoundKind::Move),
+                Err(Error::InvalidInput(_))
+            ));
+        }
     }
 
     /// Tauri production path resolution cannot be exercised by a unit test. Keep the constructor
@@ -7495,59 +7383,6 @@ mod tests {
                 .count(),
             1
         );
-    }
-
-    #[test]
-    fn register_downloaded_pgn_parent_sync_keeps_registration() {
-        let dir = tempfile::tempdir().unwrap();
-        let root_path = dir.path().join("downloads");
-        fs::create_dir(&root_path).unwrap();
-        fs::write(root_path.join("games.pgn"), b"*").unwrap();
-        let app = AppOwnedRoot::new("downloads", root_path, vec![PathOperation::DownloadFile]);
-        let root = app.id.clone();
-        let mut authority =
-            PathAuthority::open(dir.path().join("registry.json"), vec![app]).unwrap();
-        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
-            "uncertain",
-        ))));
-        let error = authority
-            .register_downloaded_pgn(&root, OsStr::new("games.pgn"))
-            .expect_err("uncertain registry durability must be surfaced");
-        set_test_atomic_file_injector(None);
-        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
-        assert!(authority
-            .persistent
-            .values()
-            .any(|entry| entry.stored.display_name == "games.pgn"));
-    }
-
-    #[test]
-    fn register_download_artifact_parent_sync_keeps_registration() {
-        let dir = tempfile::tempdir().unwrap();
-        let root_path = dir.path().join("downloads");
-        fs::create_dir(&root_path).unwrap();
-        fs::write(root_path.join("artifact.pgn"), b"*").unwrap();
-        let app = AppOwnedRoot::new("downloads", root_path, vec![PathOperation::DownloadFile]);
-        let root = app.id.clone();
-        let mut authority =
-            PathAuthority::open(dir.path().join("registry.json"), vec![app]).unwrap();
-        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
-            "uncertain",
-        ))));
-        let error = authority
-            .register_download_artifact(
-                &root,
-                OsString::from("artifact.pgn"),
-                "artifact.pgn",
-                vec![PathOperation::ReadPgn],
-            )
-            .expect_err("uncertain registry durability must be surfaced");
-        set_test_atomic_file_injector(None);
-        assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
-        assert!(authority
-            .persistent
-            .values()
-            .any(|entry| entry.stored.display_name == "artifact.pgn"));
     }
 
     #[test]

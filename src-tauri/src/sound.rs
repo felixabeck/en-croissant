@@ -1,4 +1,6 @@
 use crate::error::Error;
+use crate::infra::path_authority::{ResourceDir, SoundKind};
+use std::path::PathBuf;
 
 pub struct SoundServerPort(pub u16);
 pub struct SoundShutdownTx(pub std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
@@ -254,9 +256,51 @@ pub fn get_sound_server_port(state: tauri::State<'_, SoundServerPort>) -> Result
     Ok(state.0)
 }
 
+fn sound_path_string(path: PathBuf) -> Result<String, Error> {
+    path.into_os_string().into_string().map_err(|_| {
+        Error::Io(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "resource path is not valid UTF-8",
+        )))
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn sound_resource_path(
+    app: tauri::AppHandle,
+    collection: String,
+    kind: SoundKind,
+) -> Result<String, Error> {
+    sound_path_string(ResourceDir::for_app(&app)?.bundled_sound_path(&collection, kind)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sound_path_string_rejects_invalid_utf8_and_preserves_plain_paths() {
+        let plain = PathBuf::from("sound/standard/Move.mp3");
+        assert_eq!(
+            sound_path_string(plain.clone()).unwrap(),
+            plain.to_str().unwrap()
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+
+            let error = sound_path_string(PathBuf::from(std::ffi::OsString::from_vec(vec![
+                0x66, 0xff,
+            ])))
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                Error::Io(error) if error.kind() == std::io::ErrorKind::InvalidData
+            ));
+        }
+    }
 
     #[cfg(target_os = "linux")]
     fn authorized_sound_dir() -> (

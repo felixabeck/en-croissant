@@ -86,7 +86,7 @@ use crate::puzzle::{
     get_puzzle_workspace, get_themes_for_puzzle, issue_puzzle_download_destination,
     issue_puzzle_workspace, list_puzzle_databases,
 };
-use crate::sound::get_sound_server_port;
+use crate::sound::{get_sound_server_port, sound_resource_path};
 use crate::{
     chess::get_best_moves,
     db::{
@@ -1322,76 +1322,6 @@ fn open_engine_workspace_blocking(
         .map_err(|error| Error::InvalidInput(format!("cannot open engine workspace: {error}")))
 }
 
-#[tauri::command]
-#[specta::specta]
-async fn list_path_capabilities(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<crate::infra::path_authority::PathDescriptor>, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || list_path_capabilities_blocking(&authority))
-        .await
-}
-
-fn list_path_capabilities_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-) -> Result<Vec<crate::infra::path_authority::PathDescriptor>, Error> {
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))
-        .map(crate::infra::path_authority::PathAuthority::descriptors)
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn revoke_path_capability(
-    id: crate::infra::path_authority::PathRef,
-    state: tauri::State<'_, AppState>,
-) -> Result<bool, Error> {
-    // revoke_dialog is a HashMap::remove; a permit for a map removal is waste.
-    state
-        .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))
-        .map(|authority| authority.revoke_dialog(&id))
-}
-
-#[tauri::command]
-#[specta::specta]
-async fn promote_path_capability(
-    id: crate::infra::path_authority::PathRef,
-    path_class: crate::infra::path_authority::PathClass,
-    display_name: String,
-    operations: Vec<crate::infra::path_authority::PathOperation>,
-    state: tauri::State<'_, AppState>,
-) -> Result<crate::infra::path_authority::PathCommit, Error> {
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || {
-            promote_path_capability_blocking(&authority, id, path_class, display_name, operations)
-        })
-        .await
-}
-
-fn promote_path_capability_blocking(
-    authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
-    id: crate::infra::path_authority::PathRef,
-    path_class: crate::infra::path_authority::PathClass,
-    display_name: String,
-    operations: Vec<crate::infra::path_authority::PathOperation>,
-) -> Result<crate::infra::path_authority::PathCommit, Error> {
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .promote_dialog(&id, path_class, display_name, operations)
-}
-
 /// Whole-process budget for shutdown cleanup. Independent resources are reaped
 /// concurrently; this remains a backstop for a teardown that never completes.
 const SHUTDOWN_BUDGET: Duration = Duration::from_secs(15);
@@ -1559,9 +1489,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             trash_workspace_entry,
             restore_workspace_entry,
             permanently_delete_workspace_entry,
-            list_path_capabilities,
-            revoke_path_capability,
-            promote_path_capability,
             get_best_moves,
             analyze_game,
             cancel_analysis,
@@ -1639,6 +1566,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             set_progress_state,
             clear_progress,
             get_sound_server_port,
+            sound_resource_path,
             download_chess_com_games,
             get_public_chess_com_json
         ))
@@ -2180,14 +2108,6 @@ mod blocking_offload_scans {
             (
                 "async fn open_engine_workspace(",
                 "open_engine_workspace_blocking",
-            ),
-            (
-                "async fn list_path_capabilities(",
-                "list_path_capabilities_blocking",
-            ),
-            (
-                "async fn promote_path_capability(",
-                "promote_path_capability_blocking",
             ),
             (
                 "async fn issue_engine_image(",

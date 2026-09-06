@@ -4,10 +4,9 @@ import { resolve } from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
-const INITIAL_DEAD_CODE_ALLOWLIST = Object.freeze([
-  // Owner: f-20260830-25. This allowlist may only shrink.
-  "src-tauri/src/infra/path_authority.rs",
-]);
+// Owner: f-20260830-25. Emptied 2026-09-06 by the finding that owned it;
+// any new entry is an R1 violation.
+const INITIAL_DEAD_CODE_ALLOWLIST = Object.freeze([]);
 
 export const DEAD_CODE_ALLOWLIST = new Set(INITIAL_DEAD_CODE_ALLOWLIST);
 

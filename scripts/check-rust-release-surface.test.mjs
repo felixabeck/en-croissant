@@ -70,6 +70,7 @@ describe("Rust release-surface gate", () => {
         [ALLOWED_FILE, allowedSource()],
         ["src-tauri/src/infra/new_authority.rs", allowedSource()],
       ),
+      new Set([...DEAD_CODE_ALLOWLIST, ALLOWED_FILE]),
     );
 
     expect(violations).toContain(
@@ -81,7 +82,7 @@ describe("Rust release-surface gate", () => {
     const added = "src-tauri/src/infra/new_authority.rs";
     const violations = checkDeadCodeSurface(
       sources([ALLOWED_FILE, allowedSource()], [added, allowedSource()]),
-      new Set([...DEAD_CODE_ALLOWLIST, added]),
+      new Set([...DEAD_CODE_ALLOWLIST, ALLOWED_FILE, added]),
     );
 
     expect(violations).toContain(
@@ -90,7 +91,10 @@ describe("Rust release-surface gate", () => {
   });
 
   test("R1 rejects an allowlist entry whose file no longer carries the attribute", () => {
-    const violations = checkDeadCodeSurface(sources([ALLOWED_FILE, "pub struct PathAuthority;"]));
+    const violations = checkDeadCodeSurface(
+      sources([ALLOWED_FILE, "pub struct PathAuthority;"]),
+      new Set([...DEAD_CODE_ALLOWLIST, ALLOWED_FILE]),
+    );
 
     expect(violations).toContain(
       `R1: allowlist entry ${ALLOWED_FILE} no longer carries #![allow(dead_code)]`,
@@ -147,20 +151,17 @@ pub(crate) trait AtomicWriterInjector {}
     );
   });
 
-  test("the complete fixture surface accepts test-only fault seams and the sole suppression", () => {
+  test("the complete fixture surface accepts test-only fault seams", () => {
     expect(
       checkRustReleaseSurface(
-        sources(
-          [ALLOWED_FILE, allowedSource()],
-          [
-            "src-tauri/src/infra/fs.rs",
-            `#[cfg(test)]
+        sources([
+          "src-tauri/src/infra/fs.rs",
+          `#[cfg(test)]
 pub(crate) enum AtomicFileFaultPoint { Write }
 #[cfg(test)]
 pub(crate) trait AtomicWriterInjector {}
 `,
-          ],
-        ),
+        ]),
       ),
     ).toEqual([]);
   });
