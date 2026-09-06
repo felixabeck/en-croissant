@@ -1656,6 +1656,9 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
   `f-20260830-02` was not closed. They were right that the window exists; the part of it that no
   plan can close is recorded here instead of being argued away in a plan that closes.
 
+* **Pickup evidence (2026-09-06):** A local Python probe opened a directory, renamed it beneath a 0700 private parent, then created a file with `os.open(..., dir_fd=retained_fd)`. Output: `retained descriptor can create after private staging: True`. Private staging does not revoke previously opened directory descriptors and therefore does not reduce an adversarial retained-handle writer to a single top-level race. The final unlink race remains; the build plan evaluates rejection of the proposed staging fix rather than claiming inode-conditional deletion. Entry remains build.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c3500d5b31db22dbbda0539af2dfd855ecc33c6424814641b2316e3931c06a9d","input_sha256":"ff990757ff52b93dfa371241e1eda2e9d82fd6bce17ee814e3567e2532952367","kind":"mutation-receipt","operation":"41136ea7b263586b602c906996213699e25d4afaa44a3f02883ae1b50a4dd92b","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-09"],"target":"f-20260830-09","v":1} -->
+
 ### Below Linux 5.8 the recursive delete cannot see a same-filesystem bind mount
 
 * **ID:** f-20260830-10 · **Status:** open · **Area:** native-fs · **Root:** remove-tree-unhardened · **Entry:** build · **Blocked:** none
@@ -1687,6 +1690,9 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
 * **Found by:** the `review-plan`, `review-root-cause` and `review-error-handling` lenses (100, 100
   and 99 confidence) in round 2 of the plan review for the `remove-tree-unhardened` cluster,
   2026-08-30.
+
+* **Pickup evidence (2026-09-06):** In a fresh user/mount namespace, a real bind mount made by `mount --bind` produced equal parent/child `st_dev` values but distinct mount IDs in the held descriptors under `/proc/self/fdinfo`: `same device: True`, `different descriptor mount IDs: True`. Linux documents this descriptor field since 3.15 (https://www.man7.org/linux/man-pages/man5/proc_pid_fdinfo.5.html). This is new evidence beyond the pathname mountinfo parser considered in d-20260830-03. The build plan evaluates a bounded descriptor-based fallback without changing platform declarations. Entry remains build.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c92b4b56093b7201241d3c12bf4bb7a84fd1a62ce122ed04d7ef17adab5eb11c","input_sha256":"e19a572d9c09e4e812407eaf67ae94b44b297161db28b20c6da10b460c426f60","kind":"mutation-receipt","operation":"ff14af83456ff55ea98391c0a35c8ec90aae3ea9500a05f9faefdf3a388be96d","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-10"],"target":"f-20260830-10","v":1} -->
 
 ### Every confirmation-error message is English in all 16 locales, because its key is built dynamically
 
