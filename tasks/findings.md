@@ -1455,6 +1455,9 @@ instrument.
   * **Session:** 291b4f09-b746-4078-bdc2-32760714373b — transcript `~/.claude/projects/*/291b4f09-b746-4078-bdc2-32760714373b.jsonl`; cross-compile log kept at `/tmp/build-291b4f09-b746-4078-bdc2-32760714373b/xcompile.log`
   * **Product impact:** A macOS or Windows user of this fork either gets a working, shippable En Croissant (keep and port) or is told those platforms are unsupported and will not receive a build from this fork (declare Linux-only).
 
+* **Additional porting evidence (2026-09-06, Codex):** The final Luna correctness lens over 9330ef47..5b51fa6a found that resolve_windows returns no file/target for an empty-component directory resource (current path_authority.rs:5703), so engine_resource refuses that directory lease. Root confirmed the branch and preserves the existing non-Linux support decision/verification boundary. Include it in the platform work rather than add Windows-only behavior unobservable by current gates. Follow-up: tasks/handoffs/2026-09-06-non-linux-directory-resources.md. Existing blocked status is unchanged.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"64f8e99421b3de0a8b9c4d9d56f421eea05e5f2f5ea5a25929e6c1de36550a7e","input_sha256":"e1c864499215d24e3e4798a9555119f8bf3ff4a5575abac29ccb06e611122862","kind":"mutation-receipt","operation":"2d1e5ba5907a84e07356b5a567e4d186f46a4d902c8c993d5018e73118c17247","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-06"],"target":"f-20260830-06","v":1} -->
+
 ### Deleting a workspace directory leaves an authority record for every descendant behind
 
 * **ID:** f-20260830-07 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
@@ -2794,6 +2797,18 @@ Source revalidation during plan review, 2026-09-06: database deletion now calls 
 
 Root phase-1 integration traced both production download/provider artifact reservations in src-tauri/src/fs.rs (ReadPgn-only vectors at lines 794 and 947 on the task base). They require their own read-only PGN purpose in the reclaimable owner map; mapping only ReadPgn+WritePgn leaves finalized downloaded artifacts permanently unknown/unreclaimable. Preserve read-only rights and test reserve/finalize/reload/trusted-sweep plus retained survival. This is a required sibling of the selected registry accumulation cause, not a new feature or authority widening.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"f1a3a66a2fa82b9ff802e82021319fa40caf7bb916c21e7d2265cf7759d2a804","input_sha256":"04aa3ddd6bc253b98a20f56b0086fdf11f19a3cd5c11df1567b80462262440de","kind":"mutation-receipt","operation":"1bac7aaaf3a4b11a3f704e346fd80d52d9be4a2361faf69c3113f3b09324a3cc","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-35"],"target":"f-20260830-35","v":1} -->
+
+* **Integration finding (2026-09-06, Codex, confidence 98):** `reconcile_startup_owners` rejects more than 4096 retained IDs at `src-tauri/src/infra/path_authority.rs:3696`, and `reconcile_engine_attachments` applies the same fixed count at `:3812-3816`. Valid legacy registries above 4096 IDs are intentionally loadable and may shrink or stay equal (plan line 21), but a complete trusted owner snapshot above that count is rejected before any non-growing operation can run. The renderer prepares the entire engines/player union before writing, so even removing one owner from a 4098-attachment legacy set produces 4097 retained IDs and refuses the save. Existing `attachment_prepare_allows_non_growing_readoption_from_an_overlimit_legacy_state` submits only one ID and does not cover the full-owner protocol. Fix the request-bound/admission interaction without allowing unbounded input or registry growth, and prove the complete legacy snapshot plus a shrinking owner update. This is required by the existing grandfathered-state contract, not a new product decision.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"6f0a617228e15146d9e6920fa4bdd9ca4a45f6de9e65285920dbe93be5ea197c","input_sha256":"33d784fa58560a7031b6cb16df904d4aaf25b337a4a485b1f63bffd3abec8f60","kind":"mutation-receipt","operation":"93420da09497763240abeee5df69b2683b806aec666b6fa72486eb3fc2dd9165","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-35"],"target":"f-20260830-35","v":1} -->
+
+* **Final root-cause review (2026-09-06, Codex Luna Extra High, confidence 88):** `reconcile_startup_owners` treats equal candidate length as Durable after an earlier uncertain replacement adopted the pruned map, then marks families complete without re-establishing registry durability (path_authority.rs:3750). Root adopts a real durability retry fence for startup just as for attachment prepare: an injected parent-sync uncertainty followed by an identical retry under an I/O fault must not report success; a later durable retry marks completion and survives reopen. Preserve truthful adopted state and avoid redundant writes for ordinary already-durable no-ops.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"66cc0b384485723c737e12e0435ad412a9dfe0db72ab54b7885ba22c45ccf967","input_sha256":"3ee1df47da920057d76919b8c42fc3d821f4d8ddd9efbfad549906a78b17167e","kind":"mutation-receipt","operation":"bdc7df847ebc4e5857e6a4220178d81c01f5453b08a3b6c6e6c2efac4204b520","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-35"],"target":"f-20260830-35","v":1} -->
+
+* **Final minimalism review (2026-09-06, Codex Luna Extra High):** Root adopts shared candidate/current registry snapshot and admission accounting rather than the duplicate calculation in validate_attachment_admission (path_authority.rs:3980) and save_entries_with (:5141). The current-state input must remain the actual pre-mutation attachment metadata, not the candidate maps, preserving the over-limit legacy no-growth fix. Test the real unique-ID union, byte limits, pending bound and rollback state after extraction. Also route the two shutdown tests directly through the production generic teardown function instead of its test-only no-op wrapper.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"92ca02e5e28faa98d08f5aba7ad597f80c81fbf5a53e3019f8515eecfa942faa","input_sha256":"bcc3f177bd04bd56411eb919573548607c64affbc0fb09d31977a09784d244c2","kind":"mutation-receipt","operation":"ca492a8423c5cedbf4c80505ba15a683e92cdbeef5934bb4e22792429f9754cb","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-35"],"target":"f-20260830-35","v":1} -->
+
+* **Final error-handling review (2026-09-06, Codex Luna Extra High, confidence 98):** Physical puzzle database deletion succeeds before remove_puzzle_database registry cleanup can fail. Native code invalidates the cache but returns that ordinary failure; Puzzles.tsx only removes its selected/listed entry on success. Root traced both branches. Fix the applied-despite-error result and renderer convergence using the established typed destructive-operation contract, preserving visible cleanup failure and proving pre-delete failure versus landed deletion plus failed registry cleanup. This is required integration of the new authority pruning, not a separately deferred area.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"6b9f8484e0de6250c9594859de4aa8f1adb2b07a7beee399ed6fc6f30139a442","input_sha256":"126d039c83429c1d22a02d3b66450de5af8c2b8f419e24db1a6e163fa424b4b8","kind":"mutation-receipt","operation":"202d4986b2f79fa73116f2e79e23dc49ce562456c26d3fda2d4472596fc550f5","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-35"],"target":"f-20260830-35","v":1} -->
 
 ---
 
@@ -4429,6 +4444,9 @@ allocated the id.
 * **Found by:** the `review-pgn-index` lens (confidence 100) over the cumulative diff of the
   `native-fs` cluster, 2026-08-31. Pre-existing.
 
+* **Cumulative path-ownership review (2026-09-06):** Luna PGN/index lens re-confirmed per-file transactions at db/mod.rs:614 (confidence 100; origin cbdf2a09). Root traced the transaction loop and existing f-20260903-04/f-20260904-03 companion design. Defer to this existing multi-file import outcome/invalidation design run; no new finding or policy reversal. Detection and code share the Codex family; plan authorship/arbitration share root context.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5eaa2c2fdce1a4cf12150e39f2772012de81d7cfddf76ba18d1c56b4dfdaa8ac","input_sha256":"ff8fa5eaa6aa74b62d3ee24ad57224e99e4e59d57356181bad387ffe4d6a82e7","kind":"mutation-receipt","operation":"7db60f7783fe505d43fd96da2f0dd0a472bf38f92d7096454eeac7399b9af2dd","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-07"],"target":"f-20260831-07","v":1} -->
+
 ### Deleting a database removes its primary file first, so a later failure leaves it unusable and unretryable
 
 * **ID:** f-20260831-08 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
@@ -4847,13 +4865,16 @@ Rejected: giving `DatabaseProgress` a better id; folding the conversion counters
 
 ### createTab seeds the tree before the workspace envelope is durable
 
-* **ID:** f-20260901-05 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260901-05 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/utils/tabs.ts:64-81` (`tabStorage.seed` then `setTabs` / `setActiveTab`); `src/state/workspace.ts` `createWorkspaceStorage.setItem`.
 * **Defect:** an import can persist the game tree and then fail to persist the workspace envelope (quota). The next reload reconstructs tabs from the last durable envelope, so the new game is missing and the seeded tree key is an orphan. `setItem` now catches and notifies, but the two writes are still not one commit. Related: f-20260831-17 (startup migration order; Root `-`).
 * **Why it matters:** quitting or reloading after a large import is the same quota case as d250925f; the user thinks the game opened.
 * **Fix shape:** do not seed a tree whose tab is not yet in a durable envelope, or roll the seed back if the envelope write fails.
 * **Found by:** `review-persisted-state` over the f-20260830-30 cluster cumulative diff, 2026-09-01.
 * **Lens:** `review-persisted-state`
+
+* **Entry revalidation, 2026-09-06:** lens to build. Final review confirmed the live-close counterpart f-20260906-22 deletes existing tree data before envelope durability. createWorkspaceStorage.setItem catches failure and returns no receipt, so a local creation rollback or close reordering cannot know whether the envelope landed. A shared live create/close commit acknowledgment and rollback contract now needs a design round. This is new cross-lifecycle evidence, not a tier change for effort or quota. Keep startup ID-migration decision/f-20260831-17 intact; it already solves a different migration path. Defer to the dedicated live workspace lifecycle design run.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"3581c0da9e58321c2ec1bc1916f2157e08f0ddcbe96461a0c629a75df8371b65","input_sha256":"c593eeabec039afa7e8abcf7a986cc027019e23368fdd966dc4fc13c71ecd2d9","kind":"mutation-receipt","operation":"110b47ef1da7f59b7be650931425328c429084e660d5740206a3cb9878a4ca6f","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-05"],"target":"f-20260901-05","v":1} -->
 
 ---
 
@@ -4907,12 +4928,18 @@ Rejected: `useState`/`useRef` for the id; emitting the per-tab id from the backe
 
 ### report-settings hydrates unvalidated JSON and an unguarded write can throw
 
-* **ID:** f-20260901-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260901-09 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/panels/analysis/ReportModal.tsx` `atomWithStorage("report-settings", …)` without `createPreferenceStorage`.
 * **Defect:** older or hostile JSON such as `{"engine":"id"}` hydrates without defaults, then rendering dereferences missing `goMode.t`. A full localStorage makes the unguarded write throw and blocks starting a report.
 * **Why it matters:** `.claude/rules/persisted-state.md` — every write/read goes through serialize/deserialize, and corrupt data must fall back. Pre-existing; ReportModal was opened to pass `engine.id`.
 * **Related:** f-20260831-18 (handled) is engine-list persistence, different key. Root `-`.
 * **Found by:** `review-persisted-state` over the f-20260831-11 cumulative diff, 2026-09-01. Confidence 98.
+
+* **Final persisted-state review, 2026-09-06:** Luna confidence98 repeated missing goMode hydration at ReportModal.tsx:16. Root verified the raw atom and loaded validated preference helper. Fix now with an explicit report-settings domain schema and guarded preference storage; include actual malformed hydration and quota-save tests. No expansion into report operation ownership/lifecycle.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"2196e00ca9421e66679af7974d5fea690210b95148a6e37981db960482411a41","input_sha256":"d537217b23f0ee74fe3f30304687110c4c83ceb369c86930e0f2cd9f1c0bf7a7","kind":"mutation-receipt","operation":"6c08133e90aa861d3439d60e843c8e71c980667a25fc0d8a07def933410e7529","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-09"],"target":"f-20260901-09","v":1} -->
+
+Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary preference/report validation and safe failures), and c0016006 (exact opponent branches, legacy engine identity migration, shared startup snapshot and visible binary-path validation). Root read each complete package and retained proof in root-final-frontend-proof.log: 18 focused files / 137 tests and 49 related files / 317 tests passed, TypeScript and full lint:ci passed, all 16 locale catalogs pass extraction/completeness, diff check passed. The actual container Add Engine / Local validation screenshot also passed with both required errors visible and no native capability issuance. Earlier failed lint attempts were corrected before these commits (locale key order and unnecessary internal schema-message literals). Full task gates and actual native-app lifecycle verification still follow; these narrow claims do not substitute for them. Decisions d-20260906-12/-13 record the migration/failure contracts. Plan authorship and arbitration shared root context; detection ran on the same Codex family in separate sessions.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"04218074af88a9d65352faa49210581f3e58440aa5c368637305977f1abc7f4c","input_sha256":"4a2e2517e787868ac144ce73bb4345ec2cf0c305f09eeaee9ab1fc323042b2c7","kind":"mutation-receipt","operation":"f41bf08f269ce6176473b72e3d2f9cceb14f760e3931b531f7684e80270d278d","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-09"],"target":"f-20260901-09","v":1} -->
 
 ### get_engine_logs returns success with an empty vector when the actor channel fails
 
@@ -4966,6 +4993,21 @@ Handled 2026-09-01. `logs()` returns `Result` without `unwrap_or_default`. Absen
 
 * **Integration follow-up (2026-09-06, Codex):** After phase2 commit `739db8db`, root traced the EditEngine submit receipt through EngineForm adoption. A target deleted before the queued functional update correctly stays deleted, but the unchanged-list write still returns `saved: true`; the form then forgets newly picked provisional attachments that no persisted record contains. The same-file validation worker will return an unsuccessful correlated edit receipt when no immutable target was present, and test that result. This is part of the attachment draft ownership defect, not a new product question; do not claim completion until the follow-up is verified.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"58169bb77641fffcba811045c2f31cfe2a99e859734c32a747ac1ab6130d9923","input_sha256":"7bcc5d381eca0bbd5b31ece5248615f6f6bae5e6dc1dd9a2fdd641653317f1b1","kind":"mutation-receipt","operation":"a0dae1f5f308cad65bc9b2bd1cb175b39038cffd8956a165da3ef7e47df4200d","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-13"],"target":"f-20260901-13","v":1} -->
+
+* **Final test review (2026-09-06, Codex Luna Extra High):** Add the complete quota-failed first-add to fresh-startup protocol regression and page-level file/directory resource picker, append/replacement and cleanup assertions. The current collector already asserts that absent engines plus a valid player is trusted, so the lens claim that any absence-trust regression would pass all tests is too broad; the full quota/restart sequence and resource picker wiring still lack direct anchors. Root adopts those test improvements under the existing ownership acceptance, not a new feature.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"053c665c67dd9ff89d7e29584773bd891a5bde1ecfb98ced2463510053f57b43","input_sha256":"42b43f1d48732686c1fb5c4c3b4e061af5f347a89c48f2dc58e93faa9097efcf","kind":"mutation-receipt","operation":"6e06b063eaf7c5c7d43f9c5ef9517700be77a4eee9473f9a50f0bd5e56cbb20a","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-13"],"target":"f-20260901-13","v":1} -->
+
+* **Final root-cause review (2026-09-06, Codex Luna Extra High, confidence 94):** `issue_engine_image_blocking` reads/copies outside the authority mutex, then checks the shutdown seal only when registering the copied UUID. Shutdown currently seals and cleans without draining active image issuance, so ordinary close can exit after a late copy but before registration-refusal cleanup. Root confirmed main.rs:1133-1219. Add an in-process issuance lifetime/fence: reject new work after sealing, keep the lease alive through the complete blocking copy/registration/error-cleanup operation, and wait for active image operations before final cleanup outside the authority mutex and within the existing aggregate shutdown budget. Prove a paused real issuance and concurrent shutdown; do not put the 10 MiB read/copy back under the global authority mutex. This is a required ownership fix, not a background service.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"042143d751395dbb33f80e5b9e2312f40ded40ec7c37a6947a1fd8e59cb6353f","input_sha256":"e2bbc9f77d7dbf6857fc3e6a8fda726ada9d36beddbc1eda8188fa9118b7b52f","kind":"mutation-receipt","operation":"9ac80d19c0d618f84a9f30fb2f41d3e79cefe02c15d4d041063f325be7c5f9d0","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-13"],"target":"f-20260901-13","v":1} -->
+
+* **Final minimalism review (2026-09-06, Codex Luna Extra High):** Root adopts one raw pass for both startup owner snapshots, shared engine/attachment traversal, removal of the now production-unused enginesStorage/string adapter with useful tests migrated to the real coordinator, and removal of the redundant single-caller abandon wrapper. The three owner keys are currently read and parsed twice at startup (pathOwners.ts:130-150 and :226), and ownership traversal is duplicated across pathOwners/engineOwnerStorage. These are shared-domain/update-surface corrections under the same ownership task, not cosmetic API expansion. Preserve every current trust/error/receipt behavior and test it.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"463721cf6358620236021c1492b02bf3d7babd40b6621a9a09ebcf54097db7b3","input_sha256":"b7d4867557b3bff822735d55e2457762d610e2353d2d7782adf056ae71a9f911","kind":"mutation-receipt","operation":"40b0d7054381bebfd1f223a3628dacd7098976c17e5bc6e4eaaa8131feb360bd","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-13"],"target":"f-20260901-13","v":1} -->
+
+* **Final review follow-up (2026-09-06, Codex Luna Extra High):** Engine-protocol confidence 98 found hydration now rejects a schema-valid legacy engine lacking its default-generated id because normalization is not deeply equal to raw input. Root confirmed createEngineOwnerStorage. Keep original raw owner evidence conservative, but restore valid legacy rendering/migration with a durable stable identity through the owner coordinator; do not confuse deletion trust with display hydration. Error-handling confidence 93 found quota causes are wrapped in a generic translated message then discarded by the notification normalizer. Preserve safe actionable cause context at the owner-save notification without broad error-normalizer changes. Fix both with regression tests. The same lens claim that prepared-but-unsaved attachments are permanently orphaned is too broad: conservative same-session ownership is deliberate and trusted next-start cleanup is the recovery contract; the complete failed-first-add/restart proof is already in this run's fix set.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"57e9d64cb89dd0c9f774116a5ba8976e4b8ffd8856f5c85288ac592b7ca0a545","input_sha256":"b2f07a54407bdd7376ab9fb381cee3d66c7213034783d1a7e5ce584ca23edb4d","kind":"mutation-receipt","operation":"e87722c55d486bf09c3307276ae8f73e997d41e3f77337aa2ace3c0f22500193","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-13"],"target":"f-20260901-13","v":1} -->
+
+Final gate preview found that the new engineAttachments.ts and opponentSettings.ts utilities sit outside the closed frontend coverage area mappings. The complete Vitest coverage run passed, but coverage:frontend:check correctly refused the unmapped production surface. Fix in this run: place the engine-only draft controller beside its engine consumers, and the persisted opponent schema beside the owner coordinator in state; preserve behavior and update imports/tests. Do not change measurement includes/excludes, coverage floors, numeric baselines or the gate. Re-run exact coverage and related tests after the move. This is an integration defect of this task, not a reason to skip or reset coverage.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"e332deccdc5ee1788788c8d539b9ba369d14ab402cb35e1ab9e9203e52227325","input_sha256":"1af3e39628c9359205e3671147315c016f08f305d08685f37d3f4330e7e5484f","kind":"mutation-receipt","operation":"90eb9f7d0d1b80fb14db4502fde767bbe3b8b12d64a7bfe66ecaf2b05473649b","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-13"],"target":"f-20260901-13","v":1} -->
 
 ### get_engine_config spawns an EngineActor outside EngineSupervisor
 
@@ -5336,6 +5378,9 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
 * **Why it matters:** `.claude/rules/engine-lifecycle.md` requires a `best_moves` payload to be used only when engine id, tab, FEN *and* the searched move list all match *and* the engine is still loaded. Settings are part of the search identity; the live path does not bind the result to the search that requested it. Sibling of `f-20260831-09`, which already names the missing process generation on this file's fingerprint and on `stop_engine` / `terminate_tab`. This is the same missing discriminator on the live event path for a *same-process* settings change, which that finding's "replace the binary" framing does not spell out.
 * **Why it is `build`:** a local clear of `engineMovesFamily` on fingerprint change still cannot tell an old info line from a new one while both share fen/moves/tab/engine. Binding the event to the search that produced it is the generation-on-payload question already opened by `f-20260831-09`. Do not "fix" this with a frontend-only epoch that the payload cannot carry.
 * **Found by:** the `review-engine-protocol` lens (confidence 88) during `$push` of `ee564004..HEAD` (import-hoist of `EvalListener.test.tsx` only). Pre-existing enclosing defect.
+
+* **Cumulative path-ownership review (2026-09-06):** Luna engine-protocol lens re-confirmed live BestMoves event fingerprint lacks request/settings generation at EvalListener.tsx:153-166 (confidence 98; origins 3afed0317/ba42a3905). This repeats the existing same-position-settings evidence, not a new product decision. Defer to the existing result-not-bound-to-its-process event identity design; no frontend-only epoch can identify an event that carries no generation. Detection and code share the Codex family; plan authorship/arbitration share root context.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"b8a0b6336e4c21e378b71722cc0303b157b3dcd0c37ab8a09225e071f77a7d7b","input_sha256":"37cb5d2b0599faa87d079d07a73aa944eb0f2774b9ad6de8bf0a88845532460c","kind":"mutation-receipt","operation":"fbcb8f7f2f74ed119d9c59159bf1263d717656efeb0473fe17d7f00da27fc946","options":{"section":null},"request_id_sha256":null,"results":["f-20260903-01"],"target":"f-20260903-01","v":1} -->
 
 ---
 
@@ -5708,6 +5753,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   has no re-entrancy guard, which is the neighbouring decision about the same type.
 * **Found by:** the `blocking-work-not-offloaded` build run, 2026-09-04, as D-G and plan phase 7
   require.
+
+* **Cumulative path-ownership review (2026-09-06):** Luna PGN/index lens re-confirmed search_position uses uncancellable BLOCKING_GATEWAY.spawn at db/search.rs:478 (confidence 96; origins a22bbdf4/a5f81f5d). Root confirmed no cancellation token reaches this worker. Defer to this existing native job identity/token ownership design; not a frontend-only cancellation flag. No duplicate finding. Detection and code share the Codex family; plan authorship/arbitration share root context.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"67a1899e4dc605272c4384c94f109108f0962e56379d2e47ee7b1e82cfb45e15","input_sha256":"417a90b5278de89d16c255972a14053c20eba120573367d940c846e91a19e459","kind":"mutation-receipt","operation":"dba56eb982289bbd2f645c111aa14747cf41bfb374770274e098f1bb8cc90071","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-05"],"target":"f-20260904-05","v":1} -->
 
 ### Inside `path_authority.rs` a `VerifiedFile` can still be built from a pathname-opened descriptor
 
@@ -6181,6 +6229,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Related:** `f-20260905-07` (the conversion this residue survived; Root `-`, so the relation is named here rather than shared); `d-20260905-02`, `d-20260905-07`.
 * **Found by:** Codex `review-tauri-security` over `83376d74..HEAD`, 2026-09-05. Confidence 96. Same-area as this run; deferred because the fix is a design question (descriptor-backed `AppDataDir` + `mkdirat`) the frozen plan did not decide.
 
+* **Reconfirmed/deferred (2026-09-06, Codex):** The final Luna tauri-security lens over 9330ef47..5b51fa6a reidentified the ancestor-symlink bootstrap window at current path_authority.rs:1209. Root reread this finding and d-20260905-02/-07. The existing separate descriptor-backed AppDataDir producer design remains deferred; the ownership task does not claim to solve it. Follow-up: tasks/handoffs/2026-09-06-app-data-bootstrap.md.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"11a13291e0cc627220290fa1c72d261c7d04e10425509eb28efb32af2c3ffeff","input_sha256":"7fdd2177d368ef287ae9300cc0b7386f8ae584adf016fbfb10a9c2a8160763ee","kind":"mutation-receipt","operation":"b5588ce4e4f77d9797db734a200b13764c795138ac4613b5b5e7c8302b78a188","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-10"],"target":"f-20260905-10","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
@@ -6585,19 +6636,28 @@ Precision, from the Codex review-correctness lens over ea65d4b1: the refusal is 
 * **Verification:** `env -u KIT_ROOT pnpm findings:kit:check`, `pnpm findings:test` (3 passed), and `python3 scripts/findings.py check` passed. Root additionally exercised the actual consumer against a missing helper and the real canonical helper with a nonexistent destination parent; both retained `No such file or directory`, exactly one failure marker, and nonfatal return. Root probe: `/tmp/chessfable-path-ownership-OMFFz4/kit-consumer-probe.py`. No independent manual edit to the vendored source.
 <!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"a1cf5d6957781767be6c1f1dcfc644fbeeb54eb43b4217af154c8b351d9bdb10","input_sha256":"c67c194cd06902d3323bcbc99eb348e6b313208a456dafe8fe823fa002b2bdb5","kind":"mutation-receipt","operation":"91307cbfe094d28888ef4f7d07e63f64ff7df0785f97d05d88a88a06978c9ed2","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-13"],"target":"f-20260906-13","v":1} -->
 
+Required final parity check detected newer committed canonical tooling. Guarded consumer sync cb74e755 integrates agent-kit 4c942a6 (producer findings.py blob b9de8c31f5d88ccd66ce5fa6b7c0b67c4f10c4fd): multi-reference decision trailers, receipt-preserving set-trailer, and locked scratch/claim cleanup. Root read both deltas; separate Luna/xhigh read-only verification passed 202 findings/citations/receipts tests (one existing skipped) plus 19 targeted claim/notification tests. Consumer byte parity, three atomic-write tests and findings validation passed. No project-specific change was added to the canonical consumer and no foreign producer work was committed by this run.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"461e062ee970d8389bd92b100514dea78f66e6347b48d6f149a6d87ae538ca3d","input_sha256":"949ab4c16fb2948bdb17a0a47053a6c47424020f694261862f53e8a8adb8df5f","kind":"mutation-receipt","operation":"ad9f198c2961bdca836ed45f9297d4bed985255a223d2731da7535e31f4fa83f","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-13"],"target":"f-20260906-13","v":1} -->
+
 ---
 
 ## 2026-09-06 — filed through the inbox spool
 
 ### Saved engine-player settings hydrate through a human-only default schema and lose the selected engine
 
-* **ID:** f-20260906-14 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260906-14 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/state/atoms.ts:453-469`, `src/state/utils.ts:48-73`, `src/components/boards/OpponentForm.tsx:20-36`.
 * **Defect:** Both game-player setting atoms use `createPreferenceStorage(defaultPlayerSettings)`. Its generated object schema contains only the human default fields: it strips engine/go/engineSettings from stored engine-player records, or rejects a valid engine record lacking the default human name and repairs it to the human default. The next app start loses the selected engine and resource settings.
 * **Proof:** Round-trip a valid engine OpponentSettings record through the two actual storage adapters, then pass it through toPlayerConfig; engine handle, go mode and resource handles must survive. Use a dedicated union schema rather than inferring the domain from the human default.
 * **Review lens:** persisted-state.
 * **Relation:** f-20260831-18 governs the separate engine-list storage adapter; no shared root is asserted. Found while tracing durable attachment owners for f-20260830-35/f-20260901-13. The owner-aware storage integration must preserve these existing persisted owner records, so the required domain-schema correction is included in that plan revision rather than left as a destructive ownership precondition.
 * **Found by:** Codex root source trace after the engine-protocol plan lens identified game-player settings as additional durable attachment owners, 2026-09-06.
+
+* **Final persisted-state review (2026-09-06, confidence 99):** OpponentForm updateType spreads branch-specific fields into the new type. Strict shared owner validation correctly refuses this lossy shape, breaking human-to-engine and engine-to-human saves. Root confirmed both branches. Construct exact target union branches with only shared fields retained, then test both directions through coordinator and reload. Required fix of this run's discriminated-union integration.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"f6c3bdb8e13e19d153e6f8979d466b02e32afa3cc6bb94f7e2e68def41a8328a","input_sha256":"8807e66624b507f9d044b8b59fa064142178d134ba1487e526cb82fd75a75642","kind":"mutation-receipt","operation":"06879a62a82ba2b30f165c4f4ad9af70bc179a0f0dcc5283ec00bf6cf4b453a9","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-14"],"target":"f-20260906-14","v":1} -->
+
+Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary preference/report validation and safe failures), and c0016006 (exact opponent branches, legacy engine identity migration, shared startup snapshot and visible binary-path validation). Root read each complete package and retained proof in root-final-frontend-proof.log: 18 focused files / 137 tests and 49 related files / 317 tests passed, TypeScript and full lint:ci passed, all 16 locale catalogs pass extraction/completeness, diff check passed. The actual container Add Engine / Local validation screenshot also passed with both required errors visible and no native capability issuance. Earlier failed lint attempts were corrected before these commits (locale key order and unnecessary internal schema-message literals). Full task gates and actual native-app lifecycle verification still follow; these narrow claims do not substitute for them. Decisions d-20260906-12/-13 record the migration/failure contracts. Plan authorship and arbitration shared root context; detection ran on the same Codex family in separate sessions.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"04218074af88a9d65352faa49210581f3e58440aa5c368637305977f1abc7f4c","input_sha256":"4a2e2517e787868ac144ce73bb4345ec2cf0c305f09eeaee9ab1fc323042b2c7","kind":"mutation-receipt","operation":"dc36445e4565d0333d851e2f65e3b5152f5c553ba58e198e7d8faa0e59e7dd83","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-14"],"target":"f-20260906-14","v":1} -->
 
 ---
 
@@ -6634,7 +6694,7 @@ Precision, from the Codex review-correctness lens over ea65d4b1: the refusal is 
 
 ### EditEngine validation bypasses existing translated messages
 
-* **ID:** f-20260906-17 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260906-17 · **Status:** handled · **Area:** i18n · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** src/components/engines/EditEngine.tsx:17-22; AddEngine.tsx:67-71.
 * **Defect:** EditEngine returns raw English name-required, duplicate-name and path-required errors even in the German UI. The sibling AddEngine already uses Common.RequireName, Common.NameAlreadyUsed and Common.RequirePath for the same validation.
 * **Fix:** Reuse those three existing keys, with an observable validation test. No catalogue or copy decision is needed.
@@ -6642,13 +6702,19 @@ Precision, from the Codex review-correctness lens over ea65d4b1: the refusal is 
 * **Disposition:** Fix in this run as a small separate commit after the attachment worker releases EditEngine ownership; do not overlap its source writes.
 * **Found by:** Codex root while tracing the phase-2 EditEngine integration, 2026-09-06.
 
+* **Root visual-proof trace (2026-09-06):** EngineForm's actual binary FileInput receives no form.errors.filename, while earlier Add/Edit tests rendered that error only in their mocked form. The shared validator prevents submit but the path error is invisible. Pass the error through the existing InputWrapperProps contract and prove both required messages in the real renderer's container screenshot journey, with no native picker invocation on empty submit.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"23bac577c4b916838cc27e3fc4e6d8a1e9ed015a2042a03ead4d6f500c90c6c2","input_sha256":"3fa8dc3ca0547475f2aacbcbb6d5066f81eff43f7516a11a2c713b3eb02decd5","kind":"mutation-receipt","operation":"98d7b196610247c8352723be78e6bbe5861c1e2fbb5f3fb6f008c7110a14b67d","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-17"],"target":"f-20260906-17","v":1} -->
+
+Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary preference/report validation and safe failures), and c0016006 (exact opponent branches, legacy engine identity migration, shared startup snapshot and visible binary-path validation). Root read each complete package and retained proof in root-final-frontend-proof.log: 18 focused files / 137 tests and 49 related files / 317 tests passed, TypeScript and full lint:ci passed, all 16 locale catalogs pass extraction/completeness, diff check passed. The actual container Add Engine / Local validation screenshot also passed with both required errors visible and no native capability issuance. Earlier failed lint attempts were corrected before these commits (locale key order and unnecessary internal schema-message literals). Full task gates and actual native-app lifecycle verification still follow; these narrow claims do not substitute for them. Decisions d-20260906-12/-13 record the migration/failure contracts. Plan authorship and arbitration shared root context; detection ran on the same Codex family in separate sessions.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"04218074af88a9d65352faa49210581f3e58440aa5c368637305977f1abc7f4c","input_sha256":"4a2e2517e787868ac144ce73bb4345ec2cf0c305f09eeaee9ab1fc323042b2c7","kind":"mutation-receipt","operation":"4ccf253826ee1e251e0f709cdb8160fe8f6917951cdceda5d45e7f762b7fa8a8","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-17"],"target":"f-20260906-17","v":1} -->
+
 ---
 
 ## 2026-09-06 — filed through the inbox spool
 
 ### Saving engine metadata discards existing engine options and resource owners
 
-* **ID:** f-20260906-18 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260906-18 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** src/components/engines/EngineForm.tsx:35-49; src/components/engines/EditEngine.tsx:15-17,32-37.
 * **Defect:** EngineForm initializes its detected binary config to null, derives only required defaults from that config, and always submits `settings: settings || []`. EditEngine supplies an existing engine to this form. Editing only its name/image therefore replaces all existing options/resource handles with an empty array unless a binary was repicked; repicking still replaces custom options with only required defaults.
 * **Evidence:** Root read the complete form submit and EditEngine initialValues/submit path on 2026-09-06. No original-value fallback or merge exists. The existing EditEngine tests mock EngineForm entirely and therefore cannot catch the loss.
@@ -6656,3 +6722,115 @@ Precision, from the Codex review-correctness lens over ea65d4b1: the refusal is 
 * **Relation:** f-20260906-14 covers the separate human-default hydration schema loss; this is a form submit producer defect. No common Root is asserted. Necessary integration correction for f-20260901-13: the new owner reconciliation must not treat resources accidentally dropped by the producer as deliberately abandoned.
 * **Disposition:** Fix in the active attachment phase before it can retire such falsely dropped owners. It is not deferred as pre-existing.
 * **Found by:** Codex root integration review of phase-2 renderer handoff, confidence 99.
+
+Handled in 739db8db, retained and reverified through c0016006. Ordinary EngineForm submissions preserve existing scalar/resource settings; only the current successful binary-detection generation applies required defaults. Root read the actual form regression and reran it in the final 18-file / 137-test focused suite and 49-file / 317-test related suite; both passed, along with TypeScript and lint:ci. The separate local validation screenshot passes without issuing native capabilities. No filesystem source resource is deleted by editing settings. Plan authorship and arbitration shared root context; detection ran in separate sessions on the same Codex family as the code.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"2f129eedeba649fd2e63bdf7f53148bab7ef4398f412dae73df875f6ce01c82a","input_sha256":"d4496d256836571638cbd1dd6d392d08cb961330c27889e4a53ee9243e1cefe3","kind":"mutation-receipt","operation":"069744bbb2f6e92ffe21bd83db24e524a30e6c4ae6c925e619c79578a359a354","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-18"],"target":"f-20260906-18","v":1} -->
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### Database child creation follows a swapped selected-root pathname
+
+* **ID:** f-20260906-19 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src-tauri/src/infra/path_authority.rs:3556-3575, create_database_child.
+* **Defect:** database_root_path validates the selected root, then OpenOptions::create_new opens its joined pathname. Replacing that root with a symlink in between redirects creation of the renderer-requested .db3 outside the selected root. Registration refusal occurs after the mutation; error cleanup also removes by pathname rather than the checked parent identity.
+* **Evidence:** Final tauri-security lens reported the validation/open gap at confidence 96; root read the whole function and confirmed the pathname create and cleanup. The behavior predates this task (lens attributes it to 97c29addc). Add a deterministic production-hook swap regression with an outside sentinel before correcting it.
+* **Fix direction:** Create and clean up the exclusive single leaf through a verified descriptor for the selected database root, carry the created inode identity into registration, and preserve truthful durable/error outcomes. Do not expand capability scope or permit arbitrary path constructors.
+* **Relation:** f-20260905-10 concerns bootstrap of AppDataDir before default-root materialization and remains a separate descriptor-producer design. This finding is an existing selected database-root consumer; no shared Root is asserted.
+* **Disposition:** Fix in this run because the function and its descriptor/registration dependencies are loaded; give the adjacent correction its own commit.
+* **Found by:** Codex Luna Extra High tauri-security final lens over 9330ef47..5b51fa6a, 2026-09-06.
+
+Closed by 6422009f. Database creation now uses a retained parent descriptor with exclusive no-follow creation and sealed inode identity. Ordinary registration failures clean only the original identified leaf; substitutions are neither adopted nor removed, and combined cleanup failures remain visible. Committed durability uncertainty preserves the created database. Root reviewed the full production and test delta, then independently passed 159 path-authority tests, 55 filesystem tests (one existing ignored test), fmt, all-target check, Clippy with warnings denied and diff check. Proof: /tmp/chessfable-path-ownership-OMFFz4/root-db-final-proof.log and exit-0 sentinel. The separate AppDataDir bootstrap and non-Linux capability-port designs remain deferred.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5b51ee7f1a43b83b03e950622ef11efc277b7b9f7dece2abef7290f6b4c262dd","input_sha256":"5f6420208cbbcb1f6bb051fb0ee8cef988d29dcf3a03d772c730525c5bf22235","kind":"mutation-receipt","operation":"d8acec4c990e9d757505d701fbfee86c85d01af31a1c6fa9dba267f998f2f145","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-19"],"target":"f-20260906-19","v":1} -->
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### Preference hydration throws when corrupt-value repair hits storage failure
+
+* **ID:** f-20260906-20 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/state/utils.ts:25-36, createZodStorage.getItem.
+* **Defect:** Invalid JSON enters catch, which calls setItem outside any failure guard. A full or unavailable storage makes hydration throw instead of returning its fallback; initial getItem is also unguarded. Root confirmed both branches.
+* **Fix:** Bound recovery to validated/default values, preserve raw bytes on failed repair and surface safe persistence failure through existing reporting. Keep legacy key encodings unchanged; test corrupt/read/repair/write failures and normal roundtrips.
+* **Relation:** f-20260901-09 is the ReportModal consumer's absent domain validation; related but no shared root asserted. f-20260831-16 handles a separate tab-tree flush adapter.
+* **Disposition:** Fix in this run with the already-loaded preference producer and ReportModal consumer.
+* **Found by:** Luna Extra High persisted-state final lens, confidence 97, 2026-09-06; root verified.
+
+Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary preference/report validation and safe failures), and c0016006 (exact opponent branches, legacy engine identity migration, shared startup snapshot and visible binary-path validation). Root read each complete package and retained proof in root-final-frontend-proof.log: 18 focused files / 137 tests and 49 related files / 317 tests passed, TypeScript and full lint:ci passed, all 16 locale catalogs pass extraction/completeness, diff check passed. The actual container Add Engine / Local validation screenshot also passed with both required errors visible and no native capability issuance. Earlier failed lint attempts were corrected before these commits (locale key order and unnecessary internal schema-message literals). Full task gates and actual native-app lifecycle verification still follow; these narrow claims do not substitute for them. Decisions d-20260906-12/-13 record the migration/failure contracts. Plan authorship and arbitration shared root context; detection ran on the same Codex family in separate sessions.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"04218074af88a9d65352faa49210581f3e58440aa5c368637305977f1abc7f4c","input_sha256":"4a2e2517e787868ac144ce73bb4345ec2cf0c305f09eeaee9ab1fc323042b2c7","kind":"mutation-receipt","operation":"6088ba848cac61f83c75b2ca2b6a79ce6c5669fa0a79edf382d383c75041ad0c","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-20"],"target":"f-20260906-20","v":1} -->
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### Closing a board tab bypasses the transition boundary for the next active view
+
+* **ID:** f-20260906-21 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/components/tabs/BoardsPage.tsx:88, closeTab; selectTab/cycleTabs share direct active setters.
+* **Defect:** After native teardown closeWorkspaceTab synchronously changes the active view. The prior b829b562 protection wrapped next active selection in startTransition to avoid suspension during an urgent update; root read that historical diff and current caller. Existing duplicate/handleSetActiveTab retain transitions while close/cycle/select do not.
+* **Fix:** One consistent React transition boundary for active selection/close and a real Suspense-sensitive close regression. Preserve awaited engine/game teardown and failure behavior; do not fold durable workspace transaction redesign into this correction.
+* **Relation:** f-20260901-22 concerns native session terminal state, not React update priority; no shared root asserted.
+* **Found by:** Luna Extra High persisted-state final lens, confidence 98, 2026-09-06. Fix in this run.
+
+Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary preference/report validation and safe failures), and c0016006 (exact opponent branches, legacy engine identity migration, shared startup snapshot and visible binary-path validation). Root read each complete package and retained proof in root-final-frontend-proof.log: 18 focused files / 137 tests and 49 related files / 317 tests passed, TypeScript and full lint:ci passed, all 16 locale catalogs pass extraction/completeness, diff check passed. The actual container Add Engine / Local validation screenshot also passed with both required errors visible and no native capability issuance. Earlier failed lint attempts were corrected before these commits (locale key order and unnecessary internal schema-message literals). Full task gates and actual native-app lifecycle verification still follow; these narrow claims do not substitute for them. Decisions d-20260906-12/-13 record the migration/failure contracts. Plan authorship and arbitration shared root context; detection ran on the same Codex family in separate sessions.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"04218074af88a9d65352faa49210581f3e58440aa5c368637305977f1abc7f4c","input_sha256":"4a2e2517e787868ac144ce73bb4345ec2cf0c305f09eeaee9ab1fc323042b2c7","kind":"mutation-receipt","operation":"f18981e2c2c6446cd916f92982d8a6a3b83df3e9a043414e0861b2b44e4c0eab","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-21"],"target":"f-20260906-21","v":1} -->
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### Closing a tab removes its tree before the durable workspace stops referencing it
+
+* **ID:** f-20260906-22 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src/state/atoms.ts:110, closeWorkspaceTabAtom; src/state/workspace.ts storage adapter.
+* **Defect:** tabStorage.remove and disposeTabAtoms precede set(workspaceAtom). If workspace envelope persistence fails, reload retains old metadata referencing a deleted tree and opens a blank game. Root confirmed current order.
+* **Design:** Establish a durable lifecycle commit receipt across workspace metadata and tab-tree creation/removal; the related creation path f-20260901-05 seeds before metadata durability. Choose consistent create/close rollback and failure presentation together, preserving original tree until metadata removal is known durable. No standalone reordering that treats a swallowed adapter failure as success.
+* **Relation:** f-20260901-05 is the live creation counterpart; f-20260831-17 handled startup ID migration only, not this live close path. No shared Root asserted against those recorded entries.
+* **Disposition:** Defer to its own lifecycle transaction design run; changing the workspace API/receipt contract is a separate open design, not required by attachment ownership. React transition repair is separate and being fixed now.
+* **Found by:** Luna Extra High persisted-state final lens, confidence 96, 2026-09-06; root verified.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### Practice positions and review history use unbounded raw localStorage
+
+* **ID:** f-20260906-23 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src/state/atoms.ts:731, deckAtomFamily/practiceDataSchema; practice producers in src/components/panels/practice.
+* **Defect:** positions and review-log arrays have no retention/admission bound and createZodStorage serializes raw JSON into the shared localStorage quota. Large repertoires or accumulated history can exhaust storage and lose durable practice progress. Root confirmed both unbounded arrays and raw writer.
+* **Design:** Define durable practice storage and migration/admission across deck contents and review history without truncating user repertoire or silently deleting learning history. Retention of user history is not the same policy as disposable expansion UI state; do not invent an arbitrary array cap to green a test.
+* **Disposition:** Defer to a dedicated practice persistence design run. Current generic preference failure repair will make failures handled but does not solve capacity; keep this finding open until capacity/retention and real large-deck/reload proof are addressed.
+* **Relation:** f-20260831-18 handled engine metadata compression; this is a different owner and retention contract, no shared root asserted.
+* **Found by:** Luna Extra High persisted-state final lens, confidence 95, 2026-09-06.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### Expanded-directory preferences accumulate without a session-storage budget
+
+* **ID:** f-20260906-24 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src/state/atoms.ts:115, expandedDirectoriesAtom; workspace expansion consumers.
+* **Defect:** An unbounded string array is persisted as raw JSON in sessionStorage, sharing capacity with tab trees. A sufficiently large expanded hierarchy can exhaust that quota and fail future persistence. Root confirmed schema/writer.
+* **Design:** Specify disposable expansion-state retention/admission and its workspace identity lifetime, with legacy read compatibility and truthful storage failure handling. This is not permission to prune tab trees or user practice history to fit UI cache state.
+* **Disposition:** Defer to its own expansion-state storage policy design; the generic preference error fix in this run is not a capacity solution.
+* **Relation:** f-20260831-16 is tab-tree flush reporting; no shared root asserted.
+* **Found by:** Luna Extra High persisted-state final lens, confidence 91, 2026-09-06.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### Changing puzzle workspaces destroys the saved database selection
+
+* **ID:** f-20260906-25 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/components/puzzles/Puzzles.tsx:114-133, workspace/list refresh effect.
+* **Defect:** Workspace change or a listing without the saved handle calls setSelectedDb(null), deleting the preference rather than deriving an inactive effective selection. Switching A to B and back to A loses the selected database. Root traced the effect and persisted-state rule; no contrary decision found.
+* **Fix:** Preserve the stored choice, derive effective authority from the current successful workspace listing, and prevent stale/loading lists from authorizing theme or puzzle requests. Workspace change cancels/reset live practice; explicit confirmed deletion still clears its own persisted selection. Cover A-B-A, missing listing and concurrent selection/deletion.
+* **Relation:** Puzzle theme effective selection already uses this rule, but database selection does not. No duplicate finding returned by related query.
+* **Found by:** Luna Extra High persisted-state final lens, confidence 94, 2026-09-06. Fix in this run's puzzle lifecycle package.
+
+Closed by c0f4b341. Puzzle selection is derived against the current successful root-specific listing without erasing the saved choice on root changes or failed lists; A/B/A restores selection and stale loads cannot overwrite current state. Explicit deletion clears only its matching saved selection, and a concurrent new database request survives an older delete result. Landed native deletion plus ordinary registry failure reports PartialRemoval so the UI converges. Root full diff review, 13 direct and 22 related renderer tests, 17 native puzzle tests and the full nine-test container screenshot suite passed. No coverage or existing screenshot baseline was relaxed.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5a9a63eecafa83cfd5ceea1ad20490c1bc1644abc2c305bf02392958955bfec5","input_sha256":"cc220cc01e6d8107a5a5554ab8697e4b226d262cd68fc12193145c812a4f392d","kind":"mutation-receipt","operation":"ae5519de92cf7843274e1c9bcdadcf90748d24407401754b46273f5faf82601c","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-25"],"target":"f-20260906-25","v":1} -->

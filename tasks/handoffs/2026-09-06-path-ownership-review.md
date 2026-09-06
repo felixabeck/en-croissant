@@ -1,6 +1,6 @@
 # Path registry and engine attachment ownership — review record
 
-Status: implementation committed; final cumulative review, full gates and push are not yet complete.
+Status: implementation and final-review repairs committed; all eleven final lenses triaged. Final exact-tree gates, real-app verification and push are pending.
 
 Mandate: next-finding full-auto run for f-20260830-35 and f-20260901-13 (`unbounded-path-registry`), including necessary player-owner schema correction f-20260906-14. Original upstream base: `9330ef47`.
 
@@ -100,13 +100,13 @@ Renderer continuation1: root independently reran 74 focused tests and 268 relate
 
 Native continuation1: root independently passed 150 path-authority, 16 engine-image and 10 shutdown tests plus fmt/check/Clippy, bindings export/check, TypeScript and diff checks. Root read the full continuation delta; pending-durability retries now force a durable snapshot, and image/resource issuance consults shutdown sealing before registry mutation or dialog consumption. Evidence: `root-native-proof.log` and its exit-0 sentinel in the run scratch directory.
 
-# Final cumulative review
+# Final cumulative review — selection record
 
-Pending. Recomputed path triggers select eleven lenses: correctness, root-cause, code-quality, tests, error-handling, minimalism, tauri-security, IPC-contract, persisted-state, engine-protocol, PGN-index. PGN-index is additive for the changed puzzle database path.
+Recomputed path triggers selected eleven lenses: correctness, root-cause, code-quality, tests, error-handling, minimalism, tauri-security, IPC-contract, persisted-state, engine-protocol, PGN-index. PGN-index is additive for the changed puzzle database path. Their completed triage follows below.
 
 Routing amendment: Felix explicitly authorized Luna lenses and sessions in this conversation for latency/token efficiency, following his earlier Luna Extra High instruction. The upcoming final lenses use fresh Luna/xhigh contexts under that user override. Existing running workers are not restarted solely to switch models.
 
-The effective pushed range also includes foreign Codex commits `6bb9e542` (canonical findings sync) and `da22cf9d` (push gate wording), both inspected by root. Findings will be attributed by origin; neither commit is excluded from review.
+The effective pushed range also includes foreign Codex commits `6bb9e542` (canonical findings sync) and `da22cf9d` (push gate wording), both inspected by root. Findings are attributed by origin below; neither commit is excluded from review.
 
 # Adjacent findings
 
@@ -115,3 +115,110 @@ The effective pushed range also includes foreign Codex commits `6bb9e542` (canon
 - Fix: f-20260906-18 ordinary EngineForm metadata edits erase existing scalar/resource options, corrected in `739db8db`. Ordinary submissions preserve existing settings; current binary detection alone applies required defaults. Root verified actual-form scalar/resource submission and stale detection regressions.
 - Defer: f-20260906-15 permanently retired engine game selection, separate design under d-20260901-17. Handoff: `tasks/handoffs/2026-09-06-retired-game-selection.md`.
 - Defer: f-20260906-16 already-missing saved download capability recovery. Handoff: `tasks/handoffs/2026-09-06-download-destination-recovery.md`.
+
+# Final cumulative review — complete triage
+
+# Final cumulative review triage
+
+Range: 9330ef47..5b51fa6a. Root plan authorship and arbitration share context. Detection is same Codex family, separate sessions. Native tool hit its thread limit after four fresh lenses; remaining lenses use the canonical detached read-only Codex launcher at normal=Luna/xhigh under the explicit user rung override. No executor switch.
+
+## IPC-contract — APPROVED
+
+No findings. Detached report and terminal marker verified.
+
+## Tests — REVISE
+
+- Fix (test improvement, not evidence that all absence handling is untested): blocker99 engineOwnerStorage.test.ts:73 quota-failed first add→fresh-startup reclaim sequence. pathOwners.test.ts already proves engines absence plus a valid player retains engines-family trust; that rebuts the lens blanket mutation claim, but the complete sequence deserves the explicit acceptance anchor. Annotated f-20260901-13.
+- Fix: should-fix99 EnginesPage.test.tsx:12 real resource file/directory picker wiring, append/replacement and cleanup lacks page-level coverage. Annotated f-20260901-13.
+- Skip (false positive / canonical producer ownership): should-fix98 scripts/findings.py:302 missing breadcrumb tests. Canonical agent-kit tests/test_findings.py:1121-1317 covers missing helpers, error cause, oversized stderr, OS failure, actual canonical helper failure and durable ledger mutation. Root read these tests and ran python3 -m pytest -q tests/test_findings.py -k breadcrumb -rs:14 passed,1 skipped,77 deselected. Skip is only chmod-unwritable test under root; missing-helper/canonical-helper probes also independently passed against actual ChessFable consumer. Required byte parity gate binds consumer to tested producer; copying the producer test suite into each consumer is not needed.
+
+## Tauri-security — REVISE
+
+- Defer (existing separate design f-20260905-10): blocker99 path_authority.rs:1209 app-data ancestor symlink during default-root bootstrap. Root reread f10 and d-20260905-02/-07; replacing AppDataDir pathname bootstrap with a descriptor-backed producer is the separately recorded design, not settled by attachment GC. Preserve record/decision; provide handoff.
+- Fix: blocker96 path_authority.rs:3556 selected database-root swap before create_new and pathname cleanup. Root confirmed full function and filed f-20260906-19. Selected-root consumer can use existing checked-root descriptor/identity semantics; adjacent correction gets its own commit.
+
+## Correctness — REVISE
+
+- Fix: blocker99 path_authority.rs:3696 startup fixed4096 input bound blocks full legacy owner snapshots; independently duplicates root finding already annotated on f-20260830-35.
+- Fix: blocker99 path_authority.rs:3812 attachment fixed4096 input bound blocks shrinking legacy owner saves; same shared request-bound/admission fix.
+- Defer (existing non-Linux support design f-20260830-06): should-fix99 path_authority.rs:5703 Windows directory resources resolve without file/target. Root verified Windows tail and the existing unsupported-target compile/SDK evidence and pending product-support decision. Extend that porting assignment rather than adding unverified Windows-only behavior inside this Linux registry run; keep existing park unchanged and provide handoff.
+
+## Root-cause — REVISE
+
+- Fix: blocker94 main.rs:1133 active image copy can outlive seal/cleanup. Track its complete blocking lifetime and drain outside the authority mutex within the shutdown budget. Annotated f13.
+- Fix: should-fix88 path_authority.rs:3750 startup prune retry falsely treats an unchanged adopted candidate as durable. Share truthful pending durability retry, annotated f35.
+
+## Minimalism — REVISE
+
+- Fix: should-fix98 pathOwners.ts:226 duplicate three-owner raw reads and attachment walkers. One capture derives both snapshots; shared typed walk.
+- Fix: should-fix95 atoms.ts:180 unused enginesStorage adapter and createEngineOwnerStringStorage. Remove; migrate live regression value to coordinator tests.
+- Fix: should-fix91 path_authority.rs:3980 duplicated admission accounting/serialization. Shared current/candidate calculation preserving old lifecycle metadata baseline.
+- Fix: nit96 engineAttachments.ts:11 one-caller abandon wrapper duplicates empty check. Remove.
+- Fix: nit91 main.rs:1454 test-only shutdown_backend wrapper. Test production generic function directly.
+
+## Code-quality — REVISE
+
+- Fix: blocker97 path_authority.rs:35 MAX_PERSISTENT_IDS misleading union-budget name. Rename accurately; severity is maintainability rather than actual release failure alone.
+- Fix: blocker99 path_authority.rs:3696 unnamed trusted-family input32 limit. Name it.
+- Fix: should-fix93 path_authority.rs:925 None versus Some([]) semantics. Document.
+- Fix: should-fix96 path_authority.rs:1597 provisional comment excludes current issuance. Correct.
+- Skip (false-positive assertion claim): should-fix99 verify-app.mjs:420 check(true) follows closeApplicationThroughTitlebar, whose :67 throws if the captured application process is absent BEFORE closing. This is a success report after an enforced prerequisite, not an untested condition. No additional equivalent assertion needed.
+- Fix: nit97 engineFormValidation.ts:1 indent consistent with engine-component siblings; no broad reformat.
+
+## PGN/index — REVISE
+
+- Defer: blocker100 db/mod.rs:614 per-file import transactions, origin cbdf2a09. Existing f-20260831-07 plus companion import/invalidation design, annotated. This is a separate import atomicity/outcome design, not attachment work.
+- Skip (false positive): should-fix98 db/mod.rs:489 trailing variation resets mainline final position. Root read san/begin_variation/end_variation: san advances the root frame to e4, variation pushes a SEPARATE child starting pre-e4, end pops the child then copies the still-post-e4 root frame. The reported root-reset does not occur.
+- Defer: should-fix96 db/search.rs:478 uncancellable worker, origins a22bbdf4/a5f81f5d. Existing f-20260904-05 operation token/generation owner design, annotated.
+
+## Engine-protocol — REVISE
+
+- Defer: blocker98 EvalListener.tsx:153-166 live event lacks settings/request generation, origins3afed0317/ba42a3905. Existing f-20260903-01/f-20260831-09 event identity design, annotated.
+- Skip (settled shutdown contract, no new failure evidence): blocker97 main.rs:1512/1886 unconditional process exit after budget. f-20260830-51 explicitly requires unconditional exit outside timeout to avoid a windowless hang and records concurrent teardown/seal/drain repair; d-20260901-18 bounds post-kill reap with a stated D-state residual. The lens restates the chosen bounded-failure tail without evidence defeating those protections. Keep reported timeout as failure; do not claim guaranteed reap after timeout.
+- Defer: should-fix95 EnginesSelect.tsx:17-25 retired selection remains. Existing f-20260906-15/d-20260901-17 handoff covers the same selection design.
+- Fix: should-fix98 engineOwnerStorage.ts:216-221 valid defaultable legacy engines disappear due to strict hydration equality. Separate raw deletion trust from safe legacy display/migration with durable stable identity. Annotated f13.
+
+## Error-handling — REVISE
+
+- Fix: blocker98 puzzle.rs:511 landed deletion plus registry failure leaves UI stale. Typed applied-despite-error and UI convergence, annotated f35.
+- Skip (overstated permanent-orphan claim; required acceptance test is Fix): blocker97 engineOwnerStorage.ts:112 Prepare+storage failure conservatively retains native owned attachment for session; abandonment must not revoke possibly owned IDs. Loaded candidate plus trusted empty next startup is explicitly designed reclamation. Add complete failed-first-add/restart proof (tests lens) rather than unsafe rollback/revoke after uncertainty.
+- Fix: should-fix93 engineOwnerStorage.ts:114 generic storage wrapper discards useful quota cause at notification. Preserve safe normalized cause locally.
+- Fix: should-fix94 main.rs:1522 timeout log omits attachments. Include actual fourth teardown.
+
+## Persisted-state — REVISE
+
+The final detached report completed after a long active source/decision trace, with no executor failure. All11 reports are now complete; source unfrozen for disjoint repairs.
+
+- Skip (false positive against the published base): blocker98 atoms.ts:194 claims this diff changes engines/engines.json to engines. Root git show9330ef47:src/state/atoms.ts:194 proves the prior reader and writer already use localStorage engines. Do not invent a filesystem legacy-path migration from that incorrect comparison.
+- Fix: blocker99 OpponentForm.tsx:35 target branches retain fields from prior type, so strict owner saves reject. Exact branch construction and two-direction durable tests; annotated f-20260906-14.
+- Fix: blocker98 ReportModal.tsx:16 unvalidated report-settings lacks goMode. Existing f-20260901-09; loaded preference producer/consumer repair, no report operation lifecycle expansion.
+- Fix: blocker97 state/utils.ts:35 corrupt-value repair writes unguarded, and initial reads unguarded. New f-20260906-20, preference failure handling package.
+- Fix: blocker98 BoardsPage.tsx:88 close path bypasses transition. Root verified b829b562 historical close protection, current close/select/cycle lack it while other handlers retain it. New f-20260906-21; consistent transition boundary plus real suspension test.
+- Defer (separate durable workspace lifecycle design): blocker96 atoms.ts:110 close deletes tree before workspace envelope durability. New f-20260906-22; pair with creation counterpart f-20260901-05. The adapter swallows failure, so merely reordering lines does not establish commit acknowledgment. Define lifecycle receipt and rollback first in its own build.
+- Defer (separate practice capacity/retention design): blocker95 atoms.ts:731 unbounded practice positions/history raw JSON. New f-20260906-23. Preserve user repertoire and learning history; no arbitrary truncation cap disguised as an implementation correction.
+- Defer (same workspace lifecycle design above): should-fix99 tabs.ts:64 seed-before-envelope. Existing f-20260901-05; revalidate to build with the newly confirmed close-side failure and shared receipt/rollback question.
+- Defer (separate expansion-cache retention policy): should-fix91 atoms.ts:115 unbounded raw expanded-directory IDs. New f-20260906-24; disposable UI cache retention differs from user practice history and tab trees. Generic error repair is not a capacity solution.
+- Fix: should-fix94 Puzzles.tsx:114 destructive persisted selection clearing. New f-20260906-25; derived current-list-valid selection, A-B-A restoration, stale loading guard, explicit deletion still clears its own stored choice.
+
+Root's subsequent visual trace also found missing EngineForm filename-error propagation through actual FileInput. Fix under f17; add actual container-rendered error screenshot and no-issuance assertion.
+
+# Final repair verification
+
+- `3de47fe2` and `c0016006`: preference/report hydration, translated safe storage causes, identity-only engine migration, single-pass startup collection, exact opponent branch transitions and real resource-picker regressions. Root retained 137 focused tests and 317 related tests, TypeScript and full lint:ci green. Two failed lint attempts were resolved before commit: locale-key canonical order, and unused internal schema-message strings rejected by the JSX language guard.
+- `806005f1`: root read the complete native repair, including shared pre-mutation admission, registry durability retry and blocking issuance leases. Root exact proof passed 154 authority, 16 engine-image, 11 shutdown, 15 blocking-offload and 17 puzzle tests; fmt/check/clippy, regenerated bindings/check, TypeScript and diff check passed. Root added the explicit still-pending assertion after async issuer cancellation. Specta variant documentation generated trailing whitespace; the same contract moved to enum-level documentation and was regenerated, not hand-edited.
+- `c0f4b341`: puzzle selection/deletion lifecycle. Root reviewed the full production/test diff; 13 direct and 22 related renderer tests plus 17 native puzzle tests passed. A concurrent different database request survives settlement of an earlier deletion. Saved selection survives workspace A/B/A and unavailable listings.
+- `88c1b7bb`: tab transitions share one active-tab handler; close awaits native teardown and preserves the tab on failure. Root read both complete files and passed 7 direct React Suspense tests, 14 related tests, scoped lint/format/diff checks and TypeScript. This does not claim durable workspace-close acknowledgment; that remains f-20260906-22.
+- Actual Add Engine / Local form: root added a container Playwright check for both visible name/path errors and zero native issuance calls. The first run failed only because the new screenshot baseline did not exist; root inspected the container-produced image, then the unchanged-baseline rerun passed (1 test). No existing screenshot baseline was changed. Full-suite and real-app verification follow after final source integration.
+- Decisions `d-20260906-12` and `d-20260906-13` record identity-only legacy owner migration with raw-value conflict protection, and truthful ordinary-preference failure handling. They extend existing contracts; no Felix-attributed decision was reversed.
+- Full coverage preview passed 101 files / 764 tests, then correctly rejected two new utilities outside the closed area mapping. Decision `d-20260906-14` places the engine draft with engine consumers and the persisted player schema with state. The source/test/import-only move and exact coverage rerun are an integration fix; no floor, baseline, include/exclude or gate is relaxed. The database-create race f-20260906-19 remains the final isolated native correction before full gates.
+
+Review provenance remains unchanged: plan authorship and arbitration shared the root context;
+detection ran in separate sessions on the same Codex model family as the code. Final lenses are
+complete and are not rerun as a second fan-out; root reviews each repair and its exact proof.
+
+## Final integration at 2026-09-06 19:24 UTC
+
+- `086deaf1` moves the engine draft/test and persisted opponent schema to their domain owners, with byte-identical implementation and import-only consumer edits. Full frontend coverage passed 101 files / 764 tests and the unchanged area floors and ratchets. The full container screenshot suite passed all nine tests, including the new actual local-engine validation screenshot; no existing baseline changed.
+- `6422009f` closes f-20260906-19 with retained-descriptor exclusive database creation, sealed identity registration and identified cleanup. Root read all production and test changes, then reran 159 path-authority tests, 55 filesystem tests (one existing ignored), fmt, all-target check, Clippy and diff check successfully. Substituted roots/leaves remain untouched and uncertain registry commits preserve the created file. Decision d-20260906-15 records the boundary and reversal path.
+- Final lens counts are 42 reported findings: 26 Fix, 6 Skip and 10 Defer (duplicate reports count separately). Every Fix is implemented and narrowly verified. Additional root integration fixes cover actual filename-error propagation and domain coverage placement. The ten distinct deferred areas have permanent handoffs and remain outside this run's separate design mandate.
+- Source implementation is frozen. Full exact-tree gates and actual-product acceptance are still required; the earlier coverage and screenshot proofs are previews, not final clean-tree receipts.
