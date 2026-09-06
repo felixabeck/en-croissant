@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: cf995d8cf0b6e3cca3f640bee100660ce62352692632dcff09dd8101a640e270
+# agent-kit-sha256: 48df42aa253f5687f0e7033dcd3a697a9322f878177c320c96745931593d1cdc
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -34,6 +34,7 @@ Subcommands
 ``set-header``  mutate selected fields of one finding header
 ``annotate``    append file contents to one finding entry
 ``record-decision`` append decisions through the decisions ledger lock
+``set-trailer`` update decision supersession references and their covering receipt
 """
 
 from __future__ import annotations
@@ -695,10 +696,15 @@ DECISION_FIELD_RE = {
     for field in DECISION_CLAUSE_ONE_FIELDS
 }
 GOVERNS_RE = re.compile(r"\*\*Governs:\*\*(?P<ids>.+)")
+DECISION_REFERENCE_PATTERN = r"(?:(?:[a-z0-9]+(?:-[a-z0-9]+)*):)?d-\d{8}-\d{2}"
+QUOTED_DECISION_REFERENCE_PATTERN = (
+    rf"(?:`{DECISION_REFERENCE_PATTERN}`|{DECISION_REFERENCE_PATTERN})"
+)
 SUPERSEDED_BY_RE = re.compile(
-    r"\*\*Superseded-by:\*\*\s*(?P<quote>`)?"
-    r"(?P<ref>(?:(?:[a-z0-9]+(?:-[a-z0-9]+)*):)?d-\d{8}-\d{2}|-)"
-    r"(?(quote)`)[.,;:!?]?(?:\s*$|\s+·)"
+    r"\*\*Superseded-by:\*\*[ \t]*"
+    rf"(?P<refs>{QUOTED_DECISION_REFERENCE_PATTERN}"
+    rf"(?:[ \t]*,[ \t]*{QUOTED_DECISION_REFERENCE_PATTERN})*|`-`|-)"
+    r"[.,;:!?]?(?:\s*$|\s+·)"
 )
 # Deliberately looser than the strict form above: it has to CATCH a near-miss
 # so validation can reject it. A trailer with an unparseable id must not vanish
@@ -717,8 +723,8 @@ SUPERSEDED_BY_MARKER_RE = re.compile(
 GOVERNED_BY_MARKER_RE = re.compile(r"^\s*[*-]\s+\*\*Governed-by:\*\*")
 GOVERNED_BY_RE = re.compile(
     r"^\* \*\*Governed-by:\*\* "
-    r"(?P<ids>(?:[a-z0-9]+(?:-[a-z0-9]+)*:)?d-\d{8}-\d{2}"
-    r"(?:,\s*(?:[a-z0-9]+(?:-[a-z0-9]+)*:)?d-\d{8}-\d{2})*)\s*$"
+    rf"(?P<ids>{DECISION_REFERENCE_PATTERN}"
+    rf"(?:,\s*{DECISION_REFERENCE_PATTERN})*)\s*$"
 )
 
 
@@ -1249,7 +1255,7 @@ class Decision:
     id: str
     question: str
     governs: set[str]
-    # The replacement decision named by the trailer, empty while still current.
+    # Replacement references named by the trailer, empty while still current.
     superseded_by: str = ""
     # 1-based line of the heading. Only a duplicate-id report needs it, but it is
     # carried on the record rather than rescanned: a second scan is a second
@@ -1718,9 +1724,10 @@ def load_decisions(path: Path) -> list[Decision]:
                 for match in QUALIFIED_FINDING_RE.finditer(governs.group("ids"))
                 if match.group("owner") in {None, "local"}
             )
-        superseded_by = SUPERSEDED_BY_RE.search(line)
-        if superseded_by and superseded_by.group("ref") != "-":
-            pending.superseded_by = superseded_by.group("ref")
+        superseded_by = SUPERSEDED_BY_RE.search(_mask_inline_code_spans(line))
+        if superseded_by:
+            refs = superseded_by.group("refs").replace("`", "")
+            pending.superseded_by = "" if refs == "-" else refs
     return decisions
 
 
@@ -1782,7 +1789,7 @@ def malformed_decision_headings(decisions_path: Path) -> list[str]:
 
 
 def malformed_superseded_trailers(decisions_path: Path) -> list[str]:
-    """Report a supersession trailer that names no parseable decision id.
+    """Report a supersession trailer whose reference list or sentinel is malformed.
 
     The decisions ledger documents its own format in fenced examples, so the same
     mask as ``load_decisions`` and ``malformed_decision_headings`` must govern this
@@ -1798,17 +1805,17 @@ def malformed_superseded_trailers(decisions_path: Path) -> list[str]:
         if mask[number - 1] is not FenceState.OUTSIDE:
             continue
         masked_line = _mask_inline_code_spans(line)
-        if (
-            SUPERSEDED_BY_MARKER_RE.search(masked_line)
-            # Both searches must see the same real text; inline-code examples are not trailers.
-            and SUPERSEDED_BY_RE.search(masked_line) is None
+        if any(
+            SUPERSEDED_BY_RE.match(masked_line, marker.start()) is None
+            for marker in SUPERSEDED_BY_MARKER_RE.finditer(masked_line)
         ):
             issues.append(
                 f"{decisions_path}:{number}: malformed Superseded-by trailer. "
                 "Expected '**Superseded-by:** d-YYYYMMDD-nn', "
                 "'**Superseded-by:** local:d-YYYYMMDD-nn', "
                 "'**Superseded-by:** repo-slug:d-YYYYMMDD-nn', or "
-                "'**Superseded-by:** -', optionally backtick-quoted and "
+                "'**Superseded-by:** -'; references may be comma-separated, "
+                "optionally backtick-quoted and "
                 "followed by punctuation."
             )
     return issues
@@ -2474,7 +2481,7 @@ def _print_related_decisions(
 
     def render(d: Decision, trailer: str = "") -> None:
         superseded = (
-            f" (SUPERSEDED by {d.superseded_by} — read that one)"
+            f" (SUPERSEDED by {d.superseded_by} — read the replacement decisions)"
             if d.superseded_by
             else ""
         )
@@ -3654,6 +3661,7 @@ def _ledger_mutation_scope(path: Path) -> Iterator[str]:
             f"{waited_seconds:.2f}s of retries"
         )
     try:
+        _sweep_scratch(path.parent)
         yield path.read_text(encoding="utf-8")
     except LedgerError:
         raise
@@ -3669,6 +3677,7 @@ def _locked_ledger_mutation(
     path: Path,
     build: Callable[[str], str],
     clear_announcement_ids: Collection[str] | None = None,
+    post_commit: Callable[[], None] | None = None,
 ) -> None:
     """Run one validated, compare-and-swap mutation under the required locks.
 
@@ -3676,7 +3685,8 @@ def _locked_ledger_mutation(
     an empty one, selects announcement-first locking and a durable state prune.
     The collection is read after ``build`` returns so builders such as
     ``apply-answers`` may populate a shared mutable list while constructing the
-    candidate.
+    candidate. The post-commit callback runs only after the ledger write
+    succeeds and while every selected outer lock is still held.
     """
 
     def mutate() -> None:
@@ -3691,6 +3701,8 @@ def _locked_ledger_mutation(
             if clear_announcement_ids is not None:
                 _prune_announcement_state_strict(path, clear_announcement_ids)
             _write_if_unchanged(path, original, candidate)
+            if post_commit is not None:
+                post_commit()
 
     if clear_announcement_ids is None:
         mutate()
@@ -3795,6 +3807,15 @@ def _place_receipt(candidate: str, receipt_line: str) -> str:
     return chr(10).join(lines) + (chr(10) if candidate.endswith(chr(10)) else "")
 
 
+def _validated_mutation_metadata(text: str, path: Path) -> list[LedgerMeta]:
+    """Refuse corrupt receipts before an append, replay, or trailer rewrite."""
+    metadata, issues = _scan_ledger_metadata(text, path)
+    issues += _receipt_effect_issues(text, path, metadata)
+    if issues:
+        raise LedgerError("the ledger contains invalid metadata:\n" + "\n".join(issues))
+    return metadata
+
+
 def _locked_receipted_mutation(
     path: Path,
     request: MutationRequest,
@@ -3802,13 +3823,7 @@ def _locked_receipted_mutation(
 ) -> list[str]:
     """Run or replay one receipt-bearing ledger mutation under its lock."""
     with _ledger_mutation_scope(path) as original:
-        metadata, metadata_issues = _scan_ledger_metadata(original, path)
-        metadata_issues += _receipt_effect_issues(original, path, metadata)
-        if metadata_issues:
-            raise LedgerError(
-                "the ledger contains invalid metadata:\n"
-                + "\n".join(metadata_issues)
-            )
+        metadata = _validated_mutation_metadata(original, path)
         matching = [
             meta
             for meta in metadata
@@ -3866,11 +3881,10 @@ def claim_spool(
     answered decisions. They fold different things into the ledger, but the
     dangerous half is identical, so it lives here once.
 
-    ``os.mkdir`` is the mutex: it is atomic, so two consumers cannot both hold
-    the claim and the loser is told rather than quietly reading a batch the
-    winner is already consuming. Without it each consumer reads the ledger,
-    each writes back only its own mutation, and one batch disappears — and the
-    two consumers really do overlap, because the drain applies answers between
+    The fixed directory records durable ownership of one batch. ``os.mkdir``
+    is atomic, so two consumers cannot both claim the same published files; the
+    ledger flock provides writer exclusion across different batches and spool
+    consumers. Both are needed because the drain applies answers between
     clusters while `/decide` may apply them from another terminal.
 
     Claiming by RENAME is what makes a refused batch survivable: it sits at a
@@ -4384,9 +4398,9 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
     the writer's remaining lines disappear into an unlinked inode.
 
     **A refused batch is never destroyed.** It stays in the fixed claim directory,
-    whose path the error names. The directory is also the merger mutex: atomic
-    ``mkdir`` prevents two mergers from reading the same ledger and then replacing
-    each other's result.
+    whose path the error names. The directory records durable ownership of that
+    batch; the ledger flock excludes concurrent ledger writers, while atomic
+    ``mkdir`` prevents two consumers from claiming the same published files.
 
     Validation reuses the normal validator on a merged candidate rather than a
     second parser that could drift from the one deciding what gets worked on.
@@ -5709,6 +5723,83 @@ def cmd_record_decision(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_set_trailer(args: argparse.Namespace) -> int:
+    """Replace supersession references and refresh covering receipts atomically."""
+    references = args.superseded_by
+    if any(re.fullmatch(DECISION_REFERENCE_PATTERN, ref) is None for ref in references):
+        raise LedgerError("--superseded-by requires decision references")
+    identities = [ref.removeprefix("local:") for ref in references]
+    if len(set(identities)) != len(identities):
+        raise LedgerError("--superseded-by contains duplicate references")
+    with _ledger_mutation_scope(args.decisions) as original:
+        metadata = _validated_mutation_metadata(original, args.decisions)
+        lines, headings = _decision_heading_matches(original)
+        targets = [index for index, match in headings if match.group("id") == args.id]
+        if len(targets) != 1:
+            raise LedgerError(f"expected exactly one decision {args.id}; found {len(targets)}")
+        known = {match.group("id") for _, match in headings}
+        for ref in references:
+            owner, separator, identifier = ref.rpartition(":")
+            if not separator or owner == "local":
+                if identifier == args.id:
+                    raise LedgerError("a decision cannot supersede itself")
+                if identifier not in known:
+                    raise LedgerError(f"replacement decision {ref} does not exist locally")
+        mask = _fence_mask(lines)
+        start = targets[0]
+        end = min(
+            _find_entry_span(lines, mask, start),
+            next((index for index, _ in headings if index > start), len(lines)),
+        )
+        trailers = []
+        for index in range(start + 1, end):
+            if mask[index] is not FenceState.OUTSIDE:
+                continue
+            masked_line = _mask_inline_code_spans(lines[index])
+            for marker in SUPERSEDED_BY_MARKER_RE.finditer(masked_line):
+                trailers.append((index, SUPERSEDED_BY_RE.match(masked_line, marker.start())))
+        if len(trailers) != 1 or trailers[0][1] is None:
+            raise LedgerError(f"decision {args.id} requires exactly one valid Superseded-by trailer")
+        index, match = trailers[0]
+        assert match is not None
+        lines[index] = (
+            lines[index][:match.start("refs")]
+            + ", ".join(references)
+            + lines[index][match.end("refs"):]
+        )
+        # A record-decision receipt can cover a whole batch. Refresh its entire
+        # effect, keeping operation/input identity so the original append replays.
+        # Process in file order in case a covering effect contains earlier metadata.
+        changed = {index}
+        for meta in metadata:
+            if meta.data.get("kind") != MUTATION_RECEIPT_KIND:
+                continue
+            receipt_index = meta.line - 1
+            effect_start = receipt_index - cast(int, meta.data["effect_lines"])
+            if not any(effect_start <= line < receipt_index for line in changed):
+                continue
+            data = dict(meta.data)
+            data["effect_sha256"] = _sha256_text("\n".join(lines[effect_start:receipt_index]))
+            lines[receipt_index] = _metadata_line(data)
+            changed.add(receipt_index)
+        candidate = "\n".join(lines) + ("\n" if original.endswith("\n") else "")
+        issues = _validate_text(candidate, args.decisions)
+        # Entry ids are unchanged, so resolution may use the on-disk id set,
+        # but must inspect the candidate lines and their citation-context hashes.
+        _resolved, citation_issues = _citation_resolution(
+            args.ledger, args.decisions, decision_text=candidate
+        )
+        issues += citation_issues
+        if issues:
+            raise LedgerError("the mutation would leave the ledger invalid:\n" + "\n".join(issues))
+        if candidate == original:
+            _fsync_directory(args.decisions.parent)
+        else:
+            _write_if_unchanged(args.decisions, original, candidate, durable_directory=True)
+    print(f"set {args.id} Superseded-by: {', '.join(references)}")
+    return 0
+
+
 def _decision_bullet(
     answer: str, fence_states: list[FenceState] | None = None
 ) -> list[str] | None:
@@ -5878,6 +5969,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         nonlocal claimed
         with _publish_lock(publish_lock_path(spool)):
             _refuse_unapplied_answers(spool)
+            _sweep_scratch(spool)
             if not _adopt_orphan_parts(spool):
                 raise LedgerError(
                     f"could not adopt every orphan in answers spool {spool}"
@@ -6054,9 +6146,16 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             )
         return _with_final_newline(text, result_lines)
 
-    _locked_ledger_mutation(args.ledger, build, applied)
-    if claimed:
-        release_spool(claim, spool, claimed)
+    def clean_committed_claim() -> None:
+        if claimed:
+            release_spool(claim, spool, claimed)
+
+    _locked_ledger_mutation(
+        args.ledger,
+        build,
+        applied,
+        post_commit=clean_committed_claim,
+    )
     if applied:
         print(f"applied {len(applied)} decision(s): {', '.join(applied)}")
     for note in skipped:
@@ -6182,6 +6281,13 @@ def main(argv: list[str] | None = None) -> int:
         "--request-id", help="stable caller identity for one intentional repeat"
     )
     p_record.set_defaults(func=cmd_record_decision)
+
+    p_trailer = sub.add_parser(
+        "set-trailer", help="replace decision supersession references under the ledger lock"
+    )
+    p_trailer.add_argument("id")
+    p_trailer.add_argument("--superseded-by", nargs="+", required=True)
+    p_trailer.set_defaults(func=cmd_set_trailer)
 
     args = parser.parse_args(argv)
     root = _require_git_toplevel()
