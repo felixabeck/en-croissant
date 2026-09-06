@@ -165,7 +165,7 @@ mod unix {
     /// `MAX_REMOVE_TREE_DEPTH` (512 KiB), against a Tokio worker's 2 MiB stack.
     const REMOVE_TREE_DIR_BUFFER_BYTES: usize = 8192;
     /// Maximum accepted size of one `/proc/self/fdinfo` record.
-    const FDINFO_RECORD_BYTES: u64 = 4096;
+    const MAX_FDINFO_RECORD_BYTES: u64 = 4096;
 
     #[cfg(test)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,7 +259,7 @@ mod unix {
     }
 
     pub(super) fn parse_fdinfo_mount_id(record: &[u8]) -> Result<u64, Error> {
-        if record.len() > FDINFO_RECORD_BYTES as usize {
+        if record.len() > MAX_FDINFO_RECORD_BYTES as usize {
             return Err(Error::InvalidInput(
                 "directory cleanup cannot establish mount identity: fdinfo record is oversized"
                     .into(),
@@ -318,10 +318,10 @@ mod unix {
             return parse_fdinfo_mount_id(&record.map_err(io)?);
         }
         let path = format!("/proc/self/fdinfo/{}", file.as_raw_fd());
-        let mut record = Vec::with_capacity(FDINFO_RECORD_BYTES as usize + 1);
+        let mut record = Vec::with_capacity(MAX_FDINFO_RECORD_BYTES as usize + 1);
         File::open(path)
             .map_err(io)?
-            .take(FDINFO_RECORD_BYTES + 1)
+            .take(MAX_FDINFO_RECORD_BYTES + 1)
             .read_to_end(&mut record)
             .map_err(io)?;
         parse_fdinfo_mount_id(&record)
@@ -795,9 +795,16 @@ mod unix {
                 let is_mount = if opened.st_dev != compared_parent_dev {
                     true
                 } else {
-                    mount_crossing(parent, &child)?
+                    match mount_crossing(parent, &child) {
+                        Ok(is_mount) => is_mount,
+                        Err(error) => {
+                            log::warn!("recursive delete cannot establish mount identity: {error}");
+                            return Err(error);
+                        }
+                    }
                 };
                 if is_mount {
+                    log::warn!("recursive delete stopped at a mount point");
                     return Err(Error::InvalidInput(
                         "directory cleanup refuses to cross a mount".into(),
                     ));
@@ -1819,13 +1826,14 @@ mod tests {
     enum InjectedFdinfo {
         Real,
         Unreadable,
-        Records(Mutex<std::collections::VecDeque<Vec<u8>>>),
+        ByDescriptor(Mutex<std::collections::HashMap<std::os::fd::RawFd, Vec<u8>>>),
     }
 
     #[cfg(unix)]
     struct MountEvidenceInjector {
         statx: InjectedStatx,
         fdinfo: InjectedFdinfo,
+        child_fdinfo_record: Option<Vec<u8>>,
     }
 
     #[cfg(unix)]
@@ -1834,6 +1842,7 @@ mod tests {
             Self {
                 statx,
                 fdinfo: InjectedFdinfo::Real,
+                child_fdinfo_record: None,
             }
         }
 
@@ -1841,15 +1850,22 @@ mod tests {
             Self {
                 statx,
                 fdinfo: InjectedFdinfo::Unreadable,
+                child_fdinfo_record: None,
             }
         }
 
-        fn records(statx: InjectedStatx, records: &[&[u8]]) -> Self {
+        fn records(
+            statx: InjectedStatx,
+            parent: std::os::fd::RawFd,
+            parent_record: &[u8],
+            child_record: &[u8],
+        ) -> Self {
             Self {
                 statx,
-                fdinfo: InjectedFdinfo::Records(Mutex::new(
-                    records.iter().map(|record| record.to_vec()).collect(),
+                fdinfo: InjectedFdinfo::ByDescriptor(Mutex::new(
+                    [(parent, parent_record.to_vec())].into_iter().collect(),
                 )),
+                child_fdinfo_record: Some(child_record.to_vec()),
             }
         }
     }
@@ -1858,9 +1874,17 @@ mod tests {
     impl unix::RemovalInjector for MountEvidenceInjector {
         fn statx_mount_attributes(
             &self,
-            _: std::os::fd::RawFd,
+            descriptor: std::os::fd::RawFd,
         ) -> Option<std::io::Result<(u64, u64)>> {
             use rustix::{fs::StatxAttributes, io::Errno};
+            if let (InjectedFdinfo::ByDescriptor(records), Some(child_record)) =
+                (&self.fdinfo, &self.child_fdinfo_record)
+            {
+                records
+                    .lock()
+                    .expect("fdinfo records")
+                    .insert(descriptor, child_record.clone());
+            }
             let mount_root = StatxAttributes::MOUNT_ROOT.bits();
             Some(match self.statx {
                 InjectedStatx::Nosys => Err(std::io::Error::from_raw_os_error(
@@ -1874,18 +1898,25 @@ mod tests {
             })
         }
 
-        fn fdinfo_record(&self, _: std::os::fd::RawFd) -> Option<std::io::Result<Vec<u8>>> {
+        fn fdinfo_record(
+            &self,
+            descriptor: std::os::fd::RawFd,
+        ) -> Option<std::io::Result<Vec<u8>>> {
             match &self.fdinfo {
                 InjectedFdinfo::Real => None,
                 InjectedFdinfo::Unreadable => Some(Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     "injected unreadable fdinfo",
                 ))),
-                InjectedFdinfo::Records(records) => Some(Ok(records
-                    .lock()
-                    .expect("fdinfo records")
-                    .pop_front()
-                    .expect("one injected record per descriptor read"))),
+                InjectedFdinfo::ByDescriptor(records) => Some(
+                    match records.lock().expect("fdinfo records").get(&descriptor) {
+                        Some(record) => Ok(record.clone()),
+                        None => Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("no injected fdinfo record for descriptor {descriptor}"),
+                        )),
+                    },
+                ),
             }
         }
     }
@@ -2014,7 +2045,35 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn recursive_delete_refuses_invalid_fdinfo_before_deletion() {
+        use std::os::fd::AsRawFd;
+
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
+        std::fs::write(victim.join("keep"), b"content").expect("content");
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Arc::new(MountEvidenceInjector::records(
+                InjectedStatx::Nosys,
+                parent.as_raw_fd(),
+                b"pos:\t0\n",
+                b"mnt_id:\t42\n",
+            )),
+        )
+        .expect_err("invalid fdinfo must refuse descent");
+        assert!(matches!(error, Error::InvalidInput(_)));
+        assert_eq!(
+            std::fs::read(victim.join("keep")).expect("intact"),
+            b"content"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn recursive_delete_refuses_unequal_mount_ids_even_when_devices_match() {
+        use std::os::fd::AsRawFd;
+
         let (_temp, _root, victim, expected, parent) = removal_fixture();
         std::fs::write(victim.join("keep"), b"content").expect("content");
         let error = remove_entry_with_injector(
@@ -2023,7 +2082,9 @@ mod tests {
             expected,
             Arc::new(MountEvidenceInjector::records(
                 InjectedStatx::MissingMountRootMask,
-                &[b"mnt_id:\t41\n", b"mnt_id:\t42\n"],
+                parent.as_raw_fd(),
+                b"mnt_id:\t41\n",
+                b"mnt_id:\t42\n",
             )),
         )
         .expect_err("different descriptor mount ids must refuse descent");
@@ -2032,6 +2093,28 @@ mod tests {
             std::fs::read(victim.join("keep")).expect("intact"),
             b"content"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_accepts_equal_descriptor_addressed_mount_ids() {
+        use std::os::fd::AsRawFd;
+
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
+        std::fs::write(victim.join("removed"), b"content").expect("content");
+        remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Arc::new(MountEvidenceInjector::records(
+                InjectedStatx::MissingMountRootMask,
+                parent.as_raw_fd(),
+                b"mnt_id:\t42\n",
+                b"mnt_id:\t42\n",
+            )),
+        )
+        .expect("equal descriptor mount ids permit deletion");
+        assert!(!victim.exists());
     }
 
     #[cfg(unix)]
@@ -2074,7 +2157,7 @@ mod tests {
         root: PathBuf,
         victim: PathBuf,
         source: PathBuf,
-        mounted: Vec<PathBuf>,
+        mounted: Option<PathBuf>,
     }
 
     #[cfg(target_os = "linux")]
@@ -2101,7 +2184,7 @@ mod tests {
                 root,
                 victim,
                 source,
-                mounted: vec![target.clone()],
+                mounted: Some(target.clone()),
             };
             let output = std::process::Command::new("mount")
                 .args(["--bind"])
@@ -2135,41 +2218,40 @@ mod tests {
         }
 
         fn cleanup(&mut self) -> std::io::Result<()> {
-            let mut failures = Vec::new();
-            for target in self.mounted.iter().rev() {
-                match std::process::Command::new("umount").arg(target).output() {
-                    Ok(output) if output.status.success() => {}
-                    Ok(output) => failures.push(format!(
-                        "{}: {}",
-                        output.status,
-                        String::from_utf8_lossy(&output.stderr)
-                    )),
-                    Err(error) => failures.push(error.to_string()),
-                }
-            }
-            if failures.is_empty() {
-                self.mounted.clear();
+            let Some(target) = self.mounted.as_ref() else {
                 drop(self.temp.take());
-                Ok(())
-            } else {
+                return Ok(());
+            };
+            let failure = match std::process::Command::new("umount").arg(target).output() {
+                Ok(output) if output.status.success() => None,
+                Ok(output) => Some(format!(
+                    "{}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                )),
+                Err(error) => Some(error.to_string()),
+            };
+            if let Some(failure) = failure {
                 let retained = self
                     .temp
                     .take()
                     .expect("mounted fixture owns its temporary directory")
                     .keep();
-                Err(std::io::Error::other(format!(
-                    "failed to unmount bind fixture; retained {}: {}",
-                    retained.display(),
-                    failures.join("; ")
-                )))
+                return Err(std::io::Error::other(format!(
+                    "failed to unmount bind fixture; retained {}: {failure}",
+                    retained.display()
+                )));
             }
+            self.mounted.take();
+            drop(self.temp.take());
+            Ok(())
         }
     }
 
     #[cfg(target_os = "linux")]
     impl Drop for BindMountFixture {
         fn drop(&mut self) {
-            if self.mounted.is_empty() || self.temp.is_none() {
+            if self.mounted.is_none() || self.temp.is_none() {
                 return;
             }
             if let Err(error) = self.cleanup() {
@@ -2189,7 +2271,7 @@ mod tests {
             root: retained.join("root"),
             victim: retained.join("victim"),
             source: retained.join("source"),
-            mounted: vec![nonexistent_target],
+            mounted: Some(nonexistent_target),
         };
         fixture.cleanup().expect_err("unmount must fail");
         assert!(retained.exists(), "failed cleanup retains the fixture");
