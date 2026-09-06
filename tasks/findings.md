@@ -2650,7 +2650,7 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
 
 ### Two native reads are unbounded in practice: a metadata sidecar that follows symlinks, and an engine image read after a TOCTOU window
 
-* **ID:** f-20260830-32 · **Status:** open · **Area:** native-fs · **Root:** unbounded-native-reads · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-32 · **Status:** handled · **Area:** native-fs · **Root:** unbounded-native-reads · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/file_workspace.rs:110-118` (`metadata_from`) against its correct sibling
   at `:223-227`; `src-tauri/src/infra/path_authority.rs:2283-2305` (`read_engine_image`) against the
   two correct bounded readers at `:337-370` and `:1428-1443`.
@@ -2675,6 +2675,9 @@ must be signed at all is derived from a renderer-supplied `id` string prefix.
   three divergent copies of the same idea at once, which is the more useful fact: it is a
   consistency failure inside one diff, not drift over time.
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+**Handled 2026-09-06 (Codex):** 7a4d6fc8 shares bounded cap-plus-one consumption across metadata, images and opening books. Metadata opens no-follow relative to the retained authorized PGN parent; only absence defaults. The 1 MiB serialized-byte cap is checked before create/rename mutations. Regular-file acquisition refuses FIFO swaps. Root proof: `cargo test --manifest-path src-tauri/Cargo.toml --locked` passed (660 passed, 1 ignored), format and diff checks passed. Production metadata/image consumed-byte assertions failed when the bound was deliberately weakened and passed after restoration. Decision d-20260906-07 rejects pathname prechecks and post-read-only limits.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"6acf28f7db47738324bd127d157fa639c5bb39dcaac30b65e216d6c8d5de49e1","input_sha256":"03c7723242ede351a20e648a7444b05787cabb2b277ec8de14e4ebf7cc2be5d8","kind":"mutation-receipt","operation":"155bf80c6ee36e9e6eaa229c4b9f5a922e82b7196a8135039c82de016c94f865","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-32"],"target":"f-20260830-32","v":1} -->
 
 ---
 
@@ -4932,7 +4935,7 @@ Handled 2026-09-01. `logs()` returns `Result` without `unwrap_or_default`. Absen
 
 ### register_installed_engine discards the no-follow descriptors and re-walks by pathname
 
-* **ID:** f-20260901-12 · **Status:** open · **Area:** native-fs · **Root:** unbounded-native-reads · **Entry:** build · **Blocked:** none
+* **ID:** f-20260901-12 · **Status:** handled · **Area:** native-fs · **Root:** unbounded-native-reads · **Entry:** build · **Blocked:** none
 
 * **Where:** `src-tauri/src/infra/path_authority.rs` `register_installed_engine`, after `resolve` of the engine-root plus relative components.
 * **Defect:** the verified descriptors from the no-follow resolve are discarded. The function then reacquires the workspace root path, joins the renderer-supplied relative components, and registers by pathname. A file replaced at that path between the two walks is adopted with engine-execution authority. Registering from the already-opened descriptor is an architecture change in PathAuthority, not a one-line guard.
@@ -4941,6 +4944,9 @@ Handled 2026-09-01. `logs()` returns `Result` without `unwrap_or_default`. Absen
 * **Found by:** `review-tauri-security` over the f-20260831-13 / f-20260901-02 push range, 2026-09-01. Confidence 96. Pre-existing; not part of the keep_adopted_handle change.
 
 **Progress 2026-09-05 (AuthorizedDir run).** Phase 2 closed the registry-binding half: `register_installed_engine` now binds the `resolve` it previously discarded and calls `register_engine_file_verified(..., resolved.identity()?)`, so the stored identity is the descriptor's, not a second pathname walk. The finding's own subject remains open: `register_installed_engine` still throws the no-follow descriptors away and re-walks by pathname to build the `PathBuf` it hands the registrar (`workspace_root` + `Path::join` of the relative components). The recorded fix shape — "an architecture change in `PathAuthority`, not a one-line guard" — is no longer the whole truth; the identity check is now one argument, and what is left is routing registration through the retained descriptor instead of a reconstructed path. Stays `open` at `build`.
+
+**Handled 2026-09-06 (Codex):** 7a4d6fc8 persists installed-engine identity directly from the resolved descriptor, using its target only as a restart locator. Shared insertion preserves stable IDs, operation sets and rollback without pathname reacquisition. A deterministic post-resolve replacement now permits registration of the original identity and rejects replacement on later use after restart. Directory/link/traversal, stable retry/restart and persistence-failure tests pass. Root proof: `cargo test --manifest-path src-tauri/Cargo.toml --locked` passed (660 passed, 1 ignored), format and diff checks passed. Decision d-20260906-08 extends d-20260905-08 and rejects redundant pathname revalidation.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"79197cdd319b7d7ea620a59387dafa471b4e9803ac9fb3ac875261fe6d337410","input_sha256":"214ccad25875a4441a66b5d26dfe623ec77e043219b915391e4499c57e23e2a2","kind":"mutation-receipt","operation":"dd40bc76b086a70dca2c05ce6a416337ddd7fd2fd3521f2c3ed68be20dab0145","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-12"],"target":"f-20260901-12","v":1} -->
 
 ### Engine image and resource replacement never releases the previous capability
 
