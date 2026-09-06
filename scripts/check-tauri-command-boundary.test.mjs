@@ -15,6 +15,14 @@ import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 const REPOSITORY_ROOT = process.cwd();
 const CHECKER = join(REPOSITORY_ROOT, "scripts/check-tauri-command-boundary.mjs");
 const NATIVE_SOURCE = readFileSync(join(REPOSITORY_ROOT, "src/platform/native.ts"), "utf8");
+const VALID_SECURITY_CONFIG = JSON.stringify({
+  app: {
+    security: {
+      csp: "default-src self",
+      assetProtocol: { enable: true, scope: ["$RESOURCE/**"] },
+    },
+  },
+});
 const temporaryRoots = [];
 
 afterAll(() => {
@@ -207,6 +215,50 @@ describe("capability and CSP boundaries", () => {
   });
 });
 
+describe("native-location and asset-protocol boundaries", () => {
+  function runFixture({ permissions = [], assetProtocol } = {}) {
+    const config = JSON.parse(VALID_SECURITY_CONFIG);
+    if (assetProtocol === null) {
+      delete config.app.security.assetProtocol;
+    } else if (assetProtocol !== undefined) {
+      config.app.security.assetProtocol = assetProtocol;
+    }
+    return () =>
+      runTauriBoundaryCheck({
+        workspaceRoot: "/fixture",
+        listFiles: () => ["src/platform/native.ts"],
+        readFile: (path) => {
+          if (path.endsWith("native.ts")) return NATIVE_SOURCE;
+          if (path.endsWith("main.json")) return JSON.stringify({ permissions });
+          return JSON.stringify(config);
+        },
+      });
+  }
+
+  test.each(["core:path:allow-resolve", "core:path:allow-resolve-directory"])(
+    "rejects %s through the full boundary runner",
+    (permission) => {
+      expect(runFixture({ permissions: [permission] })).toThrow(
+        /renderer native-location authority is forbidden/,
+      );
+    },
+  );
+
+  test("allows core:path:allow-join through the full boundary runner", () => {
+    expect(runFixture({ permissions: ["core:path:allow-join"] })).not.toThrow();
+  });
+
+  test.each([
+    ["a wider scope", { enable: true, scope: ["$APPDATA/**", "$RESOURCE/**"] }],
+    ["a disabled protocol", { enable: false, scope: ["$RESOURCE/**"] }],
+    ["an absent block", null],
+  ])("rejects %s through the full boundary runner", (_name, assetProtocol) => {
+    expect(runFixture({ assetProtocol })).toThrow(
+      /asset protocol must be enabled with scope exactly \$RESOURCE\/\*\*/,
+    );
+  });
+});
+
 describe("working-tree enumeration and reads", () => {
   test("uses the exact tracked and untracked git argv and deduplicates", () => {
     const calls = [];
@@ -247,7 +299,7 @@ describe("working-tree enumeration and reads", () => {
       if (path.endsWith("missing.ts")) throw Object.assign(new Error("gone"), { code: "ENOENT" });
       if (path.endsWith("native.ts")) return NATIVE_SOURCE;
       if (path.endsWith("main.json")) return '{"permissions":[]}';
-      return '{"app":{"security":{"csp":"default-src self"}}}';
+      return VALID_SECURITY_CONFIG;
     };
     expect(
       runTauriBoundaryCheck({
@@ -268,7 +320,7 @@ describe("working-tree enumeration and reads", () => {
             throw Object.assign(new Error("gone"), { code: "ENOENT" });
           }
           if (path.endsWith("main.json")) return '{"permissions":[]}';
-          return '{"app":{"security":{"csp":"default-src self"}}}';
+          return VALID_SECURITY_CONFIG;
         },
       }),
     ).toThrow(/native facade is missing/);
@@ -282,7 +334,7 @@ describe("working-tree enumeration and reads", () => {
         readFile: (path) => {
           if (path.endsWith("native.ts")) return NATIVE_SOURCE;
           if (path.endsWith("main.json")) return "{";
-          return '{"app":{"security":{"csp":"default-src self"}}}';
+          return VALID_SECURITY_CONFIG;
         },
       }),
     ).toThrow(/capabilities\/main\.json/);
@@ -309,10 +361,7 @@ function createCliWorkspace({ nativeSource, untrackedSource } = {}) {
   mkdirSync(join(root, "src-tauri/capabilities"), { recursive: true });
   writeFileSync(join(root, "src/platform/native.ts"), nativeSource);
   writeFileSync(join(root, "src-tauri/capabilities/main.json"), '{"permissions":[]}\n');
-  writeFileSync(
-    join(root, "src-tauri/tauri.conf.json"),
-    '{"app":{"security":{"csp":"default-src self"}}}\n',
-  );
+  writeFileSync(join(root, "src-tauri/tauri.conf.json"), `${VALID_SECURITY_CONFIG}\n`);
   expect(spawnSync("git", ["init", "--quiet"], { cwd: root }).status).toBe(0);
   expect(
     spawnSync("git", ["add", "src/platform/native.ts", "src-tauri"], { cwd: root }).status,

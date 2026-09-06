@@ -1,5 +1,5 @@
+import type { SoundKind } from "@/bindings";
 import { convertFileSrc } from "@/platform/native";
-import { resolveResource } from "@/platform/native";
 import { platform } from "@/platform/native";
 import { getDefaultStore } from "jotai";
 import { tauri } from "@/platform/tauri";
@@ -42,7 +42,7 @@ export function playSound(capture: boolean, check: boolean) {
     const collection = store.get(soundCollectionAtom);
     const volume = store.get(soundVolumeAtom);
 
-    let type = "Move";
+    let type: SoundKind = "Move";
     if (capture) {
         type = "Capture";
     }
@@ -77,13 +77,12 @@ export function playSound(capture: boolean, check: boolean) {
                 // fails if Tauri APIs are unavailable (e.g., in tests)
             });
     } else {
-        const path = `sound/${collection}/${type}.mp3`;
-
         if (soundUrlCache.has(cacheKey)) {
             playWithUrl(soundUrlCache.get(cacheKey)!);
             return;
         }
-        resolveResource(path)
+        tauri
+            .soundResourcePath(collection, type)
             .then((filePath) => {
                 const assetUrl = convertFileSrc(filePath);
                 soundUrlCache.set(cacheKey, assetUrl);
@@ -91,7 +90,8 @@ export function playSound(capture: boolean, check: boolean) {
                 playWithUrl(assetUrl);
             })
             .catch(() => {
-                // fails if Tauri APIs are unavailable (e.g., in tests)
+                // fails if Tauri APIs are unavailable (e.g., in tests), or if the backend rejects
+                // the collection or cannot name the resource path
             });
     }
 }

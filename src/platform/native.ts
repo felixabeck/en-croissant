@@ -2,7 +2,6 @@
 export { getTauriVersion, getVersion } from "@tauri-apps/api/app";
 export { convertFileSrc } from "@tauri-apps/api/core";
 export { Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/menu";
-export { resolveResource } from "@tauri-apps/api/path";
 export { getCurrentWebviewWindow, type WebviewWindow } from "@tauri-apps/api/webviewWindow";
 export { getCurrentWindow } from "@tauri-apps/api/window";
 export { getMatches } from "@tauri-apps/plugin-cli";

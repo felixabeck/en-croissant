@@ -4,11 +4,14 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts three things that no other gate in this repository can:
+// It asserts five things that no other gate in this repository can:
 //   1. the real binary starts, renders and answers script under WebKitGTK,
-//   2. closing it through its own control runs the shutdown sequence to completion,
-//   3. nothing — app or WebKit service process — outlives that close.
+//   2. the renderer cannot resolve a native base directory,
+//   3. the bounded sound-resource command names the bundled file,
+//   4. closing it through its own control runs the shutdown sequence to completion,
+//   5. nothing — app or WebKit service process — outlives that close.
 
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -25,6 +28,7 @@ import {
 
 const screenshotIndex = process.argv.indexOf("--screenshot");
 const screenshotPath = screenshotIndex === -1 ? undefined : process.argv[screenshotIndex + 1];
+const BASE_DIRECTORY_APP_DATA = 14; // @tauri-apps/api BaseDirectory.AppData
 const closeControlProbe = `
   const labelled = document.querySelector('button[aria-label="Close window"]');
   const controls = document.querySelector('[class*="windowControls"]');
@@ -75,6 +79,74 @@ try {
   check(
     (await session.execute("return typeof window.__TAURI_INTERNALS__")) === "object",
     "the real Tauri IPC bridge is present (not a test mock)",
+  );
+
+  const resolveDirectoryStarterError = await session
+    .execute(`
+      window.__verifyAppResolveDirectory = null;
+      window.__TAURI_INTERNALS__
+        .invoke("plugin:path|resolve_directory", {
+          directory: ${BASE_DIRECTORY_APP_DATA},
+          path: "x",
+        })
+        .then(
+          value => { window.__verifyAppResolveDirectory = { resolved: String(value) }; },
+          error => { window.__verifyAppResolveDirectory = { rejected: String(error) }; },
+        );
+      return true;
+    `)
+    .then(
+      () => null,
+      (error) => ({ error: error.message }),
+    );
+  const resolveDirectoryResult =
+    resolveDirectoryStarterError ??
+    (await waitFor(
+      "the core:path resolve-directory refusal",
+      () =>
+        session
+          .execute("return window.__verifyAppResolveDirectory || false")
+          .catch((error) => ({ error: error.message })),
+      { timeoutMs: 5_000 },
+    ).catch((error) => ({ error: error.message })));
+  check(
+    typeof resolveDirectoryResult.rejected === "string" &&
+      /not allowed/i.test(resolveDirectoryResult.rejected),
+    "the renderer cannot resolve a base directory (core:path grants are gone)",
+    resolveDirectoryResult.resolved ?? resolveDirectoryResult.error,
+  );
+
+  const soundPathStarterError = await session
+    .execute(`
+      window.__verifyAppSoundPath = null;
+      window.__TAURI_INTERNALS__
+        .invoke("sound_resource_path", { collection: "standard", kind: "Move" })
+        .then(
+          value => { window.__verifyAppSoundPath = { path: String(value) }; },
+          error => { window.__verifyAppSoundPath = { rejected: String(error) }; },
+        );
+      return true;
+    `)
+    .then(
+      () => null,
+      (error) => ({ error: error.message }),
+    );
+  const soundPathResult =
+    soundPathStarterError ??
+    (await waitFor(
+      "sound_resource_path to settle",
+      () =>
+        session
+          .execute("return window.__verifyAppSoundPath || false")
+          .catch((error) => ({ error: error.message })),
+      { timeoutMs: 5_000 },
+    ).catch((error) => ({ error: error.message })));
+  check(
+    typeof soundPathResult.path === "string" &&
+      soundPathResult.path.endsWith("/sound/standard/Move.mp3") &&
+      existsSync(soundPathResult.path),
+    "sound_resource_path names the bundled file",
+    soundPathResult.rejected ?? soundPathResult.error ?? soundPathResult.path,
   );
 
   check(

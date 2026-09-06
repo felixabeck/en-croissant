@@ -16,7 +16,6 @@ export const NATIVE_EXPORT_ALLOWLIST = Object.freeze(
     ["@tauri-apps/api/menu", "MenuItem", "MenuItem"],
     ["@tauri-apps/api/menu", "PredefinedMenuItem", "PredefinedMenuItem"],
     ["@tauri-apps/api/menu", "Submenu", "Submenu"],
-    ["@tauri-apps/api/path", "resolveResource", "resolveResource"],
     ["@tauri-apps/api/webviewWindow", "getCurrentWebviewWindow", "getCurrentWebviewWindow"],
     ["@tauri-apps/api/webviewWindow", "WebviewWindow", "WebviewWindow"],
     ["@tauri-apps/api/window", "getCurrentWindow", "getCurrentWindow"],
@@ -238,7 +237,32 @@ export function inspectCapability(capabilityJson) {
         .join(", ")}`,
     );
   }
+  const rendererLocationAuthority = permissions.filter((permission) => {
+    const identifier = typeof permission === "string" ? permission : permission?.identifier;
+    return (
+      identifier === "core:path:allow-resolve" || identifier === "core:path:allow-resolve-directory"
+    );
+  });
+  if (rendererLocationAuthority.length) {
+    violations.push(
+      `renderer native-location authority is forbidden: ${rendererLocationAuthority
+        .map((permission) => (typeof permission === "string" ? permission : permission.identifier))
+        .join(", ")}`,
+    );
+  }
   return violations;
+}
+
+export function inspectAssetProtocol(assetProtocol) {
+  const validScope =
+    Array.isArray(assetProtocol?.scope) &&
+    assetProtocol.scope.length === 1 &&
+    assetProtocol.scope[0] === "$RESOURCE/**";
+  return assetProtocol?.enable === true && validScope
+    ? []
+    : [
+        `asset protocol must be enabled with scope exactly $RESOURCE/**: ${JSON.stringify(assetProtocol)}`,
+      ];
 }
 
 export function inspectCsp(csp) {
@@ -290,6 +314,7 @@ export function runTauriBoundaryCheck({
   const securityConfig = readJsonFile(readFile, configPath);
   violations.push(...inspectCapability(capability));
   violations.push(...inspectCsp(securityConfig?.app?.security?.csp));
+  violations.push(...inspectAssetProtocol(securityConfig?.app?.security?.assetProtocol));
 
   if (violations.length) {
     throw new Error(

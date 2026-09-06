@@ -67,7 +67,6 @@
     "security": {
       "assetProtocol": {
         "scope": [
-          "$APPDATA/**",
           "$RESOURCE/**"
         ],
         "enable": true
