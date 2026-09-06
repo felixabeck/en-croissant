@@ -115,12 +115,13 @@ That command runs the debug Specta exporter in export-only mode and then proves 
 
 ### Findings ledger
 
-`pnpm findings:kit:check` runs `kit sync --check .` and is local-only (`env -u KIT_ROOT bash "$HOME/Projekte/agent-kit/bin/kit" sync --check .` — `KIT_ROOT` unset, so an inherited value cannot point the check at another kit tree;
-CI has no kit). It runs on **every** push: `scripts/findings.py` is the kit's vendored copy, and
+`pnpm findings:kit:check` runs `bash "$HOME/Projekte/agent-kit/bin/kit" sync --check .` and is local-only
+(CI has no kit). Invoke it with `env -u KIT_ROOT` below so an inherited value cannot point the check
+at another kit tree. It runs on **every** push: `scripts/findings.py` is the kit's vendored copy, and
 this line fails if those bytes have drifted from `~/Projekte/agent-kit`.
 
 ```bash
-pnpm findings:kit:check
+env -u KIT_ROOT pnpm findings:kit:check
 ```
 
 `python3 scripts/findings.py check` and `pnpm findings:test` are members of the unconditional
