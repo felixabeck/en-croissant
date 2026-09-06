@@ -1719,6 +1719,37 @@ mod tests {
     }
 
     #[test]
+    fn rename_workspace_file_lets_a_failed_rebind_outrank_the_sidecar_uncertainty() {
+        // The sidecar rewrite loses its parent sync; the registry rebind that follows fails
+        // outright at its rename, so the hard error is the one reported, not the uncertainty.
+        struct UncertainSidecarThenFailedRegistry(std::sync::atomic::AtomicBool);
+        impl AtomicWriterInjector for UncertainSidecarThenFailedRegistry {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                let sidecar_done = self.0.load(std::sync::atomic::Ordering::SeqCst);
+                match point {
+                    AtomicFileFaultPoint::ParentSync if !sidecar_done => {
+                        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Err(std::io::Error::other("uncertain"))
+                    }
+                    AtomicFileFaultPoint::Rename if sidecar_done => {
+                        Err(std::io::Error::other("registry rename failed"))
+                    }
+                    _ => Ok(()),
+                }
+            }
+        }
+        let (_directory, _state, root, _handle, result) = rename_under_injector(Some(Arc::new(
+            UncertainSidecarThenFailedRegistry(std::sync::atomic::AtomicBool::new(false)),
+        )));
+        assert!(
+            matches!(result, Err(Error::Io(_))),
+            "a failed rebind must not be reported as an uncertainty: {result:?}"
+        );
+        assert!(root.join("after.pgn").is_file());
+        assert!(root.join("after.info").is_file());
+    }
+
+    #[test]
     fn rename_workspace_file_reports_the_sidecar_stage_over_a_registry_uncertainty() {
         // Every parent sync fails: the sidecar rewrite and the registry rebind are both
         // uncertain, and the first stage is the one reported.

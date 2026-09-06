@@ -2307,6 +2307,35 @@ mod tests {
         assert_mode_700(gzip_target.parent().unwrap());
     }
 
+    #[test]
+    fn gzip_extraction_keeps_the_installed_file_and_reports_uncertain_durability() {
+        let root = tempdir().unwrap();
+        let gzip_archive = root.path().join("archive.gz");
+        let mut encoder = flate2::write::GzEncoder::new(
+            std::fs::File::create(&gzip_archive).unwrap(),
+            flate2::Compression::default(),
+        );
+        encoder.write_all(b"gzip").unwrap();
+        encoder.finish().unwrap();
+        let gzip_target = root.path().join("gzip-target").join("installed");
+        crate::infra::fs::set_test_atomic_file_injector(Some(std::sync::Arc::new(
+            crate::infra::fs::ParentSyncFault("uncertain"),
+        )));
+        let result = extract_gz(
+            std::fs::File::open(gzip_archive).unwrap(),
+            &gzip_target,
+            OpClass::Engine.limits(),
+        );
+        crate::infra::fs::set_test_atomic_file_injector(None);
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::GzipFileReplacement
+            ))
+        ));
+        assert_eq!(std::fs::read(&gzip_target).unwrap(), b"gzip");
+    }
+
     #[cfg(unix)]
     #[test]
     fn archive_path_policy_matches_the_measured_removal_boundary() {
