@@ -4964,6 +4964,9 @@ Handled 2026-09-01. `logs()` returns `Result` without `unwrap_or_default`. Absen
 * **Related:** f-20260830-35. Root `unbounded-path-registry`.
 * **Found by:** numbered-3 adjacent lens over the f-20260901-02 push range, 2026-09-01. Confidence 98. Pre-existing.
 
+* **Integration follow-up (2026-09-06, Codex):** After phase2 commit `739db8db`, root traced the EditEngine submit receipt through EngineForm adoption. A target deleted before the queued functional update correctly stays deleted, but the unchanged-list write still returns `saved: true`; the form then forgets newly picked provisional attachments that no persisted record contains. The same-file validation worker will return an unsuccessful correlated edit receipt when no immutable target was present, and test that result. This is part of the attachment draft ownership defect, not a new product question; do not claim completion until the follow-up is verified.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"58169bb77641fffcba811045c2f31cfe2a99e859734c32a747ac1ab6130d9923","input_sha256":"7bcc5d381eca0bbd5b31ece5248615f6f6bae5e6dc1dd9a2fdd641653317f1b1","kind":"mutation-receipt","operation":"a0dae1f5f308cad65bc9b2bd1cb175b39038cffd8956a165da3ef7e47df4200d","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-13"],"target":"f-20260901-13","v":1} -->
+
 ### get_engine_config spawns an EngineActor outside EngineSupervisor
 
 * **ID:** f-20260901-14 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
@@ -6568,7 +6571,7 @@ Precision, from the Codex review-correctness lens over ea65d4b1: the refusal is 
 ## 2026-09-06 — filed through the inbox spool
 
 ### Findings breadcrumb failure discards the captured cause
-* **ID:** f-20260906-13 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260906-13 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
 
 * **Where:** `scripts/findings.py:272-288`, canonical `~/Projekte/agent-kit/scripts/findings.py`, introduced here by vendored sync `33559689`.
 * **Defect:** `append_drain_breadcrumb` captures subprocess stderr but catches every exception without retaining its cause. A missing/unreadable helper and a failed shell invocation both emit only `breadcrumb not written: <step-file>`. The successful ledger update is intentional; losing its auxiliary failure diagnosis is unnecessary.
@@ -6577,6 +6580,10 @@ Precision, from the Codex review-correctness lens over ea65d4b1: the refusal is 
 * **Related:** f-20260829-14 also concerned lost failure context, but in the separate atomic-write cleanup mechanism; no shared Root is established. f-20260830-15 governs canonical-copy parity and is already handled.
 * **Why deferred:** This run implements the native-fs descriptor-read cluster. Breadcrumb diagnostics belong to shared agent-kit tooling and its separate test/propagation contract; the native correction does not depend on changing them.
 * **Handoff:** `tasks/handoffs/2026-09-06-breadcrumb-failure-context.md`.
+
+* **Handled (2026-09-06, Codex):** Guarded-sync the committed canonical agent-kit producer at `4eb4ff6` (consumer blob `3f9ce2e436da848dc400cf5d6409bae799f174ff`). Missing-helper and canonical helper write failures now retain the real cause and helper identity in one nonfatal, newline-terminated diagnostic bounded to 4096 characters. Canonical producer tests cover missing helpers, subprocess/OS failure, oversized diagnostics, and successful ledger mutation despite breadcrumb failure.
+* **Verification:** `env -u KIT_ROOT pnpm findings:kit:check`, `pnpm findings:test` (3 passed), and `python3 scripts/findings.py check` passed. Root additionally exercised the actual consumer against a missing helper and the real canonical helper with a nonexistent destination parent; both retained `No such file or directory`, exactly one failure marker, and nonfatal return. Root probe: `/tmp/chessfable-path-ownership-OMFFz4/kit-consumer-probe.py`. No independent manual edit to the vendored source.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"a1cf5d6957781767be6c1f1dcfc644fbeeb54eb43b4217af154c8b351d9bdb10","input_sha256":"c67c194cd06902d3323bcbc99eb348e6b313208a456dafe8fe823fa002b2bdb5","kind":"mutation-receipt","operation":"91307cbfe094d28888ef4f7d07e63f64ff7df0785f97d05d88a88a06978c9ed2","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-13"],"target":"f-20260906-13","v":1} -->
 
 ---
 
@@ -6620,3 +6627,32 @@ Precision, from the Codex review-correctness lens over ea65d4b1: the refusal is 
 * **Related:** handled f-20260831-15 covers picker rejection, not stale authority recovery. No shared root is asserted with unbounded-path-registry: that task preserves a known destination but cannot reconstruct a native path for an ID whose registry record is already absent.
 * **Deferral:** Separate recovery design outside f-20260830-35/f-20260901-13. The startup sweep ignores already-unknown references to avoid blocking unrelated reclamation; it does not create this pre-existing invalid-reference state and will retain every known saved destination. AccountCard is not an implementation owner in that task.
 * **Found by:** Codex persisted-state plan lens, round 4, confidence 96; main verified the stored-key/consumer chain, 2026-09-06.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### EditEngine validation bypasses existing translated messages
+
+* **ID:** f-20260906-17 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** src/components/engines/EditEngine.tsx:17-22; AddEngine.tsx:67-71.
+* **Defect:** EditEngine returns raw English name-required, duplicate-name and path-required errors even in the German UI. The sibling AddEngine already uses Common.RequireName, Common.NameAlreadyUsed and Common.RequirePath for the same validation.
+* **Fix:** Reuse those three existing keys, with an observable validation test. No catalogue or copy decision is needed.
+* **Relation:** f-20260830-11/-19 concern dynamic missing confirmation keys; f-20260901-21 concerns native game-start errors. This is a separate literal-validation bypass, with no shared root asserted.
+* **Disposition:** Fix in this run as a small separate commit after the attachment worker releases EditEngine ownership; do not overlap its source writes.
+* **Found by:** Codex root while tracing the phase-2 EditEngine integration, 2026-09-06.
+
+---
+
+## 2026-09-06 — filed through the inbox spool
+
+### Saving engine metadata discards existing engine options and resource owners
+
+* **ID:** f-20260906-18 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** src/components/engines/EngineForm.tsx:35-49; src/components/engines/EditEngine.tsx:15-17,32-37.
+* **Defect:** EngineForm initializes its detected binary config to null, derives only required defaults from that config, and always submits `settings: settings || []`. EditEngine supplies an existing engine to this form. Editing only its name/image therefore replaces all existing options/resource handles with an empty array unless a binary was repicked; repicking still replaces custom options with only required defaults.
+* **Evidence:** Root read the complete form submit and EditEngine initialValues/submit path on 2026-09-06. No original-value fallback or merge exists. The existing EditEngine tests mock EngineForm entirely and therefore cannot catch the loss.
+* **Fix direction:** Preserve current settings for ordinary metadata/image edits. Apply newly detected defaults only at an explicit binary-change boundary with the intended existing contract, never as an unconditional submit-time replacement. Add an observable real-form submission regression with scalar and resource options.
+* **Relation:** f-20260906-14 covers the separate human-default hydration schema loss; this is a form submit producer defect. No common Root is asserted. Necessary integration correction for f-20260901-13: the new owner reconciliation must not treat resources accidentally dropped by the producer as deliberately abandoned.
+* **Disposition:** Fix in the active attachment phase before it can retire such falsely dropped owners. It is not deferred as pre-existing.
+* **Found by:** Codex root integration review of phase-2 renderer handoff, confidence 99.
