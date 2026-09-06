@@ -1,6 +1,6 @@
 # Path registry and engine attachment ownership — review record
 
-Status: implementation and final-review repairs committed; all eleven final lenses triaged. Final exact-tree gates, real-app verification and push are pending.
+Status: implementation and final-review repairs completed; all eleven final lenses triaged. Actual-product acceptance passed. Final exact-tree gates and push are pending.
 
 Mandate: next-finding full-auto run for f-20260830-35 and f-20260901-13 (`unbounded-path-registry`), including necessary player-owner schema correction f-20260906-14. Original upstream base: `9330ef47`.
 
@@ -222,3 +222,11 @@ complete and are not rerun as a second fan-out; root reviews each repair and its
 - `6422009f` closes f-20260906-19 with retained-descriptor exclusive database creation, sealed identity registration and identified cleanup. Root read all production and test changes, then reran 159 path-authority tests, 55 filesystem tests (one existing ignored), fmt, all-target check, Clippy and diff check successfully. Substituted roots/leaves remain untouched and uncertain registry commits preserve the created file. Decision d-20260906-15 records the boundary and reversal path.
 - Final lens counts are 42 reported findings: 26 Fix, 6 Skip and 10 Defer (duplicate reports count separately). Every Fix is implemented and narrowly verified. Additional root integration fixes cover actual filename-error propagation and domain coverage placement. The ten distinct deferred areas have permanent handoffs and remain outside this run's separate design mandate.
 - Source implementation is frozen. Full exact-tree gates and actual-product acceptance are still required; the earlier coverage and screenshot proofs are previews, not final clean-tree receipts.
+
+## Actual-product acceptance
+
+The release build passed. The two-session fixture initially failed because it retained the seed WebDriver session and used invalid `engineImageRead` registry operations instead of native `imageRead`. The first error was `Maximum number of active sessions`; after adding session release, the malformed registry stopped the second app before WebDriver connected. Root traced the native enum and assigned the bounded harness correction to Luna/xhigh. The final harness releases the seed session only after titlebar-driven app/WebKit exit proof, uses valid fixture operations, and exposes bounded driver diagnostics on session failure. A proposed driver restart and longer timeout were removed after the actual no-reset run passed; no new process-management abstraction or background service was needed.
+
+The final frozen harness passed every real-app assertion: automatic startup reclaim of unowned non-attachment authority; retention of the native-owned root and all user files; owned-image survival and orphan-image cleanup; real IPC; base-directory refusal; valid/invalid sound-resource requests; durable prepare and owner storage before reconciliation; retired-image bytes retained while the app runs; titlebar close; application and recorded WebKit children absent; shutdown completed within budget; retired image bytes/intent removed while retained image authority survives. Root inspected the page screenshot. This does not claim native GTK picker or live engine-child acceptance.
+
+Evidence: `/tmp/chessfable-path-ownership-OMFFz4/root-real-app-final-frozen.log` (exit 0) and `path-ownership-real-app.png`. The selected findings f-20260830-35 and f-20260901-13 are handled with implementation and acceptance evidence; final gates still control whether the change may be pushed.
