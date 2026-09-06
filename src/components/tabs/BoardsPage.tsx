@@ -36,6 +36,7 @@ import "@/styles/react-mosaic.css";
 import { platform } from "@/platform/native";
 import { atomWithStorage } from "jotai/utils";
 import classes from "./BoardsPage.module.css";
+import { notifyUnlessCancelled } from "../files/notifyError";
 
 export default function BoardsPage() {
   const { t } = useTranslation();
@@ -50,15 +51,22 @@ export default function BoardsPage() {
   const [renameValue, setRenameValue] = useState("");
   const tabListRef = useRef<HTMLDivElement>(null);
 
+  const handleSetActiveTab = useCallback(
+    (value: string | null | ((previous: string | null) => string | null)) => {
+      startTransition(() => setActiveTab(value));
+    },
+    [setActiveTab],
+  );
+
   useEffect(() => {
     if (tabs.length === 0) {
       createTab({
         tab: { name: t("Tab.NewTab"), type: "new" },
         setTabs,
-        setActiveTab,
+        setActiveTab: handleSetActiveTab,
       });
     }
-  }, [tabs, setActiveTab, setTabs, t]);
+  }, [handleSetActiveTab, setTabs, tabs, t]);
 
   useEffect(() => {
     if (document.activeElement !== document.body || !activeTab) return;
@@ -78,36 +86,41 @@ export default function BoardsPage() {
           return;
         }
         store.dispose();
-        await tauri.killEngines(value);
-        await abortExactTabGame(
-          value,
-          (tabId) => getDefaultStore().get(gameIdFamily(tabId)),
-          (tabId) => getDefaultStore().get(gameSessionFamily(tabId)),
-          (gameId, expectedSession) => tauri.abortGame(gameId, expectedSession),
-        );
-        closeWorkspaceTab(value);
+        try {
+          await tauri.killEngines(value);
+          await abortExactTabGame(
+            value,
+            (tabId) => getDefaultStore().get(gameIdFamily(tabId)),
+            (tabId) => getDefaultStore().get(gameSessionFamily(tabId)),
+            (gameId, expectedSession) => tauri.abortGame(gameId, expectedSession),
+          );
+        } catch (error) {
+          notifyUnlessCancelled(t("Common.Error"), error);
+          return;
+        }
+        startTransition(() => closeWorkspaceTab(value));
       }
     },
-    [closeWorkspaceTab, tabs],
+    [closeWorkspaceTab, t, tabs],
   );
 
   function selectTab(index: number) {
-    setActiveTab(tabs[Math.min(index, tabs.length - 1)].value);
+    handleSetActiveTab(tabs[Math.min(index, tabs.length - 1)].value);
   }
 
   function cycleTabs(reverse = false) {
     const index = tabs.findIndex((tab) => tab.value === activeTab);
     if (reverse) {
       if (index === 0) {
-        setActiveTab(tabs[tabs.length - 1].value);
+        handleSetActiveTab(tabs[tabs.length - 1].value);
       } else {
-        setActiveTab(tabs[index - 1].value);
+        handleSetActiveTab(tabs[index - 1].value);
       }
     } else {
       if (index === tabs.length - 1) {
-        setActiveTab(tabs[0].value);
+        handleSetActiveTab(tabs[0].value);
       } else {
-        setActiveTab(tabs[index + 1].value);
+        handleSetActiveTab(tabs[index + 1].value);
       }
     }
   }
@@ -119,9 +132,9 @@ export default function BoardsPage() {
       const id = genID(tabs.map((candidate) => candidate.value));
       tabStorage.clone(value, id);
       setTabs((previous) => [...previous, { ...tab, value: id }]);
-      startTransition(() => setActiveTab(id));
+      handleSetActiveTab(id);
     },
-    [setActiveTab, setTabs, tabs],
+    [handleSetActiveTab, setTabs, tabs],
   );
 
   const openRename = () => {
@@ -156,13 +169,6 @@ export default function BoardsPage() {
   }, [closeTab, activeTab]);
 
   const keyMap = useAtomValue(keyMapAtom);
-
-  const handleSetActiveTab = useCallback(
-    (v: string) => {
-      startTransition(() => setActiveTab(v));
-    },
-    [setActiveTab],
-  );
   useHotkeys([
     [keyMap.CLOSE_TAB.keys, () => closeTab(activeTab)],
     [keyMap.CYCLE_TABS.keys, () => cycleTabs()],
@@ -190,7 +196,7 @@ export default function BoardsPage() {
   return (
     <Tabs
       value={activeTab}
-      onChange={(v) => setActiveTab(v)}
+      onChange={handleSetActiveTab}
       keepMounted={false}
       className={classes.tabsContainer}
     >
@@ -282,7 +288,7 @@ export default function BoardsPage() {
             createTab({
               tab: { name: t("Tab.NewTab"), type: "new" },
               setTabs,
-              setActiveTab,
+              setActiveTab: handleSetActiveTab,
             })
           }
           classNames={{ root: classes.newTab }}
