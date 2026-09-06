@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 05402ca193c345e09b57d1cd25a44f05723459a1e37a90bdb606e3fc213c5606
+# agent-kit-sha256: 9aaf4a6b6a9e2fa096e442ca91da43462aa8c36b893c878ec5428916fc4332de
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -299,7 +299,6 @@ NOTIFY_APP = "Claude Code"
 # Matches Claude/Grok session toasts (`EXPIRE_MS = 30000`). 0 is DBus "never
 # expire" and is wrong here: a park ping is the same class as a finished turn.
 NOTIFY_DURATION_MS = 30000
-NOTIFY_TIMEOUT_S = 10
 # Overlay copies on other screens keep `notify show` alive for the duration.
 # The subprocess timeout must outlast that wait, or a successful post is killed
 # and left unrecorded, so the next named `decisions` toasts again.
@@ -4997,6 +4996,9 @@ def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None
         actions.append("Run /decide in a terminal to answer.")
     if preconditions:
         actions.append("Clear the listed precondition; no answer is needed.")
+    # Named in every failure line: this warning is the only signal that these
+    # blockers did not reach Felix, so it must say which ones and through what.
+    unannounced_ids = ", ".join(sorted(finding.id for finding in fresh))
     try:
         posted = subprocess.run(
             [
@@ -5018,8 +5020,9 @@ def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None
         ).returncode
     except (OSError, subprocess.SubprocessError) as exc:
         print(
-            f"warning: notifier failed while announcing Felix blockers "
-            f"({type(exc).__name__}: {exc}); blockers remain unannounced.",
+            f"warning: notifier {notifier} failed while announcing Felix blockers "
+            f"({type(exc).__name__}: {exc}); blockers remain unannounced: "
+            f"{unannounced_ids}.",
             file=sys.stderr,
         )
         return
@@ -5027,8 +5030,8 @@ def _announce_felix_blockers_unlocked(shown_ids: set[str], ledger: Path) -> None
         # Left unrecorded on purpose: a failed post (no session bus, headless)
         # should be retried on the next named look, not counted as delivered.
         print(
-            f"warning: notifier exited with status {posted}; blockers remain "
-            "unannounced.",
+            f"warning: notifier {notifier} exited with status {posted}; "
+            f"blockers remain unannounced: {unannounced_ids}.",
             file=sys.stderr,
         )
         return
