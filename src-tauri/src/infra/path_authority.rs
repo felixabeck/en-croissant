@@ -179,6 +179,32 @@ mod verified_identity {
         }
         Ok(VerifiedIdentity(pair))
     }
+
+    #[cfg(unix)]
+    impl super::ResolvedPath {
+        pub(super) fn create_database_file(&self) -> Result<(fs::File, VerifiedIdentity), Error> {
+            if self.operation != super::PathOperation::DatabaseCreate {
+                return Err(Error::InvalidInput(
+                    "resolved capability is not a database creation target".into(),
+                ));
+            }
+            let parent = self.parent.as_ref().ok_or_else(|| {
+                Error::InvalidInput("database child has no retained parent".into())
+            })?;
+            let leaf = self
+                .leaf
+                .as_deref()
+                .ok_or_else(|| Error::InvalidInput("database child has no retained leaf".into()))?;
+            let (file, observed) = crate::infra::fs::create_regular_at(parent, leaf)?;
+            let actual = super::opened_file_identity(&file)?;
+            if actual != observed {
+                return Err(Error::Conflict(
+                    super::VERIFIED_REGISTRATION_CONFLICT.into(),
+                ));
+            }
+            Ok((file, VerifiedIdentity(actual)))
+        }
+    }
 }
 
 pub(crate) use verified_identity::VerifiedIdentity;
@@ -193,6 +219,8 @@ type RefreshEntryHook = Box<dyn Fn(&str)>;
 #[cfg(test)]
 std::thread_local! {
     static DATABASE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static DATABASE_CHILD_POST_CREATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static INSTALLED_ENGINE_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -3544,11 +3572,35 @@ impl PathAuthority {
                 hook();
             }
         });
+        let expected_identity = resolved.identity()?;
+        self.register_database_child_verified(
+            root,
+            filename,
+            display_name.into(),
+            &resolved,
+            expected_identity,
+        )
+    }
+
+    fn register_database_child_verified(
+        &mut self,
+        root: &DatabaseRootHandle,
+        filename: &OsStr,
+        display_name: String,
+        resolved: &ResolvedPath,
+        expected_identity: VerifiedIdentity,
+    ) -> Result<DatabaseHandle, Error> {
+        #[cfg(unix)]
+        if resolved.parent.is_none() || resolved.leaf.is_none() {
+            return Err(Error::InvalidInput(
+                "database child has no retained parent boundary".into(),
+            ));
+        }
         let root_path = self.database_root_path(root)?;
         let path = root_path.join(filename);
         let validated_identity = validate_target(&path, PathClass::PersistentFile)?;
         let verified_identity =
-            verified_identity::database_child_identity(resolved.identity()?, &validated_identity)?;
+            verified_identity::database_child_identity(expected_identity, &validated_identity)?;
         if let Some(entry) = self.persistent.values().find(|entry| {
             entry.stored.class == PathClass::PersistentFile
                 && entry.stored.path.to_path().ok().as_ref() == Some(&path)
@@ -3577,7 +3629,7 @@ impl PathAuthority {
         let id = PathRef::fresh();
         let stored = StoredEntry {
             id: id.clone(),
-            display_name: display_name.into(),
+            display_name,
             class: PathClass::PersistentFile,
             purpose: Some(EntryPurpose::DatabaseFile),
             operations: canonical_operations(EntryPurpose::DatabaseFile),
@@ -3615,27 +3667,89 @@ impl PathAuthority {
                 "database filename must end in .db3".into(),
             ));
         }
-        let root_path = self.database_root_path(root)?;
-        let path = root_path.join(filename);
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
+        #[cfg(not(unix))]
         {
-            Ok(file) => file.sync_all()?,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(Error::Conflict("database filename already exists".into()));
-            }
-            Err(error) => return Err(Error::from(error)),
+            let _ = root;
+            return Err(Error::Conflict(
+                "descriptor-relative database creation is unsupported on this platform".into(),
+            ));
         }
-        match self.register_database_child(root, filename, filename.to_string_lossy()) {
-            Ok(handle) => Ok(handle),
-            Err(error @ Error::CommittedDurabilityUncertain(_)) => Err(error),
-            Err(error) => {
-                // Do not leave an unmanaged artifact if registration fails.
-                let _ = fs::remove_file(&path);
-                Err(error)
+        #[cfg(unix)]
+        {
+            let components = vec![filename.to_os_string()];
+            let resolved =
+                self.resolve(root.path_ref(), PathOperation::DatabaseCreate, &components)?;
+            #[cfg(test)]
+            DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    hook();
+                }
+            });
+            let parent = resolved.parent.as_ref().ok_or_else(|| {
+                Error::InvalidInput("database child has no retained parent".into())
+            })?;
+            let leaf = resolved
+                .leaf
+                .as_deref()
+                .ok_or_else(|| Error::InvalidInput("database child has no retained leaf".into()))?;
+            let (file, verified_identity) = match resolved.create_database_file() {
+                Ok(created) => created,
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(Error::Conflict("database filename already exists".into()));
+                }
+                Err(error) => return Err(error),
+            };
+            let sync_result = (|| {
+                file.sync_all()?;
+                parent.sync_all()?;
+                Ok::<_, Error>(())
+            })();
+            if let Err(error) = sync_result {
+                return Err(Self::cleanup_created_database_child(
+                    parent,
+                    leaf,
+                    verified_identity,
+                    error,
+                ));
             }
+            #[cfg(test)]
+            DATABASE_CHILD_POST_CREATE_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    hook();
+                }
+            });
+            match self.register_database_child_verified(
+                root,
+                filename,
+                filename.to_string_lossy().into_owned(),
+                &resolved,
+                verified_identity,
+            ) {
+                Ok(handle) => Ok(handle),
+                Err(error @ Error::CommittedDurabilityUncertain(_)) => Err(error),
+                Err(error) => Err(Self::cleanup_created_database_child(
+                    parent,
+                    leaf,
+                    verified_identity,
+                    error,
+                )),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn cleanup_created_database_child(
+        parent: &fs::File,
+        leaf: &OsStr,
+        identity: VerifiedIdentity,
+        primary: Error,
+    ) -> Error {
+        match crate::infra::fs::remove_entry_at(parent, leaf, identity.pair(), false) {
+            Ok(()) => primary,
+            Err(cleanup) => Error::OperationAndCleanup {
+                primary: primary.to_string(),
+                cleanup: cleanup.to_string(),
+            },
         }
     }
 
@@ -5664,7 +5778,9 @@ fn resolve_unix(
                 if last
                     && matches!(
                         operation,
-                        PathOperation::DownloadFile | PathOperation::DownloadArchive
+                        PathOperation::DownloadFile
+                            | PathOperation::DownloadArchive
+                            | PathOperation::DatabaseCreate
                     )
                     && error == rustix::io::Errno::NOENT =>
             {
@@ -5876,6 +5992,8 @@ mod tests {
     use crate::infra::fs::{
         set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
     };
+    #[cfg(unix)]
+    use crate::infra::fs::{set_test_removal_injector, RemovalFault, RemovalFaultPoint};
     use std::{
         os::unix::ffi::OsStringExt,
         sync::{
@@ -6258,6 +6376,197 @@ mod tests {
         assert_eq!(message, VERIFIED_REGISTRATION_CONFLICT);
         assert!(!message.contains('/'), "{message}");
         assert!(!message.contains("child.db3"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_database_child_is_exclusive_listable_and_validates_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("databases");
+        fs::create_dir(&root_path).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "Databases", None)
+            .unwrap();
+
+        let created = authority
+            .create_database_child(&root, OsStr::new("created.db3"))
+            .unwrap();
+        assert_eq!(fs::read(root_path.join("created.db3")).unwrap(), b"");
+        let listed = authority.list_database_children(&root).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].handle, created);
+
+        fs::write(root_path.join("existing.db3"), b"original").unwrap();
+        let conflict = authority
+            .create_database_child(&root, OsStr::new("existing.db3"))
+            .expect_err("exclusive creation must preserve an existing database");
+        assert!(matches!(conflict, Error::Conflict(_)));
+        assert_eq!(
+            fs::read(root_path.join("existing.db3")).unwrap(),
+            b"original"
+        );
+
+        for filename in [
+            OsStr::new("no-extension"),
+            OsStr::new("nested/child.db3"),
+            OsStr::new(""),
+        ] {
+            assert!(authority.create_database_child(&root, filename).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_database_child_cleans_through_retained_root_after_path_swap() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("databases");
+        let moved_root = dir.path().join("databases-moved");
+        let outside = dir.path().join("outside");
+        fs::create_dir(&root_path).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("sentinel.db3"), b"outside").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "Databases", None)
+            .unwrap();
+        let hook_root = root_path.clone();
+        let hook_moved = moved_root.clone();
+        let hook_outside = outside.clone();
+        DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&hook_root, &hook_moved).unwrap();
+                    symlink(&hook_outside, &hook_root).unwrap();
+                })))
+                .is_none());
+        });
+
+        let error = authority
+            .create_database_child(&root, OsStr::new("created.db3"))
+            .expect_err("registration must reject the swapped logical root");
+        assert!(matches!(error, Error::InvalidInput(_) | Error::Conflict(_)));
+        assert!(!moved_root.join("created.db3").exists());
+        assert!(!outside.join("created.db3").exists());
+        assert_eq!(fs::read(outside.join("sentinel.db3")).unwrap(), b"outside");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_database_child_refuses_late_file_and_symlink_substitution() {
+        use std::os::unix::fs::symlink;
+
+        for symlink_leaf in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root_path = dir.path().join("databases");
+            let outside = dir.path().join("outside.db3");
+            fs::create_dir(&root_path).unwrap();
+            fs::write(&outside, b"outside").unwrap();
+            let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+            let root = authority
+                .get_or_create_database_root(&root_path, "Databases", None)
+                .unwrap();
+            let leaf = root_path.join("late.db3");
+            let hook_leaf = leaf.clone();
+            let hook_outside = outside.clone();
+            DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+                assert!(slot
+                    .replace(Some(Box::new(move || {
+                        if symlink_leaf {
+                            symlink(&hook_outside, &hook_leaf).unwrap();
+                        } else {
+                            fs::write(&hook_leaf, b"original").unwrap();
+                        }
+                    })))
+                    .is_none());
+            });
+
+            let error = authority
+                .create_database_child(&root, OsStr::new("late.db3"))
+                .expect_err("exclusive creation must refuse the late leaf");
+            assert!(matches!(error, Error::Conflict(_)));
+            if symlink_leaf {
+                assert_eq!(fs::read(&outside).unwrap(), b"outside");
+                assert!(fs::symlink_metadata(&leaf)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink());
+            } else {
+                assert_eq!(fs::read(&leaf).unwrap(), b"original");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_database_child_does_not_adopt_or_unlink_substituted_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("databases");
+        let original = root_path.join("original.db3");
+        let replacement = root_path.join("created.db3");
+        fs::create_dir(&root_path).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "Databases", None)
+            .unwrap();
+        let hook_original = original.clone();
+        let hook_replacement = replacement.clone();
+        DATABASE_CHILD_POST_CREATE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&hook_replacement, &hook_original).unwrap();
+                    fs::write(&hook_replacement, b"replacement").unwrap();
+                })))
+                .is_none());
+        });
+
+        let error = authority
+            .create_database_child(&root, OsStr::new("created.db3"))
+            .expect_err("registration must reject the substituted inode");
+        assert!(matches!(error, Error::OperationAndCleanup { .. }));
+        assert_eq!(fs::read(&replacement).unwrap(), b"replacement");
+        assert_eq!(fs::read(&original).unwrap(), b"");
+        assert!(authority.persistent.values().all(|entry| entry
+            .stored
+            .path
+            .to_path()
+            .ok()
+            .as_ref()
+            != Some(&replacement)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_database_child_registry_failure_cleans_created_leaf_and_reports_cleanup_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("databases");
+        fs::create_dir(&root_path).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "Databases", None)
+            .unwrap();
+
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        let error = authority
+            .create_database_child(&root, OsStr::new("failed.db3"))
+            .expect_err("registry failure must be returned");
+        set_test_atomic_file_injector(None);
+        assert!(matches!(error, Error::Io(_)));
+        assert!(!root_path.join("failed.db3").exists());
+
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        set_test_removal_injector(Some(Arc::new(RemovalFault(
+            RemovalFaultPoint::BeforeTopOpen,
+        ))));
+        let error = authority
+            .create_database_child(&root, OsStr::new("cleanup-failed.db3"))
+            .expect_err("cleanup failure must be surfaced with the registry failure");
+        set_test_atomic_file_injector(None);
+        set_test_removal_injector(None);
+        assert!(matches!(error, Error::OperationAndCleanup { .. }));
+        assert!(root_path.join("cleanup-failed.db3").exists());
     }
 
     #[test]

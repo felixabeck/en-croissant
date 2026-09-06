@@ -1327,6 +1327,40 @@ pub(crate) fn open_regular_at(
     }
 }
 
+/// Creates one private regular-file leaf below a retained directory descriptor. The exclusive
+/// no-follow open is the namespace mutation; the returned inode identity is the only identity
+/// callers may use for later registration or cleanup.
+pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u64, u64)), Error> {
+    single_leaf(name)?;
+    #[cfg(unix)]
+    {
+        use rustix::fs::{self as rfs, FileType, Mode, OFlags};
+        let created = File::from(
+            rfs::openat(
+                parent,
+                name,
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::from_raw_mode(0o600),
+            )
+            .map_err(|error| Error::Io(Box::new(error.into())))?,
+        );
+        let stat = rfs::fstat(&created).map_err(|error| Error::Io(Box::new(error.into())))?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+            return Err(Error::InvalidInput(
+                "created database must be a regular file".into(),
+            ));
+        }
+        Ok((created, (stat.st_dev, stat.st_ino)))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (parent, name);
+        Err(Error::Conflict(
+            "descriptor-relative exclusive creation is unsupported on this platform".into(),
+        ))
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn rename_entry_at(
     source_parent: &File,
@@ -1875,6 +1909,73 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let parent = File::open(temp.path()).expect("open parent");
         assert!(open_regular_at(&parent, OsStr::new(""), RegularFileAccess::ReadOnly).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_regular_at_is_exclusive_and_returns_the_created_identity() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = File::open(temp.path()).expect("open parent");
+        let (created, identity) =
+            create_regular_at(&parent, OsStr::new("database.db3")).expect("create regular leaf");
+        assert_eq!(created.metadata().expect("created metadata").len(), 0);
+        assert_eq!(
+            entry_identity_at(&parent, OsStr::new("database.db3"), false).unwrap(),
+            identity
+        );
+        assert!(matches!(
+            create_regular_at(&parent, OsStr::new("database.db3")),
+            Err(Error::Io(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_regular_at_refuses_symlinks_and_invalid_leaves() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let outside = temp.path().join("outside");
+        std::fs::write(&outside, b"outside").expect("outside");
+        let parent = File::open(temp.path()).expect("open parent");
+        symlink(&outside, temp.path().join("link.db3")).expect("link");
+        assert!(matches!(
+            create_regular_at(&parent, OsStr::new("link.db3")),
+            Err(Error::Io(_))
+        ));
+        for leaf in [OsStr::new(""), OsStr::new("nested/database.db3")] {
+            assert!(matches!(
+                create_regular_at(&parent, leaf),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+        assert_eq!(std::fs::read(outside).expect("outside intact"), b"outside");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_regular_at_uses_retained_parent_after_pathname_swap() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let moved = temp.path().join("moved");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&root).expect("root");
+        std::fs::create_dir(&outside).expect("outside");
+        std::fs::write(outside.join("sentinel.db3"), b"outside").expect("sentinel");
+        let parent = File::open(&root).expect("open retained parent");
+        std::fs::rename(&root, &moved).expect("move root");
+        symlink(&outside, &root).expect("install pathname substitute");
+
+        let (_created, _) =
+            create_regular_at(&parent, OsStr::new("created.db3")).expect("retained parent create");
+        assert!(moved.join("created.db3").is_file());
+        assert!(!outside.join("created.db3").exists());
+        assert_eq!(
+            std::fs::read(outside.join("sentinel.db3")).expect("outside intact"),
+            b"outside"
+        );
     }
 
     #[cfg(unix)]
