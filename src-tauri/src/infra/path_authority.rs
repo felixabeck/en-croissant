@@ -9,7 +9,10 @@
 
 use crate::{
     error::Error,
-    infra::fs::{atomic_replace, AtomicFileOutcome, AtomicInstalledFile, VerifiedDir},
+    infra::fs::{
+        atomic_replace, read_bounded_bytes, AtomicFileOutcome, AtomicInstalledFile,
+        RegularFileAccess, VerifiedDir,
+    },
 };
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -29,6 +32,15 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const SCHEMA_VERSION: u32 = 1;
+
+fn engine_file_operations() -> Vec<PathOperation> {
+    vec![
+        PathOperation::EngineExecute,
+        PathOperation::EngineConfigure,
+        PathOperation::EngineInstall,
+        PathOperation::EngineBinaryInspect,
+    ]
+}
 
 /// Opaque renderer-safe identifier. It deliberately has no path parsing API.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
@@ -146,6 +158,14 @@ const VERIFIED_REGISTRATION_CONFLICT: &str = "verified identity does not match r
 std::thread_local! {
     static DATABASE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static INSTALLED_ENGINE_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static RESOLVE_PRE_REGULAR_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static WORKSPACE_METADATA_POST_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&fs::File)>>> =
+        const { std::cell::RefCell::new(None) };
+    static WORKSPACE_METADATA_PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 fn reject_disagreeing_expected_identity(
@@ -156,6 +176,16 @@ fn reject_disagreeing_expected_identity(
         return Err(Error::Conflict(VERIFIED_REGISTRATION_CONFLICT.into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn set_workspace_metadata_post_open_hook(hook: Option<Box<dyn FnOnce(&fs::File)>>) {
+    WORKSPACE_METADATA_POST_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+pub(crate) fn set_workspace_metadata_pre_open_hook(hook: Option<Box<dyn FnOnce()>>) {
+    WORKSPACE_METADATA_PRE_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
 #[derive(Debug)]
@@ -214,7 +244,7 @@ impl AuthorizedDir {
             for directory in directories {
                 parent = crate::infra::fs::open_directory_at(&parent, directory)?;
             }
-            crate::infra::fs::open_regular_at(&parent, leaf)
+            crate::infra::fs::open_regular_at(&parent, leaf, RegularFileAccess::ReadOnly)
         }
         #[cfg(not(unix))]
         {
@@ -490,6 +520,10 @@ mod verified {
         pub(super) fn into_inner(self) -> std::fs::File {
             self.0
         }
+        #[cfg(test)]
+        pub(super) fn try_clone_inner(&self) -> std::io::Result<std::fs::File> {
+            self.0.try_clone()
+        }
     }
 }
 pub(crate) use verified::VerifiedFile;
@@ -538,30 +572,19 @@ impl OpeningBookDescriptor {
             ));
         }
 
-        let mut bytes = Vec::with_capacity(usize::try_from(declared).unwrap_or(max_bytes));
-        let mut chunk = [0_u8; 16 * 1024];
-        loop {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancellation);
-            }
-            let read = self.file.read(&mut chunk)?;
-            if read == 0 {
-                break;
-            }
-            let new_len = bytes.len().checked_add(read).ok_or_else(|| {
-                Error::ResourceLimit("opening book exceeds the configured size limit".into())
-            })?;
-            if new_len > max_bytes {
-                return Err(Error::ResourceLimit(
-                    "opening book exceeds the configured size limit".into(),
-                ));
-            }
-            bytes.extend_from_slice(&chunk[..read]);
-        }
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancellation);
-        }
-        Ok(bytes)
+        read_bounded_bytes(
+            &mut self.file,
+            declared,
+            max_bytes,
+            "opening book exceeds the configured size limit",
+            || {
+                if cancellation.is_cancelled() {
+                    Err(Error::Cancellation)
+                } else {
+                    Ok(())
+                }
+            },
+        )
     }
 }
 impl OpeningBookHandle {
@@ -1899,6 +1922,13 @@ fn validate_components(components: &[OsString]) -> Result<(), Error> {
     Ok(())
 }
 
+pub(crate) fn workspace_sidecar_leaf(leaf: &OsStr) -> Result<OsString, Error> {
+    let stem = Path::new(leaf)
+        .file_stem()
+        .ok_or_else(|| Error::InvalidInput("PGN has no filename".into()))?;
+    Ok(OsString::from(format!("{}.info", stem.to_string_lossy())))
+}
+
 impl PathAuthority {
     /// Turns a native save-dialog choice into one persistent, exact PGN destination. The renderer
     /// receives only the resulting workspace handle; the selected native path never leaves this
@@ -2337,9 +2367,8 @@ impl PathAuthority {
         let path = PathBuf::from(path);
         let identity = validate_target(&path, class)?;
         reject_disagreeing_expected_identity(&identity, expected_identity)?;
-        let id = PathRef::fresh();
         let stored = StoredEntry {
-            id: id.clone(),
+            id: PathRef::fresh(),
             display_name,
             class,
             operations,
@@ -2347,16 +2376,7 @@ impl PathAuthority {
             identity,
             target_is_dir: class == PathClass::PersistentCustomRoot,
         };
-        let mut candidate = self.persistent.clone();
-        candidate.insert(
-            id.id.clone(),
-            Entry {
-                stored,
-                availability: PathAvailability::Available,
-            },
-        );
-        let durability = self.commit_candidate(candidate, None)?;
-        Ok(PathCommit { id, durability })
+        self.persist_new_entry(stored)
     }
     /// Backend discovery for bundled/app-owned files. Existing persistent
     /// entries retain their opaque ID across restarts; a replaced object is
@@ -2399,6 +2419,18 @@ impl PathAuthority {
         }
         let expected = validate_target(path, PathClass::PersistentFile)?;
         reject_disagreeing_expected_identity(&expected, expected_identity)?;
+        self.get_or_create_persistent_file_from_identity(path, display_name, operations, expected)
+    }
+
+    /// Common storage body for native paths whose file identity has already been established.
+    /// Callers must acquire `identity` from a checked pathname or retained descriptor boundary.
+    fn get_or_create_persistent_file_from_identity(
+        &mut self,
+        path: &Path,
+        display_name: String,
+        operations: Vec<PathOperation>,
+        identity: Identity,
+    ) -> Result<PathCommit, Error> {
         if let Some(entry) = self.persistent.values().find(|entry| {
             entry.stored.class == PathClass::PersistentFile
                 && entry.stored.operations == operations
@@ -2408,7 +2440,7 @@ impl PathAuthority {
                     .to_path()
                     .is_ok_and(|stored_path| stored_path == path)
         }) {
-            if entry.stored.identity != expected {
+            if entry.stored.identity != identity {
                 return Err(Error::Conflict(
                     "persistent puzzle database changed; acquire a new capability".into(),
                 ));
@@ -2418,13 +2450,30 @@ impl PathAuthority {
                 durability: CommitDurability::Durable,
             });
         }
-        self.migrate_legacy_os_path_inner(
-            path.as_os_str().to_os_string(),
+        let stored = StoredEntry {
+            id: PathRef::fresh(),
             display_name,
-            PathClass::PersistentFile,
+            class: PathClass::PersistentFile,
             operations,
-            expected_identity,
-        )
+            path: NativePath::from_path(path),
+            identity,
+            target_is_dir: false,
+        };
+        self.persist_new_entry(stored)
+    }
+
+    fn persist_new_entry(&mut self, stored: StoredEntry) -> Result<PathCommit, Error> {
+        let id = stored.id.clone();
+        let mut candidate = self.persistent.clone();
+        candidate.insert(
+            id.id.clone(),
+            Entry {
+                stored,
+                availability: PathAvailability::Available,
+            },
+        );
+        let durability = self.commit_candidate(candidate, None)?;
+        Ok(PathCommit { id, durability })
     }
 
     /// Creates a persistent database root from a native-only selected path.
@@ -2606,17 +2655,35 @@ impl PathAuthority {
         display_name: String,
         expected_identity: Option<VerifiedIdentity>,
     ) -> Result<EngineHandle, Error> {
-        let operations = vec![
-            PathOperation::EngineExecute,
-            PathOperation::EngineConfigure,
-            PathOperation::EngineInstall,
-            PathOperation::EngineBinaryInspect,
-        ];
+        let operations = engine_file_operations();
         let commit = self.get_or_create_persistent_file_inner(
             path,
             display_name,
             operations,
             expected_identity,
+        )?;
+        Ok(keep_adopted_handle(
+            commit.durability,
+            EngineHandle::new(commit.id),
+        ))
+    }
+
+    fn register_engine_file_from_resolved(
+        &mut self,
+        path: &Path,
+        display_name: String,
+        identity: VerifiedIdentity,
+    ) -> Result<EngineHandle, Error> {
+        let operations = engine_file_operations();
+        let pair = identity.pair();
+        let commit = self.get_or_create_persistent_file_from_identity(
+            path,
+            display_name,
+            operations,
+            Identity {
+                a: pair.0,
+                b: pair.1,
+            },
         )?;
         Ok(keep_adopted_handle(
             commit.durability,
@@ -2795,19 +2862,29 @@ impl PathAuthority {
         }
         validate_components(&components)?;
         let resolved = self.resolve(root.path_ref(), PathOperation::EngineInstall, &components)?;
-        let base = self.workspace_root(
-            &FileWorkspaceHandle::new(root.path_ref().clone()),
-            PathOperation::EngineInstall,
-        )?;
-        let path = components.iter().fold(base, |mut current, component| {
-            current.push(component);
-            current
+        if resolved.file.is_none() {
+            return Err(Error::InvalidInput(
+                "installed engine must be a regular file".into(),
+            ));
+        }
+        let identity = resolved.identity()?;
+        let path = resolved
+            .target
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput("installed engine must be a regular file".into()))?
+            .to_path_buf();
+        #[cfg(test)]
+        INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
         });
-        self.register_engine_file_verified(
-            &path,
-            components.last().unwrap().to_string_lossy(),
-            resolved.identity()?,
-        )
+        let display_name = components
+            .last()
+            .ok_or_else(|| Error::InvalidInput("engine path is required".into()))?
+            .to_string_lossy()
+            .into_owned();
+        self.register_engine_file_from_resolved(&path, display_name, identity)
     }
 
     pub(crate) fn engine_archive_destination(
@@ -3321,6 +3398,50 @@ impl PathAuthority {
             ));
         }
         Ok(root)
+    }
+
+    /// Opens the optional metadata sidecar beside an authority-resolved PGN. The PGN traversal
+    /// and sidecar acquisition happen under the caller's authority lock; returned bytes may be
+    /// consumed after the lock is released.
+    pub(crate) fn open_workspace_metadata(
+        &mut self,
+        workspace: &FileWorkspaceHandle,
+        components: &[OsString],
+    ) -> Result<Option<fs::File>, Error> {
+        let resolved = self.resolve(workspace.path_ref(), PathOperation::ReadPgn, components)?;
+        let parent = resolved
+            .parent
+            .as_ref()
+            .ok_or_else(|| Error::InvalidInput("PGN has no retained parent".into()))?;
+        let leaf = resolved
+            .leaf
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput("PGN has no filename".into()))?;
+        let sidecar = workspace_sidecar_leaf(leaf)?;
+        #[cfg(test)]
+        WORKSPACE_METADATA_PRE_OPEN_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        #[cfg(unix)]
+        let opened =
+            crate::infra::fs::open_regular_at(parent, &sidecar, RegularFileAccess::ReadOnly);
+        #[cfg(windows)]
+        let opened = open_windows_child(parent, &sidecar, false, false, true);
+        match opened {
+            Ok(file) => {
+                #[cfg(test)]
+                WORKSPACE_METADATA_POST_OPEN_HOOK.with(|slot| {
+                    if let Some(hook) = slot.borrow_mut().take() {
+                        hook(&file);
+                    }
+                });
+                Ok(Some(file))
+            }
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Persists an opaque child handle for a validated workspace entry. The child keeps the
@@ -4191,14 +4312,13 @@ pub(crate) fn read_engine_image_bytes(
     max_bytes: usize,
 ) -> Result<Vec<u8>, Error> {
     let mut file = file.into_inner();
-    let mut bytes = Vec::with_capacity(usize::try_from(declared).unwrap_or(max_bytes));
-    file.read_to_end(&mut bytes)?;
-    if bytes.len() > max_bytes {
-        return Err(Error::ResourceLimit(
-            "engine image exceeds the supported size limit".into(),
-        ));
-    }
-    Ok(bytes)
+    read_bounded_bytes(
+        &mut file,
+        declared,
+        max_bytes,
+        "engine image exceeds the supported size limit",
+        || Ok(()),
+    )
 }
 
 fn validate_persisted_shape(entry: &StoredEntry) -> Result<(), Error> {
@@ -4344,20 +4464,18 @@ fn resolve_unix(
                     "file authority changed concurrently".into(),
                 ));
             }
-            let file = fs::File::from(
-                rfs::openat(
-                    &handle,
-                    name,
-                    if is_write_operation(operation) {
-                        OFlags::RDWR
-                    } else {
-                        OFlags::RDONLY
-                    } | OFlags::NOFOLLOW
-                        | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )
-                .map_err(|e| Error::from(std::io::Error::from(e)))?,
-            );
+            #[cfg(test)]
+            RESOLVE_PRE_REGULAR_OPEN_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    hook();
+                }
+            });
+            let access = if is_write_operation(operation) {
+                RegularFileAccess::ReadWrite
+            } else {
+                RegularFileAccess::ReadOnly
+            };
+            let file = crate::infra::fs::open_regular_at(&handle, name, access)?;
             if file_identity(&file.metadata()?) != leaf_identity {
                 return Err(Error::Conflict("file changed while resolving".into()));
             }
@@ -4904,6 +5022,181 @@ mod tests {
             assert!(body.contains("resolved.identity()?"), "{body}");
             assert!(!body.contains("let _ = self.resolve("), "{body}");
             assert!(!body.contains("validate_target("), "{body}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_engine_registration_persists_resolved_identity_across_a_path_swap() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("engines");
+        fs::create_dir(&root_path).unwrap();
+        let engine = root_path.join("engine");
+        let replacement = root_path.join("replacement");
+        let original = root_path.join("original");
+        fs::write(&engine, b"original").unwrap();
+        fs::write(&replacement, b"replacement").unwrap();
+        let original_metadata = fs::metadata(&engine).unwrap();
+        let original_identity = (original_metadata.dev(), original_metadata.ino());
+        let clock = Arc::new(TestClock::new(0));
+        let mut authority = authority(&dir, clock);
+        let root = authority
+            .get_or_create_engine_root(&root_path, "Engines", None)
+            .unwrap();
+
+        let swap_engine = engine.clone();
+        INSTALLED_ENGINE_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::rename(&swap_engine, original).unwrap();
+                    fs::rename(replacement, swap_engine).unwrap();
+                })))
+                .is_none());
+        });
+        let handle = authority
+            .register_installed_engine(&root, "engine")
+            .expect("resolved descriptor identity is persisted despite pathname replacement");
+        let stored = &authority.persistent[&handle.id.id].stored;
+        assert_eq!((stored.identity.a, stored.identity.b), original_identity);
+        let id = handle.id.id.clone();
+        drop(authority);
+
+        let mut reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert_eq!(
+            reopened.persistent[&id].stored.identity.a,
+            original_identity.0
+        );
+        assert!(reopened
+            .resolve(handle.path_ref(), PathOperation::EngineExecute, &[])
+            .is_err());
+    }
+
+    #[test]
+    fn installed_engine_registration_reuses_id_and_refuses_invalid_paths_and_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("engines");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("engine"), b"engine").unwrap();
+        fs::create_dir(root_path.join("directory")).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_engine_root(&root_path, "Engines", None)
+            .unwrap();
+        let first = authority
+            .register_installed_engine(&root, "engine")
+            .unwrap();
+        let second = authority
+            .register_installed_engine(&root, "engine")
+            .unwrap();
+        assert_eq!(first.id, second.id);
+        for invalid in ["", "../engine", "/engine", "directory"] {
+            assert!(
+                authority.register_installed_engine(&root, invalid).is_err(),
+                "{invalid}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("engine", root_path.join("link")).unwrap();
+            assert!(authority.register_installed_engine(&root, "link").is_err());
+        }
+        drop(authority);
+        let mut reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let after_restart = reopened.register_installed_engine(&root, "engine").unwrap();
+        assert_eq!(first.id, after_restart.id);
+    }
+
+    #[test]
+    fn installed_engine_registration_keeps_registry_unchanged_on_persistence_failure() {
+        struct RegistryFailure;
+        impl AtomicWriterInjector for RegistryFailure {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::TempfileCreate {
+                    Err(std::io::Error::other("registry failure"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("engines");
+        fs::create_dir(&root_path).unwrap();
+        fs::write(root_path.join("engine"), b"engine").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_engine_root(&root_path, "Engines", None)
+            .unwrap();
+        let before = authority.persistent.len();
+        set_test_atomic_file_injector(Some(Arc::new(RegistryFailure)));
+        let result = authority.register_installed_engine(&root, "engine");
+        set_test_atomic_file_injector(None);
+        assert!(result.is_err());
+        assert_eq!(authority.persistent.len(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_regular_swap_to_fifo_is_prompt_for_read_and_write_access() {
+        for operation in [PathOperation::ReadPgn, PathOperation::WritePgn] {
+            let dir = tempfile::tempdir().unwrap();
+            let root_path = dir.path().join("workspace");
+            fs::create_dir(&root_path).unwrap();
+            let file = root_path.join("game.pgn");
+            let original = root_path.join("original.pgn");
+            fs::write(&file, b"*").unwrap();
+            let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+            let grant = authority
+                .grant_dialog_operations(
+                    &root_path,
+                    "Workspace",
+                    PathClass::BoundedDialogGrant,
+                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                    Duration::from_secs(60),
+                    1,
+                )
+                .unwrap();
+            let root = authority
+                .promote_dialog(
+                    &grant,
+                    PathClass::PersistentCustomRoot,
+                    "Workspace",
+                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                )
+                .unwrap();
+            let swap_file = file.clone();
+            RESOLVE_PRE_REGULAR_OPEN_HOOK.with(|slot| {
+                assert!(slot
+                    .replace(Some(Box::new(move || {
+                        fs::rename(&swap_file, original).unwrap();
+                        let status = std::process::Command::new("mkfifo")
+                            .arg(swap_file)
+                            .status()
+                            .unwrap();
+                        assert!(status.success());
+                    })))
+                    .is_none());
+            });
+            let release_fifo = file.clone();
+            let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+            let watchdog = std::thread::spawn(move || {
+                if completed_rx.recv_timeout(Duration::from_secs(2)).is_err() {
+                    let _ = fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(release_fifo);
+                }
+            });
+            let started = std::time::Instant::now();
+            let result = authority.resolve(&root.id, operation, &[OsString::from("game.pgn")]);
+            let elapsed = started.elapsed();
+            let _ = completed_tx.send(());
+            watchdog.join().unwrap();
+            assert!(result.is_err());
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "FIFO open blocked for {elapsed:?}"
+            );
         }
     }
 
@@ -7926,6 +8219,33 @@ mod tests {
     }
 
     #[test]
+    fn opening_book_bounded_reader_keeps_exact_limit_and_cancellation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("book.bin");
+        fs::write(&path, b"book").unwrap();
+        let mut descriptor = OpeningBookDescriptor {
+            file_name: "book.bin".into(),
+            file: fs::File::open(&path).unwrap(),
+        };
+        assert_eq!(
+            descriptor
+                .read_bounded_bytes_cancellable(4, &CancellationToken::new())
+                .unwrap(),
+            b"book"
+        );
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let mut cancelled_descriptor = OpeningBookDescriptor {
+            file_name: "book.bin".into(),
+            file: fs::File::open(path).unwrap(),
+        };
+        assert!(matches!(
+            cancelled_descriptor.read_bounded_bytes_cancellable(4, &cancelled),
+            Err(Error::Cancellation)
+        ));
+    }
+
+    #[test]
     fn engine_image_reader_rejects_oversized_file_without_a_descriptor() {
         let dir = tempfile::tempdir().unwrap();
         let contents = b"0123456789";
@@ -7943,12 +8263,15 @@ mod tests {
         let (mutex, handle, image) = registered_engine_image(&dir, contents);
         let max_bytes = 10;
         let (file, declared) = engine_image_reader_for(&mutex, &handle, max_bytes).unwrap();
+        let mut observed = file.try_clone_inner().unwrap();
         assert_eq!(declared, contents.len() as u64);
         let mut extra = fs::OpenOptions::new().append(true).open(&image).unwrap();
         extra.write_all(b"grown!").unwrap();
         drop(extra);
         let error = read_engine_image_bytes(file, declared, max_bytes).unwrap_err();
         assert!(matches!(error, Error::ResourceLimit(_)));
+        use std::io::Seek;
+        assert_eq!(observed.stream_position().unwrap(), 11);
     }
 
     #[test]

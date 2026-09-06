@@ -12,7 +12,55 @@
 use crate::error::Error;
 #[cfg(test)]
 use std::sync::Arc;
-use std::{ffi::OsStr, fs::File, io::Write, path::Path};
+use std::{
+    ffi::OsStr,
+    fs::File,
+    io::{Read, Write},
+    path::Path,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RegularFileAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
+pub(crate) fn read_bounded_bytes<R: Read>(
+    reader: &mut R,
+    declared: u64,
+    max_bytes: usize,
+    limit_message: &'static str,
+    mut checkpoint: impl FnMut() -> Result<(), Error>,
+) -> Result<Vec<u8>, Error> {
+    checkpoint()?;
+    let capacity = usize::try_from(declared)
+        .unwrap_or(max_bytes)
+        .min(max_bytes);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut chunk = [0_u8; 16 * 1024];
+    loop {
+        checkpoint()?;
+        let remaining = max_bytes - bytes.len();
+        let requested = chunk.len().min(remaining.saturating_add(1));
+        let read = loop {
+            match reader.read(&mut chunk[..requested]) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                    checkpoint()?;
+                    continue;
+                }
+                result => break result?,
+            }
+        };
+        if read == 0 {
+            checkpoint()?;
+            return Ok(bytes);
+        }
+        if read > remaining {
+            return Err(Error::ResourceLimit(limit_message.into()));
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+}
 
 mod verified_directory {
     use crate::error::Error;
@@ -1238,7 +1286,11 @@ pub(crate) fn open_directory_at(parent: &File, name: &OsStr) -> Result<File, Err
     ))
 }
 
-pub(crate) fn open_regular_at(parent: &File, name: &OsStr) -> Result<File, Error> {
+pub(crate) fn open_regular_at(
+    parent: &File,
+    name: &OsStr,
+    access: RegularFileAccess,
+) -> Result<File, Error> {
     single_leaf(name)?;
     #[cfg(unix)]
     {
@@ -1247,16 +1299,19 @@ pub(crate) fn open_regular_at(parent: &File, name: &OsStr) -> Result<File, Error
             rfs::openat(
                 parent,
                 name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+                match access {
+                    RegularFileAccess::ReadOnly => OFlags::RDONLY,
+                    RegularFileAccess::ReadWrite => OFlags::RDWR,
+                } | OFlags::NOFOLLOW
+                    | OFlags::CLOEXEC
+                    | OFlags::NONBLOCK,
                 Mode::empty(),
             )
             .map_err(|error| Error::Io(Box::new(error.into())))?,
         );
         let stat = rfs::fstat(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
         if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-            return Err(Error::InvalidInput(
-                "workspace entry must be a regular file".into(),
-            ));
+            return Err(Error::InvalidInput("target must be a regular file".into()));
         }
         let flags = rfs::fcntl_getfl(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
         rfs::fcntl_setfl(&opened, flags - OFlags::NONBLOCK)
@@ -1265,7 +1320,7 @@ pub(crate) fn open_regular_at(parent: &File, name: &OsStr) -> Result<File, Error
     }
     #[cfg(not(unix))]
     {
-        let _ = parent;
+        let _ = (parent, access);
         Err(Error::Conflict(
             "fd-relative regular-file opening is unsupported on this platform".into(),
         ))
@@ -1545,6 +1600,138 @@ mod tests {
         (metadata.dev(), metadata.ino())
     }
 
+    #[test]
+    fn bounded_reader_accepts_zero_and_exact_limits_and_detects_one_excess_byte() {
+        let mut empty = std::io::Cursor::new(Vec::<u8>::new());
+        assert_eq!(
+            read_bounded_bytes(&mut empty, 0, 0, "too large", || Ok(())).unwrap(),
+            b""
+        );
+        let mut exact = std::io::Cursor::new(b"exact".to_vec());
+        assert_eq!(
+            read_bounded_bytes(&mut exact, u64::MAX, 5, "too large", || Ok(())).unwrap(),
+            b"exact"
+        );
+        let mut excess = std::io::Cursor::new(b"excess".to_vec());
+        assert!(matches!(
+            read_bounded_bytes(&mut excess, 0, 5, "too large", || Ok(())),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_eq!(excess.position(), 6, "reader consumes only cap plus one");
+    }
+
+    #[test]
+    fn bounded_reader_retries_interrupted_and_propagates_io_and_checkpoint_errors() {
+        struct InterruptedOnce {
+            interrupted: bool,
+            bytes: std::io::Cursor<Vec<u8>>,
+        }
+        impl Read for InterruptedOnce {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+                }
+                self.bytes.read(output)
+            }
+        }
+        let mut interrupted = InterruptedOnce {
+            interrupted: false,
+            bytes: std::io::Cursor::new(b"ok".to_vec()),
+        };
+        assert_eq!(
+            read_bounded_bytes(&mut interrupted, 2, 2, "too large", || Ok(())).unwrap(),
+            b"ok"
+        );
+
+        let mut interrupted_then_cancelled = InterruptedOnce {
+            interrupted: false,
+            bytes: std::io::Cursor::new(b"unread".to_vec()),
+        };
+        let mut checkpoints = 0;
+        let error = read_bounded_bytes(&mut interrupted_then_cancelled, 6, 6, "too large", || {
+            checkpoints += 1;
+            if checkpoints == 3 {
+                Err(Error::Cancellation)
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert!(matches!(error, Error::Cancellation));
+        assert_eq!(interrupted_then_cancelled.bytes.position(), 0);
+
+        let mut failed = std::io::repeat(0).take(1);
+        let error = read_bounded_bytes(&mut failed, 1, 1, "too large", || Err(Error::Cancellation))
+            .unwrap_err();
+        assert!(matches!(error, Error::Cancellation));
+
+        struct FailedReader;
+        impl Read for FailedReader {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("read failed"))
+            }
+        }
+        assert!(matches!(
+            read_bounded_bytes(&mut FailedReader, 0, 1, "too large", || Ok(())),
+            Err(Error::Io(_))
+        ));
+    }
+
+    #[test]
+    fn bounded_reader_checks_cancellation_between_reads_and_after_eof() {
+        struct OneByteReader(std::io::Cursor<Vec<u8>>);
+        impl Read for OneByteReader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                self.0.read(&mut output[..1])
+            }
+        }
+        let mut between = OneByteReader(std::io::Cursor::new(b"two".to_vec()));
+        let mut checkpoints = 0;
+        let error = read_bounded_bytes(&mut between, 3, 3, "too large", || {
+            checkpoints += 1;
+            if checkpoints == 3 {
+                Err(Error::Cancellation)
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert!(matches!(error, Error::Cancellation));
+        assert_eq!(between.0.position(), 1);
+
+        use std::{cell::Cell, rc::Rc};
+        struct EofSignallingReader {
+            bytes: std::io::Cursor<Vec<u8>>,
+            saw_eof: Rc<Cell<bool>>,
+        }
+        impl Read for EofSignallingReader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.bytes.read(output)?;
+                if read == 0 {
+                    self.saw_eof.set(true);
+                }
+                Ok(read)
+            }
+        }
+        let saw_eof = Rc::new(Cell::new(false));
+        let checkpoint_eof = Rc::clone(&saw_eof);
+        let mut after_eof = EofSignallingReader {
+            bytes: std::io::Cursor::new(b"done".to_vec()),
+            saw_eof,
+        };
+        let error = read_bounded_bytes(&mut after_eof, 4, 4, "too large", || {
+            if checkpoint_eof.get() {
+                Err(Error::Cancellation)
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert!(matches!(error, Error::Cancellation));
+        assert_eq!(after_eof.bytes.position(), 4);
+    }
+
     #[cfg(unix)]
     #[test]
     fn verified_parent_rejects_an_intermediate_symlink_swap() {
@@ -1602,10 +1789,33 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::write(temp.path().join("track.mp3"), b"exact bytes").expect("write file");
         let parent = File::open(temp.path()).expect("open parent");
-        let mut opened = open_regular_at(&parent, OsStr::new("track.mp3")).expect("open leaf");
+        let mut opened = open_regular_at(
+            &parent,
+            OsStr::new("track.mp3"),
+            RegularFileAccess::ReadOnly,
+        )
+        .expect("open leaf");
         let mut bytes = Vec::new();
         opened.read_to_end(&mut bytes).expect("read leaf");
         assert_eq!(bytes, b"exact bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_at_supports_explicit_read_write_access() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("game.pgn");
+        std::fs::write(&path, b"old").expect("write file");
+        let parent = File::open(temp.path()).expect("open parent");
+        let mut opened = open_regular_at(
+            &parent,
+            OsStr::new("game.pgn"),
+            RegularFileAccess::ReadWrite,
+        )
+        .expect("open read/write");
+        opened.write_all(b"!").expect("write descriptor");
+        drop(opened);
+        assert_eq!(std::fs::read(path).unwrap(), b"!ld");
     }
 
     #[cfg(unix)]
@@ -1615,7 +1825,7 @@ mod tests {
         std::fs::write(temp.path().join("target"), b"target").expect("write target");
         std::os::unix::fs::symlink("target", temp.path().join("link")).expect("link");
         let parent = File::open(temp.path()).expect("open parent");
-        assert!(open_regular_at(&parent, OsStr::new("link")).is_err());
+        assert!(open_regular_at(&parent, OsStr::new("link"), RegularFileAccess::ReadOnly).is_err());
     }
 
     #[cfg(unix)]
@@ -1624,7 +1834,12 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir(temp.path().join("directory")).expect("directory");
         let parent = File::open(temp.path()).expect("open parent");
-        assert!(open_regular_at(&parent, OsStr::new("directory")).is_err());
+        assert!(open_regular_at(
+            &parent,
+            OsStr::new("directory"),
+            RegularFileAccess::ReadOnly
+        )
+        .is_err());
     }
 
     #[cfg(unix)]
@@ -1638,7 +1853,7 @@ mod tests {
             .expect("run mkfifo");
         assert!(status.success(), "mkfifo failed with {status}");
         let parent = File::open(temp.path()).expect("open parent");
-        assert!(open_regular_at(&parent, OsStr::new("fifo")).is_err());
+        assert!(open_regular_at(&parent, OsStr::new("fifo"), RegularFileAccess::ReadOnly).is_err());
     }
 
     #[cfg(unix)]
@@ -1646,7 +1861,12 @@ mod tests {
     fn open_regular_at_refuses_a_multicomponent_leaf() {
         let temp = tempfile::tempdir().expect("tempdir");
         let parent = File::open(temp.path()).expect("open parent");
-        assert!(open_regular_at(&parent, OsStr::new("nested/file")).is_err());
+        assert!(open_regular_at(
+            &parent,
+            OsStr::new("nested/file"),
+            RegularFileAccess::ReadOnly
+        )
+        .is_err());
     }
 
     #[cfg(unix)]
@@ -1654,7 +1874,7 @@ mod tests {
     fn open_regular_at_refuses_an_empty_leaf() {
         let temp = tempfile::tempdir().expect("tempdir");
         let parent = File::open(temp.path()).expect("open parent");
-        assert!(open_regular_at(&parent, OsStr::new("")).is_err());
+        assert!(open_regular_at(&parent, OsStr::new(""), RegularFileAccess::ReadOnly).is_err());
     }
 
     #[cfg(unix)]

@@ -8,8 +8,9 @@ use crate::{
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
     infra::path_authority::{
-        CommitDurability, FileWorkspaceDescriptor, FileWorkspaceHandle, PathAuthority, PathClass,
-        PathOperation, PathRef, WorkspaceMutationTarget, WorkspaceRemovalStatus,
+        workspace_sidecar_leaf as sidecar_leaf, CommitDurability, FileWorkspaceDescriptor,
+        FileWorkspaceHandle, PathAuthority, PathClass, PathOperation, PathRef,
+        WorkspaceMutationTarget, WorkspaceRemovalStatus,
     },
     pgn, AppState,
 };
@@ -23,6 +24,8 @@ use std::{
 };
 
 const TRASH_DIRECTORY: &str = ".en-croissant-trash";
+const MAX_WORKSPACE_METADATA_BYTES: usize = 1024 * 1024;
+const METADATA_LIMIT_MESSAGE: &str = "PGN metadata exceeds the supported size limit";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -101,19 +104,47 @@ fn pgn_name(name: &str) -> Result<String, Error> {
     })
 }
 
+#[cfg(test)]
 fn info_path(pgn: &Path) -> Result<PathBuf, Error> {
-    let stem = pgn
-        .file_stem()
+    let leaf = pgn
+        .file_name()
         .ok_or_else(|| Error::InvalidInput("PGN has no filename".into()))?;
-    Ok(pgn.with_file_name(format!("{}.info", stem.to_string_lossy())))
+    Ok(pgn.with_file_name(sidecar_leaf(leaf)?))
 }
 
-fn metadata_from(path: &Path) -> Result<WorkspaceMetadata, Error> {
-    let sidecar = info_path(path)?;
-    if !sidecar.exists() {
-        return Ok(WorkspaceMetadata::default());
+fn serialize_metadata(metadata: &WorkspaceMetadata) -> Result<Vec<u8>, Error> {
+    let bytes =
+        serde_json::to_vec(metadata).map_err(|error| Error::InvalidInput(error.to_string()))?;
+    if bytes.len() > MAX_WORKSPACE_METADATA_BYTES {
+        return Err(Error::ResourceLimit(METADATA_LIMIT_MESSAGE.into()));
     }
-    let bytes = fs::read(sidecar)?;
+    Ok(bytes)
+}
+
+fn metadata_from(
+    pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    workspace: &FileWorkspaceHandle,
+    path: &Path,
+) -> Result<WorkspaceMetadata, Error> {
+    let components = workspace_components(pgn_path_authority, workspace, path)?;
+    let mut sidecar = {
+        let mut guard = authority(pgn_path_authority)?;
+        let authority = guard
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+        authority.open_workspace_metadata(workspace, &components)?
+    };
+    let Some(sidecar) = sidecar.as_mut() else {
+        return Ok(WorkspaceMetadata::default());
+    };
+    let declared = sidecar.metadata()?.len();
+    let bytes = crate::infra::fs::read_bounded_bytes(
+        sidecar,
+        declared,
+        MAX_WORKSPACE_METADATA_BYTES,
+        METADATA_LIMIT_MESSAGE,
+        || Ok(()),
+    )?;
     serde_json::from_slice(&bytes)
         .map_err(|error| Error::InvalidInput(format!("invalid PGN metadata: {error}")))
 }
@@ -145,14 +176,6 @@ fn mutation_target(
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .workspace_mutation_target(entry)
-}
-
-fn sidecar_leaf(leaf: &std::ffi::OsStr) -> Result<std::ffi::OsString, Error> {
-    let path = Path::new(leaf);
-    info_path(path)?
-        .file_name()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| Error::InvalidInput("PGN has no filename".into()))
 }
 
 fn durability_uncertainty(
@@ -292,7 +315,7 @@ fn collect_tree_entries(
             kind: WorkspaceEntryKind::File,
             name: name.trim_end_matches(".pgn").to_string(),
             children: vec![],
-            metadata: Some(metadata_from(&path)?),
+            metadata: Some(metadata_from(pgn_path_authority, workspace, &path)?),
             game_count: None,
             last_modified: timestamp(&path)?,
         }))
@@ -519,6 +542,7 @@ fn create_workspace_file_blocking(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace_mutation: &Mutex<()>,
 ) -> Result<WorkspaceEntry, Error> {
+    let metadata_bytes = serialize_metadata(&metadata)?;
     let _guard = workspace_mutation
         .lock()
         .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
@@ -544,10 +568,7 @@ fn create_workspace_file_blocking(
         &info_leaf,
         |file| {
             use std::io::Write;
-            file.write_all(
-                &serde_json::to_vec(&metadata).map_err(|e| Error::InvalidInput(e.to_string()))?,
-            )
-            .map_err(Error::from)
+            file.write_all(&metadata_bytes).map_err(Error::from)
         },
     ) {
         Ok(outcome) => outcome,
@@ -752,6 +773,7 @@ fn rename_workspace_file_blocking(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace_mutation: &Mutex<()>,
 ) -> Result<(), Error> {
+    let metadata_bytes = serialize_metadata(&metadata)?;
     let _guard = workspace_mutation
         .lock()
         .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
@@ -773,10 +795,7 @@ fn rename_workspace_file_blocking(
     let sidecar_outcome =
         crate::infra::fs::atomic_replace_at(&source.parent, &info_leaf, |file| {
             use std::io::Write;
-            file.write_all(
-                &serde_json::to_vec(&metadata).map_err(|e| Error::InvalidInput(e.to_string()))?,
-            )
-            .map_err(Error::from)
+            file.write_all(&metadata_bytes).map_err(Error::from)
         })?;
     // The PGN rename and the sidecar rename both landed; the registry must follow them even
     // when the sidecar's parent sync is uncertain, so the rebind happens before reporting. The
@@ -1055,9 +1074,15 @@ mod tests {
             set_test_atomic_file_injector, set_test_removal_injector, AtomicFileFaultPoint,
             AtomicWriterInjector, RemovalFault, RemovalFaultPoint,
         },
-        path_authority::PathAuthority,
+        path_authority::{
+            set_workspace_metadata_post_open_hook, set_workspace_metadata_pre_open_hook,
+            PathAuthority,
+        },
     };
-    use std::sync::Arc;
+    use std::{
+        io::{Seek, Write},
+        sync::{Arc, Mutex as StdMutex},
+    };
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -1527,10 +1552,14 @@ mod tests {
 
     #[test]
     fn metadata_sidecars_default_parse_and_reject_invalid_json() {
-        let directory = tempfile::tempdir().expect("metadata directory");
-        let pgn = directory.path().join("game.pgn");
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let pgn = root.join("game.pgn");
         fs::write(&pgn, "[Event \"test\"]\n").expect("PGN");
-        assert_eq!(metadata_from(&pgn).unwrap(), WorkspaceMetadata::default());
+        assert_eq!(
+            metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
+            WorkspaceMetadata::default()
+        );
 
         let sidecar = info_path(&pgn).unwrap();
         let metadata = WorkspaceMetadata {
@@ -1538,10 +1567,218 @@ mod tests {
             tags: vec!["rapid".into(), "training".into()],
         };
         fs::write(&sidecar, serde_json::to_vec(&metadata).unwrap()).expect("metadata");
-        assert_eq!(metadata_from(&pgn).unwrap(), metadata);
+        assert_eq!(
+            metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
+            metadata
+        );
 
         fs::write(sidecar, "not json").expect("invalid metadata");
-        assert!(matches!(metadata_from(&pgn), Err(Error::InvalidInput(_))));
+        assert!(matches!(
+            metadata_from(&state.pgn_path_authority, &workspace, &pgn),
+            Err(Error::InvalidInput(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_sidecars_refuse_links_directories_and_fifos() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let pgn = root.join("game.pgn");
+        let sidecar = root.join("game.info");
+        fs::write(&pgn, "*").unwrap();
+        fs::write(root.join("target"), b"{}").unwrap();
+
+        std::os::unix::fs::symlink("target", &sidecar).unwrap();
+        assert!(metadata_from(&state.pgn_path_authority, &workspace, &pgn).is_err());
+        fs::remove_file(&sidecar).unwrap();
+        std::os::unix::fs::symlink("missing", &sidecar).unwrap();
+        assert!(metadata_from(&state.pgn_path_authority, &workspace, &pgn).is_err());
+        fs::remove_file(&sidecar).unwrap();
+        fs::create_dir(&sidecar).unwrap();
+        assert!(metadata_from(&state.pgn_path_authority, &workspace, &pgn).is_err());
+        fs::remove_dir(&sidecar).unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(&sidecar)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(metadata_from(&state.pgn_path_authority, &workspace, &pgn).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_sidecar_keeps_lossy_non_utf8_naming() {
+        use std::os::unix::ffi::OsStringExt;
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let leaf = std::ffi::OsString::from_vec(b"game-\xff.pgn".to_vec());
+        let pgn = root.join(&leaf);
+        fs::write(&pgn, "*").unwrap();
+        let sidecar = root.join(sidecar_leaf(&leaf).unwrap());
+        let expected = WorkspaceMetadata {
+            file_type: WorkspaceFileType::Game,
+            tags: vec!["non-utf8".into()],
+        };
+        fs::write(sidecar, serialize_metadata(&expected).unwrap()).unwrap();
+        assert_eq!(
+            metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
+            expected
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_sidecar_reads_retained_parent_and_leaf_across_replacements() {
+        let (directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let pgn = root.join("game.pgn");
+        let sidecar = root.join("game.info");
+        let trusted = WorkspaceMetadata {
+            file_type: WorkspaceFileType::Game,
+            tags: vec!["trusted".into()],
+        };
+        let attacker = WorkspaceMetadata {
+            file_type: WorkspaceFileType::Puzzle,
+            tags: vec!["attacker".into()],
+        };
+        fs::write(&pgn, "*").unwrap();
+        fs::write(&sidecar, serialize_metadata(&trusted).unwrap()).unwrap();
+        let old_root = directory.path().join("old-workspace");
+        let replacement_root = root.clone();
+        set_workspace_metadata_pre_open_hook(Some(Box::new(move || {
+            fs::rename(&replacement_root, &old_root).unwrap();
+            fs::create_dir(&replacement_root).unwrap();
+            fs::write(replacement_root.join("game.pgn"), "*").unwrap();
+            fs::write(
+                replacement_root.join("game.info"),
+                serialize_metadata(&attacker).unwrap(),
+            )
+            .unwrap();
+        })));
+        assert_eq!(
+            metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
+            trusted
+        );
+        set_workspace_metadata_pre_open_hook(None);
+
+        let (_second_directory, second_state, second_workspace) = workspace_state();
+        let second_root =
+            workspace_root(&second_state.pgn_path_authority, &second_workspace).unwrap();
+        let second_pgn = second_root.join("game.pgn");
+        let original_sidecar = second_root.join("game.info");
+        let moved_sidecar = second_root.join("original.info");
+        fs::write(&second_pgn, "*").unwrap();
+        fs::write(&original_sidecar, serialize_metadata(&trusted).unwrap()).unwrap();
+        let replacement_sidecar = original_sidecar.clone();
+        set_workspace_metadata_post_open_hook(Some(Box::new(move |_| {
+            fs::rename(&replacement_sidecar, moved_sidecar).unwrap();
+            fs::write(
+                replacement_sidecar,
+                serialize_metadata(&WorkspaceMetadata {
+                    file_type: WorkspaceFileType::Puzzle,
+                    tags: vec!["replacement".into()],
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        })));
+        assert_eq!(
+            metadata_from(
+                &second_state.pgn_path_authority,
+                &second_workspace,
+                &second_pgn,
+            )
+            .unwrap(),
+            trusted
+        );
+        set_workspace_metadata_post_open_hook(None);
+    }
+
+    #[test]
+    fn metadata_sidecar_exact_limit_succeeds_and_growth_consumes_only_cap_plus_one() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        let pgn = root.join("game.pgn");
+        let sidecar = root.join("game.info");
+        fs::write(&pgn, "*").unwrap();
+        let expected = WorkspaceMetadata::default();
+        let mut exact = serialize_metadata(&expected).unwrap();
+        exact.resize(MAX_WORKSPACE_METADATA_BYTES, b' ');
+        fs::write(&sidecar, &exact).unwrap();
+        assert_eq!(
+            metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
+            expected
+        );
+
+        fs::write(&sidecar, serialize_metadata(&expected).unwrap()).unwrap();
+        let observed = Arc::new(StdMutex::new(None));
+        let retained = Arc::clone(&observed);
+        let growing_sidecar = sidecar.clone();
+        set_workspace_metadata_post_open_hook(Some(Box::new(move |opened| {
+            *retained.lock().unwrap() = Some(opened.try_clone().unwrap());
+            let mut writer = fs::OpenOptions::new()
+                .append(true)
+                .open(growing_sidecar)
+                .unwrap();
+            writer
+                .write_all(&vec![b' '; MAX_WORKSPACE_METADATA_BYTES + 1])
+                .unwrap();
+        })));
+        let error = metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap_err();
+        set_workspace_metadata_post_open_hook(None);
+        assert!(matches!(error, Error::ResourceLimit(_)));
+        let mut retained = observed.lock().unwrap().take().unwrap();
+        assert_eq!(
+            retained.stream_position().unwrap(),
+            (MAX_WORKSPACE_METADATA_BYTES + 1) as u64
+        );
+    }
+
+    #[test]
+    fn oversized_metadata_refuses_create_and_rename_before_mutation() {
+        let (_directory, state, workspace) = workspace_state();
+        let oversized = WorkspaceMetadata {
+            file_type: WorkspaceFileType::Game,
+            tags: vec!["x".repeat(MAX_WORKSPACE_METADATA_BYTES)],
+        };
+        let create = create_workspace_file_blocking(
+            workspace.clone(),
+            workspace.clone(),
+            "too-large".into(),
+            oversized.clone(),
+            "*".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+        );
+        assert!(matches!(create, Err(Error::ResourceLimit(_))));
+        let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
+        assert!(!root.join("too-large.pgn").exists());
+        assert!(!root.join("too-large.info").exists());
+
+        let created = create_workspace_file_blocking(
+            workspace.clone(),
+            workspace.clone(),
+            "before".into(),
+            WorkspaceMetadata::default(),
+            "*".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+        )
+        .unwrap();
+        let rename = rename_workspace_file_blocking(
+            workspace,
+            created.handle,
+            "after".into(),
+            oversized,
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+        );
+        assert!(matches!(rename, Err(Error::ResourceLimit(_))));
+        assert!(root.join("before.pgn").is_file());
+        assert!(root.join("before.info").is_file());
+        assert!(!root.join("after.pgn").exists());
+        assert!(!root.join("after.info").exists());
     }
 
     #[test]
