@@ -2,17 +2,13 @@ import type { MantineColor } from "@mantine/core";
 import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import equal from "fast-deep-equal";
+import type { SetStateAction } from "react";
 import { atom, type PrimitiveAtom } from "jotai";
 import { atomFamily, atomWithStorage, unwrap } from "jotai/utils";
 import type { AtomFamily } from "jotai/vanilla/utils/atomFamily";
-import type {
-    AsyncStorage,
-    AsyncStringStorage,
-    SyncStorage,
-} from "jotai/vanilla/utils/atomWithStorage";
+import type { AsyncStringStorage, SyncStorage } from "jotai/vanilla/utils/atomWithStorage";
 import type { ReviewLog } from "ts-fsrs";
 import { z } from "zod";
-import i18n from "@/i18n";
 import type {
     BestMoves,
     DatabaseHandle,
@@ -21,7 +17,7 @@ import type {
     OpeningBookHandle,
     PathRef,
 } from "@/bindings";
-import { DEFAULT_TIME_CONTROL, type OpponentSettings } from "@/components/boards/OpponentForm";
+import type { OpponentSettings } from "@/utils/opponentSettings";
 import { type Position, positionSchema } from "@/components/files/opening";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import { positionFromFen, swapMove } from "@/utils/chessops";
@@ -42,11 +38,16 @@ import {
     pathRefSchema,
 } from "../utils/pathCapabilities";
 import { sessionsSchema, type Session } from "../utils/session";
-import { createAsyncZodStorage, createPreferenceStorage, createZodStorage } from "./utils";
+import { createPreferenceStorage, createZodStorage } from "./utils";
 import { createWorkspaceStorage, defaultWorkspace, type Workspace } from "./workspace";
 import { tabStorage } from "./store/tabStorage";
-import { reportPersistError } from "./persistError";
 import { originalPathOwnersSnapshot } from "./pathOwners";
+import {
+    createEngineOwnerStorage,
+    createEngineOwnerStringStorage,
+    type EngineOwnerSaveReceipt,
+} from "./engineOwnerStorage";
+import { defaultPlayerSettings, opponentSettingsSchema } from "@/utils/opponentSettings";
 
 // Capture durable capability owners before any persisted atom can hydrate, normalize, or repair
 // its source record. App startup consumes this immutable snapshot.
@@ -162,7 +163,7 @@ export const fileWorkspaceDisplayNameAtom = atomWithStorage<string>(
     createZodStorage(z.string().max(256), localStorage),
 );
 
-const enginesSchema = zodArray(engineSchema).transform((engines) => {
+export const enginesSchema = zodArray(engineSchema).transform((engines) => {
     const ids = new Set<string>();
 
     return engines.map((engine) => {
@@ -178,26 +179,45 @@ const enginesSchema = zodArray(engineSchema).transform((engines) => {
 // adapter preserves the existing atom update contract without granting a renderer directory.
 export const enginesStorage: AsyncStringStorage = {
     async getItem(key) {
-        return localStorage.getItem(key);
+        return createEngineOwnerStringStorage("engines").getItem(key);
     },
     async setItem(key, value) {
-        try {
-            localStorage.setItem(key, value);
-        } catch (cause) {
-            reportPersistError(new Error(i18n.t("Engines.SaveError"), { cause }));
-        }
+        await createEngineOwnerStringStorage("engines").setItem(key, value);
     },
     async removeItem(key) {
-        localStorage.removeItem(key);
+        await createEngineOwnerStringStorage("engines").removeItem(key);
     },
 };
 
-export const enginesAtom = unwrap(
+const storedEnginesAtom = unwrap(
     atomWithStorage<Engine[]>(
         "engines",
         [],
-        createAsyncZodStorage(enginesSchema, enginesStorage) as AsyncStorage<Engine[]>,
+        createEngineOwnerStorage("engines", enginesSchema, []),
     ),
+);
+
+type EngineUpdate =
+    | Engine[]
+    | Promise<Engine[]>
+    | ((current: Engine[]) => Engine[] | Promise<Engine[]>);
+let engineOwnerUpdateSequence = Promise.resolve();
+
+/** Serializes functional calculation, renderer persistence and native synchronization together. */
+export const enginesAtom = atom(
+    (get) => get(storedEnginesAtom),
+    (get, set, update: EngineUpdate): Promise<EngineOwnerSaveReceipt> => {
+        const run = engineOwnerUpdateSequence.then(async () => {
+            const current = get(storedEnginesAtom) ?? [];
+            const next = await (typeof update === "function" ? update(current) : update);
+            return set(storedEnginesAtom, next) as unknown as Promise<EngineOwnerSaveReceipt>;
+        });
+        engineOwnerUpdateSequence = run.then(
+            () => undefined,
+            () => undefined,
+        );
+        return run;
+    },
 );
 
 // Settings
@@ -455,24 +475,27 @@ export const gameInputColorAtom = atomWithStorage<GameInputColor>(
     createZodStorage(z.enum(["white", "random", "black"]), localStorage),
 );
 
-const defaultPlayerSettings: OpponentSettings = {
-    type: "human",
-    name: "Player",
-    timeControl: DEFAULT_TIME_CONTROL,
-    timeUnit: "m",
-    incrementUnit: "s",
-};
-export const gamePlayer1SettingsAtom = atomWithStorage<OpponentSettings>(
-    "game-player1-settings",
-    defaultPlayerSettings,
-    createPreferenceStorage<OpponentSettings>(defaultPlayerSettings),
-);
+function createPlayerSettingsAtom(key: "game-player1-settings" | "game-player2-settings") {
+    const stored = unwrap(
+        atomWithStorage<OpponentSettings>(
+            key,
+            defaultPlayerSettings,
+            createEngineOwnerStorage(key, opponentSettingsSchema, defaultPlayerSettings),
+        ),
+        () => defaultPlayerSettings,
+    );
+    return atom(
+        (get) => get(stored),
+        async (get, set, update: SetStateAction<OpponentSettings>) => {
+            const current = get(stored);
+            const next = typeof update === "function" ? update(current) : update;
+            await set(stored, next);
+        },
+    );
+}
 
-export const gamePlayer2SettingsAtom = atomWithStorage<OpponentSettings>(
-    "game-player2-settings",
-    defaultPlayerSettings,
-    createPreferenceStorage<OpponentSettings>(defaultPlayerSettings),
-);
+export const gamePlayer1SettingsAtom = createPlayerSettingsAtom("game-player1-settings");
+export const gamePlayer2SettingsAtom = createPlayerSettingsAtom("game-player2-settings");
 
 export const gameSameTimeControlAtom = atomWithStorage<boolean>(
     "game-same-time-control",

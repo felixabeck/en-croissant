@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => {
     initUserAgent: vi.fn(),
     preloadReferenceDb: vi.fn(),
     reconcileStartupPathOwners: vi.fn(),
+    reconcileEngineAttachments: vi.fn(),
     warn: vi.fn(),
     referenceDbAtom,
     telemetryEnabledAtom,
@@ -40,6 +41,7 @@ vi.mock("@/platform/tauri", () => ({
     closeSplashscreen: mocks.closeSplashscreen,
     preloadReferenceDb: mocks.preloadReferenceDb,
     reconcileStartupPathOwners: mocks.reconcileStartupPathOwners,
+    reconcileEngineAttachments: mocks.reconcileEngineAttachments,
   },
 }));
 vi.mock("@/platform/analytics", () => ({ analytics: mocks.analytics }));
@@ -99,6 +101,7 @@ beforeEach(() => {
   mocks.info.mockReset();
   mocks.initUserAgent.mockReset();
   mocks.reconcileStartupPathOwners.mockReset().mockResolvedValue(null);
+  mocks.reconcileEngineAttachments.mockReset().mockResolvedValue(null);
   resetPathOwnerInitializationForTests();
   mocks.preloadReferenceDb.mockReset();
   mocks.warn.mockReset();
@@ -139,12 +142,14 @@ describe("useAppStartup", () => {
     );
     expect(mocks.reconcileStartupPathOwners).toHaveBeenCalledOnce();
     await act(async () => resolveOwners());
+    expect(mocks.reconcileEngineAttachments).toHaveBeenCalledOnce();
     expect(mocks.initUserAgent).toHaveBeenCalled();
 
     await act(async () => root.unmount());
     root = createRoot(container);
     await act(async () => root.render(<Probe />));
     expect(mocks.reconcileStartupPathOwners).toHaveBeenCalledOnce();
+    expect(mocks.reconcileEngineAttachments).toHaveBeenCalledOnce();
   });
 
   test("reports reconciliation failure and still tears down the splash", async () => {
@@ -155,6 +160,21 @@ describe("useAppStartup", () => {
     await act(async () => root.render(<Probe />));
 
     expect(mocks.warn).toHaveBeenCalledWith(expect.stringContaining("registry unavailable"));
+    expect(mocks.closeSplashscreen).toHaveBeenCalledOnce();
+  });
+
+  test("reports attachment reconciliation failure and still tears down the splash", async () => {
+    mocks.reconcileEngineAttachments.mockRejectedValue(
+      new Error("attachment registry unavailable"),
+    );
+    mocks.attachConsole.mockResolvedValue(vi.fn());
+    mocks.getMatches.mockResolvedValue({ args: { file: { occurrences: 0, value: "" } } });
+
+    await act(async () => root.render(<Probe />));
+
+    expect(mocks.warn).toHaveBeenCalledWith(
+      expect.stringContaining("attachment registry unavailable"),
+    );
     expect(mocks.closeSplashscreen).toHaveBeenCalledOnce();
   });
 

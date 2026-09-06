@@ -123,6 +123,26 @@ mod verified_identity {
             )?;
             Ok((installed.outcome, VerifiedIdentity(installed.identity)))
         }
+
+        pub(crate) fn open_leaf_identified(&self, leaf: &OsStr) -> Result<VerifiedIdentity, Error> {
+            crate::infra::fs::single_leaf(leaf).map_err(|_| {
+                Error::InvalidInput("managed image leaf must be one component".into())
+            })?;
+            let file = self
+                .open_regular_relative(std::path::Path::new(leaf))
+                .map_err(|error| match error {
+                    Error::InvalidInput(_) => {
+                        Error::Conflict("managed image leaf changed before cleanup".into())
+                    }
+                    Error::Io(error)
+                        if error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) =>
+                    {
+                        Error::Conflict("managed image leaf changed before cleanup".into())
+                    }
+                    error => error,
+                })?;
+            super::opened_file_identity(&file).map(VerifiedIdentity)
+        }
     }
 
     impl super::ResolvedPath {
@@ -799,6 +819,21 @@ pub struct StartupPathOwners {
     pub trusted_families: Vec<PathOwnerFamily>,
 }
 
+const MAX_ATTACHMENT_ACTION_IDS: usize = 4096;
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "action", rename_all = "camelCase")]
+pub enum EngineAttachmentAction {
+    Prepare {
+        retained_ids: Vec<PathRef>,
+    },
+    Reconcile {
+        retained_ids: Option<Vec<PathRef>>,
+        abandoned_ids: Vec<PathRef>,
+        startup: bool,
+    },
+}
+
 fn same_operation_set(actual: &[PathOperation], expected: &[PathOperation]) -> bool {
     actual.len() == expected.len() && expected.iter().all(|operation| actual.contains(operation))
 }
@@ -1205,7 +1240,7 @@ impl Clock for SystemClock {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "platform", rename_all = "camelCase")]
 enum NativePath {
     Unix { bytes: String },
@@ -1534,7 +1569,7 @@ fn validate_dialog_target(path: &Path) -> Result<Identity, Error> {
     identity(path)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredEntry {
     id: PathRef,
     display_name: String,
@@ -1559,6 +1594,14 @@ struct Registry {
     active_engine_root: Option<PathRef>,
     #[serde(default)]
     pending_artifacts: Vec<PendingArtifact>,
+    /// Attachment IDs first issued in a prior session but not yet durably adopted by renderer
+    /// storage. Missing lifecycle metadata is deliberately interpreted as owned legacy state.
+    #[serde(default)]
+    provisional_attachments: BTreeSet<String>,
+    /// Retired managed images remain here until identity-checked cleanup completes. These are not
+    /// authority entries and therefore cannot resolve after restart.
+    #[serde(default)]
+    image_cleanup: Vec<StoredEntry>,
 }
 /// Durable intent recorded before an atomic download replacement. It lets a restarted authority
 /// either activate the newly installed exact file or discard an intent whose replacement never
@@ -1588,7 +1631,7 @@ struct PendingArtifact {
     #[serde(default)]
     installed_ctime_nanos: Option<i128>,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct Entry {
     stored: StoredEntry,
     availability: PathAvailability,
@@ -2072,6 +2115,11 @@ pub struct PathAuthority {
     completed_owner_families: BTreeSet<PathOwnerFamily>,
     startup_retained_ids: BTreeSet<String>,
     startup_unowned_roots_reconciled: bool,
+    provisional_attachments: BTreeSet<String>,
+    retired_attachments: BTreeMap<String, Entry>,
+    image_cleanup: BTreeMap<String, StoredEntry>,
+    attachments_sealed: bool,
+    attachment_durability_pending: bool,
 }
 fn validate_components(components: &[OsString]) -> Result<(), Error> {
     for name in components {
@@ -2208,6 +2256,8 @@ impl PathAuthority {
             active_puzzle_root,
             active_engine_root,
             pending_artifacts,
+            provisional_attachments,
+            image_cleanup,
         ) = if registry_path.exists() {
             let file = fs::File::open(&registry_path)?;
             let bytes = read_registry_bytes(file)?;
@@ -2219,6 +2269,8 @@ impl PathAuthority {
                     registry.schema_version
                 )));
             }
+            let image_cleanup_records = registry.image_cleanup;
+            let provisional_attachments = registry.provisional_attachments.clone();
             let mut loaded = BTreeMap::new();
             for mut stored in registry.entries {
                 validate_persisted_shape(&stored)?;
@@ -2271,6 +2323,15 @@ impl PathAuthority {
                     ));
                 }
             }
+            validate_loaded_attachment_metadata(
+                &loaded,
+                &provisional_attachments,
+                &image_cleanup_records,
+            )?;
+            let image_cleanup = image_cleanup_records
+                .into_iter()
+                .map(|stored| (stored.id.id.clone(), stored))
+                .collect();
             let active = registry.active_database_root.filter(|id| {
                 loaded.get(&id.id).is_some_and(|entry| {
                     entry.stored.target_is_dir
@@ -2301,9 +2362,19 @@ impl PathAuthority {
                 active_puzzle_root,
                 active_engine_root,
                 registry.pending_artifacts,
+                provisional_attachments,
+                image_cleanup,
             )
         } else {
-            (BTreeMap::new(), None, None, None, Vec::new())
+            (
+                BTreeMap::new(),
+                None,
+                None,
+                None,
+                Vec::new(),
+                BTreeSet::new(),
+                BTreeMap::new(),
+            )
         };
         let loaded_candidate_ids = persistent.keys().cloned().collect();
         for root in app_roots {
@@ -2343,6 +2414,11 @@ impl PathAuthority {
             completed_owner_families: BTreeSet::new(),
             startup_retained_ids: BTreeSet::new(),
             startup_unowned_roots_reconciled: false,
+            provisional_attachments,
+            retired_attachments: BTreeMap::new(),
+            image_cleanup,
+            attachments_sealed: false,
+            attachment_durability_pending: false,
         };
         authority.recover_pending_artifacts()?;
         Ok(authority)
@@ -2498,6 +2574,13 @@ impl PathAuthority {
                 "persistent operations cannot be empty".into(),
             ));
         }
+        let target_is_dir = persistent_class == PathClass::PersistentCustomRoot;
+        let purpose = purpose_for_shape(persistent_class, target_is_dir, &operations);
+        if self.attachments_sealed && is_attachment_purpose(purpose) {
+            return Err(Error::Conflict(
+                "engine attachment mutations are sealed".into(),
+            ));
+        }
         let grant = self.dialogs.get(&dialog.id).cloned().ok_or_else(|| {
             Error::InvalidInput("unknown, revoked, or expired dialog grant".into())
         })?;
@@ -2522,8 +2605,6 @@ impl PathAuthority {
                 "dialog target changed before promotion".into(),
             ));
         }
-        let target_is_dir = persistent_class == PathClass::PersistentCustomRoot;
-        let purpose = purpose_for_shape(persistent_class, target_is_dir, &operations);
         if let Some(purpose) = purpose {
             if let Some(existing) = self.persistent.values().find(|entry| {
                 entry.stored.class == persistent_class
@@ -2565,7 +2646,22 @@ impl PathAuthority {
                 availability: PathAvailability::Available,
             },
         );
-        let durability = self.commit_candidate(candidate, Some(dialog))?;
+        let provisional = matches!(
+            purpose,
+            Some(EntryPurpose::EngineResource | EntryPurpose::EngineImage)
+        );
+        if provisional {
+            self.provisional_attachments.insert(id.id.clone());
+        }
+        let durability = match self.commit_candidate(candidate, Some(dialog)) {
+            Ok(durability) => durability,
+            Err(error) => {
+                if provisional {
+                    self.provisional_attachments.remove(&id.id);
+                }
+                return Err(error);
+            }
+        };
         self.session_protected_ids.insert(id.id.clone());
         Ok(PathCommit { id, durability })
     }
@@ -2724,7 +2820,16 @@ impl PathAuthority {
     }
 
     fn persist_new_entry(&mut self, stored: StoredEntry) -> Result<PathCommit, Error> {
+        if self.attachments_sealed && is_attachment_purpose(stored.purpose) {
+            return Err(Error::Conflict(
+                "engine attachment mutations are sealed".into(),
+            ));
+        }
         let id = stored.id.clone();
+        let provisional = matches!(
+            stored.purpose,
+            Some(EntryPurpose::EngineResource | EntryPurpose::EngineImage)
+        );
         let mut candidate = self.persistent.clone();
         candidate.insert(
             id.id.clone(),
@@ -2733,7 +2838,16 @@ impl PathAuthority {
                 availability: PathAvailability::Available,
             },
         );
-        let durability = self.commit_candidate(candidate, None)?;
+        if provisional {
+            self.provisional_attachments.insert(id.id.clone());
+        }
+        let durability = match self.commit_candidate(candidate, None) {
+            Ok(durability) => durability,
+            Err(error) => {
+                self.provisional_attachments.remove(&id.id);
+                return Err(error);
+            }
+        };
         self.session_protected_ids.insert(id.id.clone());
         Ok(PathCommit { id, durability })
     }
@@ -3017,6 +3131,11 @@ impl PathAuthority {
         installed: VerifiedIdentity,
         display_name: String,
     ) -> Result<EngineImageHandle, Error> {
+        if self.attachments_sealed {
+            return Err(Error::Conflict(
+                "engine attachment mutations are sealed".into(),
+            ));
+        }
         crate::infra::fs::single_leaf(leaf)
             .map_err(|_| Error::InvalidInput("engine image leaf must be one component".into()))?;
         let path = dir.path().join(leaf);
@@ -3641,6 +3760,374 @@ impl PathAuthority {
         Ok(durability)
     }
 
+    fn attachment_entry(entry: &Entry) -> bool {
+        is_attachment_purpose(entry.stored.purpose)
+    }
+
+    pub(crate) fn seal_engine_attachments(&mut self) {
+        self.attachments_sealed = true;
+    }
+
+    fn retry_attachment_durability(&mut self) -> Result<(), Error> {
+        let durability = self.save_entries(
+            &self.persistent,
+            &self.active_database_root,
+            &self.active_puzzle_root,
+            &self.active_engine_root,
+            &self.pending_artifacts,
+        )?;
+        match durability {
+            CommitDurability::Durable => {
+                self.attachment_durability_pending = false;
+                Ok(())
+            }
+            CommitDurability::DurabilityUncertain(stage) => {
+                self.attachment_durability_pending = true;
+                Err(Error::CommittedDurabilityUncertain(stage))
+            }
+        }
+    }
+
+    /// Applies one validated whole attachment transaction. Retired entries remain resolvable only
+    /// in this process; only the authority and cleanup intent are written to the registry.
+    pub(crate) fn reconcile_engine_attachments(
+        &mut self,
+        action: EngineAttachmentAction,
+    ) -> Result<(), Error> {
+        if self.attachments_sealed {
+            return Err(Error::Conflict(
+                "engine attachment mutations are sealed".into(),
+            ));
+        }
+        let (retained, abandoned, startup, reconcile) = match action {
+            EngineAttachmentAction::Prepare { retained_ids } => {
+                (Some(retained_ids), Vec::new(), false, false)
+            }
+            EngineAttachmentAction::Reconcile {
+                retained_ids,
+                abandoned_ids,
+                startup,
+            } => (retained_ids, abandoned_ids, startup, true),
+        };
+        if retained
+            .as_ref()
+            .is_some_and(|ids| ids.len() > MAX_ATTACHMENT_ACTION_IDS)
+            || abandoned.len() > MAX_ATTACHMENT_ACTION_IDS
+            || (startup && retained.is_none())
+        {
+            return Err(Error::ResourceLimit(
+                "engine attachment action exceeds its limit".into(),
+            ));
+        }
+        let retained_ids: BTreeSet<String> = retained
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .map(|id| id.id.clone())
+            .collect();
+        for id in &retained_ids {
+            let entry = self
+                .persistent
+                .get(id)
+                .or_else(|| self.retired_attachments.get(id))
+                .ok_or_else(|| Error::InvalidInput("unknown retained engine attachment".into()))?;
+            if !Self::attachment_entry(entry) {
+                return Err(Error::InvalidInput(
+                    "retained capability is not an engine attachment".into(),
+                ));
+            }
+        }
+        for id in abandoned.iter().map(|id| &id.id) {
+            if let Some(entry) = self
+                .persistent
+                .get(id)
+                .or_else(|| self.retired_attachments.get(id))
+            {
+                if !Self::attachment_entry(entry) {
+                    return Err(Error::InvalidInput(
+                        "abandoned capability is not an engine attachment".into(),
+                    ));
+                }
+            }
+        }
+
+        let old_provisional = self.provisional_attachments.clone();
+        let old_cleanup = self.image_cleanup.clone();
+        let old_retired = self.retired_attachments.clone();
+        let mut candidate = self.persistent.clone();
+        let mut readopted_retired_ids = Vec::new();
+        for id in &retained_ids {
+            if let Some(entry) = self.retired_attachments.get(id).cloned() {
+                candidate.insert(id.clone(), entry);
+                readopted_retired_ids.push(id.clone());
+            }
+            self.provisional_attachments.remove(id);
+            self.image_cleanup.remove(id);
+        }
+        if reconcile {
+            let abandon_only = retained.is_none();
+            let explicit_abandoned: BTreeSet<_> = abandoned.into_iter().map(|id| id.id).collect();
+            let retire_ids = candidate
+                .iter()
+                .filter_map(|(id, entry)| {
+                    if !Self::attachment_entry(entry) || retained_ids.contains(id) {
+                        return None;
+                    }
+                    let provisional = self.provisional_attachments.contains(id);
+                    let explicitly_abandoned = explicit_abandoned.contains(id);
+                    let should_retire = if abandon_only {
+                        explicitly_abandoned && provisional
+                    } else {
+                        explicitly_abandoned
+                            || (!provisional
+                                && !(startup && self.session_protected_ids.contains(id)))
+                            || (startup
+                                && self.loaded_candidate_ids.contains(id)
+                                && !self.session_protected_ids.contains(id))
+                    };
+                    should_retire.then(|| id.clone())
+                })
+                .collect::<Vec<_>>();
+            for id in retire_ids {
+                if let Some(entry) = candidate.remove(&id) {
+                    self.provisional_attachments.remove(&id);
+                    if entry.stored.purpose == Some(EntryPurpose::EngineImage) {
+                        self.image_cleanup.insert(id.clone(), entry.stored.clone());
+                    }
+                    self.retired_attachments.insert(id, entry);
+                }
+            }
+        }
+        if candidate == self.persistent
+            && self.provisional_attachments == old_provisional
+            && self.image_cleanup == old_cleanup
+            && self.retired_attachments == old_retired
+        {
+            if self.attachment_durability_pending {
+                return self.retry_attachment_durability();
+            }
+            return Ok(());
+        }
+        if let Err(error) = self.validate_attachment_admission(
+            &candidate,
+            &old_provisional,
+            &old_cleanup,
+            &old_retired,
+        ) {
+            self.provisional_attachments = old_provisional;
+            self.image_cleanup = old_cleanup;
+            self.retired_attachments = old_retired;
+            return Err(error);
+        }
+        match self.commit_candidate(candidate, None) {
+            Ok(durability) => {
+                for id in readopted_retired_ids {
+                    self.retired_attachments.remove(&id);
+                }
+                match durability {
+                    CommitDurability::Durable => {
+                        self.attachment_durability_pending = false;
+                        Ok(())
+                    }
+                    CommitDurability::DurabilityUncertain(stage) => {
+                        self.attachment_durability_pending = true;
+                        Err(Error::CommittedDurabilityUncertain(stage))
+                    }
+                }
+            }
+            Err(error) => {
+                self.provisional_attachments = old_provisional;
+                self.image_cleanup = old_cleanup;
+                self.retired_attachments = old_retired;
+                Err(error)
+            }
+        }
+    }
+
+    fn validate_attachment_admission(
+        &self,
+        candidate: &BTreeMap<String, Entry>,
+        old_provisional: &BTreeSet<String>,
+        old_cleanup: &BTreeMap<String, StoredEntry>,
+        old_retired: &BTreeMap<String, Entry>,
+    ) -> Result<(), Error> {
+        let unique = unique_registry_id_count(
+            candidate.keys().map(String::as_str).collect(),
+            self.retired_attachments
+                .keys()
+                .map(String::as_str)
+                .collect(),
+            self.image_cleanup.keys().map(String::as_str).collect(),
+            self.pending_artifacts
+                .iter()
+                .map(|pending| pending.id.id.as_str())
+                .collect(),
+        );
+        let old_unique = unique_registry_id_count(
+            self.persistent.keys().map(String::as_str).collect(),
+            old_retired.keys().map(String::as_str).collect(),
+            old_cleanup.keys().map(String::as_str).collect(),
+            self.pending_artifacts
+                .iter()
+                .map(|pending| pending.id.id.as_str())
+                .collect(),
+        );
+        if unique > MAX_PERSISTENT_IDS && unique > old_unique {
+            return Err(Error::ResourceLimit(
+                "path registry identifier limit reached".into(),
+            ));
+        }
+        let encode = |entries: &BTreeMap<String, Entry>,
+                      provisional: &BTreeSet<String>,
+                      cleanup: &BTreeMap<String, StoredEntry>| {
+            serde_json::to_vec(&Registry {
+                schema_version: SCHEMA_VERSION,
+                entries: entries
+                    .values()
+                    .filter(|entry| entry.stored.class != PathClass::AppOwnedRoot)
+                    .map(|entry| entry.stored.clone())
+                    .collect(),
+                active_database_root: self.active_database_root.clone(),
+                active_puzzle_root: self.active_puzzle_root.clone(),
+                active_engine_root: self.active_engine_root.clone(),
+                pending_artifacts: self.pending_artifacts.clone(),
+                provisional_attachments: provisional.clone(),
+                image_cleanup: cleanup.values().cloned().collect(),
+            })
+            .map(|bytes| bytes.len())
+            .map_err(|error| Error::InvalidInput(error.to_string()))
+        };
+        let bytes = encode(
+            candidate,
+            &self.provisional_attachments,
+            &self.image_cleanup,
+        )?;
+        let old_bytes = encode(&self.persistent, old_provisional, old_cleanup)?;
+        if bytes > MAX_REGISTRY_BYTES && bytes > old_bytes {
+            return Err(Error::ResourceLimit(
+                "path registry serialized size limit reached".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Seals attachment mutations before process teardown. Cleanup never follows a stored path:
+    /// only UUID leaves beneath the caller-proven EngineImages directory are eligible.
+    pub(crate) fn cleanup_engine_images(
+        &mut self,
+        image_dir: &AuthorizedDir,
+        seal: bool,
+    ) -> Result<(), Error> {
+        if seal {
+            self.seal_engine_attachments();
+        }
+        if self.image_cleanup.is_empty() {
+            if self.attachment_durability_pending {
+                return self.retry_attachment_durability();
+            }
+            return Ok(());
+        }
+        let ids = self.image_cleanup.keys().cloned().collect::<Vec<_>>();
+        let original_cleanup = self.image_cleanup.clone();
+        let mut next_cleanup = original_cleanup.clone();
+        let mut failures = Vec::new();
+        let mut durability_uncertain = None;
+        for id in ids {
+            let Some(stored) = original_cleanup.get(&id).cloned() else {
+                continue;
+            };
+            let Ok(path) = stored.path.to_path() else {
+                next_cleanup.remove(&id);
+                continue;
+            };
+            let Some(leaf) = path.file_name() else {
+                next_cleanup.remove(&id);
+                continue;
+            };
+            let valid_uuid = uuid::Uuid::parse_str(&leaf.to_string_lossy()).is_ok();
+            if !valid_uuid || path.parent() != Some(image_dir.path()) {
+                next_cleanup.remove(&id);
+                continue;
+            }
+            let acquired = match image_dir.open_leaf_identified(leaf) {
+                Ok(identity) if identity.agrees_with(&stored.identity) => identity,
+                Ok(_) => {
+                    next_cleanup.remove(&id);
+                    continue;
+                }
+                Err(Error::Io(ref error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    next_cleanup.remove(&id);
+                    continue;
+                }
+                Err(Error::Conflict(_)) => {
+                    next_cleanup.remove(&id);
+                    continue;
+                }
+                Err(error) => {
+                    failures.push(error);
+                    continue;
+                }
+            };
+            match image_dir.remove_leaf_identified(leaf, acquired) {
+                Ok(()) => {
+                    next_cleanup.remove(&id);
+                }
+                Err(Error::Io(ref error))
+                    if matches!(error.kind(), std::io::ErrorKind::NotFound) =>
+                {
+                    next_cleanup.remove(&id);
+                }
+                Err(Error::Conflict(_)) => {
+                    // A substituted leaf is not ours. Complete the obsolete intent without unlinking.
+                    next_cleanup.remove(&id);
+                }
+                Err(error) => failures.push(error),
+            }
+        }
+        if next_cleanup != original_cleanup {
+            self.image_cleanup = next_cleanup;
+            let durability = self.save_entries(
+                &self.persistent,
+                &self.active_database_root,
+                &self.active_puzzle_root,
+                &self.active_engine_root,
+                &self.pending_artifacts,
+            );
+            match durability {
+                Ok(CommitDurability::Durable) => {
+                    self.attachment_durability_pending = false;
+                }
+                Ok(CommitDurability::DurabilityUncertain(stage)) => {
+                    log::warn!(
+                        "engine image cleanup registry sync is uncertain at {stage}; completed intents are adopted"
+                    );
+                    self.attachment_durability_pending = true;
+                    durability_uncertain = Some(Error::CommittedDurabilityUncertain(stage));
+                }
+                Err(error) => {
+                    self.image_cleanup = original_cleanup;
+                    return match failures.into_iter().next() {
+                        Some(cleanup) => Err(Error::OperationAndCleanup {
+                            primary: error.to_string(),
+                            cleanup: cleanup.to_string(),
+                        }),
+                        None => Err(error),
+                    };
+                }
+            }
+        }
+        if let Some(error) = durability_uncertain {
+            return match failures.into_iter().next() {
+                Some(cleanup) => Err(Error::OperationAndCleanup {
+                    primary: error.to_string(),
+                    cleanup: cleanup.to_string(),
+                }),
+                None => Err(error),
+            };
+        }
+        failures.into_iter().next().map_or(Ok(()), Err)
+    }
+
     pub fn resolve(
         &mut self,
         id: &PathRef,
@@ -3653,7 +4140,12 @@ impl PathAuthority {
                 "workspace entry is not persistent".into(),
             ));
         }
-        let entry = if let Some(entry) = self.persistent.get(&id.id).cloned() {
+        let entry = if let Some(entry) = self
+            .persistent
+            .get(&id.id)
+            .or_else(|| self.retired_attachments.get(&id.id))
+            .cloned()
+        {
             entry
         } else {
             self.take_dialog(id, Some(operation))?.entry
@@ -4609,6 +5101,9 @@ impl PathAuthority {
             &active_engine_root,
             &pending_artifacts,
         )?;
+        if durability == CommitDurability::Durable {
+            self.attachment_durability_pending = false;
+        }
         if matches!(durability, CommitDurability::Durable) || adopt_uncertain {
             self.persistent = candidate;
             self.active_database_root = active_database_root;
@@ -4655,34 +5150,40 @@ impl PathAuthority {
             active_puzzle_root: active_puzzle_root.clone(),
             active_engine_root: active_engine_root.clone(),
             pending_artifacts: pending_artifacts.to_vec(),
+            provisional_attachments: self.provisional_attachments.clone(),
+            image_cleanup: self.image_cleanup.values().cloned().collect(),
         })
         .map_err(|e| Error::InvalidInput(e.to_string()))?;
-        let unique_ids = entries
-            .iter()
-            .map(|entry| entry.id.id.as_str())
-            .chain(
-                pending_artifacts
-                    .iter()
-                    .map(|pending| pending.id.id.as_str()),
-            )
-            .collect::<BTreeSet<_>>()
-            .len();
+        let unique_ids = unique_registry_id_count(
+            source.keys().map(String::as_str).collect(),
+            self.retired_attachments
+                .keys()
+                .map(String::as_str)
+                .collect(),
+            self.image_cleanup.keys().map(String::as_str).collect(),
+            pending_artifacts
+                .iter()
+                .map(|pending| pending.id.id.as_str())
+                .collect(),
+        );
+        let current_unique_ids = unique_registry_id_count(
+            self.persistent.keys().map(String::as_str).collect(),
+            self.retired_attachments
+                .keys()
+                .map(String::as_str)
+                .collect(),
+            self.image_cleanup.keys().map(String::as_str).collect(),
+            self.pending_artifacts
+                .iter()
+                .map(|pending| pending.id.id.as_str())
+                .collect(),
+        );
         let current_entries: Vec<_> = self
             .persistent
             .values()
             .filter(|entry| entry.stored.class != PathClass::AppOwnedRoot)
             .map(|entry| entry.stored.clone())
             .collect();
-        let current_unique_ids = current_entries
-            .iter()
-            .map(|entry| entry.id.id.as_str())
-            .chain(
-                self.pending_artifacts
-                    .iter()
-                    .map(|pending| pending.id.id.as_str()),
-            )
-            .collect::<BTreeSet<_>>()
-            .len();
         let current_bytes = serde_json::to_vec(&Registry {
             schema_version: SCHEMA_VERSION,
             entries: current_entries,
@@ -4690,6 +5191,8 @@ impl PathAuthority {
             active_puzzle_root: self.active_puzzle_root.clone(),
             active_engine_root: self.active_engine_root.clone(),
             pending_artifacts: self.pending_artifacts.clone(),
+            provisional_attachments: self.provisional_attachments.clone(),
+            image_cleanup: self.image_cleanup.values().cloned().collect(),
         })
         .map_err(|error| Error::InvalidInput(error.to_string()))?
         .len();
@@ -4804,6 +5307,95 @@ fn validate_persisted_shape(entry: &StoredEntry) -> Result<(), Error> {
     }
     Ok(())
 }
+
+fn validate_loaded_attachment_metadata(
+    persistent: &BTreeMap<String, Entry>,
+    provisional_ids: &BTreeSet<String>,
+    image_cleanup: &[StoredEntry],
+) -> Result<(), Error> {
+    let is_attachment = |entry: &StoredEntry| {
+        let Some(purpose) = entry.purpose else {
+            return false;
+        };
+        matches!(
+            purpose,
+            EntryPurpose::EngineResource | EntryPurpose::EngineImage
+        ) && purpose_matches_shape(purpose, entry.class, entry.target_is_dir)
+            && entry.operations == canonical_operations(purpose)
+    };
+
+    for id in provisional_ids {
+        let Some(entry) = persistent.get(id).map(|entry| &entry.stored) else {
+            return Err(Error::InvalidInput(
+                "provisional engine attachment is not a persistent entry".into(),
+            ));
+        };
+        if !is_attachment(entry) {
+            return Err(Error::InvalidInput(
+                "provisional engine attachment has invalid authority shape".into(),
+            ));
+        }
+    }
+
+    let mut cleanup_ids = BTreeSet::new();
+    for entry in image_cleanup {
+        validate_persisted_shape(entry)?;
+        if entry.class != PathClass::PersistentFile
+            || entry.target_is_dir
+            || entry.purpose != Some(EntryPurpose::EngineImage)
+            || entry.operations != canonical_operations(EntryPurpose::EngineImage)
+        {
+            return Err(Error::InvalidInput(
+                "engine image cleanup intent has invalid authority shape".into(),
+            ));
+        }
+        if !cleanup_ids.insert(entry.id.id.clone()) || persistent.contains_key(&entry.id.id) {
+            return Err(Error::InvalidInput(
+                "duplicate or overlapping engine image cleanup intent".into(),
+            ));
+        }
+        if provisional_ids.contains(&entry.id.id) {
+            return Err(Error::InvalidInput(
+                "engine attachment cannot be both provisional and cleanup-pending".into(),
+            ));
+        }
+        let path = entry.path.to_path()?;
+        let Some(leaf) = path.file_name() else {
+            return Err(Error::InvalidInput(
+                "engine image cleanup intent has no leaf".into(),
+            ));
+        };
+        if uuid::Uuid::parse_str(&leaf.to_string_lossy()).is_err() {
+            return Err(Error::InvalidInput(
+                "engine image cleanup intent has an invalid leaf".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_attachment_purpose(purpose: Option<EntryPurpose>) -> bool {
+    matches!(
+        purpose,
+        Some(EntryPurpose::EngineResource | EntryPurpose::EngineImage)
+    )
+}
+
+fn unique_registry_id_count(
+    persistent: Vec<&str>,
+    retired: Vec<&str>,
+    cleanup: Vec<&str>,
+    pending: Vec<&str>,
+) -> usize {
+    persistent
+        .into_iter()
+        .chain(retired)
+        .chain(cleanup)
+        .chain(pending)
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
 fn read_registry_bytes(reader: impl Read) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     reader
@@ -9130,6 +9722,8 @@ mod tests {
             active_puzzle_root: None,
             active_engine_root: None,
             pending_artifacts: vec![],
+            provisional_attachments: BTreeSet::new(),
+            image_cleanup: vec![],
         })
         .unwrap();
         for entry in json["entries"].as_array_mut().unwrap() {
@@ -9191,6 +9785,8 @@ mod tests {
             active_puzzle_root: None,
             active_engine_root: None,
             pending_artifacts: vec![],
+            provisional_attachments: BTreeSet::new(),
+            image_cleanup: vec![],
         };
         fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
         let mut authority = PathAuthority::open(registry_path.clone(), vec![]).unwrap();
@@ -9654,6 +10250,8 @@ mod tests {
                 active_puzzle_root: None,
                 active_engine_root: None,
                 pending_artifacts: vec![pending],
+                provisional_attachments: BTreeSet::new(),
+                image_cleanup: vec![],
             })
             .unwrap(),
         )
@@ -9966,5 +10564,984 @@ mod tests {
         assert!(authority
             .completed_owner_families
             .contains(&PathOwnerFamily::OpeningBook));
+    }
+
+    fn attachment_resource(authority: &mut PathAuthority, path: &Path) -> EngineResourceHandle {
+        fs::write(path, b"resource").unwrap();
+        let grant = authority
+            .grant_dialog(
+                path,
+                "resource",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        authority
+            .promote_engine_resource(&grant, EngineResourceHandleKind::File, "resource")
+            .unwrap()
+    }
+
+    #[test]
+    fn attachment_prepare_adopts_new_provisional_without_downgrading_reused_owned_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("network.nnue");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let handle = attachment_resource(&mut authority, &path);
+        assert!(authority.provisional_attachments.contains(&handle.id.id));
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![handle.id.clone()],
+            })
+            .unwrap();
+        let reused = attachment_resource(&mut authority, &path);
+        assert_eq!(reused.id, handle.id);
+        assert!(!authority.provisional_attachments.contains(&handle.id.id));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![handle.id.clone()],
+            })
+            .unwrap();
+        set_test_atomic_file_injector(None);
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![handle.id.clone()],
+                startup: false,
+            })
+            .unwrap();
+        assert!(authority.persistent.contains_key(&handle.id.id));
+    }
+
+    #[test]
+    fn sealed_attachments_refuse_image_registration_and_resource_promotion_without_consumption() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let image_leaf = uuid::Uuid::new_v4().to_string();
+        let (_, image_identity) = image_dir
+            .atomic_replace_leaf_identified(OsStr::new(&image_leaf), |file| {
+                file.write_all(b"image").map_err(Error::from)
+            })
+            .unwrap();
+        let resource_path = dir.path().join("resource.nnue");
+        fs::write(&resource_path, b"resource").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let grant = authority
+            .grant_dialog(
+                &resource_path,
+                "resource",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        authority.save().unwrap();
+        let before = fs::read(dir.path().join("registry.json")).unwrap();
+        let persistent_before = authority.persistent.clone();
+        let provisional_before = authority.provisional_attachments.clone();
+        let retired_before = authority.retired_attachments.clone();
+        let cleanup_before = authority.image_cleanup.clone();
+        authority.seal_engine_attachments();
+
+        assert!(matches!(
+            authority.register_engine_image(
+                &image_dir,
+                OsStr::new(&image_leaf),
+                image_identity,
+                "image".into(),
+            ),
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            authority.promote_engine_resource(&grant, EngineResourceHandleKind::File, "resource",),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(fs::read(dir.path().join("registry.json")).unwrap(), before);
+        assert!(authority.persistent == persistent_before);
+        assert_eq!(authority.provisional_attachments, provisional_before);
+        assert!(authority.retired_attachments == retired_before);
+        assert_eq!(authority.image_cleanup, cleanup_before);
+        assert!(authority.dialogs.contains_key(&grant.id));
+        assert!(image_dir.path().join(&image_leaf).exists());
+
+        let book_path = dir.path().join("book.bin");
+        fs::write(&book_path, b"book").unwrap();
+        assert!(authority.register_opening_book(&book_path, "book").is_ok());
+    }
+
+    #[test]
+    fn prepare_retry_reestablishes_uncertain_image_adoption_and_keeps_cleanup_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = uuid::Uuid::new_v4().to_string();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let (_, identity) = image_dir
+            .atomic_replace_leaf_identified(OsStr::new(&leaf), |file| {
+                file.write_all(b"image").map_err(Error::from)
+            })
+            .unwrap();
+        let image = authority
+            .register_engine_image(&image_dir, OsStr::new(&leaf), identity, "image".into())
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![image.id.clone()],
+            })
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: false,
+            })
+            .unwrap();
+        assert!(authority.image_cleanup.contains_key(&image.id.id));
+        let before_failed_prepare = fs::read(&registry).unwrap();
+
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        assert!(authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![image.id.clone()],
+            })
+            .is_err());
+        set_test_atomic_file_injector(None);
+        assert_eq!(fs::read(&registry).unwrap(), before_failed_prepare);
+        assert!(!authority.persistent.contains_key(&image.id.id));
+        assert!(authority.retired_attachments.contains_key(&image.id.id));
+        assert!(authority.image_cleanup.contains_key(&image.id.id));
+
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![image.id.clone()],
+            }),
+            Err(Error::CommittedDurabilityUncertain(_))
+        ));
+        set_test_atomic_file_injector(None);
+        assert!(authority.persistent.contains_key(&image.id.id));
+        assert!(!authority.retired_attachments.contains_key(&image.id.id));
+        assert!(!authority.image_cleanup.contains_key(&image.id.id));
+        assert!(authority.attachment_durability_pending);
+
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        assert!(authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![image.id.clone()],
+            })
+            .is_err());
+        set_test_atomic_file_injector(None);
+        assert!(authority.attachment_durability_pending);
+
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![image.id.clone()],
+            })
+            .unwrap();
+        assert!(!authority.attachment_durability_pending);
+        assert!(image_dir.path().join(&leaf).exists());
+        let reopened = PathAuthority::open(registry, vec![]).unwrap();
+        assert!(reopened.persistent.contains_key(&image.id.id));
+        assert!(reopened.image_cleanup.is_empty());
+    }
+
+    #[test]
+    fn attachment_reconcile_retained_wins_and_retired_resource_resolves_only_this_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("network.nnue");
+        let registry = dir.path().join("registry.json");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let handle = attachment_resource(&mut authority, &path);
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![handle.id.clone()]),
+                abandoned_ids: vec![handle.id.clone()],
+                startup: false,
+            })
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: false,
+            })
+            .unwrap();
+        assert!(!authority.persistent.contains_key(&handle.id.id));
+        assert!(authority
+            .resolve(&handle.id, PathOperation::EngineResourceRead, &[])
+            .is_ok());
+        let mut reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        assert!(reloaded
+            .resolve(&handle.id, PathOperation::EngineResourceRead, &[])
+            .is_err());
+        assert_eq!(fs::read(path).unwrap(), b"resource");
+    }
+
+    #[test]
+    fn attachment_validation_and_loaded_provisional_startup_sweep_are_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("network.nnue");
+        let registry = dir.path().join("registry.json");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let handle = attachment_resource(&mut authority, &path);
+        let before = fs::read(&registry).unwrap();
+        let unknown = PathRef {
+            id: "unknown".into(),
+        };
+        assert!(authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![unknown.clone()],
+            })
+            .is_err());
+        assert_eq!(fs::read(&registry).unwrap(), before);
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![unknown],
+                startup: false,
+            })
+            .unwrap();
+        assert_eq!(fs::read(&registry).unwrap(), before);
+
+        let ordinary_path = dir.path().join("ordinary.pgn");
+        fs::write(&ordinary_path, b"*").unwrap();
+        let ordinary = authority
+            .migrate_legacy_os_path(
+                ordinary_path.into_os_string(),
+                "ordinary",
+                PathClass::PersistentFile,
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        let before_nonattachment = fs::read(&registry).unwrap();
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![ordinary.id],
+                startup: false,
+            }),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(fs::read(&registry).unwrap(), before_nonattachment);
+
+        drop(authority);
+        let mut reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        reloaded
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: true,
+            })
+            .unwrap();
+        assert!(!reloaded.persistent.contains_key(&handle.id.id));
+
+        let fresh_path = dir.path().join("fresh.nnue");
+        let fresh = attachment_resource(&mut reloaded, &fresh_path);
+        reloaded
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: true,
+            })
+            .unwrap();
+        assert!(reloaded.persistent.contains_key(&fresh.id.id));
+    }
+
+    #[test]
+    fn attachment_action_validation_matrix_preserves_memory_and_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let resource_path = dir.path().join("resource.nnue");
+        let ordinary_path = dir.path().join("ordinary.pgn");
+        fs::write(&ordinary_path, b"*").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let attachment = attachment_resource(&mut authority, &resource_path);
+        let ordinary = authority
+            .migrate_legacy_os_path(
+                ordinary_path.into_os_string(),
+                "ordinary",
+                PathClass::PersistentFile,
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        let before = fs::read(&registry).unwrap();
+        let persistent_before = authority.persistent.clone();
+        let provisional_before = authority.provisional_attachments.clone();
+        let retired_before = authority.retired_attachments.clone();
+        let cleanup_before = authority.image_cleanup.clone();
+        let assert_unchanged = |authority: &PathAuthority| {
+            assert_eq!(fs::read(&registry).unwrap(), before);
+            assert!(authority.persistent == persistent_before);
+            assert_eq!(authority.provisional_attachments, provisional_before);
+            assert!(authority.retired_attachments == retired_before);
+            assert_eq!(authority.image_cleanup, cleanup_before);
+        };
+        let oversized = (0..=MAX_ATTACHMENT_ACTION_IDS)
+            .map(|index| PathRef {
+                id: format!("oversized-{index}"),
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: oversized.clone(),
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_unchanged(&authority);
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: oversized,
+                startup: false,
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_unchanged(&authority);
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![],
+                startup: true,
+            }),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_unchanged(&authority);
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![PathRef {
+                    id: "unknown-retained".into(),
+                }],
+            }),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_unchanged(&authority);
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![ordinary.id.clone()],
+            }),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_unchanged(&authority);
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![ordinary.id],
+                startup: false,
+            }),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_unchanged(&authority);
+        assert!(authority.persistent.contains_key(&attachment.id.id));
+    }
+
+    #[test]
+    fn attachment_abandon_only_retires_provisional_and_commit_boundaries_are_truthful() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("network.nnue");
+        let registry = dir.path().join("registry.json");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let handle = attachment_resource(&mut authority, &path);
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![handle.id.clone()],
+                startup: false,
+            })
+            .unwrap();
+        assert!(!authority.persistent.contains_key(&handle.id.id));
+        assert!(authority.retired_attachments.contains_key(&handle.id.id));
+        assert!(authority
+            .resolve(&handle.id, PathOperation::EngineResourceRead, &[])
+            .is_ok());
+
+        let retry_path = dir.path().join("retry.nnue");
+        let retry = attachment_resource(&mut authority, &retry_path);
+        let before = fs::read(&registry).unwrap();
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        assert!(authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![retry.id.clone()],
+                startup: false,
+            })
+            .is_err());
+        set_test_atomic_file_injector(None);
+        assert!(authority.persistent.contains_key(&retry.id.id));
+        assert!(authority.provisional_attachments.contains(&retry.id.id));
+        assert!(!authority.retired_attachments.contains_key(&retry.id.id));
+        assert_eq!(fs::read(&registry).unwrap(), before);
+
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![retry.id.clone()],
+                startup: false,
+            }),
+            Err(Error::CommittedDurabilityUncertain(_))
+        ));
+        set_test_atomic_file_injector(None);
+        assert!(!authority.persistent.contains_key(&retry.id.id));
+        assert!(authority.retired_attachments.contains_key(&retry.id.id));
+        assert!(!authority.provisional_attachments.contains(&retry.id.id));
+        let reopened = PathAuthority::open(registry, vec![]).unwrap();
+        assert!(!reopened.persistent.contains_key(&retry.id.id));
+    }
+
+    #[test]
+    fn loaded_attachment_metadata_rejects_invalid_shapes_and_overlaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let resource = dir.path().join("resource.nnue");
+        fs::write(&resource, b"resource").unwrap();
+        let valid = stored_entry_for(
+            &resource,
+            "resource-id",
+            Some(EntryPurpose::EngineResource),
+            canonical_operations(EntryPurpose::EngineResource),
+        );
+        let mut invalid_provisional = serde_json::to_value(Registry {
+            schema_version: SCHEMA_VERSION,
+            entries: vec![valid.clone()],
+            active_database_root: None,
+            active_puzzle_root: None,
+            active_engine_root: None,
+            pending_artifacts: vec![],
+            provisional_attachments: BTreeSet::from(["unknown".into()]),
+            image_cleanup: vec![],
+        })
+        .unwrap();
+        fs::write(&registry, serde_json::to_vec(&invalid_provisional).unwrap()).unwrap();
+        assert!(matches!(
+            PathAuthority::open(registry.clone(), vec![]),
+            Err(Error::InvalidInput(_))
+        ));
+
+        let image_leaf = uuid::Uuid::new_v4().to_string();
+        let image = dir.path().join(&image_leaf);
+        fs::write(&image, b"image").unwrap();
+        let cleanup = stored_entry_for(
+            &image,
+            "resource-id",
+            Some(EntryPurpose::EngineImage),
+            canonical_operations(EntryPurpose::EngineImage),
+        );
+        invalid_provisional["provisional_attachments"] = serde_json::json!([]);
+        invalid_provisional["image_cleanup"] = serde_json::json!([cleanup]);
+        invalid_provisional["entries"] = serde_json::json!([valid]);
+        fs::write(&registry, serde_json::to_vec(&invalid_provisional).unwrap()).unwrap();
+        assert!(matches!(
+            PathAuthority::open(registry, vec![]),
+            Err(Error::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn schema_one_legacy_attachments_without_lifecycle_fields_load_as_owned() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let resource_path = dir.path().join("resource.nnue");
+        fs::write(&resource_path, b"resource").unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = uuid::Uuid::new_v4().to_string();
+        let (_, identity) = image_dir
+            .atomic_replace_leaf_identified(OsStr::new(&leaf), |file| {
+                file.write_all(b"image").map_err(Error::from)
+            })
+            .unwrap();
+        let (resource_id, image_id) = {
+            let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+            let resource = attachment_resource(&mut authority, &resource_path);
+            let image = authority
+                .register_engine_image(&image_dir, OsStr::new(&leaf), identity, "image".into())
+                .unwrap();
+            (resource.id, image.id)
+        };
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry).unwrap()).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("provisional_attachments");
+        legacy.as_object_mut().unwrap().remove("image_cleanup");
+        for entry in legacy["entries"].as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("purpose");
+        }
+        fs::write(&registry, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        let mut reopened = PathAuthority::open(registry, vec![]).unwrap();
+        assert!(reopened.persistent.contains_key(&resource_id.id));
+        assert!(reopened.persistent.contains_key(&image_id.id));
+        assert!(reopened.provisional_attachments.is_empty());
+        reopened
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: None,
+                abandoned_ids: vec![resource_id.clone(), image_id.clone()],
+                startup: false,
+            })
+            .unwrap();
+        assert!(reopened.persistent.contains_key(&resource_id.id));
+        assert!(reopened.persistent.contains_key(&image_id.id));
+        assert!(reopened.image_cleanup.is_empty());
+        assert!(resource_path.exists());
+        assert!(image_dir.path().join(&leaf).exists());
+    }
+
+    #[test]
+    fn delayed_attachment_startup_preserves_fresh_prepared_reissued_and_used_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let paths: Vec<_> = (0..3)
+            .map(|index| dir.path().join(format!("resource-{index}.nnue")))
+            .collect();
+        for path in &paths {
+            fs::write(path, b"resource").unwrap();
+        }
+        let loaded = {
+            let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+            paths
+                .iter()
+                .map(|path| attachment_resource(&mut authority, path))
+                .collect::<Vec<_>>()
+        };
+        let mut authority = PathAuthority::open(registry, vec![]).unwrap();
+        let reissued = attachment_resource(&mut authority, &paths[1]);
+        let fresh_path = dir.path().join("fresh.nnue");
+        let fresh = attachment_resource(&mut authority, &fresh_path);
+        let prepared_path = dir.path().join("prepared.nnue");
+        let prepared = attachment_resource(&mut authority, &prepared_path);
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![prepared.id.clone()],
+            })
+            .unwrap();
+        authority
+            .resolve(&loaded[2].id, PathOperation::EngineResourceRead, &[])
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: true,
+            })
+            .unwrap();
+        for id in [
+            reissued.id.clone(),
+            fresh.id.clone(),
+            prepared.id.clone(),
+            loaded[2].id.clone(),
+        ] {
+            assert!(authority.persistent.contains_key(&id.id));
+        }
+        assert!(!authority.persistent.contains_key(&loaded[0].id.id));
+        assert!(authority.retired_attachments.contains_key(&loaded[0].id.id));
+    }
+
+    #[test]
+    fn attachment_admission_counts_retired_ids_on_real_issue_and_abandon_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("network.nnue");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        for _ in 0..4 {
+            let handle = attachment_resource(&mut authority, &path);
+            authority
+                .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                    retained_ids: None,
+                    abandoned_ids: vec![handle.id],
+                    startup: false,
+                })
+                .unwrap();
+        }
+        assert_eq!(authority.retired_attachments.len(), 4);
+
+        let template = authority
+            .retired_attachments
+            .values()
+            .next()
+            .cloned()
+            .expect("abandoning a real attachment must retain session resolution");
+        for index in authority.retired_attachments.len()..MAX_PERSISTENT_IDS {
+            let mut entry = template.clone();
+            entry.stored.id.id = format!("retired-{index}");
+            authority
+                .retired_attachments
+                .insert(entry.stored.id.id.clone(), entry);
+        }
+        let grant = authority
+            .grant_dialog(
+                &path,
+                "resource",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        assert!(matches!(
+            authority.promote_engine_resource(&grant, EngineResourceHandleKind::File, "resource",),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert!(authority.dialogs.contains_key(&grant.id));
+    }
+
+    #[test]
+    fn attachment_prepare_allows_non_growing_readoption_from_an_overlimit_legacy_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("network.nnue");
+        fs::write(&path, b"resource").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let template = Entry {
+            stored: stored_entry_for(
+                &path,
+                "persistent-0",
+                Some(EntryPurpose::EngineResource),
+                canonical_operations(EntryPurpose::EngineResource),
+            ),
+            availability: PathAvailability::Available,
+        };
+        for index in 0..MAX_PERSISTENT_IDS {
+            let mut entry = template.clone();
+            entry.stored.id.id = format!("persistent-{index}");
+            authority
+                .persistent
+                .insert(entry.stored.id.id.clone(), entry);
+        }
+        let mut retired = template.clone();
+        retired.stored.id.id = "retired-legacy".into();
+        let retired_id = retired.stored.id.clone();
+        authority
+            .retired_attachments
+            .insert(retired_id.id.clone(), retired);
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![retired_id.clone()],
+            })
+            .unwrap();
+        assert_eq!(authority.persistent.len(), MAX_PERSISTENT_IDS + 1);
+        assert!(!authority.retired_attachments.contains_key(&retired_id.id));
+    }
+
+    #[test]
+    fn image_cleanup_keeps_intent_across_save_failure_and_completes_missing_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = uuid::Uuid::new_v4().to_string();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let (_, identity) = image_dir
+            .atomic_replace_leaf_identified(OsStr::new(&leaf), |file| {
+                file.write_all(b"image").map_err(Error::from)
+            })
+            .unwrap();
+        let image = authority
+            .register_engine_image(&image_dir, OsStr::new(&leaf), identity, "image".into())
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![image.id.clone()],
+            })
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: false,
+            })
+            .unwrap();
+        assert!(authority.image_cleanup.contains_key(&image.id.id));
+
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        assert!(authority.cleanup_engine_images(&image_dir, false).is_err());
+        set_test_atomic_file_injector(None);
+        assert!(authority.image_cleanup.contains_key(&image.id.id));
+        assert!(!image_dir.path().join(&leaf).exists());
+
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "uncertain",
+        ))));
+        assert!(matches!(
+            authority.cleanup_engine_images(&image_dir, false),
+            Err(Error::CommittedDurabilityUncertain(_))
+        ));
+        set_test_atomic_file_injector(None);
+        assert!(authority.image_cleanup.is_empty());
+        drop(authority);
+        let reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert!(reopened.image_cleanup.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_cleanup_finishes_symlink_and_directory_substitutions_without_unlinking_them() {
+        for directory_substitute in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let image_dir = ensure_app_owned_default_dir(
+                &AppDataDir::for_test(dir.path()),
+                AppOwnedDefaultRoot::EngineImages,
+            )
+            .unwrap();
+            let leaf = uuid::Uuid::new_v4().to_string();
+            let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+            let (_, identity) = image_dir
+                .atomic_replace_leaf_identified(OsStr::new(&leaf), |file| {
+                    file.write_all(b"image").map_err(Error::from)
+                })
+                .unwrap();
+            let image = authority
+                .register_engine_image(&image_dir, OsStr::new(&leaf), identity, "image".into())
+                .unwrap();
+            authority
+                .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                    retained_ids: vec![image.id.clone()],
+                })
+                .unwrap();
+            authority
+                .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                    retained_ids: Some(vec![]),
+                    abandoned_ids: vec![],
+                    startup: false,
+                })
+                .unwrap();
+            let path = image_dir.path().join(&leaf);
+            fs::remove_file(&path).unwrap();
+            if directory_substitute {
+                fs::create_dir(&path).unwrap();
+            } else {
+                let target = dir.path().join("substitute");
+                fs::write(&target, b"substitute").unwrap();
+                std::os::unix::fs::symlink(&target, &path).unwrap();
+            }
+            authority.cleanup_engine_images(&image_dir, false).unwrap();
+            assert!(authority.image_cleanup.is_empty());
+            assert!(path.exists());
+            assert_eq!(path.is_dir(), directory_substitute);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_cleanup_finishes_regular_file_inode_substitution_without_unlinking_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = uuid::Uuid::new_v4().to_string();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let (_, identity) = image_dir
+            .atomic_replace_leaf_identified(OsStr::new(&leaf), |file| {
+                file.write_all(b"image").map_err(Error::from)
+            })
+            .unwrap();
+        let image = authority
+            .register_engine_image(&image_dir, OsStr::new(&leaf), identity, "image".into())
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![image.id.clone()],
+            })
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: false,
+            })
+            .unwrap();
+        let path = image_dir.path().join(&leaf);
+        let substitute = dir.path().join("substitute");
+        fs::write(&substitute, b"substitute").unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::rename(&substitute, &path).unwrap();
+        authority.cleanup_engine_images(&image_dir, false).unwrap();
+        assert!(authority.image_cleanup.is_empty());
+        assert_eq!(fs::read(path).unwrap(), b"substitute");
+    }
+
+    #[test]
+    fn image_cleanup_retains_intent_on_unrelated_io_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = uuid::Uuid::new_v4().to_string();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let (_, identity) = image_dir
+            .atomic_replace_leaf_identified(OsStr::new(&leaf), |file| {
+                file.write_all(b"image").map_err(Error::from)
+            })
+            .unwrap();
+        let image = authority
+            .register_engine_image(&image_dir, OsStr::new(&leaf), identity, "image".into())
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![image.id.clone()],
+            })
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: false,
+            })
+            .unwrap();
+        let before = fs::read(&registry).unwrap();
+        crate::infra::fs::set_test_removal_injector(Some(Arc::new(
+            crate::infra::fs::RemovalFault(crate::infra::fs::RemovalFaultPoint::BeforeTopOpen),
+        )));
+        assert!(authority.cleanup_engine_images(&image_dir, false).is_err());
+        crate::infra::fs::set_test_removal_injector(None);
+        assert!(authority.image_cleanup.contains_key(&image.id.id));
+        assert!(image_dir.path().join(&leaf).exists());
+        assert_eq!(fs::read(&registry).unwrap(), before);
+    }
+
+    #[test]
+    fn empty_image_cleanup_does_not_write_under_injected_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        authority.save().unwrap();
+        let registry = dir.path().join("registry.json");
+        let before = fs::read(&registry).unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        assert!(authority.cleanup_engine_images(&image_dir, false).is_ok());
+        set_test_atomic_file_injector(None);
+        assert_eq!(fs::read(registry).unwrap(), before);
+    }
+
+    #[test]
+    fn image_cleanup_occupancy_counts_against_new_attachment_issuance() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let leaf = uuid::Uuid::new_v4().to_string();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let (_, identity) = image_dir
+            .atomic_replace_leaf_identified(OsStr::new(&leaf), |file| {
+                file.write_all(b"image").map_err(Error::from)
+            })
+            .unwrap();
+        let image = authority
+            .register_engine_image(&image_dir, OsStr::new(&leaf), identity, "image".into())
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![image.id.clone()],
+            })
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![]),
+                abandoned_ids: vec![],
+                startup: false,
+            })
+            .unwrap();
+        let template = authority.image_cleanup.values().next().cloned().unwrap();
+        for index in authority.image_cleanup.len()..MAX_PERSISTENT_IDS {
+            let mut entry = template.clone();
+            entry.id.id = format!("cleanup-{index}");
+            authority.image_cleanup.insert(entry.id.id.clone(), entry);
+        }
+        let resource_path = dir.path().join("resource.nnue");
+        fs::write(&resource_path, b"resource").unwrap();
+        let grant = authority
+            .grant_dialog(
+                &resource_path,
+                "resource",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        assert!(matches!(
+            authority.promote_engine_resource(&grant, EngineResourceHandleKind::File, "resource",),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert!(authority.dialogs.contains_key(&grant.id));
+    }
+
+    #[test]
+    fn managed_image_cleanup_deletes_only_matching_uuid_leaf_and_preserves_retained_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(dir.path()),
+            AppOwnedDefaultRoot::EngineImages,
+        )
+        .unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let issue = |authority: &mut PathAuthority, leaf: &str| {
+            let (_, identity) = image_dir
+                .atomic_replace_leaf_identified(OsStr::new(leaf), |file| {
+                    file.write_all(b"image").map_err(Error::from)
+                })
+                .unwrap();
+            authority
+                .register_engine_image(&image_dir, OsStr::new(leaf), identity, leaf.into())
+                .unwrap()
+        };
+        let retired_leaf = uuid::Uuid::new_v4().to_string();
+        let retained_leaf = uuid::Uuid::new_v4().to_string();
+        let retired = issue(&mut authority, &retired_leaf);
+        let retained = issue(&mut authority, &retained_leaf);
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![retired.id.clone(), retained.id.clone()],
+            })
+            .unwrap();
+        authority
+            .reconcile_engine_attachments(EngineAttachmentAction::Reconcile {
+                retained_ids: Some(vec![retained.id.clone()]),
+                abandoned_ids: vec![],
+                startup: false,
+            })
+            .unwrap();
+        assert!(image_dir.path().join(&retired_leaf).exists());
+        authority.cleanup_engine_images(&image_dir, false).unwrap();
+        assert!(!image_dir.path().join(&retired_leaf).exists());
+        assert!(image_dir.path().join(&retained_leaf).exists());
+        assert!(authority.image_cleanup.is_empty());
+        authority.cleanup_engine_images(&image_dir, true).unwrap();
+        assert!(matches!(
+            authority.reconcile_engine_attachments(EngineAttachmentAction::Prepare {
+                retained_ids: vec![retained.id]
+            }),
+            Err(Error::Conflict(_))
+        ));
     }
 }

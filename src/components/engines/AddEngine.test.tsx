@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
     downloadLink?: string;
   }>,
   setEngines: vi.fn(),
+  saveEngines: vi.fn(),
+  submitLocal: undefined as undefined | ((value: unknown) => Promise<unknown>),
+  localSaved: undefined as undefined | (() => void),
   defaultEngines: [
     {
       type: "local" as const,
@@ -39,7 +42,7 @@ vi.mock("@/state/atoms", () => ({
 }));
 vi.mock("jotai", async (importOriginal) => ({
   ...(await importOriginal<typeof import("jotai")>()),
-  useAtom: () => [mocks.engines, mocks.setEngines],
+  useAtom: () => [mocks.engines, mocks.saveEngines],
 }));
 vi.mock("@/utils/engines", async () => {
   const actual = await vi.importActual<typeof import("@/utils/engines")>("@/utils/engines");
@@ -83,7 +86,19 @@ vi.mock("../common/ProgressButton", () => ({
     );
   },
 }));
-vi.mock("./EngineForm", () => ({ default: () => null }));
+vi.mock("./EngineForm", () => ({
+  default: ({
+    onSubmit,
+    onSaved,
+  }: {
+    onSubmit: (value: unknown) => Promise<unknown>;
+    onSaved?: () => void;
+  }) => {
+    mocks.submitLocal = onSubmit;
+    mocks.localSaved = onSaved;
+    return null;
+  },
+}));
 vi.mock("@mantine/form", () => ({
   useForm: () => ({
     values: {},
@@ -127,6 +142,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.engines = [];
   mocks.progressButtonProps = null;
+  mocks.submitLocal = undefined;
+  mocks.localSaved = undefined;
   mocks.clearProgress.mockResolvedValue(1n);
   host = document.createElement("div");
   document.body.append(host);
@@ -176,4 +193,32 @@ test("a succeeded download that fails to register is not treated as installed", 
     defaultEngineProgressId(mocks.defaultEngines[0].downloadLink),
   );
   expect(mocks.progressButtonProps?.initInstalled).toBe(false);
+});
+
+test("local add closes only for the receipt returned by its exact write", async () => {
+  const setOpened = vi.fn();
+  mocks.saveEngines
+    .mockResolvedValueOnce({ saved: false, synchronized: false })
+    .mockResolvedValueOnce({ saved: true, synchronized: true });
+  await act(async () => root.render(<AddEngine opened setOpened={setOpened} />));
+  const local = {
+    type: "local",
+    id: "draft",
+    name: "Stockfish",
+    version: "17",
+    handle: { id: { id: "binary" }, kind: "engine" },
+    filename: "stockfish",
+  };
+
+  await act(async () => {
+    await mocks.submitLocal?.(local);
+  });
+  expect(setOpened).not.toHaveBeenCalled();
+
+  await act(async () => {
+    await mocks.submitLocal?.(local);
+  });
+  expect(setOpened).not.toHaveBeenCalled();
+  mocks.localSaved?.();
+  expect(setOpened).toHaveBeenCalledWith(false);
 });

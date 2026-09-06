@@ -2,6 +2,7 @@ import { useForm } from "@mantine/form";
 import { useAtom } from "jotai";
 import { useTranslation } from "react-i18next";
 import { enginesAtom } from "@/state/atoms";
+import { replaceEngineById } from "@/utils/engineAttachments";
 import type { LocalEngine } from "@/utils/engines";
 import EngineForm from "./EngineForm";
 
@@ -28,8 +29,8 @@ export default function EditEngine({ initialEngine }: { initialEngine: LocalEngi
     <EngineForm
       submitLabel={t("Common.Save")}
       form={form}
-      onSubmit={(values) => {
-        setEngines(async (prev) => (await prev).map((e) => (e === initialEngine ? values : e)));
+      onSubmit={async (values) => {
+        return setEngines((prev) => replaceEngineById(prev, initialEngine.id, values));
       }}
     />
   );

@@ -438,6 +438,39 @@ async fn reconcile_startup_path_owners<'a>(
 
 #[tauri::command]
 #[specta::specta]
+async fn reconcile_engine_attachments(
+    action: crate::infra::path_authority::EngineAttachmentAction,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>, // caller's managed state
+) -> Result<(), Error> {
+    let startup = matches!(
+        &action,
+        crate::infra::path_authority::EngineAttachmentAction::Reconcile { startup: true, .. }
+    );
+    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            let mut guard = authority
+                .lock()
+                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+            let authority = guard
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+            authority.reconcile_engine_attachments(action)?;
+            if startup {
+                let image_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
+                    &crate::infra::path_authority::AppDataDir::for_app(&app)?,
+                    crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
+                )?;
+                authority.cleanup_engine_images(&image_dir, false)?;
+            }
+            Ok(())
+        })
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn issue_pgn_workspace(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -1426,12 +1459,27 @@ impl SoundServerLifecycle {
 /// Every teardown the process owns. Awaited before the event loop is allowed to
 /// exit, because tao exits the process from inside `run()` — no `Drop` runs
 /// afterwards and any child that was not reaped here is re-parented to init.
+#[cfg(test)]
 async fn shutdown_backend(
     supervisor: &EngineSupervisor,
     games: &GameManager,
     sound: Option<&SoundServerLifecycle>,
     budget: Duration,
 ) -> bool {
+    shutdown_backend_with_attachments(supervisor, games, sound, std::future::ready(Ok(())), budget)
+        .await
+}
+
+async fn shutdown_backend_with_attachments<F>(
+    supervisor: &EngineSupervisor,
+    games: &GameManager,
+    sound: Option<&SoundServerLifecycle>,
+    attachments: F,
+    budget: Duration,
+) -> bool
+where
+    F: std::future::Future<Output = Result<(), String>>,
+{
     log::info!("Shutdown requested: terminating engines and live games");
     let cleanup = async {
         let engines = supervisor.terminate_all();
@@ -1445,7 +1493,7 @@ async fn shutdown_backend(
                 Ok(())
             }
         };
-        let (engines, games, sound) = tokio::join!(engines, games, sound);
+        let (engines, games, sound, attachments) = tokio::join!(engines, games, sound, attachments);
         let mut failures = Vec::new();
         if let Err(error) = engines {
             failures.push(format!("engine teardown failed: {error}"));
@@ -1455,6 +1503,9 @@ async fn shutdown_backend(
         }
         if let Err(error) = sound {
             failures.push(error);
+        }
+        if let Err(error) = attachments {
+            failures.push(format!("engine attachment teardown failed: {error}"));
         }
         failures
     };
@@ -1476,11 +1527,41 @@ async fn shutdown_backend(
     }
 }
 
+async fn shutdown_engine_attachments(app: tauri::AppHandle) -> Result<(), Error> {
+    let authority = std::sync::Arc::clone(&app.state::<AppState>().pgn_path_authority);
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            {
+                let mut guard = authority
+                    .lock()
+                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+                guard
+                    .as_mut()
+                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+                    .seal_engine_attachments();
+            }
+            let app_data = crate::infra::path_authority::AppDataDir::for_app(&app)?;
+            let mut guard = authority
+                .lock()
+                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+            let authority = guard
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+            let image_dir = crate::infra::path_authority::ensure_app_owned_default_dir(
+                &app_data,
+                crate::infra::path_authority::AppOwnedDefaultRoot::EngineImages,
+            )?;
+            authority.cleanup_engine_images(&image_dir, false)
+        })
+        .await
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let specta_builder = tauri_specta::Builder::new()
         .commands(tauri_specta::collect_commands!(
             close_splashscreen,
             reconcile_startup_path_owners,
+            reconcile_engine_attachments,
             issue_pgn_workspace,
             issue_pgn_export_destination,
             save_board_snapshot,
@@ -1785,10 +1866,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let app_handle = app_handle.clone();
                         async move {
                             let state = app_handle.state::<AppState>();
-                            shutdown_backend(
+                            shutdown_backend_with_attachments(
                                 state.engine_supervisor.as_ref(),
                                 &state.game_manager,
                                 app_handle.try_state::<SoundServerLifecycle>().as_deref(),
+                                async {
+                                    shutdown_engine_attachments(app_handle.clone())
+                                        .await
+                                        .map_err(|error| error.to_string())
+                                },
                                 SHUTDOWN_BUDGET,
                             )
                             .await;
@@ -1941,6 +2027,59 @@ mod tests {
         let games = GameManager::new();
         assert!(shutdown_backend(&supervisor, &games, None, Duration::from_secs(30)).await);
         assert!(shutdown_backend(&supervisor, &games, None, Duration::from_secs(30)).await);
+    }
+
+    #[tokio::test]
+    async fn shutdown_aggregates_attachment_failure_without_skipping_other_teardown() {
+        let supervisor = EngineSupervisor::default();
+        let games = GameManager::new();
+        let (sound_shutdown, sound_signal) = tokio::sync::oneshot::channel();
+        let sound_joined = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sound_joined_clone = sound_joined.clone();
+        let sound_join = tauri::async_runtime::spawn(async move {
+            let _ = sound_signal.await;
+            sound_joined_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let sound = SoundServerLifecycle::new(Some(sound_shutdown), Some(sound_join));
+        assert!(
+            !shutdown_backend_with_attachments(
+                &supervisor,
+                &games,
+                Some(&sound),
+                std::future::ready(Err("cleanup failed".into())),
+                Duration::from_secs(30),
+            )
+            .await
+        );
+        assert!(sound_joined.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn shutdown_timeout_still_runs_sound_teardown_when_attachments_are_pending() {
+        let supervisor = EngineSupervisor::default();
+        let games = GameManager::new();
+        let (sound_shutdown, sound_signal) = tokio::sync::oneshot::channel();
+        let sound_joined = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sound_joined_clone = sound_joined.clone();
+        let sound_join = tauri::async_runtime::spawn(async move {
+            let _ = sound_signal.await;
+            sound_joined_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let sound = SoundServerLifecycle::new(Some(sound_shutdown), Some(sound_join));
+        assert!(
+            !shutdown_backend_with_attachments(
+                &supervisor,
+                &games,
+                Some(&sound),
+                async {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Err("attachment cleanup remained pending".into())
+                },
+                Duration::from_millis(5),
+            )
+            .await
+        );
+        assert!(sound_joined.load(std::sync::atomic::Ordering::SeqCst));
     }
 }
 

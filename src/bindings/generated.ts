@@ -21,6 +21,14 @@ async reconcileStartupPathOwners(owners: StartupPathOwners) : Promise<Result<nul
     else return { status: "error", error: e  as any };
 }
 },
+async reconcileEngineAttachments(action: EngineAttachmentAction) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reconcile_engine_attachments", { action }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async issuePgnWorkspace() : Promise<Result<FileWorkspaceDescriptor, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("issue_pgn_workspace") };
@@ -1007,6 +1015,7 @@ export type DatabaseRootHandle = { id: PathRef; kind: DatabaseRootHandleKind }
 export type DatabaseRootHandleKind = "databaseRoot"
 export type DrawReason = "stalemate" | "insufficientMaterial" | "threefoldRepetition" | "fiftyMoveRule" | "agreement"
 export type DurabilityStage = "ArchiveCommitMarker" | "ArchiveFileReplacement" | "ArchiveReservationJournal" | "DatabasePgnReplacement" | "DirectoryInstall" | "DownloadTargetReplacement" | "GzipFileReplacement" | "NativeExport" | "OldDirectoryCleanup" | "OldDirectoryCleanupSync" | "PgnEdit" | "RegistryReplacement" | "SearchIndexReplacement" | "WorkspacePgnCreation" | "WorkspaceRemoval" | "WorkspaceSidecarCreation" | "WorkspaceSidecarReplacement"
+export type EngineAttachmentAction = { action: "prepare"; retained_ids: PathRef[] } | { action: "reconcile"; retained_ids: PathRef[] | null; abandoned_ids: PathRef[]; startup: boolean }
 export type EngineConfig = { name: string; options: UciOptionConfig[] }
 /**
  * Opaque exact executable capability. It is distinct from its installation root.

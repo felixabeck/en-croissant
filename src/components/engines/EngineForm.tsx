@@ -1,40 +1,52 @@
 import { tauri } from "@/platform/tauri";
 import { Button, Input, NumberInput, Text, TextInput } from "@mantine/core";
 import type { UseFormReturnType } from "@mantine/form";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { type UciOptionConfig } from "@/bindings";
-import { runUnlessCancelled } from "@/components/files/notifyError";
+import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { type LocalEngine, requiredEngineSettings } from "@/utils/engines";
+import { EngineAttachmentDraft } from "@/utils/engineAttachments";
+import type { EngineOwnerSaveReceipt } from "@/state/engineOwnerStorage";
 import FileInput from "../common/FileInput";
 
 export default function EngineForm({
   onSubmit,
+  onSaved,
   form,
   submitLabel,
 }: {
-  onSubmit: (values: LocalEngine) => void;
+  onSubmit: (
+    values: LocalEngine,
+  ) => EngineOwnerSaveReceipt | void | Promise<EngineOwnerSaveReceipt | void>;
+  onSaved?: (receipt: EngineOwnerSaveReceipt) => void | Promise<void>;
   form: UseFormReturnType<LocalEngine>;
   submitLabel: string;
 }) {
   const { t } = useTranslation();
+  const errorTitle = t("Common.Error");
 
-  const config = useRef<{ name: string; options: UciOptionConfig[] } | null>(null);
-  const pickerGeneration = useRef(0);
-  const settings = config.current?.options
-    .filter((o) => requiredEngineSettings.includes(o.value.name))
-    .filter((o) => o.type !== "button")
-    .map((o) => ({
-      type: "string" as const,
-      name: o.value.name,
-      value: String(o.value.default ?? ""),
-    }));
+  const pickerGeneration = useRef({ value: 0 });
+  const attachmentDraft = useRef(new EngineAttachmentDraft());
+  useEffect(() => {
+    const draft = new EngineAttachmentDraft();
+    const pickerState = pickerGeneration.current;
+    attachmentDraft.current = draft;
+    return () => {
+      pickerState.value++;
+      void draft.close().catch((error) => notifyUnlessCancelled(errorTitle, error));
+    };
+  }, [errorTitle]);
 
   return (
     <form
-      onSubmit={form.onSubmit(async (values) =>
-        onSubmit({ ...values, loaded: true, settings: settings || [] }),
-      )}
+      onSubmit={form.onSubmit(async (values) => {
+        const submittedAttachments = attachmentDraft.current.submission();
+        const receipt = await onSubmit({ ...values, loaded: true });
+        if (receipt) {
+          await attachmentDraft.current.adopt(receipt, submittedAttachments);
+          if (receipt.saved) await onSaved?.(receipt);
+        }
+      })}
     >
       <FileInput
         label={t("Engines.Add.BinaryFile")}
@@ -42,15 +54,24 @@ export default function EngineForm({
         filename={form.values.filename}
         withAsterisk
         onClick={() => {
-          const generation = ++pickerGeneration.current;
-          void runUnlessCancelled(t("Common.Error"), async () => {
+          const generation = ++pickerGeneration.current.value;
+          void runUnlessCancelled(errorTitle, async () => {
             const handle = await tauri.issueEngineBinary();
-            if (generation !== pickerGeneration.current) return handle;
+            if (generation !== pickerGeneration.current.value) return handle;
             form.setFieldValue("handle", handle);
-            config.current = await tauri.getEngineConfig(handle);
-            if (generation !== pickerGeneration.current) return handle;
-            form.setFieldValue("filename", config.current.name || "Engine");
-            form.setFieldValue("name", config.current.name);
+            const config = await tauri.getEngineConfig(handle);
+            if (generation !== pickerGeneration.current.value) return handle;
+            const settings = config.options
+              .filter((option) => requiredEngineSettings.includes(option.value.name))
+              .filter((option) => option.type !== "button")
+              .map((option) => ({
+                type: "string" as const,
+                name: option.value.name,
+                value: String(option.value.default ?? ""),
+              }));
+            form.setFieldValue("filename", config.name || "Engine");
+            form.setFieldValue("name", config.name);
+            form.setFieldValue("settings", settings);
             return handle;
           });
         }}
@@ -77,12 +98,12 @@ export default function EngineForm({
           component="button"
           type="button"
           onClick={() => {
-            const generation = ++pickerGeneration.current;
-            void runUnlessCancelled(t("Common.Error"), async () => {
-              const imageHandle = await tauri.issueEngineImage();
-              if (generation !== pickerGeneration.current) return imageHandle;
-              form.setFieldValue("imageHandle", imageHandle);
-              return imageHandle;
+            void runUnlessCancelled(errorTitle, async () => {
+              return attachmentDraft.current.issue(
+                "image",
+                () => tauri.issueEngineImage(),
+                (imageHandle) => form.setFieldValue("imageHandle", imageHandle),
+              );
             });
           }}
         >

@@ -9,6 +9,10 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   notifyUnlessCancelled: vi.fn(),
   retireEngine: vi.fn(),
+  issueEngineImage: vi.fn(),
+  reconcileEngineAttachments: vi.fn(),
+  saveEngines: vi.fn(),
+  selected: 0,
 }));
 
 vi.mock("@/platform/tauri", () => ({
@@ -16,15 +20,20 @@ vi.mock("@/platform/tauri", () => ({
     fileExists: mocks.fileExists,
     getEngineConfig: vi.fn().mockResolvedValue(undefined),
     retireEngine: mocks.retireEngine,
+    issueEngineImage: mocks.issueEngineImage,
+    reconcileEngineAttachments: mocks.reconcileEngineAttachments,
   },
 }));
 vi.mock("@/components/files/notifyError", () => ({
   notifyUnlessCancelled: mocks.notifyUnlessCancelled,
+  runUnlessCancelled: async (_title: string, action: () => Promise<unknown>) => action(),
 }));
 import EnginesPage, { EngineName } from "./EnginesPage";
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
-vi.mock("@/routes/engines", () => ({ Route: { useSearch: () => ({ selected: 0 }) } }));
+vi.mock("@/routes/engines", () => ({
+  Route: { useSearch: () => ({ selected: mocks.selected }) },
+}));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: { defaultValue?: string }) =>
@@ -83,11 +92,16 @@ vi.mock("../common/GoModeInput", () => ({ default: () => null }));
 vi.mock("../common/OpenFolderButton", () => ({ default: () => null }));
 vi.mock("../panels/analysis/LinesSlider", () => ({ default: () => null }));
 vi.mock("./AddEngine", () => ({ default: () => null }));
-vi.mock("@/components/common/IconAction", () => ({ IconAction: () => null }));
+vi.mock("@/components/common/IconAction", () => ({
+  IconAction: ({ label, onClick }: { label: string; onClick?: () => void }) => (
+    <button type="button" aria-label={label} onClick={onClick} />
+  ),
+}));
 
 let atomEngines: Engine[] = [];
-const setAtomEngines = vi.fn(async (update: (prev: Promise<Engine[]>) => Promise<Engine[]>) => {
-  atomEngines = await update(Promise.resolve(atomEngines));
+const setAtomEngines = vi.fn(async (update: (prev: Engine[]) => Engine[] | Promise<Engine[]>) => {
+  atomEngines = await update(atomEngines);
+  return { operationId: "save", key: "engines", saved: true, synchronized: true };
 });
 vi.mock("jotai", async (importOriginal) => ({
   ...(await importOriginal<typeof import("jotai")>()),
@@ -124,6 +138,16 @@ async function render(engine: Engine) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.reconcileEngineAttachments.mockResolvedValue(undefined);
+  mocks.selected = 0;
+  mocks.saveEngines.mockImplementation(async (update) => {
+    atomEngines = update(atomEngines);
+    return { operationId: "save", key: "engines", saved: true, synchronized: true };
+  });
+  setAtomEngines.mockImplementation(async (update) => {
+    atomEngines = await update(atomEngines);
+    return { operationId: "save", key: "engines", saved: true, synchronized: true };
+  });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -186,4 +210,93 @@ test("local removal retires by id and drops persisted state even when retirement
   expect(mocks.retireEngine).toHaveBeenCalledWith("engine-id");
   expect(atomEngines).toEqual([]);
   expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Error", failure);
+});
+
+test("details picker abandons a result that resolves after unmount without persisting it", async () => {
+  let resolveImage!: (value: { id: { id: string }; kind: "engineImage" }) => void;
+  atomEngines = [makeEngine("engine-capability")];
+  mocks.issueEngineImage.mockReturnValue(new Promise((resolve) => (resolveImage = resolve)));
+  mocks.fileExists.mockResolvedValue(true);
+
+  await act(async () => root.render(<EnginesPage />));
+  host
+    .querySelector<HTMLButtonElement>('button[aria-label="Engines.Settings.SelectImage"]')
+    ?.click();
+  await act(async () => root.unmount());
+  await act(async () => {
+    resolveImage({ id: { id: "late-details-image" }, kind: "engineImage" });
+    await vi.waitFor(() => expect(mocks.reconcileEngineAttachments).toHaveBeenCalledOnce());
+  });
+
+  expect(setAtomEngines).not.toHaveBeenCalled();
+  expect(mocks.reconcileEngineAttachments).toHaveBeenCalledWith(
+    expect.objectContaining({ abandoned_ids: [{ id: "late-details-image" }] }),
+  );
+});
+
+test("queued details save rechecks closure after a prior update deletes its target", async () => {
+  let releaseDelete!: () => void;
+  let queue = Promise.resolve();
+  atomEngines = [makeEngine("engine-capability")];
+  mocks.issueEngineImage.mockResolvedValue({
+    id: { id: "queued-details-image" },
+    kind: "engineImage",
+  });
+  mocks.fileExists.mockResolvedValue(true);
+  setAtomEngines.mockImplementation((update) => {
+    const run = queue.then(async () => {
+      atomEngines = await update(atomEngines);
+      return { operationId: "save", key: "engines", saved: true, synchronized: true };
+    });
+    queue = run.then(() => undefined);
+    return run;
+  });
+
+  const deletion = setAtomEngines(async () => {
+    await new Promise<void>((resolve) => (releaseDelete = resolve));
+    return [];
+  });
+  await act(async () => root.render(<EnginesPage />));
+  host
+    .querySelector<HTMLButtonElement>('button[aria-label="Engines.Settings.SelectImage"]')
+    ?.click();
+  await vi.waitFor(() => expect(mocks.issueEngineImage).toHaveBeenCalledOnce());
+  await act(async () => root.unmount());
+  await vi.waitFor(() => expect(releaseDelete).toBeTypeOf("function"));
+  releaseDelete();
+  await deletion;
+  await vi.waitFor(() =>
+    expect(mocks.reconcileEngineAttachments).toHaveBeenCalledWith(
+      expect.objectContaining({ abandoned_ids: [{ id: "queued-details-image" }] }),
+    ),
+  );
+
+  expect(atomEngines).toEqual([]);
+});
+
+test("changing the selected engine closes the former immutable-owner draft", async () => {
+  let resolveImage!: (value: { id: { id: string }; kind: "engineImage" }) => void;
+  atomEngines = [
+    makeEngine("first-binary"),
+    { ...makeEngine("second-binary"), id: "second-engine", name: "Second" },
+  ];
+  mocks.issueEngineImage.mockReturnValue(new Promise((resolve) => (resolveImage = resolve)));
+  mocks.fileExists.mockResolvedValue(true);
+  await act(async () => root.render(<EnginesPage />));
+  host
+    .querySelector<HTMLButtonElement>('button[aria-label="Engines.Settings.SelectImage"]')
+    ?.click();
+  await vi.waitFor(() => expect(mocks.issueEngineImage).toHaveBeenCalledOnce());
+
+  mocks.selected = 1;
+  await act(async () => root.render(<EnginesPage />));
+  await act(async () => {
+    resolveImage({ id: { id: "former-owner-image" }, kind: "engineImage" });
+    await vi.waitFor(() =>
+      expect(mocks.reconcileEngineAttachments).toHaveBeenCalledWith(
+        expect.objectContaining({ abandoned_ids: [{ id: "former-owner-image" }] }),
+      ),
+    );
+  });
+  expect(setAtomEngines).not.toHaveBeenCalled();
 });

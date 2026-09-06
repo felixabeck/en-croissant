@@ -9,36 +9,13 @@ import {
 } from "@mantine/core";
 import { IconCpu, IconUser } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
-import type { GoMode } from "@/bindings";
 import GoModeInput from "@/components/common/GoModeInput";
-import TimeInput, { type TimeType } from "@/components/common/TimeInput";
+import TimeInput from "@/components/common/TimeInput";
 import EngineSettingsForm from "@/components/panels/analysis/EngineSettingsForm";
-import type { TimeControlField } from "@/utils/clock";
-import type { EngineSettings, LocalEngine } from "@/utils/engines";
+import { DEFAULT_TIME_CONTROL, type OpponentSettings } from "@/utils/opponentSettings";
 import { EnginesSelect } from "./EnginesSelect";
 
-export type OpponentSettings =
-  | {
-      type: "human";
-      timeControl?: TimeControlField;
-      name?: string;
-      timeUnit?: TimeType;
-      incrementUnit?: TimeType;
-    }
-  | {
-      type: "engine";
-      timeControl?: TimeControlField;
-      engine: LocalEngine | null;
-      go: GoMode;
-      engineSettings?: EngineSettings;
-      timeUnit?: TimeType;
-      incrementUnit?: TimeType;
-    };
-
-export const DEFAULT_TIME_CONTROL: TimeControlField = {
-  seconds: 180_000,
-  increment: 2_000,
-};
+export { DEFAULT_TIME_CONTROL, type OpponentSettings } from "@/utils/opponentSettings";
 
 export function OpponentForm({
   sameTimeControl,

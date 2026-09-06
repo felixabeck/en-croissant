@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { serializeStorageValue } from "./store/debouncedStorage";
 
-const mocks = vi.hoisted(() => ({ reconcile: vi.fn() }));
+const mocks = vi.hoisted(() => ({ reconcile: vi.fn(), reconcileAttachments: vi.fn() }));
 vi.mock("@/platform/tauri", () => ({
-    tauri: { reconcileStartupPathOwners: mocks.reconcile },
+    tauri: {
+        reconcileStartupPathOwners: mocks.reconcile,
+        reconcileEngineAttachments: mocks.reconcileAttachments,
+    },
 }));
 
 import {
@@ -25,6 +28,7 @@ beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
     mocks.reconcile.mockReset().mockResolvedValue(null);
+    mocks.reconcileAttachments.mockReset().mockResolvedValue(null);
     resetPathOwnerInitializationForTests();
 });
 
@@ -90,6 +94,7 @@ describe("collectOriginalPathOwners", () => {
             serializeStorageValue({
                 type: "engine",
                 engine,
+                go: { t: "Depth", c: 24 },
                 engineSettings: [
                     {
                         type: "resource",
@@ -212,6 +217,7 @@ describe("collectOriginalPathOwners", () => {
             serializeStorageValue({
                 type: "engine",
                 engine: playerEngine,
+                go: { t: "Depth", c: 24 },
                 engineSettings: [
                     {
                         type: "resource",
@@ -315,4 +321,5 @@ test("initialization shares one native reconciliation promise", async () => {
     expect(mocks.reconcile).toHaveBeenCalledOnce();
     resolve();
     await first;
+    expect(mocks.reconcileAttachments).toHaveBeenCalledOnce();
 });

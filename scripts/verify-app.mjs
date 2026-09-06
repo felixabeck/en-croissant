@@ -4,7 +4,7 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts eight things that no other gate in this repository can:
+// It asserts attachment cleanup plus eight things that no other gate in this repository can:
 //   1. the real binary starts, renders and answers script under WebKitGTK,
 //   2. production startup reclaims unowned authority but preserves owned authority,
 //   3. startup authority reconciliation deletes no user files,
@@ -39,6 +39,15 @@ const closeControlProbe = `
   const fallback = controls ? controls.querySelector('button:last-of-type') : null;
   return labelled ? "label" : fallback ? "fallback" : false;
 `;
+const closeControlAction = `
+  const labelled = document.querySelector('button[aria-label="Close window"]');
+  const controls = document.querySelector('[class*="windowControls"]');
+  const fallback = controls ? controls.querySelector('button:last-of-type') : null;
+  const close = labelled || fallback;
+  if (!close) throw new Error("could not find the close control in the window-controls group");
+  setTimeout(() => close.click(), 0);
+  return 1;
+`;
 
 const failures = [];
 const check = (condition, description, detail) => {
@@ -48,6 +57,35 @@ const check = (condition, description, detail) => {
     if (detail) console.log(`      ${detail}`);
   }
 };
+
+async function closeApplicationThroughTitlebar(session, label) {
+  await waitFor(`${label} window controls`, () =>
+    session.execute(closeControlProbe).catch(() => false),
+  );
+  const running = appProcesses();
+  const application = running.find(({ cmd }) => /release\/en-croissant/.test(cmd));
+  if (!application) throw new Error(`${label} application process was not running`);
+  const webkitServicePids = running
+    .filter(
+      ({ ppid, cmd }) =>
+        ppid === application.pid && /WebKitWebProcess|WebKitNetworkProcess/.test(cmd),
+    )
+    .map(({ pid }) => pid);
+  const trackedPids = [application.pid, ...webkitServicePids];
+  await session.execute(closeControlAction);
+  const gone = await waitFor(
+    `${label} application pid ${application.pid} and recorded WebKit service pids to exit`,
+    () => trackedPids.every((pid) => !processExists(pid)),
+    { timeoutMs: 30_000 },
+  ).catch(() => false);
+  return {
+    application,
+    webkitServicePids,
+    running,
+    gone,
+    survivors: trackedPids.filter(processExists),
+  };
+}
 
 async function invokeAndWait(session, label, globalName, invokeExpression, successKey = "value") {
   const starterError = await session
@@ -90,11 +128,52 @@ try {
 
   const { socket } = await startCompositor();
   const { profileDirectory } = await startDriver({ waylandDisplay: socket });
+  // WebKit local storage belongs to the isolated profile, but it can only be initialized through
+  // the real application origin. Seed valid durable image owners, close cleanly, and only then
+  // install the registry fixture that the asserted startup must reconcile.
+  const retainedImageId = "11111111-1111-4111-8111-111111111111";
+  const retiredImageId = "22222222-2222-4222-8222-222222222222";
+  const orphanImageId = "33333333-3333-4333-8333-333333333333";
+  const ownerEngine = (id, imageId) => ({
+    type: "local",
+    id,
+    name: `Fixture ${id}`,
+    version: "1",
+    handle: { id: { id: `fixture-executable-${id}` }, kind: "engine" },
+    filename: "fixture-engine",
+    imageHandle: { id: { id: imageId }, kind: "engineImage" },
+  });
+  const seedSession = await Session.open(APP_BINARY);
+  await waitFor("the seed renderer to expose Tauri", () =>
+    seedSession.execute("return typeof window.__TAURI_INTERNALS__ === 'object'").catch(() => false),
+  );
+  await seedSession.execute(`localStorage.setItem("engines", arguments[0]); return true`, [
+    JSON.stringify([
+      ownerEngine("retained", retainedImageId),
+      ownerEngine("retire-on-shutdown", retiredImageId),
+    ]),
+  ]);
+  const seedClose = await closeApplicationThroughTitlebar(seedSession, "seed");
+  if (!seedClose.gone || seedClose.survivors.length > 0) {
+    throw new Error(`seed processes survived close: ${seedClose.survivors.join(", ")}`);
+  }
+
   const fixtureDirectory = join(profileDirectory, "path-owner-fixture");
   const ownedRoot = join(fixtureDirectory, "owned-database-root");
   const orphanFile = join(fixtureDirectory, "orphan-opening-book.bin");
+  const imageDirectory = join(
+    profileDirectory,
+    ".local/share/com.chessriddle.encroissant/engine-images",
+  );
+  const retainedImage = join(imageDirectory, retainedImageId);
+  const retiredImage = join(imageDirectory, retiredImageId);
+  const orphanImage = join(imageDirectory, orphanImageId);
   await mkdir(ownedRoot, { recursive: true });
+  await mkdir(imageDirectory, { recursive: true });
   await writeFile(orphanFile, "do not delete registry fixture bytes");
+  await writeFile(retainedImage, "retained managed image bytes");
+  await writeFile(retiredImage, "retired managed image bytes");
+  await writeFile(orphanImage, "orphan managed image bytes");
   const registryFile = join(
     profileDirectory,
     ".config/com.chessriddle.encroissant/path-authority.json",
@@ -137,25 +216,59 @@ try {
           ["openingBookRead"],
           false,
         ),
+        await storedEntry(
+          retainedImageId,
+          "Retained engine image",
+          retainedImage,
+          "engineImage",
+          ["engineImageRead"],
+          false,
+        ),
+        await storedEntry(
+          retiredImageId,
+          "Shutdown engine image",
+          retiredImage,
+          "engineImage",
+          ["engineImageRead"],
+          false,
+        ),
+        await storedEntry(
+          orphanImageId,
+          "Orphan engine image",
+          orphanImage,
+          "engineImage",
+          ["engineImageRead"],
+          false,
+        ),
       ],
       active_database_root: { id: "verify-owned-root" },
       active_puzzle_root: null,
       active_engine_root: null,
       pending_artifacts: [],
+      provisional_attachments: [],
+      image_cleanup: [],
     }),
   );
   const logFile = join(
     profileDirectory,
     ".local/share/com.chessriddle.encroissant/logs/en-croissant.log",
   );
-  const readLog = () => readFile(logFile, "utf8").catch(() => "");
+  const assertedLogStart = existsSync(logFile) ? (await stat(logFile)).size : 0;
+  const readLog = () =>
+    readFile(logFile)
+      .then((bytes) => bytes.subarray(assertedLogStart).toString("utf8"))
+      .catch(() => "");
 
   const session = await Session.open(APP_BINARY);
   const reconciledRegistry = await waitFor(
     "production startup to reconcile the seeded path registry",
     async () => {
       const registry = JSON.parse(await readFile(registryFile, "utf8"));
-      return registry.entries.some(({ id }) => id.id === "verify-unowned-book") ? false : registry;
+      return registry.entries.some(
+        ({ id }) => id.id === "verify-unowned-book" || id.id === orphanImageId,
+      ) || registry.image_cleanup?.some(({ id }) => id.id === orphanImageId)
+        ? false
+        : registry;
     },
     { timeoutMs: IPC_PROBE_TIMEOUT_MS },
   );
@@ -167,6 +280,15 @@ try {
   check(
     existsSync(ownedRoot) && existsSync(orphanFile),
     "startup authority reconciliation deletes no user files",
+  );
+  check(
+    reconciledRegistry.entries.some(({ id }) => id.id === retainedImageId) &&
+      reconciledRegistry.entries.some(({ id }) => id.id === retiredImageId) &&
+      !reconciledRegistry.entries.some(({ id }) => id.id === orphanImageId) &&
+      existsSync(retainedImage) &&
+      existsSync(retiredImage) &&
+      !existsSync(orphanImage),
+    "trusted production startup preserves owned images and cleans only the orphan",
   );
   const closeControl = await waitFor("the renderer to mount its window controls", async () =>
     session.execute(closeControlProbe).catch(() => false),
@@ -229,6 +351,54 @@ try {
     invalidSoundPathResult.value ?? invalidSoundPathResult.error,
   );
 
+  const prepareRetireImageResult = await invokeAndWait(
+    session,
+    "engine attachment prepare to settle",
+    "__verifyAppPrepareRetireImage",
+    `window.__TAURI_INTERNALS__.invoke("reconcile_engine_attachments", {
+      action: {
+        action: "prepare",
+        retained_ids: [{ id: ${JSON.stringify(retainedImageId)} }],
+      },
+    })`,
+  );
+  check(
+    prepareRetireImageResult.value === "null",
+    "real attachment IPC prepares the exact next durable owner set",
+    prepareRetireImageResult.rejected ?? prepareRetireImageResult.error,
+  );
+  await session.execute(`localStorage.setItem("engines", arguments[0]); return true`, [
+    JSON.stringify([ownerEngine("retained", retainedImageId)]),
+  ]);
+  const retireImageResult = await invokeAndWait(
+    session,
+    "engine attachment reconciliation to settle",
+    "__verifyAppRetireImage",
+    `window.__TAURI_INTERNALS__.invoke("reconcile_engine_attachments", {
+      action: {
+        action: "reconcile",
+        retained_ids: [{ id: ${JSON.stringify(retainedImageId)} }],
+        abandoned_ids: [{ id: ${JSON.stringify(retiredImageId)} }],
+        startup: false,
+      },
+    })`,
+  );
+  check(
+    retireImageResult.value === "null",
+    "real attachment IPC retires the selected managed image",
+    retireImageResult.rejected ?? retireImageResult.error,
+  );
+  const registryWithCleanup = await waitFor("the managed-image cleanup intent", async () => {
+    const registry = JSON.parse(await readFile(registryFile, "utf8"));
+    return registry.image_cleanup?.some(({ id }) => id.id === retiredImageId) ? registry : false;
+  });
+  check(
+    existsSync(retiredImage) &&
+      existsSync(retainedImage) &&
+      !registryWithCleanup.entries.some(({ id }) => id.id === retiredImageId),
+    "retirement preserves image bytes for the live session and records cleanup intent",
+  );
+
   check(
     closeControl === "label" || closeControl === "fallback",
     "the custom title bar rendered its window controls",
@@ -242,49 +412,17 @@ try {
     console.log(`  ..  page screenshot written to ${screenshotPath}`);
   }
 
-  const running = appProcesses();
-  const application = running.find(({ cmd }) => /release\/en-croissant/.test(cmd));
-  const webkitServicePids = application
-    ? running
-        .filter(
-          ({ ppid, cmd }) =>
-            ppid === application.pid && /WebKitWebProcess|WebKitNetworkProcess/.test(cmd),
-        )
-        .map(({ pid }) => pid)
-    : [];
-  const trackedPids = application ? [application.pid, ...webkitServicePids] : [];
   const describeProcesses = (processes) =>
     processes.map(({ pid, ppid, cmd }) => `${pid} ${ppid} ${cmd}`).join("\n      ");
-  check(
-    application !== undefined,
-    "the application process is running before the close",
-    describeProcesses(running),
-  );
-
-  // The app's own control, so this is the real RunEvent::ExitRequested path rather than a kill.
-  await session.execute(
-    `
-      const labelled = document.querySelector('button[aria-label="Close window"]');
-      const controls = document.querySelector('[class*="windowControls"]');
-      const fallback = controls ? controls.querySelector('button:last-of-type') : null;
-      const close = labelled || fallback;
-      if (!close) throw new Error("could not find the close control in the window-controls group");
-      setTimeout(() => close.click(), 0);
-      return 1;
-    `,
-  );
-
-  const gone = await waitFor(
-    `application pid ${application?.pid ?? "unknown"} and its recorded WebKit service pids to exit`,
-    () => trackedPids.every((pid) => !processExists(pid)),
-    { timeoutMs: 30_000 },
-  ).catch(() => false);
-  const survivors = trackedPids.filter(processExists);
+  // The app's own control exercises the real RunEvent::ExitRequested path rather than a kill.
+  const assertedClose = await closeApplicationThroughTitlebar(session, "asserted");
+  const { application, webkitServicePids, running, gone, survivors } = assertedClose;
+  check(true, "the application process is running before the close", describeProcesses(running));
   const trackedDescription =
-    `application pid ${application?.pid ?? "unknown"} and recorded WebKit service pids ` +
+    `application pid ${application.pid} and recorded WebKit service pids ` +
     `[${webkitServicePids.join(", ") || "none"}]`;
   check(
-    application !== undefined && gone && survivors.length === 0,
+    gone && survivors.length === 0,
     `${trackedDescription} do not exist after the close`,
     survivors.length > 0 ? `surviving pids: ${survivors.join(", ")}` : undefined,
   );
@@ -302,6 +440,15 @@ try {
       : undefined,
   );
   check(log.includes("Sound server shutdown signalled"), "the sound server shutdown was signalled");
+
+  const shutdownRegistry = JSON.parse(await readFile(registryFile, "utf8"));
+  check(
+    !existsSync(retiredImage) &&
+      existsSync(retainedImage) &&
+      !shutdownRegistry.image_cleanup?.some(({ id }) => id.id === retiredImageId) &&
+      shutdownRegistry.entries.some(({ id }) => id.id === retainedImageId),
+    "titlebar shutdown removes retired image bytes and intent while retaining the owner",
+  );
 
   console.log("\nshutdown log:");
   for (const line of log.split("\n").filter((line) => /Shutdown|Sound server/.test(line))) {

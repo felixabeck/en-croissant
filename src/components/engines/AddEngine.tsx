@@ -137,14 +137,17 @@ function AddEngine({
           <EngineForm
             submitLabel={t("Common.Add")}
             form={form}
-            onSubmit={(values: LocalEngine) => {
-              setEngines(async (prev) => [
-                ...(await prev),
+            onSubmit={async (values: LocalEngine) => {
+              const receipt = await setEngines((prev) => [
+                ...prev,
                 {
                   ...values,
                   id: crypto.randomUUID(),
                 },
               ]);
+              return receipt;
+            }}
+            onSaved={() => {
               form.setFieldValue("id", crypto.randomUUID());
               setOpened(false);
             }}

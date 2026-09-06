@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { LocalEngine } from "@/utils/engines";
@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   getEngineConfig: vi.fn(),
   issueEngineImage: vi.fn(),
   notify: vi.fn(),
+  reconcileEngineAttachments: vi.fn(),
 }));
 
 vi.mock("@/platform/tauri", () => ({
@@ -16,6 +17,7 @@ vi.mock("@/platform/tauri", () => ({
     issueEngineBinary: mocks.issueEngineBinary,
     getEngineConfig: mocks.getEngineConfig,
     issueEngineImage: mocks.issueEngineImage,
+    reconcileEngineAttachments: mocks.reconcileEngineAttachments,
   },
 }));
 vi.mock("@mantine/notifications", () => ({
@@ -58,6 +60,7 @@ let root: Root;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.reconcileEngineAttachments.mockResolvedValue(undefined);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -96,6 +99,130 @@ test("keeps the adopted binary handle after a successful picker", async () => {
   expect(form.setFieldValue).toHaveBeenCalledWith("handle", handle);
   expect(form.setFieldValue).toHaveBeenCalledWith("filename", "Stockfish");
   expect(form.setFieldValue).toHaveBeenCalledWith("name", "Stockfish");
+  expect(form.setFieldValue).toHaveBeenCalledWith("settings", []);
+});
+
+test("ordinary submission preserves existing scalar and resource settings", async () => {
+  const settings = [
+    { type: "string" as const, name: "Hash", value: "256" },
+    {
+      type: "resource" as const,
+      name: "SyzygyPath",
+      resources: [{ id: { id: "tables" }, kind: "directory" as const, displayName: "tables" }],
+    },
+  ];
+  const values = {
+    type: "local" as const,
+    id: "engine",
+    name: "Renamed",
+    version: "17",
+    handle: { id: { id: "binary" }, kind: "engine" as const },
+    filename: "engine",
+    settings,
+  };
+  const submit = vi.fn().mockResolvedValue({
+    operationId: "save",
+    key: "engines",
+    saved: true,
+    synchronized: true,
+  });
+  const form = {
+    values,
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: (action: (input: LocalEngine) => Promise<void>) => () => action(values),
+  };
+
+  await act(async () =>
+    root.render(<EngineForm submitLabel="Save" form={form as never} onSubmit={submit} />),
+  );
+  await act(async () => {
+    host
+      .querySelector("form")
+      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await Promise.resolve();
+  });
+  expect(submit).toHaveBeenCalledWith(expect.objectContaining({ settings }));
+});
+
+test("only the current binary detection applies fields and required defaults", async () => {
+  const firstHandle = { id: { id: "first" }, kind: "engine" as const };
+  const secondHandle = { id: { id: "second" }, kind: "engine" as const };
+  let resolveFirst!: (value: { name: string; options: never[] }) => void;
+  let resolveSecond!: (value: { name: string; options: never[] }) => void;
+  mocks.issueEngineBinary.mockResolvedValueOnce(firstHandle).mockResolvedValueOnce(secondHandle);
+  mocks.getEngineConfig
+    .mockReturnValueOnce(new Promise((resolve) => (resolveFirst = resolve)))
+    .mockReturnValueOnce(new Promise((resolve) => (resolveSecond = resolve)));
+  const form = {
+    values: { filename: "", imageHandle: undefined },
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: () => () => undefined,
+  };
+  await act(async () =>
+    root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />),
+  );
+
+  host.querySelectorAll("button")[0]?.click();
+  await vi.waitFor(() => expect(mocks.getEngineConfig).toHaveBeenCalledTimes(1));
+  host.querySelectorAll("button")[0]?.click();
+  await vi.waitFor(() => expect(mocks.getEngineConfig).toHaveBeenCalledTimes(2));
+  await act(async () => {
+    resolveSecond({ name: "Current", options: [] });
+    await Promise.resolve();
+    resolveFirst({ name: "Stale", options: [] });
+    await Promise.resolve();
+  });
+
+  expect(form.setFieldValue).toHaveBeenCalledWith("name", "Current");
+  expect(form.setFieldValue).not.toHaveBeenCalledWith("name", "Stale");
+  expect(form.setFieldValue).toHaveBeenCalledWith("settings", []);
+});
+
+test("adopts a successful image before the saved callback closes the form", async () => {
+  const image = { id: { id: "adopt-before-close" }, kind: "engineImage" as const };
+  mocks.issueEngineImage.mockResolvedValue(image);
+  const values = {
+    type: "local" as const,
+    id: "engine",
+    name: "Engine",
+    version: "1",
+    handle: { id: { id: "binary" }, kind: "engine" as const },
+    filename: "engine",
+    imageHandle: image,
+  };
+  const form = {
+    values,
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: (action: (input: LocalEngine) => Promise<void>) => () => action(values),
+  };
+  const onSaved = vi.fn(() => root.unmount());
+  await act(async () =>
+    root.render(
+      <EngineForm
+        submitLabel="Add"
+        form={form as never}
+        onSubmit={async () => ({
+          operationId: "save",
+          key: "engines",
+          saved: true,
+          synchronized: true,
+        })}
+        onSaved={onSaved}
+      />,
+    ),
+  );
+  await act(async () => {
+    host.querySelectorAll("button")[1]?.click();
+    await vi.waitFor(() => expect(form.setFieldValue).toHaveBeenCalledWith("imageHandle", image));
+    host
+      .querySelector("form")
+      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+  });
+  expect(mocks.reconcileEngineAttachments).not.toHaveBeenCalled();
 });
 
 test("does not attach a handle when the native picker is cancelled", async () => {
@@ -214,5 +341,81 @@ test("notifies a real image picker failure without attaching a handle", async ()
   expect(form.setFieldValue).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledWith(
     expect.objectContaining({ message: "permission denied" }),
+  );
+});
+
+test("abandons an image that resolves after the form unmounts", async () => {
+  let resolveImage!: (value: { id: { id: string }; kind: "engineImage" }) => void;
+  mocks.issueEngineImage.mockReturnValue(new Promise((resolve) => (resolveImage = resolve)));
+  const form = {
+    values: { filename: "", imageHandle: undefined },
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: () => () => undefined,
+  };
+
+  await act(async () => {
+    root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />);
+  });
+  host.querySelectorAll("button")[1]?.click();
+  await act(async () => root.unmount());
+  await act(async () => {
+    resolveImage({ id: { id: "late-image" }, kind: "engineImage" });
+    await vi.waitFor(() => expect(mocks.reconcileEngineAttachments).toHaveBeenCalledOnce());
+  });
+
+  expect(form.setFieldValue).not.toHaveBeenCalled();
+  expect(mocks.reconcileEngineAttachments).toHaveBeenCalledWith(
+    expect.objectContaining({ abandoned_ids: [{ id: "late-image" }] }),
+  );
+});
+
+test("StrictMode cleanup is followed by a live draft for image selection", async () => {
+  const image = { id: { id: "strict-image" }, kind: "engineImage" as const };
+  mocks.issueEngineImage.mockResolvedValue(image);
+  const form = {
+    values: { filename: "", imageHandle: undefined },
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: () => () => undefined,
+  };
+
+  await act(async () => {
+    root.render(
+      <StrictMode>
+        <EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />
+      </StrictMode>,
+    );
+  });
+  await act(async () => {
+    host.querySelectorAll("button")[1]?.click();
+    await vi.waitFor(() => expect(form.setFieldValue).toHaveBeenCalledWith("imageHandle", image));
+  });
+});
+
+test("reports a rejected attachment cleanup during unmount", async () => {
+  const image = { id: { id: "cleanup-image" }, kind: "engineImage" as const };
+  mocks.issueEngineImage.mockResolvedValue(image);
+  mocks.reconcileEngineAttachments.mockRejectedValueOnce(new Error("cleanup failed"));
+  const form = {
+    values: { filename: "", imageHandle: undefined },
+    getInputProps: () => ({}),
+    setFieldValue: vi.fn(),
+    onSubmit: () => () => undefined,
+  };
+
+  await act(async () => {
+    root.render(<EngineForm submitLabel="Add" form={form as never} onSubmit={() => undefined} />);
+    await Promise.resolve();
+  });
+  await act(async () => {
+    host.querySelectorAll("button")[1]?.click();
+    await vi.waitFor(() => expect(form.setFieldValue).toHaveBeenCalledWith("imageHandle", image));
+  });
+  await act(async () => root.unmount());
+  await vi.waitFor(() =>
+    expect(mocks.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Common.Error", message: "cleanup failed" }),
+    ),
   );
 });

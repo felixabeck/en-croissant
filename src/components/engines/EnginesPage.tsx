@@ -34,7 +34,7 @@ import {
 } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom } from "jotai";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import { match, P } from "ts-pattern";
@@ -42,6 +42,7 @@ import { Route } from "@/routes/engines";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled, runUnlessCancelled } from "@/components/files/notifyError";
 import { enginesAtom } from "@/state/atoms";
+import { EngineAttachmentDraft, replaceEngineById } from "@/utils/engineAttachments";
 import {
   isEngineResourceFileOptionName,
   isEngineResourcePathOptionName,
@@ -279,9 +280,19 @@ function EngineSettings({
   setSelected: (v: number | null) => void;
 }) {
   const { t } = useTranslation();
+  const errorTitle = t("Common.Error");
 
   const [engines, setEngines] = useAtom(enginesAtom);
   const engine = engines![selected] as LocalEngine;
+  const targetId = engine.id;
+  const attachmentDraft = useRef(new EngineAttachmentDraft());
+  useEffect(() => {
+    const draft = new EngineAttachmentDraft();
+    attachmentDraft.current = draft;
+    return () => {
+      void draft.close().catch((error) => notifyUnlessCancelled(errorTitle, error));
+    };
+  }, [errorTitle, targetId]);
   const { data: options } = useSWRImmutable(
     ["engine-config", capabilityKey(engine.handle)],
     async () => {
@@ -292,12 +303,32 @@ function EngineSettings({
   const setEngine = useCallback(
     (newEngine: LocalEngine) => {
       setEngines(async (prev) => {
-        const copy = [...(await prev)];
-        copy[selected] = newEngine;
-        return copy;
+        return replaceEngineById(await prev, targetId, newEngine);
       });
     },
-    [selected, setEngines],
+    [targetId, setEngines],
+  );
+
+  const saveAttachment = useCallback(
+    async (
+      draft: EngineAttachmentDraft,
+      update: (current: LocalEngine) => LocalEngine,
+      isDraftCurrent: () => boolean,
+    ) => {
+      const submittedAttachments = draft.submission();
+      let applied = false;
+      const receipt = await setEngines((prev) =>
+        prev.map((item) => {
+          if (item.id !== targetId || item.type !== "local" || !isDraftCurrent()) return item;
+          applied = true;
+          return update(item);
+        }),
+      );
+      if (!applied) return false;
+      await draft.adopt(receipt, submittedAttachments);
+      return true;
+    },
+    [setEngines, targetId],
   );
 
   useEffect(() => {
@@ -340,8 +371,13 @@ function EngineSettings({
 
   function changeImage() {
     void runUnlessCancelled(t("Common.Error"), async () => {
-      const imageHandle = await tauri.issueEngineImage();
-      setEngine({ ...engine, imageHandle });
+      const draft = attachmentDraft.current;
+      const imageHandle = await draft.issue(
+        "image",
+        () => tauri.issueEngineImage(),
+        (accepted, isCurrent) =>
+          saveAttachment(draft, (current) => ({ ...current, imageHandle: accepted }), isCurrent),
+      );
       return imageHandle;
     });
   }
@@ -372,16 +408,28 @@ function EngineSettings({
     }
   }
 
-  function setResourceSetting(name: string, resource: EngineResourceHandle, append: boolean) {
-    const settings = [...(engine.settings || [])];
-    const index = settings.findIndex((setting) => setting.name === name);
-    const existing = settings[index];
-    const resources =
-      append && existing?.type === "resource" ? [...existing.resources, resource] : [resource];
-    const next: EngineOption = { type: "resource", name, resources };
-    if (index === -1) settings.push(next);
-    else settings[index] = next;
-    setEngine({ ...engine, settings });
+  function setResourceSetting(
+    name: string,
+    resource: EngineResourceHandle,
+    append: boolean,
+    isCurrent: () => boolean,
+    draft: EngineAttachmentDraft,
+  ) {
+    return saveAttachment(
+      draft,
+      (current) => {
+        const settings = [...(current.settings || [])];
+        const index = settings.findIndex((setting) => setting.name === name);
+        const existing = settings[index];
+        const resources =
+          append && existing?.type === "resource" ? [...existing.resources, resource] : [resource];
+        const next: EngineOption = { type: "resource", name, resources };
+        if (index === -1) settings.push(next);
+        else settings[index] = next;
+        return { ...current, settings };
+      },
+      isCurrent,
+    );
   }
 
   const [deleteModal, toggleDeleteModal] = useToggle();
@@ -508,9 +556,13 @@ function EngineSettings({
                           leftSection={<IconFolder size="1rem" />}
                           onClick={() => {
                             void runUnlessCancelled(t("Common.Error"), async () => {
-                              const resource = await tauri.issueEngineResource(true);
-                              setResourceSetting(v.name, resource, true);
-                              return resource;
+                              const draft = attachmentDraft.current;
+                              return draft.issue(
+                                `resource:${v.name}`,
+                                () => tauri.issueEngineResource(true),
+                                (resource, isCurrent) =>
+                                  setResourceSetting(v.name, resource, true, isCurrent, draft),
+                              );
                             });
                           }}
                         >
@@ -527,9 +579,13 @@ function EngineSettings({
                         leftSection={<IconFolder size="1rem" />}
                         onClick={() => {
                           void runUnlessCancelled(t("Common.Error"), async () => {
-                            const resource = await tauri.issueEngineResource(false);
-                            setResourceSetting(v.name, resource, false);
-                            return resource;
+                            const draft = attachmentDraft.current;
+                            return draft.issue(
+                              `resource:${v.name}`,
+                              () => tauri.issueEngineResource(false),
+                              (resource, isCurrent) =>
+                                setResourceSetting(v.name, resource, false, isCurrent, draft),
+                            );
                           });
                         }}
                       >
@@ -635,16 +691,7 @@ function EngineSettings({
         opened={jsonModal}
         toggleOpened={toggleJSONModal}
         engine={engine}
-        setEngine={(v) =>
-          setEngines(async (prev) => {
-            const copy = [...(await prev)];
-            const hasDuplicateId = copy.some(
-              (engine, index) => index !== selected && engine.id === v.id,
-            );
-            copy[selected] = hasDuplicateId ? { ...v, id: crypto.randomUUID() } : v;
-            return copy;
-          })
-        }
+        setEngine={(v) => setEngines(async (prev) => replaceEngineById(await prev, targetId, v))}
       />
     </ScrollArea>
   );

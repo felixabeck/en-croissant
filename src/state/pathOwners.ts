@@ -1,6 +1,6 @@
 import equal from "fast-deep-equal";
 import { z } from "zod";
-import type { PathOwnerFamily, StartupPathOwners } from "@/bindings";
+import type { PathOwnerFamily, PathRef, StartupPathOwners } from "@/bindings";
 import { tauri } from "@/platform/tauri";
 import { decodeCompressedOrJson } from "./store/debouncedStorage";
 import { tabSchema } from "./workspaceTypes";
@@ -10,7 +10,13 @@ import {
     pathRefKey,
     pathRefSchema,
 } from "@/utils/pathCapabilities";
-import { engineSchema, engineSettingsSchema } from "@/utils/engines";
+import { engineSchema } from "@/utils/engines";
+import { opponentSettingsSchema } from "@/utils/opponentSettings";
+import {
+    collectAttachmentIds,
+    ENGINE_OWNER_KEYS,
+    reconcileStartupEngineAttachments,
+} from "./engineOwnerStorage";
 
 type StorageRead = { present: false } | { present: true; value: unknown } | { failed: true };
 
@@ -44,17 +50,6 @@ function collectEngineIds(value: z.output<typeof engineSchema>, ids: Set<string>
     }
     if (value.type === "local") ids.add(pathRefKey(value.handle.id));
 }
-
-const opponentOwnerSchema = z.discriminatedUnion("type", [
-    z.object({ type: z.literal("human") }).passthrough(),
-    z
-        .object({
-            type: z.literal("engine"),
-            engine: engineSchema.nullable(),
-            engineSettings: engineSettingsSchema.optional(),
-        })
-        .passthrough(),
-]);
 
 function collectOne<T>(
     read: StorageRead,
@@ -140,7 +135,7 @@ export function collectOriginalPathOwners(local?: Storage, session?: Storage): S
         ) && enginesTrusted;
     for (const key of ["game-player1-settings", "game-player2-settings"]) {
         enginesTrusted =
-            collectOne(readCompressed(local, key), opponentOwnerSchema, (value) => {
+            collectOne(readCompressed(local, key), opponentSettingsSchema, (value) => {
                 if (value.type === "engine") {
                     if (value.engine) collectEngineIds(value.engine, ids);
                     for (const setting of value.engineSettings ?? []) {
@@ -228,11 +223,33 @@ export function collectOriginalPathOwners(local?: Storage, session?: Storage): S
 
 export const originalPathOwnersSnapshot = collectOriginalPathOwners();
 
+export function collectOriginalEngineAttachmentIds(local?: Storage): PathRef[] | null {
+    try {
+        local ??= globalThis.localStorage;
+    } catch {
+        return null;
+    }
+    const ids = new Set<string>();
+    for (const key of ENGINE_OWNER_KEYS) {
+        const read = readCompressed(local, key);
+        if ("failed" in read) return null;
+        if (!read.present) continue;
+        const found = collectAttachmentIds(key, read.value);
+        if (found === null) return null;
+        found.forEach((id) => ids.add(id));
+    }
+    return [...ids].sort().map((id) => ({ id }));
+}
+
+export const originalEngineAttachmentIds = collectOriginalEngineAttachmentIds();
+
 let initialization: Promise<void> | undefined;
 export function initializePathOwners(): Promise<void> {
-    const current = (initialization ??= tauri
-        .reconcileStartupPathOwners(originalPathOwnersSnapshot)
-        .then(() => undefined));
+    if (!initialization) {
+        const owners = tauri.reconcileStartupPathOwners(originalPathOwnersSnapshot);
+        initialization = reconcileStartupEngineAttachments(originalEngineAttachmentIds, owners);
+    }
+    const current = initialization;
     return current;
 }
 

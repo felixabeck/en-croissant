@@ -17,7 +17,7 @@ import {
 
 export const requiredEngineSettings = ["MultiPV", "Threads", "Hash"];
 
-const goModeSchema: z.ZodSchema<GoMode> = z.union([
+export const goModeSchema: z.ZodSchema<GoMode> = z.union([
     z.object({
         t: z.literal("Depth"),
         c: z.number(),
@@ -81,7 +81,7 @@ const persistedEngineSettingsSchema = engineSettingsSchema.transform((settings) 
     );
 });
 
-const engineImageHandleSchema: z.ZodType<EngineImageHandle> = z.object({
+export const engineImageHandleSchema: z.ZodType<EngineImageHandle> = z.object({
     id: z.object({ id: z.string().min(1) }),
     kind: z.literal("engineImage"),
 });
@@ -91,7 +91,7 @@ const engineHandleSchema: z.ZodType<EngineHandle> = z.object({
     kind: z.literal("engine"),
 });
 
-const localEngineSchema = z.object({
+export const localEngineSchema = z.object({
     type: z.literal("local"),
     id: z.string().default(() => crypto.randomUUID()),
     name: z.string(),
