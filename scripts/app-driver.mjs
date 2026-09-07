@@ -47,7 +47,6 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 const started = [];
 let profileDirectory;
-let shutdownPromise;
 let driverOutput;
 
 function launch(command, args, options = {}) {
@@ -77,14 +76,33 @@ function collect(child, sink) {
   child.stderr?.on("data", (chunk) => sink.push(String(chunk)));
 }
 
-async function fetchWithTimeout(url, options = {}) {
+async function fetchWithTimeout(url, options = {}, consumeResponse) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return consumeResponse ? await consumeResponse(response) : response;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function readWebDriverResponse(response, operation) {
+  const status = `HTTP ${response.status}`;
+  let body;
+  try {
+    body = await response.json();
+  } catch (error) {
+    throw new Error(`${operation} -> ${status}: malformed JSON response`, { cause: error });
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error(`${operation} -> ${status}: malformed WebDriver response envelope`);
+  }
+  if (!response.ok) throw new Error(`${operation} -> ${status}: WebDriver request failed`);
+  if (!Object.hasOwn(body, "value")) {
+    throw new Error(`${operation} -> ${status}: response is missing the value envelope`);
+  }
+  return body.value;
 }
 
 export async function waitFor(label, probe, { timeoutMs = 45_000, everyMs = 200 } = {}) {
@@ -210,39 +228,55 @@ export function driverDiagnostics() {
 /** Minimal WebDriver client. The wire protocol is JSON over HTTP, so this needs no dependency. */
 export class Session {
   constructor(id) {
-    this.base = `http://127.0.0.1:${DRIVER_PORT}/session/${id}`;
+    this.base = `http://127.0.0.1:${DRIVER_PORT}/session/${encodeURIComponent(id)}`;
   }
 
   static async open(application = APP_BINARY, tauriOptions = {}) {
     let response;
     try {
-      response = await fetchWithTimeout(`http://127.0.0.1:${DRIVER_PORT}/session`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          capabilities: { alwaysMatch: { "tauri:options": { application, ...tauriOptions } } },
+      response = await fetchWithTimeout(
+        `http://127.0.0.1:${DRIVER_PORT}/session`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            capabilities: { alwaysMatch: { "tauri:options": { application, ...tauriOptions } } },
+          }),
+        },
+        async (wireResponse) => ({
+          status: wireResponse.status,
+          value: await readWebDriverResponse(wireResponse, "POST /session"),
         }),
-      });
+      );
     } catch (error) {
       throw new Error(
         `WebDriver session creation failed: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error },
       );
     }
-    const body = await response.json();
-    if (!response.ok) throw new Error(`session failed: ${JSON.stringify(body)}`);
-    return new Session(body.value.sessionId);
+    const { status, value } = response;
+    if (
+      value === null ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      typeof value.sessionId !== "string" ||
+      value.sessionId.length === 0
+    ) {
+      throw new Error(`POST /session -> HTTP ${status}: response is missing a valid session id`);
+    }
+    return new Session(value.sessionId);
   }
 
   async call(method, path, payload) {
-    const response = await fetchWithTimeout(this.base + path, {
-      method,
-      headers: payload ? { "content-type": "application/json" } : undefined,
-      body: payload ? JSON.stringify(payload) : undefined,
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(`${method} ${path} -> ${JSON.stringify(body)}`);
-    return body.value;
+    return fetchWithTimeout(
+      this.base + path,
+      {
+        method,
+        headers: payload ? { "content-type": "application/json" } : undefined,
+        body: payload ? JSON.stringify(payload) : undefined,
+      },
+      (response) => readWebDriverResponse(response, `${method} ${path}`),
+    );
   }
 
   /** Runs in the page, so `window.__TAURI_INTERNALS__` and the real IPC bridge are reachable. */
@@ -272,20 +306,29 @@ export class Session {
 /** Processes belonging to the app, by full command line. Used to prove nothing outlives a close. */
 export function appProcesses() {
   try {
-    return execFileSync("ps", ["-eo", "pid,ppid,cmd"])
+    const lines = execFileSync("ps", ["-eo", "pid=,ppid=,args="])
       .toString()
       .split("\n")
+      .filter((line) => line.trim().length > 0);
+    if (lines.length === 0) throw new Error("ps returned no process rows");
+    const processes = lines.map((line) => {
+      const [pid, ppid, ...command] = line.trim().split(/\s+/);
+      const parsed = { pid: Number(pid), ppid: Number(ppid), cmd: command.join(" ") };
+      if (!Number.isInteger(parsed.pid) || !Number.isInteger(parsed.ppid) || !parsed.cmd) {
+        throw new Error("ps returned a malformed process row");
+      }
+      return parsed;
+    });
+    return processes
       .filter(
-        (line) => line.includes(APP_BINARY) || /WebKitWebProcess|WebKitNetworkProcess/.test(line),
+        ({ cmd }) => cmd.includes(APP_BINARY) || /WebKitWebProcess|WebKitNetworkProcess/.test(cmd),
       )
-      .filter((line) => !/\bgrep\b/.test(line))
-      .map((line) => {
-        const [pid, ppid, ...command] = line.trim().split(/\s+/);
-        return { pid: Number(pid), ppid: Number(ppid), cmd: command.join(" ") };
-      })
-      .filter(({ pid, ppid }) => Number.isInteger(pid) && Number.isInteger(ppid));
-  } catch {
-    return [];
+      .filter(({ cmd }) => !/\bgrep\b/.test(cmd));
+  } catch (error) {
+    throw new Error(
+      `could not inspect application processes with ps: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
 }
 
@@ -303,7 +346,9 @@ function processGroupExists(pid) {
     process.kill(-pid, 0);
     return true;
   } catch (error) {
-    return error.code !== "ESRCH";
+    if (error.code === "ESRCH") return false;
+    if (error.code === "EPERM") return true;
+    throw error;
   }
 }
 
@@ -312,61 +357,131 @@ function signalProcessGroup(pid, signal) {
     process.kill(-pid, signal);
     return true;
   } catch (error) {
-    if (error.code !== "ESRCH") {
-      console.error(`cleanup: could not send ${signal} to process group ${pid}: ${error.message}`);
-    }
-    return false;
+    if (error.code === "ESRCH") return false;
+    throw error;
   }
 }
 
 async function groupGone(pid, timeoutMs) {
-  try {
-    await waitFor(`process group ${pid} to exit`, () => !processGroupExists(pid), {
-      timeoutMs,
-      everyMs: 100,
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  await waitFor(`process group ${pid} to exit`, () => !processGroupExists(pid), {
+    timeoutMs,
+    everyMs: 100,
+  });
+  return true;
 }
 
-async function cleanUp() {
-  const children = started.splice(0).reverse();
+export async function cleanUpResources({
+  children,
+  profileToRemove,
+  signalGroup = signalProcessGroup,
+  waitForGroup = groupGone,
+  groupExists = processGroupExists,
+  removeProfile = (path) => rm(path, { recursive: true, force: true }),
+}) {
   const groupPids = children.map((child) => child.pid).filter((pid) => Number.isInteger(pid));
+  const failures = [];
+  const message = (error) => (error instanceof Error ? error.message : String(error));
+  const recordWaitFailure = (pid, signal, error) => {
+    if (!message(error).startsWith("timed out waiting for process group ")) {
+      failures.push(`could not confirm process group ${pid} after ${signal}: ${message(error)}`);
+    }
+  };
 
-  for (const pid of groupPids) signalProcessGroup(pid, "SIGTERM");
+  for (const pid of groupPids) {
+    try {
+      signalGroup(pid, "SIGTERM");
+    } catch (error) {
+      failures.push(`could not send SIGTERM to process group ${pid}: ${message(error)}`);
+    }
+  }
 
   const termResults = await Promise.all(
-    groupPids.map(async (pid) => ({ pid, gone: await groupGone(pid, TERM_TIMEOUT_MS) })),
+    groupPids.map(async (pid) => {
+      try {
+        return { pid, gone: await waitForGroup(pid, TERM_TIMEOUT_MS) };
+      } catch (error) {
+        recordWaitFailure(pid, "SIGTERM", error);
+        return { pid, gone: false };
+      }
+    }),
   );
   const termSurvivors = termResults.filter(({ gone }) => !gone).map(({ pid }) => pid);
 
   for (const pid of termSurvivors) {
     console.error(`cleanup: process group ${pid} survived SIGTERM; escalating to SIGKILL`);
-    signalProcessGroup(pid, "SIGKILL");
+    try {
+      signalGroup(pid, "SIGKILL");
+    } catch (error) {
+      failures.push(`could not send SIGKILL to process group ${pid}: ${message(error)}`);
+    }
   }
 
-  await Promise.all(termSurvivors.map((pid) => groupGone(pid, KILL_TIMEOUT_MS)));
+  await Promise.all(
+    termSurvivors.map(async (pid) => {
+      try {
+        await waitForGroup(pid, KILL_TIMEOUT_MS);
+      } catch (error) {
+        recordWaitFailure(pid, "SIGKILL", error);
+        // The final process-group inspection below decides whether cleanup succeeded.
+      }
+    }),
+  );
 
-  const survivors = groupPids.filter(processGroupExists);
-  if (survivors.length > 0) {
-    console.error(`cleanup: process groups still alive after SIGKILL: ${survivors.join(", ")}`);
+  const survivors = [];
+  for (const pid of groupPids) {
+    try {
+      if (groupExists(pid)) survivors.push(pid);
+    } catch (error) {
+      failures.push(`could not inspect process group ${pid}: ${message(error)}`);
+    }
   }
 
   for (const child of children) {
-    child.stdout?.destroy();
-    child.stderr?.destroy();
+    for (const stream of [child.stdout, child.stderr]) {
+      try {
+        stream?.destroy();
+      } catch (error) {
+        failures.push(`could not release process streams for ${child.pid}: ${message(error)}`);
+      }
+    }
   }
 
-  const profileToRemove = profileDirectory;
-  profileDirectory = undefined;
   if (profileToRemove) {
-    await rm(profileToRemove, { recursive: true, force: true }).catch(() => {});
+    try {
+      await removeProfile(profileToRemove);
+    } catch (error) {
+      failures.push(`could not remove temporary profile: ${message(error)}`);
+    }
+  }
+
+  if (survivors.length > 0) {
+    failures.push(`process groups still alive after SIGKILL: ${survivors.join(", ")}`);
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures.map((message) => new Error(message)),
+      `cleanup failed: ${failures.join("; ")}`,
+    );
   }
 }
 
+async function cleanUp() {
+  const children = started.splice(0).reverse();
+  const profileToRemove = profileDirectory;
+  profileDirectory = undefined;
+  await cleanUpResources({ children, profileToRemove });
+}
+
+export function createSharedShutdown(cleanup) {
+  let promise;
+  return () => {
+    if (!promise) promise = Promise.resolve().then(cleanup);
+    return promise;
+  };
+}
+
+const sharedShutdown = createSharedShutdown(cleanUp);
+
 export function shutdown() {
-  if (!shutdownPromise) shutdownPromise = cleanUp();
-  return shutdownPromise;
+  return sharedShutdown();
 }

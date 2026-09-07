@@ -4,15 +4,16 @@
 //   pnpm verify:app                 run the checks
 //   pnpm verify:app --screenshot X  also write a PNG of the page to X
 //
-// It asserts attachment cleanup plus eight things that no other gate in this repository can:
+// It asserts attachment cleanup plus nine things that no other gate in this repository can:
 //   1. the real binary starts, renders and answers script under WebKitGTK,
-//   2. production startup reclaims unowned authority but preserves owned authority,
-//   3. startup authority reconciliation deletes no user files,
-//   4. the renderer cannot resolve a native base directory,
-//   5. the bounded sound-resource command names the bundled file,
-//   6. the bounded sound-resource command refuses an outside collection,
-//   7. closing it through its own control runs the shutdown sequence to completion,
-//   8. nothing — app or WebKit service process — outlives that close.
+//   2. the real renderer exposes the ChessFable document title,
+//   3. production startup reclaims unowned authority but preserves owned authority,
+//   4. startup authority reconciliation deletes no user files,
+//   5. the renderer cannot resolve a native base directory,
+//   6. the bounded sound-resource command names the bundled file,
+//   7. the bounded sound-resource command refuses an outside collection,
+//   8. closing it through its own control runs the shutdown sequence to completion,
+//   9. nothing — app or WebKit service process — outlives that close.
 
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
@@ -114,13 +115,19 @@ async function invokeAndWait(session, label, globalName, invokeExpression, succe
   ).catch((error) => ({ error: error.message }));
 }
 
-process.on("exit", () => void shutdown());
+let cleanupSettled = false;
+process.on("exit", () => {
+  if (!cleanupSettled) console.error("cleanup did not finish before process exit");
+});
 let signalShutdown;
 const handleSignal = () => {
   if (signalShutdown) return;
   signalShutdown = shutdown()
     .catch((error) => console.error(`cleanup failed: ${error.message}`))
-    .finally(() => process.exit(1));
+    .finally(() => {
+      cleanupSettled = true;
+      process.exit(1);
+    });
 };
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, handleSignal);
 
@@ -479,7 +486,14 @@ try {
   console.error(`\nverify:app could not run: ${error.message}`);
   process.exitCode = 1;
 } finally {
-  await shutdown();
+  try {
+    await shutdown();
+  } catch (error) {
+    console.error(`\nverify:app cleanup failed: ${error.message}`);
+    process.exitCode = 1;
+  } finally {
+    cleanupSettled = true;
+  }
 }
 
 if (failures.length > 0) {
