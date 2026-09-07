@@ -693,10 +693,10 @@ async fn save_engine_logs(app: tauri::AppHandle, text: String) -> Result<(), Err
     save_native_export(&app, "engine-logs.csv", "csv", text.as_bytes()).await
 }
 
-/// Opens the fixed project documentation URL without granting arbitrary URL authority to the
-/// renderer.
 const DOCUMENTATION_URL: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/tree/master/docs");
 
+/// Opens the fixed project documentation URL without granting arbitrary URL authority to the
+/// renderer.
 #[tauri::command]
 #[specta::specta]
 fn open_documentation(app: tauri::AppHandle) -> Result<(), Error> {
