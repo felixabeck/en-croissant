@@ -2265,3 +2265,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** Replace the test-only suppression only with equivalent after-exec proof, retained failure diagnostics and demonstrated absence of core events. This extends d-20260907-01 without reversing its memory-bound or test-only scope.
 * **Decided by:** Codex backend-mutation repair run, 2026-09-07 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"1cdb8d801d0b8e603b38016bb5a2dac0a67905666458b21836fcab8e2d412aae","input_sha256":"49b62fdc510648d0bc155b42fba315d534b76852fa853778ea14ce779ffab69b","kind":"mutation-receipt","operation":"1429010bbdf91322d59b9dd23c6cb45f18280cf50e448b5232a76ed0d1a16c79","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20260907-03 — How should poisoned native registries behave?
+
+* **Question:** Should poisoned credential and download registries recover their state or refuse new operations?
+* **Governs:** f-20260830-41
+* **Chosen:** Credential registry and path locks return CredentialRecoveryRequired and preserve journal serialization. Account listing propagates Result through IPC. Download begin and cancel return Conflict through one lock helper; Drop alone recovers the guard for token-matched removal without clearing poison.
+* **Rejected:** Empty successful account lists, blanket poison recovery, shortening credential journal lock spans, and skipping cleanup from a poisoned download registry.
+* **Reason:** Credential journal state may be partial after an unwind, while a download lease must still remove only its own registration during unwind. Fresh credential-manager startup already reconciles durable intents. Reversal path: replace fail-closed operation handling only with a proven transactional recovery protocol and poison/fault tests.
+* **Decided by:** Codex, autonomously under Full Auto, 2026-09-07 · **Superseded-by:** -
+
+### d-20260907-04 — Where should HTTP client construction failures be handled?
+
+* **Question:** Should native HTTP client creation fail at startup or defer an error to requests?
+* **Governs:** f-20260830-41
+* **Chosen:** Fallible constructors for both download and JSON clients, propagated by AppState::try_new to main. Existing test setup may retain cfg(test) Default. Preserve strict DNS/redirect policy and separate timeouts.
+* **Rejected:** Production Default with unwrap or expect, unrestricted fallback clients, and storing deferred construction errors in every request path.
+* **Reason:** Reqwest ClientBuilder::build explicitly permits TLS/resolver initialization failure despite fixed configuration. Startup already returns Result, so this gives failures one owner before publishing usable app state. Reversal path: a future explicit offline startup requirement can introduce a typed unavailable-network state with request-level tests.
+* **Decided by:** Codex, autonomously under Full Auto, 2026-09-07 · **Superseded-by:** -
+
+### d-20260907-05 — How should database statistics enforce required values?
+
+* **Question:** Should player statistics keep distant checked unwraps or bind required values at validation?
+* **Governs:** f-20260830-42
+* **Chosen:** Bind required metadata, parsed result and the selected player rating through Option propagation before move replay; missing opponent rating remains allowed.
+* **Rejected:** Comments linking distant guards to unwraps or requiring both player ratings.
+* **Reason:** Compiler-enforced values eliminate the maintenance panic trap while preserving the existing filter semantics. Reversal path: any future statistics eligibility change must explicitly revise row filters and both-color SQLite regression cases.
+* **Decided by:** Codex, autonomously under Full Auto, 2026-09-07 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"a9debdc014a4d5859bbefdb55c30099c7b0afac0c2a4a875fca6dd70d6de0558","input_sha256":"b2c7af80b1eb80af4d3f4bd3771a2a9610f80f88d63695409b61649ba5314e2b","kind":"mutation-receipt","operation":"50cc9b7e607e7d9310bf7acbd880fa15d45bb059575133285797f7e2f945adae","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-03","d-20260907-04","d-20260907-05"],"target":"decisions-ledger","v":1} -->

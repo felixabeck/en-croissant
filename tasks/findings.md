@@ -6928,3 +6928,19 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 * **Final review repair and proof (2026-09-07):** The final multi-file range triggered the minimalism lens. Its accepted finding identified the existing `stored_entry_for` helper; commit `43ab3050` routes both new test fixtures and their adjacent structural-validation fixture through it without changing explicit operations or assertions. The lens approved the repair. All six applicable lenses are approved; plan authorship/arbitration and same-family detection retain the disclosure above. The focused 161-test suite and full affected gates passed again. A second complete isolated mutation run on `43ab3050` also passed its baseline and caught all 19/19 mutants, with zero missed, timeout or unviable cases. Final artefacts: `/tmp/chessfable-f-20260907-04.xBDndf/mutation-final-artifacts/backend/path-authority/mutants.out/`. The isolated tree was clean and removed after preserving evidence. This supersedes the earlier mutation run as proof of the final test implementation.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7e5c3498f15ed5e6d13e768606756b14480db9ebe73a9df7bb7a4a60c2df6f56","input_sha256":"3a2756a4b0376ed2c6d6f0dd52860c0f43a6865bfd1341b266183111b0985454","kind":"mutation-receipt","operation":"f824ca1c527455a0bf86bcfd08113debca685c86a80ad3c03eeceef39a5e6c3b","options":{"section":null},"request_id_sha256":null,"results":["f-20260907-04"],"target":"f-20260907-04","v":1} -->
+
+---
+
+## 2026-09-07 — filed through the inbox spool
+
+### Player statistics materialize every matching game and full move blob
+
+* **ID:** f-20260907-05 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src-tauri/src/db/mod.rs:1851, get_players_game_info_blocking; GameInfo includes Vec<u8> moves and sql_query.load builds Vec<GameInfo> before Rayon processing.
+* **Defect:** All matching game rows and their complete encoded move blobs coexist in memory, although opening lookup reads at most 55 mainline moves. A large personal database with most games matching one player therefore needs memory proportional to its move corpus, plus the accumulated SiteStatsData output.
+* **Evidence:** The query selects games::moves at line 1829 and loads the full query at line 1851; the subsequent par_iter at line 1856 processes it only after collection. Review-pgn-index identified this while reviewing f-20260830-42.
+* **Scope:** Design bounded query iteration and move-prefix handling together with the result accumulation contract; removing only the input Vec does not bound the returned per-game statistics. Preserve grouping, result orientation, progress and consumers in PlayerCard.tsx and Databases.tsx.
+* **Why deferred:** Separate memory/query-result design outside the panic-binding mandate, under build plan-review MANDATE and push-review-policy section 4. Required-value binding does not depend on or worsen materialization.
+* **Related:** f-20260831-06 handled whole-corpus PGN import/export buffers in this file, but did not change this statistics query. No shared Root assigned without evidence of one implementation cause.
+* **Proof sought:** Real SQLite large-row/many-row fixtures and a measured memory bound, with identical statistics for both colors and missing optional fields.
+* **Found by:** Codex review-pgn-index plan lens, 2026-09-07 (confidence 98).
