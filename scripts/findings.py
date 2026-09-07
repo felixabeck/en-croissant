@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 1c80a3492129e2614c521c7ef6d4802ed2bd103f7d0effc6ca844ea23049d197
+# agent-kit-sha256: 0afb880fbb2b0ce2dce934706162fde0d73ce21823a1a7dfaf23bc140e981451
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -1273,6 +1273,44 @@ class Decision:
         return scan_paths(self.body, self.body_fenced)
 
 
+@dataclass(frozen=True)
+class FindingExpectation:
+    """Captured semantic content that an additive ledger update must preserve."""
+
+    identifier: str
+    status: str
+    area: str
+    root: str
+    entry: str
+    blocked: str
+    title: str
+    body: tuple[str, ...]
+    body_fenced: tuple[bool, ...]
+    governed_by: frozenset[str]
+
+
+@dataclass(frozen=True)
+class DecisionExpectation:
+    """Captured semantic content that an additive decision update must preserve."""
+
+    identifier: str
+    question: str
+    governs: frozenset[str]
+    superseded_by: str
+    body: tuple[str, ...]
+    body_fenced: tuple[bool, ...]
+
+
+@dataclass(frozen=True)
+class AnswerExpectation:
+    """Header transition and one additional evidence block from apply-answers."""
+
+    status: str
+    blocked: str
+    evidence: tuple[str, ...]
+    previous_occurrences: int
+
+
 class LedgerError(Exception):
     pass
 
@@ -1317,41 +1355,135 @@ def _register_ledger_commit(
     intent.postcondition = postcondition
 
 
-def _finding_semantics(finding: Finding) -> tuple[object, ...]:
-    """Stable entry content used to prove an additive finding mutation."""
-    return (
-        finding.status,
-        finding.area,
-        finding.root,
-        finding.entry,
-        finding.blocked,
-        finding.title,
-        tuple(finding.body),
-        tuple(finding.body_fenced),
-        frozenset(finding.governed_by),
+def _finding_expectation(finding: Finding) -> FindingExpectation:
+    return FindingExpectation(
+        identifier=finding.id,
+        status=finding.status,
+        area=finding.area,
+        root=finding.root,
+        entry=finding.entry,
+        blocked=finding.blocked,
+        title=finding.title,
+        body=tuple(finding.body),
+        body_fenced=tuple(finding.body_fenced),
+        governed_by=frozenset(finding.governed_by),
     )
 
 
+def _decision_expectation(decision: Decision) -> DecisionExpectation:
+    return DecisionExpectation(
+        identifier=decision.id,
+        question=decision.question,
+        governs=frozenset(decision.governs),
+        superseded_by=decision.superseded_by,
+        body=tuple(decision.body),
+        body_fenced=tuple(decision.body_fenced),
+    )
+
+
+def _ordered_content_preserved(
+    expected: tuple[object, ...], actual: tuple[object, ...]
+) -> bool:
+    """Accept insertions while requiring every captured item in its original order."""
+    remaining = iter(actual)
+    return all(any(item == candidate for candidate in remaining) for item in expected)
+
+
+def _finding_matches_expectation(
+    finding: Finding, expected: FindingExpectation
+) -> bool:
+    return (
+        finding.status == expected.status
+        and finding.area == expected.area
+        and finding.root == expected.root
+        and finding.entry == expected.entry
+        and finding.blocked == expected.blocked
+        and finding.title == expected.title
+        and frozenset(finding.governed_by) == expected.governed_by
+        and _ordered_content_preserved(
+            tuple(zip(expected.body, expected.body_fenced, strict=True)),
+            tuple(zip(finding.body, finding.body_fenced, strict=True)),
+        )
+    )
+
+
+def _findings_preserved(
+    expected: Collection[FindingExpectation], findings: Collection[Finding]
+) -> bool:
+    actual = {finding.id: finding for finding in findings}
+    return all(
+        (finding := actual.get(item.identifier)) is not None
+        and _finding_matches_expectation(finding, item)
+        for item in expected
+    )
+
+
+def _decision_matches_expectation(
+    decision: Decision, expected: DecisionExpectation
+) -> bool:
+    return (
+        decision.question == expected.question
+        and frozenset(decision.governs) == expected.governs
+        and decision.superseded_by == expected.superseded_by
+        and _ordered_content_preserved(
+            tuple(zip(expected.body, expected.body_fenced, strict=True)),
+            tuple(zip(decision.body, decision.body_fenced, strict=True)),
+        )
+    )
+
+
+def _ledger_snapshot_valid(path: Path, ledger_kind: str) -> bool:
+    """Read-only structural and receipt validation for one standalone ledger."""
+    text = path.read_text(encoding="utf-8")
+    metadata, issues = _scan_ledger_metadata(text, path)
+    issues += _receipt_effect_issues(text, path, metadata)
+    if ledger_kind == "findings":
+        findings, problems, vocabulary = parse(path)
+        issues += validate(findings, problems, vocabulary)
+    else:
+        issues += malformed_decision_headings(path)
+        issues += malformed_superseded_trailers(path)
+        issues += duplicate_decision_ids(path)
+    return not issues
+
+
+def _ledger_snapshot_preserved(before: Path, after: Path, ledger_kind: str) -> bool:
+    """Whether every parsed entry in ``before`` survives semantically in ``after``.
+
+    This is deliberately pure: it reads and parses the two paths but performs no Git
+    operation, lock acquisition, recovery, or write.
+    """
+    if ledger_kind not in {"findings", "decisions"}:
+        raise ValueError("ledger_kind must be exactly 'findings' or 'decisions'")
+    try:
+        if not _ledger_snapshot_valid(before, ledger_kind):
+            return False
+        if not _ledger_snapshot_valid(after, ledger_kind):
+            return False
+        if ledger_kind == "findings":
+            captured = [_finding_expectation(item) for item in parse(before)[0]]
+            return _findings_preserved(captured, parse(after)[0])
+        captured_decisions = [
+            _decision_expectation(item) for item in load_decisions(before)
+        ]
+        actual = {item.id: item for item in load_decisions(after)}
+        return all(
+            (decision := actual.get(item.identifier)) is not None
+            and _decision_matches_expectation(decision, item)
+            for item in captured_decisions
+        )
+    except (LedgerError, OSError, UnicodeError):
+        return False
+
+
 def _finding_entries_postcondition(
-    expected: dict[str, tuple[object, ...]],
+    expected: Collection[FindingExpectation],
 ) -> Callable[[Path, Path], bool]:
     def holds(findings_path: Path, _decisions_path: Path) -> bool:
         findings, problems, vocabulary = parse(findings_path)
-        if validate(findings, problems, vocabulary):
-            return False
-        actual = {finding.id: finding for finding in findings}
-        for identifier, value in expected.items():
-            finding = actual.get(identifier)
-            if finding is None or finding.title != value[5]:
-                return False
-            expected_body = cast(tuple[str, ...], value[6])
-            body = tuple(finding.body)
-            if not any(
-                body[index : index + len(expected_body)] == expected_body
-                for index in range(len(body) - len(expected_body) + 1)
-            ):
-                return False
-        return True
+        return not validate(findings, problems, vocabulary) and _findings_preserved(
+            expected, findings
+        )
 
     return holds
 
@@ -1405,20 +1537,40 @@ def _decision_trailer_postcondition(
     return holds
 
 
+def _contiguous_occurrences(haystack: Collection[str], needle: tuple[str, ...]) -> int:
+    values = tuple(haystack)
+    if not needle:
+        return 0
+    return sum(
+        values[index : index + len(needle)] == needle
+        for index in range(len(values) - len(needle) + 1)
+    )
+
+
 def _answers_postcondition(
-    expected: dict[str, tuple[str, str, tuple[str, ...]]],
+    expected: dict[str, AnswerExpectation],
 ) -> Callable[[Path, Path], bool]:
     def holds(findings_path: Path, _decisions_path: Path) -> bool:
         findings, problems, vocabulary = parse(findings_path)
         if validate(findings, problems, vocabulary):
             return False
         by_id = {finding.id: finding for finding in findings}
-        for identifier, (status, blocked, evidence) in expected.items():
+        for identifier, answer in expected.items():
             finding = by_id.get(identifier)
-            if finding is None or finding.status != status or finding.blocked != blocked:
+            if (
+                finding is None
+                or finding.status != answer.status
+                or finding.blocked != answer.blocked
+            ):
                 return False
-            body = _unfenced_body(finding)
-            if any(line not in body for line in evidence):
+            body = tuple(
+                line
+                for index, line in enumerate(finding.body)
+                if not finding.body_fenced[index]
+            )
+            if _contiguous_occurrences(body, answer.evidence) < (
+                answer.previous_occurrences + 1
+            ):
                 return False
         return True
 
@@ -4764,11 +4916,11 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
 
     merged_ids = sorted(header_ids(body))
     candidate_findings = _parse_text(candidate, ledger)[0]
-    expected_entries = {
-        finding.id: _finding_semantics(finding)
+    expected_entries = [
+        _finding_expectation(finding)
         for finding in candidate_findings
         if finding.id in merged_ids
-    }
+    ]
     command = (
         _ACTIVE_LEDGER_COMMIT.command
         if _ACTIVE_LEDGER_COMMIT is not None
@@ -6341,15 +6493,27 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             insertions[end] = bullet + evidence
             applied.append(finding_id)
 
-        expected_answers: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+        expected_answers: dict[str, AnswerExpectation] = {}
         for _answer_path, finding_id, _bullet in waiting_records:
-            header_index, _end, _header_match = target_spans[finding_id]
+            header_index, end, _header_match = target_spans[finding_id]
             updated = HEADER_RE.match(header_updates[header_index])
             assert updated is not None
-            expected_answers[finding_id] = (
-                updated.group("status"),
-                updated.group("blocked"),
-                tuple(insertions[target_spans[finding_id][1]]),
+            expected_evidence = tuple(insertions[end])
+            existing_body = tuple(
+                line
+                for index, line in enumerate(lines[header_index + 1 : end])
+                if ledger_fence_states[header_index + 1 + index]
+                is FenceState.OUTSIDE
+                and line.strip()
+                and not HRULE_RE.fullmatch(line)
+            )
+            expected_answers[finding_id] = AnswerExpectation(
+                status=updated.group("status"),
+                blocked=updated.group("blocked"),
+                evidence=expected_evidence,
+                previous_occurrences=_contiguous_occurrences(
+                    existing_body, expected_evidence
+                ),
             )
         if expected_answers:
             _register_ledger_commit(
