@@ -9232,16 +9232,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("file.pgn");
         fs::write(&file, b"pgn").unwrap();
-        let valid = StoredEntry {
-            id: PathRef::fresh(),
-            display_name: "file.pgn".into(),
-            class: PathClass::PersistentFile,
-            purpose: None,
-            operations: vec![PathOperation::ReadPgn],
-            path: NativePath::from_path(&file),
-            identity: identity(&file).unwrap(),
-            target_is_dir: false,
-        };
+        let valid = stored_entry_for(&file, "valid", None, vec![PathOperation::ReadPgn]);
         assert!(validate_persisted_shape(&valid).is_ok());
 
         let invalid = [
@@ -9281,21 +9272,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("engine");
         fs::write(&file, b"engine").unwrap();
-        let base = StoredEntry {
-            id: PathRef::fresh(),
-            display_name: "engine".into(),
-            class: PathClass::PersistentFile,
-            purpose: Some(EntryPurpose::EngineExecutable),
-            operations: vec![
+        let base = stored_entry_for(
+            &file,
+            "canonical-engine",
+            Some(EntryPurpose::EngineExecutable),
+            vec![
                 PathOperation::EngineExecute,
                 PathOperation::EngineConfigure,
                 PathOperation::EngineInstall,
                 PathOperation::EngineBinaryInspect,
             ],
-            path: NativePath::from_path(&file),
-            identity: identity(&file).unwrap(),
-            target_is_dir: false,
-        };
+        );
 
         assert!(validate_persisted_shape(&base).is_ok());
         assert!(validate_persisted_shape(&StoredEntry {
@@ -9320,20 +9307,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("engine");
         fs::write(&file, b"engine").unwrap();
-        let legacy_engine = StoredEntry {
-            id: PathRef::fresh(),
-            display_name: "engine".into(),
-            class: PathClass::PersistentFile,
-            purpose: Some(EntryPurpose::EngineExecutable),
-            operations: vec![
+        let legacy_engine = stored_entry_for(
+            &file,
+            "legacy-engine",
+            Some(EntryPurpose::EngineExecutable),
+            vec![
                 PathOperation::EngineExecute,
                 PathOperation::EngineConfigure,
                 PathOperation::EngineInstall,
             ],
-            path: NativePath::from_path(&file),
-            identity: identity(&file).unwrap(),
-            target_is_dir: false,
-        };
+        );
 
         let invalid = [
             StoredEntry {
