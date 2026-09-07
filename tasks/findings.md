@@ -6856,12 +6856,15 @@ Closed by c0f4b341. Puzzle selection is derived against the current successful r
 
 ### PGN quoted-movetext and percent escape regression assertions leave mutation survivors
 
-* **ID:** f-20260907-01 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260907-01 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/pgn.rs:914-956`, tests of `update_brace_comment` and `scan_games_cancelled`.
 * **Defect:** The existing quoted-movetext fixture places a semicolon before the literal brace, masking broken quote handling. Missing escaped-quote, closing-quote, quoted-semicolon and unmatched-brace percent-line cases leave six PGN survivors reported in Felix's approved 2026-09-07 repair request.
 * **Related:** f-20260831-05 fixed semicolon scanning behavior; this entry records missing regression assertions, without reopening its production fix.
 * **Repair:** Five shared LF/CRLF and BOM/no-BOM fixture groups, exact ranges and extracted bytes for successful scans, InvalidData for actual unterminated comments. Production behavior stays unchanged.
 * **Verification:** Focused PGN tests and complete isolated pgn-parser mutation accounting with zero survivors, followed by delivered-revision CI artifacts.
+
+Closed by the repair delivered and installed at f8df0140e6a99242de35100c2f4160a81fa0db45. Five shared LF/CRLF and BOM/no-BOM fixture groups assert exact successful ranges and bytes or InvalidData. Focused PGN tests: 25 passed. Final isolated candidate and delivered CI each account for 64 mutants: 61 caught, one unviable, two genuine test timeouts, zero survivors, with successful baselines. All six names missed in prior run 34020549919 are explicitly CaughtMutant in run 34082891426. All affected Rust and contract gates passed without ratchet changes. Full eight-package CI was inspected to completion; its separate four path-authority survivors are f-20260907-04, not a PGN failure. Evidence: tasks/handoffs/2026-09-07-backend-mutation-repair.md.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"05bb6f54c1a3088008f9f326067344b1680d07239d2e3afa6ddae6f5a5acca1d","input_sha256":"1eabe8bd678218c5e9468322295cb34e38404faff5477cfc51573f042cf43412","kind":"mutation-receipt","operation":"960887341911f824b14ed7a4502b8d176b83a2014e79ad0318ee493769dfee18","options":{"section":null},"request_id_sha256":null,"results":["f-20260907-01"],"target":"f-20260907-01","v":1} -->
 
 ---
 
@@ -6869,19 +6872,22 @@ Closed by c0f4b341. Puzzle selection is derived against the current successful r
 
 ### Database encoding mutation tests can allocate without a process memory bound
 
-* **ID:** f-20260907-02 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260907-02 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/encoding.rs:503-522`, `scripts/run-backend-mutation.mjs:239-258,335`.
 * **Defect:** Three test collections exhaust the iterator rather than checking a bounded expected sequence. The mutation runner starts test executables without a memory limit, so an allocating decoder mutant can exhaust memory before a timeout. Felix's supplied prior probe found indefinite allocation while the ordinary encoding suite passed at 2 GiB. The historical runner-shutdown cause remains unproven.
 * **Related:** f-20260829-09 protects the source tree with a mutation fence; it does not contain executable allocations.
 * **Repair:** Bounded iterator assertions plus Linux encoding-only prlimit runner, forced native Cargo target and exact command-line runner, shared Rust metadata parser, fail-closed diagnostics, and caught/unviable output. Preserve the existing timeout and fence policy.
 * **Verification:** Real dependency-free Cargo containment fixture with conflicting ambient target/runner settings and missing tools, existing contract tests, complete isolated encoding mutation accounting, and all delivered-revision CI package artifacts.
 
+Closed by the repair delivered and installed at f8df0140e6a99242de35100c2f4160a81fa0db45. All three unbounded test collections use bounded next/None assertions. Linux encoding test executables run under the exact native Cargo target runner with a 2147483648-byte address-space limit and core limit zero; setup and baseline errors fail closed. Shared host parsing preserves pinned coverage selection. Real dependency-free Cargo fixtures prove conflicting target/runner configuration cannot bypass limits; all 48 runner and 27 coverage-report tests pass. Final isolated and CI encoding runs each account for 96 mutants: 91 caught, four unviable, one genuine test timeout, zero survivors; baselines pass all 15 tests. Four allocating decoder mutations retain allocation diagnostics and SIGABRT. The separately observed desktop core gap was repaired under f-20260907-03 before delivery. All affected gates passed. The historical CI shutdown cause remains unproven. Evidence: tasks/handoffs/2026-09-07-backend-mutation-repair.md and Mutation run 34082891426.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5b51e8168efda542aadac6443fc7d15af79ea96b9b4bb2b25bb8d26d2da421cd","input_sha256":"a9d2283c5fd324b2613c15d54f3e2df9cf3c310495fa8a75d07dd841eca131f5","kind":"mutation-receipt","operation":"261921b2b3d9cb7ed538ab3a3f16fb5d9d52252a5224d7385faf2da38bda863e","options":{"section":null},"request_id_sha256":null,"results":["f-20260907-02"],"target":"f-20260907-02","v":1} -->
+
 ---
 
 ## 2026-09-07 — filed through the inbox spool
 
 ### Encoding mutation aborts create desktop crash reports despite zero core limit
-* **ID:** f-20260907-03 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260907-03 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
 
 * **Observed:** SIGABRT reports for PIDs 1989588 (2026-09-07 05:41:56 CEST, 20.9M core) and 2047128 (05:43:27, 873.8K core), both from the disposable /tmp/build-backend-mutation-20260907.sYCKNG/candidate encoding mutation executable.
 * **Cause:** scripts/run-backend-mutation.mjs:267 configures prlimit --as=2147483648 --core=0. The memory bound catches allocating mutants, but RLIMIT_CORE does not suppress the piped collector. /proc/sys/kernel/core_pattern invokes /usr/local/sbin/coredump-filter, which forwards these binaries to systemd-coredump.
@@ -6896,3 +6902,21 @@ The active backend-mutation repair adopts this finding before delivery. Root ind
 
 Completed-run inspection extends the original two-report observation: journal records name four SIGABRT PIDs (1989588, 2047128, 2056259, 2068440), all for the isolated candidate encoding executable. The four corresponding allocation-failure logs are decoder mutations at 185:16, 227:24, 240:24 and 245:24. The complete pre-suppression run at 80d6cc8a passed its baseline and accounted for 96 mutants: 91 caught, four unviable, one genuine timeout, zero survivors. Its full reports are retained under /tmp/build-backend-mutation-20260907.sYCKNG/pre-core-fix-complete/backend/. This confirms memory containment while refuting zero-core-limit-only desktop suppression.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"e13e1e29e8879030dfee11a6a9197df05fc74a0d7099377cf3858eb08995803c","input_sha256":"b4231526e3b727fe40e4bf730f25e47c2203f0a9c2e93796c3482105200d5392","kind":"mutation-receipt","operation":"3e5951acc61e8d8e24398ab1ffcd512aed819ab583f977d0ff80e7352beac944","options":{"section":null},"request_id_sha256":null,"results":["f-20260907-03"],"target":"f-20260907-03","v":1} -->
+
+Closed by f8df0140, delivered and installed. The Linux encoding mutation child receives an explicit suppression marker; other package children remove ambient marker contamination. Every encoding test checks PR_SET_DUMPABLE=0 and PR_GET_DUMPABLE=0 inside the executable after exec before exercising mutable code. This code is cfg(test); ordinary tests and application launches retain normal crash collection. The actual native Cargo/prlimit abort probe PID 2322402 reported dumpability=0, preserved its abort diagnostic and SIGABRT/Cargo exit 101, and produced no core journal event. A complete contained baseline passed 15/15: ordinary child 2492680 reported dumpability=1; protected child 2492706 reported 0 and SIGABRT, with no matching core event. Full candidate f8df0140 then completed 96/96 encoding mutants with zero survivors and zero candidate core journal events since its 2026-09-07T04:02:17Z run start; all four allocating decoder mutations were caught with allocation diagnostics and SIGABRT retained. Delivered CI reproduced 91 caught, four unviable, one genuine timeout and zero survivors. Root full gates and four Luna follow-up lenses completed; the stderr-before-status fix was adopted and a claimed exec-inheritance blocker was experimentally refuted. Evidence: tasks/handoffs/2026-09-07-backend-mutation-repair.md. Plan authorship and arbitration shared one context; detection ran on the same model family as the code.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"e0fe6fd6fd997fc298ea41eab903fdf262ae134774fe8e28f551cd982b6469ff","input_sha256":"d5aeeec8781cd9676bd48bd9619885ac49a628f6f63166a11a3ba6ec380d7224","kind":"mutation-receipt","operation":"7028ba89a24044c1ad00f155faea55aa4ee54a9027301cdbff4b72d01f65df60","options":{"section":null},"request_id_sha256":null,"results":["f-20260907-03"],"target":"f-20260907-03","v":1} -->
+
+---
+
+## 2026-09-07 — filed through the inbox spool
+
+### Persisted authority shape validation has four surviving mutation cases
+* **ID:** f-20260907-04 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+
+* **Observed:** Delivered-revision Mutation run 34082891426, job 101621461567, at f8df0140e6a99242de35100c2f4160a81fa0db45 completed path-authority with a successful baseline and 19/19 mutants accounted: 15 caught, four missed, no unviable or timeout cases.
+* **Evidence:** Artifact backend-mutation-path-authority, mutants.out/outcomes.json and missed.txt. Survivors in src-tauri/src/infra/path_authority.rs::validate_persisted_shape: 5544:13 changes legacy_engine conjunction from && to ||; 5543:37 changes the EngineExecutable equality to inequality; 5558:13 changes purpose-shape rejection || to &&; 5558:17 deletes the legacy-engine negation. Local copy: /tmp/build-backend-mutation-20260907.sYCKNG/ci-artifacts/path-authority/mutants.out/. Run: https://github.com/felixabeck/en-croissant/actions/runs/34082891426.
+* **Impact:** The selected infra::path_authority::tests suite does not distinguish these changes to legacy-engine authority acceptance and purpose/operation-shape validation. A production acceptance defect is not established by the survivor report alone.
+* **Related:** f-20260830-35 previously handled path-registry operation validation and persistence. Related-area/file search found no existing entry naming these four survivors. The PGN/encoding repair changes neither this function nor its mutation selection.
+* **Repair:** Trace persisted-entry acceptance and add direct positive and negative cases that distinguish canonical, historical-subset and exact legacy-engine operations from mismatched purposes or shapes. Verify each reported survivor is caught without weakening filters, production authority semantics or coverage floors.
+* **Verification:** Focused infra::path_authority::tests, all affected Rust/contract gates, and a complete isolated BACKEND_MUTATION_PACKAGE=path-authority pnpm mutation:backend run with successful baseline, complete accounting and zero survivors. Review the sensitive authority boundary.
+* **Disposition:** Deferred from the explicitly scoped PGN/encoding mutation repair; discovered while inspecting the required full eight-package delivered-revision workflow. No user decision is needed.
