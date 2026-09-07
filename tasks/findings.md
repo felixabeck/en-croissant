@@ -3749,7 +3749,7 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 
 ### The fork still ships upstream's product name, publisher and engine-manifest origin, and has no release channel of its own
 
-* **ID:** f-20260830-48 · **Status:** open · **Area:** app-startup · **Root:** fork-identity-not-separated · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-48 · **Status:** open · **Area:** app-startup · **Root:** fork-identity-not-separated · **Entry:** build · **Blocked:** sequenced-f-20260830-06
 * **Where:** `src-tauri/tauri.conf.json:45-46` (`productName`, `mainBinaryName`), `:23`
   (`bundle.publisher`), `:69` (window title); `.github/workflows/release.yml:69-83`;
   `src/utils/engines.ts:173`; `src-tauri/tauri.conf.json` CSP and
@@ -3788,6 +3788,10 @@ records why the checker was built rather than the gap annotated onto `f-20260830
   error-report links.
 * **Found by:** the `f-20260830-44` build run, 2026-08-30, recording the half `d-20260830-15`
   deferred so it lives in the queue rather than in a closed finding's prose.
+
+* **Progress (Codex, 2026-09-07):** d-20260903-09 settled the name as ChessFable; the original name prerequisite above is historical. Commit 072bc8db implements the independent product-identity package: native/window/package names and publisher, fork support/documentation links, all 16 locales, PGN Site, renamed binary/resource consumers, and compatible local installation with refusal/rollback tests. Stable identifiers and upstream attribution are preserved. Executor and root independently passed the exact phase proof: 773 frontend tests, 8 installer fixtures, 27 coverage-tool tests, 60 routing tests, the native documentation URL test, and lint/i18n. Full mapped gates, cumulative review and push are still required by this run before delivery.
+* **Remaining / precondition:** the finding stays open for fork-owned signing, release automation, updater and authenticated catalog hosting. The existing f-20260830-06 product decision determines supported release platforms; its non-Linux build failures remain recorded and unresolved. Resume distribution once that decision is answered. Do not treat branding as full closure or publish a release through ordinary push. d-20260907-06/07/08 record implementation decisions and reversal paths.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"6070bc61dc93328ad937addf2d8389dbe80c20e58fab6f4d52aa777244504568","input_sha256":"0350ac3d26774c3de2817f945aeb87885206646e550678530b43fe140373184e","kind":"mutation-receipt","operation":"a0b97e185dabe560d3c71aee0e038044cd16db30e094117d0cfcc0238e14ff3e","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-48"],"target":"f-20260830-48","v":1} -->
 
 ---
 
