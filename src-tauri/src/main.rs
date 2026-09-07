@@ -426,19 +426,7 @@ impl AppState {
     ) -> Result<Self, Error> {
         let http_transport = Arc::new(crate::infra::net::ProdTransport::new(download_builder)?);
         let json_http_client = Arc::new(crate::infra::net::native_json_http_client(json_builder)?);
-        Ok(Self::new_with_clients(
-            credentials,
-            http_transport,
-            json_http_client,
-        ))
-    }
-
-    fn new_with_clients(
-        credentials: Arc<crate::credentials::CredentialManager>,
-        http_transport: Arc<dyn crate::infra::net::DownloadTransport>,
-        json_http_client: Arc<reqwest::Client>,
-    ) -> Self {
-        Self {
+        Ok(Self {
             database_repository: Arc::new(db::DatabaseRepository::default()),
             new_request: Arc::new(Semaphore::new(2)),
             search_cache: Arc::new(SearchCache::default()),
@@ -454,7 +442,7 @@ impl AppState {
             http_transport,
             json_http_client,
             download_registry: Arc::new(crate::fs::DownloadRegistry::default()),
-        }
+        })
     }
 }
 
@@ -1798,13 +1786,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Hoisted so the credential store can be constructed with the bundle identifier below; the
     // `--config` merge that `pnpm dev` applies is already resolved in here.
     let context = tauri::generate_context!();
-    let app_state = AppState::try_new(Arc::new(crate::credentials::CredentialManager::new(
-        Arc::new(crate::credentials::OsCredentialStore::new(
-            &context.config().identifier,
-        )),
-    )))?;
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(
@@ -1921,62 +1904,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             Ok(())
         })
-        // The OS credential manager is shared by every build on the machine, so the store is
-        // constructed with the running bundle identifier. Building all process-lifetime HTTP
-        // clients before publishing state gives startup ownership of construction failures.
-        .manage(app_state)
-        .build(context)?
-        .run({
-            let guard = Arc::new(ExitGuard::default());
-            move |app, event| {
-                let tauri::RunEvent::ExitRequested { api, .. } = &event else {
+        .build(context)?;
+
+    // The OS credential manager is shared by every build on the machine, so the store is
+    // constructed with the running bundle identifier. Build the application and its logging
+    // plugin before the process-lifetime clients so startup can record construction failures.
+    let app_state = AppState::try_new(Arc::new(crate::credentials::CredentialManager::new(
+        Arc::new(crate::credentials::OsCredentialStore::new(
+            &app.config().identifier,
+        )),
+    )))
+    .map_err(|error| {
+        log::error!("application state could not be initialized: {error}");
+        error
+    })?;
+    app.manage(app_state);
+    app.run({
+        let guard = Arc::new(ExitGuard::default());
+        move |app, event| {
+            let tauri::RunEvent::ExitRequested { api, .. } = &event else {
+                return;
+            };
+            match guard.request() {
+                ExitDecision::StartCleanup => api.prevent_exit(),
+                ExitDecision::PreventExit => {
+                    api.prevent_exit();
                     return;
-                };
-                match guard.request() {
-                    ExitDecision::StartCleanup => api.prevent_exit(),
-                    ExitDecision::PreventExit => {
-                        api.prevent_exit();
-                        return;
-                    }
-                    ExitDecision::AllowExit => return,
                 }
-                // Tao calls `process::exit` from inside `run()`, so nothing after
-                // this point gets a second chance: the event loop has to stay
-                // alive until the children are reaped.
-                let app_handle = app.clone();
-                let guard = guard.clone();
-                tauri::async_runtime::spawn(async move {
-                    // The cleanup runs in its own task so that a panic inside it
-                    // arrives here as a `JoinError` instead of unwinding past the
-                    // `exit` below.
-                    let cleanup = tauri::async_runtime::spawn({
-                        let app_handle = app_handle.clone();
-                        async move {
-                            let state = app_handle.state::<AppState>();
-                            shutdown_backend_with_attachments(
-                                state.engine_supervisor.as_ref(),
-                                &state.game_manager,
-                                app_handle.try_state::<SoundServerLifecycle>().as_deref(),
-                                async {
-                                    shutdown_engine_attachments(app_handle.clone())
-                                        .await
-                                        .map_err(|error| error.to_string())
-                                },
-                                SHUTDOWN_BUDGET,
-                            )
-                            .await;
-                        }
-                    });
-                    if let Err(error) = cleanup.await {
-                        log::error!("shutdown cleanup did not finish: {error}");
-                    }
-                    // Unconditional, and outside the budget: a cleanup that hung
-                    // or panicked must never leave a windowless process running.
-                    guard.finish();
-                    app_handle.exit(0);
-                });
+                ExitDecision::AllowExit => return,
             }
-        });
+            // Tao calls `process::exit` from inside `run()`, so nothing after
+            // this point gets a second chance: the event loop has to stay
+            // alive until the children are reaped.
+            let app_handle = app.clone();
+            let guard = guard.clone();
+            tauri::async_runtime::spawn(async move {
+                // The cleanup runs in its own task so that a panic inside it
+                // arrives here as a `JoinError` instead of unwinding past the
+                // `exit` below.
+                let cleanup = tauri::async_runtime::spawn({
+                    let app_handle = app_handle.clone();
+                    async move {
+                        let state = app_handle.state::<AppState>();
+                        shutdown_backend_with_attachments(
+                            state.engine_supervisor.as_ref(),
+                            &state.game_manager,
+                            app_handle.try_state::<SoundServerLifecycle>().as_deref(),
+                            async {
+                                shutdown_engine_attachments(app_handle.clone())
+                                    .await
+                                    .map_err(|error| error.to_string())
+                            },
+                            SHUTDOWN_BUDGET,
+                        )
+                        .await;
+                    }
+                });
+                if let Err(error) = cleanup.await {
+                    log::error!("shutdown cleanup did not finish: {error}");
+                }
+                // Unconditional, and outside the budget: a cleanup that hung
+                // or panicked must never leave a windowless process running.
+                guard.finish();
+                app_handle.exit(0);
+            });
+        }
+    });
 
     Ok(())
 }

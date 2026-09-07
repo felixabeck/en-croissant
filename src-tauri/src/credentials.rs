@@ -242,6 +242,11 @@ pub struct CredentialManager {
     registry_path: Mutex<Option<PathBuf>>,
 }
 
+// Keep the credential manager's locks fail-closed after an unwind.
+fn credential_lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, Error> {
+    mutex.lock().map_err(|_| Error::CredentialRecoveryRequired)
+}
+
 impl Default for CredentialManager {
     fn default() -> Self {
         Self::new(Arc::new(UnboundCredentialStore))
@@ -249,18 +254,6 @@ impl Default for CredentialManager {
 }
 
 impl CredentialManager {
-    fn registry(&self) -> Result<MutexGuard<'_, RegistryFile>, Error> {
-        self.registry
-            .lock()
-            .map_err(|_| Error::CredentialRecoveryRequired)
-    }
-
-    fn registry_path(&self) -> Result<MutexGuard<'_, Option<PathBuf>>, Error> {
-        self.registry_path
-            .lock()
-            .map_err(|_| Error::CredentialRecoveryRequired)
-    }
-
     pub fn new(store: Arc<dyn CredentialStore>) -> Self {
         Self::with_persistence(store, Arc::new(AtomicRegistryPersistence))
     }
@@ -289,11 +282,11 @@ impl CredentialManager {
         secure_directory(app_data)?;
         let path = app_data.join(REGISTRY_FILE);
         let registry = self.load_registry(&path)?;
-        *self.registry()? = registry;
-        *self.registry_path()? = Some(path.clone());
+        *credential_lock(&self.registry)? = registry;
+        *credential_lock(&self.registry_path)? = Some(path.clone());
         // Commit legacy metadata-only registries to the journalled format before reconciliation
         // is allowed to touch the native credential manager.
-        let registry = self.registry()?;
+        let registry = credential_lock(&self.registry)?;
         log_uncertain_commit(
             self.persist_locked(&registry)?,
             "credential registry initialization",
@@ -305,8 +298,7 @@ impl CredentialManager {
     }
 
     pub fn list(&self) -> Result<Vec<LichessAccountMetadata>, Error> {
-        Ok(self
-            .registry()?
+        Ok(credential_lock(&self.registry)?
             .accounts
             .values()
             .filter_map(|record| match record {
@@ -320,6 +312,7 @@ impl CredentialManager {
         if !handle.valid() {
             return Ok(None);
         }
+        let _registry = credential_lock(&self.registry)?;
         self.store.get(&handle.key())
     }
 
@@ -347,7 +340,7 @@ impl CredentialManager {
         username: String,
         token: String,
     ) -> Result<LichessAccountStoreResult, Error> {
-        let mut registry = self.registry()?;
+        let mut registry = credential_lock(&self.registry)?;
         // Re-authentication must retain the public opaque handle.  Otherwise a successful
         // refresh would orphan the old keyring entry and every persisted renderer session.
         if let Some(existing) = registry.accounts.values().find_map(|record| match record {
@@ -428,7 +421,7 @@ impl CredentialManager {
         if !handle.valid() {
             return Ok(None);
         }
-        let mut registry = self.registry()?;
+        let mut registry = credential_lock(&self.registry)?;
         let Some(record) = registry.accounts.get(&handle.0).cloned() else {
             return Ok(None);
         };
@@ -441,7 +434,7 @@ impl CredentialManager {
             self.persist_locked(&registry)?,
             RegistryCommit::CommittedDurabilityUncertain
         );
-        let token = self.token(&metadata.handle)?;
+        let token = self.store.get(&metadata.handle.key())?;
         self.store.delete(&metadata.handle.key())?;
         registry.accounts.remove(&handle.0);
         match self.persist_locked(&registry) {
@@ -471,7 +464,7 @@ impl CredentialManager {
     }
 
     fn reconcile(&self) -> Result<(), Error> {
-        let mut registry = self.registry()?;
+        let mut registry = credential_lock(&self.registry)?;
         let records: Vec<(String, AccountRecord)> = registry
             .accounts
             .iter()
@@ -580,7 +573,7 @@ impl CredentialManager {
     }
 
     fn persist_locked(&self, registry: &RegistryFile) -> Result<RegistryCommit, Error> {
-        let path = self.registry_path()?.clone();
+        let path = credential_lock(&self.registry_path)?.clone();
         let Some(path) = path else {
             return Ok(RegistryCommit::Durable);
         };
@@ -1164,11 +1157,28 @@ mod tests {
             Err(Error::CredentialRecoveryRequired)
         ));
         assert!(matches!(
+            manager.token(&handle),
+            Err(Error::CredentialRecoveryRequired)
+        ));
+        assert!(matches!(
             manager.store_lichess_token("user".into(), "secret".into()),
             Err(Error::CredentialRecoveryRequired)
         ));
         assert!(matches!(
             manager.remove(&handle),
+            Err(Error::CredentialRecoveryRequired)
+        ));
+        assert_eq!(store.calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn poisoned_registry_rejects_async_token_reads() {
+        let store = Arc::new(CountingStore::default());
+        let manager = Arc::new(CredentialManager::new(store.clone()));
+        poison(&manager.registry);
+
+        assert!(matches!(
+            manager.token_async(LichessAccountHandle::new()).await,
             Err(Error::CredentialRecoveryRequired)
         ));
         assert_eq!(store.calls.load(std::sync::atomic::Ordering::Relaxed), 0);

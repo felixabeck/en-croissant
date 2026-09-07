@@ -60,6 +60,9 @@ pub fn safe_http_client(
 const JSON_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const JSON_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const JSON_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_REQUEST_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// Process-lifetime client for bounded JSON and OAuth provider requests.
 pub fn native_json_http_client(
@@ -155,9 +158,9 @@ impl ProdTransport {
         Ok(Self {
             client: safe_http_client(
                 builder,
-                Duration::from_secs(10),
-                Duration::from_secs(30),
-                Duration::from_secs(3600),
+                DOWNLOAD_CONNECT_TIMEOUT,
+                DOWNLOAD_READ_TIMEOUT,
+                DOWNLOAD_REQUEST_TIMEOUT,
             )?,
         })
     }
