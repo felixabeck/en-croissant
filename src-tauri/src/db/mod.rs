@@ -1869,19 +1869,23 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
             )| {
                 let is_white = *white_id == id;
                 let is_black = *black_id == id;
-                let result = GameOutcome::from_str(outcome.as_deref()?, is_white);
-
-                if !is_white && !is_black
-                    || is_white && white_elo.is_none()
-                    || is_black && black_elo.is_none()
-                    || result.is_none()
-                    || date.is_none()
-                    || site.is_none()
-                    || player.is_none()
-                {
+                if !is_white && !is_black {
                     return None;
                 }
 
+                let player = player.clone()?;
+                let date = date.clone()?;
+                let result = GameOutcome::from_str(outcome.as_deref()?, is_white)?;
+                let player_elo = if is_white {
+                    if is_black {
+                        // Preserve the prior eligibility rule for malformed self-play rows: both
+                        // appearances of the selected player must carry a rating.
+                        black_elo.as_ref()?;
+                    }
+                    *white_elo.as_ref()?
+                } else {
+                    *black_elo.as_ref()?
+                };
                 let site = site.as_deref().map(|s| {
                     if s.starts_with("https://lichess.org/") {
                         "Lichess".to_string()
@@ -1924,17 +1928,13 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
                 }
 
                 Some(SiteStatsData {
-                    site: site.clone(),
-                    player: player.clone().unwrap(),
+                    site,
+                    player,
                     data: vec![StatsData {
-                        date: date.clone().unwrap(),
+                        date,
                         is_player_white: is_white,
-                        player_elo: if is_white {
-                            white_elo.unwrap()
-                        } else {
-                            black_elo.unwrap()
-                        },
-                        result: result.unwrap(),
+                        player_elo,
+                        result,
                         time_control: time_control.clone().unwrap_or_default(),
                         opening,
                     }],
@@ -4949,6 +4949,63 @@ mod tests {
             .mount_events(app);
     }
 
+    #[derive(Clone, Copy)]
+    struct PlayerStatisticsGame<'a> {
+        player_id: i32,
+        opponent_id: i32,
+        event_id: i32,
+        site_id: i32,
+        is_player_white: bool,
+        player_elo: Option<i32>,
+        opponent_elo: Option<i32>,
+        date: Option<&'a str>,
+        result: Option<&'a str>,
+        time_control: Option<&'a str>,
+        fen: Option<&'a str>,
+    }
+
+    fn insert_player_statistics_game(db: &mut SqliteConnection, fixture: PlayerStatisticsGame<'_>) {
+        let (white_id, black_id, white_elo, black_elo) = if fixture.is_player_white {
+            (
+                fixture.player_id,
+                fixture.opponent_id,
+                fixture.player_elo,
+                fixture.opponent_elo,
+            )
+        } else {
+            (
+                fixture.opponent_id,
+                fixture.player_id,
+                fixture.opponent_elo,
+                fixture.player_elo,
+            )
+        };
+        create_game(
+            db,
+            NewGame {
+                event_id: fixture.event_id,
+                site_id: fixture.site_id,
+                white_id,
+                black_id,
+                white_elo,
+                black_elo,
+                white_material: 0,
+                black_material: 0,
+                date: fixture.date,
+                time: None,
+                round: None,
+                result: fixture.result,
+                time_control: fixture.time_control,
+                eco: None,
+                ply_count: 2,
+                fen: fixture.fen,
+                moves: &[],
+                pawn_home: 0,
+            },
+        )
+        .unwrap();
+    }
+
     fn insert_kept_player_game(
         db: &mut SqliteConnection,
         white_id: i32,
@@ -4956,30 +5013,260 @@ mod tests {
         event_id: i32,
         site_id: i32,
     ) {
-        create_game(
+        insert_player_statistics_game(
             db,
-            NewGame {
+            PlayerStatisticsGame {
+                player_id: white_id,
+                opponent_id: black_id,
                 event_id,
                 site_id,
-                white_id,
-                black_id,
-                white_elo: Some(2800),
-                black_elo: Some(2700),
-                white_material: 0,
-                black_material: 0,
+                is_player_white: true,
+                player_elo: Some(2800),
+                opponent_elo: Some(2700),
                 date: Some("2026.08.09"),
-                time: None,
-                round: None,
                 result: Some("1-0"),
                 time_control: Some("600+0"),
-                eco: None,
-                ply_count: 2,
                 fen: None,
-                moves: &[],
-                pawn_home: 0,
             },
+        );
+    }
+
+    fn load_player_statistics(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        handle: DatabaseHandle,
+        player_id: i32,
+    ) -> PlayerGameInfo {
+        let state = app.state::<AppState>();
+        get_players_game_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+            player_id,
+            app.clone(),
+            None,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn player_statistics_preserve_ratings_results_and_output_normalization() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let player_id = {
+            let state = app.state::<AppState>();
+            let mut db = state.database_repository.connection(&database).unwrap();
+            let player = create_player(&mut db, "Player").unwrap();
+            let opponent = create_player(&mut db, "Opponent").unwrap();
+            let event = create_event(&mut db, "Event").unwrap();
+            let site = create_site(&mut db, "https://lichess.org/abcdef").unwrap();
+            let base = PlayerStatisticsGame {
+                player_id: player.id,
+                opponent_id: opponent.id,
+                event_id: event.id,
+                site_id: site.id,
+                is_player_white: true,
+                player_elo: Some(2800),
+                opponent_elo: None,
+                date: Some("2026.08.01"),
+                result: Some("1-0"),
+                time_control: None,
+                fen: None,
+            };
+            insert_player_statistics_game(&mut db, base);
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    date: Some("2026.08.02"),
+                    result: Some("0-1"),
+                    time_control: Some("300+3"),
+                    ..base
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    is_player_white: false,
+                    player_elo: Some(2750),
+                    date: Some("2026.08.03"),
+                    result: Some("1-0"),
+                    ..base
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    is_player_white: false,
+                    player_elo: Some(2750),
+                    date: Some("2026.08.04"),
+                    result: Some("0-1"),
+                    ..base
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    date: Some("2026.08.05"),
+                    result: Some("1/2-1/2"),
+                    ..base
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    is_player_white: false,
+                    player_elo: Some(2750),
+                    date: Some("2026.08.06"),
+                    result: Some("1/2-1/2"),
+                    ..base
+                },
+            );
+            player.id
+        };
+
+        let info = load_player_statistics(&app, handle, player_id);
+        assert_eq!(info.site_stats_data.len(), 1);
+        let group = &info.site_stats_data[0];
+        assert_eq!(group.site, "Lichess");
+        assert_eq!(group.player, "Player");
+        let mut rows: Vec<_> = group.data.iter().collect();
+        rows.sort_by_key(|row| &row.date);
+        assert_eq!(rows.len(), 6);
+
+        assert_eq!(rows[0].date, "2026.08.01");
+        assert!(rows[0].is_player_white);
+        assert_eq!(rows[0].player_elo, 2800);
+        assert!(matches!(&rows[0].result, GameOutcome::Won));
+        assert_eq!(rows[0].time_control, "");
+        assert_eq!(rows[0].opening, "");
+
+        assert_eq!(rows[1].date, "2026.08.02");
+        assert!(rows[1].is_player_white);
+        assert!(matches!(&rows[1].result, GameOutcome::Lost));
+        assert_eq!(rows[1].time_control, "300+3");
+
+        assert_eq!(rows[2].date, "2026.08.03");
+        assert!(!rows[2].is_player_white);
+        assert_eq!(rows[2].player_elo, 2750);
+        assert!(matches!(&rows[2].result, GameOutcome::Lost));
+
+        assert_eq!(rows[3].date, "2026.08.04");
+        assert!(!rows[3].is_player_white);
+        assert_eq!(rows[3].player_elo, 2750);
+        assert!(matches!(&rows[3].result, GameOutcome::Won));
+
+        assert_eq!(rows[4].date, "2026.08.05");
+        assert!(rows[4].is_player_white);
+        assert!(matches!(&rows[4].result, GameOutcome::Drawn));
+
+        assert_eq!(rows[5].date, "2026.08.06");
+        assert!(!rows[5].is_player_white);
+        assert!(matches!(&rows[5].result, GameOutcome::Drawn));
+    }
+
+    #[test]
+    fn player_statistics_exclude_each_missing_or_invalid_required_value() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let (player_id, nameless_player_id) = {
+            let state = app.state::<AppState>();
+            let mut db = state.database_repository.connection(&database).unwrap();
+            let player = create_player(&mut db, "Player").unwrap();
+            let opponent = create_player(&mut db, "Opponent").unwrap();
+            let nameless_player = create_player(&mut db, "Nameless").unwrap();
+            let event = create_event(&mut db, "Event").unwrap();
+            let site = create_site(&mut db, "Site").unwrap();
+            let nameless_site = create_site(&mut db, "Nameless site").unwrap();
+            diesel::update(sites::table.find(nameless_site.id))
+                .set(sites::name.eq(None::<String>))
+                .execute(&mut *db)
+                .unwrap();
+            diesel::update(players::table.find(nameless_player.id))
+                .set(players::name.eq(None::<String>))
+                .execute(&mut *db)
+                .unwrap();
+
+            let base = PlayerStatisticsGame {
+                player_id: player.id,
+                opponent_id: opponent.id,
+                event_id: event.id,
+                site_id: site.id,
+                is_player_white: true,
+                player_elo: Some(2800),
+                opponent_elo: Some(2700),
+                date: Some("2026.08.09"),
+                result: Some("1-0"),
+                time_control: Some("600+0"),
+                fen: None,
+            };
+            insert_player_statistics_game(&mut db, base);
+            insert_player_statistics_game(&mut db, PlayerStatisticsGame { date: None, ..base });
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    result: None,
+                    ..base
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    result: Some("*"),
+                    ..base
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    player_elo: None,
+                    ..base
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    is_player_white: false,
+                    player_elo: None,
+                    ..base
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    site_id: nameless_site.id,
+                    ..base
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    player_id: player.id,
+                    opponent_id: player.id,
+                    opponent_elo: None,
+                    ..base
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    fen: Some("8/8/8/8/8/8/8/8 w - - 0 1"),
+                    ..base
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    player_id: nameless_player.id,
+                    ..base
+                },
+            );
+            (player.id, nameless_player.id)
+        };
+
+        let info = load_player_statistics(&app, handle.clone(), player_id);
+        assert_eq!(info.site_stats_data.len(), 1);
+        assert_eq!(info.site_stats_data[0].data.len(), 1);
+        assert_eq!(info.site_stats_data[0].data[0].date, "2026.08.09");
+
+        let nameless_info = load_player_statistics(&app, handle, nameless_player_id);
+        assert!(nameless_info.site_stats_data.is_empty());
     }
 
     fn capture_events<E>(
