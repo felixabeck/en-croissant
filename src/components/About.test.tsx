@@ -9,8 +9,10 @@ const native = vi.hoisted(() => ({
   OSVersion: vi.fn(),
   osType: vi.fn(),
 }));
+const notifyUnlessCancelled = vi.hoisted(() => vi.fn());
 
 vi.mock("@/platform/native", () => native);
+vi.mock("@/components/files/notifyError", () => ({ notifyUnlessCancelled }));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: { date?: string }) =>
@@ -20,7 +22,9 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 vi.mock("@mantine/core", () => ({
-  Anchor: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>,
+  Anchor: ({ children, href }: { children?: React.ReactNode; href?: string }) => (
+    <a href={href}>{children}</a>
+  ),
   Text: ({ children }: { children?: React.ReactNode }) => <p>{children}</p>,
 }));
 vi.mock("./common/AppModal", () => ({
@@ -54,6 +58,7 @@ beforeEach(() => {
   native.getVersion.mockResolvedValue("1.0.0");
   native.OSVersion.mockResolvedValue("1.0.0");
   native.osType.mockResolvedValue("Linux");
+  notifyUnlessCancelled.mockReset();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -74,6 +79,32 @@ test("renders the modification notice inside the opened About dialog", async () 
   expect(dialog?.textContent).toContain("since 2026-08-09");
   expect(dialog?.textContent).toContain("GNU General Public License version 3");
   expect(dialog?.textContent).toContain("no warranty");
+  expect(dialog?.getAttribute("aria-label")).toBe("ChessFable");
+  expect(dialog?.querySelector("a")?.getAttribute("href")).toBe(
+    "https://github.com/felixabeck/en-croissant",
+  );
+});
+
+test("reports metadata failure and renders translated unknown values", async () => {
+  const failure = new Error("metadata unavailable");
+  native.getVersion.mockRejectedValue(failure);
+  await act(async () => root.render(<AboutModal opened setOpened={vi.fn()} />));
+  expect(notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
+  expect(container.textContent).toContain("Common.Unknown");
+});
+
+test("does not update or notify after unmount", async () => {
+  let rejectVersion: (error: Error) => void = () => undefined;
+  native.getVersion.mockImplementation(
+    () =>
+      new Promise((_, reject) => {
+        rejectVersion = reject;
+      }),
+  );
+  await act(async () => root.render(<AboutModal opened setOpened={vi.fn()} />));
+  await act(async () => root.unmount());
+  await act(async () => rejectVersion(new Error("late failure")));
+  expect(notifyUnlessCancelled).not.toHaveBeenCalled();
 });
 
 // The test above renders through a mocked `t`, so it proves the notice is rendered and that the

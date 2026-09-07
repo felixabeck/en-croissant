@@ -12,7 +12,7 @@ const generated = spawnSync(
     "--manifest-path",
     "src-tauri/Cargo.toml",
     "--bin",
-    "en-croissant",
+    "chessfable",
     "--",
     "--export-bindings-only",
   ],

@@ -19,7 +19,6 @@ const mocks = vi.hoisted(() => {
     getMatches: vi.fn(),
     getVersion: vi.fn(),
     info: vi.fn(),
-    initUserAgent: vi.fn(),
     preloadReferenceDb: vi.fn(),
     reconcileStartupPathOwners: vi.fn(),
     reconcileEngineAttachments: vi.fn(),
@@ -45,7 +44,6 @@ vi.mock("@/platform/tauri", () => ({
   },
 }));
 vi.mock("@/platform/analytics", () => ({ analytics: mocks.analytics }));
-vi.mock("@/utils/http", () => ({ initUserAgent: mocks.initUserAgent }));
 vi.mock("@/state/atoms", () => ({
   fontSizeAtom: {},
   pieceSetAtom: {},
@@ -99,14 +97,12 @@ beforeEach(() => {
   mocks.getMatches.mockReset();
   mocks.getVersion.mockReset();
   mocks.info.mockReset();
-  mocks.initUserAgent.mockReset();
   mocks.reconcileStartupPathOwners.mockReset().mockResolvedValue(null);
   mocks.reconcileEngineAttachments.mockReset().mockResolvedValue(null);
   resetPathOwnerInitializationForTests();
   mocks.preloadReferenceDb.mockReset();
   mocks.warn.mockReset();
 
-  mocks.initUserAgent.mockResolvedValue(undefined);
   mocks.getDefaultStore.mockReturnValue({
     get: (atom: object) => (atom === mocks.telemetryEnabledAtom ? false : undefined),
   });
@@ -143,7 +139,6 @@ describe("useAppStartup", () => {
     expect(mocks.reconcileStartupPathOwners).toHaveBeenCalledOnce();
     await act(async () => resolveOwners());
     expect(mocks.reconcileEngineAttachments).toHaveBeenCalledOnce();
-    expect(mocks.initUserAgent).toHaveBeenCalled();
 
     await act(async () => root.unmount());
     root = createRoot(container);

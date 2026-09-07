@@ -40,7 +40,6 @@ const colorSchemeManager = localStorageColorSchemeManager({
 import ErrorComponent from "@/components/ErrorComponent";
 import { useConversionProgress } from "@/hooks/useConversionProgress";
 import { useDocumentLanguage } from "@/hooks/useDocumentLanguage";
-import { initUserAgent } from "@/utils/http";
 import { routeTree } from "./routeTree.gen";
 import { appCssVariablesResolver, createAppTheme } from "./styles/theme";
 import { initializePathOwners } from "./state/pathOwners";
@@ -87,8 +86,6 @@ export function useAppStartup() {
         await initializePathOwners().catch((error) =>
           warn(`Path owner reconciliation failed: ${String(error)}`),
         );
-        if (signal.aborted) return;
-        await initUserAgent();
         if (signal.aborted) return;
 
         detachFn = await attachConsole();

@@ -1,17 +1,20 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
-import ErrorComponent from "./ErrorComponent";
+import ErrorComponent, { recoverFromError } from "./ErrorComponent";
+
+const mocks = vi.hoisted(() => ({ navigate: vi.fn(), notify: vi.fn() }));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (value: string) => value }),
-  Trans: ({ i18nKey }: { i18nKey: string }) => i18nKey,
+  Trans: ({ components }: { components: Record<string, React.ReactNode> }) => components.github,
 }));
 vi.mock("@tanstack/react-router", () => ({
-  useNavigate: () => vi.fn(async () => undefined),
+  useNavigate: () => mocks.navigate,
 }));
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@mantine/core", () => ({
-  Anchor: ({ children }: any) => <a>{children}</a>,
+  Anchor: ({ children, href }: any) => <a href={href}>{children}</a>,
   Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
   Code: ({ children }: any) => <code>{children}</code>,
   CopyButton: ({ children, value }: any) => (
@@ -80,4 +83,43 @@ test("renders an extra diagnostic when it differs from the message", async () =>
   );
   expect(host.querySelector("code")?.textContent).toBe("safe-code");
   expect(host.textContent).toContain("Error.CopyStackTrace");
+});
+
+test("routes issue reports to the fork", async () => {
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  await act(async () => root.render(<ErrorComponent error={new Error("boom")} />));
+  expect(host.querySelector("a")?.getAttribute("href")).toBe(
+    "https://github.com/felixabeck/en-croissant/issues/new?assignees=&labels=bug&projects=&template=bug.yml",
+  );
+});
+
+test("successful recovery navigates before reloading", async () => {
+  const order: string[] = [];
+  await recoverFromError(
+    async () => {
+      order.push("navigate");
+    },
+    () => order.push("reload"),
+    "Common.Error",
+  );
+  expect(order).toEqual(["navigate", "reload"]);
+});
+
+test("failed recovery surfaces the shared notification and does not reload", async () => {
+  const failure = new Error("navigation failed");
+  const reload = vi.fn();
+  mocks.notify.mockReset();
+  await recoverFromError(
+    async () => {
+      throw failure;
+    },
+    reload,
+    "Common.Error",
+  );
+  expect(reload).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({ title: "Common.Error", message: "navigation failed" }),
+  );
 });

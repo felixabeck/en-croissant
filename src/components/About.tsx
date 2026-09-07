@@ -4,6 +4,8 @@ import { getTauriVersion, getVersion } from "@/platform/native";
 import { arch, osType, OSVersion } from "@/platform/native";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { PRODUCT_NAME, REPOSITORY_URL } from "@/utils/product";
 
 function AboutModal({
   opened,
@@ -13,6 +15,7 @@ function AboutModal({
   setOpened: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
   const { t } = useTranslation();
+  const errorTitle = t("Common.Error");
   const [info, setInfo] = useState<{
     version: string;
     tauri: string;
@@ -22,26 +25,38 @@ function AboutModal({
   } | null>(null);
 
   useEffect(() => {
+    let active = true;
     async function load() {
-      const os = await osType();
-      const version = await getVersion();
-      const tauri = await getTauriVersion();
-      const architecture = await arch();
-      const osVersion = await OSVersion();
-      setInfo({ version, tauri, os, architecture, osVersion });
+      try {
+        const [os, version, tauri, architecture, osVersion] = await Promise.all([
+          osType(),
+          getVersion(),
+          getTauriVersion(),
+          arch(),
+          OSVersion(),
+        ]);
+        if (active) setInfo({ version, tauri, os, architecture, osVersion });
+      } catch (error) {
+        if (active) notifyUnlessCancelled(errorTitle, error);
+      }
     }
-    load();
-  }, []);
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [errorTitle]);
+  const unknown = t("Common.Unknown");
   return (
-    <AppModal centered opened={opened} onClose={() => setOpened(false)} title="En Croissant">
+    <AppModal centered opened={opened} onClose={() => setOpened(false)} title={PRODUCT_NAME}>
       <Text>
-        {t("Common.Version")}: {info?.version}
+        {t("Common.Version")}: {info?.version ?? unknown}
       </Text>
       <Text>
-        {t("About.TauriVersion")}: {info?.tauri}
+        {t("About.TauriVersion")}: {info?.tauri ?? unknown}
       </Text>
       <Text>
-        {t("About.OperatingSystem")}: {info?.os} {info?.architecture} {info?.osVersion}
+        {t("About.OperatingSystem")}:{" "}
+        {info ? `${info.os} ${info.architecture} ${info.osVersion}` : unknown}
       </Text>
 
       <Text size="xs" c="dimmed">
@@ -50,8 +65,8 @@ function AboutModal({
 
       <br />
 
-      <Anchor href="https://www.encroissant.org" target="_blank" rel="noreferrer">
-        www.encroissant.org
+      <Anchor href={REPOSITORY_URL} target="_blank" rel="noreferrer">
+        {REPOSITORY_URL}
       </Anchor>
     </AppModal>
   );

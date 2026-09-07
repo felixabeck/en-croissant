@@ -59,8 +59,7 @@ export function coverageTools(runCommand = run) {
 }
 
 export function isCoverageExecutable(name, details, platform = process.platform) {
-  const pattern =
-    platform === "win32" ? /^en_croissant-[0-9a-f]+\.exe$/ : /^en_croissant-[0-9a-f]+$/;
+  const pattern = platform === "win32" ? /^chessfable-[0-9a-f]+\.exe$/ : /^chessfable-[0-9a-f]+$/;
   return (
     pattern.test(name) && details.isFile() && (platform === "win32" || (details.mode & 0o111) !== 0)
   );
@@ -129,7 +128,7 @@ async function main() {
       "--manifest-path",
       manifestPath,
       "--bin",
-      "en-croissant",
+      "chessfable",
       "--locked",
       "--branch",
       "--no-report",
@@ -143,7 +142,7 @@ async function main() {
 
   const executableCandidates = [];
   for (const entry of await readdir(dependencies)) {
-    if (!entry.startsWith("en_croissant-")) continue;
+    if (!entry.startsWith("chessfable-")) continue;
     const path = resolve(dependencies, entry);
     const details = await stat(path);
     if (isCoverageExecutable(entry, details))

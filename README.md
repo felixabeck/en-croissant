@@ -1,6 +1,6 @@
 <br />
 <div align="center">
-  <a href="https://github.com/franciscoBSalgueiro/en-croissant">
+  <a href="https://github.com/felixabeck/en-croissant">
     <img width="115" height="115" src="https://github.com/franciscoBSalgueiro/en-croissant/blob/master/src-tauri/icons/icon.png" alt="Logo of the original En Croissant project">
   </a>
 
@@ -9,14 +9,12 @@
   <p align="center">
     The Ultimate Chess Toolkit
     <br />
-    <a href="https://www.encroissant.org"><strong>encroissant.org</strong></a>
+    <a href="https://github.com/felixabeck/en-croissant"><strong>Source and support</strong></a>
     <br />
     <br />
-    <a href="https://discord.gg/tdYzfDbSSW">Discord Server</a>
+    <a href="https://github.com/felixabeck/en-croissant/issues">Issues</a>
     ·
-    <a href="https://www.encroissant.org/download">Download</a>
-    .
-    <a href="https://www.encroissant.org/docs">Explore the docs</a>
+    <a href="https://www.encroissant.org/docs">Upstream documentation</a>
   </p>
 </div>
 

@@ -64,7 +64,7 @@ async function closeApplicationThroughTitlebar(session, label) {
     session.execute(closeControlProbe).catch(() => false),
   );
   const running = appProcesses();
-  const application = running.find(({ cmd }) => /release\/en-croissant/.test(cmd));
+  const application = running.find(({ cmd }) => cmd.includes(APP_BINARY));
   if (!application) throw new Error(`${label} application process was not running`);
   const webkitServicePids = running
     .filter(
@@ -319,6 +319,10 @@ try {
   check(
     (await session.execute("return typeof window.__TAURI_INTERNALS__")) === "object",
     "the real Tauri IPC bridge is present (not a test mock)",
+  );
+  check(
+    (await session.execute("return document.title")) === "ChessFable",
+    "the real renderer exposes the ChessFable document title",
   );
 
   const resolveDirectoryResult = await invokeAndWait(

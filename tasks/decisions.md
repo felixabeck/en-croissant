@@ -2293,3 +2293,34 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Compiler-enforced values eliminate the maintenance panic trap while preserving the existing filter semantics. Reversal path: any future statistics eligibility change must explicitly revise row filters and both-color SQLite regression cases.
 * **Decided by:** Codex, autonomously under Full Auto, 2026-09-07 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"a9debdc014a4d5859bbefdb55c30099c7b0afac0c2a4a875fca6dd70d6de0558","input_sha256":"b2c7af80b1eb80af4d3f4bd3771a2a9610f80f88d63695409b61649ba5314e2b","kind":"mutation-receipt","operation":"50cc9b7e607e7d9310bf7acbd880fa15d45bb059575133285797f7e2f945adae","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-03","d-20260907-04","d-20260907-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20260907-06 — How does ChessFable branding preserve installed data and launch compatibility?
+
+* **Governs:** f-20260830-48
+* **Question:** Which names change in the dedicated app rebrand, and which remain compatibility identities?
+* **Chosen:** ChessFable for the product/window/UI name, chessfable for Cargo/npm and the executable, and Felix Beck for bundle publisher. Preserve com.chessriddle.encroissant and its development variant, upstream authorship and modification notices, existing log/trash/MIME names, and a bin/en-croissant executable symlink in local installations. Install resources under lib/ChessFable to match Tauri PackageInfo.name. Derive installer names from the Tauri config.
+* **Rejected:** changing the application identifier again; leaving mismatched build and public package names; breaking existing launchers when the executable moves; retaining scattered renderer identity literals.
+* **Reason:** d-20260903-09 already settles the public name and permits the dedicated rebrand. d-20260830-16 and d-20260830-17 settle persisted and OAuth identity. The local Tauri source resolves resources using PackageInfo.name exactly, and CLAUDE.md documents the daily launcher at current/bin/en-croissant. A compatibility symlink preserves that existing consumer and rollback to older installations without a new running helper.
+* **Reversal path:** a future brand change updates the config and shared renderer identity with their consumers; remove the compatibility symlink only after the old launcher/install path is no longer used. Any identifier migration requires a separate data/credential migration decision.
+* **Decided by:** Codex, autonomously under full auto, 2026-09-07 · **Superseded-by:** -
+
+### d-20260907-07 — Where do ChessFable support and source links lead before a dedicated site exists?
+
+* **Governs:** f-20260830-48
+* **Question:** Does the fork need a new website to stop sending its support traffic to upstream?
+* **Chosen:** use the existing felixabeck/en-croissant GitHub repository for About, error reporting, issue search, contributions, package source metadata and native documentation. Preserve explicit upstream attribution and label any retained upstream documentation as such. Use one shared renderer identity module for the live consumers; delete src/utils/http.ts and its startup initialization because apiHeaders has no caller, updating the direct App.test.tsx consumer too.
+* **Rejected:** introducing a website or background service; presenting upstream issues or Discord as fork support; rebranding an unused HTTP header API whose output reaches no request or retaining its pointless startup call.
+* **Reason:** the existing fork repository is already the reviewed push destination and provides those public surfaces without new infrastructure. Source tracing found a native documentation command and a bug-form issue-search link in addition to the renderer links named by the finding.
+* **Reversal path:** point the shared links and native fixed destination at an explicitly established project site when one exists; retain fork-specific support routing and attribution.
+* **Decided by:** Codex, autonomously under full auto, 2026-09-07 · **Superseded-by:** -
+
+### d-20260907-08 — Can the identity package ship before the existing platform decision?
+
+* **Governs:** f-20260830-48
+* **Question:** How can this run progress while the release-platform decision f-20260830-06 remains unanswered?
+* **Chosen:** implement and verify the independently committable product-identity package, preserving all current platform configuration. Leave the distribution portion and full finding closure pending the existing platform decision and a separately authorized release publication. No updater or manifest-trust surface changes until its complete replacement can be verified.
+* **Rejected:** declaring Linux-only by changing the release matrix; silently ignoring the known non-Linux release failures; marking f-20260830-48 handled after branding alone; replacing a live manifest endpoint with an unavailable fork endpoint.
+* **Reason:** d-20260830-15 sequenced this work and d-20260903-09 resolves its former name prerequisite. f-20260830-06 still records an actual product choice over supported platforms; the code cannot answer it. Branding and preserving native data identity do not choose a platform policy.
+* **Reversal path:** when Felix answers f-20260830-06, resume the distribution package under that answer and verify signing, manifest hosting and the supported release targets before closing f-20260830-48.
+* **Decided by:** Codex, autonomously under full auto, 2026-09-07 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":29,"effect_sha256":"75d9482e1bbb0eef9fabe56fb00c64d425cf5d385f367429f6f69fe81a1688b2","input_sha256":"ca9a9ad53abcc71b154c488fd2c10bb803e947fadb8d82d0c2790ef61c975188","kind":"mutation-receipt","operation":"d091d37102bcaa331b0e764a4f8b6a51702459f5c6321899405bd693b3e8d5a1","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-06","d-20260907-07","d-20260907-08"],"target":"decisions-ledger","v":1} -->

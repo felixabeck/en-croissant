@@ -20,7 +20,7 @@
         "bundleMediaFramework": true
       }
     },
-    "publisher": "Francisco Salgueiro",
+    "publisher": "Felix Beck",
     "shortDescription": "Ultimate Chess Toolkit",
     "longDescription": "",
     "macOS": {
@@ -41,8 +41,8 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420"
   },
-  "productName": "en-croissant",
-  "mainBinaryName": "en-croissant",
+  "productName": "ChessFable",
+  "mainBinaryName": "chessfable",
   "identifier": "com.chessriddle.encroissant",
   "plugins": {
     "cli": {
@@ -59,7 +59,7 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "En Croissant",
+        "title": "ChessFable",
         "visible": false,
         "decorations": true
       }

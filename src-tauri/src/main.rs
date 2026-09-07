@@ -695,12 +695,14 @@ async fn save_engine_logs(app: tauri::AppHandle, text: String) -> Result<(), Err
 
 /// Opens the fixed project documentation URL without granting arbitrary URL authority to the
 /// renderer.
+const DOCUMENTATION_URL: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/tree/master/docs");
+
 #[tauri::command]
 #[specta::specta]
 fn open_documentation(app: tauri::AppHandle) -> Result<(), Error> {
     use tauri_plugin_opener::OpenerExt;
     app.opener()
-        .open_url("https://encroissant.org/docs/", None::<&str>)
+        .open_url(DOCUMENTATION_URL, None::<&str>)
         .map_err(Error::from)
 }
 
@@ -2067,6 +2069,14 @@ mod search_cache_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn documentation_url_targets_the_fork_repository() {
+        assert_eq!(
+            DOCUMENTATION_URL,
+            "https://github.com/felixabeck/en-croissant/tree/master/docs"
+        );
+    }
 
     fn test_credentials() -> Arc<crate::credentials::CredentialManager> {
         Arc::new(crate::credentials::CredentialManager::default())

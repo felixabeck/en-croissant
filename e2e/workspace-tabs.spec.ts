@@ -8,7 +8,7 @@ test("workspace-tabs: creates, focuses, and cycles workspace tabs", async ({
 }) => {
     await page.goto("/");
 
-    await expect(page).toHaveTitle(/en croissant/i);
+    await expect(page).toHaveTitle(/ChessFable/i);
     const tabs = page.getByRole("tab");
     await expect(tabs).toHaveCount(1);
     await expect(tabs.first()).toBeFocused();

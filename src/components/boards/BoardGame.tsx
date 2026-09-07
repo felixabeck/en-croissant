@@ -71,6 +71,7 @@ import {
 } from "./gameSession";
 import { OpponentForm, type OpponentSettings } from "./OpponentForm";
 import { toPlayerConfig } from "./playerConfig";
+import { PRODUCT_NAME } from "@/utils/product";
 
 function gameResultToOutcome(result: GameResult): Outcome {
   if (result.type === "whiteWins") return "1-0";
@@ -449,7 +450,7 @@ function BoardGame() {
           white: state.whitePlayer,
           black: state.blackPlayer,
           event: eventStr,
-          site: "En Croissant",
+          site: PRODUCT_NAME,
           date: dateStr,
           time: timeStr,
           time_control: undefined,

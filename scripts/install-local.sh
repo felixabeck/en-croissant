@@ -1,35 +1,15 @@
 #!/usr/bin/env bash
 # Install a reviewed ChessFable build for daily use, separate from the build tree.
-#
-#   bash scripts/install-local.sh            build from HEAD, then install
-#   bash scripts/install-local.sh --no-build install the build already in target/release
-#   bash scripts/install-local.sh --force    also accept a dirty tree / unpushed HEAD (recorded)
-#
-# Why this exists: the application-menu entry used to run
-# src-tauri/target/release/en-croissant directly. Every `pnpm build` (verify:app, a drain, a
-# manual check) replaced that file with whatever the working tree held at that moment, and
-# cargo-target-cleanup could delete it outright. The daily app was therefore whichever
-# half-reviewed state was compiled last. This script installs a build whose commit is on the
-# pushed upstream — the only state that has passed the full push review — and the launcher
-# points at the install.
-#
-# Layout under ~/.local/opt/chessfable (the Debian-bundle shape Tauri expects):
-#   releases/<short>-<timestamp>/bin/en-croissant
-#   releases/<short>-<timestamp>/lib/en-croissant/sound/   bundled resources — measured on
-#       2026-09-05 against tauri-utils 2.8.2 `resource_dir_from`: outside a cargo output
-#       directory, Linux resolves `<exe_dir>/../lib/<productName>` if it exists, else
-#       `/usr/lib/<productName>`. Resources next to the executable are NOT found.
-#   releases/<short>-<timestamp>/{icon.png,VERSION}
-#   current -> releases/<…>         swapped by an atomic rename; the launcher runs current/bin/en-croissant
-#   previous -> releases/<…>        the install before this one, kept for rollback
-# A running instance keeps its open binary and its resource-directory descriptor, so an
-# install while the app is running changes nothing until the next launch.
+# The stable launcher remains current/bin/en-croissant for rollback compatibility. The real
+# executable is bin/chessfable, and Tauri resolves resources from lib/ChessFable.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="${CHESSFABLE_INSTALL_DIR:-$HOME/.local/opt/chessfable}"
 RELEASE_DIR="$REPO/src-tauri/target/release"
 ICON="$REPO/src-tauri/icons/icon.png"
+APPLICATIONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+DESKTOP="$APPLICATIONS_DIR/ChessFable.desktop"
 
 build=1
 force=0
@@ -41,12 +21,25 @@ for arg in "$@"; do
   esac
 done
 
+mapfile -t identity < <(node -e '
+  const c = require(process.argv[1]);
+  for (const value of [c.mainBinaryName, c.productName]) {
+    if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) process.exit(2);
+    console.log(value);
+  }
+' "$REPO/src-tauri/tauri.conf.json")
+[ "${#identity[@]}" -eq 2 ] || { echo "invalid product identity in tauri.conf.json" >&2; exit 1; }
+binary="${identity[0]}"
+product_name="${identity[1]}"
+
 head="$(git -C "$REPO" rev-parse HEAD)"
 short="$(git -C "$REPO" rev-parse --short "$head")"
-upstream="$(git -C "$REPO" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || echo origin/master)"
+if ! upstream="$(git -C "$REPO" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
+  echo "refusing: the current branch has no configured upstream" >&2
+  exit 1
+fi
 dirty="$(git -C "$REPO" status --porcelain --untracked-files=no)"
 provenance="reviewed"
-
 if [ -n "$dirty" ]; then
   if [ "$force" -eq 1 ]; then
     provenance="UNREVIEWED (dirty tree, --force)"
@@ -58,6 +51,10 @@ if [ -n "$dirty" ]; then
   fi
 fi
 
+if ! git -C "$REPO" rev-parse --verify "$upstream^{commit}" >/dev/null 2>&1; then
+  echo "refusing: configured upstream $upstream cannot be resolved" >&2
+  exit 1
+fi
 if ! git -C "$REPO" merge-base --is-ancestor "$head" "$upstream"; then
   if [ "$force" -eq 1 ]; then
     provenance="UNREVIEWED (HEAD not on $upstream, --force)"
@@ -72,46 +69,109 @@ if [ "$build" -eq 1 ]; then
   echo "building release binary from $short …"
   (cd "$REPO" && pnpm build)
 fi
-
-[ -x "$RELEASE_DIR/en-croissant" ] || { echo "no release binary in $RELEASE_DIR" >&2; exit 1; }
+[ -x "$RELEASE_DIR/$binary" ] || { echo "no release binary in $RELEASE_DIR" >&2; exit 1; }
 [ -d "$RELEASE_DIR/sound" ] || { echo "no bundled sound/ resources in $RELEASE_DIR — the build is incomplete" >&2; exit 1; }
 
-stamp="$(date +%Y%m%dT%H%M%S)"
-mkdir -p "$ROOT/releases"
-staging="$ROOT/releases/.staging-$$"
-target="$ROOT/releases/$short-$stamp"
-rm -rf "$staging"
-mkdir -p "$staging"
-mkdir -p "$staging/bin" "$staging/lib/en-croissant"
-cp "$RELEASE_DIR/en-croissant" "$staging/bin/en-croissant"
-chmod 755 "$staging/bin/en-croissant"
-cp -R "$RELEASE_DIR/sound" "$staging/lib/en-croissant/sound"
+mkdir -p "$ROOT/releases" "$APPLICATIONS_DIR"
+staging=""
+target="$ROOT/releases/$short-$(date +%Y%m%dT%H%M%S)-$$"
+current_tmp="$ROOT/.current-new-$$"
+previous_tmp="$ROOT/.previous-new-$$"
+desktop_tmp=""
+current_committed=0
+target_owned=0
+original_current_present=0
+original_previous_present=0
+original_current=""
+original_previous=""
+[ ! -e "$ROOT/current" ] || [ -L "$ROOT/current" ] || { echo "refusing: current exists and is not a symlink" >&2; exit 1; }
+[ ! -e "$ROOT/previous" ] || [ -L "$ROOT/previous" ] || { echo "refusing: previous exists and is not a symlink" >&2; exit 1; }
+[ -L "$ROOT/current" ] && { original_current_present=1; original_current="$(readlink "$ROOT/current")"; }
+[ -L "$ROOT/previous" ] && { original_previous_present=1; original_previous="$(readlink "$ROOT/previous")"; }
+
+restore_link() {
+  local path="$1" present="$2" value="$3" temporary="$4"
+  if [ "$present" -eq 1 ]; then
+    ln -s "$value" "$temporary" && mv -T "$temporary" "$path"
+  else
+    [ ! -e "$path" ] && [ ! -L "$path" ] || rm "$path"
+  fi
+}
+
+cleanup() {
+  local status="$?"
+  trap - EXIT INT TERM HUP
+  [ -z "$staging" ] || rm -rf "$staging"
+  rm -f "$current_tmp" "$previous_tmp"
+  [ -z "$desktop_tmp" ] || rm -f "$desktop_tmp"
+  if [ "$status" -ne 0 ] && [ "$current_committed" -eq 0 ]; then
+    if ! restore_link "$ROOT/current" "$original_current_present" "$original_current" "$current_tmp"; then
+      echo "restoration failure: could not restore original current link" >&2
+      status=1
+    fi
+    if ! restore_link "$ROOT/previous" "$original_previous_present" "$original_previous" "$previous_tmp"; then
+      echo "restoration failure: could not restore original previous link" >&2
+      status=1
+    fi
+    rm -f "$current_tmp" "$previous_tmp"
+  fi
+  if [ "$target_owned" -eq 1 ] && [ "$current_committed" -eq 0 ]; then
+    local current_target="" previous_target=""
+    [ -L "$ROOT/current" ] && current_target="$(readlink -f "$ROOT/current" || true)"
+    [ -L "$ROOT/previous" ] && previous_target="$(readlink -f "$ROOT/previous" || true)"
+    if [ "$target" != "$current_target" ] && [ "$target" != "$previous_target" ]; then
+      rm -rf "$target"
+    fi
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+
+staging="$(mktemp -d "$ROOT/releases/.staging-XXXXXXXX")"
+desktop_tmp="$(mktemp "$APPLICATIONS_DIR/.ChessFable.desktop.XXXXXXXX")"
+
+mkdir -p "$staging/bin" "$staging/lib/$product_name"
+cp "$RELEASE_DIR/$binary" "$staging/bin/$binary"
+chmod 755 "$staging/bin/$binary"
+ln -s "$binary" "$staging/bin/en-croissant"
+cp -R "$RELEASE_DIR/sound" "$staging/lib/$product_name/sound"
 cp "$ICON" "$staging/icon.png"
-cat > "$staging/VERSION" <<EOV
-commit $head
-short $short
-subject $(git -C "$REPO" log -1 --format=%s "$head")
-installed $(date --iso-8601=seconds)
-provenance $provenance
-EOV
+printf 'commit %s\nshort %s\nsubject %s\ninstalled %s\nprovenance %s\n' \
+  "$head" "$short" "$(git -C "$REPO" log -1 --format=%s "$head")" \
+  "$(date --iso-8601=seconds)" "$provenance" > "$staging/VERSION"
+target_owned=1
 mv "$staging" "$target"
 
-# Atomic swap of the `current` symlink: write a temporary link, then rename it over the old one.
-ln -sfn "$target" "$ROOT/.current-new-$$"
-if [ -L "$ROOT/current" ]; then
-  ln -sfn "$(readlink -f "$ROOT/current")" "$ROOT/.previous-new-$$"
-  mv -T "$ROOT/.previous-new-$$" "$ROOT/previous"
+desktop_root="${ROOT//\\/\\\\}"
+desktop_root="${desktop_root//\"/\\\"}"
+desktop_icon_root="${desktop_root// /\\s}"
+cat > "$desktop_tmp" <<EOF
+[Desktop Entry]
+Type=Application
+Name=ChessFable
+Exec="$desktop_root/current/bin/en-croissant"
+Icon=$desktop_icon_root/current/icon.png
+Terminal=false
+StartupWMClass=ChessFable
+Categories=Game;
+EOF
+chmod 644 "$desktop_tmp"
+
+ln -s "$target" "$current_tmp"
+if [ "$original_current_present" -eq 1 ]; then
+  ln -s "$original_current" "$previous_tmp"
+  mv -T "$previous_tmp" "$ROOT/previous"
 fi
-mv -T "$ROOT/.current-new-$$" "$ROOT/current"
+if ! mv -T "$current_tmp" "$ROOT/current"; then
+  echo "current publication failed; installed state will be restored" >&2
+  exit 1
+fi
+current_committed=1
 
-# Keep only the releases `current` and `previous` point at.
-keep_current="$(readlink -f "$ROOT/current")"
-keep_previous="$( [ -L "$ROOT/previous" ] && readlink -f "$ROOT/previous" || true )"
-for dir in "$ROOT"/releases/*/; do
-  dir="${dir%/}"
-  [ "$dir" = "$keep_current" ] && continue
-  [ "$dir" = "$keep_previous" ] && continue
-  rm -rf "$dir"
-done
+if ! mv -T "$desktop_tmp" "$DESKTOP"; then
+  echo "desktop publication failed after install committed: current=$target; rollback=$ROOT/previous" >&2
+  exit 1
+fi
 
-echo "installed $short → $ROOT/current/bin/en-croissant ($provenance)"
+echo "installed $short → $ROOT/current/bin/$binary (compatibility launcher: $ROOT/current/bin/en-croissant; $provenance)"

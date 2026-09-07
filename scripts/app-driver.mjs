@@ -3,7 +3,7 @@
 //   kwin_wayland --virtual        an off-screen compositor, so nothing reaches the desktop
 //     └─ tauri-driver             proxies WebDriver to WebKitWebDriver
 //        └─ WebKitWebDriver       launches and controls the app
-//           └─ en-croissant       the real binary, real IPC, real WebKitGTK
+//           └─ chessfable         the real binary, real IPC, real WebKitGTK
 //
 // This is the complement to `pnpm test:e2e:container`, not a replacement for it. The container
 // suite pins renderer *pixels* in Chromium against a mocked IPC surface; this pins *behaviour* in
@@ -28,7 +28,7 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
-export const APP_BINARY = join(projectRoot, "src-tauri", "target", "release", "en-croissant");
+export const APP_BINARY = join(projectRoot, "src-tauri", "target", "release", "chessfable");
 
 const DRIVER_PORT = 4444;
 const NATIVE_PORT = 4445;
@@ -174,7 +174,7 @@ export async function startDriver({ waylandDisplay }) {
     if (error.message.includes(`port ${DRIVER_PORT} is already answering`)) throw error;
   }
 
-  profileDirectory = await mkdtemp(join(tmpdir(), "en-croissant-verify-"));
+  profileDirectory = await mkdtemp(join(tmpdir(), "chessfable-verify-"));
   env.HOME = profileDirectory;
   for (const name of ["XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"]) {
     delete env[name];
@@ -275,7 +275,9 @@ export function appProcesses() {
     return execFileSync("ps", ["-eo", "pid,ppid,cmd"])
       .toString()
       .split("\n")
-      .filter((line) => /release\/en-croissant|WebKitWebProcess|WebKitNetworkProcess/.test(line))
+      .filter(
+        (line) => line.includes(APP_BINARY) || /WebKitWebProcess|WebKitNetworkProcess/.test(line),
+      )
       .filter((line) => !/\bgrep\b/.test(line))
       .map((line) => {
         const [pid, ppid, ...command] = line.trim().split(/\s+/);
