@@ -2324,3 +2324,24 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** when Felix answers f-20260830-06, resume the distribution package under that answer and verify signing, manifest hosting and the supported release targets before closing f-20260830-48.
 * **Decided by:** Codex, autonomously under full auto, 2026-09-07 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":29,"effect_sha256":"75d9482e1bbb0eef9fabe56fb00c64d425cf5d385f367429f6f69fe81a1688b2","input_sha256":"ca9a9ad53abcc71b154c488fd2c10bb803e947fadb8d82d0c2790ef61c975188","kind":"mutation-receipt","operation":"d091d37102bcaa331b0e764a4f8b6a51702459f5c6321899405bd693b3e8d5a1","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-06","d-20260907-07","d-20260907-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20260907-09 — How do local installs stay serialized and bounded without deleting foreign releases?
+
+* **Governs:** f-20260830-48
+* **Question:** How should the installer protect current/previous publication and retire old releases?
+* **Chosen:** hold a kernel flock for the install root throughout build, pointer snapshots, publication and cleanup. Retire only recognized managed releases after successful publication, keeping current and previous; preserve unrelated directories and arbitrary pointer destinations. Derive all desktop identity fields from the parsed product name.
+* **Rejected:** unsynchronized snapshot restoration; broad deletion of every unreferenced directory; unbounded retention of each new installation; a persistent watcher or service.
+* **Reason:** cumulative review established a concrete two-process stale-rollback race and the lost bounded-retention behavior. A one-off flock closes the race without a background tool, while explicit managed ownership separates safe retirement from foreign files.
+* **Reversal path:** replace flock only with an equally verified ownership-aware transaction; change retention only with explicit cleanup and rollback regression proof. No product behavior or platform support policy changes.
+* **Decided by:** Codex, autonomously under full auto, 2026-09-07 · **Superseded-by:** -
+
+### d-20260907-10 — What constitutes success in the real-app verification harness?
+
+* **Governs:** f-20260907-06
+* **Question:** Can missing protocol, process-monitoring or cleanup evidence count as successful verification?
+* **Chosen:** require valid WebDriver response envelopes, propagate process inspection failures, and reject shutdown when owned process groups survive or cleanup fails. Preserve best-effort cleanup of remaining resources and idempotent shutdown. Route harness failure tests through the unconditional contract gate.
+* **Rejected:** malformed JSON as undefined success; failed process inspection as an empty process set; log-only surviving process groups.
+* **Reason:** these loaded verifier dependencies determine whether this run can prove actual native startup and teardown. Missing evidence cannot establish process absence or completed cleanup. This is a technical verification contract, not a change to supported platforms.
+* **Reversal path:** alternate monitoring/protocol transports must preserve explicit failure outcomes and the same executable regression proof.
+* **Decided by:** Codex, autonomously under full auto, 2026-09-07 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":19,"effect_sha256":"2a816c6a06b8d705daf2f34336541198b3292098268d2d20ee8920a4632768e1","input_sha256":"4e161eab9edc714e6617ea4af2944c01d97345114c3a0169577b0f2e4d0ebd40","kind":"mutation-receipt","operation":"6e7a101a6424a6dcbc0c27644ac563fc6dd2fe3afc6a950b287bd105a0e5456d","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-09","d-20260907-10"],"target":"decisions-ledger","v":1} -->

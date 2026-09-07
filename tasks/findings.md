@@ -3793,6 +3793,9 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 * **Remaining / precondition:** the finding stays open for fork-owned signing, release automation, updater and authenticated catalog hosting. The existing f-20260830-06 product decision determines supported release platforms; its non-Linux build failures remain recorded and unresolved. Resume distribution once that decision is answered. Do not treat branding as full closure or publish a release through ordinary push. d-20260907-06/07/08 record implementation decisions and reversal paths.
 <!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"6070bc61dc93328ad937addf2d8389dbe80c20e58fab6f4d52aa777244504568","input_sha256":"0350ac3d26774c3de2817f945aeb87885206646e550678530b43fe140373184e","kind":"mutation-receipt","operation":"a0b97e185dabe560d3c71aee0e038044cd16db30e094117d0cfcc0238e14ff3e","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-48"],"target":"f-20260830-48","v":1} -->
 
+* **Review repairs (Codex, 2026-09-07):** f397464e adds serialized publication, bounded managed-release retirement, legacy recognition, foreign-directory preservation, post-publication interruption handling and regression proof (16 installer tests). It also strengthens publisher/About/recovery-button tests (17 focused renderer tests) and corrects the bug-form guidance. 0ffc2e00 preserves Specta command documentation after moving the repository URL constant; generated bindings remain unchanged. Root independently verified the repair tests and full contract gate. The related loaded verifier defect f-20260907-06 is fixed separately in c45a33be. Distribution still waits on f-20260830-06; this finding is not fully closed.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4ca4a9e3ac509ef57b3070a97fe03b30fc64e7a8bee6e545267e1514f32ccd71","input_sha256":"a8d5498776b24b5a8a41c3f8d9d5787b805cc1e27af4a47a54bea81634ce1332","kind":"mutation-receipt","operation":"313136dcccb6ad7bc4d3d42bd3b807b7055e614a0726bcd8e74a344149342f97","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-48"],"target":"f-20260830-48","v":1} -->
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
@@ -6977,3 +6980,20 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Related:** f-20260831-06 handled whole-corpus PGN import/export buffers in this file, but did not change this statistics query. No shared Root assigned without evidence of one implementation cause.
 * **Proof sought:** Real SQLite large-row/many-row fixtures and a measured memory bound, with identical statistics for both colors and missing optional fields.
 * **Found by:** Codex review-pgn-index plan lens, 2026-09-07 (confidence 98).
+
+---
+
+## 2026-09-07 — filed through the inbox spool
+
+### Real-app verification converts observation and cleanup failures into successful results
+
+* **ID:** f-20260907-06 · **Status:** handled · **Area:** e2e-gate · **Root:** verification-harness-fails-open · **Entry:** lens · **Blocked:** none
+* **Where:** scripts/app-driver.mjs Session.call, appProcesses and cleanUp; scripts/verify-app.mjs final cleanup and success reporting.
+* **Defect:** Session.call catches invalid JSON as an empty object, so a successful HTTP status with a malformed body returns undefined success. appProcesses catches process inspection failure as an empty set. cleanUp discards post-SIGKILL wait failures and only logs surviving groups, so shutdown can resolve while processes remain. These are one evidenced failure mode: loss of observation/cleanup evidence becomes a successful harness result.
+* **Why it matters:** this run uses the real-app verifier to prove the renamed native executable starts and cleans up. A verifier that discards protocol, monitoring or teardown failure cannot establish that proof.
+* **Fix shape:** reject malformed WebDriver responses and process-inspection failures with context; make surviving groups fail cleanup and the verifier exit; retain best-effort cleanup of other resources; add executable failure-path regressions and route them through the contract gate.
+* **Related:** f-20260830-50 shares app-driver.mjs but records an upstream Mesa teardown crash, not this harness reporting defect; no shared root is claimed. f-20260830-13 shares e2e-gate but concerns a separate modal flow.
+* **Found by:** error-handling cumulative review during f-20260830-48 on 2026-09-07 (confidence 97–99), confirmed by root reading the concrete catch and cleanup paths. Fixing now in a separate commit because these files are already loaded dependencies of this run.
+
+* **Resolution (Codex, 2026-09-07):** c45a33be rejects malformed/missing WebDriver envelopes, propagates process-inspection failures and makes failed teardown fail verification after attempting all owned cleanup. Response-body deadlines remain active without rejecting valid large screenshots. Executor and root independently passed the four harness tests and 60 routing tests; the full contract gate also passed. The real-app run is part of the final verification before this run pushes. Decision d-20260907-10 records the contract and reversal path.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"061a832e423c396a3d97b3d2e047a1918a6e9855972b25938a28bcc5b37b9eeb","input_sha256":"7d8fd606aa2d3b73e20c9b670e8a9f3eeb48bd3b23c963f72959b3d25dbf557f","kind":"mutation-receipt","operation":"94e78aa7802900e04d5813c4632076040f43060a06f6871b7f3a84d01eca94a6","options":{"section":null},"request_id_sha256":null,"results":["f-20260907-06"],"target":"f-20260907-06","v":1} -->
