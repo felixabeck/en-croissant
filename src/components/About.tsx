@@ -5,7 +5,7 @@ import { arch, osType, OSVersion } from "@/platform/native";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { PRODUCT_NAME, REPOSITORY_URL } from "@/utils/product";
+import { PRODUCT_NAME, REPOSITORY_URL } from "@/utils/product.json";
 
 function AboutModal({
   opened,

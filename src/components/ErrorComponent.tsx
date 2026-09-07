@@ -3,7 +3,9 @@ import { useNavigate } from "@tanstack/react-router";
 import { Trans, useTranslation } from "react-i18next";
 import { normalizeError } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
-import { ISSUE_URL } from "@/utils/product";
+import { REPOSITORY_URL } from "@/utils/product.json";
+
+const issueUrl = `${REPOSITORY_URL}/issues/new?assignees=&labels=bug&projects=&template=bug.yml`;
 
 export default function ErrorComponent({ error }: { error: unknown }) {
   const { t } = useTranslation();
@@ -46,7 +48,7 @@ export default function ErrorComponent({ error }: { error: unknown }) {
         <Trans
           i18nKey="Error.ReportIssue"
           components={{
-            github: <Anchor href={ISSUE_URL} target="_blank" />,
+            github: <Anchor href={issueUrl} target="_blank" />,
           }}
         />
       </Text>

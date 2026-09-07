@@ -2345,3 +2345,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** alternate monitoring/protocol transports must preserve explicit failure outcomes and the same executable regression proof.
 * **Decided by:** Codex, autonomously under full auto, 2026-09-07 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":19,"effect_sha256":"2a816c6a06b8d705daf2f34336541198b3292098268d2d20ee8920a4632768e1","input_sha256":"4e161eab9edc714e6617ea4af2944c01d97345114c3a0169577b0f2e4d0ebd40","kind":"mutation-receipt","operation":"6e7a101a6424a6dcbc0c27644ac563fc6dd2fe3afc6a950b287bd105a0e5456d","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-09","d-20260907-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20260907-11 — How is static renderer product identity represented?
+
+* **Question:** How should static product values be shared without changing the executable-code coverage contract?
+* **Governs:** f-20260830-48
+* **Chosen:** Keep the renderer product name and repository URL in a shared JSON metadata file; derive the issue-form URL at its sole consumer. Retain consistency and rendered-link tests. This refines d-20260907-07 without changing its support destination.
+* **Rejected:** Rewriting the coverage baseline signature or relocating constants into an unrelated covered code domain to clear the new-module mapping failure.
+* **Reason:** These two values are static product metadata, with no executable behavior to instrument. JSON is already a supported data input in this renderer. Existing source coverage scope, numeric baselines and floors remain byte-identical. Reversal path: if product identity gains executable behavior, introduce a properly assigned production module with explicitly reviewed measurement ownership.
+* **Decided by:** Codex, next-finding/build full-auto session, 2026-09-07. **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"2d3e77d1aa4075ca1eebb43f6547f69b461acc5aa621b2584ead36433a8f5bb8","input_sha256":"b7e8b6c4e494209a2ad3ef49b158a5cf701ce9101d59a8c8ea540463cde9ed1e","kind":"mutation-receipt","operation":"41ea7bc0d6cbd992fe6e6748dbd7dcf9e4ebd37cef704d7e6b79cfe2c2e9bb8c","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-11"],"target":"decisions-ledger","v":1} -->

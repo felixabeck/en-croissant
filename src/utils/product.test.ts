@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { ISSUE_URL, PRODUCT_NAME, REPOSITORY_URL } from "./product";
+import { PRODUCT_NAME, REPOSITORY_URL } from "./product.json";
 import config from "../../src-tauri/tauri.conf.json";
 import cargoManifest from "../../src-tauri/Cargo.toml?raw";
 import contributionGuide from "../../CONTRIBUTING.md?raw";
@@ -18,7 +18,6 @@ describe("product identity", () => {
 
     test("routes source, contribution and bug support to the fork", () => {
         expect(REPOSITORY_URL).toBe("https://github.com/felixabeck/en-croissant");
-        expect(ISSUE_URL).toContain(`${REPOSITORY_URL}/issues/new`);
         expect(cargoManifest).toContain(`repository = "${REPOSITORY_URL}"`);
         expect(contributionGuide).toContain(`${REPOSITORY_URL}/compare`);
         expect(bugForm).toContain(`${REPOSITORY_URL}/issues?q=`);

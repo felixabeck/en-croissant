@@ -71,7 +71,7 @@ import {
 } from "./gameSession";
 import { OpponentForm, type OpponentSettings } from "./OpponentForm";
 import { toPlayerConfig } from "./playerConfig";
-import { PRODUCT_NAME } from "@/utils/product";
+import { PRODUCT_NAME } from "@/utils/product.json";
 
 function gameResultToOutcome(result: GameResult): Outcome {
   if (result.type === "whiteWins") return "1-0";
