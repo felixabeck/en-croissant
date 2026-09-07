@@ -3226,7 +3226,7 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 
 ### Panic-on-poison and unguarded `unwrap` on paths reachable from a database, an engine or the network
 
-* **ID:** f-20260830-41 · **Status:** open · **Area:** oauth-credentials · **Root:** panic-on-untrusted-input · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-41 · **Status:** handled · **Area:** oauth-credentials · **Root:** panic-on-untrusted-input · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/credentials.rs:359-374` and its `.expect` sites `:256,271,280,305,362,388`;
   `src-tauri/src/fs.rs:84-90`, `:50`, `:69`; `src-tauri/src/oauth.rs:450,463`;
   `src-tauri/src/infra/net.rs:136-147`.
@@ -3252,13 +3252,17 @@ records why the checker was built rather than the gap annotated onto `f-20260830
   rather than expecting. (The exemplar cited in the first report, `chess.rs:441`, is unrelated code.)
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
 
+* **Handled 2026-09-07:** d2a48b8e replaces credential registry/path lock expects with fallible shared guards; listing propagates through IPC and authenticated identity verification. Download begin/cancel fail closed and lease Drop performs token-matched cleanup even on a poisoned mutex. Both native HTTP clients are constructed fallibly before AppState is published. Existing OAuth delivery/persistence poison mapping was already fixed; persistence now has a regression test. Credential journal lock spans remain serialized under d-20260907-03/-04.
+* **Proof:** cargo test --manifest-path src-tauri/Cargo.toml --locked: 734 passed, 0 failed, 1 ignored; cargo fmt check, all-target Clippy with -D warnings, and pnpm bindings:check passed. Separate probes cover registry/path poisoning without secret-store effects, unwinding lease cleanup, stale-token identity, and failure of each client constructor.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"26b75d49b53dbdbd53778ba0844a2080a5958ae0f04bf6264fdb9568502d21c6","input_sha256":"eee81ad5ed8a3847c4fd181973bd7657e4a976d4aa4cd131181b61142b999a78","kind":"mutation-receipt","operation":"35f3d8f64ed5beee2e47f5b6f33fa34d6164a893f113971057555ac62df16871","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-41"],"target":"f-20260830-41","v":1} -->
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
 
 ### Five `unwrap()` on database-loaded values, protected only by an unlabelled condition fifty lines earlier
 
-* **ID:** f-20260830-42 · **Status:** open · **Area:** db-search · **Root:** panic-on-untrusted-input · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-42 · **Status:** handled · **Area:** db-search · **Root:** panic-on-untrusted-input · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs:1676,1678,1681,1683,1685`, guarded by the compound condition at
   `:1626-1635`.
 * **Defect:** five `unwrap()` calls on values loaded from SQLite — `player`, `date`, `white_elo`,
@@ -3275,6 +3279,10 @@ records why the checker was built rather than the gap annotated onto `f-20260830
 * **Correction to the first report:** the guard is at `:1626-1635` (not 1624-1633) and the distance
   is ~50 lines (not 25).
 * **Found by:** Claude review of the 2026-08-13 audit diff, 2026-08-30.
+
+* **Handled 2026-09-07:** 47c9c5bf binds required player, date, parsed outcome, site and selected rating before move replay. No distant unwraps remain in row construction. Eligibility remains unchanged, including the same-player edge case requiring both ratings; ordinary games accept missing opponent ratings. This is behavior preservation, not a claim that the previous guard already failed.
+* **Proof:** cargo test --manifest-path src-tauri/Cargo.toml --locked db::: 138 passed, 0 failed; cargo fmt check and all-target Clippy with -D warnings passed. SQLite cases cover each missing field, NULL and non-null invalid outcome, both colors and all outcomes, normalization/defaults, FEN exclusion and self-play eligibility. Separate statistics materialization design is filed as f-20260907-05.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"b56692c37b89d71d1fd9fbd413c1f58fe4dc6100ff1c97edd95c3c1f55c349bb","input_sha256":"f2be93b9acb187f929d7622d2d0bbff4e5240e15e664e6a7ecf3a3566b6dcf19","kind":"mutation-receipt","operation":"e6b8f5e1dc843b2fcdff5683573310d6e708cbca87e99561a59a74f4431e3d40","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-42"],"target":"f-20260830-42","v":1} -->
 
 ---
 
