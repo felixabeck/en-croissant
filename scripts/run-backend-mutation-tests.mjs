@@ -35,6 +35,30 @@ async function installContainmentTools(bin) {
   await symlink(commandPath("prlimit"), join(bin, "prlimit"));
 }
 
+function nativeRustHost(runCommand = spawnSync) {
+  const result = runCommand("rustc", ["-vV"], { encoding: "utf8" });
+  if (result.error) {
+    throw new Error(`Test fixture native Rust host detection failed: ${result.error.message}`, {
+      cause: result.error,
+    });
+  }
+  if (result.signal) {
+    throw new Error(
+      `Test fixture native Rust host detection failed: rustc died with ${result.signal}`,
+    );
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `Test fixture native Rust host detection failed: rustc exited with status ${result.status}`,
+    );
+  }
+  const host = parseRustHostMetadata(result.stdout ?? "");
+  if (!host) {
+    throw new Error("Test fixture native Rust host detection failed: rustc returned no valid host");
+  }
+  return host;
+}
+
 function git(root, args) {
   const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -139,7 +163,7 @@ test("a normal clean run holds the fence for the run and removes it afterwards",
   assert.ok(argumentsList.includes("--caught"));
   assert.ok(argumentsList.includes("--unviable"));
   if (process.platform === "linux") {
-    const host = parseRustHostMetadata(spawnSync("rustc", ["-vV"], { encoding: "utf8" }).stdout);
+    const host = nativeRustHost();
     const containmentStart = argumentsList.indexOf("--cargo-arg=--target");
     assert.deepEqual(argumentsList.slice(containmentStart, containmentStart + 4), [
       "--cargo-arg=--target",
@@ -156,8 +180,7 @@ test("the production Cargo arguments enforce executable limits over file and env
     return;
   }
   const root = await mkdtemp(join(tmpdir(), "backend-mutation-limits-"));
-  const host = parseRustHostMetadata(spawnSync("rustc", ["-vV"], { encoding: "utf8" }).stdout);
-  assert.ok(host, "rustc did not report a native host");
+  const host = nativeRustHost();
   await mkdir(join(root, ".cargo"));
   await mkdir(join(root, "tests"));
   await writeFile(
@@ -215,6 +238,18 @@ test("the production Cargo arguments enforce executable limits over file and env
   }
 });
 
+test("the real-Cargo fixture host helper rejects process and metadata failures clearly", () => {
+  const processFailure = new Error("rustc unavailable");
+  assert.throws(
+    () => nativeRustHost(() => ({ error: processFailure })),
+    /Test fixture native Rust host detection failed: rustc unavailable/,
+  );
+  assert.throws(
+    () => nativeRustHost(() => ({ status: 0, stdout: "rustc without host\n" })),
+    /Test fixture native Rust host detection failed: rustc returned no valid host/,
+  );
+});
+
 test("encoding containment fails closed when host detection or prlimit setup fails", async (t) => {
   if (process.platform !== "linux") {
     t.skip("containment applies only to Linux encoding executables");
@@ -225,6 +260,8 @@ test("encoding containment fails closed when host detection or prlimit setup fai
     "invalid-host",
     "missing-prlimit",
     "broken-prlimit",
+    "signalled-host",
+    "signalled-prlimit",
   ]) {
     const { root, bin, state } = await fixture();
     const isolatedBin = join(root, failure);
@@ -236,13 +273,23 @@ test("encoding containment fails closed when host detection or prlimit setup fai
         join(isolatedBin, "rustc"),
         failure === "invalid-host"
           ? "#!/bin/sh\nprintf 'rustc fixture without host\\n'\n"
-          : "#!/bin/sh\nprintf 'rustc 1.98.0\\nhost: x86_64-unknown-linux-gnu\\n'\n",
+          : failure === "signalled-host"
+            ? "#!/bin/sh\necho 'host shim terminating' >&2\nkill -TERM $$\n"
+            : "#!/bin/sh\nprintf 'rustc 1.98.0\\nhost: x86_64-unknown-linux-gnu\\n'\n",
       );
     }
-    if (failure !== "missing-prlimit" && failure !== "missing-host-tool") {
+    if (
+      failure !== "missing-prlimit" &&
+      failure !== "missing-host-tool" &&
+      failure !== "signalled-host"
+    ) {
       await writeShim(
         join(isolatedBin, "prlimit"),
-        failure === "broken-prlimit" ? "#!/bin/sh\nexit 9\n" : '#!/bin/sh\nexec "$@"\n',
+        failure === "broken-prlimit"
+          ? "#!/bin/sh\nexit 9\n"
+          : failure === "signalled-prlimit"
+            ? "#!/bin/sh\necho 'prlimit shim terminating' >&2\nkill -TERM $$\n"
+            : '#!/bin/sh\nexec "$@"\n',
       );
     }
     const result = run(root, environment({ bin, state, path: isolatedBin }));
@@ -255,6 +302,18 @@ test("encoding containment fails closed when host detection or prlimit setup fai
       assert.match(result.stderr, /prlimit runner setup failed:.*ENOENT/s);
     if (failure === "broken-prlimit") {
       assert.match(result.stderr, /prlimit runner setup failed: prlimit exited with status 9/s);
+    }
+    if (failure === "signalled-host") {
+      assert.match(
+        result.stderr,
+        /host detection failed: rustc died with SIGTERM: host shim terminating/s,
+      );
+    }
+    if (failure === "signalled-prlimit") {
+      assert.match(
+        result.stderr,
+        /prlimit runner setup failed: prlimit died with SIGTERM: prlimit shim terminating/s,
+      );
     }
     await assert.rejects(() => readFile(join(state, "started")));
     assert.equal(existsSync(join(root, fence)), false);

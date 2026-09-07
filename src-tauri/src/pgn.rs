@@ -745,51 +745,55 @@ mod tests {
         value.replace('\n', line_ending).into_bytes()
     }
 
-    fn assert_scan_variants(leading: &str, expected_games: &[&str]) {
+    fn for_each_scan_variant(mut assertion: impl FnMut(&str, &[u8])) {
         for line_ending in ["\n", "\r\n"] {
+            for bom in [b"".as_slice(), b"\xef\xbb\xbf".as_slice()] {
+                assertion(line_ending, bom);
+            }
+        }
+    }
+
+    fn assert_scan_variants(leading: &str, expected_games: &[&str]) {
+        for_each_scan_variant(|line_ending, bom| {
             let leading = with_line_ending(leading, line_ending);
             let expected_games: Vec<Vec<u8>> = expected_games
                 .iter()
                 .map(|game| with_line_ending(game, line_ending))
                 .collect();
-            for bom in [b"".as_slice(), b"\xef\xbb\xbf".as_slice()] {
-                let mut data = bom.to_vec();
-                data.extend_from_slice(&leading);
-                for game in &expected_games {
-                    data.extend_from_slice(game);
-                }
-
-                let ranges = scan_games(Cursor::new(&data)).expect("scan PGN fixture");
-                assert_eq!(ranges.len(), expected_games.len());
-                let mut expected_start = (bom.len() + leading.len()) as u64;
-                for (range, expected_game) in ranges.iter().zip(&expected_games) {
-                    let expected_end = expected_start + expected_game.len() as u64;
-                    assert_eq!(range.start, expected_start);
-                    assert_eq!(range.end, expected_end);
-                    assert_eq!(
-                        &data[range.start as usize..range.end as usize],
-                        expected_game
-                    );
-                    expected_start = expected_end;
-                }
+            let mut data = bom.to_vec();
+            data.extend_from_slice(&leading);
+            for game in &expected_games {
+                data.extend_from_slice(game);
             }
-        }
+
+            let ranges = scan_games(Cursor::new(&data)).expect("scan PGN fixture");
+            assert_eq!(ranges.len(), expected_games.len());
+            let mut expected_start = (bom.len() + leading.len()) as u64;
+            for (range, expected_game) in ranges.iter().zip(&expected_games) {
+                let expected_end = expected_start + expected_game.len() as u64;
+                assert_eq!(range.start, expected_start);
+                assert_eq!(range.end, expected_end);
+                assert_eq!(
+                    &data[range.start as usize..range.end as usize],
+                    expected_game
+                );
+                expected_start = expected_end;
+            }
+        });
     }
 
     fn assert_invalid_scan_variants(data: &str) {
-        for line_ending in ["\n", "\r\n"] {
+        for_each_scan_variant(|line_ending, bom| {
             let data = with_line_ending(data, line_ending);
-            for bom in [b"".as_slice(), b"\xef\xbb\xbf".as_slice()] {
-                let mut fixture = bom.to_vec();
-                fixture.extend_from_slice(&data);
-                assert_eq!(
-                    scan_games(Cursor::new(fixture))
-                        .expect_err("unterminated comment must fail")
-                        .kind(),
-                    io::ErrorKind::InvalidData
-                );
-            }
-        }
+            let mut fixture = bom.to_vec();
+            fixture.extend_from_slice(&data);
+            assert_eq!(
+                scan_games(Cursor::new(fixture))
+                    .expect_err("unterminated comment must fail")
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        });
     }
 
     fn writable_for(

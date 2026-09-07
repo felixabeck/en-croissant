@@ -247,6 +247,13 @@ function successfulOutput(command, args, purpose) {
       cause: result.error,
     });
   }
+  if (result.signal) {
+    throw new Error(
+      `Backend mutation ${purpose} failed: ${command} died with ${result.signal}${
+        result.stderr ? `: ${result.stderr.trim()}` : ""
+      }`,
+    );
+  }
   if (result.status !== 0) {
     throw new Error(
       `Backend mutation ${purpose} failed: ${command} exited with status ${result.status}${
@@ -282,7 +289,7 @@ function prepareEncodingContainment() {
   return encodingCargoArguments(host);
 }
 
-function cargoArguments(mutationPackage, containmentCargoArguments = []) {
+function cargoArguments(mutationPackage, containmentCargoArguments) {
   const cargoArguments = [
     "mutants",
     "--manifest-path",
