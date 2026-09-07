@@ -741,6 +741,57 @@ mod tests {
             .expect("snapshot PGN")
     }
 
+    fn with_line_ending(value: &str, line_ending: &str) -> Vec<u8> {
+        value.replace('\n', line_ending).into_bytes()
+    }
+
+    fn assert_scan_variants(leading: &str, expected_games: &[&str]) {
+        for line_ending in ["\n", "\r\n"] {
+            let leading = with_line_ending(leading, line_ending);
+            let expected_games: Vec<Vec<u8>> = expected_games
+                .iter()
+                .map(|game| with_line_ending(game, line_ending))
+                .collect();
+            for bom in [b"".as_slice(), b"\xef\xbb\xbf".as_slice()] {
+                let mut data = bom.to_vec();
+                data.extend_from_slice(&leading);
+                for game in &expected_games {
+                    data.extend_from_slice(game);
+                }
+
+                let ranges = scan_games(Cursor::new(&data)).expect("scan PGN fixture");
+                assert_eq!(ranges.len(), expected_games.len());
+                let mut expected_start = (bom.len() + leading.len()) as u64;
+                for (range, expected_game) in ranges.iter().zip(&expected_games) {
+                    let expected_end = expected_start + expected_game.len() as u64;
+                    assert_eq!(range.start, expected_start);
+                    assert_eq!(range.end, expected_end);
+                    assert_eq!(
+                        &data[range.start as usize..range.end as usize],
+                        expected_game
+                    );
+                    expected_start = expected_end;
+                }
+            }
+        }
+    }
+
+    fn assert_invalid_scan_variants(data: &str) {
+        for line_ending in ["\n", "\r\n"] {
+            let data = with_line_ending(data, line_ending);
+            for bom in [b"".as_slice(), b"\xef\xbb\xbf".as_slice()] {
+                let mut fixture = bom.to_vec();
+                fixture.extend_from_slice(&data);
+                assert_eq!(
+                    scan_games(Cursor::new(fixture))
+                        .expect_err("unterminated comment must fail")
+                        .kind(),
+                    io::ErrorKind::InvalidData
+                );
+            }
+        }
+    }
+
     fn writable_for(
         directory: &tempfile::TempDir,
         path: &Path,
@@ -914,6 +965,49 @@ mod tests {
     fn braces_in_quoted_tag_values_do_not_start_comments() {
         let data = b"[Event \"{literal\"]\n\n1. e4\n[Event \"B\"]\n\n1. d4\n";
         assert_eq!(scan_games(Cursor::new(data)).expect("scan PGN").len(), 2);
+    }
+
+    #[test]
+    fn quoted_literal_brace_without_semicolon_does_not_start_a_comment() {
+        assert_scan_variants(
+            "",
+            &[
+                "[Event \"A\"]\n\n1. e4 \"quoted { literal\" e5\n",
+                "[Event \"B\"]\n\n1. d4\n",
+            ],
+        );
+    }
+
+    #[test]
+    fn escaped_quote_before_literal_brace_keeps_the_brace_quoted() {
+        assert_scan_variants(
+            "",
+            &[
+                "[Event \"A\"]\n\n1. e4 \"quoted \\\" { literal\" e5\n",
+                "[Event \"B\"]\n\n1. d4\n",
+            ],
+        );
+    }
+
+    #[test]
+    fn unterminated_comment_after_a_closing_quote_is_invalid_data() {
+        assert_invalid_scan_variants("[Event \"A\"]\n\n1. e4 \"quoted literal\" {unterminated\n");
+    }
+
+    #[test]
+    fn quoted_semicolon_before_an_unterminated_comment_is_invalid_data() {
+        assert_invalid_scan_variants("[Event \"A\"]\n\n1. e4 \"quoted ; literal\" {unterminated\n");
+    }
+
+    #[test]
+    fn percent_escape_lines_with_unmatched_braces_do_not_mask_games() {
+        assert_scan_variants(
+            "% { unmatched before games\n",
+            &[
+                "[Event \"A\"]\n\n1. e4\n% { unmatched between games\n",
+                "[Event \"B\"]\n\n1. d4\n",
+            ],
+        );
     }
 
     #[test]
