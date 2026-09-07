@@ -19,8 +19,17 @@ test("settings-responsive: preserves keyboard focus at narrow 200% font scale", 
     await capture("settings-responsive");
     await expect(page).toHaveScreenshot("settings-responsive.png", { fullPage: true });
 
-    await page.getByRole("button", { name: /application/i }).click();
-    await page.getByRole("menuitem", { name: /about chessfable/i }).click();
-    await expect(page.getByRole("dialog", { name: "ChessFable" })).toBeVisible();
+    await page.getByRole("button", { name: /^help$/i }).focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("menuitem", { name: /^about$/i }).press("Enter");
+    const about = page.getByRole("dialog", { name: "ChessFable" });
+    await expect(about).toBeVisible();
+    await expect(about).toHaveCSS("opacity", "1");
     await capture("settings-about-modal");
+    const support = about.getByRole("link", {
+        name: "https://github.com/felixabeck/en-croissant",
+    });
+    await support.scrollIntoViewIfNeeded();
+    await expect(support).toHaveAttribute("href", "https://github.com/felixabeck/en-croissant");
+    await capture("settings-about-support");
 });

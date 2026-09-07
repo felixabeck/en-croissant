@@ -65,7 +65,12 @@ function AboutModal({
 
       <br />
 
-      <Anchor href={REPOSITORY_URL} target="_blank" rel="noreferrer">
+      <Anchor
+        href={REPOSITORY_URL}
+        target="_blank"
+        rel="noreferrer"
+        style={{ overflowWrap: "anywhere" }}
+      >
         {REPOSITORY_URL}
       </Anchor>
     </AppModal>
