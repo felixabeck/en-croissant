@@ -6875,3 +6875,18 @@ Closed by c0f4b341. Puzzle selection is derived against the current successful r
 * **Related:** f-20260829-09 protects the source tree with a mutation fence; it does not contain executable allocations.
 * **Repair:** Bounded iterator assertions plus Linux encoding-only prlimit runner, forced native Cargo target and exact command-line runner, shared Rust metadata parser, fail-closed diagnostics, and caught/unviable output. Preserve the existing timeout and fence policy.
 * **Verification:** Real dependency-free Cargo containment fixture with conflicting ambient target/runner settings and missing tools, existing contract tests, complete isolated encoding mutation accounting, and all delivered-revision CI package artifacts.
+
+---
+
+## 2026-09-07 — filed through the inbox spool
+
+### Encoding mutation aborts create desktop crash reports despite zero core limit
+* **ID:** f-20260907-03 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+
+* **Observed:** SIGABRT reports for PIDs 1989588 (2026-09-07 05:41:56 CEST, 20.9M core) and 2047128 (05:43:27, 873.8K core), both from the disposable /tmp/build-backend-mutation-20260907.sYCKNG/candidate encoding mutation executable.
+* **Cause:** scripts/run-backend-mutation.mjs:267 configures prlimit --as=2147483648 --core=0. The memory bound catches allocating mutants, but RLIMIT_CORE does not suppress the piped collector. /proc/sys/kernel/core_pattern invokes /usr/local/sbin/coredump-filter, which forwards these binaries to systemd-coredump.
+* **Evidence:** Candidate mutants.out/backend/database-encoding/mutants.out/log/src__db__encoding.rs_line_185_col_16_001.log and src__db__encoding.rs_line_227_col_24_001.log report allocation failures (268435456 and 2147483648 bytes), the exact prlimit invocation and SIGABRT. The first mutant changes cursor += 1 to cursor *= 1 in decode_game, preventing progress. Supplied stack offsets symbolize to std::alloc::rust_oom, __rust_alloc_error_handler and RawVec<DecodedGameNode>::grow_one. The baseline passed; cargo-mutants counted these mutants as caught and continued.
+* **Related:** f-20260907-02 is the active memory-containment repair; this is the separate core-suppression gap in its candidate. Preserve the 2 GiB test-only bound and ongoing isolated run. No evidence here of an installed-app crash or system-wide memory exhaustion.
+* **Fix direction:** Follow interactive-workflow rule 18d: call prctl(PR_SET_DUMPABLE, 0) inside the deliberately faulting Linux test executable after exec, check success, and scope this explicitly to mutation tests. Preserve stderr, exit status and ordinary application crash collection. A pre-exec wrapper or zero core limit alone is insufficient. No daemon or global suppression is needed.
+* **Verification:** Exercise the real mutation launch path with a disposable aborting executable; confirm non-dumpability inside it, retained failure diagnostics, and no systemd core event. Confirm ordinary launches retain normal dumpability. The current scripts/run-backend-mutation-tests.mjs containment fixture only checks /proc/self/limits, which cannot prove this property.
+* **Disposition:** Investigation only; another session owns the active candidate. Record for project queue pickup without editing its runner or production code.
