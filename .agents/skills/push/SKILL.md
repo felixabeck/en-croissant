@@ -8,10 +8,7 @@ description: Validate, independently review, remediate, commit, and push ChessFa
 Read `.claude/skills/push/SKILL.md` first and follow that canonical ChessFable workflow.
 Read `~/.claude/references/push-review-policy.md` before its first step.
 
-Codex runtime deltas:
+Follow the canonical execution order and stage-emission contract above.
 
-* Use `GIT_COMMITTER_NAME="Codex"` for every commit this workflow creates. Leave the author
-  untouched and add no AI or co-author trailer.
-* Run the shared review-policy lenses and fixes on the selected executor as directed by
-  `~/.claude/references/review-lens-contract.md` and `~/.claude/references/executor-profiles.md`.
-* Push when Felix requests it, or when a drain session (`--yes` at drain start) or a `build` run invokes this skill — that invocation is the explicit request (`~/.claude/references/push-review-policy.md` §1); commits already ahead of the upstream are carried, never a stop. Push never releases or deploys.
+* Use `GIT_COMMITTER_NAME="Codex"` for every commit; leave the author untouched and add no
+  co-author trailer.

@@ -6997,3 +6997,22 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 * **Resolution (Codex, 2026-09-07):** c45a33be rejects malformed/missing WebDriver envelopes, propagates process-inspection failures and makes failed teardown fail verification after attempting all owned cleanup. Response-body deadlines remain active without rejecting valid large screenshots. Executor and root independently passed the four harness tests and 60 routing tests; the full contract gate also passed. The real-app run is part of the final verification before this run pushes. Decision d-20260907-10 records the contract and reversal path.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"061a832e423c396a3d97b3d2e047a1918a6e9855972b25938a28bcc5b37b9eeb","input_sha256":"7d8fd606aa2d3b73e20c9b670e8a9f3eeb48bd3b23c963f72959b3d25dbf557f","kind":"mutation-receipt","operation":"94e78aa7802900e04d5813c4632076040f43060a06f6871b7f3a84d01eca94a6","options":{"section":null},"request_id_sha256":null,"results":["f-20260907-06"],"target":"f-20260907-06","v":1} -->
+
+---
+
+## 2026-09-07 — filed through the inbox spool
+
+### Push workflow still orders final gates before review and omits drain stages
+* **ID:** f-20260907-07 · **Status:** handled · **Area:** docs-agent-config · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `.claude/skills/push/SKILL.md`, `.agents/skills/push/SKILL.md`.
+* **Evidence:** At 9e9c0584, section 2 explicitly reruns failed gates before review; section 4 commits after final gates, and neither route owns explicit drain stage records. Review repairs invalidate those earlier gates and leave the drain display without reliable state boundaries. ChessRiddle and the shared build workflow already have the settled review-before-final-gates contract.
+* **Scope:** Align the canonical push order and bridge with that contract; preserve existing gates, ordinary push and local installer requirements.
+* **Related:** f-20260906-06 concerns concurrent gate inputs in the same workflow; this finding concerns ordering and stage reporting, not generated bindings.
+
+* **Resolution (2026-09-07):** The canonical skill now orders review and repairs, relevant browser verification and known commits before final gates and ordinary push. It owns balanced named drain stages and requires same-shell helper sourcing for every emission; the Codex bridge points to that contract. Final-gate repair loops and post-push coordination records retain their shared-policy paths. Existing gates and the local installer remain required.
+* **Verification:** `node scripts/check-skill-bridges.mjs` and `git diff --check` passed. The final contract/parity gates and ordinary push are still required by the delivery workflow; this record does not claim those future outcomes. This documentation port has not been observed in a new drain run.
+* **Review provenance:** Plan authorship and arbitration shared one root context; detection uses fresh Luna contexts on the same model family as the implementation.
+<!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"faf98d9c232f17f680132a5c61b68084c08f55f4ffba5d86c8c5a154b6221feb","input_sha256":"fb391033a596f557712325ec16c0f09a4e25bca3c89ea7cdc5dcd89a4f8b662c","kind":"mutation-receipt","operation":"dba71d1aa52f370686179927b221709499c00eb92e9ffa8e36aa685963096093","options":{"section":null},"request_id_sha256":null,"results":["f-20260907-07"],"target":"f-20260907-07","v":1} -->
+
+* **Review:** Fresh Luna/xhigh correctness and root-cause lenses approved without findings. Minimalism reported duplication of the full order in the Codex bridge; fixed by retaining the canonical pointer and genuine Codex attribution only, then inspected and rechecked. No unresolved Fix findings remain.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"923f3a02f6197a2a4b4afb6a9560fa4eb171c3456b77800cad261bf914e17f95","input_sha256":"69990c70102f3002e8035056cfc9a3b6029f9012ae6795c7a4dd2cfc541e8297","kind":"mutation-receipt","operation":"85918229dbb926d8d302ef3a5f11c1d5a64dea3c3849974ac8a69fde90a04fec","options":{"section":null},"request_id_sha256":null,"results":["f-20260907-07"],"target":"f-20260907-07","v":1} -->

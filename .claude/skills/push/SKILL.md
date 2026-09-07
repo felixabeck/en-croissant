@@ -8,6 +8,27 @@ disable-model-invocation: false
 
 Complete the push autonomously. Read `~/.claude/references/push-review-policy.md` first; it is the single source for authorization, attribution, review lenses, model allocation, triage, remediation, and red-gate behavior. This skill adds only ChessFable mechanics.
 
+**Execution order:** establish the exact push scope (§1) → complete review and arbitration
+with repairs (§3), including any preliminary checks needed to reproduce review claims → run
+relevant browser verification through `verify-ui` → commit implementation changes and known
+coordination records according to `~/.claude/references/coordination-file-commits.md` → run
+the final affected gates (§2) → push (§4) on the unchanged verified tree. A gate repair returns
+to `repair`, commit, and the required affected final-gate rerun before push.
+
+The workflow owns balanced `drain_stage` start/end records at each boundary: `code-review` for
+§3, `repair` for each repair batch, `browser-verification` for the browser pass, `final-gates`
+for §2, and `push` for §4, each with concise human-readable phase/round/name detail. Parallel
+review fixes use one enclosing repair start/end, closed after every repair proof and inspection.
+A stage is the last reported state; never infer it from a later command. Review fixes still run
+their required per-commit tests immediately, and any changed tree invalidates the final gates. A
+build handoff already contains review, repairs, browser verification, and pre-gate coordination-
+record commits; do not restart review or start §2 while build lenses or repairs remain outstanding.
+
+For every `drain_stage` emission, source `~/.claude/scripts/lib/drain-breadcrumb.sh` and call it
+in the same shell: `source ~/.claude/scripts/lib/drain-breadcrumb.sh && drain_stage start <stage> "<detail>"`
+(use `end` for the matching closure). Fresh tool shells do not retain a source from an earlier
+command.
+
 ## Relationship to the `build` skill
 
 The normal route for a change is the user-wide `build` skill
@@ -24,14 +45,17 @@ interrupted runs, and accumulated work from another session.
 - This repository's expected remote is `felixabeck/en-croissant` in either of its two legitimate forms — `git@github.com:felixabeck/en-croissant.git` (the `tuxedo-atlas` clone) or `https://github.com/felixabeck/en-croissant.git`. Any other owner, repository or host is a stop. Reject a separate `remote.origin.pushurl`. The current local branch must track the same-named `origin/<branch>`; `master` therefore must track `origin/master`. Stop for Felix if any identity is missing or different. Never invent or change a remote/upstream.
 - Build an explicit owned-path manifest from files created or edited in the invoking conversation plus file scopes assigned to its finished workers. Compare it with the initial status. Ambiguous or foreign paths are excluded and left untouched. Commits already ahead of the upstream in this single-user checkout are Felix's own agents' unpushed work: they are in the reviewed range (`~/.claude/references/push-review-policy.md` §2) and are carried by this push, never a reason to stop for Felix; stop only for a committer outside the Multi-Agent rubric or an unexpected remote (§1). A drain session (`--yes` at drain start) or a `build` run invoking this skill is the explicit push request. Commit only manifest paths in cohesive atomic commits and never use `git add -A`.
 - Gates execute against the complete worktree. Therefore stop before any compile, generator, formatter, or browser gate when a foreign dirty path is code, generated output, dependency/configuration, test, asset, locale, workflow, or another input to an affected gate. Only clearly inert foreign Markdown/planning files may remain. Never generate or commit an owned output from foreign dirty inputs.
-- Every workflow-created commit sets `GIT_COMMITTER_NAME` to the acting agent per `~/.claude/references/push-review-policy.md` §1 (`Claude Code`, `Codex`, or `Grok`). Claude Code reads this file directly; Codex reaches it through `.agents/skills/push/SKILL.md`, which names its own committer. Leave the author untouched and add no co-author trailer.
+- Every workflow-created commit sets `GIT_COMMITTER_NAME` to the acting agent per `~/.claude/references/push-review-policy.md` §1 (`Claude Code`, `Codex`, or `Grok`). Leave the author untouched and add no co-author trailer.
 - Determine pushed files from `BASE=$(git merge-base HEAD @{u})` and both the committed and owned dirty diffs. Review `git diff "$BASE"..HEAD`, `git diff -- <owned tracked paths>`, `git diff --cached -- <owned tracked paths>`, plus each owned untracked file as a new-file diff. An explicit push includes already-ahead commits, so review their effective diff too.
 
 Markdown/planning-only changes need no *build* gate; the contract gate still runs. They still require the shared review and clean-diff checks.
 
 ## 2. Run affected gates
 
-Run commands serially for readable failures. A failure is repaired and the affected gates rerun before review.
+These are the final affected gates. Run them only after review/arbitration and repairs (§3),
+relevant browser verification, and known coordination-record commits. Run commands serially for
+readable failures. A failure returns to `repair`, commit, and the required affected final-gate
+rerun before push.
 
 **Gate on the exit code, never on a line of output.** `pnpm lint:ci && echo green || echo red` reports the failure and still leaves the shell at exit 0, so a `&&`-chained commit behind it proceeds over a red gate. Check `$?` (or `${PIPESTATUS[0]}` behind a pipe, with `set -o pipefail`) and stop. *Measured 2026-08-29: a formatting failure was printed as `lint:ci RED` and the same command committed and pushed anyway, which took a second commit to repair.*
 
@@ -80,7 +104,10 @@ As a contract-gate member, `ui:boundary:check` scans the whole tree, reading fil
 
 The coverage floors in `coverage-areas.json` / `backend-coverage-areas.json` and the baselines in the two `*-baselines.json` files are ratchets, and `bundle-budgets.json` caps gzip bytes. A red ratchet is a finding about the diff. Never run `coverage:baseline:*` or edit a budget to make a gate pass.
 
-For visible UI changes, run the repo-local `$verify-ui` workflow after the static gates (it owns `pnpm test:e2e:container` and the live Tauri-window check). Retain screenshots of every affected flow. Missing screenshots are not evidence that layout is correct.
+For visible UI changes, run the repo-local `$verify-ui` workflow during the browser-verification
+stage, after review repairs and before known coordination-record commits and final gates (it owns
+`pnpm test:e2e:container` and the live Tauri-window check). Retain screenshots of every affected
+flow. Missing screenshots are not evidence that layout is correct.
 
 ### Exact-tree gate receipts
 
@@ -152,8 +179,8 @@ Run the review exactly as `~/.claude/references/push-review-policy.md` §§2–4
 lenses over the effective pushed diff plus enclosing code; `review-correctness` and
 `review-root-cause` always on; the rest when their `description:` line applies. Every finding
 gets a `Fix` / `Defer` / `Skip(reason)` verdict. Out-of-area findings are `Defer`d autonomously
-to `tasks/findings.md` plus one handoff prompt (policy §4, universal rule 4b); never ask Felix
-which.
+through the project ledger/inbox workflow (policy §4, universal rule 4b); ledger-backed deferrals
+need no manual handoff prompt. Never ask Felix which.
 
 A path below is a Sensitive-Path glob: a hit is `--role sensitive` for that lens (and for
 fixes); everything else is `--role normal`. The globs do not replace named-lens selection.
@@ -223,10 +250,17 @@ Use the exact-string override keywords from
 
 ## 4. Commit, push, and verify
 
+- After review, repairs, and browser verification, commit implementation changes and coordination
+  records already known to the run according to `~/.claude/references/coordination-file-commits.md`,
+  using the attribution above and only the remaining authorized paths. These commits precede the
+  final affected gates.
 - Require `git diff --check`, all affected gates green on the final tree, and no unresolved `Fix` finding.
-- Commit only the remaining authorized paths with the attribution above.
+- If a final gate requires a repair, return to `repair`, commit the repair, and rerun the affected
+  final gates on the changed tree before push. The push then uses the unchanged verified tree.
 - Run ordinary non-force `git push` to the configured upstream.
 - Verify local `HEAD` equals `@{u}` and report commits, destination, gate results, review findings/verdicts, and that no release/deployment occurred.
+- The post-push coordination-record exception remains governed by
+  `~/.claude/references/coordination-file-commits.md`; it does not generalize to implementation changes.
 - On `master`, after that verification, run the installer (a Tauri release build followed by an atomic swap of `~/.local/opt/chessfable/current`):
 
 ```bash
