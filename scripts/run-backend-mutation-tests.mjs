@@ -80,6 +80,7 @@ async function fixture() {
 echo $$ > "$SHIM_STATE/pid"
 : > "$SHIM_STATE/started"
 printf '%s\n' "$@" > "$SHIM_STATE/arguments"
+printf '%s' "\${CHESSFABLE_ENCODING_MUTATION_SUPPRESS_CORE-}" > "$SHIM_STATE/core-suppression"
 if [ -e mutants.out/backend/.mutation-in-progress ]; then
   : > "$SHIM_STATE/fence-present-at-spawn"
 fi
@@ -171,6 +172,7 @@ test("a normal clean run holds the fence for the run and removes it afterwards",
       "--cargo-arg=--config",
       `--cargo-arg=target.${host}.runner=["prlimit","--as=2147483648","--core=0","--"]`,
     ]);
+    assert.equal(await readFile(join(state, "core-suppression"), "utf8"), "1");
   }
 });
 
@@ -329,6 +331,7 @@ test("a selected non-encoding package runs without containment tools", async () 
   const env = {
     ...environment({ bin, state, path: isolatedBin }),
     BACKEND_MUTATION_PACKAGE: "database-search",
+    CHESSFABLE_ENCODING_MUTATION_SUPPRESS_CORE: "ambient-contamination",
   };
   const result = run(root, env);
   assert.equal(result.status, 0, result.stderr);
@@ -342,6 +345,7 @@ test("a selected non-encoding package runs without containment tools", async () 
     argumentsList.some((argument) => argument.includes("prlimit")),
     false,
   );
+  assert.equal(await readFile(join(state, "core-suppression"), "utf8"), "");
 });
 
 test("selection and side-effect-free routes do not require containment tools", async () => {

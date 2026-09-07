@@ -30,6 +30,7 @@ const terminationTimeoutMs = 2_000;
 // Give each cargo-mutants test at least this many seconds before timing it out.
 const minimumTestTimeoutSeconds = 30;
 const encodingAddressSpaceLimit = "2147483648";
+const suppressMutationCoreEnvironment = "CHESSFABLE_ENCODING_MUTATION_SUPPRESS_CORE";
 
 const mutationPackages = [
   {
@@ -315,6 +316,16 @@ function cargoArguments(mutationPackage, containmentCargoArguments) {
   return cargoArguments;
 }
 
+function mutationChildEnvironment(mutationPackage) {
+  const environment = { ...process.env };
+  if (process.platform === "linux" && mutationPackage.id === "database-encoding") {
+    environment[suppressMutationCoreEnvironment] = "1";
+  } else {
+    delete environment[suppressMutationCoreEnvironment];
+  }
+  return environment;
+}
+
 function clearFence() {
   unlinkSync(fencePath);
   fsyncDirectory(dirname(fencePath));
@@ -404,7 +415,7 @@ export async function runBackendMutation({ recordChild = recordSpawnedChild } = 
           mutationPackage,
           mutationPackage.id === "database-encoding" ? containmentCargoArguments : [],
         ),
-        { stdio: "inherit" },
+        { stdio: "inherit", env: mutationChildEnvironment(mutationPackage) },
       );
       supervisor = superviseChild(child, { terminationTimeoutMs });
       signalForwarding.attach(supervisor);

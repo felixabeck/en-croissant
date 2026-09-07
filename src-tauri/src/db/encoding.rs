@@ -395,6 +395,39 @@ mod tests {
 
     use shakmaty::{Role, Square};
 
+    #[cfg(target_os = "linux")]
+    const SUPPRESS_MUTATION_CORE_ENV: &str = "CHESSFABLE_ENCODING_MUTATION_SUPPRESS_CORE";
+    #[cfg(target_os = "linux")]
+    const CORE_SUPPRESSION_PROBE_ENV: &str = "CHESSFABLE_ENCODING_CORE_SUPPRESSION_PROBE";
+
+    fn prepare_mutation_test() {
+        #[cfg(target_os = "linux")]
+        if std::env::var(SUPPRESS_MUTATION_CORE_ENV).as_deref() == Ok("1") {
+            // The mutation runner sets this only for Linux encoding tests. This call
+            // runs inside the test executable, after Cargo's runner has exec'd it.
+            let result = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
+            if result != 0 {
+                panic!(
+                    "failed to disable core dumps for encoding mutation test: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+            assert_eq!(current_dumpability(), 0);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn current_dumpability() -> libc::c_int {
+        let result = unsafe { libc::prctl(libc::PR_GET_DUMPABLE) };
+        if result < 0 {
+            panic!(
+                "failed to read encoding-test dumpability: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        result
+    }
+
     fn assert_mainline_move_bytes(bytes: &[u8], expected: &[u8]) {
         let mut actual = iter_mainline_move_bytes(bytes);
         for expected_byte in expected {
@@ -405,6 +438,7 @@ mod tests {
 
     #[test]
     fn test_encoding() {
+        prepare_mutation_test();
         let mut chess = Chess::default();
         let m = Move::Normal {
             role: Role::Pawn,
@@ -434,6 +468,7 @@ mod tests {
 
     #[test]
     fn test_encode_illegal_move_returns_contextual_error() {
+        prepare_mutation_test();
         let chess = Chess::default();
         let illegal_move = Move::Normal {
             role: Role::Pawn,
@@ -454,6 +489,7 @@ mod tests {
 
     #[test]
     fn test_encode_checked_conversion_roundtrips_legal_move() {
+        prepare_mutation_test();
         let chess = Chess::default();
         let legal_move = Move::Normal {
             role: Role::Knight,
@@ -469,6 +505,7 @@ mod tests {
 
     #[test]
     fn test_decode_game_rejects_invalid_initial_setup() {
+        prepare_mutation_test();
         let missing_black_king: Fen = "8/8/8/8/8/8/8/K7 w - - 0 1".parse().unwrap();
 
         let error = decode_game(&[], missing_black_king).unwrap_err();
@@ -479,6 +516,7 @@ mod tests {
 
     #[test]
     fn test_mainline_iterator_ignores_variations_and_comments() {
+        prepare_mutation_test();
         let bytes = vec![
             1,
             NAG_MARKER,
@@ -513,6 +551,7 @@ mod tests {
 
     #[test]
     fn mainline_iterator_handles_exact_and_truncated_annotation_boundaries() {
+        prepare_mutation_test();
         let exact_empty = [1, COMMENT_MARKER, 0, 0, 2, NAG_MARKER, 0, 0, 3];
         assert_mainline_move_bytes(&[], &[]);
         assert_mainline_move_bytes(&[1], &[1]);
@@ -530,6 +569,7 @@ mod tests {
 
     #[test]
     fn test_decode_game_with_nags() {
+        prepare_mutation_test();
         let mut bytes = Vec::new();
         let mut chess = Chess::default();
         let m = decode_move(12, &chess).unwrap();
@@ -556,6 +596,7 @@ mod tests {
 
     #[test]
     fn render_nodes_preserves_every_symbolic_and_custom_nag_spacing() {
+        prepare_mutation_test();
         let mut state = RenderState {
             move_number: 1,
             white_to_move: true,
@@ -586,6 +627,7 @@ mod tests {
 
     #[test]
     fn decode_game_checks_exact_annotation_length_and_payload_boundaries() {
+        prepare_mutation_test();
         for marker in [COMMENT_MARKER, NAG_MARKER] {
             assert!(decode_game(&[marker], Fen::default()).is_err());
             assert!(decode_game(&[marker, 0], Fen::default()).is_err());
@@ -630,6 +672,7 @@ mod tests {
 
     #[test]
     fn test_decode_game_plain_mainline() {
+        prepare_mutation_test();
         let mut chess = Chess::default();
         let mut bytes = Vec::new();
 
@@ -678,6 +721,7 @@ mod tests {
 
     #[test]
     fn test_decode_game_comment_does_not_force_black_ellipsis() {
+        prepare_mutation_test();
         let mut chess = Chess::default();
         let mut bytes = Vec::new();
 
@@ -708,6 +752,7 @@ mod tests {
 
     #[test]
     fn test_decode_game_starts_with_black_move_numbering() {
+        prepare_mutation_test();
         let initial_fen: Fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"
             .parse()
             .unwrap();
@@ -730,6 +775,7 @@ mod tests {
 
     #[test]
     fn test_decode_game_nested_variations_and_comments() {
+        prepare_mutation_test();
         let mut bytes = Vec::new();
 
         let mut root = Chess::default();
@@ -782,9 +828,70 @@ mod tests {
 
     #[test]
     fn fallible_mainline_iterator_rejects_truncated_and_unbalanced_streams() {
+        prepare_mutation_test();
         assert!(try_iter_mainline_move_bytes(&[COMMENT_MARKER, 4, 0, b'x']).is_err());
         assert!(try_iter_mainline_move_bytes(&[NAG_MARKER, 1]).is_err());
         assert!(try_iter_mainline_move_bytes(&[VARIATION_END_MARKER]).is_err());
         assert!(try_iter_mainline_move_bytes(&[VARIATION_START_MARKER, 0]).is_err());
+    }
+
+    #[test]
+    fn mutation_core_suppression_is_after_exec_and_scoped() {
+        prepare_mutation_test();
+
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::Command;
+
+            if let Some(mode) = std::env::var_os(CORE_SUPPRESSION_PROBE_ENV) {
+                let dumpability = current_dumpability();
+                eprintln!(
+                    "encoding-core-probe pid={} dumpability={} mode={}",
+                    std::process::id(),
+                    dumpability,
+                    mode.to_string_lossy()
+                );
+                match mode.to_str() {
+                    Some("ordinary") => {
+                        assert_eq!(dumpability, 1);
+                        return;
+                    }
+                    Some("contained-abort") => {
+                        assert_eq!(dumpability, 0);
+                        eprintln!("encoding-core-probe aborting after checked dumpability=0");
+                        std::process::abort();
+                    }
+                    _ => panic!("unknown encoding core-suppression probe mode"),
+                }
+            }
+
+            let executable = std::env::current_exe().expect("test executable path is available");
+            let test_name =
+                "db::encoding::tests::mutation_core_suppression_is_after_exec_and_scoped";
+            let ordinary = Command::new(&executable)
+                .args(["--exact", test_name, "--nocapture"])
+                .env_remove(SUPPRESS_MUTATION_CORE_ENV)
+                .env(CORE_SUPPRESSION_PROBE_ENV, "ordinary")
+                .output()
+                .expect("ordinary probe starts");
+            let ordinary_stderr = String::from_utf8_lossy(&ordinary.stderr);
+            eprint!("{ordinary_stderr}");
+            assert!(ordinary.status.success());
+            assert!(ordinary_stderr.contains("dumpability=1 mode=ordinary"));
+
+            let contained = Command::new(executable)
+                .args(["--exact", test_name, "--nocapture"])
+                .env(SUPPRESS_MUTATION_CORE_ENV, "1")
+                .env(CORE_SUPPRESSION_PROBE_ENV, "contained-abort")
+                .output()
+                .expect("contained abort probe starts");
+            let contained_stderr = String::from_utf8_lossy(&contained.stderr);
+            eprint!("{contained_stderr}");
+            assert_eq!(contained.status.signal(), Some(libc::SIGABRT));
+            assert!(contained_stderr.contains("encoding-core-probe pid="));
+            assert!(contained_stderr.contains("dumpability=0 mode=contained-abort"));
+            assert!(contained_stderr.contains("aborting after checked dumpability=0"));
+        }
     }
 }

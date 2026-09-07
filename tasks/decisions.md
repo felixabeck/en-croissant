@@ -2254,3 +2254,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** Replace this test-executable mechanism only after equivalent real Cargo fixture proof and full encoding mutant accounting; production formats and parser behavior remain outside this decision.
 * **Decided by:** Codex backend-mutation repair run, 2026-09-07, implementing Felix's supplied specification · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"f7d1167a0d142ba1447b17e10a9a64a381b440c4e2b39eac5602697d760c34f1","input_sha256":"3bd2b61d17f35a4c822ba073875b6948c56c4b88f3430bc94a8e2cd6a0228674","kind":"mutation-receipt","operation":"2610fec97919f84bf43a3bb948f55a70a17881b32883d162919afe8bfe49bfba","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20260907-02 — How should encoding mutation aborts avoid desktop crash collection?
+
+* **Question:** How should encoding mutation aborts avoid desktop crash collection?
+* **Governs:** f-20260907-02, f-20260907-03
+* **Chosen:** Extend d-20260907-01 with checked Linux PR_SET_DUMPABLE suppression inside the encoding test executable after exec, explicitly selected only for encoding mutation runs. Retain the exact native Cargo runner, 2 GiB address-space limit and zero core limit. Ordinary tests and production application crash reporting remain unchanged.
+* **Rejected:** Global collector suppression, a background service, a pre-exec wrapper whose dumpability is reset by exec, and treating RLIMIT_CORE alone as proof against a piped collector.
+* **Reason:** The completed candidate caught allocating mutants but generated two systemd SIGABRT records despite core=0. Root independently matched the allocation-failure logs and journal records for PIDs 1989588 and 2047128. This is new evidence about core suppression, not evidence establishing the historical CI shutdown cause. Interactive workflow rule 18d requires in-executable suppression for intentional abort probes.
+* **Reversal path:** Replace the test-only suppression only with equivalent after-exec proof, retained failure diagnostics and demonstrated absence of core events. This extends d-20260907-01 without reversing its memory-bound or test-only scope.
+* **Decided by:** Codex backend-mutation repair run, 2026-09-07 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"1cdb8d801d0b8e603b38016bb5a2dac0a67905666458b21836fcab8e2d412aae","input_sha256":"49b62fdc510648d0bc155b42fba315d534b76852fa853778ea14ce779ffab69b","kind":"mutation-receipt","operation":"1429010bbdf91322d59b9dd23c6cb45f18280cf50e448b5232a76ed0d1a16c79","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-02"],"target":"decisions-ledger","v":1} -->
