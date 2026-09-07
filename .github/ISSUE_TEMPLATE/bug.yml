@@ -8,7 +8,7 @@ body:
       value: |
         ## First of all
         1. Please search for [existing issues](https://github.com/felixabeck/en-croissant/issues?q=is%3Aissue) about this problem first.
-        2. Make sure you have the latest version of available to download, or the latest version of the code if you are building from source.
+        2. Please reproduce the problem with the latest source from this repository and include the commit you built.
 
   - type: textarea
     id: description

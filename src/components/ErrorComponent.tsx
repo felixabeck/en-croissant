@@ -5,17 +5,6 @@ import { normalizeError } from "@/platform/errors";
 import { runUnlessCancelled } from "@/components/files/notifyError";
 import { ISSUE_URL } from "@/utils/product";
 
-export async function recoverFromError(
-  navigateHome: () => Promise<unknown>,
-  reload: () => void,
-  errorTitle: string,
-) {
-  await runUnlessCancelled(errorTitle, async () => {
-    await navigateHome();
-    reload();
-  });
-}
-
 export default function ErrorComponent({ error }: { error: unknown }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -43,11 +32,10 @@ export default function ErrorComponent({ error }: { error: unknown }) {
         )}
         <Button
           onClick={() => {
-            void recoverFromError(
-              () => navigate({ to: "/" }),
-              () => window.location.reload(),
-              t("Common.Error"),
-            );
+            void runUnlessCancelled(t("Common.Error"), async () => {
+              await navigate({ to: "/" });
+              window.location.reload();
+            });
           }}
         >
           {t("Menu.View.Reload")}

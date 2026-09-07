@@ -11,6 +11,7 @@ describe("product identity", () => {
         expect(PRODUCT_NAME).toBe("ChessFable");
         expect(config.productName).toBe(PRODUCT_NAME);
         expect(config.mainBinaryName).toBe("chessfable");
+        expect(config.bundle.publisher).toBe("Felix Beck");
         expect(config.app.windows[0].title).toBe(PRODUCT_NAME);
         expect(indexDocument).toContain(`<title>${PRODUCT_NAME}</title>`);
     });

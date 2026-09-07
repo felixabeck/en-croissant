@@ -10,6 +10,7 @@ const native = vi.hoisted(() => ({
   osType: vi.fn(),
 }));
 const notifyUnlessCancelled = vi.hoisted(() => vi.fn());
+let translatedErrorTitle = "Common.Error";
 
 vi.mock("@/platform/native", () => native);
 vi.mock("@/components/files/notifyError", () => ({ notifyUnlessCancelled }));
@@ -18,7 +19,9 @@ vi.mock("react-i18next", () => ({
     t: (key: string, options?: { date?: string }) =>
       key === "About.ModificationNotice"
         ? `Modified version of En Croissant, modified by Felix Beck since ${options?.date}. Distributed under the GNU General Public License version 3, with no warranty.`
-        : key,
+        : key === "Common.Error"
+          ? translatedErrorTitle
+          : key,
   }),
 }));
 vi.mock("@mantine/core", () => ({
@@ -53,6 +56,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  translatedErrorTitle = "Common.Error";
   native.arch.mockResolvedValue("x86_64");
   native.getTauriVersion.mockResolvedValue("2.0.0");
   native.getVersion.mockResolvedValue("1.0.0");
@@ -85,6 +89,22 @@ test("renders the modification notice inside the opened About dialog", async () 
   );
 });
 
+test("renders every metadata field after a successful load", async () => {
+  native.getVersion.mockResolvedValue("app-version-4.5.6");
+  native.getTauriVersion.mockResolvedValue("tauri-version-7.8.9");
+  native.osType.mockResolvedValue("TestOS");
+  native.arch.mockResolvedValue("test-architecture");
+  native.OSVersion.mockResolvedValue("test-os-version");
+
+  await act(async () => root.render(<AboutModal opened setOpened={vi.fn()} />));
+
+  expect(container.textContent).toContain("app-version-4.5.6");
+  expect(container.textContent).toContain("tauri-version-7.8.9");
+  expect(container.textContent).toContain("TestOS");
+  expect(container.textContent).toContain("test-architecture");
+  expect(container.textContent).toContain("test-os-version");
+});
+
 test("reports metadata failure and renders translated unknown values", async () => {
   const failure = new Error("metadata unavailable");
   native.getVersion.mockRejectedValue(failure);
@@ -106,6 +126,90 @@ test("does not update or notify after unmount", async () => {
   await act(async () => rejectVersion(new Error("late failure")));
   expect(notifyUnlessCancelled).not.toHaveBeenCalled();
 });
+
+test("keeps newer metadata when an obsolete successful load completes later", async () => {
+  const first = {
+    os: deferred<string>(),
+    version: deferred<string>(),
+    tauri: deferred<string>(),
+    architecture: deferred<string>(),
+    osVersion: deferred<string>(),
+  };
+  const second = {
+    os: deferred<string>(),
+    version: deferred<string>(),
+    tauri: deferred<string>(),
+    architecture: deferred<string>(),
+    osVersion: deferred<string>(),
+  };
+
+  native.osType
+    .mockImplementationOnce(() => first.os.promise)
+    .mockImplementationOnce(() => second.os.promise);
+  native.getVersion
+    .mockImplementationOnce(() => first.version.promise)
+    .mockImplementationOnce(() => second.version.promise);
+  native.getTauriVersion
+    .mockImplementationOnce(() => first.tauri.promise)
+    .mockImplementationOnce(() => second.tauri.promise);
+  native.arch
+    .mockImplementationOnce(() => first.architecture.promise)
+    .mockImplementationOnce(() => second.architecture.promise);
+  native.OSVersion.mockImplementationOnce(() => first.osVersion.promise).mockImplementationOnce(
+    () => second.osVersion.promise,
+  );
+
+  await act(async () => root.render(<AboutModal opened setOpened={vi.fn()} />));
+  translatedErrorTitle = "Reloaded.Error";
+  await act(async () => root.render(<AboutModal opened setOpened={vi.fn()} />));
+
+  await act(async () => {
+    second.os.resolve("new-os");
+    second.version.resolve("new-version");
+    second.tauri.resolve("new-tauri");
+    second.architecture.resolve("new-architecture");
+    second.osVersion.resolve("new-os-version");
+    await Promise.all([
+      second.os.promise,
+      second.version.promise,
+      second.tauri.promise,
+      second.architecture.promise,
+      second.osVersion.promise,
+    ]);
+  });
+
+  expect(container.textContent).toContain("new-version");
+  expect(container.textContent).toContain("new-tauri");
+  expect(container.textContent).toContain("new-os new-architecture new-os-version");
+
+  await act(async () => {
+    first.os.resolve("old-os");
+    first.version.resolve("old-version");
+    first.tauri.resolve("old-tauri");
+    first.architecture.resolve("old-architecture");
+    first.osVersion.resolve("old-os-version");
+    await Promise.all([
+      first.os.promise,
+      first.version.promise,
+      first.tauri.promise,
+      first.architecture.promise,
+      first.osVersion.promise,
+    ]);
+  });
+
+  expect(container.textContent).toContain("new-version");
+  expect(container.textContent).toContain("new-tauri");
+  expect(container.textContent).toContain("new-os new-architecture new-os-version");
+  expect(container.textContent).not.toContain("old-version");
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 // The test above renders through a mocked `t`, so it proves the notice is rendered and that the
 // date is interpolated, but not that the shipped English string actually says what GPL-3 section

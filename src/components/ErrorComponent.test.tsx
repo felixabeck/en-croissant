@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, test, vi } from "vitest";
-import ErrorComponent, { recoverFromError } from "./ErrorComponent";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import ErrorComponent from "./ErrorComponent";
 
 const mocks = vi.hoisted(() => ({ navigate: vi.fn(), notify: vi.fn() }));
 
@@ -29,10 +29,28 @@ vi.mock("@mantine/core", () => ({
 let root: ReturnType<typeof createRoot>;
 let host: HTMLDivElement;
 
+beforeEach(() => {
+  mocks.navigate.mockReset();
+  mocks.notify.mockReset();
+});
+
 afterEach(() => {
   root?.unmount();
   host?.remove();
+  vi.unstubAllGlobals();
 });
+
+function replaceWindowReload(reload: () => void) {
+  vi.stubGlobal("window", { location: { reload } });
+}
+
+async function renderError() {
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  await act(async () => root.render(<ErrorComponent error={new Error("boom")} />));
+  return host.querySelector("button") as HTMLButtonElement;
+}
 
 test("does not present a duplicate diagnostic", async () => {
   host = document.createElement("div");
@@ -95,31 +113,62 @@ test("routes issue reports to the fork", async () => {
   );
 });
 
-test("successful recovery navigates before reloading", async () => {
-  const order: string[] = [];
-  await recoverFromError(
-    async () => {
-      order.push("navigate");
-    },
-    () => order.push("reload"),
-    "Common.Error",
-  );
-  expect(order).toEqual(["navigate", "reload"]);
+test("rendered recovery waits for navigation before reloading", async () => {
+  const navigation = deferred<void>();
+  const reload = vi.fn();
+  replaceWindowReload(reload);
+  mocks.navigate.mockReturnValue(navigation.promise);
+
+  const button = await renderError();
+  button.click();
+  await act(async () => Promise.resolve());
+  expect(reload).not.toHaveBeenCalled();
+
+  await act(async () => {
+    navigation.resolve(undefined);
+    await navigation.promise;
+  });
+  expect(reload).toHaveBeenCalledTimes(1);
 });
 
-test("failed recovery surfaces the shared notification and does not reload", async () => {
+test("rendered recovery reports rejected navigation and does not reload", async () => {
   const failure = new Error("navigation failed");
   const reload = vi.fn();
-  mocks.notify.mockReset();
-  await recoverFromError(
-    async () => {
-      throw failure;
-    },
-    reload,
-    "Common.Error",
-  );
+  replaceWindowReload(reload);
+  mocks.navigate.mockRejectedValue(failure);
+
+  const button = await renderError();
+  button.click();
+  await act(async () => Promise.resolve());
+
   expect(reload).not.toHaveBeenCalled();
   expect(mocks.notify).toHaveBeenCalledWith(
     expect.objectContaining({ title: "Common.Error", message: "navigation failed" }),
   );
 });
+
+test("rendered recovery reports a thrown reload", async () => {
+  const failure = new Error("reload failed");
+  const reload = vi.fn(() => {
+    throw failure;
+  });
+  replaceWindowReload(reload);
+  mocks.navigate.mockResolvedValue(undefined);
+
+  const button = await renderError();
+  button.click();
+  await act(async () => Promise.resolve());
+
+  expect(reload).toHaveBeenCalledTimes(1);
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({ title: "Common.Error", message: "reload failed" }),
+  );
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
