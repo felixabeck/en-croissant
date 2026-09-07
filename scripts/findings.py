@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 199bae53789dfc1d21492736617a125bd9f930e4d20fd2f3f2031bc7cf300974
+# agent-kit-sha256: 1c80a3492129e2614c521c7ef6d4802ed2bd103f7d0effc6ca844ea23049d197
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -43,6 +43,7 @@ import argparse
 import errno
 import fcntl
 import hashlib
+import io
 import itertools
 import json
 import os
@@ -52,9 +53,10 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Collection, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
@@ -1273,6 +1275,154 @@ class Decision:
 
 class LedgerError(Exception):
     pass
+
+
+@dataclass
+class LedgerCommitIntent:
+    """One CLI command's semantic obligation for a replaced ledger."""
+
+    command: str
+    ledger: Path
+    findings: Path
+    decisions: Path
+    subject: str = ""
+    identifiers: tuple[str, ...] = ()
+    postcondition: Callable[[Path, Path], bool] | None = None
+    replaced: bool = False
+    written_bytes: bytes | None = None
+
+
+_ACTIVE_LEDGER_COMMIT: LedgerCommitIntent | None = None
+
+
+def _note_ledger_replacement(path: Path, text: str) -> None:
+    """Signal replacement immediately, before durability or cleanup can fail."""
+    intent = _ACTIVE_LEDGER_COMMIT
+    if intent is not None and path == intent.ledger:
+        intent.replaced = True
+        intent.written_bytes = text.encode("utf-8")
+
+
+def _register_ledger_commit(
+    subject: str,
+    identifiers: Collection[str],
+    postcondition: Callable[[Path, Path], bool],
+) -> None:
+    """Attach the subject and semantic HEAD check before ledger replacement."""
+    intent = _ACTIVE_LEDGER_COMMIT
+    if intent is None:
+        return
+    intent.subject = subject
+    intent.identifiers = tuple(identifiers)
+    intent.postcondition = postcondition
+
+
+def _finding_semantics(finding: Finding) -> tuple[object, ...]:
+    """Stable entry content used to prove an additive finding mutation."""
+    return (
+        finding.status,
+        finding.area,
+        finding.root,
+        finding.entry,
+        finding.blocked,
+        finding.title,
+        tuple(finding.body),
+        tuple(finding.body_fenced),
+        frozenset(finding.governed_by),
+    )
+
+
+def _finding_entries_postcondition(
+    expected: dict[str, tuple[object, ...]],
+) -> Callable[[Path, Path], bool]:
+    def holds(findings_path: Path, _decisions_path: Path) -> bool:
+        findings, problems, vocabulary = parse(findings_path)
+        if validate(findings, problems, vocabulary):
+            return False
+        actual = {finding.id: finding for finding in findings}
+        for identifier, value in expected.items():
+            finding = actual.get(identifier)
+            if finding is None or finding.title != value[5]:
+                return False
+            expected_body = cast(tuple[str, ...], value[6])
+            body = tuple(finding.body)
+            if not any(
+                body[index : index + len(expected_body)] == expected_body
+                for index in range(len(body) - len(expected_body) + 1)
+            ):
+                return False
+        return True
+
+    return holds
+
+
+def _finding_header_postcondition(
+    identifier: str, expected: dict[str, str]
+) -> Callable[[Path, Path], bool]:
+    def holds(findings_path: Path, _decisions_path: Path) -> bool:
+        findings, problems, vocabulary = parse(findings_path)
+        if validate(findings, problems, vocabulary):
+            return False
+        target = next((finding for finding in findings if finding.id == identifier), None)
+        return target is not None and all(
+            getattr(target, field) == value for field, value in expected.items()
+        )
+
+    return holds
+
+
+def _receipt_postcondition(
+    *, command: str, operation: str, results: Collection[str], decisions: bool
+) -> Callable[[Path, Path], bool]:
+    expected_results = list(results)
+
+    def holds(findings_path: Path, decisions_path: Path) -> bool:
+        path = decisions_path if decisions else findings_path
+        text = path.read_text(encoding="utf-8")
+        metadata, issues = _scan_ledger_metadata(text, path)
+        issues += _receipt_effect_issues(text, path, metadata)
+        return not issues and any(
+            meta.data.get("kind") == MUTATION_RECEIPT_KIND
+            and meta.data.get("command") == command
+            and meta.data.get("operation") == operation
+            and meta.data.get("results") == expected_results
+            for meta in metadata
+        )
+
+    return holds
+
+
+def _decision_trailer_postcondition(
+    identifier: str, references: Collection[str]
+) -> Callable[[Path, Path], bool]:
+    expected = ", ".join(references)
+
+    def holds(_findings_path: Path, decisions_path: Path) -> bool:
+        decisions = load_decisions(decisions_path)
+        target = next((decision for decision in decisions if decision.id == identifier), None)
+        return target is not None and target.superseded_by == expected
+
+    return holds
+
+
+def _answers_postcondition(
+    expected: dict[str, tuple[str, str, tuple[str, ...]]],
+) -> Callable[[Path, Path], bool]:
+    def holds(findings_path: Path, _decisions_path: Path) -> bool:
+        findings, problems, vocabulary = parse(findings_path)
+        if validate(findings, problems, vocabulary):
+            return False
+        by_id = {finding.id: finding for finding in findings}
+        for identifier, (status, blocked, evidence) in expected.items():
+            finding = by_id.get(identifier)
+            if finding is None or finding.status != status or finding.blocked != blocked:
+                return False
+            body = _unfenced_body(finding)
+            if any(line not in body for line in evidence):
+                return False
+        return True
+
+    return holds
 
 
 _READ_ERRORS_LEDGER = (OSError, UnicodeError, LedgerError)
@@ -2728,6 +2878,7 @@ def _atomic_write(path: Path, text: str, *, durable_directory: bool = False) -> 
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        _note_ledger_replacement(path, text)
         committed = True
         try:
             _fsync_directory(path.parent)
@@ -4611,6 +4762,24 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
         )
         return MergeResult(1)
 
+    merged_ids = sorted(header_ids(body))
+    candidate_findings = _parse_text(candidate, ledger)[0]
+    expected_entries = {
+        finding.id: _finding_semantics(finding)
+        for finding in candidate_findings
+        if finding.id in merged_ids
+    }
+    command = (
+        _ACTIVE_LEDGER_COMMIT.command
+        if _ACTIVE_LEDGER_COMMIT is not None
+        else "merge-inbox"
+    )
+    _register_ledger_commit(
+        f"docs(findings): {command} {' '.join(merged_ids)}",
+        merged_ids,
+        _finding_entries_postcondition(expected_entries),
+    )
+
     try:
         _write_if_unchanged(ledger, ledger_text, candidate, durable_directory=True)
     except (LedgerError, OSError) as exc:
@@ -5497,6 +5666,16 @@ def cmd_set_header(args: argparse.Namespace) -> int:
         "Root": args.root,
         "Entry": args.entry,
     }
+    expected_header = {
+        field.lower(): value
+        for field, value in changes.items()
+        if value is not None
+    }
+    _register_ledger_commit(
+        f"docs(findings): set header for {args.id}",
+        [args.id],
+        _finding_header_postcondition(args.id, expected_header),
+    )
 
     def build(text: str) -> str:
         current_findings, _problems, _vocabulary = _parse_text(text, args.ledger)
@@ -5627,6 +5806,16 @@ def cmd_annotate(args: argparse.Namespace) -> int:
             block.insert(0, "")
         block.append(RECEIPT_PLACEHOLDER)
         lines[end:end] = block
+        _register_ledger_commit(
+            f"docs(findings): annotate {args.id}",
+            [args.id],
+            _receipt_postcondition(
+                command="annotate",
+                operation=request.operation,
+                results=[args.id],
+                decisions=False,
+            ),
+        )
         return _with_final_newline(text, lines), [args.id], effect
 
     _locked_receipted_mutation(args.ledger, request, build)
@@ -5723,6 +5912,16 @@ def cmd_record_decision(args: argparse.Namespace) -> int:
         candidate = _append_decision_entry(
             text, rewritten.strip() + "\n" + RECEIPT_PLACEHOLDER, args.section
         )
+        _register_ledger_commit(
+            f"docs(decisions): record {' '.join(minted)}",
+            minted,
+            _receipt_postcondition(
+                command="record-decision",
+                operation=request.operation,
+                results=minted,
+                decisions=True,
+            ),
+        )
         return candidate, minted, effect
 
     allocated = _locked_receipted_mutation(args.decisions, request, build)
@@ -5802,6 +6001,11 @@ def cmd_set_trailer(args: argparse.Namespace) -> int:
         if candidate == original:
             _fsync_directory(args.decisions.parent)
         else:
+            _register_ledger_commit(
+                f"docs(decisions): set trailer for {args.id}",
+                [args.id, *references],
+                _decision_trailer_postcondition(args.id, references),
+            )
             _write_if_unchanged(args.decisions, original, candidate, durable_directory=True)
     print(f"set {args.id} Superseded-by: {', '.join(references)}")
     return 0
@@ -6137,6 +6341,23 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             insertions[end] = bullet + evidence
             applied.append(finding_id)
 
+        expected_answers: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+        for _answer_path, finding_id, _bullet in waiting_records:
+            header_index, _end, _header_match = target_spans[finding_id]
+            updated = HEADER_RE.match(header_updates[header_index])
+            assert updated is not None
+            expected_answers[finding_id] = (
+                updated.group("status"),
+                updated.group("blocked"),
+                tuple(insertions[target_spans[finding_id][1]]),
+            )
+        if expected_answers:
+            _register_ledger_commit(
+                f"docs(findings): apply answers for {' '.join(expected_answers)}",
+                expected_answers,
+                _answers_postcondition(expected_answers),
+            )
+
         result_lines: list[str] = []
         for index in range(len(lines) + 1):
             if index in insertions:
@@ -6183,7 +6404,230 @@ def _bind_repo_root(root: Path) -> None:
     DEFAULT_DRAIN_LOCK = _lock_for_root(root)
 
 
+LEDGER_COMMIT_ENV = "FINDINGS_LEDGER_COMMIT"
+LEDGER_COMMIT_COMMANDS = frozenset(
+    {
+        "file",
+        "merge-inbox",
+        "apply-answers",
+        "set-header",
+        "annotate",
+        "record-decision",
+        "set-trailer",
+    }
+)
+LEDGER_COMMIT_RETRY_SECONDS = 0.1
+
+
+def _git_for_ledger(
+    root: Path, *arguments: str, stdin: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run one non-interactive git operation for the commit helper."""
+    git = shutil.which("git") or "/usr/bin/git"
+    return subprocess.run(
+        [git, *arguments],
+        cwd=root,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _git_failure_detail(result: subprocess.CompletedProcess[str]) -> str:
+    detail = (result.stderr or result.stdout).strip().replace("\n", "; ")
+    return detail or f"git exited {result.returncode} without a diagnostic"
+
+
+def _save_ledger_commit_scratch(intent: LedgerCommitIntent) -> Path | None:
+    """Save the published bytes outside the checkout; never gate the commit."""
+    try:
+        directory = Path(tempfile.gettempdir()).resolve()
+        root = cast(Path, REPO_ROOT).resolve()
+        if directory == root or root in directory.parents:
+            directory = Path("/tmp")
+        fd, name = tempfile.mkstemp(
+            prefix=f"findings-ledger-{intent.command}-",
+            suffix=f"-{intent.ledger.name}",
+            dir=directory,
+        )
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(intent.written_bytes or b"")
+            handle.flush()
+            os.fsync(handle.fileno())
+        return Path(name)
+    except (OSError, UnicodeError):
+        return None
+
+
+def _head_postcondition(intent: LedgerCommitIntent) -> tuple[bool, str]:
+    """Validate HEAD and prove this command's semantic postcondition there."""
+    root = cast(Path, REPO_ROOT)
+    try:
+        resolved_head = _git_for_ledger(root, "rev-parse", "--verify", "HEAD^{commit}")
+        if resolved_head.returncode != 0:
+            return False, f"could not resolve HEAD: {_git_failure_detail(resolved_head)}"
+        commit = resolved_head.stdout.strip()
+        if not commit:
+            return False, "could not resolve HEAD: git returned an empty commit id"
+        with tempfile.TemporaryDirectory(prefix="findings-ledger-head-") as directory:
+            tasks = Path(directory) / "tasks"
+            tasks.mkdir()
+            for source, target in (
+                (intent.findings, tasks / "findings.md"),
+                (intent.decisions, tasks / "decisions.md"),
+            ):
+                relative = source.relative_to(root).as_posix()
+                shown = _git_for_ledger(root, "show", f"{commit}:{relative}")
+                if shown.returncode == 0:
+                    target.write_text(shown.stdout, encoding="utf-8")
+                elif source == intent.ledger or source == intent.findings:
+                    return False, (
+                        f"could not read {commit}:{relative}: "
+                        f"{_git_failure_detail(shown)}"
+                    )
+            stderr = io.StringIO()
+            stdout = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                valid = cmd_check(
+                    argparse.Namespace(
+                        ledger=tasks / "findings.md",
+                        decisions=tasks / "decisions.md",
+                    )
+                )
+            if valid != 0:
+                detail = stderr.getvalue().strip().replace("\n", "; ")
+                return False, f"HEAD ledger validation failed: {detail}"
+            if intent.postcondition is None:
+                return False, "no semantic postcondition was registered"
+            if not intent.postcondition(tasks / "findings.md", tasks / "decisions.md"):
+                return False, "the command's write is not in HEAD"
+            return True, ""
+    except (LedgerError, OSError, UnicodeError, ValueError) as exc:
+        return False, f"could not verify HEAD: {exc}"
+
+
+def _warn_ledger_commit(
+    intent: LedgerCommitIntent, cause: str, scratch: Path | None
+) -> None:
+    identifiers = " ".join(intent.identifiers) or "(unknown ids)"
+    recovery = f"; written bytes: {scratch}" if scratch is not None else ""
+    print(
+        f"WARNING ledger commit for {intent.ledger} after {intent.command} "
+        f"({identifiers}) did not preserve the write in HEAD: {cause}{recovery}",
+        file=sys.stderr,
+    )
+
+
+def _validate_worktree_for_commit(intent: LedgerCommitIntent) -> tuple[bool, str]:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    try:
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            result = cmd_check(
+                argparse.Namespace(ledger=intent.findings, decisions=intent.decisions)
+            )
+    except (LedgerError, OSError, UnicodeError) as exc:
+        return False, str(exc)
+    if result == 0:
+        return True, ""
+    detail = stderr.getvalue().strip().replace("\n", "; ")
+    return False, detail or "ledger validation failed"
+
+
+def _attempt_ledger_commit(intent: LedgerCommitIntent) -> None:
+    """Best-effort isolated commit that can never change command status."""
+    if not intent.replaced or os.environ.get(LEDGER_COMMIT_ENV) == "0":
+        return
+    scratch = _save_ledger_commit_scratch(intent)
+    try:
+        root = cast(Path, REPO_ROOT)
+        relative = intent.ledger.relative_to(root).as_posix()
+        tracked = _git_for_ledger(root, "ls-files", "--error-unmatch", "--", relative)
+        if tracked.returncode == 1:
+            if scratch is not None:
+                scratch.unlink(missing_ok=True)
+            return
+        if tracked.returncode != 0:
+            _warn_ledger_commit(
+                intent,
+                f"fatal tracked-file probe: {_git_failure_detail(tracked)}",
+                scratch,
+            )
+            return
+
+        dirty = _git_for_ledger(root, "diff", "--quiet", "HEAD", "--", relative)
+        if dirty.returncode == 0:
+            holds, detail = _head_postcondition(intent)
+            if not holds:
+                _warn_ledger_commit(intent, detail, scratch)
+            elif scratch is not None:
+                scratch.unlink(missing_ok=True)
+            return
+        if dirty.returncode != 1:
+            _warn_ledger_commit(
+                intent,
+                f"fatal HEAD dirtiness probe: {_git_failure_detail(dirty)}",
+                scratch,
+            )
+            return
+
+        valid, validation_detail = _validate_worktree_for_commit(intent)
+        if not valid:
+            _warn_ledger_commit(
+                intent, f"ledger validation refused the commit: {validation_detail}", scratch
+            )
+            return
+
+        committed = subprocess.CompletedProcess[str]([], 1, "", "commit not attempted")
+        for attempt in range(2):
+            committed = _git_for_ledger(
+                root,
+                "commit",
+                "-q",
+                "-F",
+                "-",
+                "--",
+                relative,
+                stdin=intent.subject + "\n",
+            )
+            if committed.returncode == 0:
+                break
+            if "index.lock" not in (committed.stderr or committed.stdout) or attempt == 1:
+                break
+            time.sleep(LEDGER_COMMIT_RETRY_SECONDS)
+        if committed.returncode != 0:
+            reprobe = _git_for_ledger(root, "diff", "--quiet", "HEAD", "--", relative)
+            if reprobe.returncode == 0:
+                holds, detail = _head_postcondition(intent)
+                if holds:
+                    if scratch is not None:
+                        scratch.unlink(missing_ok=True)
+                    return
+                _warn_ledger_commit(
+                    intent,
+                    f"{detail}; git commit reported: {_git_failure_detail(committed)}",
+                    scratch,
+                )
+                return
+            cause = _git_failure_detail(committed)
+            if reprobe.returncode not in {0, 1}:
+                cause += f"; fatal post-commit probe: {_git_failure_detail(reprobe)}"
+            _warn_ledger_commit(intent, f"git commit failed: {cause}", scratch)
+            return
+
+        holds, detail = _head_postcondition(intent)
+        if not holds:
+            _warn_ledger_commit(intent, detail, scratch)
+            return
+        if scratch is not None:
+            scratch.unlink(missing_ok=True)
+    except (LedgerError, OSError, UnicodeError, ValueError) as exc:
+        _warn_ledger_commit(intent, f"commit helper failed: {exc}", scratch)
+
+
 def main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_LEDGER_COMMIT
     parser = argparse.ArgumentParser(
         description="Query and validate the findings ledger (tasks/findings.md)."
     )
@@ -6315,11 +6759,39 @@ def main(argv: list[str] | None = None) -> int:
         for value in (args.status, args.blocked, args.root, args.entry)
     ):
         parser.error("set-header requires at least one field option")
+    intent: LedgerCommitIntent | None = None
+    if args.command in LEDGER_COMMIT_COMMANDS:
+        target = (
+            args.decisions
+            if args.command in {"record-decision", "set-trailer"}
+            else args.ledger
+        )
+        intent = LedgerCommitIntent(
+            command=args.command,
+            ledger=target,
+            findings=args.ledger,
+            decisions=args.decisions,
+        )
+        _ACTIVE_LEDGER_COMMIT = intent
     try:
-        return args.func(args)
-    except (LedgerError, OSError, UnicodeDecodeError) as exc:
-        print(f"FAIL {exc}", file=sys.stderr)
-        return 1
+        try:
+            return args.func(args)
+        except (LedgerError, OSError, UnicodeDecodeError) as exc:
+            print(f"FAIL {exc}", file=sys.stderr)
+            return 1
+    finally:
+        _ACTIVE_LEDGER_COMMIT = None
+        if intent is not None:
+            try:
+                _attempt_ledger_commit(intent)
+            except Exception as exc:  # noqa: BLE001
+                # This is the final status-transparency boundary: arbitrary
+                # consumer hooks and diagnostics must never replace the command's
+                # return value, SystemExit, or unexpected exception.
+                with suppress(OSError, UnicodeError):
+                    _warn_ledger_commit(
+                        intent, f"unexpected commit helper failure: {exc}", None
+                    )
 
 
 if __name__ == "__main__":
