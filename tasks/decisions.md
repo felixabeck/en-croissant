@@ -2241,3 +2241,16 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The selected-root authority must control the actual namespace mutation, not just an earlier check. Existing exclusive descriptor and identity-safe cleanup semantics supply that boundary without changing database handles or broadening capabilities. Reversal path: replace the platform refusal only with a reviewed equivalent retained-handle implementation and the same substitution, exclusivity, cleanup and uncertain-commit proofs.
 * **Decided by:** Codex, next-finding/build full-auto session, 2026-09-06. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"47a31bb5c23b4e9724e2ef492119e5219ac1909571791a5b31e72b70fbaeb9d8","input_sha256":"9724c9fbb683d5a77c1cf1ea08c6c4a13ff68bebab8f0df8d16704f3e5917e73","kind":"mutation-receipt","operation":"e76ed89698028701a8d70651ef002b9c2d25e40ba7ba8c1c841bb4521e01ed35","options":{"section":null},"request_id_sha256":null,"results":["d-20260906-15"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-07 — recorded through the decisions lock
+
+### d-20260907-01 — How should allocating encoding mutants be contained without limiting Cargo builds?
+
+* **Question:** How should allocating encoding mutants be contained without limiting Cargo builds?
+* **Governs:** f-20260907-01, f-20260907-02
+* **Chosen:** Follow the approved repair specification: assert bounded expected iterator sequences, and use existing Linux prlimit as Cargo's native-target test runner with 2147483648-byte address-space and zero core limits only for database-encoding mutation tests. Force the native target and exact runner in Cargo command-line arguments. Extract the existing Rust host parser for mutation and pinned coverage callers. Fail closed if host/tool/runner setup or the unmodified baseline fails.
+* **Rejected:** Limiting Cargo/compiler address space; environment-only runner configuration that ambient target settings can bypass; uncapped fallback; changing mutation filters or timeout policy; a monitoring service.
+* **Reason:** Three current test collections are unbounded. The user supplied measured ordinary-suite success at 2 GiB and an allocating decoder mutant. Existing Cargo runner configuration applies the bound at the executable boundary without limiting compilation. The historical runner-shutdown cause remains unproven. Prior CI artifact 34020549919 independently confirms the six PGN survivors.
+* **Reversal path:** Replace this test-executable mechanism only after equivalent real Cargo fixture proof and full encoding mutant accounting; production formats and parser behavior remain outside this decision.
+* **Decided by:** Codex backend-mutation repair run, 2026-09-07, implementing Felix's supplied specification · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"f7d1167a0d142ba1447b17e10a9a64a381b440c4e2b39eac5602697d760c34f1","input_sha256":"3bd2b61d17f35a4c822ba073875b6948c56c4b88f3430bc94a8e2cd6a0228674","kind":"mutation-receipt","operation":"2610fec97919f84bf43a3bb948f55a70a17881b32883d162919afe8bfe49bfba","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-01"],"target":"decisions-ledger","v":1} -->

@@ -28,6 +28,7 @@ import {
   llvmCovExportArgs,
   probeCrashingSources,
 } from "./rust-branch-coverage.mjs";
+import { parseRustHostMetadata } from "./rust-host.mjs";
 import { RUST_COVERAGE_TOOLCHAIN } from "./toolchain-versions.mjs";
 
 const config = {
@@ -380,6 +381,16 @@ test("coverage tools follow the pinned compiler host, including Windows tool suf
       ["rustup", "run", RUST_COVERAGE_TOOLCHAIN, "rustc", "--print", "sysroot"],
       ["rustup", "run", RUST_COVERAGE_TOOLCHAIN, "rustc", "-vV"],
     ]);
+  }
+});
+
+test("the shared Rust metadata parser accepts native triples and rejects unsafe values", () => {
+  assert.equal(
+    parseRustHostMetadata("rustc 1.98.0\r\nhost: x86_64-unknown-linux-gnu\r\n"),
+    "x86_64-unknown-linux-gnu",
+  );
+  for (const metadata of ["host: ", "host: ../../other", "host: aarch64-apple-darwin extra"]) {
+    assert.equal(parseRustHostMetadata(metadata), undefined);
   }
 });
 

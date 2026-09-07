@@ -395,6 +395,14 @@ mod tests {
 
     use shakmaty::{Role, Square};
 
+    fn assert_mainline_move_bytes(bytes: &[u8], expected: &[u8]) {
+        let mut actual = iter_mainline_move_bytes(bytes);
+        for expected_byte in expected {
+            assert_eq!(actual.next(), Some(*expected_byte));
+        }
+        assert_eq!(actual.next(), None);
+    }
+
     #[test]
     fn test_encoding() {
         let mut chess = Chess::default();
@@ -500,17 +508,15 @@ mod tests {
             5,
         ];
 
-        let result: Vec<u8> = iter_mainline_move_bytes(&bytes).collect();
-        assert_eq!(result, vec![1, 5]);
+        assert_mainline_move_bytes(&bytes, &[1, 5]);
     }
 
     #[test]
     fn mainline_iterator_handles_exact_and_truncated_annotation_boundaries() {
         let exact_empty = [1, COMMENT_MARKER, 0, 0, 2, NAG_MARKER, 0, 0, 3];
-        assert_eq!(
-            iter_mainline_move_bytes(&exact_empty).collect::<Vec<_>>(),
-            vec![1, 2, 3]
-        );
+        assert_mainline_move_bytes(&[], &[]);
+        assert_mainline_move_bytes(&[1], &[1]);
+        assert_mainline_move_bytes(&exact_empty, &[1, 2, 3]);
 
         for truncated in [
             vec![1, COMMENT_MARKER],
@@ -518,10 +524,7 @@ mod tests {
             vec![1, NAG_MARKER],
             vec![1, NAG_MARKER, 0],
         ] {
-            assert_eq!(
-                iter_mainline_move_bytes(&truncated).collect::<Vec<_>>(),
-                vec![1]
-            );
+            assert_mainline_move_bytes(&truncated, &[1]);
         }
     }
 

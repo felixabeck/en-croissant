@@ -22,12 +22,14 @@ import { installSignalForwarding, superviseChild } from "./child-supervisor.mjs"
 import { isEntrypoint } from "./entrypoint.mjs";
 import { fsyncDirectory } from "./fsync-directory.mjs";
 import { identityForPid, identityIsLive } from "./process-identity.mjs";
+import { parseRustHostMetadata } from "./rust-host.mjs";
 
 const fencePath = "mutants.out/backend/.mutation-in-progress";
 const mutationMarker = "~ changed by cargo-mutants ~";
 const terminationTimeoutMs = 2_000;
 // Give each cargo-mutants test at least this many seconds before timing it out.
 const minimumTestTimeoutSeconds = 30;
+const encodingAddressSpaceLimit = "2147483648";
 
 const mutationPackages = [
   {
@@ -238,13 +240,59 @@ function acquireFence() {
   return true;
 }
 
-function cargoArguments(mutationPackage) {
-  return [
+function successfulOutput(command, args, purpose) {
+  const result = spawnSync(command, args, { encoding: "utf8" });
+  if (result.error) {
+    throw new Error(`Backend mutation ${purpose} failed: ${result.error.message}`, {
+      cause: result.error,
+    });
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `Backend mutation ${purpose} failed: ${command} exited with status ${result.status}${
+        result.stderr ? `: ${result.stderr.trim()}` : ""
+      }`,
+    );
+  }
+  return result.stdout ?? "";
+}
+
+export function encodingCargoArguments(host) {
+  const runnerConfig = JSON.stringify([
+    "prlimit",
+    `--as=${encodingAddressSpaceLimit}`,
+    "--core=0",
+    "--",
+  ]);
+  return ["--target", host, "--config", `target.${host}.runner=${runnerConfig}`];
+}
+
+function prepareEncodingContainment() {
+  if (process.platform !== "linux") return [];
+  const metadata = successfulOutput("rustc", ["-vV"], "host detection");
+  const host = parseRustHostMetadata(metadata);
+  if (!host) {
+    throw new Error("Backend mutation host detection failed: rustc -vV returned no valid host");
+  }
+  successfulOutput(
+    "prlimit",
+    [`--as=${encodingAddressSpaceLimit}`, "--core=0", "--", "/bin/true"],
+    "prlimit runner setup",
+  );
+  return encodingCargoArguments(host);
+}
+
+function cargoArguments(mutationPackage, containmentCargoArguments = []) {
+  const cargoArguments = [
     "mutants",
     "--manifest-path",
     "src-tauri/Cargo.toml",
     "--in-place",
     "--cargo-arg=--locked",
+    ...containmentCargoArguments.map((argument) => `--cargo-arg=${argument}`),
+    "--baseline=run",
+    "--caught",
+    "--unviable",
     "--no-config",
     "--file",
     mutationPackage.file,
@@ -257,6 +305,7 @@ function cargoArguments(mutationPackage) {
     "--",
     mutationPackage.test,
   ];
+  return cargoArguments;
 }
 
 function clearFence() {
@@ -309,6 +358,9 @@ export async function runBackendMutation({ recordChild = recordSpawnedChild } = 
     return 1;
   }
   assertCleanBackend();
+  const containmentCargoArguments = selectedPackages.some(({ id }) => id === "database-encoding")
+    ? prepareEncodingContainment()
+    : [];
   try {
     if (!acquireFence()) return 1;
     fenceStarted = readFileSync(fencePath, "utf8");
@@ -339,7 +391,14 @@ export async function runBackendMutation({ recordChild = recordSpawnedChild } = 
     for (const mutationPackage of selectedPackages) {
       if (signalForwarding.requestedSignal) break;
       console.log(`\nBackend mutation package: ${mutationPackage.id}`);
-      const child = spawn("cargo", cargoArguments(mutationPackage), { stdio: "inherit" });
+      const child = spawn(
+        "cargo",
+        cargoArguments(
+          mutationPackage,
+          mutationPackage.id === "database-encoding" ? containmentCargoArguments : [],
+        ),
+        { stdio: "inherit" },
+      );
       supervisor = superviseChild(child, { terminationTimeoutMs });
       signalForwarding.attach(supervisor);
       try {

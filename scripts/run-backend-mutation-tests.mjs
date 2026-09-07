@@ -13,11 +13,27 @@ import {
   waitFor,
   writeShim,
 } from "./mutation-runner-test-harness.mjs";
+import { encodingCargoArguments } from "./run-backend-mutation.mjs";
+import { parseRustHostMetadata } from "./rust-host.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const runner = join(projectRoot, "scripts", "run-backend-mutation.mjs");
 const fence = "mutants.out/backend/.mutation-in-progress";
 const marker = "/* ~ changed by cargo-mutants ~ */";
+
+function commandPath(command) {
+  for (const directory of process.env.PATH.split(":")) {
+    const candidate = join(directory, command);
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error(`Test prerequisite is missing from PATH: ${command}`);
+}
+
+async function installContainmentTools(bin) {
+  if (process.platform !== "linux") return;
+  await symlink(commandPath("rustc"), join(bin, "rustc"));
+  await symlink(commandPath("prlimit"), join(bin, "prlimit"));
+}
 
 function git(root, args) {
   const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
@@ -39,6 +55,7 @@ async function fixture() {
     `#!/bin/sh
 echo $$ > "$SHIM_STATE/pid"
 : > "$SHIM_STATE/started"
+printf '%s\n' "$@" > "$SHIM_STATE/arguments"
 if [ -e mutants.out/backend/.mutation-in-progress ]; then
   : > "$SHIM_STATE/fence-present-at-spawn"
 fi
@@ -59,6 +76,10 @@ case "$SHIM_MODE" in
     ;;
   nonzero)
     exit 7
+    ;;
+  baseline)
+    echo 'cargo-mutants unmodified baseline failed' >&2
+    exit 4
     ;;
   timeout)
     mkdir -p mutants.out/backend/database-encoding/mutants.out
@@ -113,6 +134,175 @@ test("a normal clean run holds the fence for the run and removes it afterwards",
   const result = await running.done;
   assert.equal(result.code, 0, result.stderr);
   assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
+  const argumentsList = (await readFile(join(state, "arguments"), "utf8")).trim().split("\n");
+  assert.ok(argumentsList.includes("--baseline=run"));
+  assert.ok(argumentsList.includes("--caught"));
+  assert.ok(argumentsList.includes("--unviable"));
+  if (process.platform === "linux") {
+    const host = parseRustHostMetadata(spawnSync("rustc", ["-vV"], { encoding: "utf8" }).stdout);
+    const containmentStart = argumentsList.indexOf("--cargo-arg=--target");
+    assert.deepEqual(argumentsList.slice(containmentStart, containmentStart + 4), [
+      "--cargo-arg=--target",
+      `--cargo-arg=${host}`,
+      "--cargo-arg=--config",
+      `--cargo-arg=target.${host}.runner=["prlimit","--as=2147483648","--core=0","--"]`,
+    ]);
+  }
+});
+
+test("the production Cargo arguments enforce executable limits over file and environment config", async (t) => {
+  if (process.platform !== "linux") {
+    t.skip("Linux /proc limits and prlimit are required");
+    return;
+  }
+  const root = await mkdtemp(join(tmpdir(), "backend-mutation-limits-"));
+  const host = parseRustHostMetadata(spawnSync("rustc", ["-vV"], { encoding: "utf8" }).stdout);
+  assert.ok(host, "rustc did not report a native host");
+  await mkdir(join(root, ".cargo"));
+  await mkdir(join(root, "tests"));
+  await writeFile(
+    join(root, "Cargo.toml"),
+    '[package]\nname = "limits-fixture"\nversion = "0.0.0"\nedition = "2021"\n\n[[test]]\nname = "limits"\npath = "tests/limits.rs"\nharness = false\n',
+  );
+  await writeFile(
+    join(root, "tests", "limits.rs"),
+    `fn main() {
+    let limits = std::fs::read_to_string("/proc/self/limits").unwrap();
+    for line in limits.lines() {
+        if line.starts_with("Max address space") || line.starts_with("Max core file size") {
+            println!("{line}");
+        }
+    }
+}
+`,
+  );
+  await writeFile(
+    join(root, ".cargo", "config.toml"),
+    `[build]\ntarget = "invalid-file-target"\n[target.${host}]\nrunner = ["invalid-file-runner", "--from-file"]\n`,
+  );
+  const runnerKey = `CARGO_TARGET_${host.toUpperCase().replaceAll("-", "_")}_RUNNER`;
+  const baseEnvironment = { ...process.env };
+  delete baseEnvironment.CARGO_BUILD_TARGET;
+  delete baseEnvironment[runnerKey];
+  const invokeFixture = (extraEnvironment = {}) =>
+    spawnSync(
+      "cargo",
+      [
+        "test",
+        "--test",
+        "limits",
+        "--quiet",
+        "--manifest-path",
+        join(root, "Cargo.toml"),
+        ...encodingCargoArguments(host),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...baseEnvironment, ...extraEnvironment },
+      },
+    );
+  for (const result of [
+    invokeFixture(),
+    invokeFixture({
+      CARGO_BUILD_TARGET: "invalid-environment-target",
+      [runnerKey]: "invalid-environment-runner",
+    }),
+  ]) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Max address space\s+2147483648\s+2147483648\s+bytes/);
+    assert.match(result.stdout, /Max core file size\s+0\s+0\s+bytes/);
+  }
+});
+
+test("encoding containment fails closed when host detection or prlimit setup fails", async (t) => {
+  if (process.platform !== "linux") {
+    t.skip("containment applies only to Linux encoding executables");
+    return;
+  }
+  for (const failure of [
+    "missing-host-tool",
+    "invalid-host",
+    "missing-prlimit",
+    "broken-prlimit",
+  ]) {
+    const { root, bin, state } = await fixture();
+    const isolatedBin = join(root, failure);
+    await mkdir(isolatedBin);
+    await symlink("/usr/bin/git", join(isolatedBin, "git"));
+    await symlink(join(bin, "cargo"), join(isolatedBin, "cargo"));
+    if (failure !== "missing-host-tool") {
+      await writeShim(
+        join(isolatedBin, "rustc"),
+        failure === "invalid-host"
+          ? "#!/bin/sh\nprintf 'rustc fixture without host\\n'\n"
+          : "#!/bin/sh\nprintf 'rustc 1.98.0\\nhost: x86_64-unknown-linux-gnu\\n'\n",
+      );
+    }
+    if (failure !== "missing-prlimit" && failure !== "missing-host-tool") {
+      await writeShim(
+        join(isolatedBin, "prlimit"),
+        failure === "broken-prlimit" ? "#!/bin/sh\nexit 9\n" : '#!/bin/sh\nexec "$@"\n',
+      );
+    }
+    const result = run(root, environment({ bin, state, path: isolatedBin }));
+    assert.equal(result.status, 1);
+    if (failure === "missing-host-tool")
+      assert.match(result.stderr, /host detection failed:.*ENOENT/s);
+    if (failure === "invalid-host")
+      assert.match(result.stderr, /host detection failed:.*no valid host/s);
+    if (failure === "missing-prlimit")
+      assert.match(result.stderr, /prlimit runner setup failed:.*ENOENT/s);
+    if (failure === "broken-prlimit") {
+      assert.match(result.stderr, /prlimit runner setup failed: prlimit exited with status 9/s);
+    }
+    await assert.rejects(() => readFile(join(state, "started")));
+    assert.equal(existsSync(join(root, fence)), false);
+  }
+});
+
+test("a selected non-encoding package runs without containment tools", async () => {
+  const { root, bin, state } = await fixture();
+  const isolatedBin = join(root, "non-encoding-bin");
+  await mkdir(isolatedBin);
+  await symlink("/usr/bin/git", join(isolatedBin, "git"));
+  await symlink(join(bin, "cargo"), join(isolatedBin, "cargo"));
+  const env = {
+    ...environment({ bin, state, path: isolatedBin }),
+    BACKEND_MUTATION_PACKAGE: "database-search",
+  };
+  const result = run(root, env);
+  assert.equal(result.status, 0, result.stderr);
+  const argumentsList = (await readFile(join(state, "arguments"), "utf8")).trim().split("\n");
+  assert.ok(argumentsList.includes("src/db/search.rs"));
+  assert.equal(
+    argumentsList.some((argument) => argument.includes("target.")),
+    false,
+  );
+  assert.equal(
+    argumentsList.some((argument) => argument.includes("prlimit")),
+    false,
+  );
+});
+
+test("selection and side-effect-free routes do not require containment tools", async () => {
+  const { root, bin, state } = await fixture();
+  const isolatedBin = join(root, "empty-bin");
+  await mkdir(isolatedBin);
+  const env = environment({ bin, state, path: isolatedBin });
+
+  const listed = run(root, env, ["--list-packages"]);
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(JSON.parse(listed.stdout).length, 8);
+
+  const guarded = run(root, env, ["--check-guard"]);
+  assert.equal(guarded.status, 0, guarded.stderr);
+
+  const unknown = run(root, { ...env, BACKEND_MUTATION_PACKAGE: "unknown-package" });
+  assert.equal(unknown.status, 1);
+  assert.match(unknown.stderr, /Unknown BACKEND_MUTATION_PACKAGE: unknown-package/);
+  await assert.rejects(() => readFile(join(state, "started")));
+  assert.equal(existsSync(join(root, fence)), false);
 });
 
 test("an uncatchable mid-flight kill leaves the fence and makes the next run refuse", async (t) => {
@@ -152,6 +342,14 @@ test("cargo exiting non-zero still runs the finaliser", async () => {
   assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
 });
 
+test("an unmodified baseline failure is surfaced and clears the fence", async () => {
+  const { root, bin, state } = await fixture();
+  const result = run(root, environment({ bin, state, mode: "baseline" }));
+  assert.equal(result.status, 4);
+  assert.match(result.stderr, /cargo-mutants unmodified baseline failed/);
+  assert.equal(run(root, environment({ bin, state }), ["--check-guard"]).status, 0);
+});
+
 test("exit 3 remains successful only when missed.txt has no survivor", async () => {
   const timeout = await fixture();
   const timeoutResult = run(
@@ -173,6 +371,7 @@ test("cargo failing to spawn runs the finaliser and surfaces the underlying erro
   const isolatedBin = join(root, "git-only-bin");
   await mkdir(isolatedBin);
   await symlink("/usr/bin/git", join(isolatedBin, "git"));
+  await installContainmentTools(isolatedBin);
   const result = run(root, environment({ bin, state, path: isolatedBin }));
   assert.equal(result.status, 1);
   assert.match(result.stderr, /spawn cargo ENOENT/);
@@ -353,6 +552,7 @@ test("a failed final marker scan keeps the fence and fails the run", async () =>
   );
   await chmod(join(failingBin, "git"), 0o755);
   await symlink(join(bin, "cargo"), join(failingBin, "cargo"));
+  await installContainmentTools(failingBin);
   const result = run(root, environment({ bin, state, path: `${failingBin}:/bin` }));
   assert.equal(result.status, 1);
   assert.match(result.stderr, /finaliser could not verify the tree/);

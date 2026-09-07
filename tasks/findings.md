@@ -6849,3 +6849,29 @@ Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary 
 
 Closed by c0f4b341. Puzzle selection is derived against the current successful root-specific listing without erasing the saved choice on root changes or failed lists; A/B/A restores selection and stale loads cannot overwrite current state. Explicit deletion clears only its matching saved selection, and a concurrent new database request survives an older delete result. Landed native deletion plus ordinary registry failure reports PartialRemoval so the UI converges. Root full diff review, 13 direct and 22 related renderer tests, 17 native puzzle tests and the full nine-test container screenshot suite passed. No coverage or existing screenshot baseline was relaxed.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5a9a63eecafa83cfd5ceea1ad20490c1bc1644abc2c305bf02392958955bfec5","input_sha256":"cc220cc01e6d8107a5a5554ab8697e4b226d262cd68fc12193145c812a4f392d","kind":"mutation-receipt","operation":"ae5519de92cf7843274e1c9bcdadcf90748d24407401754b46273f5faf82601c","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-25"],"target":"f-20260906-25","v":1} -->
+
+---
+
+## 2026-09-07 — filed through the inbox spool
+
+### PGN quoted-movetext and percent escape regression assertions leave mutation survivors
+
+* **ID:** f-20260907-01 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/pgn.rs:914-956`, tests of `update_brace_comment` and `scan_games_cancelled`.
+* **Defect:** The existing quoted-movetext fixture places a semicolon before the literal brace, masking broken quote handling. Missing escaped-quote, closing-quote, quoted-semicolon and unmatched-brace percent-line cases leave six PGN survivors reported in Felix's approved 2026-09-07 repair request.
+* **Related:** f-20260831-05 fixed semicolon scanning behavior; this entry records missing regression assertions, without reopening its production fix.
+* **Repair:** Five shared LF/CRLF and BOM/no-BOM fixture groups, exact ranges and extracted bytes for successful scans, InvalidData for actual unterminated comments. Production behavior stays unchanged.
+* **Verification:** Focused PGN tests and complete isolated pgn-parser mutation accounting with zero survivors, followed by delivered-revision CI artifacts.
+
+---
+
+## 2026-09-07 — filed through the inbox spool
+
+### Database encoding mutation tests can allocate without a process memory bound
+
+* **ID:** f-20260907-02 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/db/encoding.rs:503-522`, `scripts/run-backend-mutation.mjs:239-258,335`.
+* **Defect:** Three test collections exhaust the iterator rather than checking a bounded expected sequence. The mutation runner starts test executables without a memory limit, so an allocating decoder mutant can exhaust memory before a timeout. Felix's supplied prior probe found indefinite allocation while the ordinary encoding suite passed at 2 GiB. The historical runner-shutdown cause remains unproven.
+* **Related:** f-20260829-09 protects the source tree with a mutation fence; it does not contain executable allocations.
+* **Repair:** Bounded iterator assertions plus Linux encoding-only prlimit runner, forced native Cargo target and exact command-line runner, shared Rust metadata parser, fail-closed diagnostics, and caught/unviable output. Preserve the existing timeout and fence policy.
+* **Verification:** Real dependency-free Cargo containment fixture with conflicting ambient target/runner settings and missing tools, existing contract tests, complete isolated encoding mutation accounting, and all delivered-revision CI package artifacts.
