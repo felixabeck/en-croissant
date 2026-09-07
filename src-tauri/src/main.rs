@@ -38,7 +38,6 @@ use std::{
 use chess::BestMovesPayload;
 use dashmap::DashMap;
 use db::{ConvertProgress, GameQuery, IndexSource, NormalizedGame, PositionStats};
-use derivative::Derivative;
 use engine::EngineSupervisor;
 use game::GameManager;
 use progress::{clear_progress, get_progress, set_progress_state, start_progress, ProgressEvent};
@@ -391,40 +390,80 @@ impl SearchCache {
     }
 }
 
-#[derive(Derivative)]
-#[derivative(Default)]
 pub struct AppState {
     pub(crate) database_repository: Arc<db::DatabaseRepository>,
-    #[derivative(Default(value = "Arc::new(Semaphore::new(2))"))]
     new_request: Arc<Semaphore>,
-    #[derivative(Default(value = "Arc::new(SearchCache::default())"))]
     pub(crate) search_cache: Arc<SearchCache>,
-    #[derivative(Default(value = "Default::default()"))]
     pub pgn_repository: crate::pgn::PgnRepository,
-    #[derivative(Default(value = "Arc::new(std::sync::Mutex::new(None))"))]
     pub pgn_path_authority:
         Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
-    #[derivative(Default(value = "Arc::new(std::sync::Mutex::new(()))"))]
     pub(crate) workspace_mutation: Arc<std::sync::Mutex<()>>,
 
     engine_supervisor: Arc<EngineSupervisor>,
-    #[derivative(Default(value = "Arc::new(AuthLifecycle::default())"))]
     auth: Arc<AuthLifecycle>,
-    #[derivative(Default(value = "Arc::new(crate::credentials::CredentialManager::default())"))]
     credentials: Arc<crate::credentials::CredentialManager>,
     game_manager: Arc<GameManager>,
-    #[derivative(Default(value = "Default::default()"))]
     progress_state: progress::ProgressStore,
-    #[derivative(Default(
-        value = "Arc::new(tokio::sync::Mutex::new(crate::puzzle::PuzzleCache::new()))"
-    ))]
     puzzle_cache: Arc<tokio::sync::Mutex<crate::puzzle::PuzzleCache>>,
-    #[derivative(Default(value = "Arc::new(crate::infra::net::ProdTransport::default())"))]
     pub http_transport: Arc<dyn crate::infra::net::DownloadTransport>,
-    #[derivative(Default(value = "Arc::new(crate::infra::net::native_json_http_client())"))]
     pub(crate) json_http_client: Arc<reqwest::Client>,
-    #[derivative(Default(value = "Arc::new(crate::fs::DownloadRegistry::default())"))]
     pub download_registry: Arc<crate::fs::DownloadRegistry>,
+}
+
+impl AppState {
+    fn try_new(credentials: Arc<crate::credentials::CredentialManager>) -> Result<Self, Error> {
+        Self::try_new_with_builders(
+            credentials,
+            reqwest::Client::builder(),
+            reqwest::Client::builder(),
+        )
+    }
+
+    fn try_new_with_builders(
+        credentials: Arc<crate::credentials::CredentialManager>,
+        download_builder: reqwest::ClientBuilder,
+        json_builder: reqwest::ClientBuilder,
+    ) -> Result<Self, Error> {
+        let http_transport = Arc::new(crate::infra::net::ProdTransport::new(download_builder)?);
+        let json_http_client = Arc::new(crate::infra::net::native_json_http_client(json_builder)?);
+        Ok(Self::new_with_clients(
+            credentials,
+            http_transport,
+            json_http_client,
+        ))
+    }
+
+    fn new_with_clients(
+        credentials: Arc<crate::credentials::CredentialManager>,
+        http_transport: Arc<dyn crate::infra::net::DownloadTransport>,
+        json_http_client: Arc<reqwest::Client>,
+    ) -> Self {
+        Self {
+            database_repository: Arc::new(db::DatabaseRepository::default()),
+            new_request: Arc::new(Semaphore::new(2)),
+            search_cache: Arc::new(SearchCache::default()),
+            pgn_repository: Default::default(),
+            pgn_path_authority: Arc::new(std::sync::Mutex::new(None)),
+            workspace_mutation: Arc::new(std::sync::Mutex::new(())),
+            engine_supervisor: Arc::new(EngineSupervisor::default()),
+            auth: Arc::new(AuthLifecycle::default()),
+            credentials,
+            game_manager: Arc::new(GameManager::default()),
+            progress_state: Default::default(),
+            puzzle_cache: Arc::new(tokio::sync::Mutex::new(crate::puzzle::PuzzleCache::new())),
+            http_transport,
+            json_http_client,
+            download_registry: Arc::new(crate::fs::DownloadRegistry::default()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Default for AppState {
+    fn default() -> Self {
+        Self::try_new(Arc::new(crate::credentials::CredentialManager::default()))
+            .expect("test AppState HTTP clients must be constructible")
+    }
 }
 
 #[tauri::command]
@@ -1759,6 +1798,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Hoisted so the credential store can be constructed with the bundle identifier below; the
     // `--config` merge that `pnpm dev` applies is already resolved in here.
     let context = tauri::generate_context!();
+    let app_state = AppState::try_new(Arc::new(crate::credentials::CredentialManager::new(
+        Arc::new(crate::credentials::OsCredentialStore::new(
+            &context.config().identifier,
+        )),
+    )))?;
 
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::new().build())
@@ -1877,15 +1921,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             Ok(())
         })
-        .manage(AppState {
-            // The OS credential manager is shared by every build on the machine, so the store is
-            // constructed with the running bundle identifier.  Injecting it here rather than
-            // binding it later keeps "a store without a namespace" out of the running application.
-            credentials: Arc::new(crate::credentials::CredentialManager::new(Arc::new(
-                crate::credentials::OsCredentialStore::new(&context.config().identifier),
-            ))),
-            ..Default::default()
-        })
+        // The OS credential manager is shared by every build on the machine, so the store is
+        // constructed with the running bundle identifier. Building all process-lifetime HTTP
+        // clients before publishing state gives startup ownership of construction failures.
+        .manage(app_state)
         .build(context)?
         .run({
             let guard = Arc::new(ExitGuard::default());
@@ -2035,6 +2074,39 @@ mod search_cache_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_credentials() -> Arc<crate::credentials::CredentialManager> {
+        Arc::new(crate::credentials::CredentialManager::default())
+    }
+
+    fn failing_client_builder() -> reqwest::ClientBuilder {
+        reqwest::Client::builder().user_agent("\n")
+    }
+
+    #[test]
+    fn app_state_constructs_both_http_clients() {
+        assert!(AppState::try_new(test_credentials()).is_ok());
+    }
+
+    #[test]
+    fn app_state_propagates_download_client_construction_failure() {
+        assert!(AppState::try_new_with_builders(
+            test_credentials(),
+            failing_client_builder(),
+            reqwest::Client::builder(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn app_state_propagates_json_client_failure_after_download_client_succeeds() {
+        assert!(AppState::try_new_with_builders(
+            test_credentials(),
+            reqwest::Client::builder(),
+            failing_client_builder(),
+        )
+        .is_err());
+    }
 
     #[test]
     fn exit_requests_are_blocked_until_cleanup_is_done() {

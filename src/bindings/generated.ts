@@ -645,8 +645,13 @@ async getAuthenticationStatus(job: AuthenticationJob) : Promise<Result<Authentic
     else return { status: "error", error: e  as any };
 }
 },
-async listLichessAccounts() : Promise<LichessAccountMetadata[]> {
-    return await TAURI_INVOKE("list_lichess_accounts");
+async listLichessAccounts() : Promise<Result<LichessAccountMetadata[], ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_lichess_accounts") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async removeLichessAccount(handle: LichessAccountHandle) : Promise<Result<LichessAccountRemoval, ErrorPayload>> {
     try {

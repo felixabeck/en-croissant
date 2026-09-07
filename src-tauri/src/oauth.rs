@@ -527,7 +527,9 @@ pub fn get_authentication_status(
 
 #[tauri::command]
 #[specta::specta]
-pub fn list_lichess_accounts(state: tauri::State<'_, AppState>) -> Vec<LichessAccountMetadata> {
+pub fn list_lichess_accounts(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<LichessAccountMetadata>, Error> {
     state.credentials.list()
 }
 
@@ -1218,7 +1220,7 @@ mod tests {
         .unwrap();
         assert_eq!(result.account.username, "user");
         assert!(!result.durability_uncertain);
-        assert_eq!(credentials.list(), vec![result.account]);
+        assert_eq!(credentials.list().unwrap(), vec![result.account]);
         assert!(
             !std::fs::read_to_string(temp.path().join("lichess-accounts.json"))
                 .unwrap()
@@ -1246,7 +1248,26 @@ mod tests {
         };
         assert_eq!(account.username, "user");
         assert!(!durability_uncertain);
-        assert_eq!(credentials.list(), vec![account]);
+        assert_eq!(credentials.list().unwrap(), vec![account]);
+    }
+
+    #[tokio::test]
+    async fn persist_stashed_token_rejects_a_poisoned_stash() {
+        let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
+            crate::credentials::MemoryCredentialStore::default(),
+        )));
+        let stash = Arc::new(std::sync::Mutex::new(Some("token".into())));
+        let stash_to_poison = stash.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = stash_to_poison.lock().unwrap();
+            panic!("poison OAuth token stash");
+        }));
+        assert!(result.is_err());
+
+        assert!(matches!(
+            persist_stashed_lichess_token("user".into(), credentials, stash).await,
+            Err(Error::Conflict(message)) if message == "OAuth token stash was unavailable"
+        ));
     }
 
     #[tokio::test]
@@ -1272,7 +1293,7 @@ mod tests {
             panic!("uncertain persistence must remain successful");
         };
         assert!(durability_uncertain);
-        assert_eq!(credentials.list(), vec![account]);
+        assert_eq!(credentials.list().unwrap(), vec![account]);
     }
 
     #[tokio::test]
@@ -1304,7 +1325,7 @@ mod tests {
         )
         .await
         .is_err());
-        assert!(credentials.list().is_empty());
+        assert!(credentials.list().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1329,7 +1350,7 @@ mod tests {
                 durability_uncertain: false,
             }
         );
-        assert!(credentials.list().is_empty());
+        assert!(credentials.list().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1357,7 +1378,7 @@ mod tests {
                 durability_uncertain: true,
             }
         );
-        assert!(credentials.list().is_empty());
+        assert!(credentials.list().unwrap().is_empty());
     }
 
     #[tokio::test]

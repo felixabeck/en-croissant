@@ -283,7 +283,7 @@ pub async fn get_authenticated_lichess_account(
         .ok_or_else(|| Error::InvalidInput("Lichess returned an invalid account".into()))?;
     let expected_username = state
         .credentials
-        .list()
+        .list()?
         .into_iter()
         .find(|account| account.handle == handle)
         .map(|account| account.username)

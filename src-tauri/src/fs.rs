@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 
@@ -60,8 +60,14 @@ pub struct DownloadLease {
 }
 
 impl DownloadRegistry {
+    fn active(&self) -> Result<MutexGuard<'_, HashMap<String, CancellationToken>>, Error> {
+        self.active
+            .lock()
+            .map_err(|_| Error::Conflict("download registry was poisoned".into()))
+    }
+
     pub fn begin(self: &Arc<Self>, id: &str) -> Result<DownloadLease, Error> {
-        let mut active = self.active.lock().expect("download registry poisoned");
+        let mut active = self.active()?;
         if active.contains_key(id) {
             return Err(Error::Conflict(
                 "download operation is already active".into(),
@@ -79,13 +85,13 @@ impl DownloadRegistry {
         })
     }
 
-    pub fn cancel(&self, id: &str) -> bool {
-        let active = self.active.lock().expect("download registry poisoned");
+    pub fn cancel(&self, id: &str) -> Result<bool, Error> {
+        let active = self.active()?;
         let Some(token) = active.get(id) else {
-            return false;
+            return Ok(false);
         };
         token.cancel();
-        true
+        Ok(true)
     }
 }
 
@@ -101,7 +107,7 @@ impl Drop for DownloadLease {
             .registry
             .active
             .lock()
-            .expect("download registry poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if active
             .get(&self.id)
             .is_some_and(|registered| registered == &self.token)
@@ -1233,7 +1239,7 @@ pub async fn download_engine_archive(
 #[tauri::command]
 #[specta::specta]
 pub async fn cancel_download(id: String, state: tauri::State<'_, AppState>) -> Result<bool, Error> {
-    Ok(state.download_registry.cancel(&id))
+    state.download_registry.cancel(&id)
 }
 
 fn create_private_dir_all(path: &Path) -> Result<(), Error> {
@@ -1907,10 +1913,58 @@ mod tests {
         let registry = Arc::new(DownloadRegistry::default());
         let first = registry.begin("job").unwrap();
         assert!(registry.begin("job").is_err());
-        assert!(registry.cancel("job"));
+        assert!(registry.cancel("job").unwrap());
         assert!(first.token.is_cancelled());
         drop(first);
-        assert!(!registry.cancel("job"));
+        assert!(!registry.cancel("job").unwrap());
+    }
+
+    struct PoisonDownloadRegistryOnDrop(Arc<DownloadRegistry>);
+
+    impl Drop for PoisonDownloadRegistryOnDrop {
+        fn drop(&mut self) {
+            let _guard = self.0.active.lock().unwrap();
+            panic!("poison download registry");
+        }
+    }
+
+    #[test]
+    fn lease_cleanup_removes_its_registration_during_poisoning_unwind() {
+        let registry = Arc::new(DownloadRegistry::default());
+        let registry_for_unwind = registry.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let lease = registry_for_unwind.begin("job").unwrap();
+            let _poison_on_drop = PoisonDownloadRegistryOnDrop(registry_for_unwind.clone());
+            std::hint::black_box(&lease);
+        }));
+
+        assert!(result.is_err());
+        assert!(registry.active.lock().unwrap_err().into_inner().is_empty());
+        assert!(matches!(registry.begin("other"), Err(Error::Conflict(_))));
+        assert!(matches!(registry.cancel("job"), Err(Error::Conflict(_))));
+    }
+
+    #[test]
+    fn poisoned_cleanup_preserves_a_newer_lease_with_the_same_id() {
+        let registry = Arc::new(DownloadRegistry::default());
+        let stale = registry.begin("job").unwrap();
+        let replacement = CancellationToken::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = registry.active.lock().unwrap();
+            panic!("poison download registry");
+        }));
+        assert!(result.is_err());
+        registry
+            .active
+            .lock()
+            .unwrap_err()
+            .into_inner()
+            .insert("job".into(), replacement.clone());
+
+        drop(stale);
+
+        let active = registry.active.lock().unwrap_err().into_inner();
+        assert_eq!(active.get("job"), Some(&replacement));
     }
 
     #[test]

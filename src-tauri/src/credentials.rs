@@ -17,7 +17,7 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -249,6 +249,18 @@ impl Default for CredentialManager {
 }
 
 impl CredentialManager {
+    fn registry(&self) -> Result<MutexGuard<'_, RegistryFile>, Error> {
+        self.registry
+            .lock()
+            .map_err(|_| Error::CredentialRecoveryRequired)
+    }
+
+    fn registry_path(&self) -> Result<MutexGuard<'_, Option<PathBuf>>, Error> {
+        self.registry_path
+            .lock()
+            .map_err(|_| Error::CredentialRecoveryRequired)
+    }
+
     pub fn new(store: Arc<dyn CredentialStore>) -> Self {
         Self::with_persistence(store, Arc::new(AtomicRegistryPersistence))
     }
@@ -277,20 +289,11 @@ impl CredentialManager {
         secure_directory(app_data)?;
         let path = app_data.join(REGISTRY_FILE);
         let registry = self.load_registry(&path)?;
-        *self
-            .registry
-            .lock()
-            .expect("credential registry mutex poisoned") = registry;
-        *self
-            .registry_path
-            .lock()
-            .expect("credential path mutex poisoned") = Some(path.clone());
+        *self.registry()? = registry;
+        *self.registry_path()? = Some(path.clone());
         // Commit legacy metadata-only registries to the journalled format before reconciliation
         // is allowed to touch the native credential manager.
-        let registry = self
-            .registry
-            .lock()
-            .expect("credential registry mutex poisoned");
+        let registry = self.registry()?;
         log_uncertain_commit(
             self.persist_locked(&registry)?,
             "credential registry initialization",
@@ -301,17 +304,16 @@ impl CredentialManager {
         self.reconcile()
     }
 
-    pub fn list(&self) -> Vec<LichessAccountMetadata> {
-        self.registry
-            .lock()
-            .expect("credential registry mutex poisoned")
+    pub fn list(&self) -> Result<Vec<LichessAccountMetadata>, Error> {
+        Ok(self
+            .registry()?
             .accounts
             .values()
             .filter_map(|record| match record {
                 AccountRecord::Active(account) => Some(account.clone()),
                 AccountRecord::PendingAdd(_) | AccountRecord::PendingDelete(_) => None,
             })
-            .collect()
+            .collect())
     }
 
     pub fn token(&self, handle: &LichessAccountHandle) -> Result<Option<String>, Error> {
@@ -345,10 +347,7 @@ impl CredentialManager {
         username: String,
         token: String,
     ) -> Result<LichessAccountStoreResult, Error> {
-        let mut registry = self
-            .registry
-            .lock()
-            .expect("credential registry mutex poisoned");
+        let mut registry = self.registry()?;
         // Re-authentication must retain the public opaque handle.  Otherwise a successful
         // refresh would orphan the old keyring entry and every persisted renderer session.
         if let Some(existing) = registry.accounts.values().find_map(|record| match record {
@@ -429,10 +428,7 @@ impl CredentialManager {
         if !handle.valid() {
             return Ok(None);
         }
-        let mut registry = self
-            .registry
-            .lock()
-            .expect("credential registry mutex poisoned");
+        let mut registry = self.registry()?;
         let Some(record) = registry.accounts.get(&handle.0).cloned() else {
             return Ok(None);
         };
@@ -475,10 +471,7 @@ impl CredentialManager {
     }
 
     fn reconcile(&self) -> Result<(), Error> {
-        let mut registry = self
-            .registry
-            .lock()
-            .expect("credential registry mutex poisoned");
+        let mut registry = self.registry()?;
         let records: Vec<(String, AccountRecord)> = registry
             .accounts
             .iter()
@@ -587,11 +580,7 @@ impl CredentialManager {
     }
 
     fn persist_locked(&self, registry: &RegistryFile) -> Result<RegistryCommit, Error> {
-        let path = self
-            .registry_path
-            .lock()
-            .expect("credential path mutex poisoned")
-            .clone();
+        let path = self.registry_path()?.clone();
         let Some(path) = path else {
             return Ok(RegistryCommit::Durable);
         };
@@ -690,6 +679,39 @@ mod tests {
         fail_set: bool,
         fail_delete: bool,
     }
+
+    #[derive(Default)]
+    struct CountingStore {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CredentialStore for CountingStore {
+        fn set(&self, _key: &str, _secret: &str) -> Result<(), Error> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn get(&self, _key: &str) -> Result<Option<String>, Error> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(None)
+        }
+
+        fn delete(&self, _key: &str) -> Result<(), Error> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    fn poison<T>(mutex: &Mutex<T>) {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = mutex.lock().unwrap();
+            panic!("poison test mutex");
+        }));
+        assert!(result.is_err());
+    }
     impl CredentialStore for FailStore {
         fn set(&self, key: &str, secret: &str) -> Result<(), Error> {
             if self.fail_set {
@@ -773,7 +795,7 @@ mod tests {
         assert!(!content.contains("not-in-registry"));
         let after_restart = CredentialManager::new(store);
         after_restart.initialize(temp.path()).unwrap();
-        assert_eq!(after_restart.list(), vec![account]);
+        assert_eq!(after_restart.list().unwrap(), vec![account]);
     }
 
     #[test]
@@ -788,10 +810,10 @@ mod tests {
         assert!(manager
             .store_lichess_token("a".into(), "secret".into())
             .is_err());
-        assert!(manager.list().is_empty());
+        assert!(manager.list().unwrap().is_empty());
         let after_restart = CredentialManager::new(store);
         after_restart.initialize(temp.path()).unwrap();
-        assert!(after_restart.list().is_empty());
+        assert!(after_restart.list().unwrap().is_empty());
     }
 
     #[test]
@@ -804,13 +826,13 @@ mod tests {
             manager.store_lichess_token("a".into(), "secret".into()),
             Err(Error::CredentialRecoveryRequired)
         ));
-        assert!(manager.list().is_empty());
+        assert!(manager.list().unwrap().is_empty());
         assert!(!fs::read_to_string(temp.path().join(REGISTRY_FILE))
             .unwrap()
             .contains("secret"));
         let after_restart = CredentialManager::new(store);
         after_restart.initialize(temp.path()).unwrap();
-        assert_eq!(after_restart.list().len(), 1);
+        assert_eq!(after_restart.list().unwrap().len(), 1);
     }
 
     #[test]
@@ -833,7 +855,7 @@ mod tests {
         }
         let after_restart = CredentialManager::new(store.clone());
         after_restart.initialize(temp.path()).unwrap();
-        assert!(after_restart.list().is_empty());
+        assert!(after_restart.list().unwrap().is_empty());
         assert_eq!(store.get(&account.handle.key()).unwrap(), None);
     }
 
@@ -852,10 +874,10 @@ mod tests {
         assert!(manager
             .store_lichess_token("a".into(), "secret".into())
             .is_err());
-        assert!(manager.list().is_empty());
+        assert!(manager.list().unwrap().is_empty());
         let after_restart = CredentialManager::new(store);
         after_restart.initialize(temp.path()).unwrap();
-        assert_eq!(after_restart.list().len(), 1);
+        assert_eq!(after_restart.list().unwrap().len(), 1);
     }
 
     #[test]
@@ -873,7 +895,7 @@ mod tests {
             .store_lichess_token("a".into(), "secret".into())
             .unwrap();
         assert!(result.durability_uncertain);
-        assert_eq!(manager.list(), vec![result.account]);
+        assert_eq!(manager.list().unwrap(), vec![result.account]);
     }
 
     #[test]
@@ -891,7 +913,7 @@ mod tests {
             .store_lichess_token("a".into(), "secret".into())
             .unwrap();
         assert!(result.durability_uncertain);
-        assert_eq!(manager.list(), vec![result.account]);
+        assert_eq!(manager.list().unwrap(), vec![result.account]);
     }
 
     #[test]
@@ -912,7 +934,7 @@ mod tests {
         let removal = manager.remove(&account.handle).unwrap().unwrap();
         assert!(removal.durability_uncertain);
         assert_eq!(removal.token.as_deref(), Some("secret"));
-        assert!(manager.list().is_empty());
+        assert!(manager.list().unwrap().is_empty());
     }
 
     #[test]
@@ -933,7 +955,7 @@ mod tests {
         let removal = manager.remove(&account.handle).unwrap().unwrap();
         assert!(removal.durability_uncertain);
         assert_eq!(removal.token.as_deref(), Some("secret"));
-        assert!(manager.list().is_empty());
+        assert!(manager.list().unwrap().is_empty());
     }
 
     #[test]
@@ -951,7 +973,7 @@ mod tests {
             .unwrap();
         assert!(!second.durability_uncertain);
         assert_eq!(first, second.account);
-        assert_eq!(manager.list(), vec![first.clone()]);
+        assert_eq!(manager.list().unwrap(), vec![first.clone()]);
         assert_eq!(
             store.get(&first.handle.key()).unwrap().as_deref(),
             Some("replacement-token")
@@ -1124,10 +1146,57 @@ mod tests {
                 manager.token(&invalid.handle).ok(),
                 manager.remove(&invalid.handle).ok(),
                 manager.remove(&absent).ok(),
-                manager.list(),
+                manager.list().unwrap(),
             ),
             (Some(None), Some(None), Some(None), vec![invalid],)
         );
+    }
+
+    #[test]
+    fn poisoned_registry_rejects_operations_without_reaching_the_credential_store() {
+        let store = Arc::new(CountingStore::default());
+        let manager = CredentialManager::new(store.clone());
+        poison(&manager.registry);
+
+        let handle = LichessAccountHandle::new();
+        assert!(matches!(
+            manager.list(),
+            Err(Error::CredentialRecoveryRequired)
+        ));
+        assert!(matches!(
+            manager.store_lichess_token("user".into(), "secret".into()),
+            Err(Error::CredentialRecoveryRequired)
+        ));
+        assert!(matches!(
+            manager.remove(&handle),
+            Err(Error::CredentialRecoveryRequired)
+        ));
+        assert_eq!(store.calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn poisoned_registry_path_rejects_mutations_without_reaching_the_credential_store() {
+        let store = Arc::new(CountingStore::default());
+        let manager = CredentialManager::new(store.clone());
+        let account = LichessAccountMetadata {
+            handle: LichessAccountHandle::new(),
+            username: "user".into(),
+        };
+        manager.registry.lock().unwrap().accounts.insert(
+            account.handle.0.clone(),
+            AccountRecord::Active(account.clone()),
+        );
+        poison(&manager.registry_path);
+
+        assert!(matches!(
+            manager.store_lichess_token("other".into(), "secret".into()),
+            Err(Error::CredentialRecoveryRequired)
+        ));
+        assert!(matches!(
+            manager.remove(&account.handle),
+            Err(Error::CredentialRecoveryRequired)
+        ));
+        assert_eq!(store.calls.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
     #[test]

@@ -43,11 +43,12 @@ fn validate_resolved_addresses(
 /// Shared provider client policy. Every native request, including credential-bearing OAuth and
 /// account traffic, resolves only globally routable addresses and never follows redirects.
 pub fn safe_http_client(
+    builder: reqwest::ClientBuilder,
     connect_timeout: Duration,
     read_timeout: Duration,
     request_timeout: Duration,
 ) -> Result<reqwest::Client, reqwest::Error> {
-    reqwest::Client::builder()
+    builder
         .dns_resolver(Arc::new(SafeResolver))
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(connect_timeout)
@@ -61,14 +62,15 @@ const JSON_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const JSON_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Process-lifetime client for bounded JSON and OAuth provider requests.
-pub fn native_json_http_client() -> reqwest::Client {
-    // These fixed builder arguments contain no runtime input, so startup construction is infallible.
+pub fn native_json_http_client(
+    builder: reqwest::ClientBuilder,
+) -> Result<reqwest::Client, reqwest::Error> {
     safe_http_client(
+        builder,
         JSON_CONNECT_TIMEOUT,
         JSON_READ_TIMEOUT,
         JSON_REQUEST_TIMEOUT,
     )
-    .unwrap()
 }
 
 pub fn is_public_ip(ip: IpAddr) -> bool {
@@ -148,16 +150,16 @@ pub struct ProdTransport {
     client: reqwest::Client,
 }
 
-impl Default for ProdTransport {
-    fn default() -> Self {
-        Self {
+impl ProdTransport {
+    pub fn new(builder: reqwest::ClientBuilder) -> Result<Self, reqwest::Error> {
+        Ok(Self {
             client: safe_http_client(
+                builder,
                 Duration::from_secs(10),
                 Duration::from_secs(30),
                 Duration::from_secs(3600),
-            )
-            .unwrap(),
-        }
+            )?,
+        })
     }
 }
 
@@ -261,6 +263,7 @@ mod tests {
     #[test]
     fn shared_client_accepts_independent_connect_read_and_total_timeouts() {
         let client = safe_http_client(
+            reqwest::Client::builder(),
             Duration::from_millis(5),
             Duration::from_millis(10),
             Duration::from_millis(15),
