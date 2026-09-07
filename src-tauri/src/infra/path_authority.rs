@@ -9276,6 +9276,86 @@ mod tests {
         }
     }
 
+    #[test]
+    fn persisted_purpose_accepts_canonical_historical_subset_and_legacy_engine_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("engine");
+        fs::write(&file, b"engine").unwrap();
+        let base = StoredEntry {
+            id: PathRef::fresh(),
+            display_name: "engine".into(),
+            class: PathClass::PersistentFile,
+            purpose: Some(EntryPurpose::EngineExecutable),
+            operations: vec![
+                PathOperation::EngineExecute,
+                PathOperation::EngineConfigure,
+                PathOperation::EngineInstall,
+                PathOperation::EngineBinaryInspect,
+            ],
+            path: NativePath::from_path(&file),
+            identity: identity(&file).unwrap(),
+            target_is_dir: false,
+        };
+
+        assert!(validate_persisted_shape(&base).is_ok());
+        assert!(validate_persisted_shape(&StoredEntry {
+            purpose: Some(EntryPurpose::DatabaseFile),
+            operations: vec![PathOperation::DatabaseRead],
+            ..base.clone()
+        })
+        .is_ok());
+        assert!(validate_persisted_shape(&StoredEntry {
+            operations: vec![
+                PathOperation::EngineExecute,
+                PathOperation::EngineConfigure,
+                PathOperation::EngineInstall,
+            ],
+            ..base
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn persisted_purpose_rejects_wrong_purpose_class_and_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("engine");
+        fs::write(&file, b"engine").unwrap();
+        let legacy_engine = StoredEntry {
+            id: PathRef::fresh(),
+            display_name: "engine".into(),
+            class: PathClass::PersistentFile,
+            purpose: Some(EntryPurpose::EngineExecutable),
+            operations: vec![
+                PathOperation::EngineExecute,
+                PathOperation::EngineConfigure,
+                PathOperation::EngineInstall,
+            ],
+            path: NativePath::from_path(&file),
+            identity: identity(&file).unwrap(),
+            target_is_dir: false,
+        };
+
+        let invalid = [
+            StoredEntry {
+                purpose: Some(EntryPurpose::EngineImage),
+                ..legacy_engine.clone()
+            },
+            StoredEntry {
+                class: PathClass::PersistentCustomRoot,
+                target_is_dir: true,
+                ..legacy_engine.clone()
+            },
+            StoredEntry {
+                operations: vec![PathOperation::ImageRead],
+                ..legacy_engine
+            },
+        ];
+
+        for entry in invalid {
+            assert!(validate_persisted_shape(&entry).is_err(), "{entry:?}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn read_only_engine_can_be_resolved_for_configuration() {
