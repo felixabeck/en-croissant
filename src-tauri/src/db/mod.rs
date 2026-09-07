@@ -11,7 +11,10 @@ mod search_index;
 
 use crate::{
     db::{
-        encoding::{decode_game_to_movetext, decode_move, iter_mainline_move_bytes},
+        encoding::{
+            decode_game_to_movetext, decode_move, iter_mainline_move_bytes,
+            try_iter_mainline_move_bytes,
+        },
         models::*,
         ops::*,
         schema::*,
@@ -84,6 +87,9 @@ pub use self::search::{is_position_in_db, search_position, PositionQueryJs, Posi
 const INDEXES_SQL: &str = include_str!("indexes.sql");
 
 const DELETE_INDEXES_SQL: &str = include_str!("delete_indexes.sql");
+
+/// Established cap for replaying plies during statistics opening lookup.
+const OPENING_STATISTICS_PLY_LIMIT: usize = 55;
 
 #[cfg(test)]
 const CREATE_TABLES_SQL: &str = include_str!("create.sql");
@@ -1894,13 +1900,10 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
                     }
                 })?;
 
+                let move_bytes = try_iter_mainline_move_bytes(moves).ok()?;
                 let mut setups = vec![];
                 let mut chess = Chess::default();
-                for (i, byte) in iter_mainline_move_bytes(moves).enumerate() {
-                    if i > 54 {
-                        // max length of opening in data
-                        break;
-                    }
+                for byte in move_bytes.take(OPENING_STATISTICS_PLY_LIMIT) {
                     let Some(m) = decode_move(byte, &chess) else {
                         break;
                     };
@@ -4949,7 +4952,7 @@ mod tests {
             .mount_events(app);
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct PlayerStatisticsGame<'a> {
         player_id: i32,
         opponent_id: i32,
@@ -4958,6 +4961,7 @@ mod tests {
         is_player_white: bool,
         player_elo: Option<i32>,
         opponent_elo: Option<i32>,
+        moves: Vec<u8>,
         date: Option<&'a str>,
         result: Option<&'a str>,
         time_control: Option<&'a str>,
@@ -4999,7 +5003,7 @@ mod tests {
                 eco: None,
                 ply_count: 2,
                 fen: fixture.fen,
-                moves: &[],
+                moves: &fixture.moves,
                 pawn_home: 0,
             },
         )
@@ -5023,6 +5027,7 @@ mod tests {
                 is_player_white: true,
                 player_elo: Some(2800),
                 opponent_elo: Some(2700),
+                moves: Vec::new(),
                 date: Some("2026.08.09"),
                 result: Some("1-0"),
                 time_control: Some("600+0"),
@@ -5066,19 +5071,20 @@ mod tests {
                 is_player_white: true,
                 player_elo: Some(2800),
                 opponent_elo: None,
+                moves: Vec::new(),
                 date: Some("2026.08.01"),
                 result: Some("1-0"),
                 time_control: None,
                 fen: None,
             };
-            insert_player_statistics_game(&mut db, base);
+            insert_player_statistics_game(&mut db, base.clone());
             insert_player_statistics_game(
                 &mut db,
                 PlayerStatisticsGame {
                     date: Some("2026.08.02"),
                     result: Some("0-1"),
                     time_control: Some("300+3"),
-                    ..base
+                    ..base.clone()
                 },
             );
             insert_player_statistics_game(
@@ -5088,7 +5094,7 @@ mod tests {
                     player_elo: Some(2750),
                     date: Some("2026.08.03"),
                     result: Some("1-0"),
-                    ..base
+                    ..base.clone()
                 },
             );
             insert_player_statistics_game(
@@ -5098,7 +5104,7 @@ mod tests {
                     player_elo: Some(2750),
                     date: Some("2026.08.04"),
                     result: Some("0-1"),
-                    ..base
+                    ..base.clone()
                 },
             );
             insert_player_statistics_game(
@@ -5106,7 +5112,7 @@ mod tests {
                 PlayerStatisticsGame {
                     date: Some("2026.08.05"),
                     result: Some("1/2-1/2"),
-                    ..base
+                    ..base.clone()
                 },
             );
             insert_player_statistics_game(
@@ -5116,7 +5122,7 @@ mod tests {
                     player_elo: Some(2750),
                     date: Some("2026.08.06"),
                     result: Some("1/2-1/2"),
-                    ..base
+                    ..base.clone()
                 },
             );
             player.id
@@ -5191,32 +5197,39 @@ mod tests {
                 is_player_white: true,
                 player_elo: Some(2800),
                 opponent_elo: Some(2700),
+                moves: Vec::new(),
                 date: Some("2026.08.09"),
                 result: Some("1-0"),
                 time_control: Some("600+0"),
                 fen: None,
             };
-            insert_player_statistics_game(&mut db, base);
-            insert_player_statistics_game(&mut db, PlayerStatisticsGame { date: None, ..base });
+            insert_player_statistics_game(&mut db, base.clone());
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    date: None,
+                    ..base.clone()
+                },
+            );
             insert_player_statistics_game(
                 &mut db,
                 PlayerStatisticsGame {
                     result: None,
-                    ..base
+                    ..base.clone()
                 },
             );
             insert_player_statistics_game(
                 &mut db,
                 PlayerStatisticsGame {
                     result: Some("*"),
-                    ..base
+                    ..base.clone()
                 },
             );
             insert_player_statistics_game(
                 &mut db,
                 PlayerStatisticsGame {
                     player_elo: None,
-                    ..base
+                    ..base.clone()
                 },
             );
             insert_player_statistics_game(
@@ -5224,14 +5237,14 @@ mod tests {
                 PlayerStatisticsGame {
                     is_player_white: false,
                     player_elo: None,
-                    ..base
+                    ..base.clone()
                 },
             );
             insert_player_statistics_game(
                 &mut db,
                 PlayerStatisticsGame {
                     site_id: nameless_site.id,
-                    ..base
+                    ..base.clone()
                 },
             );
             insert_player_statistics_game(
@@ -5240,21 +5253,21 @@ mod tests {
                     player_id: player.id,
                     opponent_id: player.id,
                     opponent_elo: None,
-                    ..base
+                    ..base.clone()
                 },
             );
             insert_player_statistics_game(
                 &mut db,
                 PlayerStatisticsGame {
                     fen: Some("8/8/8/8/8/8/8/8 w - - 0 1"),
-                    ..base
+                    ..base.clone()
                 },
             );
             insert_player_statistics_game(
                 &mut db,
                 PlayerStatisticsGame {
                     player_id: nameless_player.id,
-                    ..base
+                    ..base.clone()
                 },
             );
             (player.id, nameless_player.id)
@@ -5267,6 +5280,98 @@ mod tests {
 
         let nameless_info = load_player_statistics(&app, handle, nameless_player_id);
         assert!(nameless_info.site_stats_data.is_empty());
+    }
+
+    #[test]
+    fn player_statistics_exclude_structurally_invalid_move_streams() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let player_id = {
+            let state = app.state::<AppState>();
+            let mut db = state.database_repository.connection(&database).unwrap();
+            let player = create_player(&mut db, "Player").unwrap();
+            let opponent = create_player(&mut db, "Opponent").unwrap();
+            let event = create_event(&mut db, "Event").unwrap();
+            let site = create_site(&mut db, "Site").unwrap();
+            let base = PlayerStatisticsGame {
+                player_id: player.id,
+                opponent_id: opponent.id,
+                event_id: event.id,
+                site_id: site.id,
+                is_player_white: true,
+                player_elo: Some(2800),
+                opponent_elo: Some(2700),
+                moves: Vec::new(),
+                date: Some("2026.08.10"),
+                result: Some("1-0"),
+                time_control: Some("600+0"),
+                fen: None,
+            };
+
+            insert_player_statistics_game(&mut db, base.clone());
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    moves: vec![
+                        encoding::COMMENT_MARKER,
+                        1,
+                        0,
+                        120,
+                        encoding::NAG_MARKER,
+                        1,
+                        0,
+                        33,
+                        VARIATION_START_MARKER,
+                        0,
+                        VARIATION_END_MARKER,
+                    ],
+                    date: Some("2026.08.11"),
+                    ..base.clone()
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    moves: vec![encoding::COMMENT_MARKER, 4, 0, 120],
+                    date: Some("2026.08.12"),
+                    ..base.clone()
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    moves: vec![encoding::NAG_MARKER, 1],
+                    date: Some("2026.08.13"),
+                    ..base.clone()
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    moves: vec![VARIATION_END_MARKER],
+                    date: Some("2026.08.14"),
+                    ..base.clone()
+                },
+            );
+            insert_player_statistics_game(
+                &mut db,
+                PlayerStatisticsGame {
+                    moves: vec![VARIATION_START_MARKER, 0],
+                    date: Some("2026.08.15"),
+                    ..base
+                },
+            );
+            player.id
+        };
+
+        let info = load_player_statistics(&app, handle, player_id);
+        assert_eq!(info.site_stats_data.len(), 1);
+        let mut dates: Vec<_> = info.site_stats_data[0]
+            .data
+            .iter()
+            .map(|row| row.date.as_str())
+            .collect();
+        dates.sort_unstable();
+        assert_eq!(dates, ["2026.08.10", "2026.08.11"]);
     }
 
     fn capture_events<E>(
