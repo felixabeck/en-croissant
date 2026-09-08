@@ -14,6 +14,8 @@ import {
   closingTabsAtom,
   gameIdFamily,
   gameSessionFamily,
+  gameStateFamily,
+  pendingGameStartFamily,
   tabsAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
@@ -90,13 +92,28 @@ export default function BoardsPage() {
         }
         jotaiStore.set(closingTabsAtom, (previous: Set<string>) => new Set(previous).add(value));
         store.dispose();
+        const ownerGameIdAtom = gameIdFamily(value);
+        const ownerSessionAtom = gameSessionFamily(value);
+        const ownerStateAtom = gameStateFamily(value);
+        const ownerPendingStartAtom = pendingGameStartFamily(value);
         try {
+          await jotaiStore.get(ownerPendingStartAtom);
           await tauri.killEngines(value);
           await abortExactTabGame(
             value,
-            (tabId) => getDefaultStore().get(gameIdFamily(tabId)),
-            (tabId) => getDefaultStore().get(gameSessionFamily(tabId)),
+            () => jotaiStore.get(ownerGameIdAtom),
+            () => jotaiStore.get(ownerSessionAtom),
             (gameId, expectedSession) => tauri.abortGame(gameId, expectedSession),
+            (gameId, session) => {
+              if (
+                jotaiStore.get(ownerGameIdAtom) === gameId &&
+                jotaiStore.get(ownerSessionAtom) === session
+              ) {
+                jotaiStore.set(ownerGameIdAtom, null);
+                jotaiStore.set(ownerSessionAtom, null);
+                jotaiStore.set(ownerStateAtom, "gameOver");
+              }
+            },
           );
           startTransition(() => closeWorkspaceTab(value));
         } catch (error) {
@@ -410,7 +427,7 @@ function TabSwitch({ tab }: { tab: Tab }) {
           onChange={(currentNode) => setWindowsState({ currentNode })}
           resize={{ minimumPaneSizePercentage: 0 }}
         />
-        <BoardGame />
+        <BoardGame tabId={tab.value} />
       </TreeStateProvider>
     ))
     .with("analysis", () => (

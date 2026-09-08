@@ -1,40 +1,4 @@
-/** Payload ordering rules shared by commands, event listeners, and polling. */
-export function nextAcceptedGameRevision(
-    previous: bigint,
-    expectedSession: bigint | null,
-    payload: unknown,
-    allowSessionAdoption = false,
-): bigint | null {
-    if (
-        !payload ||
-        typeof payload !== "object" ||
-        !("revision" in payload) ||
-        !("session" in payload)
-    ) {
-        return null;
-    }
-    const revision = payload.revision;
-    const session = payload.session;
-    if (
-        typeof revision !== "bigint" ||
-        revision < BigInt(0) ||
-        typeof session !== "bigint" ||
-        session < BigInt(0) ||
-        (expectedSession === null && !allowSessionAdoption) ||
-        (expectedSession !== null && session !== expectedSession)
-    ) {
-        return null;
-    }
-    return revision > previous ? revision : null;
-}
-
-export function isLiveGameSession(
-    activeGameId: string | null,
-    candidateGameId: string,
-    cancelled: boolean,
-): boolean {
-    return !cancelled && activeGameId === candidateGameId;
-}
+import { normalizeError } from "@/platform/errors";
 
 /**
  * A throttled renderer update belongs to exactly one native game session.
@@ -60,17 +24,35 @@ export function isCurrentQueuedGameUpdate(
 }
 
 /** Synchronous acquisition closes the double-click gap before React renders pending UI. */
-export class SingleFlightGuard {
-    #active = false;
+export class SingleFlightGuard<T = symbol> {
+    #active: T | null = null;
 
-    acquire(): boolean {
-        if (this.#active) return false;
-        this.#active = true;
+    acquire(token: T): boolean {
+        if (this.#active !== null) return false;
+        this.#active = token;
         return true;
     }
 
-    release(): void {
-        this.#active = false;
+    owns(token: T): boolean {
+        return this.#active === token;
+    }
+
+    release(token: T): boolean {
+        if (!this.owns(token)) return false;
+        this.#active = null;
+        return true;
+    }
+}
+
+export async function abortExactGame(
+    gameId: string,
+    session: bigint,
+    abort: (gameId: string, expectedSession: bigint) => Promise<unknown>,
+): Promise<void> {
+    try {
+        await abort(gameId, session);
+    } catch (error) {
+        if (normalizeError(error).backendCategory !== "missing-resource") throw error;
     }
 }
 
@@ -79,10 +61,12 @@ export async function abortExactTabGame(
     getGameId: (tabId: string) => string | null,
     getSession: (tabId: string) => bigint | null,
     abort: (gameId: string, expectedSession: bigint) => Promise<unknown>,
+    clear?: (gameId: string, session: bigint) => void,
 ): Promise<string | null> {
     const gameId = getGameId(tabId);
     const session = getSession(tabId);
     if (!gameId || session === null) return null;
-    await abort(gameId, session);
+    await abortExactGame(gameId, session, abort);
+    clear?.(gameId, session);
     return gameId;
 }

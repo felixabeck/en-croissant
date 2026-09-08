@@ -4,7 +4,7 @@ import { getDefaultStore } from "jotai";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 const fixtures = vi.hoisted(() => ({
-  abortExactTabGame: vi.fn(),
+  abortGame: vi.fn(),
   closeWorkspaceTab: vi.fn(),
   confirm: null as null | {
     pendingClose: { tabId: string } | null;
@@ -56,7 +56,9 @@ vi.mock("@/state/atoms", async () => {
     }),
     closingTabsAtom: atom<Set<string>>(new Set<string>()),
     gameIdFamily: atomFamily(() => atom<string | null>(null)),
-    gameSessionFamily: atomFamily(() => atom<string | null>(null)),
+    gameSessionFamily: atomFamily(() => atom<bigint | null>(null)),
+    gameStateFamily: atomFamily(() => atom<"settingUp" | "playing" | "gameOver">("settingUp")),
+    pendingGameStartFamily: atomFamily(() => atom<Promise<void> | null>(null)),
     tabsAtom,
   };
 });
@@ -72,7 +74,7 @@ vi.mock("@/state/keybinds", async () => {
 });
 vi.mock("@/platform/native", () => ({ platform: () => "linux" }));
 vi.mock("@/platform/tauri", () => ({
-  tauri: { abortGame: vi.fn(), killEngines: fixtures.killEngines },
+  tauri: { abortGame: fixtures.abortGame, killEngines: fixtures.killEngines },
 }));
 vi.mock("@/state/store/tree", () => ({ createTreeStore: fixtures.createTreeStore }));
 vi.mock("@/state/store/tabStorage", () => ({ tabStorage: { clone: vi.fn() } }));
@@ -81,7 +83,6 @@ vi.mock("@/utils/tabs", () => ({
   genID: () => "duplicate",
   isPersistentGameOrigin: () => fixtures.persistent,
 }));
-vi.mock("../boards/gameSession", () => ({ abortExactTabGame: fixtures.abortExactTabGame }));
 vi.mock("../files/notifyError", () => ({ notifyUnlessCancelled: fixtures.notifyUnlessCancelled }));
 vi.mock("jotai/utils", async () => {
   const actual = await vi.importActual<typeof import("jotai/utils")>("jotai/utils");
@@ -197,7 +198,15 @@ vi.mock("./NewTabHome", () => ({
 vi.mock("react-mosaic-component", () => ({ Mosaic: () => null }));
 
 import BoardsPage from "./BoardsPage";
-import { activeTabAtom, closingTabsAtom, tabsAtom } from "@/state/atoms";
+import {
+  activeTabAtom,
+  closingTabsAtom,
+  gameIdFamily,
+  gameSessionFamily,
+  gameStateFamily,
+  pendingGameStartFamily,
+  tabsAtom,
+} from "@/state/atoms";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -238,6 +247,11 @@ beforeEach(() => {
   store.set(tabsAtom, fixtures.tabs);
   store.set(activeTabAtom, "current");
   store.set(closingTabsAtom, new Set());
+  for (const tabId of ["current", "next"]) {
+    store.set(gameIdFamily(tabId), null);
+    store.set(gameSessionFamily(tabId), null);
+    store.set(pendingGameStartFamily(tabId), null);
+  }
   fixtures.confirm = null;
   fixtures.dirty = false;
   fixtures.persistent = false;
@@ -250,7 +264,7 @@ beforeEach(() => {
     fixtures.resolveNext = resolve;
   });
   fixtures.killEngines.mockResolvedValue(undefined);
-  fixtures.abortExactTabGame.mockResolvedValue(null);
+  fixtures.abortGame.mockResolvedValue(undefined);
   fixtures.createTreeStore.mockImplementation(() => ({
     dispose: fixtures.dispose,
     getState: () => ({ dirty: fixtures.dirty }),
@@ -284,6 +298,7 @@ test("keeps the current view while closing into a suspending next tab", async ()
     await closePromise;
   });
   expect(fixtures.closeWorkspaceTab).toHaveBeenCalledWith("current");
+  expect(fixtures.abortGame).not.toHaveBeenCalled();
   expect(container.querySelector('[data-testid="fallback"]')).toBeNull();
   expect(container.querySelector('[data-testid="view-current"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="view-next"]')).toBeNull();
@@ -352,6 +367,7 @@ test("deduplicates close teardown and holds intent until completion", async () =
 
   const first = fixtures.closeHandler!();
   const second = fixtures.closeHandler!();
+  await act(async () => Promise.resolve());
   expect(fixtures.killEngines).toHaveBeenCalledTimes(1);
   expect(store.get(closingTabsAtom).has("current")).toBe(true);
 
@@ -374,12 +390,71 @@ test("failed teardown releases close intent and permits a fresh close", async ()
   expect(fixtures.killEngines).toHaveBeenCalledTimes(2);
 });
 
+test("close waits for a pending start before exact cleanup and removal", async () => {
+  await renderPage();
+  const start = deferred<void>();
+  store.set(pendingGameStartFamily("current"), start.promise);
+  fixtures.closeHandler!();
+  await act(async () => Promise.resolve());
+  expect(fixtures.killEngines).not.toHaveBeenCalled();
+  expect(fixtures.closeWorkspaceTab).not.toHaveBeenCalled();
+
+  store.set(gameIdFamily("current"), "late-game");
+  store.set(gameSessionFamily("current"), 9n);
+  await act(async () => {
+    start.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(fixtures.abortGame).toHaveBeenCalledWith("late-game", 9n);
+  expect(fixtures.closeWorkspaceTab).toHaveBeenCalledWith("current");
+});
+
+test("closing a terminal tab with relinquished ownership does not abort", async () => {
+  await renderPage();
+  store.set(gameStateFamily("current"), "gameOver");
+  store.set(gameIdFamily("current"), null);
+  store.set(gameSessionFamily("current"), null);
+  await act(async () => fixtures.closeHandler!());
+  expect(fixtures.abortGame).not.toHaveBeenCalled();
+  expect(fixtures.closeWorkspaceTab).toHaveBeenCalledWith("current");
+});
+
+test("typed missing game permits close while genuine abort failure retains the tab", async () => {
+  await renderPage();
+  store.set(gameIdFamily("current"), "native-game");
+  store.set(gameSessionFamily("current"), 3n);
+  fixtures.abortGame.mockRejectedValueOnce({
+    tag: "backend-error",
+    category: "missing-resource",
+    message: "gone",
+  });
+  await act(async () => fixtures.closeHandler!());
+  expect(fixtures.closeWorkspaceTab).toHaveBeenCalledWith("current");
+
+  store.set(tabsAtom, fixtures.tabs);
+  store.set(activeTabAtom, "current");
+  store.set(gameIdFamily("current"), "native-game-2");
+  store.set(gameSessionFamily("current"), 4n);
+  fixtures.abortGame.mockRejectedValueOnce(new Error("abort failed"));
+  await renderPage();
+  await act(async () => fixtures.closeHandler!());
+  expect(store.get(tabsAtom).some((tab) => tab.value === "current")).toBe(true);
+  expect(store.get(gameIdFamily("current"))).toBe("native-game-2");
+  expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledWith(
+    "Common.Error",
+    expect.objectContaining({ message: "abort failed" }),
+  );
+});
+
 test("holds close intent through kill and game abort, then removes metadata before release", async () => {
   await renderPage();
   const kill = deferred<void>();
   const abort = deferred<null>();
   fixtures.killEngines.mockReturnValueOnce(kill.promise);
-  fixtures.abortExactTabGame.mockReturnValueOnce(abort.promise);
+  store.set(gameIdFamily("current"), "native-game");
+  store.set(gameSessionFamily("current"), 7n);
+  fixtures.abortGame.mockReturnValueOnce(abort.promise);
   let markerAtMetadataRemoval = false;
   let tabPresentAtMetadataRemoval = true;
   fixtures.closeWorkspaceTab.mockImplementationOnce(() => {
@@ -391,14 +466,16 @@ test("holds close intent through kill and game abort, then removes metadata befo
 
   fixtures.closeHandler!();
   expect(store.get(closingTabsAtom).has("current")).toBe(true);
-  expect(fixtures.abortExactTabGame).not.toHaveBeenCalled();
+  expect(fixtures.abortGame).not.toHaveBeenCalled();
 
   await act(async () => {
     kill.resolve();
     await Promise.resolve();
   });
-  expect(fixtures.abortExactTabGame).toHaveBeenCalledTimes(1);
+  expect(fixtures.abortGame).toHaveBeenCalledWith("native-game", 7n);
   expect(store.get(closingTabsAtom).has("current")).toBe(true);
+  expect(store.get(gameIdFamily("current"))).toBe("native-game");
+  expect(store.get(gameSessionFamily("current"))).toBe(7n);
 
   await act(async () => {
     abort.resolve(null);

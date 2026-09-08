@@ -13,9 +13,12 @@ function Probe({
   onEvent,
   onError,
 }: {
-  subscribe: (callback: (value: string) => void) => Promise<() => void>;
+  subscribe: (
+    callback: (value: string) => void,
+    onError?: (error: unknown, event: string) => void,
+  ) => Promise<() => void>;
   onEvent: (value: string, signal: AbortSignal) => void | Promise<void>;
-  onError: (error: { message: string }) => void;
+  onError: (error: { message: string }, event?: string) => void;
 }) {
   useTauriListener(subscribe, onEvent, { onError });
   return null;
@@ -117,7 +120,30 @@ describe("useTauriListener", () => {
 
     await act(async () => listener("event"));
 
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: "callback failed" }));
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "callback failed" }),
+      "event",
+    );
+  });
+
+  test("forwards adapter errors with their original event only while mounted", async () => {
+    let adapterError!: (error: unknown, event: string) => void;
+    const onError = vi.fn();
+    const subscribe = vi.fn(async (_callback, report) => {
+      adapterError = report!;
+      return vi.fn();
+    });
+    await act(async () =>
+      root.render(<Probe subscribe={subscribe} onEvent={vi.fn()} onError={onError} />),
+    );
+    act(() => adapterError(new Error("bad counter"), "raw-event"));
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "bad counter" }),
+      "raw-event",
+    );
+    await act(async () => root.unmount());
+    act(() => adapterError(new Error("late"), "late-event"));
+    expect(onError).toHaveBeenCalledTimes(1);
   });
 
   test("silences an async callback rejection after abort", async () => {

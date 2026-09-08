@@ -9,6 +9,7 @@ import {
     engineMovesFamily,
     engineProgressFamily,
     gameIdFamily,
+    pendingGameStartFamily,
     tabsAtom,
     tabEngineSettingsFamily,
     tabFamily,
@@ -20,6 +21,7 @@ test("closing a tab removes all cached tab and per-engine atom-family entries", 
     const store = getDefaultStore();
     store.set(tabFamily(tabId), "practice");
     store.set(gameIdFamily(tabId), "native-game");
+    store.set(pendingGameStartFamily(tabId), Promise.resolve());
     store.set(engineMovesFamily({ tab: tabId, engine: "engine" }), new Map());
     store.set(engineProgressFamily({ tab: tabId, engine: "engine" }), 42);
     store.set(
@@ -36,6 +38,7 @@ test("closing a tab removes all cached tab and per-engine atom-family entries", 
 
     expect([...tabFamily.getParams()]).not.toContain(tabId);
     expect([...gameIdFamily.getParams()]).not.toContain(tabId);
+    expect([...pendingGameStartFamily.getParams()]).not.toContain(tabId);
     expect([...engineMovesFamily.getParams()]).not.toContainEqual({ tab: tabId, engine: "engine" });
     expect([...engineProgressFamily.getParams()]).not.toContainEqual({
         tab: tabId,

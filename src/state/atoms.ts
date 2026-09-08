@@ -677,10 +677,10 @@ export const currentPuzzleAtom = tabValue(currentPuzzleFamily);
 // Game
 
 type GameState = "settingUp" | "playing" | "gameOver";
-const gameStateFamily = atomFamily((_tab: string) => atom<GameState>("settingUp"));
+export const gameStateFamily = atomFamily((_tab: string) => atom<GameState>("settingUp"));
 export const currentGameStateAtom = tabValue(gameStateFamily);
 
-const playersFamily = atomFamily((_tab: string) =>
+export const playersFamily = atomFamily((_tab: string) =>
     atom<{
         white: OpponentSettings;
         black: OpponentSettings;
@@ -692,6 +692,9 @@ export const gameIdFamily = atomFamily((_tab: string) => atom<string | null>(nul
 export const currentGameIdAtom = tabValue(gameIdFamily);
 export const gameSessionFamily = atomFamily((_tab: string) => atom<bigint | null>(null));
 export const currentGameSessionAtom = tabValue(gameSessionFamily);
+export const pendingGameStartFamily = atomFamily((_tab: string) =>
+    atom<Promise<void> | null>(null),
+);
 
 // Practice
 
@@ -969,6 +972,7 @@ export function disposeTabAtoms(tabId: string) {
         playersFamily,
         gameIdFamily,
         gameSessionFamily,
+        pendingGameStartFamily,
         practiceStateFamily,
         practiceMoveControllerFamily,
         practiceSessionStatsFamily,

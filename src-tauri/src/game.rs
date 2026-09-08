@@ -785,6 +785,7 @@ fn emit_terminal_event(controller: &mut GameController, app: &AppHandle) -> bool
 }
 
 const COMPLETED_GAME_SNAPSHOTS: usize = 128;
+const MAX_SAFE_JS_COUNTER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SessionDisposition {
@@ -1039,6 +1040,26 @@ impl GameManager {
         }
     }
 
+    fn allocate_session(&self) -> Result<u64, Error> {
+        let mut current = self.next_session.load(Ordering::Relaxed);
+        loop {
+            if current >= MAX_SAFE_JS_COUNTER {
+                return Err(Error::ResourceLimit(
+                    "game session generation exhausted".into(),
+                ));
+            }
+            match self.next_session.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(current + 1),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
     async fn publish_live(
         &self,
         game_id: GameId,
@@ -1151,11 +1172,7 @@ impl GameManager {
         self.ensure_accepting_starts()?;
         let lifecycle = self.lifecycle_lease(&game_id);
         let _transition = lifecycle.lock().await;
-        let session = self
-            .next_session
-            .fetch_add(1, Ordering::Relaxed)
-            .checked_add(1)
-            .ok_or_else(|| Error::ResourceLimit("game session generation exhausted".into()))?;
+        let session = self.allocate_session()?;
         let OpeningBookResult {
             config,
             polyglot_book,
@@ -3683,6 +3700,26 @@ mod tests {
     fn game_session_identity_is_preserved_in_state() {
         let controller = GameController::new("game".into(), 42, human_config()).unwrap();
         assert_eq!(controller.get_state().session, 42);
+    }
+
+    #[test]
+    fn session_allocation_accepts_the_final_safe_identity_and_then_stays_exhausted() {
+        let manager = GameManager::new();
+        manager
+            .next_session
+            .store(MAX_SAFE_JS_COUNTER - 1, Ordering::Relaxed);
+
+        assert_eq!(manager.allocate_session().unwrap(), MAX_SAFE_JS_COUNTER);
+        for _ in 0..2 {
+            assert!(matches!(
+                manager.allocate_session(),
+                Err(Error::ResourceLimit(_))
+            ));
+            assert_eq!(
+                manager.next_session.load(Ordering::Relaxed),
+                MAX_SAFE_JS_COUNTER
+            );
+        }
     }
 
     #[test]

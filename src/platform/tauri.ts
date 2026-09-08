@@ -1,5 +1,13 @@
 import { commands, events, type Result as GeneratedResult } from "@/bindings/generated";
 import { normalizeError } from "./errors";
+import {
+    encodeGameCounter,
+    type GameConfigInput,
+    normalizeClockUpdateEvent,
+    normalizeGameMoveEvent,
+    normalizeGameOverEvent,
+    normalizeGameState,
+} from "./gameTransport";
 
 type CommandResult<T> = GeneratedResult<T, unknown>;
 
@@ -12,7 +20,48 @@ type UnwrapResult<T> = [SuccessResult<T>] extends [never]
 type FacadeCommand<T> = T extends (...args: any[]) => Promise<any>
     ? (...args: Parameters<T>) => Promise<UnwrapResult<Awaited<ReturnType<T>>>>
     : never;
-type TauriCommands = { [Name in keyof typeof commands]: FacadeCommand<(typeof commands)[Name]> };
+type GeneratedCommands = {
+    [Name in keyof typeof commands]: FacadeCommand<(typeof commands)[Name]>;
+};
+type TauriCommands = Omit<GeneratedCommands, "startGame"> & {
+    startGame: (
+        gameId: string,
+        config: GameConfigInput,
+    ) => ReturnType<GeneratedCommands["startGame"]>;
+};
+
+const EXPECTED_SESSION_COMMANDS = new Set<PropertyKey>([
+    "getGameState",
+    "makeGameMove",
+    "takeBackGameMove",
+    "resignGame",
+    "abortGame",
+    "getGameEngineLogs",
+]);
+const GAME_STATE_COMMANDS = new Set<PropertyKey>([
+    "startGame",
+    "getGameState",
+    "makeGameMove",
+    "takeBackGameMove",
+    "resignGame",
+]);
+
+type EventEnvelope<T> = { payload: T };
+type EventAdapterError<T> = (error: unknown, event: EventEnvelope<T>) => void;
+
+function gameEventSubscription<T>(
+    subscribe: (callback: (event: EventEnvelope<T>) => void) => Promise<() => void>,
+    normalize: (payload: T) => T,
+) {
+    return (callback: (event: EventEnvelope<T>) => void, onError?: EventAdapterError<T>) =>
+        subscribe((event) => {
+            try {
+                callback({ ...event, payload: normalize(event.payload) });
+            } catch (error) {
+                onError?.(normalizeError(error), event);
+            }
+        });
+}
 
 export class TauriCommandError extends Error {
     readonly details;
@@ -51,8 +100,12 @@ export const tauri: TauriCommands = new Proxy(commands, {
         if (typeof command !== "function") return command;
         return async (...args: unknown[]) => {
             try {
+                if (EXPECTED_SESSION_COMMANDS.has(property)) {
+                    args[1] = encodeGameCounter(args[1] as bigint);
+                }
                 const result = await command(...args);
-                return isCommandResult(result) ? unwrapCommand(result) : result;
+                const value = isCommandResult(result) ? unwrapCommand(result) : result;
+                return GAME_STATE_COMMANDS.has(property) ? normalizeGameState(value) : value;
             } catch (error) {
                 if (error instanceof TauriCommandError) throw error;
                 throw new TauriCommandError(error);
@@ -65,14 +118,20 @@ export const tauri: TauriCommands = new Proxy(commands, {
 export const tauriSubscriptions = {
     bestMoves: (callback: Parameters<typeof events.bestMovesPayload.listen>[0]) =>
         events.bestMovesPayload.listen(callback),
-    clockUpdate: (callback: Parameters<typeof events.clockUpdateEvent.listen>[0]) =>
-        events.clockUpdateEvent.listen(callback),
+    clockUpdate: gameEventSubscription(
+        (callback) => events.clockUpdateEvent.listen(callback),
+        normalizeClockUpdateEvent,
+    ),
     convertProgress: (callback: Parameters<typeof events.convertProgress.listen>[0]) =>
         events.convertProgress.listen(callback),
-    gameMove: (callback: Parameters<typeof events.gameMoveEvent.listen>[0]) =>
-        events.gameMoveEvent.listen(callback),
-    gameOver: (callback: Parameters<typeof events.gameOverEvent.listen>[0]) =>
-        events.gameOverEvent.listen(callback),
+    gameMove: gameEventSubscription(
+        (callback) => events.gameMoveEvent.listen(callback),
+        normalizeGameMoveEvent,
+    ),
+    gameOver: gameEventSubscription(
+        (callback) => events.gameOverEvent.listen(callback),
+        normalizeGameOverEvent,
+    ),
     progress: (callback: Parameters<typeof events.progressEvent.listen>[0]) =>
         events.progressEvent.listen(callback),
 };

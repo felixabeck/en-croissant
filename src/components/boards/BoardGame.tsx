@@ -25,22 +25,25 @@ import type { Piece } from "chessops";
 import type { Key } from "@lichess-org/chessground/types";
 import { makeUci, parseUci } from "chessops";
 import { INITIAL_FEN } from "chessops/fen";
-import { useAtom, useAtomValue } from "jotai";
+import { getDefaultStore, useAtom, useAtomValue } from "jotai";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
 import type { Outcome } from "@/bindings";
-import { type EngineLog, type GameConfig, type GameResult } from "@/bindings";
+import { type EngineLog, type GameResult, type GameState as NativeGameState } from "@/bindings";
 import type { ChessgroundRef } from "@/chessground/Chessground";
-import { notifyListenerError, runUnlessCancelled } from "@/components/files/notifyError";
 import {
-  activeTabAtom,
+  notifyListenerError,
+  notifyUnlessCancelled,
+  runUnlessCancelled,
+} from "@/components/files/notifyError";
+import {
+  closingTabsAtom,
   flipBoardAfterMoveAtom,
-  currentGameIdAtom,
-  currentGameSessionAtom,
-  currentGameStateAtom,
-  currentPlayersAtom,
+  gameIdFamily,
+  gameSessionFamily,
+  gameStateFamily,
   gameInputColorAtom,
   gameOpeningBookEnabledAtom,
   gameOpeningBookMaxPlyAtom,
@@ -48,10 +51,13 @@ import {
   gamePlayer1SettingsAtom,
   gamePlayer2SettingsAtom,
   gameSameTimeControlAtom,
+  pendingGameStartFamily,
+  playersFamily,
   tabsAtom,
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
 import { useTauriListener } from "@/platform/useTauriListener";
+import { decodeGameCounter, type GameConfigInput } from "@/platform/gameTransport";
 import type { GameHeaders } from "@/utils/treeReducer";
 import EngineLogsView from "../common/EngineLogsView";
 import FileInput from "../common/FileInput";
@@ -63,12 +69,7 @@ import Board from "./Board";
 import IconAction from "../common/IconAction";
 import BoardControls from "./BoardControls";
 import EditingCard from "./EditingCard";
-import {
-  isCurrentQueuedGameUpdate,
-  isLiveGameSession,
-  nextAcceptedGameRevision,
-  SingleFlightGuard,
-} from "./gameSession";
+import { isCurrentQueuedGameUpdate, abortExactGame, SingleFlightGuard } from "./gameSession";
 import { OpponentForm, type OpponentSettings } from "./OpponentForm";
 import { toPlayerConfig } from "./playerConfig";
 import { PRODUCT_NAME } from "@/utils/product.json";
@@ -88,9 +89,16 @@ function mapBackendMoves(moves: { uci: string; clock: bigint | null }[]): Backen
   }));
 }
 
-function BoardGame() {
+function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
   const { t } = useTranslation();
-  const activeTab = useAtomValue(activeTabAtom);
+  const tRef = useRef(t);
+  tRef.current = t;
+  const atomStore = getDefaultStore();
+  const ownerGameStateAtom = gameStateFamily(ownerTabId);
+  const ownerPlayersAtom = playersFamily(ownerTabId);
+  const ownerGameIdAtom = gameIdFamily(ownerTabId);
+  const ownerSessionAtom = gameSessionFamily(ownerTabId);
+  const ownerPendingStartAtom = pendingGameStartFamily(ownerTabId);
 
   const [editingMode, toggleEditingMode] = useToggle();
   const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
@@ -125,10 +133,6 @@ function BoardGame() {
   const store = useContext(TreeStateContext)!;
   const root = useStore(store, (s) => s.root);
   const headers = useStore(store, (s) => s.headers);
-  const setFen = useStore(store, (s) => s.setFen);
-  const setHeaders = useStore(store, (s) => s.setHeaders);
-  const setResult = useStore(store, (s) => s.setResult);
-  const appendMove = useStore(store, (s) => s.appendMove);
   const resetTree = useStore(store, (s) => s.reset);
 
   const [, setTabs] = useAtom(tabsAtom);
@@ -136,31 +140,39 @@ function BoardGame() {
 
   const boardRef = useRef(null);
   const cgRef = useRef<ChessgroundRef>(null);
-  const [gameState, setGameState] = useAtom(currentGameStateAtom);
-  const [players, setPlayers] = useAtom(currentPlayersAtom);
+  const gameState = useAtomValue(ownerGameStateAtom);
+  const players = useAtomValue(ownerPlayersAtom);
 
   const [whiteTime, setWhiteTime] = useState<number | null>(null);
   const [blackTime, setBlackTime] = useState<number | null>(null);
-  const [gameId, setGameId] = useAtom(currentGameIdAtom);
-  const [backendSession, setBackendSession] = useAtom(currentGameSessionAtom);
+  const gameId = useAtomValue(ownerGameIdAtom);
+  const backendSession = useAtomValue(ownerSessionAtom);
   const liveGameIdRef = useRef<string | null>(gameId);
   liveGameIdRef.current = gameId;
   const sessionGenerationRef = useRef(0);
   const backendSessionRef = useRef<bigint | null>(backendSession);
   backendSessionRef.current = backendSession;
-  const latestRevisionRef = useRef(BigInt(-1));
-  const pendingMovesRef = useRef<{ uci: string; clock: number | null }[] | null>(null);
+  const moveRevisionRef = useRef(BigInt(-1));
+  const clockRevisionRef = useRef(BigInt(-1));
+  const pendingMovesRef = useRef<{
+    moves: { uci: string; clock: number | null }[];
+    revision: bigint;
+  } | null>(null);
   const pendingTimesRef = useRef<{
     white: number | null;
     black: number | null;
+    revision: bigint;
   } | null>(null);
   const queuedUpdateGenerationRef = useRef<number | null>(null);
   const queuedUpdateSessionRef = useRef<bigint | null>(null);
   const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const premoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const startInFlightRef = useRef<Promise<void> | null>(null);
-  const moveInFlightRef = useRef(false);
-  const takeBackGuardRef = useRef(new SingleFlightGuard());
+  const commandGuardRef = useRef(new SingleFlightGuard<symbol>());
+  const commandTokenRef = useRef<symbol | null>(null);
+  const logSequenceRef = useRef(0);
+  const logsOpenedRef = useRef(false);
+  const mountedRef = useRef(true);
+  const mountLeaseRef = useRef<symbol | null>(null);
   const [pendingCommand, setPendingCommand] = useState<
     "start" | "move" | "takeback" | "abort" | "resign" | null
   >(null);
@@ -175,45 +187,65 @@ function BoardGame() {
     queuedUpdateGenerationRef.current = null;
     queuedUpdateSessionRef.current = null;
   }, []);
-  const invalidateSession = useCallback(() => {
-    clearQueuedGameUpdates();
-    sessionGenerationRef.current += 1;
-    backendSessionRef.current = null;
-    setBackendSession(null);
-  }, [clearQueuedGameUpdates, setBackendSession]);
-  const abortLiveSession = useCallback(() => {
-    const liveGameId = liveGameIdRef.current;
-    const expectedSession = backendSessionRef.current;
-    invalidateSession();
-    if (liveGameId && expectedSession !== null) void tauri.abortGame(liveGameId, expectedSession);
-  }, [invalidateSession]);
-  const acceptAuthoritativeRevision = useCallback(
-    (payload: unknown, allowSessionAdoption = false): boolean => {
-      const nextRevision = nextAcceptedGameRevision(
-        latestRevisionRef.current,
-        backendSessionRef.current,
-        payload,
-        allowSessionAdoption,
-      );
-      if (nextRevision === null) return false;
-      if (
-        backendSessionRef.current === null &&
-        payload &&
-        typeof payload === "object" &&
-        "session" in payload
-      ) {
-        if (typeof payload.session === "bigint") {
-          backendSessionRef.current = payload.session;
-          setBackendSession(payload.session);
-        }
+  const clearOwnershipIfMatches = useCallback(
+    (ownedGameId: string, ownedSession: bigint) => {
+      const refsMatch =
+        liveGameIdRef.current === ownedGameId && backendSessionRef.current === ownedSession;
+      const atomsMatch =
+        atomStore.get(ownerGameIdAtom) === ownedGameId &&
+        atomStore.get(ownerSessionAtom) === ownedSession;
+      if (refsMatch) {
+        liveGameIdRef.current = null;
+        backendSessionRef.current = null;
       }
-      latestRevisionRef.current = nextRevision;
-      return true;
+      if (atomsMatch) {
+        atomStore.set(ownerGameIdAtom, null);
+        atomStore.set(ownerSessionAtom, null);
+      }
+      return atomsMatch;
     },
-    [setBackendSession],
+    [atomStore, ownerGameIdAtom, ownerSessionAtom],
+  );
+  const invalidateUiSession = useCallback(
+    (preserveCommandToken?: symbol) => {
+      clearQueuedGameUpdates();
+      sessionGenerationRef.current += 1;
+      if (!preserveCommandToken || commandTokenRef.current !== preserveCommandToken) {
+        commandTokenRef.current = null;
+        commandGuardRef.current = new SingleFlightGuard<symbol>();
+        setPendingCommand(null);
+      }
+      setCommandError(null);
+      logSequenceRef.current += 1;
+    },
+    [clearQueuedGameUpdates],
+  );
+
+  const ownsSession = useCallback(
+    (ownedGameId: string, ownedSession: bigint, generation: number) => {
+      return (
+        mountedRef.current &&
+        sessionGenerationRef.current === generation &&
+        liveGameIdRef.current === ownedGameId &&
+        backendSessionRef.current === ownedSession
+      );
+    },
+    [],
+  );
+
+  const cleanupExactIdentity = useCallback(
+    async (ownedGameId: string, ownedSession: bigint, complete = false) => {
+      await abortExactGame(ownedGameId, ownedSession, (id, session) =>
+        tauri.abortGame(id, session),
+      );
+      const retiredOwnedAtoms = clearOwnershipIfMatches(ownedGameId, ownedSession);
+      if (complete && retiredOwnedAtoms) atomStore.set(ownerGameStateAtom, "gameOver");
+    },
+    [atomStore, clearOwnershipIfMatches, ownerGameStateAtom],
   );
 
   const [logsOpened, toggleLogsOpened] = useToggle();
+  logsOpenedRef.current = logsOpened;
   const [logsColor, setLogsColor] = useState<"white" | "black">("white");
   const [engineLogs, setEngineLogs] = useState<EngineLog[]>([]);
   const [openingBookHandle, setOpeningBookHandle] = useAtom(gameOpeningBookHandleAtom);
@@ -226,48 +258,74 @@ function BoardGame() {
     (players.white.type === "human" && players.black.type === "engine") ||
     (players.black.type === "human" && players.white.type === "engine");
 
-  const orientation = headers.orientation || "white";
   const toggleOrientation = useCallback(() => {
-    setHeaders({
-      ...headers,
-      fen: root.fen,
-      orientation: orientation === "black" ? "white" : "black",
+    const tree = store.getState();
+    const currentOrientation = tree.headers.orientation || "white";
+    tree.setHeaders({
+      ...tree.headers,
+      fen: tree.root.fen,
+      orientation: currentOrientation === "black" ? "white" : "black",
     });
-  }, [headers, root.fen, orientation, setHeaders]);
+  }, [store]);
 
   const fetchEngineLogs = useCallback(async () => {
     const expectedSession = backendSession;
     if (!gameId || expectedSession === null || !hasEngine) return;
     const generation = sessionGenerationRef.current;
+    const request = ++logSequenceRef.current;
     let color = logsColor;
     if (players.white.type === "human" && players.black.type === "engine") {
       color = "black";
     } else if (players.black.type === "human" && players.white.type === "engine") {
       color = "white";
     }
-    const logs = await runUnlessCancelled(t("Common.Error"), () =>
-      tauri.getGameEngineLogs(gameId, expectedSession, color),
-    );
-    if (!logs) return;
-    if (
-      generation === sessionGenerationRef.current &&
-      liveGameIdRef.current === gameId &&
-      backendSessionRef.current === expectedSession
-    ) {
-      setEngineLogs(logs);
+    try {
+      const logs = await tauri.getGameEngineLogs(gameId, expectedSession, color);
+      if (
+        request === logSequenceRef.current &&
+        logsOpenedRef.current &&
+        ownsSession(gameId, expectedSession, generation)
+      ) {
+        setEngineLogs(logs);
+      }
+    } catch (error) {
+      if (
+        request === logSequenceRef.current &&
+        logsOpenedRef.current &&
+        ownsSession(gameId, expectedSession, generation)
+      ) {
+        notifyUnlessCancelled(tRef.current("Common.Error"), error);
+      }
     }
-  }, [gameId, logsColor, hasEngine, players.white.type, players.black.type, backendSession, t]);
+  }, [
+    gameId,
+    logsColor,
+    hasEngine,
+    players.white.type,
+    players.black.type,
+    backendSession,
+    ownsSession,
+  ]);
 
   useEffect(() => {
-    if (logsOpened) {
-      fetchEngineLogs();
-    }
-  }, [logsOpened, fetchEngineLogs]);
+    logSequenceRef.current += 1;
+    if (logsOpened) void fetchEngineLogs();
+  }, [logsColor, logsOpened, fetchEngineLogs]);
+
+  const changeLogsColor = useCallback(
+    (value: "white" | "black") => {
+      if (value === logsColor) return;
+      logSequenceRef.current += 1;
+      setLogsColor(value);
+    },
+    [logsColor],
+  );
 
   const syncTreeWithMoves = useCallback(
     (backendMoves: BackendMove[]) => {
+      const tree = store.getState();
       const treeMoves: string[] = [];
-      let node = root;
+      let node = tree.root;
       while (node.children.length > 0) {
         node = node.children[0];
         if (node.move) {
@@ -284,11 +342,11 @@ function BoardGame() {
       }
 
       if (needsReset) {
-        setFen(root.fen);
+        tree.setFen(tree.root.fen);
         for (const move of backendMoves) {
           const parsed = parseUci(move.uci);
           if (parsed) {
-            appendMove({
+            store.getState().appendMove({
               payload: parsed,
               clock: move.clock !== null ? Number(move.clock) : undefined,
             });
@@ -302,7 +360,7 @@ function BoardGame() {
           const move = backendMoves[i];
           const parsed = parseUci(move.uci);
           if (parsed) {
-            appendMove({
+            store.getState().appendMove({
               payload: parsed,
               clock: move.clock !== null ? Number(move.clock) : undefined,
             });
@@ -313,12 +371,12 @@ function BoardGame() {
 
       return false;
     },
-    [root, setFen, appendMove],
+    [store],
   );
 
   function changeToAnalysisMode() {
     setTabs((prev) =>
-      prev.map((tab) => (tab.value === activeTab ? { ...tab, type: "analysis" } : tab)),
+      prev.map((tab) => (tab.value === ownerTabId ? { ...tab, type: "analysis" } : tab)),
     );
   }
 
@@ -342,23 +400,87 @@ function BoardGame() {
     return moves;
   }
 
+  const syncTreeWithMovesRef = useRef(syncTreeWithMoves);
+  syncTreeWithMovesRef.current = syncTreeWithMoves;
+
+  const applyAuthoritativeState = useCallback(
+    (
+      state: NativeGameState,
+      ownedGameId: string,
+      ownedSession: bigint,
+      generation: number,
+      initialize = false,
+    ): boolean => {
+      if (
+        !ownsSession(ownedGameId, ownedSession, generation) ||
+        state.gameId !== ownedGameId ||
+        state.session !== ownedSession
+      ) {
+        return false;
+      }
+      if (state.revision < moveRevisionRef.current) return false;
+      if (atomStore.get(ownerGameStateAtom) === "gameOver" && state.status === "playing") {
+        return false;
+      }
+
+      if (initialize) store.getState().setFen(state.initialFen);
+      syncTreeWithMovesRef.current(mapBackendMoves(state.moves));
+      moveRevisionRef.current = state.revision;
+      if (state.revision > clockRevisionRef.current) {
+        clockRevisionRef.current = state.revision;
+        setWhiteTime(state.whiteTime !== null ? Number(state.whiteTime) : null);
+        setBlackTime(state.blackTime !== null ? Number(state.blackTime) : null);
+      }
+
+      if (state.status === "playing") {
+        atomStore.set(ownerGameStateAtom, "playing");
+      } else {
+        invalidateUiSession();
+        clearOwnershipIfMatches(ownedGameId, ownedSession);
+        atomStore.set(ownerGameStateAtom, "gameOver");
+        store.getState().setResult(gameResultToOutcome(state.status.finished.result));
+      }
+      return true;
+    },
+    [
+      atomStore,
+      clearOwnershipIfMatches,
+      invalidateUiSession,
+      ownerGameStateAtom,
+      ownsSession,
+      store,
+    ],
+  );
+
   async function startGame() {
-    if (startInFlightRef.current) return startInFlightRef.current;
-    // A replacement must atomically detach every buffered render update from the
-    // old native session before the new game id becomes observable.
-    invalidateSession();
-    const generation = sessionGenerationRef.current;
-    latestRevisionRef.current = BigInt(-1);
+    if (atomStore.get(closingTabsAtom).has(ownerTabId) || atomStore.get(ownerPendingStartAtom))
+      return;
+    const generation = sessionGenerationRef.current + 1;
+    const admission = Promise.withResolvers<void>();
+    const startToken = Symbol("start");
+    commandTokenRef.current = startToken;
+    setPendingCommand("start");
+    setCommandError(null);
     const run = async () => {
-      setPendingCommand("start");
-      setCommandError(null);
-      // The try opens before the config is built, not at the first await: toPlayerConfig throws
-      // for an engine player with no local engine selected. Outside the try that throw escaped
-      // run(), so the finally never cleared pendingCommand and the button stayed disabled with
-      // no error shown.
       try {
+        const retainedGameId = liveGameIdRef.current;
+        const retainedSession = backendSessionRef.current;
+        if (retainedGameId && retainedSession !== null) {
+          await cleanupExactIdentity(retainedGameId, retainedSession);
+        }
+        if (
+          !mountedRef.current ||
+          atomStore.get(closingTabsAtom).has(ownerTabId) ||
+          sessionGenerationRef.current + 1 !== generation
+        )
+          return;
+
+        invalidateUiSession(startToken);
+        setPendingCommand("start");
+        moveRevisionRef.current = BigInt(-1);
+        clockRevisionRef.current = BigInt(-1);
         const playerSettings = getPlayers();
-        setPlayers(playerSettings);
+        atomStore.set(ownerPlayersAtom, playerSettings);
 
         const boardOrientation =
           playerSettings.black.type === "human" && playerSettings.white.type === "engine"
@@ -367,12 +489,11 @@ function BoardGame() {
 
         // The backend event payload carries only an id. A monotonically unique id per
         // start makes delayed events from a prior session unambiguously discardable.
-        const newGameId = `${activeTab}-game-${generation}`;
-        setGameId(newGameId);
+        const newGameId = `${ownerTabId}-game-${crypto.randomUUID()}`;
 
         const initialMoves = getTreeMoves();
 
-        const config: GameConfig = {
+        const config: GameConfigInput = {
           white: toPlayerConfig(playerSettings.white),
           black: toPlayerConfig(playerSettings.black),
           whiteTimeControl: playerSettings.white.timeControl
@@ -393,32 +514,26 @@ function BoardGame() {
             openingBookEnabled && openingBookHandle
               ? { book: openingBookHandle, maxPly: Math.max(1, openingBookMaxPly) }
               : null,
-        } as GameConfig;
+        };
 
         const state = await tauri.startGame(newGameId, config);
+        liveGameIdRef.current = newGameId;
+        backendSessionRef.current = state.session;
+        atomStore.set(ownerGameIdAtom, newGameId);
+        atomStore.set(ownerSessionAtom, state.session);
+
         if (
-          sessionGenerationRef.current !== generation ||
-          !acceptAuthoritativeRevision(state, true)
+          !ownsSession(newGameId, state.session, generation) ||
+          atomStore.get(closingTabsAtom).has(ownerTabId)
         ) {
-          await tauri.abortGame(newGameId, state.session);
+          try {
+            await cleanupExactIdentity(newGameId, state.session);
+          } catch (error) {
+            notifyUnlessCancelled(tRef.current("Common.Error"), error);
+          }
           return;
         }
-
-        setWhiteTime(state.whiteTime !== null ? Number(state.whiteTime) : null);
-        setBlackTime(state.blackTime !== null ? Number(state.blackTime) : null);
-
-        setGameState("playing");
-
-        setFen(state.initialFen);
-        for (const move of mapBackendMoves(state.moves)) {
-          const parsed = parseUci(move.uci);
-          if (parsed) {
-            appendMove({
-              payload: parsed,
-              clock: move.clock ?? undefined,
-            });
-          }
-        }
+        applyAuthoritativeState(state, newGameId, state.session, generation, true);
 
         const now = new Date();
         const dateStr = now.toISOString().slice(0, 10).replace(/-/g, ".");
@@ -466,82 +581,81 @@ function BoardGame() {
           newHeaders.black_time_control = blackTimeControl;
         }
 
-        setHeaders({
-          ...headers,
+        store.getState().setHeaders({
+          ...store.getState().headers,
           ...newHeaders,
           fen: state.initialFen,
         });
 
         setTabs((prev) =>
           prev.map((tab) =>
-            tab.value === activeTab
+            tab.value === ownerTabId
               ? { ...tab, name: `${state.whitePlayer} vs. ${state.blackPlayer}` }
               : tab,
           ),
         );
       } catch (err) {
-        console.error("Failed to start game:", err);
-        if (sessionGenerationRef.current === generation) {
+        if (mountedRef.current && commandTokenRef.current === startToken) {
           setCommandError(err instanceof Error ? err.message : "Unable to start the game.");
         }
       } finally {
-        if (sessionGenerationRef.current === generation) setPendingCommand(null);
+        if (atomStore.get(ownerPendingStartAtom) === admission.promise) {
+          atomStore.set(ownerPendingStartAtom, null);
+        }
+        if (mountedRef.current && commandTokenRef.current === startToken) {
+          commandTokenRef.current = null;
+          setPendingCommand(null);
+        }
       }
     };
-    const promise = run();
-    startInFlightRef.current = promise;
-    try {
-      await promise;
-    } finally {
-      if (startInFlightRef.current === promise) startInFlightRef.current = null;
-    }
+    atomStore.set(ownerPendingStartAtom, admission.promise);
+    void run().then(admission.resolve, admission.reject);
+    await admission.promise;
   }
 
   const handleHumanMove = useCallback(
     async (uci: string): Promise<boolean> => {
-      if (!gameId || gameState !== "playing" || moveInFlightRef.current) return false;
+      if (!gameId || gameState !== "playing") return false;
       const generation = sessionGenerationRef.current;
       const expectedSession = backendSessionRef.current;
       if (expectedSession === null) return false;
-      moveInFlightRef.current = true;
+      const token = Symbol("move");
+      const guard = commandGuardRef.current;
+      if (!guard.acquire(token)) return false;
+      commandTokenRef.current = token;
       setPendingCommand("move");
       setCommandError(null);
       try {
         const state = await tauri.makeGameMove(gameId, expectedSession, uci);
         if (
-          generation !== sessionGenerationRef.current ||
-          liveGameIdRef.current !== gameId ||
-          state.gameId !== gameId ||
-          !acceptAuthoritativeRevision(state)
-        ) {
+          !guard.owns(token) ||
+          !applyAuthoritativeState(state, gameId, expectedSession, generation)
+        )
           return false;
-        }
-        syncTreeWithMovesRef.current(mapBackendMoves(state.moves));
-        setWhiteTime(state.whiteTime !== null ? Number(state.whiteTime) : null);
-        setBlackTime(state.blackTime !== null ? Number(state.blackTime) : null);
         if (!isPlayerVsEngine && autoFlipBoard) {
           toggleOrientation();
         }
         return true;
       } catch (err) {
-        console.error("Failed to make move:", err);
-        setCommandError(err instanceof Error ? err.message : "Move rejected. Please try again.");
-        // The command response is authoritative; recover from a rejected/stale
-        // submission instead of leaving a speculative UI line behind.
-        void tauri.getGameState(gameId, expectedSession).then((state) => {
-          if (
-            generation === sessionGenerationRef.current &&
-            liveGameIdRef.current === gameId &&
-            state.gameId === gameId &&
-            acceptAuthoritativeRevision(state)
-          ) {
-            syncTreeWithMovesRef.current(mapBackendMoves(state.moves));
+        if (guard.owns(token) && ownsSession(gameId, expectedSession, generation)) {
+          setCommandError(err instanceof Error ? err.message : "Move rejected. Please try again.");
+          try {
+            const recovered = await tauri.getGameState(gameId, expectedSession);
+            if (guard.owns(token)) {
+              applyAuthoritativeState(recovered, gameId, expectedSession, generation);
+            }
+          } catch (error) {
+            if (guard.owns(token) && ownsSession(gameId, expectedSession, generation)) {
+              notifyUnlessCancelled(t("Common.Error"), error);
+            }
           }
-        });
+        }
         return false;
       } finally {
-        moveInFlightRef.current = false;
-        setPendingCommand(null);
+        if (guard.release(token) && commandTokenRef.current === token) {
+          commandTokenRef.current = null;
+          setPendingCommand(null);
+        }
       }
     },
     [
@@ -550,7 +664,9 @@ function BoardGame() {
       toggleOrientation,
       isPlayerVsEngine,
       autoFlipBoard,
-      acceptAuthoritativeRevision,
+      applyAuthoritativeState,
+      ownsSession,
+      t,
     ],
   );
 
@@ -559,9 +675,6 @@ function BoardGame() {
   }, []);
 
   const THROTTLE_MS = 150;
-
-  const syncTreeWithMovesRef = useRef(syncTreeWithMoves);
-  syncTreeWithMovesRef.current = syncTreeWithMoves;
 
   const applyPendingUpdates = useCallback(() => {
     const queuedGeneration = queuedUpdateGenerationRef.current;
@@ -577,11 +690,11 @@ function BoardGame() {
       clearQueuedGameUpdates();
       return;
     }
-    if (pendingMovesRef.current) {
-      syncTreeWithMovesRef.current(pendingMovesRef.current);
+    if (pendingMovesRef.current && pendingMovesRef.current.revision === moveRevisionRef.current) {
+      syncTreeWithMovesRef.current(pendingMovesRef.current.moves);
       pendingMovesRef.current = null;
     }
-    if (pendingTimesRef.current) {
+    if (pendingTimesRef.current && pendingTimesRef.current.revision === clockRevisionRef.current) {
       setWhiteTime(pendingTimesRef.current.white);
       setBlackTime(pendingTimesRef.current.black);
       pendingTimesRef.current = null;
@@ -611,38 +724,53 @@ function BoardGame() {
   }, [applyPendingUpdates]);
 
   const onTakeBack = useCallback(async () => {
-    if (!gameId || gameState !== "playing" || !takeBackGuardRef.current.acquire()) return;
+    if (!gameId || gameState !== "playing") return;
     const generation = sessionGenerationRef.current;
     const expectedSession = backendSessionRef.current;
-    if (expectedSession === null) {
-      takeBackGuardRef.current.release();
-      return;
-    }
+    if (expectedSession === null) return;
+    const token = Symbol("takeback");
+    const guard = commandGuardRef.current;
+    if (!guard.acquire(token)) return;
+    commandTokenRef.current = token;
     setPendingCommand("takeback");
     setCommandError(null);
     try {
       const state = await tauri.takeBackGameMove(gameId, expectedSession);
-      if (
-        generation === sessionGenerationRef.current &&
-        liveGameIdRef.current === gameId &&
-        state.gameId === gameId &&
-        acceptAuthoritativeRevision(state)
-      ) {
-        syncTreeWithMovesRef.current(mapBackendMoves(state.moves));
-        setWhiteTime(state.whiteTime !== null ? Number(state.whiteTime) : null);
-        setBlackTime(state.blackTime !== null ? Number(state.blackTime) : null);
-      }
+      if (guard.owns(token)) applyAuthoritativeState(state, gameId, expectedSession, generation);
     } catch (err) {
-      setCommandError(err instanceof Error ? err.message : "Unable to take back the move.");
+      if (guard.owns(token) && ownsSession(gameId, expectedSession, generation)) {
+        setCommandError(err instanceof Error ? err.message : "Unable to take back the move.");
+      }
     } finally {
-      takeBackGuardRef.current.release();
-      setPendingCommand(null);
+      if (guard.release(token) && commandTokenRef.current === token) {
+        commandTokenRef.current = null;
+        setPendingCommand(null);
+      }
     }
-  }, [gameId, gameState, acceptAuthoritativeRevision]);
+  }, [gameId, gameState, applyAuthoritativeState, ownsSession]);
+
+  const reportGameEventError = useCallback((error: unknown, event?: { payload?: unknown }) => {
+    if (!mountedRef.current) return;
+    if (!event?.payload) {
+      notifyListenerError(error);
+      return;
+    }
+    const ownedGameId = liveGameIdRef.current;
+    const ownedSession = backendSessionRef.current;
+    if (!ownedGameId || ownedSession === null) return;
+    const payload = event.payload as { gameId?: unknown; session?: unknown };
+    if (payload.gameId !== ownedGameId) return;
+    try {
+      if (decodeGameCounter(payload.session, "session") !== ownedSession) return;
+    } catch {
+      // A malformed counter cannot be correlated by session, but the unique game id still can.
+    }
+    notifyListenerError(error);
+  }, []);
 
   const subscribeGameMove = useCallback(
-    (listener: Parameters<typeof tauriSubscriptions.gameMove>[0]) =>
-      tauriSubscriptions.gameMove(listener),
+    (...args: Parameters<typeof tauriSubscriptions.gameMove>) =>
+      tauriSubscriptions.gameMove(...args),
     [],
   );
   useTauriListener(
@@ -651,25 +779,34 @@ function BoardGame() {
       if (
         gameState !== "playing" ||
         payload.gameId !== gameId ||
-        !acceptAuthoritativeRevision(payload)
+        payload.session !== backendSessionRef.current ||
+        payload.revision <= moveRevisionRef.current
       )
         return;
 
-      pendingMovesRef.current = mapBackendMoves(payload.moves);
-      pendingTimesRef.current = {
-        white: payload.whiteTime !== null ? Number(payload.whiteTime) : null,
-        black: payload.blackTime !== null ? Number(payload.blackTime) : null,
+      moveRevisionRef.current = payload.revision;
+      pendingMovesRef.current = {
+        moves: mapBackendMoves(payload.moves),
+        revision: payload.revision,
       };
+      if (payload.revision > clockRevisionRef.current) {
+        clockRevisionRef.current = payload.revision;
+        pendingTimesRef.current = {
+          white: payload.whiteTime !== null ? Number(payload.whiteTime) : null,
+          black: payload.blackTime !== null ? Number(payload.blackTime) : null,
+          revision: payload.revision,
+        };
+      }
       queuedUpdateGenerationRef.current = sessionGenerationRef.current;
       queuedUpdateSessionRef.current = payload.session;
       scheduleUpdate();
     },
-    { onError: notifyListenerError },
+    { onError: reportGameEventError },
   );
 
   const subscribeClockUpdate = useCallback(
-    (listener: Parameters<typeof tauriSubscriptions.clockUpdate>[0]) =>
-      tauriSubscriptions.clockUpdate(listener),
+    (...args: Parameters<typeof tauriSubscriptions.clockUpdate>) =>
+      tauriSubscriptions.clockUpdate(...args),
     [],
   );
   useTauriListener(
@@ -678,18 +815,20 @@ function BoardGame() {
       if (
         gameState !== "playing" ||
         payload.gameId !== gameId ||
-        !acceptAuthoritativeRevision(payload)
+        payload.session !== backendSessionRef.current ||
+        payload.revision <= clockRevisionRef.current
       )
         return;
+      clockRevisionRef.current = payload.revision;
       setWhiteTime(payload.whiteTime !== null ? Number(payload.whiteTime) : null);
       setBlackTime(payload.blackTime !== null ? Number(payload.blackTime) : null);
     },
-    { onError: notifyListenerError },
+    { onError: reportGameEventError },
   );
 
   const subscribeGameOver = useCallback(
-    (listener: Parameters<typeof tauriSubscriptions.gameOver>[0]) =>
-      tauriSubscriptions.gameOver(listener),
+    (...args: Parameters<typeof tauriSubscriptions.gameOver>) =>
+      tauriSubscriptions.gameOver(...args),
     [],
   );
   useTauriListener(
@@ -698,18 +837,19 @@ function BoardGame() {
       if (
         gameState !== "playing" ||
         payload.gameId !== gameId ||
-        !acceptAuthoritativeRevision(payload)
+        payload.session !== backendSessionRef.current ||
+        payload.revision < moveRevisionRef.current
       )
         return;
 
-      clearQueuedGameUpdates();
-
+      moveRevisionRef.current = payload.revision;
+      invalidateUiSession();
       syncTreeWithMovesRef.current(mapBackendMoves(payload.moves));
-
-      setGameState("gameOver");
-      setResult(gameResultToOutcome(payload.result));
+      clearOwnershipIfMatches(payload.gameId, payload.session);
+      atomStore.set(ownerGameStateAtom, "gameOver");
+      store.getState().setResult(gameResultToOutcome(payload.result));
     },
-    { onError: notifyListenerError },
+    { onError: reportGameEventError },
   );
 
   useEffect(() => {
@@ -719,35 +859,23 @@ function BoardGame() {
   }, [clearQueuedGameUpdates]);
 
   useEffect(() => {
-    let cancelled = false;
     if (gameState === "playing" && gameId) {
       const polledGameId = gameId;
       const expectedSession = backendSessionRef.current;
       if (expectedSession === null) return;
-      tauri.getGameState(gameId, expectedSession).then((state) => {
-        if (
-          isLiveGameSession(liveGameIdRef.current, polledGameId, cancelled) &&
-          state.gameId === polledGameId &&
-          acceptAuthoritativeRevision(state)
-        ) {
-          syncTreeWithMovesRef.current(mapBackendMoves(state.moves));
-
-          setWhiteTime(state.whiteTime !== null ? Number(state.whiteTime) : null);
-          setBlackTime(state.blackTime !== null ? Number(state.blackTime) : null);
-
-          if (state.status !== "playing") {
-            setGameState("gameOver");
-            if (typeof state.status === "object" && "finished" in state.status) {
-              setResult(gameResultToOutcome(state.status.finished.result));
-            }
+      const generation = sessionGenerationRef.current;
+      void tauri
+        .getGameState(gameId, expectedSession)
+        .then((state) => {
+          applyAuthoritativeState(state, polledGameId, expectedSession, generation);
+        })
+        .catch((error) => {
+          if (ownsSession(polledGameId, expectedSession, generation)) {
+            notifyUnlessCancelled(tRef.current("Common.Error"), error);
           }
-        }
-      });
+        });
     }
-    return () => {
-      cancelled = true;
-    };
-  }, [gameId, gameState, setGameState, setResult, acceptAuthoritativeRevision, backendSession]);
+  }, [gameId, gameState, applyAuthoritativeState, backendSession, ownsSession]);
 
   const movable = useMemo(() => {
     if (players.white.type === "human" && players.black.type === "human") {
@@ -779,17 +907,26 @@ function BoardGame() {
     const generation = sessionGenerationRef.current;
     const expectedSession = backendSessionRef.current;
     if (expectedSession === null) return;
+    const token = Symbol("abort");
+    const guard = commandGuardRef.current;
+    if (!guard.acquire(token)) return;
+    commandTokenRef.current = token;
     setPendingCommand("abort");
     setCommandError(null);
     try {
-      await tauri.abortGame(gameId, expectedSession);
-      if (generation !== sessionGenerationRef.current || liveGameIdRef.current !== gameId) return;
-      setGameState("gameOver");
-      setResult("*");
+      await cleanupExactIdentity(gameId, expectedSession, true);
+      if (!guard.owns(token) || sessionGenerationRef.current !== generation) return;
+      invalidateUiSession();
+      store.getState().setResult("*");
     } catch (err) {
-      setCommandError(err instanceof Error ? err.message : "Unable to abort the game.");
+      if (guard.owns(token) && ownsSession(gameId, expectedSession, generation)) {
+        setCommandError(err instanceof Error ? err.message : "Unable to abort the game.");
+      }
     } finally {
-      setPendingCommand(null);
+      if (guard.release(token) && commandTokenRef.current === token) {
+        commandTokenRef.current = null;
+        setPendingCommand(null);
+      }
     }
   }
 
@@ -798,44 +935,67 @@ function BoardGame() {
     const generation = sessionGenerationRef.current;
     const expectedSession = backendSessionRef.current;
     if (expectedSession === null) return;
+    const token = Symbol("resign");
+    const guard = commandGuardRef.current;
+    if (!guard.acquire(token)) return;
+    commandTokenRef.current = token;
     const losingColor = getResignationLosingColor();
     setPendingCommand("resign");
     setCommandError(null);
     try {
       const state = await tauri.resignGame(gameId, expectedSession, losingColor);
-      if (
-        generation === sessionGenerationRef.current &&
-        liveGameIdRef.current === gameId &&
-        state.gameId === gameId &&
-        state.status !== "playing" &&
-        acceptAuthoritativeRevision(state)
-      ) {
-        setGameState("gameOver");
-        if (typeof state.status === "object" && "finished" in state.status) {
-          setResult(gameResultToOutcome(state.status.finished.result));
-        }
-      }
+      if (guard.owns(token)) applyAuthoritativeState(state, gameId, expectedSession, generation);
     } catch (err) {
-      setCommandError(err instanceof Error ? err.message : "Unable to resign the game.");
+      if (guard.owns(token) && ownsSession(gameId, expectedSession, generation)) {
+        setCommandError(err instanceof Error ? err.message : "Unable to resign the game.");
+      }
     } finally {
-      setPendingCommand(null);
+      if (guard.release(token) && commandTokenRef.current === token) {
+        commandTokenRef.current = null;
+        setPendingCommand(null);
+      }
     }
   }
 
   async function handleNewGame() {
-    abortLiveSession();
-    setGameId(null);
-    setGameState("settingUp");
+    const ownedGameId = liveGameIdRef.current;
+    const ownedSession = backendSessionRef.current;
+    if (ownedGameId && ownedSession !== null) {
+      try {
+        await cleanupExactIdentity(ownedGameId, ownedSession);
+      } catch (error) {
+        notifyUnlessCancelled(t("Common.Error"), error);
+        return;
+      }
+    }
+    invalidateUiSession();
+    atomStore.set(ownerGameStateAtom, "settingUp");
     setWhiteTime(null);
     setBlackTime(null);
     resetTree();
   }
 
   useEffect(() => {
+    const mountLease = Symbol("board-game-mount");
+    mountLeaseRef.current = mountLease;
+    mountedRef.current = true;
     return () => {
-      abortLiveSession();
+      mountedRef.current = false;
+      invalidateUiSession();
+      const ownedGameId = liveGameIdRef.current;
+      const ownedSession = backendSessionRef.current;
+      void Promise.resolve()
+        .then(async () => {
+          if (mountLeaseRef.current !== mountLease) return;
+          if (ownedGameId && ownedSession !== null) {
+            await cleanupExactIdentity(ownedGameId, ownedSession, true);
+          }
+        })
+        .catch((error) => {
+          notifyUnlessCancelled(tRef.current("Common.Error"), error);
+        });
     };
-  }, [abortLiveSession]);
+  }, [cleanupExactIdentity, invalidateUiSession]);
 
   async function handleSelectOpeningBook() {
     const handle = await runUnlessCancelled(t("Common.Error"), () => tauri.issueOpeningBook());
@@ -871,7 +1031,7 @@ function BoardGame() {
                   {players.white.type === "engine" && players.black.type === "engine" ? (
                     <SegmentedControl
                       value={logsColor}
-                      onChange={(value) => setLogsColor(value as "white" | "black")}
+                      onChange={(value) => changeLogsColor(value as "white" | "black")}
                       data={[
                         { value: "white", label: t("Fen.White") },
                         { value: "black", label: t("Fen.Black") },
@@ -892,6 +1052,11 @@ function BoardGame() {
             />
           ) : (
             <>
+              {commandError && (
+                <Text c="red" role="alert">
+                  {commandError}
+                </Text>
+              )}
               {gameState === "settingUp" && (
                 <Stack h="100%" gap={0}>
                   <ScrollArea style={{ flex: 1 }} offsetScrollbars>
@@ -994,11 +1159,6 @@ function BoardGame() {
                   </ScrollArea>
 
                   <Divider pb="sm" />
-                  {commandError && (
-                    <Text c="red" role="alert">
-                      {commandError}
-                    </Text>
-                  )}
                   <Button
                     onClick={startGame}
                     fullWidth

@@ -2,19 +2,22 @@ import { useEffect, useRef } from "react";
 import { normalizeError, type AppError } from "./errors";
 
 type Unlisten = () => void;
-type Subscribe<T> = (listener: (event: T) => void) => Promise<Unlisten>;
-type ListenerErrorHandler = (error: AppError) => void;
+type Subscribe<T> = (
+    listener: (event: T) => void,
+    onError?: (error: unknown, event: T) => void,
+) => Promise<Unlisten>;
+type ListenerErrorHandler<T> = (error: AppError, event?: T) => void;
 
-export type TauriListenerOptions = {
+export type TauriListenerOptions<T> = {
     /** Called only while the owner is mounted; errors after abort are silent. */
-    onError: ListenerErrorHandler;
+    onError: ListenerErrorHandler<T>;
 };
 
 /** Registers exactly one listener and safely disposes registrations which resolve after unmount. */
 export function useTauriListener<T>(
     subscribe: Subscribe<T>,
     callback: (event: T, signal: AbortSignal) => void | Promise<void>,
-    options: TauriListenerOptions,
+    options: TauriListenerOptions<T>,
 ) {
     const callbackRef = useRef(callback);
     const onErrorRef = useRef(options.onError);
@@ -25,16 +28,19 @@ export function useTauriListener<T>(
         const controller = new AbortController();
         const { signal } = controller;
         let unlisten: Unlisten | undefined;
+        const report = (error: unknown, event?: T) => {
+            if (!signal.aborted) onErrorRef.current(normalizeError(error), event);
+        };
         void subscribe((event) => {
             if (signal.aborted) return;
             void (async () => {
                 try {
                     await callbackRef.current(event, signal);
                 } catch (error: unknown) {
-                    if (!signal.aborted) onErrorRef.current(normalizeError(error));
+                    report(error, event);
                 }
             })();
-        })
+        }, report)
             .then((registered) => {
                 if (signal.aborted) registered();
                 else unlisten = registered;
