@@ -34,6 +34,7 @@ use crate::{
     },
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
+    infra::keyed_locks::{KeyedLockLease, KeyedLocks},
     infra::path_authority::{
         EngineExecutable, EngineHandle, OpeningBookHandle, PathAuthority, PathOperation,
     },
@@ -809,6 +810,27 @@ struct CompletedGames {
     latest: HashMap<GameId, LatestSession>,
 }
 
+impl CompletedGames {
+    fn prune(&mut self, games: &DashMap<GameId, Arc<LiveSession>>) {
+        while self.snapshots.len() > COMPLETED_GAME_SNAPSHOTS {
+            self.snapshots.pop_front();
+        }
+        self.latest
+            .retain(|game_id, latest| match latest.disposition {
+                SessionDisposition::Active => games
+                    .get(game_id)
+                    .is_some_and(|live| live.session == latest.session),
+                SessionDisposition::Completed => self.snapshots.iter().any(|snapshot| {
+                    snapshot.game_id == *game_id && snapshot.session == latest.session
+                }),
+                SessionDisposition::Tombstoned => self
+                    .snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.game_id == *game_id),
+            });
+    }
+}
+
 /// One lifecycle owner per public game ID. Keeping controller, shutdown and
 /// loop handle together makes replacement and natural cleanup exact-session
 /// operations instead of independent best-effort map mutations.
@@ -878,7 +900,7 @@ pub struct GameManager {
     next_session: AtomicU64,
     sealed: AtomicBool,
     registration: Mutex<()>,
-    lifecycle: DashMap<GameId, Arc<Mutex<()>>>,
+    lifecycle: KeyedLocks<GameId>,
     completed: Mutex<CompletedGames>,
 }
 
@@ -998,16 +1020,14 @@ impl GameManager {
             next_session: AtomicU64::new(0),
             sealed: AtomicBool::new(false),
             registration: Mutex::new(()),
-            lifecycle: DashMap::new(),
+            lifecycle: KeyedLocks::default(),
             completed: Mutex::new(CompletedGames::default()),
         }
     }
 
-    fn lifecycle_slot(&self, game_id: &str) -> Arc<Mutex<()>> {
-        self.lifecycle
-            .entry(game_id.to_owned())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+    // The returned lease's lifetime is tied to this manager.
+    fn lifecycle_lease(&self, game_id: &str) -> KeyedLockLease<'_, GameId> {
+        self.lifecycle.lease(game_id.to_owned())
     }
 
     fn ensure_accepting_starts(&self) -> Result<(), Error> {
@@ -1018,24 +1038,50 @@ impl GameManager {
         }
     }
 
+    async fn publish_live(
+        &self,
+        game_id: GameId,
+        session: u64,
+        live: Arc<LiveSession>,
+        install_loop: impl FnOnce(),
+    ) -> Result<(), Error> {
+        let registration = self.registration.lock().await;
+        self.ensure_accepting_starts()?;
+        {
+            let mut completed = self.completed.lock().await;
+            self.games.insert(game_id.clone(), live);
+            completed.latest.insert(
+                game_id,
+                LatestSession {
+                    session,
+                    disposition: SessionDisposition::Active,
+                },
+            );
+            completed.prune(&self.games);
+        }
+        install_loop();
+        drop(registration);
+        Ok(())
+    }
+
     async fn complete_exact(
         &self,
         game_id: &str,
         session: u64,
         controller: &Arc<RwLock<GameController>>,
     ) {
-        if !self.session_is_current(game_id, session) {
-            return;
-        }
         let snapshot = controller.read().await.get_state();
         let mut completed = self.completed.lock().await;
-        let Some(latest) = completed.latest.get_mut(game_id) else {
-            return;
-        };
-        if latest.session != session || latest.disposition != SessionDisposition::Active {
+        let is_exact_live = self
+            .games
+            .get(game_id)
+            .is_some_and(|live| live.session == session);
+        let is_exact_active = completed.latest.get(game_id).is_some_and(|latest| {
+            latest.session == session && latest.disposition == SessionDisposition::Active
+        });
+        if !is_exact_live || !is_exact_active {
             return;
         }
-        latest.disposition = SessionDisposition::Completed;
         completed
             .snapshots
             .retain(|entry| entry.game_id != game_id || entry.session != session);
@@ -1044,16 +1090,40 @@ impl GameManager {
             session,
             state: snapshot,
         });
-        while completed.snapshots.len() > COMPLETED_GAME_SNAPSHOTS {
-            completed.snapshots.pop_front();
-        }
-        drop(completed);
-        // Publish the completed disposition before removing the live entry.
-        // Readers consequently observe either Live or the exact completed
-        // snapshot, never an Active session with neither representation.
         let _ = self
             .games
             .remove_if(game_id, |_, current| current.session == session);
+        completed.latest.insert(
+            game_id.to_owned(),
+            LatestSession {
+                session,
+                disposition: SessionDisposition::Completed,
+            },
+        );
+        completed.prune(&self.games);
+    }
+
+    fn retire_live_locked(
+        &self,
+        completed: &mut CompletedGames,
+        game_id: &str,
+        session: u64,
+    ) -> Option<Arc<LiveSession>> {
+        let removed = self
+            .games
+            .remove_if(game_id, |_, current| current.session == session)
+            .map(|(_, live)| live);
+        if removed.is_some() {
+            completed.latest.insert(
+                game_id.to_owned(),
+                LatestSession {
+                    session,
+                    disposition: SessionDisposition::Tombstoned,
+                },
+            );
+        }
+        completed.prune(&self.games);
+        removed
     }
 
     pub async fn start_game(
@@ -1065,7 +1135,7 @@ impl GameManager {
         engine_supervisor: Arc<EngineSupervisor>,
     ) -> Result<GameState, Error> {
         self.ensure_accepting_starts()?;
-        let lifecycle = self.lifecycle_slot(&game_id);
+        let lifecycle = self.lifecycle_lease(&game_id);
         let _transition = lifecycle.lock().await;
         let session = self
             .next_session
@@ -1190,9 +1260,10 @@ impl GameManager {
             // The lifecycle lock prevents a newer session from replacing this
             // exact one while it is joined. Remove before signaling so an
             // aborted replacement cannot become a completed snapshot.
-            let _ = self
-                .games
-                .remove_if(&game_id, |_, current| current.session == old_game.session);
+            {
+                let mut completed = self.completed.lock().await;
+                self.retire_live_locked(&mut completed, &game_id, old_game.session);
+            }
             if let Err(primary) = old_game
                 .shutdown_and_join(EngineDeadlines::default().quit)
                 .await
@@ -1215,17 +1286,34 @@ impl GameManager {
                 };
             }
         }
-        self.completed.lock().await.latest.insert(
-            game_id.clone(),
-            LatestSession {
-                session,
-                disposition: SessionDisposition::Active,
-            },
-        );
-        let registration = self.registration.lock().await;
-        if let Err(error) = self.ensure_accepting_starts() {
-            drop(registration);
-            self.completed.lock().await.latest.remove(&game_id);
+        let (start_loop, start_loop_rx) = tokio::sync::oneshot::channel();
+        let manager = Arc::downgrade(self);
+        let loop_game_id = game_id.clone();
+        let loop_live = live.clone();
+        let loop_app = app.clone();
+        let install_live = live.clone();
+        let publication = self
+            .publish_live(game_id.clone(), session, live.clone(), move || {
+                let join = tokio::spawn(async move {
+                    if start_loop_rx.await.is_ok() {
+                        game_loop(
+                            loop_game_id,
+                            loop_live,
+                            shutdown_rx,
+                            move_notify_rx,
+                            loop_app,
+                            manager,
+                        )
+                        .await;
+                    }
+                });
+                match install_live.join.lock() {
+                    Ok(mut slot) => *slot = Some(join),
+                    Err(poisoned) => *poisoned.into_inner() = Some(join),
+                }
+            })
+            .await;
+        if let Err(error) = publication {
             let engines = {
                 let controller = controller.read().await;
                 controller
@@ -1243,31 +1331,6 @@ impl GameManager {
                 }),
             };
         }
-        self.games.insert(game_id.clone(), live.clone());
-
-        let (start_loop, start_loop_rx) = tokio::sync::oneshot::channel();
-        let manager = Arc::downgrade(self);
-        let loop_game_id = game_id.clone();
-        let loop_live = live.clone();
-        let loop_app = app.clone();
-        let join = tokio::spawn(async move {
-            if start_loop_rx.await.is_ok() {
-                game_loop(
-                    loop_game_id,
-                    loop_live,
-                    shutdown_rx,
-                    move_notify_rx,
-                    loop_app,
-                    manager,
-                )
-                .await;
-            }
-        });
-        match live.join.lock() {
-            Ok(mut slot) => *slot = Some(join),
-            Err(poisoned) => *poisoned.into_inner() = Some(join),
-        }
-        drop(registration);
 
         // A FEN (or a validated initial move sequence) may already be
         // terminal. Register the LiveSession first, then publish exactly once
@@ -1311,7 +1374,7 @@ impl GameManager {
         game_id: &str,
         expected_session: u64,
     ) -> Result<GameState, Error> {
-        let lifecycle = self.lifecycle_slot(game_id);
+        let lifecycle = self.lifecycle_lease(game_id);
         let _operation = lifecycle.lock().await;
         if let Some(game) = self.games.get(game_id).map(|entry| entry.clone()) {
             if game.session != expected_session {
@@ -1345,7 +1408,7 @@ impl GameManager {
         uci: &str,
         app: &AppHandle,
     ) -> Result<GameState, Error> {
-        let lifecycle = self.lifecycle_slot(game_id);
+        let lifecycle = self.lifecycle_lease(game_id);
         let _operation = lifecycle.lock().await;
         let game = self.current_session(game_id, expected_session).await?;
 
@@ -1412,7 +1475,7 @@ impl GameManager {
         expected_session: u64,
         app: &AppHandle,
     ) -> Result<GameState, Error> {
-        let lifecycle = self.lifecycle_slot(game_id);
+        let lifecycle = self.lifecycle_lease(game_id);
         let _operation = lifecycle.lock().await;
         let game = self.current_session(game_id, expected_session).await?;
 
@@ -1480,7 +1543,7 @@ impl GameManager {
         color: &str,
         app: &AppHandle,
     ) -> Result<GameState, Error> {
-        let lifecycle = self.lifecycle_slot(game_id);
+        let lifecycle = self.lifecycle_lease(game_id);
         let _operation = lifecycle.lock().await;
         let game = self.current_session(game_id, expected_session).await?;
 
@@ -1544,8 +1607,8 @@ impl GameManager {
                 |(game_id, session)| async move {
                     let result = session.shutdown_and_join(join_budget).await;
                     if result.is_ok() {
-                        self.games
-                            .remove_if(&game_id, |_, current| current.session == session.session);
+                        let mut completed = self.completed.lock().await;
+                        self.retire_live_locked(&mut completed, &game_id, session.session);
                     }
                     (game_id, result)
                 },
@@ -1568,27 +1631,17 @@ impl GameManager {
     }
 
     pub async fn abort_game(&self, game_id: &str, expected_session: u64) -> Result<(), Error> {
-        let lifecycle = self.lifecycle_slot(game_id);
+        let lifecycle = self.lifecycle_lease(game_id);
         let _transition = lifecycle.lock().await;
         let game = self.current_session(game_id, expected_session).await?;
-        if self
-            .games
-            .remove_if(game_id, |_, current| current.session == expected_session)
-            .is_none()
-        {
+        let removed = {
+            let mut completed = self.completed.lock().await;
+            self.retire_live_locked(&mut completed, game_id, expected_session)
+        };
+        if removed.is_none() {
             return Err(Error::Conflict(
                 "game session changed before abort commit".into(),
             ));
-        }
-        {
-            let mut completed = self.completed.lock().await;
-            completed.latest.insert(
-                game_id.to_owned(),
-                LatestSession {
-                    session: expected_session,
-                    disposition: SessionDisposition::Tombstoned,
-                },
-            );
         }
         // The abort itself has already committed: the session is tombstoned and
         // removed, and a loop that ignored its signal had its engines terminated
@@ -1612,7 +1665,7 @@ impl GameManager {
         expected_session: u64,
         color: &str,
     ) -> Result<Vec<EngineLog>, Error> {
-        let lifecycle = self.lifecycle_slot(game_id);
+        let lifecycle = self.lifecycle_lease(game_id);
         let _operation = lifecycle.lock().await;
         let game = self.current_session(game_id, expected_session).await?;
 
@@ -2668,7 +2721,7 @@ async fn request_engine_move(
             let Some(manager) = manager.upgrade() else {
                 return Ok(());
             };
-            let lifecycle = manager.lifecycle_slot(game_id);
+            let lifecycle = manager.lifecycle_lease(game_id);
             let _operation = lifecycle.lock().await;
             let mut ctrl = controller.write().await;
             if !manager.session_is_current(game_id, context.session)
@@ -2804,7 +2857,7 @@ async fn request_engine_move(
     let Some(manager) = manager.upgrade() else {
         return Ok(());
     };
-    let lifecycle = manager.lifecycle_slot(game_id);
+    let lifecycle = manager.lifecycle_lease(game_id);
     let _operation = lifecycle.lock().await;
     let mut ctrl = controller.write().await;
     if !manager.session_is_current(game_id, context.session)
@@ -2977,6 +3030,26 @@ mod tests {
             key,
             generation: supervised.generation,
         }
+    }
+
+    fn test_live_session(
+        game_id: &str,
+        session: u64,
+    ) -> (Arc<LiveSession>, Arc<RwLock<GameController>>) {
+        let controller = Arc::new(RwLock::new(
+            GameController::new(game_id.into(), session, human_config()).unwrap(),
+        ));
+        let (shutdown, _) = watch::channel(false);
+        (
+            Arc::new(LiveSession {
+                session,
+                controller: controller.clone(),
+                shutdown,
+                join: std::sync::Mutex::new(None),
+                engine_supervisor: Arc::new(EngineSupervisor::default()),
+            }),
+            controller,
+        )
     }
 
     struct CancelsAfterFirstRead {
@@ -3661,16 +3734,177 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_game_lifecycle_slot_serializes_start_and_abort_transitions() {
-        let manager = Arc::new(GameManager::new());
-        let first_slot = manager.lifecycle_slot("game");
-        let held = first_slot.lock().await;
-        let second_slot = manager.lifecycle_slot("game");
-        assert!(Arc::ptr_eq(&first_slot, &second_slot));
-
-        assert!(second_slot.try_lock().is_err());
+    async fn same_game_lifecycle_lease_serializes_start_and_abort_transitions() {
+        let manager = GameManager::new();
+        let first = manager.lifecycle_lease("game");
+        let held = first.lock().await;
+        let second = manager.lifecycle_lease("game");
+        assert!(second.try_lock().is_err());
         drop(held);
-        assert!(second_slot.try_lock().is_ok());
+        drop(first);
+        assert!(second.try_lock().is_ok());
+        drop(second);
+        assert_eq!(manager.lifecycle.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn distinct_missing_game_operations_leave_no_lifecycle_entries() {
+        let manager = GameManager::new();
+        for index in 0..2_000 {
+            let game_id = format!("missing-{index}");
+            assert!(matches!(
+                manager.get_game_state(&game_id, 1).await,
+                Err(Error::GameNotFound(_))
+            ));
+        }
+        assert_eq!(manager.lifecycle.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancelled_registration_wait_cannot_publish_live_or_latest_state() {
+        let manager = GameManager::new();
+        let registration = manager.registration.lock().await;
+        let (live, _) = test_live_session("cancelled", 1);
+        let mut publication = Box::pin(manager.publish_live("cancelled".into(), 1, live, || {}));
+        assert!(futures_util::poll!(&mut publication).is_pending());
+        drop(publication);
+        drop(registration);
+
+        assert!(manager.games.get("cancelled").is_none());
+        assert!(!manager
+            .completed
+            .lock()
+            .await
+            .latest
+            .contains_key("cancelled"));
+
+        manager.sealed.store(true, Ordering::SeqCst);
+        let (rejected, _) = test_live_session("rejected", 2);
+        assert!(matches!(
+            manager
+                .publish_live("rejected".into(), 2, rejected, || {})
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(manager.games.get("rejected").is_none());
+        assert!(!manager
+            .completed
+            .lock()
+            .await
+            .latest
+            .contains_key("rejected"));
+    }
+
+    #[tokio::test]
+    async fn completion_abort_and_replacement_churn_keep_metadata_at_its_state_bound() {
+        let manager = GameManager::new();
+        let (active, _) = test_live_session("active", 10_000);
+        manager
+            .publish_live("active".into(), 10_000, active, || {})
+            .await
+            .unwrap();
+
+        for session in 1..=300 {
+            let game_id = format!("completed-{session}");
+            let (live, controller) = test_live_session(&game_id, session);
+            manager
+                .publish_live(game_id.clone(), session, live, || {})
+                .await
+                .unwrap();
+            manager.complete_exact(&game_id, session, &controller).await;
+        }
+        for session in 1..=150 {
+            let game_id = format!("aborted-{session}");
+            let (live, _) = test_live_session(&game_id, session);
+            manager
+                .publish_live(game_id.clone(), session, live, || {})
+                .await
+                .unwrap();
+            manager.abort_game(&game_id, session).await.unwrap();
+        }
+        for index in 1..=150 {
+            let game_id = format!("replaced-{index}");
+            let (old, _) = test_live_session(&game_id, 1);
+            manager
+                .publish_live(game_id.clone(), 1, old, || {})
+                .await
+                .unwrap();
+            {
+                let mut completed = manager.completed.lock().await;
+                manager.retire_live_locked(&mut completed, &game_id, 1);
+            }
+            let (replacement, _) = test_live_session(&game_id, 2);
+            manager
+                .publish_live(game_id.clone(), 2, replacement, || {})
+                .await
+                .unwrap();
+            manager.abort_game(&game_id, 2).await.unwrap();
+        }
+        for session in 1..=200 {
+            let (live, controller) = test_live_session("repeated", session);
+            manager
+                .publish_live("repeated".into(), session, live, || {})
+                .await
+                .unwrap();
+            manager
+                .complete_exact("repeated", session, &controller)
+                .await;
+        }
+
+        let completed = manager.completed.lock().await;
+        assert_eq!(completed.snapshots.len(), COMPLETED_GAME_SNAPSHOTS);
+        assert!(completed.latest.len() <= manager.games.len() + completed.snapshots.len());
+        assert!(completed.latest.get("active").is_some_and(|latest| {
+            latest.session == 10_000 && latest.disposition == SessionDisposition::Active
+        }));
+        for (game_id, latest) in &completed.latest {
+            match latest.disposition {
+                SessionDisposition::Active => assert!(manager
+                    .games
+                    .get(game_id)
+                    .is_some_and(|live| live.session == latest.session)),
+                SessionDisposition::Completed => assert!(completed
+                    .snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.game_id == *game_id
+                        && snapshot.session == latest.session)),
+                SessionDisposition::Tombstoned => assert!(completed
+                    .snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.game_id == *game_id)),
+            }
+        }
+        for game_id in completed.latest.keys() {
+            assert!(
+                manager.games.contains_key(game_id)
+                    || completed
+                        .snapshots
+                        .iter()
+                        .any(|snapshot| snapshot.game_id == *game_id)
+            );
+        }
+        drop(completed);
+        assert_eq!(manager.lifecycle.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn shutdown_fallback_retires_live_metadata() {
+        let manager = GameManager::new();
+        let (live, _) = test_live_session("shutdown", 7);
+        manager
+            .publish_live("shutdown".into(), 7, live, || {})
+            .await
+            .unwrap();
+
+        manager.shutdown_all(Duration::from_secs(1)).await.unwrap();
+
+        assert!(manager.games.is_empty());
+        assert!(!manager
+            .completed
+            .lock()
+            .await
+            .latest
+            .contains_key("shutdown"));
     }
 
     #[tokio::test]
@@ -3969,6 +4203,50 @@ mod tests {
             manager.get_game_state("game", 1).await,
             Err(Error::Conflict(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn evicting_a_tombstones_last_snapshot_never_reveals_the_old_session() {
+        let manager = GameManager::new();
+        {
+            let mut completed = manager.completed.lock().await;
+            completed.snapshots.push_back(CompletedSnapshot {
+                game_id: "old".into(),
+                session: 1,
+                state: GameController::new("old".into(), 1, human_config())
+                    .unwrap()
+                    .get_state(),
+            });
+            completed.latest.insert(
+                "old".into(),
+                LatestSession {
+                    session: 2,
+                    disposition: SessionDisposition::Tombstoned,
+                },
+            );
+        }
+        for session in 1..=COMPLETED_GAME_SNAPSHOTS {
+            let game_id = format!("new-{session}");
+            let (live, controller) = test_live_session(&game_id, session as u64);
+            manager
+                .publish_live(game_id.clone(), session as u64, live, || {})
+                .await
+                .unwrap();
+            manager
+                .complete_exact(&game_id, session as u64, &controller)
+                .await;
+        }
+
+        assert!(matches!(
+            manager.get_game_state("old", 1).await,
+            Err(Error::GameNotFound(_))
+        ));
+        let completed = manager.completed.lock().await;
+        assert!(!completed.latest.contains_key("old"));
+        assert!(!completed
+            .snapshots
+            .iter()
+            .any(|snapshot| snapshot.game_id == "old"));
     }
 
     #[test]

@@ -23,7 +23,10 @@ use tokio_util::sync::CancellationToken;
 use vampirc_uci::UciMessage;
 
 use crate::error::Error;
-use crate::infra::path_authority::{EngineExecutable, PathRef};
+use crate::infra::{
+    keyed_locks::{KeyedLockLease, KeyedLocks},
+    path_authority::{EngineExecutable, PathRef},
+};
 
 use super::{
     normalize_uci_moves_for_fen,
@@ -534,7 +537,7 @@ pub struct EngineSupervisor {
     // Every lifecycle transition for an exact key takes this lock before it
     // observes or mutates `actors`.  The map itself is concurrent, but it
     // cannot make remove → await shutdown → insert atomic.
-    lifecycle: DashMap<EngineKey, Arc<Mutex<()>>>,
+    lifecycle: KeyedLocks<EngineKey>,
 }
 
 impl EngineSupervisor {
@@ -592,11 +595,8 @@ impl EngineSupervisor {
         self.with_retired_executables(|retired| retired.ids.contains(executable))
     }
 
-    fn lifecycle_slot(&self, key: &EngineKey) -> Arc<Mutex<()>> {
-        self.lifecycle
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+    fn lifecycle_lease(&self, key: &EngineKey) -> KeyedLockLease<'_, EngineKey> {
+        self.lifecycle.lease(key.clone())
     }
 
     #[cfg(test)]
@@ -621,7 +621,7 @@ impl EngineSupervisor {
         executable: PathRef,
     ) -> Result<SupervisedEngine, Error> {
         validate_uci_text("engine", &engine_id)?;
-        let lifecycle = self.lifecycle_slot(&key);
+        let lifecycle = self.lifecycle_lease(&key);
         let _transition = lifecycle.lock().await;
         if self.sealed.load(Ordering::SeqCst) {
             return Err(Self::reject_replacement_during_shutdown(&actor).await);
@@ -669,7 +669,7 @@ impl EngineSupervisor {
     }
 
     pub async fn terminate_exact(&self, key: &EngineKey, generation: u64) -> Result<(), Error> {
-        let lifecycle = self.lifecycle_slot(key);
+        let lifecycle = self.lifecycle_lease(key);
         let _transition = lifecycle.lock().await;
         let Some(current) = self.actors.get(key).map(|entry| entry.clone()) else {
             return Ok(());
@@ -683,7 +683,7 @@ impl EngineSupervisor {
     }
 
     pub async fn stop_exact(&self, key: &EngineKey) -> Result<(), Error> {
-        let lifecycle = self.lifecycle_slot(key);
+        let lifecycle = self.lifecycle_lease(key);
         let _transition = lifecycle.lock().await;
         let Some(current) = self.actors.get(key).map(|entry| entry.clone()) else {
             return Ok(());
@@ -2423,6 +2423,18 @@ mod tests {
             .await
             .is_err());
         assert!(supervisor.get_exact(&key).is_none());
+        assert_eq!(supervisor.lifecycle.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_leases_are_reclaimed_after_distinct_missing_engine_operations() {
+        let supervisor = EngineSupervisor::default();
+        for index in 0..2_000 {
+            let key = EngineKey::new(format!("tab-{index}"), format!("engine-{index}")).unwrap();
+            supervisor.terminate_exact(&key, 1).await.unwrap();
+            supervisor.stop_exact(&key).await.unwrap();
+        }
+        assert_eq!(supervisor.lifecycle.len(), 0);
     }
 
     #[tokio::test]
@@ -2548,7 +2560,7 @@ mod tests {
 
         let registration = supervisor.registration.lock().await;
         let race_key = EngineKey::new("tab".into(), "racing".into()).unwrap();
-        let race_lifecycle = supervisor.lifecycle_slot(&race_key);
+        let race_lifecycle = supervisor.lifecycle_lease(&race_key);
         let ((racing, _), racing_terminated) = actor_with(&[], false, None);
         let replacement = tokio::spawn({
             let supervisor = supervisor.clone();
@@ -2616,7 +2628,7 @@ mod tests {
         let registration = supervisor.registration.lock().await;
         let executable = path_ref("racing-path");
         let key = EngineKey::new("tab".into(), "operation".into()).unwrap();
-        let lifecycle = supervisor.lifecycle_slot(&key);
+        let lifecycle = supervisor.lifecycle_lease(&key);
         let ((actor, _), terminated) = actor_with(&[], false, None);
         let replacement = tokio::spawn({
             let supervisor = supervisor.clone();
