@@ -2404,3 +2404,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Full auto assigns acceptance to the agent. The existing harness proves real startup/IPC/shutdown but cannot register an engine through native GTK; controlled actor tests prove the engine interleavings. Revisit when the harness gains live-engine registration.
 * **Decided by:** Codex drain 52f8d250-54f7-410c-a395-5187c124ada0 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"10851d30b7e71fd518271c02151543327780f45fe9d58a9f298d57aa0d0ff3c6","input_sha256":"f1f2553b1804133a7011ee229f76a70ff859ec3bed69f8aa95a1b6945baf59c4","kind":"mutation-receipt","operation":"03a52cca57587ef53c1c2cf9d4194cb70928ba68a4f4cad6a8e71fe5102185f3","options":{"section":null},"request_id_sha256":null,"results":["d-20260908-03","d-20260908-04","d-20260908-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20260908-06 — How should the renderer represent a terminated native game?
+
+* **Question:** How should the renderer represent a terminated native game?
+* **Governs:** f-20260901-22, f-20260901-23
+* **Chosen:** Keep the existing gameOver UI state and relinquish abortable native session ownership at authoritative termination, preserving the final board and result.
+* **Rejected:** Retaining the completed native identity as though it remained abortable, or adding a persisted terminal-session schema.
+* **Reason:** GameManager removes completed games from its live map and retains snapshots separately; native abort targets only live exact sessions. The existing UI already represents completion. Reversal: introduce a distinct retained terminal identity only if a consumer requires it, with completion/reset/close regression proof.
+* **Decided by:** Codex drain 0b810ced-b5af-451c-aaaf-d41acd0fc87d, autonomously · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"3544c5cea4530c821008961f3007286d0f11b49d4b7217e9a03fa88d129cbfcd","input_sha256":"f7bcacd8b34884505620f7e1d3610150b3b03b4244a44cb0d4e6015b7a20e118","kind":"mutation-receipt","operation":"a50d1c62b78b7936f1e23c5341af326bb94cc2de045bd6f1dcc3fb227ab82752","options":{"section":null},"request_id_sha256":null,"results":["d-20260908-06"],"target":"decisions-ledger","v":1} -->
