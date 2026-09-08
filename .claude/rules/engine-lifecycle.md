@@ -20,8 +20,10 @@ paths:
 ## The single rule
 
 **An engine is identified by its immutable id, never by name or path. Every spawn has an owner and
-a kill on every exit path. A `best_moves` payload is used only when the engine id, the tab, the FEN
-*and* the searched move list all match and the engine is still loaded.**
+a kill on every exit path. An interactive search reserves a native generation before spawning;
+automatic stop and every `best_moves` payload carry that exact generation. A payload is used only
+when its generation, engine id, tab, full FEN, searched move list, settings, go mode and executable
+identity still match and the engine is loaded.**
 
 ## Why
 
@@ -67,6 +69,8 @@ recomputed on the next read.
 
 * Treat `real_multipv` — not the configured `multipv` option — as the expected line count.
 * Exclude `lowerbound`/`upperbound` scores from anything treated as a final evaluation.
+* Admit a spawn before its first asynchronous spawn or registration wait. Tab close, retirement and
+  shutdown cancel that admission under the publication barrier; a canceled late actor is reaped.
 * State what resets a cached option belief when the process is replaced or the option is written by
   another path, and prove a cached `last_best_moves` still belongs to the current position.
 * Check that stopping one tab's engine cannot kill another tab's.

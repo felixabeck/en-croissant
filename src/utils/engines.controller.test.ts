@@ -5,6 +5,7 @@ const native = vi.hoisted(() => ({
     killEngine: vi.fn(),
     retireEngine: vi.fn(),
     getBestMoves: vi.fn(),
+    prepareEngineSearch: vi.fn(),
     getEngineWorkspace: vi.fn(),
     engineArchiveDestination: vi.fn(),
     downloadEngineArchive: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock("@/platform/tauri", async () => {
 import { TauriCommandError } from "@/platform/tauri";
 import {
     getBestMoves,
+    prepareEngineSearch,
     installDefaultEngine,
     killEngine,
     registerInstalledEngineHandle,
@@ -43,9 +45,16 @@ describe("engine IPC controllers", () => {
         native.killEngine.mockResolvedValue(undefined);
 
         await expect(stopEngine(engine, "tab-1")).resolves.toBeUndefined();
+        await expect(stopEngine(engine, "tab-1", "9007199254740993")).resolves.toBeUndefined();
         await expect(killEngine(engine, "tab-1")).resolves.toBeUndefined();
 
-        expect(native.stopEngine).toHaveBeenCalledWith("engine-1", "tab-1");
+        expect(native.stopEngine).toHaveBeenNthCalledWith(1, "engine-1", "tab-1", null);
+        expect(native.stopEngine).toHaveBeenNthCalledWith(
+            2,
+            "engine-1",
+            "tab-1",
+            "9007199254740993",
+        );
         expect(native.killEngine).toHaveBeenCalledWith("engine-1", "tab-1");
     });
 
@@ -61,7 +70,7 @@ describe("engine IPC controllers", () => {
         native.getBestMoves.mockResolvedValue([12, []]);
 
         await expect(
-            getBestMoves(engine, "tab-2", { t: "Depth", c: 12 }, {} as never),
+            getBestMoves(engine, "tab-2", { t: "Depth", c: 12 }, {} as never, "42"),
         ).resolves.toEqual([12, []]);
         expect(native.getBestMoves).toHaveBeenCalledWith(
             "engine-1",
@@ -69,13 +78,21 @@ describe("engine IPC controllers", () => {
             "tab-2",
             { t: "Depth", c: 12 },
             {},
+            "42",
         );
 
         const failure = new Error("native analysis failed");
         native.getBestMoves.mockRejectedValueOnce(failure);
-        await expect(getBestMoves(engine, "tab-2", { t: "Infinite" }, {} as never)).rejects.toBe(
-            failure,
-        );
+        await expect(
+            getBestMoves(engine, "tab-2", { t: "Infinite" }, {} as never, "42"),
+        ).rejects.toBe(failure);
+    });
+
+    it("prepares an opaque native search generation for the exact engine handle", async () => {
+        native.prepareEngineSearch.mockResolvedValue("9007199254740993");
+
+        await expect(prepareEngineSearch(engine, "tab-2")).resolves.toBe("9007199254740993");
+        expect(native.prepareEngineSearch).toHaveBeenCalledWith("engine-1", engine.handle, "tab-2");
     });
 });
 

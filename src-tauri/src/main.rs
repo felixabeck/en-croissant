@@ -52,7 +52,7 @@ use tauri_plugin_log::{Target, TargetKind};
 
 use crate::chess::{
     analyze_game, cancel_analysis, get_engine_config, get_engine_logs, kill_engine, kill_engines,
-    retire_engine, stop_engine,
+    prepare_engine_search, retire_engine, stop_engine,
 };
 use crate::chesscom::{download_chess_com_games, get_public_chess_com_json};
 use crate::db::{
@@ -1671,6 +1671,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             restore_workspace_entry,
             permanently_delete_workspace_entry,
             get_best_moves,
+            prepare_engine_search,
             analyze_game,
             cancel_analysis,
             stop_engine,

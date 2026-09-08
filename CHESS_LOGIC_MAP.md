@@ -72,8 +72,13 @@ Implemented in `src-tauri/src/engine/process.rs`.
    behind its own timeout (`deadlines.uciok`, `deadlines.readyok`).
 3. **Configuration** — `set_option` (e.g. `UCI_Chess960`, `Threads`), validated in `engine/types.rs`
    (`MAX_ENGINE_LIMIT`, `MAX_ENGINE_OPTION_RESOURCES`).
-4. **Search** — `set_position` takes a FEN plus follow-up moves; `go` is parameterised by `GoMode`
-   (time, depth, infinite).
+4. **Search admission** — the renderer calls `prepare_engine_search`, which reserves one bounded,
+   generation-owned native admission for the exact tab, application engine id and executable
+   capability. The opaque generation is serialized as a string. `get_best_moves` consumes it once;
+   tab close, exact stop, retirement and shutdown invalidate it before publication.
+5. **Search** — `set_position` takes a FEN plus follow-up moves; `go` is parameterised by `GoMode`
+   (time, depth, infinite). Every info and terminal payload carries the actor generation, and the
+   renderer accepts it only for the current transient attempt fingerprint.
 
 Output handling is asynchronous throughout: a dedicated `tokio::spawn` drains `stderr` line by line
 into `log::error!`, `stdout` is read through a `BufReader<ChildStdout>` by

@@ -4,8 +4,10 @@ import { defaultTree } from "@/utils/treeReducer";
 import {
     activeTabAtom,
     closeWorkspaceTabAtom,
+    closingTabsAtom,
     disposeTabAtoms,
     engineMovesFamily,
+    engineProgressFamily,
     gameIdFamily,
     tabsAtom,
     tabEngineSettingsFamily,
@@ -19,6 +21,7 @@ test("closing a tab removes all cached tab and per-engine atom-family entries", 
     store.set(tabFamily(tabId), "practice");
     store.set(gameIdFamily(tabId), "native-game");
     store.set(engineMovesFamily({ tab: tabId, engine: "engine" }), new Map());
+    store.set(engineProgressFamily({ tab: tabId, engine: "engine" }), 42);
     store.set(
         tabEngineSettingsFamily({
             tab: tabId,
@@ -34,9 +37,25 @@ test("closing a tab removes all cached tab and per-engine atom-family entries", 
     expect([...tabFamily.getParams()]).not.toContain(tabId);
     expect([...gameIdFamily.getParams()]).not.toContain(tabId);
     expect([...engineMovesFamily.getParams()]).not.toContainEqual({ tab: tabId, engine: "engine" });
+    expect([...engineProgressFamily.getParams()]).not.toContainEqual({
+        tab: tabId,
+        engine: "engine",
+    });
     expect([...tabEngineSettingsFamily.getParams()]).not.toContainEqual(
         expect.objectContaining({ tab: tabId }),
     );
+});
+
+test("close intent is transient and explicitly reclaimed", () => {
+    const store = createStore();
+    sessionStorage.clear();
+    const before = { ...sessionStorage };
+    store.set(closingTabsAtom, new Set(["closing-tab"]));
+    expect(store.get(closingTabsAtom).has("closing-tab")).toBe(true);
+    expect({ ...sessionStorage }).toEqual(before);
+    store.set(closingTabsAtom, new Set());
+    expect(store.get(closingTabsAtom)).toEqual(new Set());
+    expect({ ...sessionStorage }).toEqual(before);
 });
 
 test("immediate close removes tab metadata and its pending tree in one lifecycle operation", () => {

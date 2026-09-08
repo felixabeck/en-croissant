@@ -228,8 +228,16 @@ export function parsePersistedEngineJson(value: string) {
     return engineSchema.safeParse(parsed);
 }
 
-export async function stopEngine(engine: LocalEngine, tab: string): Promise<void> {
-    await tauri.stopEngine(engine.id, tab);
+export async function stopEngine(
+    engine: LocalEngine,
+    tab: string,
+    expectedGeneration: string | null = null,
+): Promise<void> {
+    await tauri.stopEngine(engine.id, tab, expectedGeneration);
+}
+
+export function prepareEngineSearch(engine: LocalEngine, tab: string): Promise<string> {
+    return tauri.prepareEngineSearch(engine.id, engine.handle, tab);
 }
 
 export async function killEngine(engine: LocalEngine, tab: string): Promise<void> {
@@ -245,8 +253,9 @@ export function getBestMoves(
     tab: string,
     goMode: GoMode,
     options: EngineOptions,
+    generation: string,
 ): Promise<[number, BestMoves[]] | null> {
-    return tauri.getBestMoves(engine.id, engine.handle, tab, goMode, options);
+    return tauri.getBestMoves(engine.id, engine.handle, tab, goMode, options, generation);
 }
 
 export function useDefaultEngines(os: Platform | undefined, opened: boolean) {

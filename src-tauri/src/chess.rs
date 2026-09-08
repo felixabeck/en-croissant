@@ -28,8 +28,8 @@ use vampirc_uci::{
 use crate::{
     db::{is_position_in_db, DatabaseRepository, GameQuery, PositionQueryJs},
     engine::{
-        parse_fen_and_apply_moves, resolve_engine_options, spawn_registered, EngineActor,
-        EngineDeadlines, EngineKey, EngineLog, EngineOption, EngineRequestId, GoMode,
+        parse_fen_and_apply_moves, resolve_engine_options, spawn_registered, AdmissionLease,
+        EngineActor, EngineDeadlines, EngineKey, EngineLog, EngineOption, EngineRequestId, GoMode,
         ResolvedEngineOption,
     },
     error::Error,
@@ -81,6 +81,7 @@ impl EngineProcess {
         executable: EngineExecutable,
         engine_id: String,
         executable_ref: crate::infra::path_authority::PathRef,
+        prepared_admission: Option<AdmissionLease>,
     ) -> Result<(Self, crate::engine::SupervisedEngine), Error> {
         let (supervised, ()) = spawn_registered(
             supervisor,
@@ -88,6 +89,7 @@ impl EngineProcess {
             executable,
             engine_id,
             executable_ref,
+            prepared_admission,
             |actor| async move { actor.init_uci().await },
         )
         .await?;
@@ -268,6 +270,7 @@ pub struct BestMovesPayload {
     pub fen: String,
     pub moves: Vec<String>,
     pub progress: f64,
+    pub generation: String,
 }
 
 fn invert_score(score: Score) -> Score {
@@ -431,10 +434,55 @@ pub async fn kill_engine(
 pub async fn stop_engine(
     engine: String,
     tab: String,
+    expected_generation: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     let key = EngineKey::new(tab, engine)?;
-    state.engine_supervisor.stop_exact(&key).await
+    let generation = expected_generation
+        .as_deref()
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| Error::InvalidInput("invalid engine generation".into()))
+        })
+        .transpose()?;
+    state
+        .engine_supervisor
+        .stop_generation(&key, generation)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn prepare_engine_search(
+    id: String,
+    engine: EngineHandle,
+    tab: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, Error> {
+    let executable_ref = engine.id.clone();
+    resolve_engine_executable(&state, &engine, PathOperation::EngineExecute)?;
+    let key = EngineKey::new(tab, id.clone())?;
+    state
+        .engine_supervisor
+        .prepare_engine_search(key, id, executable_ref)
+        .await
+}
+
+fn classify_interactive_search_result(
+    run_result: Result<(), Error>,
+    cancelled: bool,
+) -> Result<(), Error> {
+    if !cancelled {
+        return run_result;
+    }
+    match run_result {
+        Ok(())
+        | Err(Error::Cancellation | Error::AnalysisCancelled | Error::EngineDisconnected) => {
+            Err(Error::Cancellation)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[tauri::command]
@@ -467,10 +515,16 @@ pub async fn get_best_moves(
     tab: String,
     go_mode: GoMode,
     options: EngineOptions,
+    generation: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<(f32, Vec<BestMoves>)>, Error> {
     let executable_ref = engine.id.clone();
+    let key = EngineKey::new(tab.clone(), id.clone())?;
+    let admission = state
+        .engine_supervisor
+        .consume_engine_search(key.clone(), id.clone(), executable_ref.clone(), &generation)
+        .await?;
     let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineExecute)?;
     let mut resolved = {
         let mut authority = state
@@ -489,14 +543,13 @@ pub async fn get_best_moves(
         .flat_map(|option| std::mem::take(&mut option.resources))
         .collect();
 
-    let key = EngineKey::new(tab.clone(), id.clone())?;
-
     let (mut process, supervised) = EngineProcess::new(
         state.engine_supervisor.clone(),
         key.clone(),
         executable.with_resource_leases(child_leases),
         id.clone(),
         executable_ref,
+        Some(admission),
     )
     .await?;
 
@@ -544,6 +597,7 @@ pub async fn get_best_moves(
                                         fen: proc.options.fen.clone(),
                                         moves: proc.options.moves.clone(),
                                         progress,
+                                        generation: supervised.generation.to_string(),
                                     }
                                     .emit(&app)?;
                                     proc.last_depth = set.depth;
@@ -568,6 +622,7 @@ pub async fn get_best_moves(
                         fen: proc.options.fen.clone(),
                         moves: proc.options.moves.clone(),
                         progress: 100.0,
+                        generation: supervised.generation.to_string(),
                     }
                     .emit(&app)?;
                     proc.last_progress = 100.0;
@@ -578,6 +633,8 @@ pub async fn get_best_moves(
         Ok(())
     }
     .await;
+    let run_result =
+        classify_interactive_search_result(run_result, supervised.cancelled.load(Ordering::SeqCst));
     info!(
         "Engine process finished: tab: {}, engine: {}",
         tab, engine.id.id
@@ -751,6 +808,7 @@ pub async fn analyze_game(
         executable.with_resource_leases(child_leases),
         engine_id,
         executable_ref,
+        None,
     )
     .await
     {
@@ -1122,6 +1180,28 @@ mod tests {
             value: value.into(),
             resources: Vec::new(),
         }
+    }
+
+    #[test]
+    fn cancelled_interactive_search_normalizes_only_expected_stop_consequences() {
+        assert!(matches!(
+            classify_interactive_search_result(Err(Error::EngineDisconnected), true),
+            Err(Error::Cancellation)
+        ));
+        assert!(matches!(
+            classify_interactive_search_result(Ok(()), true),
+            Err(Error::Cancellation)
+        ));
+
+        let combined = Error::OperationAndCleanup {
+            primary: "search failed".into(),
+            cleanup: "reap failed".into(),
+        };
+        assert!(matches!(
+            classify_interactive_search_result(Err(combined), true),
+            Err(Error::OperationAndCleanup { primary, cleanup })
+                if primary == "search failed" && cleanup == "reap failed"
+        ));
     }
 
     #[tokio::test]
@@ -1617,6 +1697,7 @@ pub async fn get_engine_config(
         executable,
         probe_id,
         executable_ref,
+        None,
         collect_engine_configuration,
     )
     .await?;

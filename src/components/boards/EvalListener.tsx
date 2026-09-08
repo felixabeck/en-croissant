@@ -2,8 +2,16 @@ import { tauriSubscriptions } from "@/platform/tauri";
 import { parseUci } from "chessops";
 import { INITIAL_FEN, makeFen } from "chessops/fen";
 import equal from "fast-deep-equal";
-import { useAtom, useAtomValue } from "jotai";
-import { startTransition, useCallback, useContext, useEffect, useMemo, useRef } from "react";
+import { getDefaultStore, useAtom, useAtomValue } from "jotai";
+import {
+  startTransition,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
@@ -12,12 +20,14 @@ import { type BestMovesPayload, type EngineOptions, type GoMode } from "@/bindin
 import { notifyListenerError, notifyUnlessCancelled } from "@/components/files/notifyError";
 import {
   activeTabAtom,
+  closingTabsAtom,
   currentThreatAtom,
   engineMovesFamily,
   engineProgressFamily,
   enginesAtom,
   firstEngineWithLinesFamily,
   tabEngineSettingsFamily,
+  tabsAtom,
 } from "@/state/atoms";
 import { getVariationLine } from "@/utils/chess";
 import { getBestMoves as chessdbGetBestMoves } from "@/utils/chessdb/api";
@@ -26,12 +36,33 @@ import {
   type Engine,
   type LocalEngine,
   getBestMoves as localGetBestMoves,
+  prepareEngineSearch,
   stopEngine,
 } from "@/utils/engines";
 import { getBestMoves as lichessGetBestMoves } from "@/utils/lichess/api";
 import { useThrottledEffect } from "@/utils/misc";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { TreeStateContext } from "../common/TreeStateContext";
+
+type SearchAttempt = {
+  fingerprint: string;
+  tab: string;
+  nativeOwner: NativeSearchOwner | null;
+  predecessorOwner: NativeSearchOwner | null;
+  cancelled: boolean;
+};
+
+type NativeSearchOwner = {
+  engine: LocalEngine;
+  tab: string;
+  generation: string;
+  stopPromise: Promise<void> | null;
+};
+
+function stopNativeOwner(owner: NativeSearchOwner): Promise<void> {
+  owner.stopPromise ??= stopEngine(owner.engine, owner.tab, owner.generation);
+  return owner.stopPromise;
+}
 
 function EvalListener() {
   const [engines] = useAtom(enginesAtom);
@@ -124,6 +155,7 @@ function EngineListener({
   const store = useContext(TreeStateContext)!;
   const setScore = useStore(store, (s) => s.setScore);
   const activeTab = useAtomValue(activeTabAtom);
+  const closingTabs = useAtomValue(closingTabsAtom);
 
   const [, setProgress] = useAtom(engineProgressFamily({ engine: engine.id, tab: activeTab! }));
 
@@ -136,23 +168,69 @@ function EngineListener({
       tab: activeTab!,
     }),
   );
-  const settingsFingerprint = JSON.stringify({
-    enabled: settings.enabled,
-    go: settings.go,
-    options: settings.settings,
-    engine: engine.id,
-  });
-  const generation = useRef(0);
+  const settingsFingerprint = JSON.stringify(settings);
+  const activeAttempt = useRef<SearchAttempt | null>(null);
+  const [closeRevision, advanceCloseRevision] = useReducer((revision: number) => revision + 1, 0);
   const mounted = useRef(false);
+  const enabled = useRef(settings.enabled);
+  const gameOver = useRef(isGameOver);
+  enabled.current = settings.enabled;
+  gameOver.current = isGameOver;
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      const attempt = activeAttempt.current;
+      const owner = attempt?.nativeOwner ?? attempt?.predecessorOwner;
+      if (owner) {
+        void stopNativeOwner(owner).catch((error) =>
+          notifyUnlessCancelled(t("Common.Error"), error),
+        );
+      }
     };
-  }, []);
-  const requestFingerprint = `${activeTab}\u0000${searchingFen}\u0000${searchingMoves.join("\u0000")}\u0000${settingsFingerprint}`;
+  }, [t]);
+  useEffect(() => {
+    const jotaiStore = getDefaultStore();
+    const tab = activeTab!;
+    let wasClosing = jotaiStore.get(closingTabsAtom).has(tab);
+    return jotaiStore.sub(closingTabsAtom, () => {
+      const isClosing = jotaiStore.get(closingTabsAtom).has(tab);
+      if (isClosing && !wasClosing) {
+        const attempt = activeAttempt.current;
+        if (attempt?.tab === tab) attempt.cancelled = true;
+      } else if (!isClosing && wasClosing) {
+        advanceCloseRevision();
+      }
+      wasClosing = isClosing;
+    });
+  }, [activeTab]);
+  const requestFingerprint = JSON.stringify({
+    tab: activeTab,
+    closing: activeTab ? closingTabs.has(activeTab) : false,
+    closeRevision,
+    fen: searchingFen,
+    moves: searchingMoves,
+    settings: settingsFingerprint,
+    engine:
+      engine.type === "local"
+        ? { type: engine.type, id: engine.id, handle: engine.handle }
+        : { type: engine.type, id: engine.id, url: engine.url },
+  });
   const currentFingerprint = useRef(requestFingerprint);
   currentFingerprint.current = requestFingerprint;
+  const isCurrentAttempt = useCallback((attempt: SearchAttempt) => {
+    const jotaiStore = getDefaultStore();
+    return (
+      mounted.current &&
+      activeAttempt.current === attempt &&
+      !attempt.cancelled &&
+      currentFingerprint.current === attempt.fingerprint &&
+      enabled.current &&
+      !gameOver.current &&
+      !jotaiStore.get(closingTabsAtom).has(attempt.tab) &&
+      jotaiStore.get(tabsAtom).some((candidate) => candidate.value === attempt.tab)
+    );
+  }, []);
   const onBestMoves = useCallback(
     ({ payload }: { payload: BestMovesPayload }) => {
       const ev = payload.bestLines;
@@ -161,6 +239,9 @@ function EngineListener({
         payload.tab === activeTab &&
         payload.fen === searchingFen &&
         equal(payload.moves, searchingMoves) &&
+        activeAttempt.current?.nativeOwner?.generation === payload.generation &&
+        activeAttempt.current !== null &&
+        isCurrentAttempt(activeAttempt.current) &&
         settings.enabled &&
         !isGameOver &&
         currentFingerprint.current === requestFingerprint &&
@@ -206,6 +287,7 @@ function EngineListener({
       fen,
       moves,
       finalFen,
+      isCurrentAttempt,
     ],
   );
   const subscribeBestMoves = useCallback(
@@ -220,48 +302,97 @@ function EngineListener({
       match(engine.type)
         .with(
           "local",
-          () => (fen: string, goMode: GoMode, options: EngineOptions) =>
-            localGetBestMoves(engine as LocalEngine, fen, goMode, options),
+          () => (fen: string, goMode: GoMode, options: EngineOptions, generation: string) =>
+            localGetBestMoves(engine as LocalEngine, fen, goMode, options, generation),
         )
-        .with("chessdb", () => chessdbGetBestMoves)
-        .with("lichess", () => lichessGetBestMoves)
+        .with(
+          "chessdb",
+          () => (fen: string, goMode: GoMode, options: EngineOptions) =>
+            chessdbGetBestMoves(fen, goMode, options),
+        )
+        .with(
+          "lichess",
+          () => (fen: string, goMode: GoMode, options: EngineOptions) =>
+            lichessGetBestMoves(fen, goMode, options),
+        )
         .exhaustive(),
     [engine],
   );
 
+  useEffect(() => {
+    const previous = activeAttempt.current;
+    if (previous) previous.cancelled = true;
+    const attempt: SearchAttempt = {
+      fingerprint: requestFingerprint,
+      tab: activeTab!,
+      nativeOwner: null,
+      predecessorOwner: previous?.nativeOwner ?? previous?.predecessorOwner ?? null,
+      cancelled: false,
+    };
+    activeAttempt.current = attempt;
+    setEngineVariation(new Map());
+    setProgress(0);
+    return () => {
+      attempt.cancelled = true;
+    };
+  }, [activeTab, engine, requestFingerprint, setEngineVariation, setProgress]);
+
   useThrottledEffect(
     () => {
-      const currentGeneration = ++generation.current;
-      const stillCurrent = () =>
-        generation.current === currentGeneration &&
-        currentFingerprint.current === requestFingerprint;
+      const attempt = activeAttempt.current;
+      if (!attempt || attempt.fingerprint !== requestFingerprint) return;
       const runSearch = async () => {
         // A local engine has one native search slot per tab.  Cancelling it on
         // every identity change gives FEN/settings/go-mode changes a real
         // cancellation boundary instead of merely hiding stale UI results.
+        try {
+          if (attempt.predecessorOwner) {
+            await stopNativeOwner(attempt.predecessorOwner);
+            attempt.predecessorOwner = null;
+          }
+        } catch (error) {
+          if (isCurrentAttempt(attempt)) notifyUnlessCancelled(t("Common.Error"), error);
+          return;
+        }
         if (engine.type === "local") {
+          if (!isCurrentAttempt(attempt)) return;
+          let nativeGeneration: string;
           try {
-            await stopEngine(engine, activeTab!);
+            nativeGeneration = await prepareEngineSearch(engine, activeTab!);
           } catch (error) {
-            notifyUnlessCancelled(t("Common.Error"), error);
+            if (isCurrentAttempt(attempt)) notifyUnlessCancelled(t("Common.Error"), error);
             return;
           }
+          if (!isCurrentAttempt(attempt)) {
+            try {
+              await stopEngine(engine, activeTab!, nativeGeneration);
+            } catch (error) {
+              notifyUnlessCancelled(t("Common.Error"), error);
+            }
+            return;
+          }
+          attempt.nativeOwner = {
+            engine,
+            tab: activeTab!,
+            generation: nativeGeneration,
+            stopPromise: null,
+          };
         }
-        if (!mounted.current || !stillCurrent() || !settings.enabled || isGameOver) return;
+        if (!isCurrentAttempt(attempt)) return;
 
         const options =
           settings.settings?.map((s) =>
             s.type === "resource" ? s : { ...s, value: s.value.toString() },
           ) ?? [];
         try {
-          const result = await getBestMoves(activeTab!, settings.go, {
-            moves: searchingMoves,
-            fen: searchingFen,
-            extraOptions: options,
-          });
+          const result = await getBestMoves(
+            activeTab!,
+            settings.go,
+            { moves: searchingMoves, fen: searchingFen, extraOptions: options },
+            attempt.nativeOwner?.generation ?? "",
+          );
           if (
-            mounted.current &&
-            stillCurrent() &&
+            isCurrentAttempt(attempt) &&
             result &&
             result[1].length > 0 &&
             result[1].every((line) => line && line.score && Array.isArray(line.uciMoves))
@@ -275,7 +406,7 @@ function EngineListener({
             setProgress(progress);
           }
         } catch (error) {
-          if (mounted.current && stillCurrent()) {
+          if (isCurrentAttempt(attempt)) {
             notifyUnlessCancelled(t("Common.Error"), error);
           }
         }
@@ -295,6 +426,7 @@ function EngineListener({
       setEngineVariation,
       engine,
       requestFingerprint,
+      isCurrentAttempt,
       t,
     ],
   );

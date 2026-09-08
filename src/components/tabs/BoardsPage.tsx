@@ -11,6 +11,7 @@ import { match } from "ts-pattern";
 import {
   activeTabAtom,
   closeWorkspaceTabAtom,
+  closingTabsAtom,
   gameIdFamily,
   gameSessionFamily,
   tabsAtom,
@@ -80,11 +81,14 @@ export default function BoardsPage() {
       if (value !== null) {
         const closedTab = tabs.find((tab) => tab.value === value);
         if (!closedTab) return;
+        const jotaiStore = getDefaultStore();
+        if (jotaiStore.get(closingTabsAtom).has(value)) return;
         const store = createTreeStore(value);
         if (isPersistentGameOrigin(closedTab) && store.getState().dirty && !discard) {
           setPendingClose({ tabId: value, store });
           return;
         }
+        jotaiStore.set(closingTabsAtom, (previous: Set<string>) => new Set(previous).add(value));
         store.dispose();
         try {
           await tauri.killEngines(value);
@@ -94,11 +98,17 @@ export default function BoardsPage() {
             (tabId) => getDefaultStore().get(gameSessionFamily(tabId)),
             (gameId, expectedSession) => tauri.abortGame(gameId, expectedSession),
           );
+          startTransition(() => closeWorkspaceTab(value));
         } catch (error) {
           notifyUnlessCancelled(t("Common.Error"), error);
           return;
+        } finally {
+          jotaiStore.set(closingTabsAtom, (previous: Set<string>) => {
+            const next = new Set(previous);
+            next.delete(value);
+            return next;
+          });
         }
-        startTransition(() => closeWorkspaceTab(value));
       }
     },
     [closeWorkspaceTab, t, tabs],

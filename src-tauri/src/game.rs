@@ -943,6 +943,7 @@ async fn spawn_configured_game_engine(
         executable.with_resource_leases(child_leases),
         engine_id,
         executable_ref,
+        None,
         move |engine| async move {
             engine.init_uci().await?;
             for option in resolved {

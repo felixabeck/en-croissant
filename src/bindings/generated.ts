@@ -316,9 +316,17 @@ async permanentlyDeleteWorkspaceEntry(workspace: FileWorkspaceHandle, entry: Fil
     else return { status: "error", error: e  as any };
 }
 },
-async getBestMoves(id: string, engine: EngineHandle, tab: string, goMode: GoMode, options: EngineOptions) : Promise<Result<[number, BestMoves[]] | null, ErrorPayload>> {
+async getBestMoves(id: string, engine: EngineHandle, tab: string, goMode: GoMode, options: EngineOptions, generation: string) : Promise<Result<[number, BestMoves[]] | null, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_best_moves", { id, engine, tab, goMode, options }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_best_moves", { id, engine, tab, goMode, options, generation }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async prepareEngineSearch(id: string, engine: EngineHandle, tab: string) : Promise<Result<string, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("prepare_engine_search", { id, engine, tab }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -340,9 +348,9 @@ async cancelAnalysis(id: string) : Promise<Result<null, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
-async stopEngine(engine: string, tab: string) : Promise<Result<null, ErrorPayload>> {
+async stopEngine(engine: string, tab: string, expectedGeneration: string | null) : Promise<Result<null, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("stop_engine", { engine, tab }) };
+    return { status: "ok", data: await TAURI_INVOKE("stop_engine", { engine, tab, expectedGeneration }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -989,7 +997,7 @@ export type ArtifactPublication = { handle: FileWorkspaceHandle; durability: Com
 export type AuthenticationJob = string
 export type AuthenticationStatus = { state: "pending" } | { state: "succeeded"; account: LichessAccountMetadata; durability_uncertain?: boolean } | { state: "failed" }
 export type BestMoves = { nodes: bigint; depth: number; score: Score; uciMoves: string[]; sanMoves: string[]; multipv: number; nps: bigint }
-export type BestMovesPayload = { bestLines: BestMoves[]; engine: string; tab: string; fen: string; moves: string[]; progress: number }
+export type BestMovesPayload = { bestLines: BestMoves[]; engine: string; tab: string; fen: string; moves: string[]; progress: number; generation: string }
 export type ClockUpdateEvent = { gameId: string; session: bigint; revision: bigint; whiteTime: bigint | null; blackTime: bigint | null }
 /**
  * Persistence result paired with a committed path identifier. `DurabilityUncertain` means the

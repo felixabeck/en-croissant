@@ -93,6 +93,9 @@ export const activeTabAtom = atom(
     },
 );
 
+/** Transient close intent shared with async listeners; never persisted. */
+export const closingTabsAtom = atom<Set<string>>(new Set<string>());
+
 /** Removes tab metadata and all tab-local persistence as one synchronous lifecycle operation. */
 export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
     const workspace = get(workspaceAtom);
