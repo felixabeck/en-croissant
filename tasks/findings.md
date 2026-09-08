@@ -6234,6 +6234,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   load-bearing data, not just an argument" cause.
 * **Found by:** Claude Code, locate stage of `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
 
+* **Cancellation design evidence, 2026-09-08:** The Tauri-security lens identified the concrete A-B-A opening window in `DatabaseRepository::connection` (repository.rs:159-174): pathname-based pool creation plus later identity confirmation cannot authenticate the already-open SQLite connection if the leaf is swapped and restored around opening. `schema_specific_connection_expected_file` documents why exact-descriptor snapshots are used for puzzles. This extends the existing pathname repository design question here, not the cancellation token identity question. A proposed new rusqlite pathname adapter was rejected; a measured SQLite public auto-extension/progress-callback bridge can interrupt existing Diesel queries without adding connections or changing authority. Full live-WAL snapshotting would need repository-wide exclusion, pool retirement, all writer/schema paths, and a defined external-writer contract (probe-5); it is not a safe incidental replacement. Retain this opening risk as acceptance evidence for this repository redesign. Plan authorship and arbitration share root context; detection uses Codex, the family of existing code. No authority repair is claimed.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c8cf9656d88c175e6ca98599cd77860943137c2d1b64c20af4b8e69916a82389","input_sha256":"5c8f72d6c507e10b2151a5e87c79867e66d5fe373d7d260098bcba9bc9dcc9a3","kind":"mutation-receipt","operation":"b5d2c684de441b25197e34b137e15195730f73dd74256b6896b2cfb83c02eb15","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-03"],"target":"f-20260905-03","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
