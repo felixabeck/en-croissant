@@ -5360,6 +5360,9 @@ followed by a three-way guard that omits `color`. The guard, not the fetch, is w
 discriminator — `.claude/rules/async-resource-invariants.md` requires an identity per async
 operation, and colour is part of this one's identity.
 
+Root repair inspection found one remaining stale-header write: toggleOrientation still spreads render-time headers, and handleHumanMove calls it after authoritative terminal application when automatic flipping is enabled. It can overwrite the newly stored result. Use the live store headers for orientation updates and prove a terminal human move preserves its result while flipping. Also require an adversarial test where old log success/failure settles after the colour/close handler is invoked but before the subsequent passive effect: sequence/open refs currently change only on render/effect, leaving that interval unguarded. Confirm with failing tests before repair. These are within the same lifecycle and stale-result findings. Plan authorship and arbitration share root context; detection uses the same model family as code.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"586368d5053ea16f74c6d72de06f44c5ddcd6437d12c87c09fcde59c6b4d39c9","input_sha256":"c310cd243729169628799919b60b03e4bd36f757d04e9a22285a9dffb2264902","kind":"mutation-receipt","operation":"e050b0f79b8212acfe276f11a8ffe72f98e7bd0c5c42a9c492eee0a219e434d8","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-23"],"target":"f-20260901-23","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
