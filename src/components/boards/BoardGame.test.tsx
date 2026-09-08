@@ -71,7 +71,7 @@ vi.mock("zustand", () => ({
   useStore: (_store: unknown, selector: (state: unknown) => unknown) => selector(fixtures.tree),
 }));
 vi.mock("@/utils/chessops", () => ({ positionFromFen: () => [{ turn: "white" }, null] }));
-vi.mock("@/platform/tauri", () => {
+vi.mock("@/platform/tauri", async () => {
   const subscribe = (name: string) =>
     vi.fn(async (listener, onError) => {
       fixtures.listeners.set(name, listener);
@@ -79,6 +79,9 @@ vi.mock("@/platform/tauri", () => {
       return vi.fn();
     });
   return {
+    decodeGameCounter: (
+      await vi.importActual<typeof import("@/platform/tauri")>("@/platform/tauri")
+    ).decodeGameCounter,
     tauri: {
       abortGame: fixtures.abortGame,
       getGameEngineLogs: fixtures.getGameEngineLogs,

@@ -6,7 +6,7 @@ import {
     normalizeGameMoveEvent,
     normalizeGameOverEvent,
     normalizeGameState,
-} from "./gameTransport";
+} from "./tauri";
 
 const baseState = {
     gameId: "game",

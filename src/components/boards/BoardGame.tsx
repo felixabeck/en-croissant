@@ -1,4 +1,9 @@
-import { tauri, tauriSubscriptions } from "@/platform/tauri";
+import {
+  decodeGameCounter,
+  tauri,
+  tauriSubscriptions,
+  type GameConfigInput,
+} from "@/platform/tauri";
 import {
   Box,
   Button,
@@ -57,7 +62,6 @@ import {
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
 import { useTauriListener } from "@/platform/useTauriListener";
-import { decodeGameCounter, type GameConfigInput } from "@/platform/gameTransport";
 import type { GameHeaders } from "@/utils/treeReducer";
 import EngineLogsView from "../common/EngineLogsView";
 import FileInput from "../common/FileInput";
