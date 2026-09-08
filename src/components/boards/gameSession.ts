@@ -23,27 +23,6 @@ export function isCurrentQueuedGameUpdate(
     );
 }
 
-/** Synchronous acquisition closes the double-click gap before React renders pending UI. */
-export class SingleFlightGuard<T = symbol> {
-    #active: T | null = null;
-
-    acquire(token: T): boolean {
-        if (this.#active !== null) return false;
-        this.#active = token;
-        return true;
-    }
-
-    owns(token: T): boolean {
-        return this.#active === token;
-    }
-
-    release(token: T): boolean {
-        if (!this.owns(token)) return false;
-        this.#active = null;
-        return true;
-    }
-}
-
 export async function abortExactGame(
     gameId: string,
     session: bigint,

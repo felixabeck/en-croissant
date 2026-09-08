@@ -69,7 +69,7 @@ import Board from "./Board";
 import IconAction from "../common/IconAction";
 import BoardControls from "./BoardControls";
 import EditingCard from "./EditingCard";
-import { isCurrentQueuedGameUpdate, abortExactGame, SingleFlightGuard } from "./gameSession";
+import { isCurrentQueuedGameUpdate, abortExactGame } from "./gameSession";
 import { OpponentForm, type OpponentSettings } from "./OpponentForm";
 import { toPlayerConfig } from "./playerConfig";
 import { PRODUCT_NAME } from "@/utils/product.json";
@@ -81,6 +81,24 @@ function gameResultToOutcome(result: GameResult): Outcome {
 }
 
 type BackendMove = { uci: string; clock: number | null };
+
+type GameCommand = "move" | "takeback" | "abort" | "resign";
+
+type GameCommandContext = {
+  gameId: string;
+  session: bigint;
+  generation: number;
+};
+
+type GameCommandOptions<TResult, TReturn> = {
+  command: GameCommand;
+  unavailable: TReturn;
+  action: (context: GameCommandContext) => Promise<TResult>;
+  onSuccess: (result: TResult, context: GameCommandContext) => TReturn | Promise<TReturn>;
+  errorMessage: string;
+  recover?: (context: GameCommandContext) => Promise<NativeGameState>;
+  canApplySuccess?: (result: TResult, context: GameCommandContext) => boolean;
+};
 
 function mapBackendMoves(moves: { uci: string; clock: bigint | null }[]): BackendMove[] {
   return moves.map((m) => ({
@@ -94,11 +112,22 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
   const tRef = useRef(t);
   tRef.current = t;
   const atomStore = getDefaultStore();
-  const ownerGameStateAtom = gameStateFamily(ownerTabId);
-  const ownerPlayersAtom = playersFamily(ownerTabId);
-  const ownerGameIdAtom = gameIdFamily(ownerTabId);
-  const ownerSessionAtom = gameSessionFamily(ownerTabId);
-  const ownerPendingStartAtom = pendingGameStartFamily(ownerTabId);
+  const {
+    ownerGameStateAtom,
+    ownerPlayersAtom,
+    ownerGameIdAtom,
+    ownerSessionAtom,
+    ownerPendingStartAtom,
+  } = useMemo(
+    () => ({
+      ownerGameStateAtom: gameStateFamily(ownerTabId),
+      ownerPlayersAtom: playersFamily(ownerTabId),
+      ownerGameIdAtom: gameIdFamily(ownerTabId),
+      ownerSessionAtom: gameSessionFamily(ownerTabId),
+      ownerPendingStartAtom: pendingGameStartFamily(ownerTabId),
+    }),
+    [ownerTabId],
+  );
 
   const [editingMode, toggleEditingMode] = useToggle();
   const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
@@ -164,10 +193,10 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     revision: bigint;
   } | null>(null);
   const queuedUpdateGenerationRef = useRef<number | null>(null);
+  const queuedUpdateGameIdRef = useRef<string | null>(null);
   const queuedUpdateSessionRef = useRef<bigint | null>(null);
   const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const premoveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const commandGuardRef = useRef(new SingleFlightGuard<symbol>());
   const commandTokenRef = useRef<symbol | null>(null);
   const logSequenceRef = useRef(0);
   const logsOpenedRef = useRef(false);
@@ -185,8 +214,30 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     pendingMovesRef.current = null;
     pendingTimesRef.current = null;
     queuedUpdateGenerationRef.current = null;
+    queuedUpdateGameIdRef.current = null;
     queuedUpdateSessionRef.current = null;
   }, []);
+  const ownerTabExists = useCallback(
+    () => atomStore.get(tabsAtom).some((tab) => tab.value === ownerTabId),
+    [atomStore, ownerTabId],
+  );
+  const ownsMountedOwner = useCallback(
+    () => mountedRef.current && ownerTabExists(),
+    [ownerTabExists],
+  );
+  const ownsUiEpoch = useCallback(
+    (generation: number) => ownsMountedOwner() && sessionGenerationRef.current === generation,
+    [ownsMountedOwner],
+  );
+  const ownsUiSession = useCallback(
+    (ownedGameId: string, ownedSession: bigint, generation: number) =>
+      ownsUiEpoch(generation) &&
+      liveGameIdRef.current === ownedGameId &&
+      backendSessionRef.current === ownedSession &&
+      atomStore.get(ownerGameIdAtom) === ownedGameId &&
+      atomStore.get(ownerSessionAtom) === ownedSession,
+    [atomStore, ownerGameIdAtom, ownerSessionAtom, ownsUiEpoch],
+  );
   const clearOwnershipIfMatches = useCallback(
     (ownedGameId: string, ownedSession: bigint) => {
       const refsMatch =
@@ -212,7 +263,6 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       sessionGenerationRef.current += 1;
       if (!preserveCommandToken || commandTokenRef.current !== preserveCommandToken) {
         commandTokenRef.current = null;
-        commandGuardRef.current = new SingleFlightGuard<symbol>();
         setPendingCommand(null);
       }
       setCommandError(null);
@@ -221,27 +271,22 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     [clearQueuedGameUpdates],
   );
 
-  const ownsSession = useCallback(
-    (ownedGameId: string, ownedSession: bigint, generation: number) => {
-      return (
-        mountedRef.current &&
-        sessionGenerationRef.current === generation &&
-        liveGameIdRef.current === ownedGameId &&
-        backendSessionRef.current === ownedSession
-      );
-    },
-    [],
-  );
-
   const cleanupExactIdentity = useCallback(
-    async (ownedGameId: string, ownedSession: bigint, complete = false) => {
+    async (
+      ownedGameId: string,
+      ownedSession: bigint,
+      options: { finish?: true } = {},
+    ): Promise<boolean> => {
       await abortExactGame(ownedGameId, ownedSession, (id, session) =>
         tauri.abortGame(id, session),
       );
       const retiredOwnedAtoms = clearOwnershipIfMatches(ownedGameId, ownedSession);
-      if (complete && retiredOwnedAtoms) atomStore.set(ownerGameStateAtom, "gameOver");
+      if (options.finish && retiredOwnedAtoms && ownerTabExists()) {
+        atomStore.set(ownerGameStateAtom, "gameOver");
+      }
+      return retiredOwnedAtoms;
     },
-    [atomStore, clearOwnershipIfMatches, ownerGameStateAtom],
+    [atomStore, clearOwnershipIfMatches, ownerGameStateAtom, ownerTabExists],
   );
 
   const [logsOpened, toggleLogsOpened] = useToggle();
@@ -272,6 +317,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     const expectedSession = backendSession;
     if (!gameId || expectedSession === null || !hasEngine) return;
     const generation = sessionGenerationRef.current;
+    if (!ownsUiSession(gameId, expectedSession, generation)) return;
     const request = ++logSequenceRef.current;
     let color = logsColor;
     if (players.white.type === "human" && players.black.type === "engine") {
@@ -284,7 +330,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       if (
         request === logSequenceRef.current &&
         logsOpenedRef.current &&
-        ownsSession(gameId, expectedSession, generation)
+        ownsUiSession(gameId, expectedSession, generation)
       ) {
         setEngineLogs(logs);
       }
@@ -292,7 +338,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       if (
         request === logSequenceRef.current &&
         logsOpenedRef.current &&
-        ownsSession(gameId, expectedSession, generation)
+        ownsUiSession(gameId, expectedSession, generation)
       ) {
         notifyUnlessCancelled(tRef.current("Common.Error"), error);
       }
@@ -304,7 +350,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     players.white.type,
     players.black.type,
     backendSession,
-    ownsSession,
+    ownsUiSession,
   ]);
 
   useEffect(() => {
@@ -412,7 +458,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       initialize = false,
     ): boolean => {
       if (
-        !ownsSession(ownedGameId, ownedSession, generation) ||
+        !ownsUiSession(ownedGameId, ownedSession, generation) ||
         state.gameId !== ownedGameId ||
         state.session !== ownedSession
       ) {
@@ -447,13 +493,17 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       clearOwnershipIfMatches,
       invalidateUiSession,
       ownerGameStateAtom,
-      ownsSession,
+      ownsUiSession,
       store,
     ],
   );
 
   async function startGame() {
-    if (atomStore.get(closingTabsAtom).has(ownerTabId) || atomStore.get(ownerPendingStartAtom))
+    if (
+      !ownsMountedOwner() ||
+      atomStore.get(closingTabsAtom).has(ownerTabId) ||
+      atomStore.get(ownerPendingStartAtom)
+    )
       return;
     const generation = sessionGenerationRef.current + 1;
     const admission = Promise.withResolvers<void>();
@@ -469,7 +519,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
           await cleanupExactIdentity(retainedGameId, retainedSession);
         }
         if (
-          !mountedRef.current ||
+          !ownsMountedOwner() ||
           atomStore.get(closingTabsAtom).has(ownerTabId) ||
           sessionGenerationRef.current + 1 !== generation
         )
@@ -487,8 +537,8 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
             ? "black"
             : "white";
 
-        // The backend event payload carries only an id. A monotonically unique id per
-        // start makes delayed events from a prior session unambiguously discardable.
+        // Events carry gameId, session and revision. A unique gameId still permits safe
+        // correlation when a malformed session counter cannot be normalized.
         const newGameId = `${ownerTabId}-game-${crypto.randomUUID()}`;
 
         const initialMoves = getTreeMoves();
@@ -523,11 +573,11 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         atomStore.set(ownerSessionAtom, state.session);
 
         if (
-          !ownsSession(newGameId, state.session, generation) ||
+          !ownsUiSession(newGameId, state.session, generation) ||
           atomStore.get(closingTabsAtom).has(ownerTabId)
         ) {
           try {
-            await cleanupExactIdentity(newGameId, state.session);
+            await cleanupExactIdentity(newGameId, state.session, { finish: true });
           } catch (error) {
             notifyUnlessCancelled(tRef.current("Common.Error"), error);
           }
@@ -595,16 +645,16 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
           ),
         );
       } catch (err) {
-        if (mountedRef.current && commandTokenRef.current === startToken) {
+        if (ownsMountedOwner() && commandTokenRef.current === startToken) {
           setCommandError(err instanceof Error ? err.message : "Unable to start the game.");
         }
       } finally {
         if (atomStore.get(ownerPendingStartAtom) === admission.promise) {
           atomStore.set(ownerPendingStartAtom, null);
         }
-        if (mountedRef.current && commandTokenRef.current === startToken) {
+        if (commandTokenRef.current === startToken) {
           commandTokenRef.current = null;
-          setPendingCommand(null);
+          if (ownsMountedOwner()) setPendingCommand(null);
         }
       }
     };
@@ -613,78 +663,113 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     await admission.promise;
   }
 
-  const handleHumanMove = useCallback(
-    async (uci: string): Promise<boolean> => {
-      if (!gameId || gameState !== "playing") return false;
+  const runGameCommand = useCallback(
+    async <TResult, TReturn>({
+      command,
+      unavailable,
+      action,
+      onSuccess,
+      errorMessage,
+      recover,
+      canApplySuccess,
+    }: GameCommandOptions<TResult, TReturn>): Promise<TReturn> => {
+      if (!gameId || gameState !== "playing") return unavailable;
+      const session = backendSessionRef.current;
+      if (session === null || commandTokenRef.current !== null) return unavailable;
       const generation = sessionGenerationRef.current;
-      const expectedSession = backendSessionRef.current;
-      if (expectedSession === null) return false;
-      const token = Symbol("move");
-      const guard = commandGuardRef.current;
-      if (!guard.acquire(token)) return false;
+      const token = Symbol(command);
+      const context = { gameId, session, generation };
+      const ownsToken = () => commandTokenRef.current === token;
+      if (!ownsUiSession(gameId, session, generation)) return unavailable;
+      const ownsCommandSession = () => ownsToken() && ownsUiSession(gameId, session, generation);
+
       commandTokenRef.current = token;
-      setPendingCommand("move");
+      setPendingCommand(command);
       setCommandError(null);
       try {
-        const state = await tauri.makeGameMove(gameId, expectedSession, uci);
-        if (
-          !guard.owns(token) ||
-          !applyAuthoritativeState(state, gameId, expectedSession, generation)
-        )
-          return false;
-        if (!isPlayerVsEngine && autoFlipBoard) {
-          toggleOrientation();
+        const result = await action(context);
+        if (!ownsToken()) return unavailable;
+        if (canApplySuccess ? !canApplySuccess(result, context) : !ownsCommandSession()) {
+          return unavailable;
         }
-        return true;
-      } catch (err) {
-        if (guard.owns(token) && ownsSession(gameId, expectedSession, generation)) {
-          setCommandError(err instanceof Error ? err.message : "Move rejected. Please try again.");
-          try {
-            const recovered = await tauri.getGameState(gameId, expectedSession);
-            if (guard.owns(token)) {
-              applyAuthoritativeState(recovered, gameId, expectedSession, generation);
-            }
-          } catch (error) {
-            if (guard.owns(token) && ownsSession(gameId, expectedSession, generation)) {
-              notifyUnlessCancelled(t("Common.Error"), error);
+        return await onSuccess(result, context);
+      } catch (error) {
+        if (ownsCommandSession()) {
+          setCommandError(error instanceof Error ? error.message : errorMessage);
+          if (recover) {
+            try {
+              const recovered = await recover(context);
+              if (ownsCommandSession()) {
+                applyAuthoritativeState(recovered, gameId, session, generation);
+              }
+            } catch (recoveryError) {
+              if (ownsCommandSession()) {
+                notifyUnlessCancelled(tRef.current("Common.Error"), recoveryError);
+              }
             }
           }
         }
-        return false;
+        return unavailable;
       } finally {
-        if (guard.release(token) && commandTokenRef.current === token) {
+        if (commandTokenRef.current === token) {
           commandTokenRef.current = null;
-          setPendingCommand(null);
+          if (ownsMountedOwner()) setPendingCommand(null);
         }
       }
     },
-    [
-      gameId,
-      gameState,
-      toggleOrientation,
-      isPlayerVsEngine,
-      autoFlipBoard,
-      applyAuthoritativeState,
-      ownsSession,
-      t,
-    ],
+    [applyAuthoritativeState, gameId, gameState, ownsMountedOwner, ownsUiSession],
   );
 
-  const queueKeyboardPremove = useCallback((from: Key, to: Key) => {
-    return cgRef.current?.queuePremove(from, to) ?? false;
-  }, []);
+  const handleHumanMove = useCallback(
+    (uci: string): Promise<boolean> =>
+      runGameCommand({
+        command: "move",
+        unavailable: false,
+        action: ({ gameId, session }) => tauri.makeGameMove(gameId, session, uci),
+        onSuccess: (state, { gameId, session, generation }) => {
+          if (!applyAuthoritativeState(state, gameId, session, generation)) return false;
+          if (!isPlayerVsEngine && autoFlipBoard) toggleOrientation();
+          return true;
+        },
+        errorMessage: "Move rejected. Please try again.",
+        recover: ({ gameId, session }) => tauri.getGameState(gameId, session),
+      }),
+    [applyAuthoritativeState, autoFlipBoard, isPlayerVsEngine, runGameCommand, toggleOrientation],
+  );
+
+  const queueKeyboardPremove = useCallback(
+    (from: Key, to: Key) => {
+      const ownedGameId = liveGameIdRef.current;
+      const ownedSession = backendSessionRef.current;
+      if (
+        !ownedGameId ||
+        ownedSession === null ||
+        !ownsUiSession(ownedGameId, ownedSession, sessionGenerationRef.current)
+      ) {
+        return false;
+      }
+      return cgRef.current?.queuePremove(from, to) ?? false;
+    },
+    [ownsUiSession],
+  );
 
   const THROTTLE_MS = 150;
 
   const applyPendingUpdates = useCallback(() => {
     const queuedGeneration = queuedUpdateGenerationRef.current;
+    const queuedGameId = queuedUpdateGameIdRef.current;
     const queuedSession = queuedUpdateSessionRef.current;
-    const isCurrent = isCurrentQueuedGameUpdate(
-      queuedGeneration,
-      sessionGenerationRef.current,
-      queuedSession,
-      backendSessionRef.current,
-    );
+    const isCurrent =
+      isCurrentQueuedGameUpdate(
+        queuedGeneration,
+        sessionGenerationRef.current,
+        queuedSession,
+        backendSessionRef.current,
+      ) &&
+      queuedGeneration !== null &&
+      queuedGameId !== null &&
+      queuedSession !== null &&
+      ownsUiSession(queuedGameId, queuedSession, queuedGeneration);
     throttleTimerRef.current = null;
     if (!isCurrent) {
       clearQueuedGameUpdates();
@@ -700,8 +785,10 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       pendingTimesRef.current = null;
     }
     queuedUpdateGenerationRef.current = null;
+    queuedUpdateGameIdRef.current = null;
     queuedUpdateSessionRef.current = null;
 
+    // Defer premove execution to the next task so the just-applied board update settles first.
     premoveTimerRef.current = setTimeout(() => {
       if (
         isCurrentQueuedGameUpdate(
@@ -709,13 +796,17 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
           sessionGenerationRef.current,
           queuedSession,
           backendSessionRef.current,
-        )
+        ) &&
+        queuedGeneration !== null &&
+        queuedGameId !== null &&
+        queuedSession !== null &&
+        ownsUiSession(queuedGameId, queuedSession, queuedGeneration)
       ) {
         cgRef.current?.playPremove();
       }
       premoveTimerRef.current = null;
     }, 0);
-  }, [clearQueuedGameUpdates]);
+  }, [clearQueuedGameUpdates, ownsUiSession]);
 
   const scheduleUpdate = useCallback(() => {
     if (!throttleTimerRef.current) {
@@ -723,63 +814,55 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     }
   }, [applyPendingUpdates]);
 
-  const onTakeBack = useCallback(async () => {
-    if (!gameId || gameState !== "playing") return;
-    const generation = sessionGenerationRef.current;
-    const expectedSession = backendSessionRef.current;
-    if (expectedSession === null) return;
-    const token = Symbol("takeback");
-    const guard = commandGuardRef.current;
-    if (!guard.acquire(token)) return;
-    commandTokenRef.current = token;
-    setPendingCommand("takeback");
-    setCommandError(null);
-    try {
-      const state = await tauri.takeBackGameMove(gameId, expectedSession);
-      if (guard.owns(token)) applyAuthoritativeState(state, gameId, expectedSession, generation);
-    } catch (err) {
-      if (guard.owns(token) && ownsSession(gameId, expectedSession, generation)) {
-        setCommandError(err instanceof Error ? err.message : "Unable to take back the move.");
-      }
-    } finally {
-      if (guard.release(token) && commandTokenRef.current === token) {
-        commandTokenRef.current = null;
-        setPendingCommand(null);
-      }
-    }
-  }, [gameId, gameState, applyAuthoritativeState, ownsSession]);
-
-  const reportGameEventError = useCallback((error: unknown, event?: { payload?: unknown }) => {
-    if (!mountedRef.current) return;
-    if (!event?.payload) {
-      notifyListenerError(error);
-      return;
-    }
-    const ownedGameId = liveGameIdRef.current;
-    const ownedSession = backendSessionRef.current;
-    if (!ownedGameId || ownedSession === null) return;
-    const payload = event.payload as { gameId?: unknown; session?: unknown };
-    if (payload.gameId !== ownedGameId) return;
-    try {
-      if (decodeGameCounter(payload.session, "session") !== ownedSession) return;
-    } catch {
-      // A malformed counter cannot be correlated by session, but the unique game id still can.
-    }
-    notifyListenerError(error);
-  }, []);
-
-  const subscribeGameMove = useCallback(
-    (...args: Parameters<typeof tauriSubscriptions.gameMove>) =>
-      tauriSubscriptions.gameMove(...args),
-    [],
+  const onTakeBack = useCallback(
+    () =>
+      runGameCommand({
+        command: "takeback",
+        unavailable: undefined,
+        action: ({ gameId, session }) => tauri.takeBackGameMove(gameId, session),
+        onSuccess: (state, { gameId, session, generation }) => {
+          applyAuthoritativeState(state, gameId, session, generation);
+        },
+        errorMessage: "Unable to take back the move.",
+      }),
+    [applyAuthoritativeState, runGameCommand],
   );
+
+  const reportGameEventError = useCallback(
+    (error: unknown, event?: { payload?: unknown }) => {
+      if (!event?.payload) {
+        if (ownsMountedOwner()) notifyListenerError(error);
+        return;
+      }
+      const ownedGameId = liveGameIdRef.current;
+      const ownedSession = backendSessionRef.current;
+      const generation = sessionGenerationRef.current;
+      if (
+        !ownedGameId ||
+        ownedSession === null ||
+        !ownsUiSession(ownedGameId, ownedSession, generation)
+      ) {
+        return;
+      }
+      const payload = event.payload as { gameId?: unknown; session?: unknown };
+      if (payload.gameId !== ownedGameId) return;
+      try {
+        if (decodeGameCounter(payload.session, "session") !== ownedSession) return;
+      } catch {
+        // The current valid owner pair plus its unique game id correlate this error;
+        // the malformed counter itself is never accepted as a session identity.
+      }
+      notifyListenerError(error);
+    },
+    [ownsMountedOwner, ownsUiSession],
+  );
+
   useTauriListener(
-    subscribeGameMove,
+    tauriSubscriptions.gameMove,
     ({ payload }) => {
       if (
-        gameState !== "playing" ||
-        payload.gameId !== gameId ||
-        payload.session !== backendSessionRef.current ||
+        atomStore.get(ownerGameStateAtom) !== "playing" ||
+        !ownsUiSession(payload.gameId, payload.session, sessionGenerationRef.current) ||
         payload.revision <= moveRevisionRef.current
       )
         return;
@@ -798,24 +881,19 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         };
       }
       queuedUpdateGenerationRef.current = sessionGenerationRef.current;
+      queuedUpdateGameIdRef.current = payload.gameId;
       queuedUpdateSessionRef.current = payload.session;
       scheduleUpdate();
     },
     { onError: reportGameEventError },
   );
 
-  const subscribeClockUpdate = useCallback(
-    (...args: Parameters<typeof tauriSubscriptions.clockUpdate>) =>
-      tauriSubscriptions.clockUpdate(...args),
-    [],
-  );
   useTauriListener(
-    subscribeClockUpdate,
+    tauriSubscriptions.clockUpdate,
     ({ payload }) => {
       if (
-        gameState !== "playing" ||
-        payload.gameId !== gameId ||
-        payload.session !== backendSessionRef.current ||
+        atomStore.get(ownerGameStateAtom) !== "playing" ||
+        !ownsUiSession(payload.gameId, payload.session, sessionGenerationRef.current) ||
         payload.revision <= clockRevisionRef.current
       )
         return;
@@ -826,18 +904,12 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     { onError: reportGameEventError },
   );
 
-  const subscribeGameOver = useCallback(
-    (...args: Parameters<typeof tauriSubscriptions.gameOver>) =>
-      tauriSubscriptions.gameOver(...args),
-    [],
-  );
   useTauriListener(
-    subscribeGameOver,
+    tauriSubscriptions.gameOver,
     ({ payload }) => {
       if (
-        gameState !== "playing" ||
-        payload.gameId !== gameId ||
-        payload.session !== backendSessionRef.current ||
+        atomStore.get(ownerGameStateAtom) !== "playing" ||
+        !ownsUiSession(payload.gameId, payload.session, sessionGenerationRef.current) ||
         payload.revision < moveRevisionRef.current
       )
         return;
@@ -864,18 +936,19 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       const expectedSession = backendSessionRef.current;
       if (expectedSession === null) return;
       const generation = sessionGenerationRef.current;
+      if (!ownsUiSession(polledGameId, expectedSession, generation)) return;
       void tauri
         .getGameState(gameId, expectedSession)
         .then((state) => {
           applyAuthoritativeState(state, polledGameId, expectedSession, generation);
         })
         .catch((error) => {
-          if (ownsSession(polledGameId, expectedSession, generation)) {
+          if (ownsUiSession(polledGameId, expectedSession, generation)) {
             notifyUnlessCancelled(tRef.current("Common.Error"), error);
           }
         });
     }
-  }, [gameId, gameState, applyAuthoritativeState, backendSession, ownsSession]);
+  }, [gameId, gameState, applyAuthoritativeState, backendSession, ownsUiSession]);
 
   const movable = useMemo(() => {
     if (players.white.type === "human" && players.black.type === "human") {
@@ -903,58 +976,30 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
   }
 
   async function handleAbort() {
-    if (!gameId) return;
-    const generation = sessionGenerationRef.current;
-    const expectedSession = backendSessionRef.current;
-    if (expectedSession === null) return;
-    const token = Symbol("abort");
-    const guard = commandGuardRef.current;
-    if (!guard.acquire(token)) return;
-    commandTokenRef.current = token;
-    setPendingCommand("abort");
-    setCommandError(null);
-    try {
-      await cleanupExactIdentity(gameId, expectedSession, true);
-      if (!guard.owns(token) || sessionGenerationRef.current !== generation) return;
-      invalidateUiSession();
-      store.getState().setResult("*");
-    } catch (err) {
-      if (guard.owns(token) && ownsSession(gameId, expectedSession, generation)) {
-        setCommandError(err instanceof Error ? err.message : "Unable to abort the game.");
-      }
-    } finally {
-      if (guard.release(token) && commandTokenRef.current === token) {
-        commandTokenRef.current = null;
-        setPendingCommand(null);
-      }
-    }
+    await runGameCommand({
+      command: "abort",
+      unavailable: undefined,
+      action: ({ gameId, session }) => cleanupExactIdentity(gameId, session, { finish: true }),
+      canApplySuccess: (retired, { generation }) => retired && ownsUiEpoch(generation),
+      onSuccess: () => {
+        invalidateUiSession();
+        store.getState().setResult("*");
+      },
+      errorMessage: "Unable to abort the game.",
+    });
   }
 
   async function handleResign() {
-    if (!gameId) return;
-    const generation = sessionGenerationRef.current;
-    const expectedSession = backendSessionRef.current;
-    if (expectedSession === null) return;
-    const token = Symbol("resign");
-    const guard = commandGuardRef.current;
-    if (!guard.acquire(token)) return;
-    commandTokenRef.current = token;
     const losingColor = getResignationLosingColor();
-    setPendingCommand("resign");
-    setCommandError(null);
-    try {
-      const state = await tauri.resignGame(gameId, expectedSession, losingColor);
-      if (guard.owns(token)) applyAuthoritativeState(state, gameId, expectedSession, generation);
-    } catch (err) {
-      if (guard.owns(token) && ownsSession(gameId, expectedSession, generation)) {
-        setCommandError(err instanceof Error ? err.message : "Unable to resign the game.");
-      }
-    } finally {
-      if (guard.release(token) && commandTokenRef.current === token) {
-        commandTokenRef.current = null;
-        setPendingCommand(null);
-      }
-    }
+    await runGameCommand({
+      command: "resign",
+      unavailable: undefined,
+      action: ({ gameId, session }) => tauri.resignGame(gameId, session, losingColor),
+      onSuccess: (state, { gameId, session, generation }) => {
+        applyAuthoritativeState(state, gameId, session, generation);
+      },
+      errorMessage: "Unable to resign the game.",
+    });
   }
 
   async function handleNewGame() {
@@ -968,6 +1013,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         return;
       }
     }
+    if (!ownsMountedOwner()) return;
     invalidateUiSession();
     atomStore.set(ownerGameStateAtom, "settingUp");
     setWhiteTime(null);
@@ -988,7 +1034,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         .then(async () => {
           if (mountLeaseRef.current !== mountLease) return;
           if (ownedGameId && ownedSession !== null) {
-            await cleanupExactIdentity(ownedGameId, ownedSession, true);
+            await cleanupExactIdentity(ownedGameId, ownedSession, { finish: true });
           }
         })
         .catch((error) => {

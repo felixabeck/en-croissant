@@ -33,17 +33,29 @@ const fixtures = vi.hoisted(() => ({
 vi.mock("@/state/atoms", async () => {
   const { atom } = await vi.importActual<typeof import("jotai")>("jotai");
   const { atomFamily } = await vi.importActual<typeof import("jotai/utils")>("jotai/utils");
+  const gameIdFamily = atomFamily(() => atom<string | null>(null));
+  const gameSessionFamily = atomFamily(() => atom<bigint | null>(null));
+  const gameStateFamily = atomFamily(() => atom<"settingUp" | "playing" | "gameOver">("settingUp"));
+  const pendingGameStartFamily = atomFamily(() => atom<Promise<void> | null>(null));
+  const playersFamily = atomFamily(() =>
+    atom({ white: { type: "human", name: "White" }, black: { type: "human", name: "Black" } }),
+  );
   return {
     activeTabAtom: atom<string | null>("tab-a"),
     closingTabsAtom: atom<Set<string>>(new Set<string>()),
     flipBoardAfterMoveAtom: atom(false),
-    gameIdFamily: atomFamily(() => atom<string | null>(null)),
-    gameSessionFamily: atomFamily(() => atom<bigint | null>(null)),
-    gameStateFamily: atomFamily(() => atom<"settingUp" | "playing" | "gameOver">("settingUp")),
-    pendingGameStartFamily: atomFamily(() => atom<Promise<void> | null>(null)),
-    playersFamily: atomFamily(() =>
-      atom({ white: { type: "human", name: "White" }, black: { type: "human", name: "Black" } }),
-    ),
+    gameIdFamily,
+    gameSessionFamily,
+    gameStateFamily,
+    pendingGameStartFamily,
+    playersFamily,
+    disposeTabAtoms: (tabId: string) => {
+      gameIdFamily.remove(tabId);
+      gameSessionFamily.remove(tabId);
+      gameStateFamily.remove(tabId);
+      pendingGameStartFamily.remove(tabId);
+      playersFamily.remove(tabId);
+    },
     gameInputColorAtom: atom<"white" | "black" | "random">("white"),
     gamePlayer1SettingsAtom: atom<any>({ type: "human", name: "Alice" }),
     gamePlayer2SettingsAtom: atom<any>({ type: "human", name: "Bob" }),
@@ -185,6 +197,7 @@ vi.mock("../common/IconAction", () => ({
 
 import {
   closingTabsAtom,
+  disposeTabAtoms,
   flipBoardAfterMoveAtom,
   gameIdFamily,
   gamePlayer1SettingsAtom,
@@ -192,6 +205,8 @@ import {
   gameSessionFamily,
   gameStateFamily,
   pendingGameStartFamily,
+  playersFamily,
+  tabsAtom,
 } from "@/state/atoms";
 import BoardGame from "./BoardGame";
 import { INITIAL_FEN } from "chessops/fen";
@@ -312,6 +327,10 @@ beforeEach(() => {
   };
   store.set(closingTabsAtom, new Set());
   store.set(flipBoardAfterMoveAtom, false);
+  store.set(tabsAtom, [
+    { name: "A", value: "tab-a", type: "play", gameOrigin: { kind: "none" } },
+    { name: "B", value: "tab-b", type: "play", gameOrigin: { kind: "none" } },
+  ]);
   for (const tabId of ["tab-a", "tab-b"]) {
     store.set(gameIdFamily(tabId), null);
     store.set(gameSessionFamily(tabId), null);
@@ -359,6 +378,7 @@ test("a deferred start keeps real loading and disabled semantics until admission
   const gameId = fixtures.startGame.mock.calls[0][0];
   await act(async () => reply.resolve(state({ gameId })));
   expect(store.get(pendingGameStartFamily("tab-a"))).toBeNull();
+  expect(store.get(gameStateFamily("tab-a"))).toBe("playing");
 });
 
 test("auto-flip after a terminal human move preserves live result and headers", async () => {
@@ -413,6 +433,89 @@ test("start remains loading through prior cleanup and native admission", async (
   const gameId = fixtures.startGame.mock.calls[0][0];
   await act(async () => reply.resolve(state({ gameId })));
   expect(store.get(pendingGameStartFamily("tab-a"))).toBeNull();
+});
+
+test("a retained setup handler cannot start after its owner tab was removed", async () => {
+  await render();
+  const retainedStart = button("Board.Opponent.StartGame");
+  const initialPlayers = store.get(playersFamily("tab-a"));
+  await act(async () =>
+    store.set(tabsAtom, [
+      { name: "B", value: "tab-b", type: "play", gameOrigin: { kind: "none" } },
+    ]),
+  );
+  fixtures.setHeaders.mockClear();
+  fixtures.appendMove.mockClear();
+
+  await act(async () => retainedStart.click());
+
+  expect(fixtures.startGame).not.toHaveBeenCalled();
+  expect(store.get(pendingGameStartFamily("tab-a"))).toBeNull();
+  expect(store.get(gameStateFamily("tab-a"))).toBe("settingUp");
+  expect(store.get(gameIdFamily("tab-a"))).toBeNull();
+  expect(store.get(gameSessionFamily("tab-a"))).toBeNull();
+  expect(store.get(playersFamily("tab-a"))).toEqual(initialPlayers);
+  expect(fixtures.setHeaders).not.toHaveBeenCalled();
+  expect(fixtures.appendMove).not.toHaveBeenCalled();
+});
+
+test("a retained rerender does not recreate disposed owner atom-family entries", async () => {
+  await render();
+  const capturedAtoms = [
+    gameStateFamily("tab-a"),
+    playersFamily("tab-a"),
+    gameIdFamily("tab-a"),
+    gameSessionFamily("tab-a"),
+    pendingGameStartFamily("tab-a"),
+  ];
+  const ownerFamilies = [
+    gameStateFamily,
+    playersFamily,
+    gameIdFamily,
+    gameSessionFamily,
+    pendingGameStartFamily,
+  ];
+  expect(new Set(capturedAtoms).size).toBe(5);
+
+  disposeTabAtoms("tab-a");
+  for (const family of ownerFamilies) {
+    expect([...family.getParams()]).not.toContain("tab-a");
+  }
+
+  await act(async () => {
+    store.set(tabsAtom, [
+      { name: "B", value: "tab-b", type: "play", gameOrigin: { kind: "none" } },
+    ]);
+    store.set(flipBoardAfterMoveAtom, true);
+  });
+
+  for (const family of ownerFamilies) {
+    expect([...family.getParams()]).not.toContain("tab-a");
+  }
+});
+
+test("tab removal during prior cleanup prevents replacement native admission", async () => {
+  const cleanup = Promise.withResolvers<void>();
+  await render();
+  store.set(gameIdFamily("tab-a"), "retained");
+  store.set(gameSessionFamily("tab-a"), 7n);
+  await act(async () => Promise.resolve());
+  fixtures.abortGame.mockReturnValueOnce(cleanup.promise);
+
+  act(() => button("Board.Opponent.StartGame").click());
+  expect(store.get(pendingGameStartFamily("tab-a"))).not.toBeNull();
+  await act(async () =>
+    store.set(tabsAtom, [
+      { name: "B", value: "tab-b", type: "play", gameOrigin: { kind: "none" } },
+    ]),
+  );
+  await act(async () => cleanup.resolve());
+
+  expect(fixtures.startGame).not.toHaveBeenCalled();
+  expect(store.get(pendingGameStartFamily("tab-a"))).toBeNull();
+  expect(store.get(gameStateFamily("tab-a"))).toBe("settingUp");
+  expect(fixtures.setHeaders).not.toHaveBeenCalled();
+  expect(fixtures.appendMove).not.toHaveBeenCalled();
 });
 
 test("automatic initial log open applies its successful response", async () => {
@@ -473,14 +576,18 @@ test.each(["success", "failure"] as const)(
     expect(fixtures.getGameEngineLogs).toHaveBeenCalledTimes(2);
     expect(fixtures.getGameEngineLogs).toHaveBeenLastCalledWith(expect.any(String), 1n, "black");
     fixtures.notify.mockClear();
+    const failure = new Error("black logs failed");
     if (outcome === "success") {
       await act(async () => switched.resolve([{ type: "gui", value: "black" }]));
-      expect(fixtures.setEngineLogs).toEqual([{ type: "gui", value: "black" }]);
-      expect(fixtures.notify).not.toHaveBeenCalled();
     } else {
-      await act(async () => switched.reject(new Error("black logs failed")));
-      expect(fixtures.notify).toHaveBeenCalledWith("Common.Error", expect.any(Error));
+      await act(async () => switched.reject(failure));
     }
+    expect(fixtures.setEngineLogs).toEqual([
+      { type: "gui", value: outcome === "success" ? "black" : "white" },
+    ]);
+    expect(fixtures.notify.mock.calls).toEqual(
+      outcome === "success" ? [] : [["Common.Error", failure]],
+    );
   },
 );
 
@@ -700,6 +807,149 @@ test("natural GameOver is terminal against later clock and command rejection", a
   root = createRoot(host);
 });
 
+test.each(["reply", "event"] as const)(
+  "a late controlled %s cannot mutate a retained panel after workspace removal",
+  async (delivery) => {
+    const move = Promise.withResolvers<any>();
+    if (delivery === "reply") fixtures.makeGameMove.mockReturnValueOnce(move.promise);
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"))!;
+    let moveResult: Promise<boolean> | undefined;
+    if (delivery === "reply") {
+      act(() => {
+        moveResult = fixtures.onMove!("e2e4");
+      });
+    }
+    store.set(tabsAtom, [
+      { name: "B", value: "tab-b", type: "play", gameOrigin: { kind: "none" } },
+    ]);
+    fixtures.appendMove.mockClear();
+    fixtures.setResult.mockClear();
+
+    if (delivery === "reply") {
+      await act(async () =>
+        move.resolve(state({ gameId, revision: 1n, moves: [{ uci: "e2e4", clock: null }] })),
+      );
+    } else {
+      act(() =>
+        fixtures.listeners.get("gameOver")?.({
+          payload: {
+            gameId,
+            session: 1n,
+            revision: 1n,
+            result: { type: "whiteWins", reason: "checkmate" },
+            moves: [{ uci: "e2e4", clock: null }],
+          },
+        }),
+      );
+    }
+
+    expect(await moveResult).toBe(delivery === "reply" ? false : undefined);
+    expect(fixtures.appendMove).not.toHaveBeenCalled();
+    expect(fixtures.setResult).not.toHaveBeenCalled();
+    expect(store.get(gameStateFamily("tab-a"))).toBe("playing");
+  },
+);
+
+test.each(["reply", "event"] as const)(
+  "a late controlled %s cannot mutate a replaced captured owner pair before rerender",
+  async (delivery) => {
+    const move = Promise.withResolvers<any>();
+    if (delivery === "reply") fixtures.makeGameMove.mockReturnValueOnce(move.promise);
+    await render();
+    await start();
+    const oldGameId = store.get(gameIdFamily("tab-a"))!;
+    let moveResult: Promise<boolean> | undefined;
+    if (delivery === "reply") {
+      act(() => {
+        moveResult = fixtures.onMove!("e2e4");
+      });
+    }
+    store.set(gameIdFamily("tab-a"), "replacement");
+    store.set(gameSessionFamily("tab-a"), 2n);
+    store.set(gameStateFamily("tab-a"), "playing");
+    fixtures.appendMove.mockClear();
+    fixtures.setResult.mockClear();
+
+    if (delivery === "reply") {
+      await act(async () =>
+        move.resolve(
+          state({ gameId: oldGameId, revision: 1n, moves: [{ uci: "e2e4", clock: null }] }),
+        ),
+      );
+    } else {
+      act(() =>
+        fixtures.listeners.get("gameOver")?.({
+          payload: {
+            gameId: oldGameId,
+            session: 1n,
+            revision: 1n,
+            result: { type: "whiteWins", reason: "checkmate" },
+            moves: [{ uci: "e2e4", clock: null }],
+          },
+        }),
+      );
+    }
+
+    expect(await moveResult).toBe(delivery === "reply" ? false : undefined);
+    expect(store.get(gameIdFamily("tab-a"))).toBe("replacement");
+    expect(store.get(gameSessionFamily("tab-a"))).toBe(2n);
+    expect(store.get(gameStateFamily("tab-a"))).toBe("playing");
+    expect(fixtures.appendMove).not.toHaveBeenCalled();
+    expect(fixtures.setResult).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["removed", "replaced"] as const)(
+  "a retained move handler cannot admit native work after owner %s",
+  async (ownership) => {
+    await render();
+    await start();
+    if (ownership === "removed") {
+      store.set(tabsAtom, [
+        { name: "B", value: "tab-b", type: "play", gameOrigin: { kind: "none" } },
+      ]);
+    } else {
+      store.set(gameIdFamily("tab-a"), "replacement");
+      store.set(gameSessionFamily("tab-a"), 2n);
+    }
+
+    await expect(fixtures.onMove!("e2e4")).resolves.toBe(false);
+    expect(fixtures.boardProps.onKeyboardPremove("e2", "e4")).toBe(false);
+    expect(fixtures.makeGameMove).not.toHaveBeenCalled();
+    expect(fixtures.queuePremove).not.toHaveBeenCalled();
+  },
+);
+
+test("queued move and premove work is discarded after workspace removal", async () => {
+  vi.useFakeTimers();
+  await render();
+  await start();
+  const gameId = store.get(gameIdFamily("tab-a"));
+  expect(fixtures.boardProps.onKeyboardPremove("e2", "e4")).toBe(true);
+  act(() =>
+    fixtures.listeners.get("gameMove")?.({
+      payload: {
+        gameId,
+        session: 1n,
+        revision: 1n,
+        moves: [{ uci: "e2e4", clock: null }],
+        whiteTime: null,
+        blackTime: null,
+      },
+    }),
+  );
+  fixtures.appendMove.mockClear();
+  store.set(tabsAtom, [{ name: "B", value: "tab-b", type: "play", gameOrigin: { kind: "none" } }]);
+
+  await act(async () => vi.runAllTimersAsync());
+
+  expect(fixtures.appendMove).not.toHaveBeenCalled();
+  expect(fixtures.playPremove).not.toHaveBeenCalled();
+  vi.useRealTimers();
+});
+
 test("a resignation response applies terminal moves and clears abortable ownership", async () => {
   fixtures.resignGame.mockImplementation(async (gameId, session) =>
     state({
@@ -739,6 +989,34 @@ test("abort success clears ownership and reset or unmount cannot abort it twice"
   await act(async () => root.unmount());
   expect(fixtures.abortGame).toHaveBeenCalledOnce();
   root = createRoot(host);
+});
+
+test("abort still retires native ownership after removal without applying a UI result", async () => {
+  const abort = Promise.withResolvers<void>();
+  store.set(gamePlayer1SettingsAtom, {
+    type: "engine",
+    engine: engine("removed-white"),
+    go: { t: "Infinite" },
+  });
+  store.set(gamePlayer2SettingsAtom, {
+    type: "engine",
+    engine: engine("removed-black"),
+    go: { t: "Infinite" },
+  });
+  await render();
+  await start();
+  fixtures.abortGame.mockReturnValueOnce(abort.promise);
+  fixtures.setResult.mockClear();
+  act(() => button("Board.Opponent.Abort").click());
+  store.set(tabsAtom, [{ name: "B", value: "tab-b", type: "play", gameOrigin: { kind: "none" } }]);
+
+  await act(async () => abort.resolve());
+
+  expect(fixtures.abortGame).toHaveBeenCalledOnce();
+  expect(store.get(gameIdFamily("tab-a"))).toBeNull();
+  expect(store.get(gameSessionFamily("tab-a"))).toBeNull();
+  expect(store.get(gameStateFamily("tab-a"))).toBe("playing");
+  expect(fixtures.setResult).not.toHaveBeenCalled();
 });
 
 test("terminal handoff makes a late takeback catch and finally silent", async () => {
@@ -883,6 +1161,25 @@ test("current move recovery success applies the authoritative board", async () =
   expect(fixtures.appendMove).toHaveBeenCalledWith(
     expect.objectContaining({ payload: expect.objectContaining({ from: 12, to: 28 }) }),
   );
+});
+
+test("one local command token admits only the first synchronous handler", async () => {
+  const move = Promise.withResolvers<any>();
+  fixtures.makeGameMove.mockReturnValueOnce(move.promise);
+  await render();
+  await start();
+  const gameId = store.get(gameIdFamily("tab-a"));
+
+  let moveResult!: Promise<boolean>;
+  act(() => {
+    moveResult = fixtures.onMove!("e2e4");
+    void fixtures.onTakeBack!();
+  });
+  expect(fixtures.makeGameMove).toHaveBeenCalledOnce();
+  expect(fixtures.takeBackGameMove).not.toHaveBeenCalled();
+
+  await act(async () => move.resolve(state({ gameId, revision: 1n })));
+  await expect(moveResult).resolves.toBe(true);
 });
 
 test.each(["current", "stale"] as const)(
@@ -1115,16 +1412,11 @@ test.each(["resolve", "reject"] as const)(
   async (outcome) => {
     const logs = Promise.withResolvers<any>();
     fixtures.getGameEngineLogs.mockReturnValue(logs.promise);
-    const engine = {
-      type: "local" as const,
-      id: "engine-id",
-      name: "Engine",
-      version: "1",
-      filename: "engine",
-      handle: { id: { id: "engine" }, kind: "engine" as const },
-      settings: [],
-    };
-    store.set(gamePlayer1SettingsAtom, { type: "engine", engine, go: { t: "Infinite" } });
+    store.set(gamePlayer1SettingsAtom, {
+      type: "engine",
+      engine: engine("engine-id"),
+      go: { t: "Infinite" },
+    });
     await render();
     await start();
     const gameId = store.get(gameIdFamily("tab-a"));
@@ -1207,6 +1499,9 @@ test("listener registration failure reports only while mounted without an event"
   const report = fixtures.listenerErrors.get("gameMove")!;
   report(new Error("registration failed"), undefined);
   expect(fixtures.notify).toHaveBeenCalledOnce();
+  store.set(tabsAtom, [{ name: "B", value: "tab-b", type: "play", gameOrigin: { kind: "none" } }]);
+  report(new Error("registration after removal"), undefined);
+  expect(fixtures.notify).toHaveBeenCalledOnce();
   await act(async () => root.unmount());
   report(new Error("registration after unmount"), undefined);
   expect(fixtures.notify).toHaveBeenCalledOnce();
@@ -1233,10 +1528,10 @@ test.each(["resolve", "reject"] as const)(
     fixtures.notify.mockClear();
     if (outcome === "resolve") {
       await act(async () => logs.resolve([{ type: "gui", value: "old owner" }]));
-      expect(fixtures.setEngineLogs).toEqual([]);
     } else {
       await act(async () => logs.reject(new Error("old owner logs")));
     }
+    expect(fixtures.setEngineLogs).toEqual([]);
     expect(fixtures.notify).not.toHaveBeenCalled();
   },
 );
@@ -1269,6 +1564,7 @@ test("unmount and remount cannot admit a second unresolved start", async () => {
   const admittedGameId = fixtures.startGame.mock.calls[0][0];
   await act(async () => reply.resolve(state({ gameId: admittedGameId })));
   expect(fixtures.abortGame).toHaveBeenCalledWith(admittedGameId, 1n);
+  expect(store.get(gameStateFamily("tab-a"))).toBe("gameOver");
 });
 
 test("stale-start cleanup failure retains exact identity and a remount retries it", async () => {
@@ -1336,29 +1632,6 @@ test("StrictMode setup replay restores the mounted owner", async () => {
   expect(fixtures.startGame).toHaveBeenCalledOnce();
   expect(store.get(gameStateFamily("tab-a"))).toBe("playing");
   expect(store.get(gameIdFamily("tab-a"))).not.toBeNull();
-});
-
-test("terminal start stores the final result and rebuilds moves from the live tree", async () => {
-  fixtures.startGame.mockImplementationOnce(async (gameId) =>
-    state({
-      gameId,
-      initialFen: "7k/8/5KQ1/8/8/8/8/8 w - - 0 1",
-      currentFen: "7k/6Q1/5K2/8/8/8/8/8 b - - 1 1",
-      revision: 1n,
-      status: { finished: { result: { type: "whiteWins", reason: "checkmate" } } },
-      moves: [{ uci: "g6g7", clock: null }],
-    }),
-  );
-  await render();
-  await start();
-  expect(fixtures.tree.headers.result).toBe("1-0");
-  const moves: any[] = [];
-  let node = fixtures.tree.root;
-  while (node.children.length) {
-    node = node.children[0];
-    moves.push(node.move);
-  }
-  expect(moves).toEqual([expect.objectContaining({ from: 46, to: 54 })]);
 });
 
 test("initialization restores setup moves into the reset live tree and keeps metadata", async () => {

@@ -1,10 +1,5 @@
 import { expect, test, vi } from "vitest";
-import {
-    abortExactTabGame,
-    abortExactGame,
-    isCurrentQueuedGameUpdate,
-    SingleFlightGuard,
-} from "./gameSession";
+import { abortExactTabGame, abortExactGame, isCurrentQueuedGameUpdate } from "./gameSession";
 
 test("a pending move from the replaced session cannot apply after New Game", () => {
     // New Game first cancels the queue, then increments its local generation and
@@ -25,18 +20,6 @@ test("a queued update carrying no session is rejected during a session handoff",
     expect(isCurrentQueuedGameUpdate(3, 3, null, null)).toBe(false);
     // And the same queue is still accepted once a real session is present on both sides.
     expect(isCurrentQueuedGameUpdate(3, 3, BigInt(2), BigInt(2))).toBe(true);
-});
-
-test("a command guard permits exactly one takeback until its first attempt settles", () => {
-    const guard = new SingleFlightGuard();
-    const first = Symbol();
-    const second = Symbol();
-    expect(guard.acquire(first)).toBe(true);
-    expect(guard.acquire(second)).toBe(false);
-    expect(guard.release(first)).toBe(true);
-    expect(guard.acquire(second)).toBe(true);
-    expect(guard.release(first)).toBe(false);
-    expect(guard.owns(second)).toBe(true);
 });
 
 test("only typed missing-resource makes exact abort idempotent", async () => {

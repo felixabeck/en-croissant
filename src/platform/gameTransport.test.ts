@@ -10,8 +10,8 @@ import {
 
 const baseState = {
     gameId: "game",
-    session: 0 as unknown as bigint,
-    revision: Number.MAX_SAFE_INTEGER as unknown as bigint,
+    session: 0,
+    revision: Number.MAX_SAFE_INTEGER,
     status: "playing" as const,
     initialFen: "start",
     moves: [],
@@ -54,8 +54,8 @@ describe("game counter transport", () => {
         expect(
             normalizeGameMoveEvent({
                 gameId: "game",
-                session: 1 as unknown as bigint,
-                revision: 2 as unknown as bigint,
+                session: 1,
+                revision: 2,
                 moves: [],
                 fen: "start",
                 whiteTime: null,
@@ -65,8 +65,8 @@ describe("game counter transport", () => {
         expect(
             normalizeClockUpdateEvent({
                 gameId: "game",
-                session: 3 as unknown as bigint,
-                revision: 4 as unknown as bigint,
+                session: 3,
+                revision: 4,
                 whiteTime: null,
                 blackTime: null,
             }),
@@ -74,8 +74,8 @@ describe("game counter transport", () => {
         expect(
             normalizeGameOverEvent({
                 gameId: "game",
-                session: 5 as unknown as bigint,
-                revision: 6 as unknown as bigint,
+                session: 5,
+                revision: 6,
                 result: { type: "draw", reason: "stalemate" },
                 moves: [],
             }),

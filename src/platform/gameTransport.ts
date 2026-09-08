@@ -10,6 +10,11 @@ import type {
 
 const MAX_SAFE_COUNTER = BigInt(Number.MAX_SAFE_INTEGER);
 
+type GameCounterFields = Pick<GameState, "session" | "revision">;
+type GameCounterWireInput<T extends GameCounterFields> = Omit<T, keyof GameCounterFields> & {
+    [Field in keyof GameCounterFields]: number | GameCounterFields[Field];
+};
+
 export type GameConfigInput = Omit<
     GameConfig,
     "whiteTimeControl" | "blackTimeControl" | "openingBook"
@@ -44,23 +49,27 @@ export function encodeGameCounter(value: bigint, field = "expectedSession"): num
     return Number(value);
 }
 
-export function normalizeGameState(value: GameState): GameState {
+export function normalizeGameState(value: GameCounterWireInput<GameState>): GameState {
     return normalizeCounterPair(value);
 }
 
-export function normalizeGameMoveEvent(value: GameMoveEvent): GameMoveEvent {
+export function normalizeGameMoveEvent(value: GameCounterWireInput<GameMoveEvent>): GameMoveEvent {
     return normalizeCounterPair(value);
 }
 
-export function normalizeClockUpdateEvent(value: ClockUpdateEvent): ClockUpdateEvent {
+export function normalizeClockUpdateEvent(
+    value: GameCounterWireInput<ClockUpdateEvent>,
+): ClockUpdateEvent {
     return normalizeCounterPair(value);
 }
 
-export function normalizeGameOverEvent(value: GameOverEvent): GameOverEvent {
+export function normalizeGameOverEvent(value: GameCounterWireInput<GameOverEvent>): GameOverEvent {
     return normalizeCounterPair(value);
 }
 
-function normalizeCounterPair<T extends { session: bigint; revision: bigint }>(value: T): T {
+function normalizeCounterPair<T extends GameCounterFields>(
+    value: GameCounterWireInput<T>,
+): Omit<T, keyof GameCounterFields> & GameCounterFields {
     return {
         ...value,
         session: decodeGameCounter(value.session, "session"),

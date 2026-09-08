@@ -134,9 +134,18 @@ describe("tauri command facade", () => {
             session: 1n,
             revision: 2n,
         });
-        await tauri.makeGameMove("game", 2n, "e2e4");
-        await tauri.takeBackGameMove("game", 3n);
-        await tauri.resignGame("game", 4n, "white");
+        await expect(tauri.makeGameMove("game", 2n, "e2e4")).resolves.toMatchObject({
+            session: 1n,
+            revision: 2n,
+        });
+        await expect(tauri.takeBackGameMove("game", 3n)).resolves.toMatchObject({
+            session: 1n,
+            revision: 2n,
+        });
+        await expect(tauri.resignGame("game", 4n, "white")).resolves.toMatchObject({
+            session: 1n,
+            revision: 2n,
+        });
         await tauri.abortGame("game", 5n);
         await tauri.getGameEngineLogs("game", 6n, "black");
         expect(mocks.getGameState).toHaveBeenCalledWith("game", 1);
@@ -160,7 +169,10 @@ describe("tauri command facade", () => {
             initialMoves: [],
             openingBook: { book: { id: { id: "book" }, kind: "openingBook" as const }, maxPly: 24 },
         };
-        await expect(tauri.startGame("game", config)).resolves.toMatchObject({ session: 1n });
+        await expect(tauri.startGame("game", config)).resolves.toMatchObject({
+            session: 1n,
+            revision: 2n,
+        });
         expect(mocks.startGame).toHaveBeenCalledWith("game", config);
         expect(() => JSON.stringify(mocks.startGame.mock.calls[0])).not.toThrow();
         await tauri.closeSplashscreen();
