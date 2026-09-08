@@ -5712,7 +5712,7 @@ The shared `closing_paren` helper introduced here became the basis of the closur
 
 ### `activate_download_artifact` still hashes the published inode under the process-wide authority mutex, on a Tokio worker
 
-* **ID:** f-20260904-01 · **Status:** open · **Area:** native-fs · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
+* **ID:** f-20260904-01 · **Status:** handled · **Area:** native-fs · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority.rs` — `activate_download_artifact` and its
   `sha256_open_file` call; call sites `src-tauri/src/fs.rs` in `download_to_destination_inner`
   (the mark-and-activate block) and `install_staged_pgn_artifact`; restart recovery in
