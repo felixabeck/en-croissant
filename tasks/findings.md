@@ -5354,7 +5354,7 @@ Decisions d-20260908-06 through 09 remain the documented contracts and carry the
 
 ### Late command results in BoardGame overwrite newer state, and two async paths have no rejection handler
 
-* **ID:** f-20260901-23 · **Status:** open · **Area:** frontend-state · **Root:** boardgame-session-lifecycle · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260901-23 · **Status:** handled · **Area:** frontend-state · **Root:** boardgame-session-lifecycle · **Entry:** lens · **Blocked:** none
 
 Also from the `$push` review of `d-20260901-36`, same lens, all pre-existing in
 `src/components/boards/BoardGame.tsx`. Separated from `f-20260901-22` because these are guard bugs
