@@ -2424,3 +2424,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Completed native sessions are absent from the live map, while a session mismatch is a distinct conflict. The transport preserves structured backend categories. Reversal: move exact absence semantics into native abort only with native identity/refusal tests.
 * **Decided by:** Codex drain 0b810ced-b5af-451c-aaaf-d41acd0fc87d, autonomously · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"a11db9cc1934696b5c7aed37f987f9c6f83b236ce12eb0492f5fb1a0b6fb1015","input_sha256":"2fcca7ad201db51bfcc8a0a12df946954aba0149062a8594f3575924e07399f5","kind":"mutation-receipt","operation":"5ef0f3db5a2368ad628694df7009b2b9377424f0a890bb8e0a12b30155bbe943","options":{"section":null},"request_id_sha256":null,"results":["d-20260908-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20260908-08 — How should tab close own a game start whose native identity has not returned?
+
+* **Question:** How should tab close own a game start whose native identity has not returned?
+* **Governs:** f-20260901-22, f-20260901-23
+* **Chosen:** Bind game state to immutable owner-tab primitive atoms and share a runtime per-tab pending-start promise. Closing intent blocks new admission synchronously; close waits for existing admission before exact cleanup and atom disposal. Failed cleanup retains its exact native identity.
+* **Rejected:** Component-only pending refs that disappear on unmount, or delayed writes through currentTabAtom that can target a replacement tab.
+* **Reason:** BoardsPage unmounts inactive panels, and the current tabValue setter resolves its owner at write time. Native start can finish after unmount. Reversal: replace the shared runtime owner only if pending-start/close, failure/retry, remount and cross-tab isolation tests remain valid.
+* **Decided by:** Codex drain 0b810ced-b5af-451c-aaaf-d41acd0fc87d, autonomously · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"476daaddb3122ce9ea3b878b170b41725296269dd5202981caf3ab27c4cccc57","input_sha256":"931cb1947d780620373c292ced9995d594727057d3e77ef561e821822d0533ce","kind":"mutation-receipt","operation":"b12bc741b9d16ce3aac2028d41c28e9fcd6be749358dcba88c1ebb855b2f4e46","options":{"section":null},"request_id_sha256":null,"results":["d-20260908-08"],"target":"decisions-ledger","v":1} -->
