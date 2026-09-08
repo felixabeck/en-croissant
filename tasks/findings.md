@@ -5752,6 +5752,9 @@ The shared `closing_paren` helper introduced here became the basis of the closur
 * **Found by:** the `review-root-cause` lens (confidence 90) over the cumulative diff of the
   `blocking-work-not-offloaded` range, 2026-09-04.
 
+* **Plan review, 2026-09-08:** The activation slice retains build tier. Before implementation, review identified missing independent stale-intent field tests, runtime marker-persistence failure coverage and caller durability/progress checks; these are included in the plan. Two adjacent error-path defects are also being repaired: recovery currently discards activation failures with no diagnostic, and a failed progress report can replace the primary activation error. Recovery will retain quarantine and emit only a stable error category; runtime error reporting will preserve the primary failure. No repair is claimed complete yet. Plan authorship and arbitration share the Codex root context; Gemini ran review-plan and Codex ran the sensitive detection lenses.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7cf43a1f1eed3c0d6c63859fc7a3c123044de91360236d90a1f28e6a44d3d997","input_sha256":"69d120857b3d63ada229e89bc95713440634a628aebc38157f3ac8bb5c087a4d","kind":"mutation-receipt","operation":"c9cbbf985298001c4c4aea8dbf0fac4c6d744bb6275f0392d3f4daa3574064e8","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-01"],"target":"f-20260904-01","v":1} -->
+
 ### The analysis report's progress bar never updates, because the backend's operation id and the button's listener id can never be equal
 
 * **ID:** f-20260904-02 · **Status:** handled · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
