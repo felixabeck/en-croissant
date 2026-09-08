@@ -5319,6 +5319,9 @@ identity, a stale-result guard, **a terminal state**, an error path and a cleanu
 the missing terminal state; item 4 is a stale-result guard that discriminates on the wrong thing.
 Run `review-engine-protocol` and `review-persisted-state` over whatever repair is planned.
 
+* **Pickup evidence (2026-09-08):** The real WebKitGTK/native probe exposed an additional prerequisite of this repair: native start_game serializes session and revision as JavaScript numbers, despite generated declarations naming bigint. The current nextAcceptedGameRevision rejects those values. Sending BigInt(session) to get_game_state fails with `TypeError: JSON.stringify cannot serialize BigInt.` The probe calls the actual start_game/get_game_state/abort_game commands, not reconstructed serializer inputs. Retained proof: `/tmp/build-0b810ced-boardgame/counter-probe.mjs`, output `/tmp/build-0b810ced-boardgame/counter-only.DieF22/log`, exit 0. Binary built at 2026-09-08 10:12; renderer source matches current HEAD f696978b for BoardGame.tsx/gameSession.ts. Include bounded game-counter normalization in the session repair and verify again on the rebuilt artifact. Do not widen this into unrelated IPC schemas.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"6a91a3ca2e68c98d8a4e6010cb5c06bd99e134e1bc009cc4e04ff2edb2c646af","input_sha256":"15e8e4382ff537b798da0a3ad264a679df306b856049e4c9ac212776e0e81404","kind":"mutation-receipt","operation":"810b7ad43a0676fc54b9373ea28955bda96ff25e90fce7863572194a5b70ac23","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-22"],"target":"f-20260901-22","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
