@@ -537,10 +537,10 @@ pub struct EngineSupervisor {
     registration: Mutex<()>,
     retired: StdMutex<RetiredEngineIds>,
     retired_executables: StdMutex<RetiredExecutables>,
-    // `lifecycle` provides the per-key transition locks. Every lifecycle
-    // transition acquires the lock for its exact key before observing or
-    // mutating the `actors` map. `actors` itself is concurrent, but cannot make
-    // remove → await shutdown → insert atomic.
+    // `lifecycle` provides the per-key transition locks. Lifecycle transitions
+    // may capture actor snapshots before awaiting the exact-key lock, but they
+    // recheck under that lock before mutation. `actors` itself is concurrent,
+    // but cannot make remove → await shutdown → insert atomic.
     lifecycle: KeyedLocks<EngineKey>,
 }
 
@@ -557,7 +557,7 @@ pub(crate) struct AdmissionLease {
     admissions: Arc<DashMap<EngineKey, EngineAdmission>>,
     key: EngineKey,
     admission: EngineAdmission,
-    published: bool,
+    disarmed: bool,
 }
 
 impl AdmissionLease {
@@ -573,20 +573,36 @@ impl AdmissionLease {
     }
 
     fn disarm(&mut self) {
-        self.published = true;
+        self.disarmed = true;
     }
 }
 
 impl Drop for AdmissionLease {
     fn drop(&mut self) {
-        if self.published {
+        if self.disarmed {
             return;
         }
-        self.admission.cancelled.store(true, Ordering::SeqCst);
-        self.admissions.remove_if(&self.key, |_, admission| {
-            admission.generation == self.admission.generation
-        });
+        cancel_admission_exact(
+            &self.admissions,
+            &self.key,
+            self.admission.generation,
+            &self.admission.cancelled,
+        );
     }
+}
+
+fn cancel_admission_exact(
+    admissions: &DashMap<EngineKey, EngineAdmission>,
+    key: &EngineKey,
+    generation: u64,
+    cancelled: &AtomicBool,
+) -> bool {
+    // Flag the captured lease even if a newer admission has already replaced
+    // its map entry. A late holder must still observe cancellation of its Arc.
+    cancelled.store(true, Ordering::SeqCst);
+    admissions
+        .remove_if(key, |_, admission| admission.generation == generation)
+        .is_some()
 }
 
 impl EngineSupervisor {
@@ -599,10 +615,30 @@ impl EngineSupervisor {
             .map_err(|_| Error::ResourceLimit("engine generation exhausted".into()))
     }
 
-    fn remove_admission_exact(&self, key: &EngineKey, generation: u64) -> bool {
-        self.admissions
-            .remove_if(key, |_, admission| admission.generation == generation)
-            .is_some()
+    fn validate_admission_policy(
+        &self,
+        engine_id: &str,
+        executable: &PathRef,
+    ) -> Result<(), Error> {
+        if self.sealed.load(Ordering::SeqCst) {
+            return Err(Error::Conflict("application is shutting down".into()));
+        }
+        if self.is_retired(engine_id) {
+            return Err(Error::Conflict("engine id is retired".into()));
+        }
+        if self.is_retired_executable(executable) {
+            return Err(Error::Conflict("engine executable is retired".into()));
+        }
+        Ok(())
+    }
+
+    fn cancel_admission(&self, key: &EngineKey, admission: &EngineAdmission) -> bool {
+        cancel_admission_exact(
+            &self.admissions,
+            key,
+            admission.generation,
+            &admission.cancelled,
+        )
     }
 
     fn cancel_admissions_matching(&self, predicate: impl Fn(&EngineKey, &EngineAdmission) -> bool) {
@@ -613,8 +649,7 @@ impl EngineSupervisor {
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect();
         for (key, admission) in targets {
-            admission.cancelled.store(true, Ordering::SeqCst);
-            self.remove_admission_exact(&key, admission.generation);
+            self.cancel_admission(&key, &admission);
         }
     }
 
@@ -626,15 +661,7 @@ impl EngineSupervisor {
         prepared: bool,
     ) -> Result<AdmissionLease, Error> {
         validate_uci_text("engine", &engine_id)?;
-        if self.sealed.load(Ordering::SeqCst) {
-            return Err(Error::Conflict("application is shutting down".into()));
-        }
-        if self.is_retired(&engine_id) {
-            return Err(Error::Conflict("engine id is retired".into()));
-        }
-        if self.is_retired_executable(&executable) {
-            return Err(Error::Conflict("engine executable is retired".into()));
-        }
+        self.validate_admission_policy(&engine_id, &executable)?;
         let generation = self.allocate_generation()?;
         let admission = EngineAdmission {
             generation,
@@ -647,22 +674,17 @@ impl EngineSupervisor {
             admissions: self.admissions.clone(),
             key,
             admission,
-            published: false,
+            disarmed: false,
         };
         {
             let _coordination = self
                 .admission_coordination
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if self.sealed.load(Ordering::SeqCst) {
-                return Err(Error::Conflict("application is shutting down".into()));
-            }
-            if self.is_retired(&lease.admission.engine_id) {
-                return Err(Error::Conflict("engine id is retired".into()));
-            }
-            if self.is_retired_executable(&lease.admission.executable) {
-                return Err(Error::Conflict("engine executable is retired".into()));
-            }
+            self.validate_admission_policy(
+                &lease.admission.engine_id,
+                &lease.admission.executable,
+            )?;
             if prepared
                 && self
                     .admissions
@@ -686,15 +708,7 @@ impl EngineSupervisor {
         if let Some(error) = lease.cancel_error() {
             return Err(error);
         }
-        if self.sealed.load(Ordering::SeqCst) {
-            return Err(Error::Conflict("application is shutting down".into()));
-        }
-        if self.is_retired(&lease.admission.engine_id) {
-            return Err(Error::Conflict("engine id is retired".into()));
-        }
-        if self.is_retired_executable(&lease.admission.executable) {
-            return Err(Error::Conflict("engine executable is retired".into()));
-        }
+        self.validate_admission_policy(&lease.admission.engine_id, &lease.admission.executable)?;
         Ok(lease)
     }
 
@@ -763,36 +777,8 @@ impl EngineSupervisor {
                 prepared: false,
                 ..admission
             },
-            published: false,
+            disarmed: false,
         })
-    }
-    async fn reject_replacement_during_shutdown(actor: &EngineActor) -> Error {
-        if let Err(error) = actor.terminate().await {
-            error!("engine spawned during shutdown could not be terminated cleanly: {error}");
-        }
-        Error::Conflict("application is shutting down".into())
-    }
-
-    async fn reject_retired_replacement(actor: &EngineActor) -> Error {
-        let primary = Error::Conflict("engine id is retired".into());
-        match actor.terminate().await {
-            Ok(()) => primary,
-            Err(cleanup) => Error::OperationAndCleanup {
-                primary: primary.to_string(),
-                cleanup: cleanup.to_string(),
-            },
-        }
-    }
-
-    async fn reject_retired_executable(actor: &EngineActor) -> Error {
-        let primary = Error::Conflict("engine executable is retired".into());
-        match actor.terminate().await {
-            Ok(()) => primary,
-            Err(cleanup) => Error::OperationAndCleanup {
-                primary: primary.to_string(),
-                cleanup: cleanup.to_string(),
-            },
-        }
     }
 
     fn with_retired<T>(&self, operation: impl FnOnce(&mut RetiredEngineIds) -> T) -> T {
@@ -846,22 +832,19 @@ impl EngineSupervisor {
         engine_id: String,
         executable: PathRef,
     ) -> Result<SupervisedEngine, Error> {
-        let mut actor_guard = PendingActorGuard::new(actor.clone());
+        let mut actor_guard = PendingActorGuard::new(actor.clone(), key.clone(), None);
         let admission = match self
             .admit(key.clone(), engine_id.clone(), executable.clone(), false)
             .await
         {
-            Ok(admission) => admission,
+            Ok(admission) => {
+                actor_guard.set_generation(admission.generation());
+                admission
+            }
             Err(primary) => {
-                let cleanup = actor.terminate().await;
+                let error = reject_actor(&actor, primary).await;
                 actor_guard.disarm();
-                return match cleanup {
-                    Ok(()) => Err(primary),
-                    Err(cleanup) => Err(Error::OperationAndCleanup {
-                        primary: primary.to_string(),
-                        cleanup: cleanup.to_string(),
-                    }),
-                };
+                return Err(error);
             }
         };
         let result = self.publish_admitted(key, actor, admission).await;
@@ -878,16 +861,13 @@ impl EngineSupervisor {
         let lifecycle = self.lifecycle_lease(&key);
         let _transition = lifecycle.lock().await;
         if let Some(error) = admission.cancel_error() {
-            return Err(Self::reject_cancelled_replacement(&actor, error).await);
+            return Err(reject_actor(&actor, error).await);
         }
-        if self.sealed.load(Ordering::SeqCst) {
-            return Err(Self::reject_replacement_during_shutdown(&actor).await);
-        }
-        if self.is_retired(&admission.admission.engine_id) {
-            return Err(Self::reject_retired_replacement(&actor).await);
-        }
-        if self.is_retired_executable(&admission.admission.executable) {
-            return Err(Self::reject_retired_executable(&actor).await);
+        if let Err(error) = self.validate_admission_policy(
+            &admission.admission.engine_id,
+            &admission.admission.executable,
+        ) {
+            return Err(reject_actor(&actor, error).await);
         }
         if let Some(previous) = self.actors.get(&key).map(|entry| entry.clone()) {
             let previous_actor = previous.actor.clone();
@@ -895,21 +875,16 @@ impl EngineSupervisor {
             let terminate = previous_actor.terminate().await;
             self.actors.remove(&key);
             if let Err(primary) = combine_shutdown_results(stop, terminate) {
-                return Err(Self::reject_cancelled_replacement(&actor, primary).await);
+                return Err(reject_actor(&actor, primary).await);
             }
         }
         let registration = self.registration.lock().await;
-        if self.sealed.load(Ordering::SeqCst) {
+        if let Err(error) = self.validate_admission_policy(
+            &admission.admission.engine_id,
+            &admission.admission.executable,
+        ) {
             drop(registration);
-            return Err(Self::reject_replacement_during_shutdown(&actor).await);
-        }
-        if self.is_retired(&admission.admission.engine_id) {
-            drop(registration);
-            return Err(Self::reject_retired_replacement(&actor).await);
-        }
-        if self.is_retired_executable(&admission.admission.executable) {
-            drop(registration);
-            return Err(Self::reject_retired_executable(&actor).await);
+            return Err(reject_actor(&actor, error).await);
         }
         let published = {
             let _coordination = self
@@ -932,26 +907,18 @@ impl EngineSupervisor {
                     cancelled: admission.admission.cancelled.clone(),
                 };
                 self.actors.insert(key, entry.clone());
-                self.remove_admission_exact(&admission.key, generation);
+                self.admissions.remove_if(&admission.key, |_, current| {
+                    current.generation == generation
+                });
                 Some(entry)
             }
         };
         drop(registration);
         let Some(entry) = published else {
-            return Err(Self::reject_cancelled_replacement(&actor, Error::Cancellation).await);
+            return Err(reject_actor(&actor, Error::Cancellation).await);
         };
         admission.disarm();
         Ok(entry)
-    }
-
-    async fn reject_cancelled_replacement(actor: &EngineActor, primary: Error) -> Error {
-        match actor.terminate().await {
-            Ok(()) => primary,
-            Err(cleanup) => Error::OperationAndCleanup {
-                primary: primary.to_string(),
-                cleanup: cleanup.to_string(),
-            },
-        }
     }
 
     pub async fn terminate_exact(&self, key: &EngineKey, generation: u64) -> Result<(), Error> {
@@ -992,8 +959,7 @@ impl EngineSupervisor {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(admission) = self.admissions.get(key).map(|entry| entry.clone()) {
                 if admission.generation == generation {
-                    admission.cancelled.store(true, Ordering::SeqCst);
-                    self.remove_admission_exact(key, generation);
+                    self.cancel_admission(key, &admission);
                 }
             }
         }
@@ -1030,8 +996,8 @@ impl EngineSupervisor {
 
     pub async fn terminate_tab(&self, tab: &str) -> Result<(), Error> {
         // Same publication barrier as `terminate_all` / `retire_engine`: wait
-        // for in-flight `replace_handle` inserts before scanning, then drain
-        // until this tab has no actors.
+        // for in-flight admission and `publish_admitted` checks before scanning,
+        // then drain until this tab has no actors.
         let registration = self.registration.lock().await;
         let _coordination = self
             .admission_coordination
@@ -1042,10 +1008,7 @@ impl EngineSupervisor {
         drop(registration);
         let mut failures = Vec::new();
         loop {
-            match self.terminate_matching(|key, _| key.tab == tab).await {
-                Ok(()) => {}
-                Err(error) => failures.push(error.to_string()),
-            }
+            failures.extend(self.terminate_matching(|key, _| key.tab == tab).await);
             if !self.actors.iter().any(|entry| entry.key().tab == tab) {
                 break;
             }
@@ -1056,8 +1019,8 @@ impl EngineSupervisor {
     pub async fn retire_engine(&self, engine_id: String) -> Result<(), Error> {
         validate_uci_text("engine", &engine_id)?;
         self.with_retired(|retired| retired.insert(engine_id.clone()));
-        // Synchronize with the final publication check in `replace_handle`.
-        // Once this barrier is crossed, a retired id cannot be inserted.
+        // Synchronize with admission and the final `publish_admitted` check.
+        // Once this barrier is crossed, a retired id cannot be published.
         let registration = self.registration.lock().await;
         let _coordination = self
             .admission_coordination
@@ -1070,15 +1033,12 @@ impl EngineSupervisor {
         drop(registration);
         let mut failures = Vec::new();
         loop {
-            match self
-                .terminate_matching(|key, engine| {
+            failures.extend(
+                self.terminate_matching(|key, engine| {
                     key.engine == engine_id || engine.engine_id == engine_id
                 })
-                .await
-            {
-                Ok(()) => {}
-                Err(error) => failures.push(error.to_string()),
-            }
+                .await,
+            );
             if !self.actors.iter().any(|entry| {
                 entry.key().engine == engine_id || entry.value().engine_id == engine_id
             }) {
@@ -1098,7 +1058,7 @@ impl EngineSupervisor {
                 retired.insert(executable);
             }
         });
-        // Synchronize with the final publication check in `replace_handle`.
+        // Synchronize with admission and the final `publish_admitted` check.
         let registration = self.registration.lock().await;
         let _coordination = self
             .admission_coordination
@@ -1111,13 +1071,10 @@ impl EngineSupervisor {
         drop(registration);
         let mut failures = Vec::new();
         loop {
-            match self
-                .terminate_matching(|_, engine| executable_set.contains(&engine.executable))
-                .await
-            {
-                Ok(()) => {}
-                Err(error) => failures.push(error.to_string()),
-            }
+            failures.extend(
+                self.terminate_matching(|_, engine| executable_set.contains(&engine.executable))
+                    .await,
+            );
             if !self
                 .actors
                 .iter()
@@ -1132,8 +1089,8 @@ impl EngineSupervisor {
     pub async fn terminate_all(&self) -> Result<(), Error> {
         let mut failures = Vec::new();
         self.sealed.store(true, Ordering::SeqCst);
-        // Synchronize with the final publication check in `replace*`. Once
-        // this barrier is crossed, no production path can add another actor.
+        // Synchronize with admission and the final `publish_admitted` check.
+        // Once this barrier is crossed, no production path can add an actor.
         let registration = self.registration.lock().await;
         let _coordination = self
             .admission_coordination
@@ -1151,33 +1108,32 @@ impl EngineSupervisor {
             if targets.is_empty() {
                 break;
             }
-            if let Err(error) = self.terminate_targets(targets).await {
-                failures.push(error.to_string());
-            }
+            failures.extend(self.terminate_targets(targets).await);
         }
         aggregate_shutdown_failures(failures)
     }
 
-    async fn terminate_targets(&self, targets: Vec<(EngineKey, u64)>) -> Result<(), Error> {
+    async fn terminate_targets(&self, targets: Vec<(EngineKey, u64)>) -> Vec<ActorShutdownFailure> {
         let results = futures_util::future::join_all(targets.into_iter().map(
             |(key, generation)| async move {
                 let result = self.terminate_exact(&key, generation).await;
-                (key, result)
+                (key, generation, result)
             },
         ))
         .await;
-        let failures = results
+        results
             .into_iter()
-            .filter_map(|(key, result)| {
-                result
-                    .err()
-                    .map(|error| format!("{}:{}: {error}", key.tab, key.engine))
+            .filter_map(|(key, generation, result)| {
+                result.err().map(|error| ActorShutdownFailure {
+                    key,
+                    generation,
+                    error,
+                })
             })
-            .collect();
-        aggregate_shutdown_failures(failures)
+            .collect()
     }
 
-    async fn terminate_matching<P>(&self, predicate: P) -> Result<(), Error>
+    async fn terminate_matching<P>(&self, predicate: P) -> Vec<ActorShutdownFailure>
     where
         P: Fn(&EngineKey, &SupervisedEngine) -> bool,
     {
@@ -1191,6 +1147,22 @@ impl EngineSupervisor {
     }
 }
 
+async fn reject_actor(actor: &EngineActor, primary: Error) -> Error {
+    match actor.terminate().await {
+        Ok(()) => primary,
+        Err(cleanup) => Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: cleanup.to_string(),
+        },
+    }
+}
+
+struct ActorShutdownFailure {
+    key: EngineKey,
+    generation: u64,
+    error: Error,
+}
+
 struct RegistrationGuard {
     supervisor: Arc<EngineSupervisor>,
     key: EngineKey,
@@ -1200,11 +1172,22 @@ struct RegistrationGuard {
 
 struct PendingActorGuard {
     actor: Option<Arc<EngineActor>>,
+    key: EngineKey,
+    generation: Option<u64>,
 }
 
 impl PendingActorGuard {
-    fn new(actor: Arc<EngineActor>) -> Self {
-        Self { actor: Some(actor) }
+    fn new(actor: Arc<EngineActor>, key: EngineKey, generation: Option<u64>) -> Self {
+        Self {
+            actor: Some(actor),
+            key,
+            generation,
+        }
+    }
+
+    #[cfg(test)]
+    fn set_generation(&mut self, generation: u64) {
+        self.generation = Some(generation);
     }
 
     fn disarm(&mut self) {
@@ -1217,9 +1200,11 @@ impl Drop for PendingActorGuard {
         let Some(actor) = self.actor.take() else {
             return;
         };
+        let key = self.key.clone();
+        let generation = self.generation;
         tokio::spawn(async move {
             if let Err(error) = actor.terminate().await {
-                error!("dropped engine admission actor could not be terminated cleanly: {error}");
+                log_pending_actor_cleanup_error(&key, generation, &error);
             }
         });
     }
@@ -1228,10 +1213,36 @@ impl Drop for PendingActorGuard {
 #[cfg(test)]
 static REGISTRATION_CLEANUP_ERRORS: StdMutex<Vec<String>> = StdMutex::new(Vec::new());
 
+#[cfg(test)]
+static PENDING_ACTOR_CLEANUP_ERRORS: StdMutex<Vec<String>> = StdMutex::new(Vec::new());
+
+#[cfg(test)]
+static SHUTDOWN_FAILURE_LOGS: StdMutex<Vec<String>> = StdMutex::new(Vec::new());
+
+fn log_pending_actor_cleanup_error(key: &EngineKey, generation: Option<u64>, error: &Error) {
+    let generation = generation
+        .map(|generation| generation.to_string())
+        .unwrap_or_else(|| "not-yet-assigned".into());
+    let message = format!(
+        "dropped engine admission actor cleanup failed for {}:{} generation={generation} category={}",
+        key.tab,
+        key.engine,
+        error.category()
+    );
+    #[cfg(test)]
+    match PENDING_ACTOR_CLEANUP_ERRORS.lock() {
+        Ok(mut errors) => errors.push(message.clone()),
+        Err(poisoned) => poisoned.into_inner().push(message.clone()),
+    }
+    error!("{message}");
+}
+
 fn log_registration_cleanup_error(key: &EngineKey, error: &Error) {
     let message = format!(
-        "cancelled engine registration could not be terminated cleanly for {}:{}: {error}",
-        key.tab, key.engine
+        "cancelled engine registration cleanup failed for {}:{} category={}",
+        key.tab,
+        key.engine,
+        error.category()
     );
     #[cfg(test)]
     match REGISTRATION_CLEANUP_ERRORS.lock() {
@@ -1326,7 +1337,8 @@ where
     F: FnOnce(Arc<EngineActor>) -> Fut,
     Fut: std::future::Future<Output = Result<T, Error>>,
 {
-    let mut actor_guard = PendingActorGuard::new(actor.clone());
+    let mut actor_guard =
+        PendingActorGuard::new(actor.clone(), key.clone(), Some(admission.generation()));
     let published = supervisor
         .publish_admitted(key.clone(), actor.clone(), admission)
         .await;
@@ -1377,15 +1389,27 @@ fn combine_shutdown_results(
     }
 }
 
-fn aggregate_shutdown_failures(failures: Vec<String>) -> Result<(), Error> {
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::Conflict(format!(
-            "failed to terminate one or more engines: {}",
-            failures.join("; ")
-        )))
+fn aggregate_shutdown_failures(failures: Vec<ActorShutdownFailure>) -> Result<(), Error> {
+    let mut representative = None;
+    for failure in failures {
+        let message = format!(
+            "engine cleanup failed for {}:{} generation={} category={}",
+            failure.key.tab,
+            failure.key.engine,
+            failure.generation,
+            failure.error.category()
+        );
+        #[cfg(test)]
+        match SHUTDOWN_FAILURE_LOGS.lock() {
+            Ok(mut errors) => errors.push(message.clone()),
+            Err(poisoned) => poisoned.into_inner().push(message.clone()),
+        }
+        error!("{message}");
+        if representative.is_none() {
+            representative = Some(failure.error);
+        }
     }
+    representative.map_or(Ok(()), Err)
 }
 
 impl EngineRuntime {
@@ -2463,6 +2487,17 @@ mod tests {
 
     struct PendingTerminateErrorIo;
 
+    #[derive(Clone, Copy)]
+    enum TypedTerminateFailure {
+        Timeout,
+        OperationAndCleanup,
+    }
+
+    struct TypedTerminateErrorIo {
+        failure: TypedTerminateFailure,
+        terminate_calls: Arc<AtomicUsize>,
+    }
+
     #[async_trait]
     impl UciIo for PendingTerminateErrorIo {
         async fn write_line(&mut self, _: &str) -> Result<(), Error> {
@@ -2490,6 +2525,30 @@ mod tests {
 
         async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
             Err(io::Error::other("fake terminate failed").into())
+        }
+    }
+
+    #[async_trait]
+    impl UciIo for TypedTerminateErrorIo {
+        async fn write_line(&mut self, _: &str) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn read_line(&mut self) -> Result<Option<String>, Error> {
+            Ok(None)
+        }
+
+        async fn terminate(&mut self, _: Duration, _: Duration) -> Result<(), Error> {
+            self.terminate_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            match self.failure {
+                TypedTerminateFailure::Timeout => {
+                    Err(Error::EngineTimeout("typed timeout sentinel".into()))
+                }
+                TypedTerminateFailure::OperationAndCleanup => Err(Error::OperationAndCleanup {
+                    primary: "typed primary sentinel".into(),
+                    cleanup: "typed cleanup sentinel".into(),
+                }),
+            }
         }
     }
 
@@ -2554,14 +2613,12 @@ mod tests {
             loop {
                 let logged = match REGISTRATION_CLEANUP_ERRORS.lock() {
                     Ok(errors) => errors.iter().any(|message| {
-                        message.contains(
-                            "cancelled engine registration could not be terminated cleanly",
-                        ) && message.contains("I/O failure")
+                        message.contains("cancelled engine registration cleanup failed")
+                            && message.contains("category=I/O failure")
                     }),
                     Err(poisoned) => poisoned.into_inner().iter().any(|message| {
-                        message.contains(
-                            "cancelled engine registration could not be terminated cleanly",
-                        ) && message.contains("I/O failure")
+                        message.contains("cancelled engine registration cleanup failed")
+                            && message.contains("category=I/O failure")
                     }),
                 };
                 if logged {
@@ -2573,6 +2630,52 @@ mod tests {
         .await
         .expect("Drop cleanup failure must be logged");
         assert!(supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_actor_cleanup_log_carries_key_and_generation() {
+        let key = EngineKey::new("pending-log-tab".into(), "pending-log-engine".into()).unwrap();
+        let actor = Arc::new(EngineActor::new(
+            Box::new(TerminateErrorIo),
+            EngineDeadlines::default(),
+        ));
+        drop(PendingActorGuard::new(actor, key, Some(42)));
+        let unassigned_key =
+            EngineKey::new("pending-log-tab".into(), "unassigned-engine".into()).unwrap();
+        let unassigned_actor = Arc::new(EngineActor::new(
+            Box::new(TerminateErrorIo),
+            EngineDeadlines::default(),
+        ));
+        drop(PendingActorGuard::new(
+            unassigned_actor,
+            unassigned_key,
+            None,
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let logged = match PENDING_ACTOR_CLEANUP_ERRORS.lock() {
+                    Ok(errors) => errors.clone(),
+                    Err(poisoned) => poisoned.into_inner().clone(),
+                };
+                let assigned = logged.iter().any(|message| {
+                    message.contains("pending-log-tab:pending-log-engine")
+                        && message.contains("generation=42")
+                        && message.contains("category=I/O failure")
+                });
+                let unassigned = logged.iter().any(|message| {
+                    message.contains("pending-log-tab:unassigned-engine")
+                        && message.contains("generation=not-yet-assigned")
+                        && message.contains("category=I/O failure")
+                });
+                if assigned && unassigned {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("pending actor cleanup failure must carry its ownership identity");
     }
     #[tokio::test]
     async fn replacement_waits_for_old_bestmove_before_go() {
@@ -3142,6 +3245,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generation_exhaustion_allocates_last_value_once_without_retaining_an_overflow() {
+        let supervisor = EngineSupervisor::default();
+        supervisor
+            .next_generation
+            .store(u64::MAX - 1, Ordering::SeqCst);
+        let last_key = EngineKey::new("last-generation".into(), "engine".into()).unwrap();
+        let overflow_key = EngineKey::new("overflow-generation".into(), "engine".into()).unwrap();
+        let executable = path_ref("engine-path");
+
+        let last = supervisor
+            .prepare_engine_search(last_key.clone(), "engine".into(), executable.clone())
+            .await
+            .unwrap();
+        assert_eq!(last, u64::MAX.to_string());
+        assert!(matches!(
+            supervisor
+                .prepare_engine_search(overflow_key.clone(), "engine".into(), executable)
+                .await,
+            Err(Error::ResourceLimit(message)) if message == "engine generation exhausted"
+        ));
+        assert_eq!(supervisor.next_generation.load(Ordering::SeqCst), u64::MAX);
+        assert!(supervisor.admissions.contains_key(&last_key));
+        assert!(!supervisor.admissions.contains_key(&overflow_key));
+        assert_eq!(supervisor.admissions.len(), 1);
+    }
+
+    #[test]
+    fn dropping_replaced_admission_cancels_its_arc_without_removing_the_replacement() {
+        let admissions = Arc::new(DashMap::new());
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let old_cancelled = Arc::new(AtomicBool::new(false));
+        let old = EngineAdmission {
+            generation: 1,
+            engine_id: "engine".into(),
+            executable: path_ref("old"),
+            cancelled: old_cancelled.clone(),
+            prepared: false,
+        };
+        let lease = AdmissionLease {
+            admissions: admissions.clone(),
+            key: key.clone(),
+            admission: old,
+            disarmed: false,
+        };
+        admissions.insert(
+            key.clone(),
+            EngineAdmission {
+                generation: 2,
+                engine_id: "engine".into(),
+                executable: path_ref("new"),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                prepared: false,
+            },
+        );
+
+        drop(lease);
+
+        assert!(old_cancelled.load(Ordering::SeqCst));
+        assert_eq!(admissions.get(&key).unwrap().generation, 2);
+    }
+
+    #[tokio::test]
     async fn prepared_search_capacity_refuses_without_evicting_and_reclaims() {
         let supervisor = Arc::new(EngineSupervisor::default());
         let executable = path_ref("engine-path");
@@ -3242,6 +3407,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutdown_rejection_preserves_actor_cleanup_failure() {
+        let supervisor = EngineSupervisor::default();
+        supervisor.terminate_all().await.unwrap();
+        let key = EngineKey::new("shutdown".into(), "cleanup-fails".into()).unwrap();
+        let actor = EngineActor::new(Box::new(TerminateErrorIo), EngineDeadlines::default());
+
+        assert!(matches!(
+            supervisor.replace(key, actor).await,
+            Err(Error::OperationAndCleanup { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn terminate_exact_removes_entry_when_termination_reports_an_error() {
         let supervisor = EngineSupervisor::default();
         let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
@@ -3291,6 +3469,94 @@ mod tests {
                 "a terminated actor must leave no registry entry behind"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn shutdown_aggregation_preserves_types_logs_identity_and_completes_all_targets() {
+        match SHUTDOWN_FAILURE_LOGS.lock() {
+            Ok(mut logs) => logs.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+        let supervisor = EngineSupervisor::default();
+        let timeout_key = EngineKey::new("typed".into(), "timeout".into()).unwrap();
+        let combined_key = EngineKey::new("typed".into(), "combined".into()).unwrap();
+        let timeout_calls = Arc::new(AtomicUsize::new(0));
+        let combined_calls = Arc::new(AtomicUsize::new(0));
+        let timeout_actor = EngineActor::new(
+            Box::new(TypedTerminateErrorIo {
+                failure: TypedTerminateFailure::Timeout,
+                terminate_calls: timeout_calls.clone(),
+            }),
+            EngineDeadlines::default(),
+        );
+        let combined_actor = EngineActor::new(
+            Box::new(TypedTerminateErrorIo {
+                failure: TypedTerminateFailure::OperationAndCleanup,
+                terminate_calls: combined_calls.clone(),
+            }),
+            EngineDeadlines::default(),
+        );
+        let timeout = supervisor
+            .replace(timeout_key.clone(), timeout_actor)
+            .await
+            .unwrap();
+        let combined = supervisor
+            .replace(combined_key.clone(), combined_actor)
+            .await
+            .unwrap();
+
+        let failures = supervisor
+            .terminate_targets(vec![
+                (timeout_key.clone(), timeout.generation),
+                (combined_key.clone(), combined.generation),
+            ])
+            .await;
+        assert_eq!(failures.len(), 2);
+        assert!(matches!(failures[0].error, Error::EngineTimeout(_)));
+        assert!(matches!(
+            failures[1].error,
+            Error::OperationAndCleanup { .. }
+        ));
+        assert_eq!(timeout_calls.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(combined_calls.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&timeout_key).is_none());
+        assert!(supervisor.get_exact(&combined_key).is_none());
+
+        assert!(matches!(
+            aggregate_shutdown_failures(failures),
+            Err(Error::EngineTimeout(_))
+        ));
+        let logs = match SHUTDOWN_FAILURE_LOGS.lock() {
+            Ok(logs) => logs.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        assert!(logs.iter().any(|message| {
+            message.contains("typed:timeout")
+                && message.contains(&format!("generation={}", timeout.generation))
+                && message.contains("category=engine timeout")
+        }));
+        assert!(logs.iter().any(|message| {
+            message.contains("typed:combined")
+                && message.contains(&format!("generation={}", combined.generation))
+                && message.contains("category=operation and cleanup failure")
+        }));
+        assert!(logs.iter().all(|message| {
+            !message.contains("typed timeout sentinel")
+                && !message.contains("typed primary sentinel")
+                && !message.contains("typed cleanup sentinel")
+        }));
+
+        assert!(matches!(
+            aggregate_shutdown_failures(vec![ActorShutdownFailure {
+                key: combined_key,
+                generation: combined.generation,
+                error: Error::OperationAndCleanup {
+                    primary: "primary".into(),
+                    cleanup: "cleanup".into(),
+                },
+            }]),
+            Err(Error::OperationAndCleanup { .. })
+        ));
     }
 
     #[tokio::test]
