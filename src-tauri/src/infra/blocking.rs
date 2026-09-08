@@ -3,7 +3,7 @@ use once_cell::sync::Lazy;
 use std::any::Any;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 pub static BLOCKING_GATEWAY: Lazy<BlockingGateway> = Lazy::new(|| BlockingGateway::new(4));
@@ -155,6 +155,24 @@ fn map_join<R>(
     }
 }
 
+async fn dispatch<F, R>(permit: OwnedSemaphorePermit, f: F) -> Result<R, Error>
+where
+    F: FnOnce() -> Result<R, Error> + Send + 'static,
+    R: Send + 'static,
+{
+    #[cfg(test)]
+    let injectors = CapturedInjectors::capture();
+
+    let handle = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        #[cfg(test)]
+        let _injector_guard = injectors.install();
+        catch_unwind(AssertUnwindSafe(f))
+    });
+
+    map_join(handle.await)
+}
+
 impl BlockingGateway {
     pub fn new(max_concurrent: usize) -> Self {
         Self {
@@ -162,31 +180,25 @@ impl BlockingGateway {
         }
     }
 
+    /// Runs admitted work to completion even if the awaiting future is dropped. The blocking
+    /// worker owns the capacity permit until the closure actually exits.
     pub async fn spawn<F, R>(&self, f: F) -> Result<R, Error>
     where
         F: FnOnce() -> Result<R, Error> + Send + 'static,
         R: Send + 'static,
     {
-        let _permit = self
+        let permit = self
             .semaphore
-            .acquire()
+            .clone()
+            .acquire_owned()
             .await
             .map_err(|_| Error::Cancellation)?;
-
-        #[cfg(test)]
-        let injectors = CapturedInjectors::capture();
-
-        let handle = tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            let _injector_guard = injectors.install();
-            catch_unwind(AssertUnwindSafe(f))
-        });
-
-        map_join(handle.await)
+        dispatch(permit, f).await
     }
 
-    /// Keeps its permit inside the blocking worker, including when the awaiting command is
-    /// abandoned. Callers supply cooperative checkpoints through `CancellationToken`.
+    /// Derives an operation-local child token and cancels it when the awaiting future is dropped.
+    /// Once admitted, the worker owns its permit and its true result wins any cancellation race;
+    /// callers supply the cooperative checkpoints that decide when work can stop safely.
     pub async fn spawn_cancellable<F, R>(
         &self,
         cancellation: CancellationToken,
@@ -196,25 +208,25 @@ impl BlockingGateway {
         F: FnOnce(&CancellationToken) -> Result<R, Error> + Send + 'static,
         R: Send + 'static,
     {
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Cancellation)?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancellation);
-        }
-        let worker_cancellation = cancellation.clone();
-        #[cfg(test)]
-        let injectors = CapturedInjectors::capture();
-        let handle = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            #[cfg(test)]
-            let _injector_guard = injectors.install();
-            catch_unwind(AssertUnwindSafe(|| f(&worker_cancellation)))
-        });
-        map_join(handle.await)
+        let worker_cancellation = cancellation.child_token();
+        let awaiter_guard = worker_cancellation.clone().drop_guard();
+        let permit = tokio::select! {
+            biased;
+            _ = worker_cancellation.cancelled() => return Err(Error::Cancellation),
+            permit = self.semaphore.clone().acquire_owned() => {
+                permit.map_err(|_| Error::Cancellation)?
+            }
+        };
+        let cancellation_at_worker = worker_cancellation.clone();
+        let result = dispatch(permit, move || {
+            if cancellation_at_worker.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            f(&cancellation_at_worker)
+        })
+        .await;
+        awaiter_guard.disarm();
+        result
     }
 }
 
@@ -224,6 +236,56 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Condvar, Mutex};
     use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    const TEST_DEADLINE: Duration = Duration::from_secs(5);
+
+    #[derive(Clone)]
+    struct WorkerHold(Arc<(Mutex<bool>, Condvar)>);
+
+    impl WorkerHold {
+        fn new() -> Self {
+            Self(Arc::new((Mutex::new(true), Condvar::new())))
+        }
+
+        fn wait(&self) {
+            let (lock, cvar) = &*self.0;
+            let mut holding = lock.lock().unwrap();
+            while *holding {
+                holding = cvar.wait(holding).unwrap();
+            }
+        }
+
+        fn release(&self) {
+            let (lock, cvar) = &*self.0;
+            *lock.lock().unwrap() = false;
+            cvar.notify_all();
+        }
+    }
+
+    struct ReleaseOnDrop(WorkerHold);
+
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    struct ResetAtomicFileInjector;
+
+    impl Drop for ResetAtomicFileInjector {
+        fn drop(&mut self) {
+            crate::infra::fs::set_test_atomic_file_injector(None);
+        }
+    }
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
 
     #[tokio::test]
     async fn panicking_closure_surfaces_conflict_and_does_not_abort() {
@@ -248,6 +310,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn panic_and_error_paths_release_capacity_for_both_methods() {
+        let gateway = BlockingGateway::new(1);
+
+        let spawn_panic = tokio::time::timeout(
+            TEST_DEADLINE,
+            gateway.spawn(|| -> Result<(), Error> { panic!("spawn panic") }),
+        )
+        .await
+        .expect("spawn panic must return");
+        assert!(matches!(spawn_panic, Err(Error::Conflict(_))));
+        assert_eq!(gateway.semaphore.available_permits(), 1);
+
+        let spawn_error = tokio::time::timeout(
+            TEST_DEADLINE,
+            gateway
+                .spawn(|| -> Result<(), Error> { Err(Error::InvalidInput("spawn error".into())) }),
+        )
+        .await
+        .expect("spawn error must return");
+        assert!(matches!(spawn_error, Err(Error::InvalidInput(_))));
+        assert_eq!(gateway.semaphore.available_permits(), 1);
+
+        let cancellable_panic = tokio::time::timeout(
+            TEST_DEADLINE,
+            gateway.spawn_cancellable(CancellationToken::new(), |_| -> Result<(), Error> {
+                panic!("cancellable panic")
+            }),
+        )
+        .await
+        .expect("cancellable panic must return");
+        assert!(matches!(cancellable_panic, Err(Error::Conflict(_))));
+        assert_eq!(gateway.semaphore.available_permits(), 1);
+
+        let cancellable_error = tokio::time::timeout(
+            TEST_DEADLINE,
+            gateway.spawn_cancellable(CancellationToken::new(), |_| -> Result<(), Error> {
+                Err(Error::InvalidInput("cancellable error".into()))
+            }),
+        )
+        .await
+        .expect("cancellable error must return");
+        assert!(matches!(
+            cancellable_error,
+            Err(Error::InvalidInput(ref message)) if message == "cancellable error"
+        ));
+        assert_eq!(gateway.semaphore.available_permits(), 1);
+
+        tokio::time::timeout(TEST_DEADLINE, gateway.spawn(|| Ok(())))
+            .await
+            .expect("all panic and error paths must release capacity")
+            .unwrap();
+        assert_eq!(gateway.semaphore.available_permits(), 1);
+    }
+
+    #[tokio::test]
     async fn spawn_cancellable_skips_closure_when_already_cancelled() {
         let gateway = BlockingGateway::new(1);
         let cancellation = CancellationToken::new();
@@ -265,6 +382,354 @@ mod tests {
             !ran.load(Ordering::SeqCst),
             "already-cancelled spawn_cancellable must not run the closure"
         );
+    }
+
+    #[tokio::test]
+    async fn dropped_spawn_awaiter_keeps_capacity_until_worker_exit() {
+        let gateway = Arc::new(BlockingGateway::new(1));
+        let hold = WorkerHold::new();
+        let _release = ReleaseOnDrop(hold.clone());
+        let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+        let first_gateway = gateway.clone();
+        let first_hold = hold.clone();
+        let first = tokio::spawn(async move {
+            first_gateway
+                .spawn(move || {
+                    entered_tx.send(()).unwrap();
+                    first_hold.wait();
+                    Ok(())
+                })
+                .await
+        });
+        tokio::time::timeout(TEST_DEADLINE, entered_rx.recv())
+            .await
+            .expect("first worker must enter")
+            .expect("first worker entered");
+        first.abort();
+        let _ = first.await;
+        assert_eq!(
+            gateway.semaphore.available_permits(),
+            0,
+            "abandoning spawn must not release the worker's permit"
+        );
+
+        let second_ran = Arc::new(AtomicBool::new(false));
+        let second_flag = second_ran.clone();
+        let second_gateway = gateway.clone();
+        let (attempted_tx, attempted_rx) = tokio::sync::oneshot::channel();
+        let second = tokio::spawn(async move {
+            attempted_tx.send(()).unwrap();
+            second_gateway
+                .spawn(move || {
+                    second_flag.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        });
+        tokio::time::timeout(TEST_DEADLINE, attempted_rx)
+            .await
+            .expect("second future must be polled")
+            .expect("second admission attempted");
+        assert!(
+            !second_ran.load(Ordering::SeqCst),
+            "abandoning spawn must not release capacity before its worker exits"
+        );
+
+        hold.release();
+        tokio::time::timeout(TEST_DEADLINE, second)
+            .await
+            .expect("second worker must run after first exits")
+            .unwrap()
+            .unwrap();
+        assert!(second_ran.load(Ordering::SeqCst));
+        assert_eq!(gateway.semaphore.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn queued_cancellation_returns_while_capacity_remains_held() {
+        let gateway = Arc::new(BlockingGateway::new(1));
+        let hold = WorkerHold::new();
+        let _release = ReleaseOnDrop(hold.clone());
+        let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+        let holder_gateway = gateway.clone();
+        let holder_hold = hold.clone();
+        let holder = tokio::spawn(async move {
+            holder_gateway
+                .spawn(move || {
+                    entered_tx.send(()).unwrap();
+                    holder_hold.wait();
+                    Ok(())
+                })
+                .await
+        });
+        tokio::time::timeout(TEST_DEADLINE, entered_rx.recv())
+            .await
+            .expect("capacity holder must enter")
+            .expect("capacity holder entered");
+
+        let cancellation = CancellationToken::new();
+        let cancellation_for_task = cancellation.clone();
+        let queued_gateway = gateway.clone();
+        let queued_ran = Arc::new(AtomicBool::new(false));
+        let queued_flag = queued_ran.clone();
+        let (attempted_tx, attempted_rx) = tokio::sync::oneshot::channel();
+        let queued = tokio::spawn(async move {
+            attempted_tx.send(()).unwrap();
+            queued_gateway
+                .spawn_cancellable(cancellation_for_task, move |_| {
+                    queued_flag.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        });
+        tokio::time::timeout(TEST_DEADLINE, attempted_rx)
+            .await
+            .expect("queued future must be polled")
+            .expect("queued future started");
+        cancellation.cancel();
+        let result = tokio::time::timeout(TEST_DEADLINE, queued)
+            .await
+            .expect("queued cancellation must not wait for capacity")
+            .unwrap();
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert!(!queued_ran.load(Ordering::SeqCst));
+
+        hold.release();
+        tokio::time::timeout(TEST_DEADLINE, holder)
+            .await
+            .expect("capacity holder must exit after release")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn cancellation_after_dispatch_before_worker_entry_skips_closure() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_time()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let pool_hold = WorkerHold::new();
+            let _release = ReleaseOnDrop(pool_hold.clone());
+            let (pool_entered_tx, mut pool_entered_rx) = mpsc::unbounded_channel();
+            let blocker_hold = pool_hold.clone();
+            let blocker = tokio::task::spawn_blocking(move || {
+                pool_entered_tx.send(()).unwrap();
+                blocker_hold.wait();
+            });
+            tokio::time::timeout(TEST_DEADLINE, pool_entered_rx.recv())
+                .await
+                .expect("pool blocker must enter")
+                .expect("pool blocker entered");
+
+            let gateway = Arc::new(BlockingGateway::new(1));
+            let cancellation = CancellationToken::new();
+            let cancellation_for_task = cancellation.clone();
+            let ran = Arc::new(AtomicBool::new(false));
+            let ran_in_worker = ran.clone();
+            let worker_gateway = gateway.clone();
+            let worker = tokio::spawn(async move {
+                worker_gateway
+                    .spawn_cancellable(cancellation_for_task, move |_| {
+                        ran_in_worker.store(true, Ordering::SeqCst);
+                        Ok(())
+                    })
+                    .await
+            });
+            tokio::time::timeout(TEST_DEADLINE, async {
+                while gateway.semaphore.available_permits() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("worker dispatched and owns the permit");
+
+            cancellation.cancel();
+            pool_hold.release();
+            tokio::time::timeout(TEST_DEADLINE, blocker)
+                .await
+                .expect("pool blocker must exit after release")
+                .unwrap();
+            let result = tokio::time::timeout(TEST_DEADLINE, worker)
+                .await
+                .expect("dispatched worker must return")
+                .unwrap();
+            assert!(matches!(result, Err(Error::Cancellation)));
+            assert!(
+                !ran.load(Ordering::SeqCst),
+                "worker-entry cancellation check must skip the closure"
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn dropped_cancellable_awaiter_cancels_worker_but_retains_capacity_until_exit() {
+        let gateway = Arc::new(BlockingGateway::new(1));
+        let parent = CancellationToken::new();
+        let _cancel = parent.clone().drop_guard();
+        let exit_hold = WorkerHold::new();
+        let _release = ReleaseOnDrop(exit_hold.clone());
+        let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+        let (cancelled_tx, mut cancelled_rx) = mpsc::unbounded_channel();
+        let resource_dropped = Arc::new(AtomicBool::new(false));
+        let worker_resource_dropped = resource_dropped.clone();
+        let first_gateway = gateway.clone();
+        let first_hold = exit_hold.clone();
+        let worker_parent = parent.clone();
+        let first = tokio::spawn(async move {
+            first_gateway
+                .spawn_cancellable(worker_parent, move |token| {
+                    let _resource = DropFlag(worker_resource_dropped);
+                    entered_tx.send(()).unwrap();
+                    tokio::runtime::Handle::current().block_on(token.cancelled());
+                    cancelled_tx.send(()).unwrap();
+                    first_hold.wait();
+                    Err::<(), _>(Error::Cancellation)
+                })
+                .await
+        });
+        tokio::time::timeout(TEST_DEADLINE, entered_rx.recv())
+            .await
+            .expect("cancellable worker must enter")
+            .expect("cancellable worker entered");
+        first.abort();
+        let _ = first.await;
+        tokio::time::timeout(TEST_DEADLINE, cancelled_rx.recv())
+            .await
+            .expect("worker must observe awaiter-drop cancellation")
+            .expect("worker cancellation signal");
+        assert_eq!(
+            gateway.semaphore.available_permits(),
+            0,
+            "cancelled worker must retain its permit until cooperative exit"
+        );
+
+        let next_ran = Arc::new(AtomicBool::new(false));
+        let next_flag = next_ran.clone();
+        let next_gateway = gateway.clone();
+        let (attempted_tx, attempted_rx) = tokio::sync::oneshot::channel();
+        let next = tokio::spawn(async move {
+            attempted_tx.send(()).unwrap();
+            next_gateway
+                .spawn(move || {
+                    next_flag.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        });
+        tokio::time::timeout(TEST_DEADLINE, attempted_rx)
+            .await
+            .expect("next future must be polled")
+            .expect("next admission attempted");
+        assert!(
+            !next_ran.load(Ordering::SeqCst),
+            "cancelled worker must retain capacity until cooperative exit"
+        );
+
+        exit_hold.release();
+        tokio::time::timeout(TEST_DEADLINE, next)
+            .await
+            .expect("next worker must run after cancelled worker exits")
+            .unwrap()
+            .unwrap();
+        assert!(next_ran.load(Ordering::SeqCst));
+        assert_eq!(gateway.semaphore.available_permits(), 1);
+        assert!(
+            resource_dropped.load(Ordering::SeqCst),
+            "cooperative worker exit must drop worker-owned resources"
+        );
+    }
+
+    #[tokio::test]
+    async fn awaiter_drop_cancels_only_its_child_token() {
+        let gateway = Arc::new(BlockingGateway::new(2));
+        let parent = CancellationToken::new();
+        let hold = WorkerHold::new();
+        let _release = ReleaseOnDrop(hold.clone());
+        let (tokens_tx, mut tokens_rx) = mpsc::unbounded_channel();
+
+        let start = |id, gateway: Arc<BlockingGateway>| {
+            let parent = parent.clone();
+            let hold = hold.clone();
+            let tokens_tx = tokens_tx.clone();
+            tokio::spawn(async move {
+                gateway
+                    .spawn_cancellable(parent, move |token| {
+                        tokens_tx.send((id, token.clone())).unwrap();
+                        hold.wait();
+                        Ok(())
+                    })
+                    .await
+            })
+        };
+        let first = start(1, gateway.clone());
+        let second = start(2, gateway.clone());
+        let mut first_child = None;
+        let mut second_child = None;
+        for _ in 0..2 {
+            let (id, token) = tokio::time::timeout(TEST_DEADLINE, tokens_rx.recv())
+                .await
+                .expect("worker must announce its child token")
+                .expect("child token");
+            match id {
+                1 => first_child = Some(token),
+                2 => second_child = Some(token),
+                _ => unreachable!(),
+            }
+        }
+        let first_child = first_child.expect("first child token");
+        let second_child = second_child.expect("second child token");
+
+        first.abort();
+        let _ = first.await;
+        tokio::time::timeout(TEST_DEADLINE, first_child.cancelled())
+            .await
+            .expect("dropped awaiter's child must cancel");
+        assert!(!parent.is_cancelled(), "child cancellation reached parent");
+        assert!(
+            !second_child.is_cancelled(),
+            "child cancellation reached sibling"
+        );
+
+        hold.release();
+        tokio::time::timeout(TEST_DEADLINE, second)
+            .await
+            .expect("sibling worker must return after release")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_commit_does_not_replace_worker_result() {
+        let gateway = Arc::new(BlockingGateway::new(1));
+        let cancellation = CancellationToken::new();
+        let hold = WorkerHold::new();
+        let _release = ReleaseOnDrop(hold.clone());
+        let (committed_tx, mut committed_rx) = mpsc::unbounded_channel();
+        let worker_hold = hold.clone();
+        let worker_cancellation = cancellation.clone();
+        let worker = tokio::spawn(async move {
+            gateway
+                .spawn_cancellable(worker_cancellation, move |_| {
+                    committed_tx.send(()).unwrap();
+                    worker_hold.wait();
+                    Ok(42)
+                })
+                .await
+        });
+        tokio::time::timeout(TEST_DEADLINE, committed_rx.recv())
+            .await
+            .expect("worker must announce commit")
+            .expect("worker committed");
+        cancellation.cancel();
+        hold.release();
+        let result = tokio::time::timeout(TEST_DEADLINE, worker)
+            .await
+            .expect("committed worker must return")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, 42);
     }
 
     #[tokio::test]
@@ -367,18 +832,11 @@ mod tests {
 
     #[tokio::test]
     async fn atomic_file_injector_fires_inside_spawn_blocking_worker() {
-        struct ResetInjector;
-        impl Drop for ResetInjector {
-            fn drop(&mut self) {
-                crate::infra::fs::set_test_atomic_file_injector(None);
-            }
-        }
-
         let fired = Arc::new(AtomicBool::new(false));
         crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(FlagInjector(
             fired.clone(),
         ))));
-        let _reset = ResetInjector;
+        let _reset = ResetAtomicFileInjector;
         BLOCKING_GATEWAY
             .spawn(|| {
                 crate::infra::fs::inject_atomic_file(crate::infra::fs::AtomicFileFaultPoint::Write)
@@ -388,6 +846,25 @@ mod tests {
         assert!(
             fired.load(Ordering::SeqCst),
             "injector installed on the test thread must fire inside BLOCKING_GATEWAY.spawn"
+        );
+    }
+
+    #[tokio::test]
+    async fn atomic_file_injector_fires_inside_cancellable_worker() {
+        let fired = Arc::new(AtomicBool::new(false));
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(FlagInjector(
+            fired.clone(),
+        ))));
+        let _reset = ResetAtomicFileInjector;
+        BLOCKING_GATEWAY
+            .spawn_cancellable(CancellationToken::new(), |_| {
+                crate::infra::fs::inject_atomic_file(crate::infra::fs::AtomicFileFaultPoint::Write)
+            })
+            .await
+            .expect("spawn_cancellable");
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "injector installed on the test thread must fire inside spawn_cancellable"
         );
     }
 
@@ -439,6 +916,7 @@ mod tests {
             crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(FlagInjector(
                 Arc::new(AtomicBool::new(false)),
             ))));
+            let _reset = ResetAtomicFileInjector;
             let result = gateway
                 .spawn(|| -> Result<(), Error> { panic!("leaves the guard to clean up") })
                 .await;
