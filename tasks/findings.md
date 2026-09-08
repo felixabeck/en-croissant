@@ -7118,3 +7118,17 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Proof:** use initialized supervised actors, hold game registration or old-session teardown, poll construction to the blocked await, cancel, and assert exact generations are terminated and registry entries removed while unrelated/newer actors survive. Include the first-player/second-player boundary and publication handoff. Backend tests plus real-app lifecycle smoke and affected push gates.
 * **Disposition:** Defer under build section 4 and push-review-policy section 4: this is a separate game-construction cancellation ownership design, not required to reclaim the three historical metadata maps in the fixed f-20260830-52 mandate. That run changes metadata publication ordering but does not claim to repair cancellation of engine construction.
 * **Found by:** Sol/medium error-handling plan lens, 2026-09-08, confidence 94. Related d-20260901-30/-31 establish supervisor ownership and initialization registration, but do not settle ownership through later game construction awaits.
+
+---
+
+## 2026-09-08 — filed through the inbox spool
+
+### Native game events discard transport failures without a delivery recovery contract
+
+* **ID:** f-20260908-03 · **Status:** open · **Area:** engine-uci · **Root:** native-game-event-delivery · **Entry:** build · **Blocked:** none
+* **Where:** src-tauri/src/game.rs:768-784 emit_terminal_event and :2916 engine GameMoveEvent emission; renderer BoardGame post-adoption query is one-shot.
+* **Defect:** terminal emission sets terminal_event_emitted before ignoring emit errors; engine move emission uses unwrap_or(()). An actual transport failure is neither observable nor retried/reconciled. If a surviving renderer misses an engine move or terminal transition, it can remain on stale state. Root verified both discarded Results; the trigger is an injected or actual emit failure, not demonstrated in the real app.
+* **Root evidence:** both are native game snapshots published through best-effort Tauri emission without a common failure/recovery owner.
+* **Design:** choose and verify a bounded native delivery/reconciliation contract across moves, clocks and terminal results, including logging, retry or authoritative resynchronization, and shutdown behavior. Merely resetting the terminal flag or logging cannot guarantee a later publisher runs after game completion. Do not introduce an unowned retry task.
+* **Disposition:** Defer the separate native event-delivery design under push-review-policy section 4. The current f-20260901-22/23 repair handles renderer ownership, terminal snapshots, pre-adoption events, and stale continuations under existing delivery semantics; it does not redesign native transport reliability. Related f-20260908-02 concerns cancelled construction/engine ownership and has a different cause.
+* **Found by:** cumulative error-handling lens over 065c8936, confidence 94 and 91, 2026-09-08. Plan authorship and arbitration shared root context; detection used the same model family as code.
