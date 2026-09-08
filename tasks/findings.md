@@ -5761,6 +5761,20 @@ Root phase inspection before acceptance: the independent proof passed 781 tests 
 First Gemini correction pass addressed privacy, portable timestamps, exact primary-error assertions, marker observer coverage and shared fixtures. Root rejected its remaining duplicate test/production SHA256 loops: tests must execute the same read/hash implementation that production uses. A second narrow continuation will compile out only the observer parameter and callback within one shared loop. No mandate or design change. Plan authorship and arbitration share root context; correction detection is Codex over Gemini, with same-family Codex plan/existing-code review also present in this run.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4cc4ef3ed4d7cc1f0cc2d29ae29a2a2041d78768f11c4202473d5d726f883d23","input_sha256":"ca3dd4b54b199fed2256582efe214a31fd7e7909cb80a1d2fecac3a92e39b9c1","kind":"mutation-receipt","operation":"b002ad17a6ebd32235db516bc16e26ec50cfcaca9fd4c23a1682fab3a2042d98","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-01"],"target":"f-20260904-01","v":1} -->
 
+**Cumulative review at 67ecbdc1**
+
+Correctness, root-cause, IPC and Tauri-security: approved without findings. Twelve Fix verdicts and one Skip across the remaining thirteen reports:
+
+* Tests: Fix the post-hash change-stamp proof with a same-byte rewrite at the EOF read hook. Fix retained-descriptor sampling coverage with a narrowly named test-only commit-stage hook after current-leaf validation; this proves rejection at that sample, not filesystem/registry atomicity. Skip the repeated warning-format test request for the recorded plan-round reason: low-impact diagnostic additions are inspected directly and do not justify a global logger harness.
+* Minimalism: Fix repeated successful MockTransport setup, duplicate corruption observers, and duplicate marker injectors/reset guards.
+* Code quality: Fix platform-specific names on new internal change-stamp fields, the stale prepare comment, the staged-only S5 name, and the unqualified short-lock wording. Existing persisted field names stay compatible.
+* Error handling: Fix silently unavailable cleanup authority in both callers, reserve lock/initialization failure leaving progress Running, and successful publication discarded by terminal progress failure.
+
+Root additionally found raw Error Display in the existing abandon-reservation warning while tracing cleanup. Fix it to an opaque reservation ID and stable category in the same native-authority repair package.
+
+Repairs are grouped by file ownership: native authority plus its main.rs structural test; fs.rs runtime progress/cleanup and shared test setup. Both run through Gemini write leaves. No separate design deferrals. Plan authorship and arbitration share the root context; new code detection is Codex over Gemini, while plan and existing-code review include same-family Codex detection.
+<!-- ledger-meta {"command":"annotate","effect_lines":12,"effect_sha256":"1d2237d98e45f713cdb7dd40556413df42f763d543eb31f86b0e9e8d1731c02e","input_sha256":"e464e44c840e8f984bf629f1caafd1167ef7bf5be04d7381acf71b48252605e7","kind":"mutation-receipt","operation":"e2e89550be65ba2ac32e038b0594ccc868db5b64b072f9808cf5c6887b4fa8ae","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-01"],"target":"f-20260904-01","v":1} -->
+
 ### The analysis report's progress bar never updates, because the backend's operation id and the button's listener id can never be equal
 
 * **ID:** f-20260904-02 · **Status:** handled · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
