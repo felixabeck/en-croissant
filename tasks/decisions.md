@@ -2376,3 +2376,31 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** metadata lifetime follows the state it protects. Missing metadata fails with GameNotFound; a retained newer identity rejects stale sessions. Reversal path: preserve exact stale-session rejection and the key-set bound by live keys plus retained snapshot keys, including cancellation and failed replacement, before changing retention policy.
 * **Decided by:** Codex, autonomously under full auto, 2026-09-08 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"c25e937e6811885af0a40454a046aa0d1414cc1b3202955d1014ef7a8d233ed8","input_sha256":"21b14a42a9b0e8819c1cd07a22b5a5ee211890fee2788e4a524a9cdfa9a47860","kind":"mutation-receipt","operation":"11ed2365c8bc06a8d296140c59743d61314c815a1950a548102f1e56c40293a7","options":{"section":null},"request_id_sha256":null,"results":["d-20260908-01","d-20260908-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20260908-03 — How should interactive engine searches identify their producer before events arrive?
+
+* **Question:** How should interactive engine searches identify their producer before events arrive?
+* **Governs:** f-20260831-09, f-20260903-01
+* **Chosen:** Reserve an opaque native generation before starting the fresh actor; carry it on results and generation-qualified automatic stops. Missing terminal reservations share an invalid-or-expired error, with stale renderer attempt suppression.
+* **Rejected:** Renderer-only epochs, first-observed event identity, or historical terminal records solely for distinguishing expired tokens.
+* **Reason:** Events may arrive before the start promise returns, and a delayed start must not resurrect a stopped reservation. Each interactive request already creates a fresh actor, so one generation covers both producer and search. Reverse only with equivalent ordering and rejection proof.
+* **Decided by:** Codex drain 52f8d250-54f7-410c-a395-5187c124ada0 · **Superseded-by:** -
+
+### d-20260908-04 — How should tab closure prevent engine work that has not yet published?
+
+* **Question:** How should tab closure prevent engine work that has not yet published?
+* **Governs:** f-20260831-09, f-20260903-01
+* **Chosen:** Transient native admission cancellation under the publication barrier plus synchronous renderer close intent in the live tab store. Keep prepared reservations bounded and remove all operation-owned state on its terminal path.
+* **Rejected:** Permanent closed-tab tombstones or moving preparation ahead of stop without a renderer close boundary.
+* **Reason:** Native admissions cover spawned actors waiting for publication; close intent also reaches the debounce interval before native admission exists. A suspended React transition cannot re-enable a removed tab. Reverse only with bounded retention and proof across both intervals.
+* **Decided by:** Codex drain 52f8d250-54f7-410c-a395-5187c124ada0 · **Superseded-by:** -
+
+### d-20260908-05 — What acceptance evidence covers search ownership in this drain?
+
+* **Question:** What acceptance evidence covers search ownership in this drain?
+* **Governs:** f-20260831-09, f-20260903-01
+* **Chosen:** Agent-owned deterministic supervisor and renderer race tests, pinned Playwright screenshots, and the real off-screen Tauri lifecycle harness.
+* **Rejected:** Requiring Felix to repeat deterministic races manually or treating typechecking as UI proof.
+* **Reason:** Full auto assigns acceptance to the agent. The existing harness proves real startup/IPC/shutdown but cannot register an engine through native GTK; controlled actor tests prove the engine interleavings. Revisit when the harness gains live-engine registration.
+* **Decided by:** Codex drain 52f8d250-54f7-410c-a395-5187c124ada0 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":26,"effect_sha256":"10851d30b7e71fd518271c02151543327780f45fe9d58a9f298d57aa0d0ff3c6","input_sha256":"f1f2553b1804133a7011ee229f76a70ff859ec3bed69f8aa95a1b6945baf59c4","kind":"mutation-receipt","operation":"03a52cca57587ef53c1c2cf9d4194cb70928ba68a4f4cad6a8e71fe5102185f3","options":{"section":null},"request_id_sha256":null,"results":["d-20260908-03","d-20260908-04","d-20260908-05"],"target":"decisions-ledger","v":1} -->
