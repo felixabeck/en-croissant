@@ -4097,7 +4097,7 @@ regressions — plus the proof that the wiring invokes them.
 
 ### Three lifecycle registries grow without bound: engine `lifecycle`, game `lifecycle`, and `completed.latest`
 
-* **ID:** f-20260830-52 · **Status:** open · **Area:** engine-uci · **Root:** unbounded-registry-retention · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-52 · **Status:** handled · **Area:** engine-uci · **Root:** unbounded-registry-retention · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/engine/process.rs:318` (`EngineSupervisor::lifecycle`),
   `src-tauri/src/game.rs:817` (`GameManager::lifecycle`), and `game.rs` `CompletedGames::latest`.
 * **Defect:** all three are `DashMap`s keyed by an unbounded identifier — engine key, game id — and
