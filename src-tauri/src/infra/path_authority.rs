@@ -607,6 +607,7 @@ pub(crate) use verified::VerifiedFile;
 pub(crate) enum ActivationObserverStage {
     BeforeRead,
     PostVerification,
+    CommitBeforeRetainedDescriptorValidation,
 }
 
 #[cfg(test)]
@@ -625,7 +626,7 @@ struct PreparedArtifactActivation {
     root_path: PathBuf,
     root_identity: Identity,
     prepared_identity: Identity,
-    prepared_ctime_nanos: i128,
+    prepared_change_stamp: i128,
     #[cfg(test)]
     observer: Option<Arc<dyn ActivationObserver + Send + Sync>>,
 }
@@ -639,12 +640,14 @@ struct ContentVerifiedArtifactActivation {
     root_path: PathBuf,
     root_identity: Identity,
     verified_identity: Identity,
-    verified_ctime_nanos: i128,
+    verified_change_stamp: i128,
+    #[cfg(test)]
+    observer: Option<Arc<dyn ActivationObserver + Send + Sync>>,
 }
 
 impl PreparedArtifactActivation {
     /// Hashes the retained descriptor against the journalled size/digest without holding
-    /// any authority reference or mutex lock, and verifies descriptor identity and ctime after reading.
+    /// any authority reference or mutex lock, and verifies descriptor identity and change stamp after reading.
     fn verify(mut self) -> Result<ContentVerifiedArtifactActivation, Error> {
         #[cfg(test)]
         let (size, digest) =
@@ -659,8 +662,9 @@ impl PreparedArtifactActivation {
         }
         let (a, b) = opened_file_identity(self.descriptor.as_file())?;
         let post_identity = Identity { a, b };
-        let post_ctime_nanos = opened_file_change_nanos(self.descriptor.as_file())?;
-        if post_identity != self.prepared_identity || post_ctime_nanos != self.prepared_ctime_nanos
+        let post_change_stamp = opened_file_change_stamp(self.descriptor.as_file())?;
+        if post_identity != self.prepared_identity
+            || post_change_stamp != self.prepared_change_stamp
         {
             return Err(Error::Conflict(
                 "download artifact has no durable post-rename identity marker".into(),
@@ -677,7 +681,9 @@ impl PreparedArtifactActivation {
             root_path: self.root_path,
             root_identity: self.root_identity,
             verified_identity: post_identity,
-            verified_ctime_nanos: post_ctime_nanos,
+            verified_change_stamp: post_change_stamp,
+            #[cfg(test)]
+            observer: self.observer,
         })
     }
 }
@@ -1461,9 +1467,9 @@ pub(crate) async fn hash_staged_payload(path: PathBuf) -> Result<(u64, String), 
         .await
 }
 
-/// Activates the download artifact through a single blocking worker with two short authority lock scopes.
-/// Locks to persist the post-rename marker and prepare, drops the lock to verify the descriptor,
-/// then reacquires the lock to commit.
+/// Activates the download artifact through a single blocking worker where payload hashing
+/// occurs outside the authority lock. Locks to persist the post-rename marker and prepare,
+/// drops the lock to verify the descriptor, then reacquires the lock to commit.
 pub(crate) async fn activate_download_artifact_runtime(
     authority: &Arc<std::sync::Mutex<Option<PathAuthority>>>,
     reservation: &PendingArtifactReservation,
@@ -1527,7 +1533,7 @@ fn sha256_open_file(
 /// Change stamp paired with the opaque file identity. It is never a standalone authority check:
 /// Unix uses inode ctime; Windows uses the handle's last-write FILETIME. Platforms without a
 /// stable handle timestamp reject post-rename marker publication rather than making a claim.
-fn opened_file_change_nanos(file: &fs::File) -> Result<i128, Error> {
+fn opened_file_change_stamp(file: &fs::File) -> Result<i128, Error> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -4862,9 +4868,11 @@ impl PathAuthority {
         })
     }
 
-    /// Activates exactly the artifact covered by a durable reservation after atomic replacement.
-    /// A failed activation intentionally leaves the durable intent in place so restart recovery
-    /// can return the same opaque capability instead of losing a published file.
+    /// Prepares exactly the artifact covered by a durable reservation after atomic replacement.
+    /// Retains the no-follow opened descriptor and validates the pending reservation, root,
+    /// payload bound, post-rename identity marker and replacement baseline before reading bytes.
+    /// Failed preparation leaves the durable intent in place so restart recovery can proceed
+    /// without losing a published file.
     fn prepare_download_artifact(
         &mut self,
         reservation: &PendingArtifactReservation,
@@ -4906,9 +4914,9 @@ impl PathAuthority {
             .ok_or_else(|| Error::Conflict("artifact target is not a regular file".into()))?;
         let (a, b) = opened_file_identity(descriptor.as_file())?;
         let descriptor_identity = Identity { a, b };
-        let descriptor_ctime_nanos = opened_file_change_nanos(descriptor.as_file())?;
+        let descriptor_change_stamp = opened_file_change_stamp(descriptor.as_file())?;
         if pending.installed_identity.as_ref() != Some(&descriptor_identity)
-            || pending.installed_ctime_nanos != Some(descriptor_ctime_nanos)
+            || pending.installed_ctime_nanos != Some(descriptor_change_stamp)
         {
             return Err(Error::Conflict(
                 "download artifact has no durable post-rename identity marker".into(),
@@ -4933,7 +4941,7 @@ impl PathAuthority {
             root_path,
             root_identity,
             prepared_identity: descriptor_identity,
-            prepared_ctime_nanos: descriptor_ctime_nanos,
+            prepared_change_stamp: descriptor_change_stamp,
             #[cfg(test)]
             observer,
         })
@@ -5005,21 +5013,26 @@ impl PathAuthority {
             .ok_or_else(|| Error::Conflict("artifact target is not a regular file".into()))?;
         let (cur_a, cur_b) = opened_file_identity(&current_file)?;
         let current_leaf_identity = Identity { a: cur_a, b: cur_b };
-        let current_leaf_ctime_nanos = opened_file_change_nanos(&current_file)?;
+        let current_leaf_change_stamp = opened_file_change_stamp(&current_file)?;
 
         if current_leaf_identity != verified.verified_identity
-            || current_leaf_ctime_nanos != verified.verified_ctime_nanos
+            || current_leaf_change_stamp != verified.verified_change_stamp
         {
             return Err(Error::Conflict(
                 "download artifact target changed before activation".into(),
             ));
         }
 
+        #[cfg(test)]
+        if let Some(observer) = &verified.observer {
+            observer.observe(ActivationObserverStage::CommitBeforeRetainedDescriptorValidation);
+        }
+
         let (ret_a, ret_b) = opened_file_identity(verified.descriptor.as_file())?;
         let retained_identity = Identity { a: ret_a, b: ret_b };
-        let retained_ctime_nanos = opened_file_change_nanos(verified.descriptor.as_file())?;
+        let retained_change_stamp = opened_file_change_stamp(verified.descriptor.as_file())?;
         if retained_identity != verified.verified_identity
-            || retained_ctime_nanos != verified.verified_ctime_nanos
+            || retained_change_stamp != verified.verified_change_stamp
         {
             return Err(Error::Conflict(
                 "download artifact target changed before activation".into(),
@@ -5149,9 +5162,10 @@ impl PathAuthority {
             None,
             true,
         ) {
+            let category = error.category();
+            let reservation_id = &reservation.id.id;
             log::warn!(
-                "failed to abandon download artifact reservation {}: {error}",
-                reservation.id.id
+                "failed to abandon download artifact reservation {reservation_id}: {category}"
             );
         }
     }
@@ -8650,15 +8664,20 @@ mod tests {
                 current_thread, self.caller_thread_id,
                 "observer must execute on a blocking worker thread, not caller thread"
             );
-            let authority_arc = self
-                .authority
-                .upgrade()
-                .expect("authority must exist during verification");
-            let try_lock = authority_arc.try_lock();
-            assert!(
-                try_lock.is_ok(),
-                "authority mutex must be unlocked during stage {stage:?}"
-            );
+            if matches!(
+                stage,
+                ActivationObserverStage::BeforeRead | ActivationObserverStage::PostVerification
+            ) {
+                let authority_arc = self
+                    .authority
+                    .upgrade()
+                    .expect("authority must exist during verification");
+                let try_lock = authority_arc.try_lock();
+                assert!(
+                    try_lock.is_ok(),
+                    "authority mutex must be unlocked during stage {stage:?}"
+                );
+            }
             self.observed_stages.lock().unwrap().push(stage);
         }
     }
@@ -8797,16 +8816,20 @@ mod tests {
             before_read_count >= 1,
             "must have observed at least one BeforeRead stage"
         );
-        assert_eq!(
-            *recorded.last().unwrap(),
-            ActivationObserverStage::PostVerification,
-            "last observed stage must be PostVerification"
-        );
         let post_pos = recorded
             .iter()
             .position(|s| *s == ActivationObserverStage::PostVerification)
-            .unwrap();
-        assert_eq!(post_pos, recorded.len() - 1);
+            .expect("must contain PostVerification");
+        let commit_pos = recorded
+            .iter()
+            .position(|s| *s == ActivationObserverStage::CommitBeforeRetainedDescriptorValidation)
+            .expect("must contain commit stage");
+        assert!(post_pos > 0 && commit_pos > post_pos);
+        assert_eq!(
+            *recorded.last().unwrap(),
+            ActivationObserverStage::CommitBeforeRetainedDescriptorValidation,
+            "last observed stage must be commit stage"
+        );
     }
 
     #[test]
@@ -8846,43 +8869,112 @@ mod tests {
             .contains_key(&fixture.reservation.id.id));
     }
 
+    struct EofSameBytesRewriteObserver {
+        target_path: PathBuf,
+        payload: Vec<u8>,
+        read_counter: std::sync::atomic::AtomicUsize,
+        hook_fired: std::sync::atomic::AtomicBool,
+        initial_stamp: i128,
+        final_stamp: std::sync::Mutex<Option<i128>>,
+    }
+
+    impl ActivationObserver for EofSameBytesRewriteObserver {
+        fn observe(&self, stage: ActivationObserverStage) {
+            if stage != ActivationObserverStage::BeforeRead {
+                return;
+            }
+            let count = self.read_counter.fetch_add(1, Ordering::SeqCst);
+            // The first BeforeRead is before payload bytes are read.
+            // The second BeforeRead is the EOF callback after payload was read.
+            if count == 1 {
+                let mut changed = false;
+                for _ in 0..64 {
+                    {
+                        let mut file = fs::OpenOptions::new()
+                            .write(true)
+                            .open(&self.target_path)
+                            .expect("target must open for rewrite");
+                        file.write_all(&self.payload).expect("rewrite must succeed");
+                        file.sync_all().expect("sync must succeed");
+                    }
+                    let reader = fs::File::open(&self.target_path)
+                        .expect("target must open to read change stamp");
+                    let stamp = opened_file_change_stamp(&reader).expect("stamp must read");
+                    if stamp != self.initial_stamp {
+                        *self.final_stamp.lock().unwrap() = Some(stamp);
+                        changed = true;
+                        break;
+                    }
+                }
+                assert!(
+                    changed,
+                    "must observe a changed real stamp within bounded rewrite attempts"
+                );
+                self.hook_fired.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
     #[test]
     fn test_activation_mutation_during_and_after_verification_rejects() {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = InstalledArtifactFixture::new(dir.path());
 
-        // Case a: Mutate/truncate file before/during verification
+        // Case a: Rewrite SAME bytes in the final BeforeRead callback (EOF callback after payload was read)
+        let observer = Arc::new(EofSameBytesRewriteObserver {
+            target_path: fixture.target_path.clone(),
+            payload: b"1. e4 e5".to_vec(),
+            read_counter: std::sync::atomic::AtomicUsize::new(0),
+            hook_fired: std::sync::atomic::AtomicBool::new(false),
+            initial_stamp: fixture.installed.ctime_nanos,
+            final_stamp: std::sync::Mutex::new(None),
+        });
+        fixture
+            .authority
+            .set_activation_observer(Some(observer.clone()));
+
         let prepared = fixture
             .authority
             .prepare_download_artifact(&fixture.reservation)
-            .unwrap();
-        // Truncate retained file through the pathname (modifies the same inode)
-        {
-            let f = fs::OpenOptions::new()
-                .write(true)
-                .open(&fixture.target_path)
-                .unwrap();
-            f.set_len(2).unwrap();
-        }
-        let verify_err = match prepared.verify() {
-            Ok(_) => panic!("verify must reject mutated content"),
-            Err(e) => e,
-        };
+            .expect("preparation must succeed");
+
+        let verify_err = prepared
+            .verify()
+            .err()
+            .expect("post-hash verification must reject when change stamp changed");
         assert!(matches!(verify_err, Error::Conflict(_)));
+        assert!(
+            observer.hook_fired.load(Ordering::SeqCst),
+            "EOF read observer hook must have fired"
+        );
+        let final_stamp = observer
+            .final_stamp
+            .lock()
+            .unwrap()
+            .expect("final stamp must have been captured");
+        assert_ne!(
+            final_stamp, observer.initial_stamp,
+            "change stamp must differ from initial stamp on real platform"
+        );
         assert!(fixture
             .authority
             .pending_artifacts
             .iter()
             .any(|p| p.id == fixture.reservation.id));
 
-        // Restore file content and ctime marker for case b
+        // Clear observer and restore file content and change stamp marker for case b
+        fixture.authority.set_activation_observer(None);
         fs::write(&fixture.target_path, b"1. e4 e5").unwrap();
         let restored_file = fs::File::open(&fixture.target_path).unwrap();
         let (new_a, new_b) = opened_file_identity(&restored_file).unwrap();
-        let new_ctime = opened_file_change_nanos(&restored_file).unwrap();
+        let new_change_stamp = opened_file_change_stamp(&restored_file).unwrap();
         fixture
             .authority
-            .mark_download_artifact_committed(&fixture.reservation, (new_a, new_b), new_ctime)
+            .mark_download_artifact_committed(
+                &fixture.reservation,
+                (new_a, new_b),
+                new_change_stamp,
+            )
             .unwrap();
 
         // Case b: Mutate/touch file after verification before commit
@@ -8914,13 +9006,77 @@ mod tests {
             .any(|p| p.id == fixture.reservation.id));
     }
 
-    struct InjectParentSyncFailure;
-    impl AtomicWriterInjector for InjectParentSyncFailure {
-        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point == AtomicFileFaultPoint::ParentSync {
-                return Err(std::io::Error::other("injected parent sync failure"));
+    struct CommitStageMutationObserver {
+        target_path: PathBuf,
+        fired: std::sync::atomic::AtomicBool,
+    }
+
+    impl ActivationObserver for CommitStageMutationObserver {
+        fn observe(&self, stage: ActivationObserverStage) {
+            if stage == ActivationObserverStage::CommitBeforeRetainedDescriptorValidation {
+                let mut f = fs::OpenOptions::new()
+                    .write(true)
+                    .open(&self.target_path)
+                    .expect("target must open for commit-stage mutation");
+                f.write_all(b"mutated!").expect("write must succeed");
+                f.sync_all().expect("sync must succeed");
+                self.fired.store(true, Ordering::SeqCst);
             }
-            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_activation_commit_rejects_mutation_at_commit_observer_stage_and_retains_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = InstalledArtifactFixture::new(dir.path());
+
+        let observer = Arc::new(CommitStageMutationObserver {
+            target_path: fixture.target_path.clone(),
+            fired: std::sync::atomic::AtomicBool::new(false),
+        });
+        fixture
+            .authority
+            .set_activation_observer(Some(observer.clone()));
+
+        let prepared = fixture
+            .authority
+            .prepare_download_artifact(&fixture.reservation)
+            .expect("prepare must succeed");
+        let verified = prepared.verify().expect("verify must succeed");
+
+        let commit_err = fixture
+            .authority
+            .commit_download_artifact(verified)
+            .expect_err(
+                "commit must reject mutation between current-leaf and retained-descriptor checks",
+            );
+
+        assert!(matches!(commit_err, Error::Conflict(_)));
+        assert!(
+            observer.fired.load(Ordering::SeqCst),
+            "commit observer hook must have fired"
+        );
+        assert!(
+            fixture
+                .authority
+                .pending_artifacts
+                .iter()
+                .any(|p| p.id == fixture.reservation.id),
+            "pending intent must be retained"
+        );
+        assert!(
+            !fixture
+                .authority
+                .persistent
+                .contains_key(&fixture.reservation.id.id),
+            "no grant must be published"
+        );
+    }
+
+    struct ResetInjector;
+    impl Drop for ResetInjector {
+        fn drop(&mut self) {
+            set_test_atomic_file_injector(None);
         }
     }
 
@@ -8934,13 +9090,6 @@ mod tests {
     #[tokio::test]
     async fn test_activation_runtime_marker_uncertain_durability_fails_with_archive_commit_marker()
     {
-        struct ResetInjector;
-        impl Drop for ResetInjector {
-            fn drop(&mut self) {
-                set_test_atomic_file_injector(None);
-            }
-        }
-
         let dir = tempfile::tempdir().unwrap();
         let fixture = InstalledArtifactFixture::uncommitted(dir.path(), b"content");
         let authority = Arc::new(std::sync::Mutex::new(Some(fixture.authority)));
@@ -8953,7 +9102,9 @@ mod tests {
             .unwrap()
             .set_activation_observer(Some(observer.clone()));
 
-        set_test_atomic_file_injector(Some(Arc::new(InjectParentSyncFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "injected parent sync failure",
+        ))));
         let _reset = ResetInjector;
 
         let result = activate_download_artifact_runtime(
@@ -8988,26 +9139,9 @@ mod tests {
         assert!(!auth.persistent.contains_key(&fixture.reservation.id.id));
     }
 
-    struct InjectWriteFailure;
-    impl AtomicWriterInjector for InjectWriteFailure {
-        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point == AtomicFileFaultPoint::Write {
-                return Err(std::io::Error::other("injected write failure"));
-            }
-            Ok(())
-        }
-    }
-
     #[tokio::test]
     async fn test_activation_runtime_marker_write_failure_returns_io_category_and_retains_pending()
     {
-        struct ResetInjector;
-        impl Drop for ResetInjector {
-            fn drop(&mut self) {
-                set_test_atomic_file_injector(None);
-            }
-        }
-
         let dir = tempfile::tempdir().unwrap();
         let fixture = InstalledArtifactFixture::uncommitted(dir.path(), b"content");
         let authority = Arc::new(std::sync::Mutex::new(Some(fixture.authority)));
@@ -9020,7 +9154,7 @@ mod tests {
             .unwrap()
             .set_activation_observer(Some(observer.clone()));
 
-        set_test_atomic_file_injector(Some(Arc::new(InjectWriteFailure)));
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
         let _reset = ResetInjector;
 
         let result = activate_download_artifact_runtime(

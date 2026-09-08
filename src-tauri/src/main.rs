@@ -2903,7 +2903,7 @@ mod blocking_offload_scans {
     }
 
     #[test]
-    fn s5_staged_hash_leaves_the_guard_and_the_tokio_worker() {
+    fn s5_staged_and_published_hash_leaves_the_guard_and_the_tokio_worker() {
         let path_authority = include_str!("infra/path_authority.rs");
         let reserve = body_at_indent(path_authority, "fn reserve_download_artifact");
         assert!(
