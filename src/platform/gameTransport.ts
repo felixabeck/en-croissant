@@ -6,7 +6,7 @@ import type {
     GameState,
     OpeningBookConfig,
     TimeControl,
-} from "@/bindings/generated";
+} from "@/bindings";
 
 const MAX_SAFE_COUNTER = BigInt(Number.MAX_SAFE_INTEGER);
 
