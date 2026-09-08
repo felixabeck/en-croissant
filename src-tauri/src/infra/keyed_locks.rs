@@ -114,15 +114,18 @@ mod tests {
         let third = locks.lease("same");
         assert!(third.try_lock().is_err());
         drop(held);
-        drop(first);
         let waiter_guard = waiting.as_mut().await;
+        drop(first);
+        let fresh = locks.lease("same");
         assert!(third.try_lock().is_err());
+        assert!(fresh.try_lock().is_err());
         drop(waiter_guard);
         drop(waiting);
         drop(waiter);
         let third_guard = third.lock().await;
         drop(third_guard);
         drop(third);
+        drop(fresh);
         assert_eq!(locks.len(), 0);
     }
 
@@ -174,7 +177,7 @@ mod tests {
                 drop(peer);
                 drop(next);
             });
+            assert_eq!(locks.len(), 0);
         }
-        assert_eq!(locks.len(), 0);
     }
 }

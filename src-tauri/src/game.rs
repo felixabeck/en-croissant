@@ -805,12 +805,12 @@ struct CompletedSnapshot {
 }
 
 #[derive(Default)]
-struct CompletedGames {
+struct SessionMetadata {
     snapshots: VecDeque<CompletedSnapshot>,
     latest: HashMap<GameId, LatestSession>,
 }
 
-impl CompletedGames {
+impl SessionMetadata {
     fn prune(&mut self, games: &DashMap<GameId, Arc<LiveSession>>) {
         while self.snapshots.len() > COMPLETED_GAME_SNAPSHOTS {
             self.snapshots.pop_front();
@@ -901,7 +901,7 @@ pub struct GameManager {
     sealed: AtomicBool,
     registration: Mutex<()>,
     lifecycle: KeyedLocks<GameId>,
-    completed: Mutex<CompletedGames>,
+    session_metadata: Mutex<SessionMetadata>,
 }
 
 async fn spawn_configured_game_engine(
@@ -1021,7 +1021,7 @@ impl GameManager {
             sealed: AtomicBool::new(false),
             registration: Mutex::new(()),
             lifecycle: KeyedLocks::default(),
-            completed: Mutex::new(CompletedGames::default()),
+            session_metadata: Mutex::new(SessionMetadata::default()),
         }
     }
 
@@ -1048,16 +1048,16 @@ impl GameManager {
         let registration = self.registration.lock().await;
         self.ensure_accepting_starts()?;
         {
-            let mut completed = self.completed.lock().await;
+            let mut metadata = self.session_metadata.lock().await;
             self.games.insert(game_id.clone(), live);
-            completed.latest.insert(
+            metadata.latest.insert(
                 game_id,
                 LatestSession {
                     session,
                     disposition: SessionDisposition::Active,
                 },
             );
-            completed.prune(&self.games);
+            metadata.prune(&self.games);
         }
         install_loop();
         drop(registration);
@@ -1071,21 +1071,21 @@ impl GameManager {
         controller: &Arc<RwLock<GameController>>,
     ) {
         let snapshot = controller.read().await.get_state();
-        let mut completed = self.completed.lock().await;
+        let mut metadata = self.session_metadata.lock().await;
         let is_exact_live = self
             .games
             .get(game_id)
             .is_some_and(|live| live.session == session);
-        let is_exact_active = completed.latest.get(game_id).is_some_and(|latest| {
+        let is_exact_active = metadata.latest.get(game_id).is_some_and(|latest| {
             latest.session == session && latest.disposition == SessionDisposition::Active
         });
         if !is_exact_live || !is_exact_active {
             return;
         }
-        completed
+        metadata
             .snapshots
             .retain(|entry| entry.game_id != game_id || entry.session != session);
-        completed.snapshots.push_back(CompletedSnapshot {
+        metadata.snapshots.push_back(CompletedSnapshot {
             game_id: game_id.to_owned(),
             session,
             state: snapshot,
@@ -1093,19 +1093,19 @@ impl GameManager {
         let _ = self
             .games
             .remove_if(game_id, |_, current| current.session == session);
-        completed.latest.insert(
+        metadata.latest.insert(
             game_id.to_owned(),
             LatestSession {
                 session,
                 disposition: SessionDisposition::Completed,
             },
         );
-        completed.prune(&self.games);
+        metadata.prune(&self.games);
     }
 
     fn retire_live_locked(
         &self,
-        completed: &mut CompletedGames,
+        metadata: &mut SessionMetadata,
         game_id: &str,
         session: u64,
     ) -> Option<Arc<LiveSession>> {
@@ -1114,7 +1114,7 @@ impl GameManager {
             .remove_if(game_id, |_, current| current.session == session)
             .map(|(_, live)| live);
         if removed.is_some() {
-            completed.latest.insert(
+            metadata.latest.insert(
                 game_id.to_owned(),
                 LatestSession {
                     session,
@@ -1122,8 +1122,21 @@ impl GameManager {
                 },
             );
         }
-        completed.prune(&self.games);
+        metadata.prune(&self.games);
         removed
+    }
+
+    async fn retire_replaced_session(
+        &self,
+        game_id: &str,
+        old_game: Arc<LiveSession>,
+        join_budget: Duration,
+    ) -> Result<(), Error> {
+        {
+            let mut metadata = self.session_metadata.lock().await;
+            self.retire_live_locked(&mut metadata, game_id, old_game.session);
+        }
+        old_game.shutdown_and_join(join_budget).await
     }
 
     pub async fn start_game(
@@ -1260,12 +1273,8 @@ impl GameManager {
             // The lifecycle lock prevents a newer session from replacing this
             // exact one while it is joined. Remove before signaling so an
             // aborted replacement cannot become a completed snapshot.
-            {
-                let mut completed = self.completed.lock().await;
-                self.retire_live_locked(&mut completed, &game_id, old_game.session);
-            }
-            if let Err(primary) = old_game
-                .shutdown_and_join(EngineDeadlines::default().quit)
+            if let Err(primary) = self
+                .retire_replaced_session(&game_id, old_game, EngineDeadlines::default().quit)
                 .await
             {
                 let engines = {
@@ -1382,8 +1391,8 @@ impl GameManager {
             }
             return Ok(game.controller.read().await.get_state());
         }
-        let completed = self.completed.lock().await;
-        let Some(latest) = completed.latest.get(game_id) else {
+        let metadata = self.session_metadata.lock().await;
+        let Some(latest) = metadata.latest.get(game_id) else {
             return Err(Error::GameNotFound(game_id.to_string()));
         };
         if latest.session != expected_session {
@@ -1392,7 +1401,7 @@ impl GameManager {
         if latest.disposition == SessionDisposition::Tombstoned {
             return Err(Error::GameNotFound(game_id.to_string()));
         }
-        completed
+        metadata
             .snapshots
             .iter()
             .rev()
@@ -1607,8 +1616,8 @@ impl GameManager {
                 |(game_id, session)| async move {
                     let result = session.shutdown_and_join(join_budget).await;
                     if result.is_ok() {
-                        let mut completed = self.completed.lock().await;
-                        self.retire_live_locked(&mut completed, &game_id, session.session);
+                        let mut metadata = self.session_metadata.lock().await;
+                        self.retire_live_locked(&mut metadata, &game_id, session.session);
                     }
                     (game_id, result)
                 },
@@ -1635,8 +1644,8 @@ impl GameManager {
         let _transition = lifecycle.lock().await;
         let game = self.current_session(game_id, expected_session).await?;
         let removed = {
-            let mut completed = self.completed.lock().await;
-            self.retire_live_locked(&mut completed, game_id, expected_session)
+            let mut metadata = self.session_metadata.lock().await;
+            self.retire_live_locked(&mut metadata, game_id, expected_session)
         };
         if removed.is_none() {
             return Err(Error::Conflict(
@@ -3763,36 +3772,64 @@ mod tests {
     #[tokio::test]
     async fn cancelled_registration_wait_cannot_publish_live_or_latest_state() {
         let manager = GameManager::new();
+        let callback_count = AtomicU64::new(0);
         let registration = manager.registration.lock().await;
         let (live, _) = test_live_session("cancelled", 1);
-        let mut publication = Box::pin(manager.publish_live("cancelled".into(), 1, live, || {}));
+        let mut publication = Box::pin(manager.publish_live("cancelled".into(), 1, live, || {
+            callback_count.fetch_add(1, Ordering::SeqCst);
+        }));
         assert!(futures_util::poll!(&mut publication).is_pending());
         drop(publication);
         drop(registration);
 
         assert!(manager.games.get("cancelled").is_none());
         assert!(!manager
-            .completed
+            .session_metadata
             .lock()
             .await
             .latest
             .contains_key("cancelled"));
+        assert_eq!(callback_count.load(Ordering::SeqCst), 0);
+
+        let (active, _) = test_live_session("active-callback", 3);
+        manager
+            .publish_live("active-callback".into(), 3, active, || {
+                assert_eq!(callback_count.fetch_add(1, Ordering::SeqCst), 0);
+                assert!(manager.registration.try_lock().is_err());
+                assert!(manager
+                    .games
+                    .get("active-callback")
+                    .is_some_and(|live| live.session == 3));
+                let metadata = manager.session_metadata.try_lock().unwrap();
+                assert!(metadata
+                    .latest
+                    .get("active-callback")
+                    .is_some_and(|latest| {
+                        latest.session == 3 && latest.disposition == SessionDisposition::Active
+                    }));
+            })
+            .await
+            .unwrap();
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
 
         manager.sealed.store(true, Ordering::SeqCst);
         let (rejected, _) = test_live_session("rejected", 2);
         assert!(matches!(
             manager
-                .publish_live("rejected".into(), 2, rejected, || {})
+                .publish_live("rejected".into(), 2, rejected, || {
+                    callback_count.fetch_add(1, Ordering::SeqCst);
+                })
                 .await,
             Err(Error::Conflict(_))
         ));
         assert!(manager.games.get("rejected").is_none());
         assert!(!manager
-            .completed
+            .session_metadata
             .lock()
             .await
             .latest
             .contains_key("rejected"));
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -3822,17 +3859,70 @@ mod tests {
                 .unwrap();
             manager.abort_game(&game_id, session).await.unwrap();
         }
+
+        let retained_id = "replaced-retained";
+        {
+            let mut metadata = manager.session_metadata.lock().await;
+            metadata.snapshots.push_back(CompletedSnapshot {
+                game_id: retained_id.into(),
+                session: 0,
+                state: GameController::new(retained_id.into(), 0, human_config())
+                    .unwrap()
+                    .get_state(),
+            });
+            metadata.latest.insert(
+                retained_id.into(),
+                LatestSession {
+                    session: 0,
+                    disposition: SessionDisposition::Completed,
+                },
+            );
+        }
+        let (old, _) = test_live_session(retained_id, 1);
+        *old.join.lock().unwrap() = Some(tokio::spawn(std::future::pending::<()>()));
+        manager
+            .publish_live(retained_id.into(), 1, old.clone(), || {})
+            .await
+            .unwrap();
+        assert!(manager
+            .retire_replaced_session(retained_id, old, Duration::ZERO)
+            .await
+            .is_err());
+        assert!(manager.games.get(retained_id).is_none());
+        assert!(manager
+            .session_metadata
+            .lock()
+            .await
+            .latest
+            .get(retained_id)
+            .is_some_and(|latest| latest.session == 1
+                && latest.disposition == SessionDisposition::Tombstoned));
+        assert!(matches!(
+            manager.get_game_state(retained_id, 1).await,
+            Err(Error::GameNotFound(_))
+        ));
+        assert!(matches!(
+            manager.get_game_state(retained_id, 0).await,
+            Err(Error::Conflict(_))
+        ));
+        let (replacement, _) = test_live_session(retained_id, 2);
+        manager
+            .publish_live(retained_id.into(), 2, replacement, || {})
+            .await
+            .unwrap();
+        manager.abort_game(retained_id, 2).await.unwrap();
+
         for index in 1..=150 {
             let game_id = format!("replaced-{index}");
             let (old, _) = test_live_session(&game_id, 1);
             manager
-                .publish_live(game_id.clone(), 1, old, || {})
+                .publish_live(game_id.clone(), 1, old.clone(), || {})
                 .await
                 .unwrap();
-            {
-                let mut completed = manager.completed.lock().await;
-                manager.retire_live_locked(&mut completed, &game_id, 1);
-            }
+            manager
+                .retire_replaced_session(&game_id, old, Duration::ZERO)
+                .await
+                .unwrap();
             let (replacement, _) = test_live_session(&game_id, 2);
             manager
                 .publish_live(game_id.clone(), 2, replacement, || {})
@@ -3851,39 +3941,39 @@ mod tests {
                 .await;
         }
 
-        let completed = manager.completed.lock().await;
-        assert_eq!(completed.snapshots.len(), COMPLETED_GAME_SNAPSHOTS);
-        assert!(completed.latest.len() <= manager.games.len() + completed.snapshots.len());
-        assert!(completed.latest.get("active").is_some_and(|latest| {
+        let metadata = manager.session_metadata.lock().await;
+        assert_eq!(metadata.snapshots.len(), COMPLETED_GAME_SNAPSHOTS);
+        assert!(metadata.latest.len() <= manager.games.len() + metadata.snapshots.len());
+        assert!(metadata.latest.get("active").is_some_and(|latest| {
             latest.session == 10_000 && latest.disposition == SessionDisposition::Active
         }));
-        for (game_id, latest) in &completed.latest {
+        for (game_id, latest) in &metadata.latest {
             match latest.disposition {
                 SessionDisposition::Active => assert!(manager
                     .games
                     .get(game_id)
                     .is_some_and(|live| live.session == latest.session)),
-                SessionDisposition::Completed => assert!(completed
+                SessionDisposition::Completed => assert!(metadata
                     .snapshots
                     .iter()
                     .any(|snapshot| snapshot.game_id == *game_id
                         && snapshot.session == latest.session)),
-                SessionDisposition::Tombstoned => assert!(completed
+                SessionDisposition::Tombstoned => assert!(metadata
                     .snapshots
                     .iter()
                     .any(|snapshot| snapshot.game_id == *game_id)),
             }
         }
-        for game_id in completed.latest.keys() {
+        for game_id in metadata.latest.keys() {
             assert!(
                 manager.games.contains_key(game_id)
-                    || completed
+                    || metadata
                         .snapshots
                         .iter()
                         .any(|snapshot| snapshot.game_id == *game_id)
             );
         }
-        drop(completed);
+        drop(metadata);
         assert_eq!(manager.lifecycle.len(), 0);
     }
 
@@ -3900,7 +3990,7 @@ mod tests {
 
         assert!(manager.games.is_empty());
         assert!(!manager
-            .completed
+            .session_metadata
             .lock()
             .await
             .latest
@@ -3914,7 +4004,7 @@ mod tests {
             GameController::new("game".into(), 1, human_config()).unwrap(),
         ));
         let (shutdown, _) = watch::channel(false);
-        manager.completed.lock().await.latest.insert(
+        manager.session_metadata.lock().await.latest.insert(
             "game".into(),
             LatestSession {
                 session: 1,
@@ -3939,7 +4029,7 @@ mod tests {
             GameController::new("game".into(), 2, human_config()).unwrap(),
         ));
         let (shutdown, _) = watch::channel(false);
-        manager.completed.lock().await.latest.insert(
+        manager.session_metadata.lock().await.latest.insert(
             "game".into(),
             LatestSession {
                 session: 2,
@@ -3958,7 +4048,7 @@ mod tests {
         );
         manager.complete_exact("game", 1, &controller).await;
         assert_eq!(manager.get_game_state("game", 2).await.unwrap().session, 2);
-        assert!(manager.completed.lock().await.snapshots.len() <= COMPLETED_GAME_SNAPSHOTS);
+        assert!(manager.session_metadata.lock().await.snapshots.len() <= COMPLETED_GAME_SNAPSHOTS);
     }
 
     #[tokio::test]
@@ -4180,20 +4270,20 @@ mod tests {
         let old_state = GameController::new("game".into(), 1, human_config())
             .unwrap()
             .get_state();
-        let mut completed = manager.completed.lock().await;
-        completed.snapshots.push_back(CompletedSnapshot {
+        let mut metadata = manager.session_metadata.lock().await;
+        metadata.snapshots.push_back(CompletedSnapshot {
             game_id: "game".into(),
             session: 1,
             state: old_state,
         });
-        completed.latest.insert(
+        metadata.latest.insert(
             "game".into(),
             LatestSession {
                 session: 2,
                 disposition: SessionDisposition::Tombstoned,
             },
         );
-        drop(completed);
+        drop(metadata);
 
         assert!(matches!(
             manager.get_game_state("game", 2).await,
@@ -4209,15 +4299,15 @@ mod tests {
     async fn evicting_a_tombstones_last_snapshot_never_reveals_the_old_session() {
         let manager = GameManager::new();
         {
-            let mut completed = manager.completed.lock().await;
-            completed.snapshots.push_back(CompletedSnapshot {
+            let mut metadata = manager.session_metadata.lock().await;
+            metadata.snapshots.push_back(CompletedSnapshot {
                 game_id: "old".into(),
                 session: 1,
                 state: GameController::new("old".into(), 1, human_config())
                     .unwrap()
                     .get_state(),
             });
-            completed.latest.insert(
+            metadata.latest.insert(
                 "old".into(),
                 LatestSession {
                     session: 2,
@@ -4241,9 +4331,9 @@ mod tests {
             manager.get_game_state("old", 1).await,
             Err(Error::GameNotFound(_))
         ));
-        let completed = manager.completed.lock().await;
-        assert!(!completed.latest.contains_key("old"));
-        assert!(!completed
+        let metadata = manager.session_metadata.lock().await;
+        assert!(!metadata.latest.contains_key("old"));
+        assert!(!metadata
             .snapshots
             .iter()
             .any(|snapshot| snapshot.game_id == "old"));

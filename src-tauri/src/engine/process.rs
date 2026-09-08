@@ -534,9 +534,10 @@ pub struct EngineSupervisor {
     registration: Mutex<()>,
     retired: StdMutex<RetiredEngineIds>,
     retired_executables: StdMutex<RetiredExecutables>,
-    // Every lifecycle transition for an exact key takes this lock before it
-    // observes or mutates `actors`.  The map itself is concurrent, but it
-    // cannot make remove → await shutdown → insert atomic.
+    // `lifecycle` provides the per-key transition locks. Every lifecycle
+    // transition acquires the lock for its exact key before observing or
+    // mutating the `actors` map. `actors` itself is concurrent, but cannot make
+    // remove → await shutdown → insert atomic.
     lifecycle: KeyedLocks<EngineKey>,
 }
 
