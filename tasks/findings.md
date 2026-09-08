@@ -4527,7 +4527,7 @@ Handled by `2d545015`. Unlink order is preferred sidecar, provenance-matching le
 
 ### Engine results are bound to a tab and a position but not to the process that produced them
 
-* **ID:** f-20260831-09 · **Status:** open · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-09 · **Status:** handled · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** build · **Blocked:** none
 * **Where:** three sites on one axis.
   * `src/components/boards/EvalListener.tsx` — the result fingerprint covers tab, FEN, moves and
     settings, but not the executable handle or a process generation.
