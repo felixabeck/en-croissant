@@ -2355,3 +2355,24 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** These two values are static product metadata, with no executable behavior to instrument. JSON is already a supported data input in this renderer. Existing source coverage scope, numeric baselines and floors remain byte-identical. Reversal path: if product identity gains executable behavior, introduce a properly assigned production module with explicitly reviewed measurement ownership.
 * **Decided by:** Codex, next-finding/build full-auto session, 2026-09-07. **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"2d3e77d1aa4075ca1eebb43f6547f69b461acc5aa621b2584ead36433a8f5bb8","input_sha256":"b7e8b6c4e494209a2ad3ef49b158a5cf701ce9101d59a8c8ea540463cde9ed1e","kind":"mutation-receipt","operation":"41ea7bc0d6cbd992fe6e6748dbd7dcf9e4ebd37cef704d7e6b79cfe2c2e9bb8c","options":{"section":null},"request_id_sha256":null,"results":["d-20260907-11"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-08 — recorded through the decisions lock
+
+### d-20260908-01 — How are engine and game lifecycle locks reclaimed without splitting exclusion?
+
+* **Question:** How are engine and game lifecycle locks reclaimed without splitting exclusion?
+* **Governs:** f-20260830-52
+* **Chosen:** Share a crate-private Tokio keyed-lock lease in `src-tauri/src/infra/keyed_locks.rs`. Acquisition and final release use the same map-entry guard. The non-cloneable lease exposes borrowed mutex guards only; it releases its own Arc while the entry guard is held and removes a sole map reference. Both engine and game transitions use this lease.
+* **Rejected:** unconditional deletion (concurrent owners split their lock), weak values without key removal (historical keys still leak), periodic sweeps (unnecessary deferred cleanup), and fixed stripes (unrelated keys block each other).
+* **Reason:** retained entry count tracks outstanding leases, including holders and waiters, and reaches zero after quiescence without a background helper. Reversal path: replace only with a design proving same-key exclusion, independent-key progress, waiter cancellation and zero historical retention under concurrent final release/reacquisition.
+* **Decided by:** Codex, autonomously under full auto, 2026-09-08 · **Superseded-by:** -
+
+### d-20260908-02 — What keeps completed-game latest-session metadata alive?
+
+* **Question:** What keeps completed-game latest-session metadata alive?
+* **Governs:** f-20260830-52
+* **Chosen:** Retain latest metadata only for live session keys or retained completed snapshot keys; keep the existing 128-snapshot cap. Tombstones need retention only while an older snapshot for that key remains. Publish/remove live and latest entries atomically under the completed mutex, recheck exact session at completion, and prune on completion, abort, replacement and shutdown fallback.
+* **Rejected:** an independent TTL/FIFO for latest metadata (a second policy and possible active eviction), unconditional tombstone deletion (can expose older snapshots), and retaining Active records before awaiting registration (cancelled publication leaks metadata).
+* **Reason:** metadata lifetime follows the state it protects. Missing metadata fails with GameNotFound; a retained newer identity rejects stale sessions. Reversal path: preserve exact stale-session rejection and the key-set bound by live keys plus retained snapshot keys, including cancellation and failed replacement, before changing retention policy.
+* **Decided by:** Codex, autonomously under full auto, 2026-09-08 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"c25e937e6811885af0a40454a046aa0d1414cc1b3202955d1014ef7a8d233ed8","input_sha256":"21b14a42a9b0e8819c1cd07a22b5a5ee211890fee2788e4a524a9cdfa9a47860","kind":"mutation-receipt","operation":"11ed2365c8bc06a8d296140c59743d61314c815a1950a548102f1e56c40293a7","options":{"section":null},"request_id_sha256":null,"results":["d-20260908-01","d-20260908-02"],"target":"decisions-ledger","v":1} -->
