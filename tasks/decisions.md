@@ -2444,3 +2444,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** A real WebKitGTK probe of the installed native binary returned numeric session/revision and rejected a bigint expectedSession with JSON.stringify cannot serialize BigInt. Generated bindings provide types, not conversion. Reversal: adopt a lossless native string-counter contract if the valid range must exceed JavaScript safe integers.
 * **Decided by:** Codex drain 0b810ced-b5af-451c-aaaf-d41acd0fc87d, autonomously · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f27514ef01861380cd9e3ca117cc1d8af02fdc2b12994f1a72c19c54f99a1303","input_sha256":"202ff3fd045212d19b1eccc3552ce4bc7111ac3249d3d1408845a17553d6a32c","kind":"mutation-receipt","operation":"726874f9f88b5b2eba6a395757ecd2bf1bf0b65a636bc000ae4064f1103dd28e","options":{"section":null},"request_id_sha256":null,"results":["d-20260908-09"],"target":"decisions-ledger","v":1} -->
+
+### d-20260908-10 — Where should the game wire helpers live under the measured platform boundary?
+
+* **Question:** Where should the game wire helpers live under the measured platform boundary?
+* **Governs:** f-20260901-22, f-20260901-23
+* **Chosen:** Keep the shared game counter normalizers and GameConfigInput in src/platform/tauri.ts, alongside their command/event consumers; retain focused gameTransport.test.ts coverage of the exported pure helpers. Remove the extra production module after moving its implementation unchanged.
+* **Rejected:** Placing platform logic in an unrelated already-globbed directory, excluding the new helper from coverage, weakening the gate, or re-recording baseline measurements to pass.
+* **Reason:** The coverage area enumerates existing platform modules and its exact scope is pinned. The facade already owns every game wire conversion, so keeping the shared implementation there is a cohesive boundary without a second production module. This preserves d-20260908-09 and all measured counters/floors. Reversal: extract a dedicated module when a deliberate coverage-scope expansion contract and a separate production consumer justify it.
+* **Decided by:** Codex drain 0b810ced-b5af-451c-aaaf-d41acd0fc87d, autonomously · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"a18b3e79f27882ef90c3490362dab4e284e09e9021814e404f5a0f543a43e87b","input_sha256":"63cbd703f7199ac07d33621b3e664684207167159062fc88ed495f12c8f65771","kind":"mutation-receipt","operation":"4d6cb06378c669a2ba74edc39a4307f9ef52dd3c23a067b6f828b54b55a5bd9a","options":{"section":null},"request_id_sha256":null,"results":["d-20260908-10"],"target":"decisions-ledger","v":1} -->
