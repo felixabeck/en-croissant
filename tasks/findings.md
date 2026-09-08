@@ -7174,3 +7174,17 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Design:** choose and verify a bounded native delivery/reconciliation contract across moves, clocks and terminal results, including logging, retry or authoritative resynchronization, and shutdown behavior. Merely resetting the terminal flag or logging cannot guarantee a later publisher runs after game completion. Do not introduce an unowned retry task.
 * **Disposition:** Defer the separate native event-delivery design under push-review-policy section 4. The current f-20260901-22/23 repair handles renderer ownership, terminal snapshots, pre-adoption events, and stale continuations under existing delivery semantics; it does not redesign native transport reliability. Related f-20260908-02 concerns cancelled construction/engine ownership and has a different cause.
 * **Found by:** cumulative error-handling lens over 065c8936, confidence 94 and 91, 2026-09-08. Plan authorship and arbitration shared root context; detection used the same model family as code.
+
+---
+
+## 2026-09-08 — filed through the inbox spool
+
+### File import materializes a complete PGN through a page-limited IPC command
+
+* **ID:** f-20260908-04 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/tabs/ImportModal.tsx:81-87`, `src-tauri/src/pgn.rs` read-games range limit.
+* **Defect:** Selecting a file calls `readGames(handle, 0, count - 1)` and joins the complete returned corpus before checking whether saving was requested. A file with 1,001 games exceeds the backend's 1,000-game page limit; a large corpus below that count is copied as one IPC payload and renderer string. Opening without saving performs that unnecessary complete read too.
+* **Why it matters:** Routine large PGNs cannot be imported reliably and may allocate several corpus-sized copies, contradicting the streaming rule.
+* **Design to settle:** Split opening the first game from saving a retained source file; choose a native streaming copy/publication operation that preserves existing destination metadata, authority and error semantics. Merely paging and joining on the renderer keeps the memory defect.
+* **Related:** f-20260831-06 handled native scanner/index/export materialization, not this renderer whole-file import. No shared Root assigned: this is a different producer and requires its own native copy boundary.
+* **Found by:** Codex PGN/index plan lens for f-20260904-05, confidence 99, confirmed by root source trace on 2026-09-08. Deferred as a separate import/copy design outside the cancellation mandate. Plan authorship and arbitration share the root context; detection ran on the family of the existing code.
