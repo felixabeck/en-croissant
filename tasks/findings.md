@@ -7025,3 +7025,28 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 * **Review:** Fresh Luna/xhigh correctness and root-cause lenses approved without findings. Minimalism reported duplication of the full order in the Codex bridge; fixed by retaining the canonical pointer and genuine Codex attribution only, then inspected and rechecked. No unresolved Fix findings remain.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"923f3a02f6197a2a4b4afb6a9560fa4eb171c3456b77800cad261bf914e17f95","input_sha256":"69990c70102f3002e8035056cfc9a3b6029f9012ae6795c7a4dd2cfc541e8297","kind":"mutation-receipt","operation":"85918229dbb926d8d302ef3a5f11c1d5a64dea3c3849974ac8a69fde90a04fec","options":{"section":null},"request_id_sha256":null,"results":["f-20260907-07"],"target":"f-20260907-07","v":1} -->
+
+---
+
+## 2026-09-08 — filed through the inbox spool
+
+### Search-cache lock reclamation can split a lock while a new waiter acquires it
+
+* **ID:** f-20260908-01 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs:346-379`, `src-tauri/src/db/search.rs:306-330`.
+* **Defect:** `remove_generation_lock_if_idle` and `remove_collision_if_idle` check `Arc::strong_count == 2` before acquiring the DashMap entry guard. A concurrent `generation_lock`/`collision_lock` can clone the same Arc after that check but before `remove_if`, whose predicate checks only pointer identity. Removal then allows a third caller to create a second mutex for the same key while the second caller still owns the first. `SearchCache::clear` also clears these maps without honoring outstanding owners.
+* **Why it matters:** generation and collision exclusion can disappear during a database/index operation. The lifecycle-retention plan review found these synchronous registries while reviewing the analogous async engine/game locks in f-20260830-52.
+* **Design:** establish one atomic acquire/release lifetime contract for synchronous search locks, including cache clear/invalidation and the two cleanup guards; consider sharing the keyed-lease mechanism with the async engine/game registries while preserving synchronous blocking-worker semantics. The Tokio lease is not a drop-in for std::sync::Mutex and its poison/error paths.
+* **Proof:** deterministic acquire-between-count-and-remove regression; outstanding waiter plus cache clear; concurrent final cleanup; distinct-key churn returns entry count to zero; run backend tests and all affected push gates.
+* **Disposition:** Defer from the engine/game retention run: the database search invalidation/locking contract is a separate design question outside its fixed mandate. No source fix in that run.
+* **Found by:** Sol/medium minimalism plan lens plus root source trace, 2026-09-08, confidence 94.
+
+### Cancelling game construction after engine initialization leaves registered actors without a live game owner
+
+* **ID:** f-20260908-02 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/game.rs:1060-1268`, `src-tauri/src/engine/process.rs:958-961`.
+* **Defect:** `spawn_registered` disarms its cancellation guard after protocol initialization. `start_game` then holds the returned actor through further awaits (second engine setup, old-session join, registration barrier), without an owner that terminates it if the construction future is cancelled. Dropping the controller does not call `terminate_exact`; the actor stays in EngineSupervisor and its process survives until global shutdown. This precedes the lifecycle-retention change in f-20260830-52.
+* **Design question:** define transfer of cancellation ownership from per-engine initialization to game construction and then to the published LiveSession/loop. Existing cloneable RegisteredGameEngine handles are not ownership guards; adding Drop there can kill a still-shared actor. Decide an explicit construction transaction/guard and its exact handoff, including both players, replacement, event publication, and cleanup failure reporting.
+* **Proof:** use initialized supervised actors, hold game registration or old-session teardown, poll construction to the blocked await, cancel, and assert exact generations are terminated and registry entries removed while unrelated/newer actors survive. Include the first-player/second-player boundary and publication handoff. Backend tests plus real-app lifecycle smoke and affected push gates.
+* **Disposition:** Defer under build section 4 and push-review-policy section 4: this is a separate game-construction cancellation ownership design, not required to reclaim the three historical metadata maps in the fixed f-20260830-52 mandate. That run changes metadata publication ordering but does not claim to repair cancellation of engine construction.
+* **Found by:** Sol/medium error-handling plan lens, 2026-09-08, confidence 94. Related d-20260901-30/-31 establish supervisor ownership and initialization registration, but do not settle ownership through later game construction awaits.
