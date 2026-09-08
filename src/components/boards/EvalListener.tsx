@@ -155,7 +155,6 @@ function EngineListener({
   const store = useContext(TreeStateContext)!;
   const setScore = useStore(store, (s) => s.setScore);
   const activeTab = useAtomValue(activeTabAtom);
-  const closingTabs = useAtomValue(closingTabsAtom);
 
   const [, setProgress] = useAtom(engineProgressFamily({ engine: engine.id, tab: activeTab! }));
 
@@ -198,15 +197,16 @@ function EngineListener({
       if (isClosing && !wasClosing) {
         const attempt = activeAttempt.current;
         if (attempt?.tab === tab) attempt.cancelled = true;
+        setEngineVariation(new Map());
+        setProgress(0);
       } else if (!isClosing && wasClosing) {
         advanceCloseRevision();
       }
       wasClosing = isClosing;
     });
-  }, [activeTab]);
+  }, [activeTab, setEngineVariation, setProgress]);
   const requestFingerprint = JSON.stringify({
     tab: activeTab,
-    closing: activeTab ? closingTabs.has(activeTab) : false,
     closeRevision,
     fen: searchingFen,
     moves: searchingMoves,
@@ -242,9 +242,6 @@ function EngineListener({
         activeAttempt.current?.nativeOwner?.generation === payload.generation &&
         activeAttempt.current !== null &&
         isCurrentAttempt(activeAttempt.current) &&
-        settings.enabled &&
-        !isGameOver &&
-        currentFingerprint.current === requestFingerprint &&
         ev.length > 0 &&
         ev.every(
           (line) =>
@@ -274,15 +271,12 @@ function EngineListener({
     [
       activeTab,
       setScore,
-      settings.enabled,
-      isGameOver,
       searchingFen,
       searchingMoves,
       engine.id,
       setEngineVariation,
       setProgress,
       firstEngineWithLines,
-      requestFingerprint,
       threat,
       fen,
       moves,
@@ -302,18 +296,18 @@ function EngineListener({
       match(engine.type)
         .with(
           "local",
-          () => (fen: string, goMode: GoMode, options: EngineOptions, generation: string) =>
-            localGetBestMoves(engine as LocalEngine, fen, goMode, options, generation),
+          () => (tab: string, goMode: GoMode, options: EngineOptions, generation: string) =>
+            localGetBestMoves(engine as LocalEngine, tab, goMode, options, generation),
         )
         .with(
           "chessdb",
-          () => (fen: string, goMode: GoMode, options: EngineOptions) =>
-            chessdbGetBestMoves(fen, goMode, options),
+          () => (tab: string, goMode: GoMode, options: EngineOptions) =>
+            chessdbGetBestMoves(tab, goMode, options),
         )
         .with(
           "lichess",
-          () => (fen: string, goMode: GoMode, options: EngineOptions) =>
-            lichessGetBestMoves(fen, goMode, options),
+          () => (tab: string, goMode: GoMode, options: EngineOptions) =>
+            lichessGetBestMoves(tab, goMode, options),
         )
         .exhaustive(),
     [engine],

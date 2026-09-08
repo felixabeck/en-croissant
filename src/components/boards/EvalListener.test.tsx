@@ -14,8 +14,16 @@ const fixtures = vi.hoisted(() => ({
     handle: { id: { id: "handle-1" }, kind: "engine" as const },
     loaded: true,
   },
+  chessdbEngine: {
+    type: "chessdb" as const,
+    id: "chessdb-1",
+    name: "ChessDB",
+    url: "https://chessdb.cn",
+    loaded: true,
+  },
   fen: "start-fen",
   moves: [] as string[],
+  chessdbGetBestMoves: vi.fn(),
   getBestMoves: vi.fn(),
   prepareEngineSearch: vi.fn(),
   listeners: [] as Array<(event: any) => void>,
@@ -26,6 +34,7 @@ const fixtures = vi.hoisted(() => ({
 }));
 
 const engine = fixtures.engine;
+const chessdbEngine = fixtures.chessdbEngine;
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: fixtures.t }) }));
 vi.mock("@/components/files/notifyError", () => ({
@@ -42,7 +51,7 @@ vi.mock("@/utils/chessops", () => ({
   positionFromFen: () => [null],
   swapMove: (fen: string) => fen,
 }));
-vi.mock("@/utils/chessdb/api", () => ({ getBestMoves: vi.fn() }));
+vi.mock("@/utils/chessdb/api", () => ({ getBestMoves: fixtures.chessdbGetBestMoves }));
 vi.mock("@/utils/lichess/api", () => ({ getBestMoves: vi.fn() }));
 vi.mock("@/platform/tauri", () => ({
   tauriSubscriptions: {
@@ -113,9 +122,9 @@ let host: HTMLDivElement;
 let root: Root;
 let mounted: boolean;
 const store = getDefaultStore();
-const settingsAtom = (tab = store.get(activeTabAtom)!) =>
+const settingsAtom = (tab = store.get(activeTabAtom)!, engineId = engine.id) =>
   tabEngineSettingsFamily({
-    engineId: engine.id,
+    engineId,
     tab,
     defaultSettings: [],
     defaultGo: { t: "Infinite" },
@@ -164,6 +173,7 @@ beforeEach(() => {
   fixtures.prepareEngineSearch.mockResolvedValue("generation-1");
   fixtures.stopEngine.mockResolvedValue(undefined);
   fixtures.getBestMoves.mockImplementation(() => new Promise(() => undefined));
+  fixtures.chessdbGetBestMoves.mockImplementation(() => new Promise(() => undefined));
   store.set(activeTabAtom, "tab-1");
   store.set(tabsAtom, [{ value: "tab-1" }, { value: "tab-2" }] as any);
   store.set(closingTabsAtom, new Set());
@@ -174,8 +184,16 @@ beforeEach(() => {
     go: { t: "Infinite" },
     settings: [],
   });
+  store.set(settingsAtom("tab-1", chessdbEngine.id), {
+    enabled: true,
+    synced: true,
+    go: { t: "Infinite" },
+    settings: [],
+  });
   store.set(movesAtom("tab-1"), new Map([["old", payload("cached").bestLines]]));
   store.set(progressAtom("tab-1"), 73);
+  store.set(movesAtom("tab-1", chessdbEngine.id), new Map());
+  store.set(progressAtom("tab-1", chessdbEngine.id), 0);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -209,6 +227,156 @@ test("clears cached analysis immediately and waits for the real 50 ms debounce",
     { fen: "start-fen", moves: [], extraOptions: [] },
     "generation-1",
   );
+});
+
+test("a current ChessDB promise result populates its cache and progress", async () => {
+  const result = deferred<ReturnType<typeof remoteResult>>();
+  fixtures.chessdbGetBestMoves.mockReturnValueOnce(result.promise);
+  store.set(enginesAtom, [chessdbEngine] as any);
+  await rerender();
+  await advanceDebounce();
+
+  expect(fixtures.chessdbGetBestMoves).toHaveBeenCalledWith(
+    "tab-1",
+    { t: "Infinite" },
+    { fen: "start-fen", moves: [], extraOptions: [] },
+  );
+  await act(async () => {
+    result.resolve(remoteResult(81));
+    await flush();
+  });
+
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get("start-fen:")).toEqual(
+    remoteResult(81)[1],
+  );
+  expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(81);
+});
+
+test("A to B to A does not let a generation-equivalent remote attempt complete", async () => {
+  const results = [
+    deferred<ReturnType<typeof remoteResult>>(),
+    deferred<ReturnType<typeof remoteResult>>(),
+    deferred<ReturnType<typeof remoteResult>>(),
+  ];
+  fixtures.chessdbGetBestMoves
+    .mockReturnValueOnce(results[0].promise)
+    .mockReturnValueOnce(results[1].promise)
+    .mockReturnValueOnce(results[2].promise);
+  store.set(enginesAtom, [chessdbEngine] as any);
+  await rerender();
+  await advanceDebounce();
+
+  fixtures.fen = "fen-b";
+  await rerender();
+  await advanceDebounce();
+  fixtures.fen = "start-fen";
+  await rerender();
+  await advanceDebounce();
+
+  await act(async () => {
+    results[0].resolve(remoteResult(41));
+    await flush();
+  });
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id))).toEqual(new Map());
+  expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
+
+  await act(async () => {
+    results[2].resolve(remoteResult(82));
+    await flush();
+  });
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id)).get("start-fen:")).toBeDefined();
+  expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(82);
+});
+
+test("position, settings, and tab changes reject stale ChessDB promise results", async () => {
+  const results = Array.from({ length: 4 }, () => deferred<ReturnType<typeof remoteResult>>());
+  for (const result of results) {
+    fixtures.chessdbGetBestMoves.mockReturnValueOnce(result.promise);
+  }
+  store.set(enginesAtom, [chessdbEngine] as any);
+  await rerender();
+  await advanceDebounce();
+
+  fixtures.fen = "fen-b";
+  await rerender();
+  await advanceDebounce();
+  await act(async () => {
+    results[0].resolve(remoteResult(31));
+    await flush();
+  });
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id))).toEqual(new Map());
+  expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
+
+  await act(async () => {
+    store.set(settingsAtom("tab-1", chessdbEngine.id), {
+      enabled: true,
+      synced: true,
+      go: { t: "Depth", c: 14 },
+      settings: [],
+    });
+    await flush();
+  });
+  await advanceDebounce();
+  await act(async () => {
+    results[1].resolve(remoteResult(32));
+    await flush();
+  });
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id))).toEqual(new Map());
+  expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
+
+  await act(async () => {
+    store.set(activeTabAtom, "tab-2");
+    await flush();
+  });
+  await advanceDebounce();
+  await act(async () => {
+    results[2].resolve(remoteResult(33));
+    await flush();
+  });
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id))).toEqual(new Map());
+  expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
+  expect(store.get(movesAtom("tab-2", chessdbEngine.id))).toEqual(new Map());
+  expect(store.get(progressAtom("tab-2", chessdbEngine.id))).toBe(0);
+});
+
+test("close entry clears remote state immediately and a stale result cannot restore it", async () => {
+  const result = deferred<ReturnType<typeof remoteResult>>();
+  fixtures.chessdbGetBestMoves.mockReturnValueOnce(result.promise);
+  store.set(enginesAtom, [chessdbEngine] as any);
+  await rerender();
+  await advanceDebounce();
+  store.set(movesAtom("tab-1", chessdbEngine.id), new Map([["start-fen:", remoteResult(65)[1]]]));
+  store.set(progressAtom("tab-1", chessdbEngine.id), 65);
+
+  await act(async () => {
+    store.set(closingTabsAtom, new Set(["tab-1"]));
+    expect(store.get(movesAtom("tab-1", chessdbEngine.id))).toEqual(new Map());
+    expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
+  });
+  await act(async () => {
+    result.resolve(remoteResult(66));
+    await flush();
+  });
+
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id))).toEqual(new Map());
+  expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
+});
+
+test("a ChessDB promise completing after unmount cannot write state", async () => {
+  const result = deferred<ReturnType<typeof remoteResult>>();
+  fixtures.chessdbGetBestMoves.mockReturnValueOnce(result.promise);
+  store.set(enginesAtom, [chessdbEngine] as any);
+  await rerender();
+  await advanceDebounce();
+  await unmount();
+
+  await act(async () => {
+    result.resolve(remoteResult(67));
+    await flush();
+  });
+
+  expect(store.get(movesAtom("tab-1", chessdbEngine.id))).toEqual(new Map());
+  expect(store.get(progressAtom("tab-1", chessdbEngine.id))).toBe(0);
 });
 
 test("settings and go changes reject old events before debounce and clear cached state", async () => {
@@ -622,6 +790,10 @@ function payload(
     progress: overrides.progress ?? 50,
     generation,
   };
+}
+
+function remoteResult(progress: number): [number, BestMovesPayload["bestLines"]] {
+  return [progress, payload("").bestLines];
 }
 
 function deferred<T>() {

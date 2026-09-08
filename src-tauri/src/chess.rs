@@ -30,7 +30,7 @@ use crate::{
     engine::{
         parse_fen_and_apply_moves, resolve_engine_options, spawn_registered, AdmissionLease,
         EngineActor, EngineDeadlines, EngineKey, EngineLog, EngineOption, EngineRequestId, GoMode,
-        ResolvedEngineOption,
+        ResolvedEngineOption, SupervisedEngine,
     },
     error::Error,
     infra::{
@@ -485,6 +485,86 @@ fn classify_interactive_search_result(
     }
 }
 
+async fn process_interactive_search_output<R: tauri::Runtime>(
+    process: &mut EngineProcess,
+    engine: &str,
+    tab: &str,
+    supervised: &SupervisedEngine,
+    app: &tauri::AppHandle<R>,
+) -> Result<(), Error> {
+    let limiter = RateLimiter::direct(Quota::per_second(nonzero!(5u32)));
+    loop {
+        let Some(line) = process.next_line().await? else {
+            break;
+        };
+        match parse_one(&line) {
+            UciMessage::Info(attrs) => {
+                match parse_uci_attrs(attrs, &process.options.fen.parse()?, &process.options.moves)
+                {
+                    Ok(best_moves) => {
+                        if let Some(set) = ingest_info_line(
+                            &mut process.best_moves,
+                            process.last_depth,
+                            process.real_multipv,
+                            best_moves,
+                        ) {
+                            if set.publishable && limiter.check().is_ok() {
+                                let progress = (match process.go_mode {
+                                    GoMode::Depth(depth) => {
+                                        (set.depth as f64 / depth as f64) * 100.0
+                                    }
+                                    GoMode::Time(time) => {
+                                        (process.start.elapsed().as_millis() as f64 / time as f64)
+                                            * 100.0
+                                    }
+                                    GoMode::Nodes(nodes) => {
+                                        (set.nodes as f64 / nodes as f64) * 100.0
+                                    }
+                                    GoMode::PlayersTime(_) => 99.99,
+                                    GoMode::Infinite => 99.99,
+                                })
+                                .clamp(0.0, 100.0);
+                                BestMovesPayload {
+                                    best_lines: set.lines.clone(),
+                                    engine: engine.to_owned(),
+                                    tab: tab.to_owned(),
+                                    fen: process.options.fen.clone(),
+                                    moves: process.options.moves.clone(),
+                                    progress,
+                                    generation: supervised.generation.to_string(),
+                                }
+                                .emit(app)?;
+                                process.last_depth = set.depth;
+                                process.last_best_moves = set.lines;
+                                process.last_progress = progress as f32;
+                            }
+                        }
+                    }
+                    Err(Error::NoMovesFound) => {}
+                    Err(error) => {
+                        warn!("Failed to parse info line: {}, error: {:?}", line, error);
+                    }
+                }
+            }
+            UciMessage::BestMove { .. } => {
+                BestMovesPayload {
+                    best_lines: process.last_best_moves.clone(),
+                    engine: engine.to_owned(),
+                    tab: tab.to_owned(),
+                    fen: process.options.fen.clone(),
+                    moves: process.options.moves.clone(),
+                    progress: 100.0,
+                    generation: supervised.generation.to_string(),
+                }
+                .emit(app)?;
+                process.last_progress = 100.0;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn get_engine_logs(
@@ -509,6 +589,9 @@ async fn get_engine_logs_from_supervisor(
 
 #[tauri::command]
 #[specta::specta]
+// Tauri injects `app` and `state`; the remaining Specta arguments stay explicit
+// because grouping them would change the generated renderer invoke contract.
+#[allow(clippy::too_many_arguments)]
 pub async fn get_best_moves(
     id: String,
     engine: EngineHandle,
@@ -553,84 +636,10 @@ pub async fn get_best_moves(
     )
     .await?;
 
-    let lim = RateLimiter::direct(Quota::per_second(nonzero!(5u32)));
-
     let run_result: Result<(), Error> = async {
         process.set_options(options.clone(), resolved).await?;
         process.go(&go_mode).await?;
-        loop {
-            let line = { process.next_line().await? };
-            let Some(line) = line else {
-                break;
-            };
-            let proc = &mut process;
-            match parse_one(&line) {
-                UciMessage::Info(attrs) => {
-                    match parse_uci_attrs(attrs, &proc.options.fen.parse()?, &proc.options.moves) {
-                        Ok(best_moves) => {
-                            if let Some(set) = ingest_info_line(
-                                &mut proc.best_moves,
-                                proc.last_depth,
-                                proc.real_multipv,
-                                best_moves,
-                            ) {
-                                if set.publishable && lim.check().is_ok() {
-                                    let progress = (match proc.go_mode {
-                                        GoMode::Depth(depth) => {
-                                            (set.depth as f64 / depth as f64) * 100.0
-                                        }
-                                        GoMode::Time(time) => {
-                                            (proc.start.elapsed().as_millis() as f64 / time as f64)
-                                                * 100.0
-                                        }
-                                        GoMode::Nodes(nodes) => {
-                                            (set.nodes as f64 / nodes as f64) * 100.0
-                                        }
-                                        GoMode::PlayersTime(_) => 99.99,
-                                        GoMode::Infinite => 99.99,
-                                    })
-                                    .clamp(0.0, 100.0);
-                                    BestMovesPayload {
-                                        best_lines: set.lines.clone(),
-                                        engine: id.clone(),
-                                        tab: tab.clone(),
-                                        fen: proc.options.fen.clone(),
-                                        moves: proc.options.moves.clone(),
-                                        progress,
-                                        generation: supervised.generation.to_string(),
-                                    }
-                                    .emit(&app)?;
-                                    proc.last_depth = set.depth;
-                                    proc.last_best_moves = set.lines;
-                                    proc.last_progress = progress as f32;
-                                }
-                            }
-                        }
-                        Err(e) => match e {
-                            Error::NoMovesFound => {}
-                            _ => {
-                                warn!("Failed to parse info line: {}, error: {:?}", line, e);
-                            }
-                        },
-                    }
-                }
-                UciMessage::BestMove { .. } => {
-                    BestMovesPayload {
-                        best_lines: proc.last_best_moves.clone(),
-                        engine: id.clone(),
-                        tab: tab.clone(),
-                        fen: proc.options.fen.clone(),
-                        moves: proc.options.moves.clone(),
-                        progress: 100.0,
-                        generation: supervised.generation.to_string(),
-                    }
-                    .emit(&app)?;
-                    proc.last_progress = 100.0;
-                }
-                _ => {}
-            }
-        }
-        Ok(())
+        process_interactive_search_output(&mut process, &id, &tab, &supervised, &app).await
     }
     .await;
     let run_result =
@@ -1164,6 +1173,7 @@ fn naive_eval(pos: &Chess) -> i32 {
 #[cfg(test)]
 mod tests {
     use shakmaty::FromSetup;
+    use tauri::{Listener, Manager};
 
     use super::*;
 
@@ -1180,6 +1190,153 @@ mod tests {
             value: value.into(),
             resources: Vec::new(),
         }
+    }
+
+    fn engine_test_app() -> tauri::AppHandle<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_app();
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(BestMovesPayload))
+            .mount_events(&app);
+        app.manage(AppState::default());
+        app.handle().clone()
+    }
+
+    #[tokio::test]
+    async fn stop_engine_command_forwards_qualified_and_broad_generations() {
+        let app = engine_test_app();
+        let state = app.state::<AppState>();
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let executable = crate::infra::path_authority::PathRef {
+            id: "engine-path".into(),
+        };
+
+        let (old_actor, _) = EngineActor::recording_test_actor(&[]);
+        let old = state
+            .engine_supervisor
+            .replace_handle(key.clone(), old_actor, "engine".into(), executable.clone())
+            .await
+            .unwrap();
+        let (replacement_actor, _) = EngineActor::recording_test_actor(&[]);
+        let replacement = state
+            .engine_supervisor
+            .replace_handle(
+                key.clone(),
+                replacement_actor,
+                "engine".into(),
+                executable.clone(),
+            )
+            .await
+            .unwrap();
+
+        stop_engine(
+            "engine".into(),
+            "tab".into(),
+            Some(old.generation.to_string()),
+            app.state(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state.engine_supervisor.get_exact(&key).unwrap().generation,
+            replacement.generation
+        );
+
+        stop_engine(
+            "engine".into(),
+            "tab".into(),
+            Some(replacement.generation.to_string()),
+            app.state(),
+        )
+        .await
+        .unwrap();
+        assert!(state.engine_supervisor.get_exact(&key).is_none());
+
+        let (broad_actor, _) = EngineActor::recording_test_actor(&[]);
+        let broad = state
+            .engine_supervisor
+            .replace_handle(key.clone(), broad_actor, "engine".into(), executable)
+            .await
+            .unwrap();
+        assert!(matches!(
+            stop_engine(
+                "engine".into(),
+                "tab".into(),
+                Some("not-a-generation".into()),
+                app.state(),
+            )
+            .await,
+            Err(Error::InvalidInput(message)) if message == "invalid engine generation"
+        ));
+        assert_eq!(
+            state.engine_supervisor.get_exact(&key).unwrap().generation,
+            broad.generation
+        );
+
+        stop_engine("engine".into(), "tab".into(), None, app.state())
+            .await
+            .unwrap();
+        assert!(state.engine_supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn interactive_producer_emits_supervised_generation_for_info_and_terminal_payloads() {
+        let app = engine_test_app();
+        let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = emitted.clone();
+        app.listen(BestMovesPayload::NAME, move |event| {
+            observed
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap());
+        });
+
+        let (actor, _) = EngineActor::recording_test_actor(&[
+            "info depth 8 multipv 1 score cp 34 nodes 100 pv e2e4",
+            "bestmove e2e4",
+        ]);
+        let request_id = actor.start_search(&GoMode::Depth(8)).await.unwrap();
+        let generation = 9_007_199_254_740_993;
+        let supervised = SupervisedEngine {
+            generation,
+            engine_id: "engine".into(),
+            executable: crate::infra::path_authority::PathRef {
+                id: "engine-path".into(),
+            },
+            actor: actor.clone(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        let mut process = EngineProcess {
+            base: actor.clone(),
+            last_depth: 0,
+            best_moves: Vec::new(),
+            last_best_moves: Vec::new(),
+            last_progress: 0.0,
+            options: EngineOptions {
+                fen: start_fen().to_string(),
+                moves: Vec::new(),
+                extra_options: Vec::new(),
+            },
+            resource_leases: Vec::new(),
+            go_mode: GoMode::Depth(8),
+            running: true,
+            request_id: Some(request_id),
+            real_multipv: 1,
+            start: Instant::now(),
+        };
+
+        process_interactive_search_output(&mut process, "engine", "tab", &supervised, &app)
+            .await
+            .unwrap();
+
+        {
+            let payloads = emitted.lock().unwrap();
+            assert_eq!(payloads.len(), 2);
+            assert_eq!(payloads[0]["progress"], 100.0);
+            assert_eq!(payloads[0]["generation"], generation.to_string());
+            assert_eq!(payloads[1]["progress"], 100.0);
+            assert_eq!(payloads[1]["generation"], generation.to_string());
+        }
+        actor.terminate().await.unwrap();
     }
 
     #[test]
@@ -1550,14 +1707,24 @@ mod tests {
     }
 
     #[test]
-    fn production_uci_loops_share_ingest_info_line() {
+    fn production_uci_paths_share_ingest_info_line() {
         let source = include_str!("chess.rs");
         let production = source
             .split_once("mod tests {")
             .map(|(prefix, _)| prefix)
             .expect("test module should exist");
 
-        for function in ["pub async fn get_best_moves", "pub async fn analyze_game"] {
+        for (function, expected_call) in [
+            (
+                "async fn process_interactive_search_output",
+                "ingest_info_line(",
+            ),
+            (
+                "pub async fn get_best_moves",
+                "process_interactive_search_output(",
+            ),
+            ("pub async fn analyze_game", "ingest_info_line("),
+        ] {
             let start = production
                 .find(function)
                 .expect("production loop should exist");
@@ -1569,8 +1736,8 @@ mod tests {
                 .unwrap_or(after_start.len());
             let body = &after_start[..end];
             assert!(
-                body.contains("ingest_info_line("),
-                "{function} must use ingest_info_line"
+                body.contains(expected_call),
+                "{function} must use {expected_call}"
             );
         }
     }
