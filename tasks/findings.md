@@ -5287,7 +5287,7 @@ message presentable.
 
 ### BoardGame's native game session has no terminal state, so completed games poison abort and close
 
-* **ID:** f-20260901-22 · **Status:** open · **Area:** frontend-state · **Root:** boardgame-session-lifecycle · **Entry:** build · **Blocked:** none
+* **ID:** f-20260901-22 · **Status:** handled · **Area:** frontend-state · **Root:** boardgame-session-lifecycle · **Entry:** build · **Blocked:** none
 
 Found by the `$push` review of `d-20260901-36` (a Codex lens over the enclosing code, confidence 99
 on each item). None was introduced by that change; all are pre-existing in `src/components/boards/BoardGame.tsx`
