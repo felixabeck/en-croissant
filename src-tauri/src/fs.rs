@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 use crate::infra::fs::atomic_replace;
-use crate::progress::{begin_progress, update_progress_with_state, ProgressState};
+use crate::progress::{begin_progress, update_progress_with_state, ProgressLease, ProgressState};
 use crate::AppState;
 
 const MAX_ACTIVE_DOWNLOADS: usize = 32;
@@ -683,6 +683,27 @@ pub(crate) async fn download_to_destination<R: tauri::Runtime>(
     .map_err(sanitize_download_error)
 }
 
+fn report_download_error<R: tauri::Runtime>(
+    state: &AppState,
+    app: &tauri::AppHandle<R>,
+    progress_lease: &ProgressLease,
+    job_id: &str,
+    primary_error: &Error,
+) {
+    let terminal = if matches!(primary_error, Error::Cancellation) {
+        ProgressState::Cancelled
+    } else {
+        ProgressState::Failed
+    };
+    if let Err(secondary) =
+        update_progress_with_state(&state.progress_state, app, progress_lease, 0.0, terminal)
+    {
+        let category = secondary.category();
+        let generation = progress_lease.generation;
+        log::warn!("download {job_id} progress report generation {generation} failed: {category}");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn download_to_destination_inner<R: tauri::Runtime>(
     id: &str,
@@ -751,23 +772,12 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         Ok(result) => result,
         Err(_) => {
             let error = Error::EngineTimeout("download deadline exceeded".into());
-            update_progress_with_state(
-                &state.progress_state,
-                app,
-                &progress_lease,
-                0.0,
-                ProgressState::Failed,
-            )?;
+            report_download_error(state, app, &progress_lease, &job_id, &error);
             return Err(error);
         }
     };
     if let Err(error) = result {
-        let terminal = if matches!(error, Error::Cancellation) {
-            ProgressState::Cancelled
-        } else {
-            ProgressState::Failed
-        };
-        update_progress_with_state(&state.progress_state, app, &progress_lease, 0.0, terminal)?;
+        report_download_error(state, app, &progress_lease, &job_id, &error);
         return Err(error);
     }
 
@@ -776,13 +786,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
             match crate::infra::path_authority::hash_staged_payload(staged_file.clone()).await {
                 Ok(payload) => payload,
                 Err(error) => {
-                    update_progress_with_state(
-                        &state.progress_state,
-                        app,
-                        &progress_lease,
-                        0.0,
-                        ProgressState::Failed,
-                    )?;
+                    report_download_error(state, app, &progress_lease, &job_id, &error);
                     return Err(error);
                 }
             };
@@ -802,13 +806,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         match reservation {
             Ok(reservation) => Some(reservation),
             Err(error) => {
-                update_progress_with_state(
-                    &state.progress_state,
-                    app,
-                    &progress_lease,
-                    0.0,
-                    ProgressState::Failed,
-                )?;
+                report_download_error(state, app, &progress_lease, &job_id, &error);
                 return Err(error);
             }
         }
@@ -847,56 +845,23 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
                     }
                 }
             }
-            update_progress_with_state(
-                &state.progress_state,
-                app,
-                &progress_lease,
-                0.0,
-                ProgressState::Failed,
-            )?;
+            report_download_error(state, app, &progress_lease, &job_id, &error);
             return Err(error);
         }
     };
     let artifact = if let Some(reservation) = reservation.as_ref() {
         let Some((installed_identity, installed_ctime_nanos)) = installed_identity else {
             let error = Error::Conflict("artifact install has no inode marker".into());
-            update_progress_with_state(
-                &state.progress_state,
-                app,
-                &progress_lease,
-                0.0,
-                ProgressState::Failed,
-            )?;
+            report_download_error(state, app, &progress_lease, &job_id, &error);
             return Err(error);
         };
-        let marker = state
-            .pgn_path_authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-            .mark_download_artifact_committed(
-                reservation,
-                installed_identity,
-                installed_ctime_nanos,
-            );
-        if let Err(error) = marker {
-            update_progress_with_state(
-                &state.progress_state,
-                app,
-                &progress_lease,
-                0.0,
-                ProgressState::Failed,
-            )?;
-            return Err(error);
-        }
-        match state
-            .pgn_path_authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-            .activate_download_artifact(reservation)
+        match crate::infra::path_authority::activate_download_artifact_runtime(
+            &state.pgn_path_authority,
+            reservation,
+            installed_identity,
+            installed_ctime_nanos,
+        )
+        .await
         {
             Ok(mut artifact) => {
                 if let Some(durability) = download_target_durability(target_durability) {
@@ -905,13 +870,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
                 Some(artifact)
             }
             Err(error) => {
-                update_progress_with_state(
-                    &state.progress_state,
-                    app,
-                    &progress_lease,
-                    0.0,
-                    ProgressState::Failed,
-                )?;
+                report_download_error(state, app, &progress_lease, &job_id, &error);
                 return Err(error);
             }
         }
@@ -980,19 +939,13 @@ pub(crate) async fn install_staged_pgn_artifact(
             return Err(error);
         }
     };
-    let mut authority = state
-        .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    let authority = authority
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-    authority.mark_download_artifact_committed(
+    let mut artifact = crate::infra::path_authority::activate_download_artifact_runtime(
+        &state.pgn_path_authority,
         &reservation,
         target_durability.identity,
         target_durability.ctime_nanos,
-    )?;
-    let mut artifact = authority.activate_download_artifact(&reservation)?;
+    )
+    .await?;
     if let Some(durability) = download_target_durability(target_durability.outcome) {
         artifact.durability = durability;
     }
@@ -2617,5 +2570,397 @@ mod tests {
             res.unwrap_err().to_string(),
             "Invalid input: Actual downloaded size mismatch"
         );
+    }
+
+    struct ResetAtomicInjectorGuard;
+    impl Drop for ResetAtomicInjectorGuard {
+        fn drop(&mut self) {
+            crate::infra::fs::set_test_atomic_file_injector(None);
+        }
+    }
+
+    struct TargetParentSyncFault {
+        skip: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::infra::fs::AtomicWriterInjector for TargetParentSyncFault {
+        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == crate::infra::fs::AtomicFileFaultPoint::ParentSync
+                && self.skip.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 0
+            {
+                return Err(std::io::Error::other("target parent sync failed"));
+            }
+            Ok(())
+        }
+    }
+
+    fn test_downloads_destination(
+        dir: &tempfile::TempDir,
+    ) -> (
+        crate::infra::path_authority::PathAuthority,
+        crate::infra::path_authority::PathRef,
+        PathBuf,
+    ) {
+        let download_root = dir.path().join("downloads");
+        std::fs::create_dir(&download_root).unwrap();
+        let app_root = crate::infra::path_authority::AppOwnedRoot::new(
+            "downloads",
+            download_root.clone(),
+            vec![crate::infra::path_authority::PathOperation::DownloadFile],
+        );
+        let root_id = app_root.id.clone();
+        let authority = crate::infra::path_authority::PathAuthority::open(
+            dir.path().join("path-authority.json"),
+            vec![app_root],
+        )
+        .unwrap();
+        (authority, root_id, download_root)
+    }
+
+    fn test_progress_app() -> tauri::App<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_app();
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(
+                crate::progress::ProgressEvent
+            ))
+            .mount_events(&app);
+        app
+    }
+
+    #[tokio::test]
+    async fn runtime_callers_pin_download_target_replacement_durability_override() {
+        let _guard = ResetAtomicInjectorGuard;
+        let dir = tempdir().unwrap();
+        let (authority, destination, download_root) = test_downloads_destination(&dir);
+        let mut state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+
+        // 1. download_to_destination caller with temporary-file install and injected target parent-sync failure
+        let pgn_content = b"1. e4 c5 2. Nf3 d6";
+        let mock = MockTransport {
+            responses: std::sync::Mutex::new(vec![Ok(DownloadResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                content_length: Some(pgn_content.len() as u64),
+                stream: Box::pin(futures_util::stream::iter(vec![Ok(
+                    bytes::Bytes::from_static(pgn_content),
+                )])),
+            })]),
+            requests_seen: std::sync::Mutex::new(vec![]),
+        };
+        state.http_transport = Arc::new(mock);
+
+        // Skip download staging (1) and reservation journal (2); fail target replacement parent sync (3)
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(TargetParentSyncFault {
+            skip: std::sync::atomic::AtomicUsize::new(2),
+        })));
+
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let result = download_to_destination(
+            "progress_download_override",
+            "https://example.com/games.pgn",
+            destination.clone(),
+            "games.pgn".into(),
+            app.handle(),
+            &state,
+            None,
+            Some(pgn_content.len() as u32),
+            job_id,
+            true,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("artifact publication");
+
+        assert!(matches!(
+            result.durability,
+            crate::infra::path_authority::CommitDurability::DurabilityUncertain(
+                crate::error::DurabilityStage::DownloadTargetReplacement
+            )
+        ));
+        assert_eq!(
+            std::fs::read(download_root.join("games.pgn")).unwrap(),
+            pgn_content
+        );
+        {
+            let auth = state.pgn_path_authority.lock().unwrap();
+            assert!(auth
+                .as_ref()
+                .unwrap()
+                .has_persistent_id(&result.handle.id.id));
+        }
+
+        // 2. install_staged_pgn_artifact caller with actual temporary file and injected target parent-sync failure
+        // Skip reservation journal (1); fail target replacement parent sync (2)
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(TargetParentSyncFault {
+            skip: std::sync::atomic::AtomicUsize::new(1),
+        })));
+
+        let staged_content = b"1. d4 Nf6 2. c4 g6";
+        let mut staged_file = tempfile::NamedTempFile::new().unwrap();
+        staged_file.write_all(staged_content).unwrap();
+
+        let staged_result = install_staged_pgn_artifact(
+            destination.clone(),
+            "staged_games.pgn".into(),
+            staged_file,
+            &state,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            staged_result.durability,
+            crate::infra::path_authority::CommitDurability::DurabilityUncertain(
+                crate::error::DurabilityStage::DownloadTargetReplacement
+            )
+        ));
+        assert_eq!(
+            std::fs::read(download_root.join("staged_games.pgn")).unwrap(),
+            staged_content
+        );
+        {
+            let auth = state.pgn_path_authority.lock().unwrap();
+            assert!(auth
+                .as_ref()
+                .unwrap()
+                .has_persistent_id(&staged_result.handle.id.id));
+        }
+    }
+
+    struct CorruptPayloadObserver {
+        target: PathBuf,
+    }
+
+    impl crate::infra::path_authority::ActivationObserver for CorruptPayloadObserver {
+        fn observe(&self, stage: crate::infra::path_authority::ActivationObserverStage) {
+            if stage == crate::infra::path_authority::ActivationObserverStage::BeforeRead {
+                std::fs::write(&self.target, b"corrupted payload bytes that do not match")
+                    .expect("fs::write must succeed in test observer");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn download_verification_failure_records_failed_progress_and_quarantines_intent() {
+        let dir = tempdir().unwrap();
+        let (mut authority, destination, download_root) = test_downloads_destination(&dir);
+        let target_file = download_root.join("games.pgn");
+
+        let observer = Arc::new(CorruptPayloadObserver {
+            target: target_file,
+        });
+        authority.set_activation_observer(Some(observer));
+
+        let mut state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+
+        let pgn_content = b"1. e4 e5 2. Nf3 Nc6";
+        let mock = MockTransport {
+            responses: std::sync::Mutex::new(vec![Ok(DownloadResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                content_length: Some(pgn_content.len() as u64),
+                stream: Box::pin(futures_util::stream::iter(vec![Ok(
+                    bytes::Bytes::from_static(pgn_content),
+                )])),
+            })]),
+            requests_seen: std::sync::Mutex::new(vec![]),
+        };
+        state.http_transport = Arc::new(mock);
+
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let err = download_to_destination(
+            "progress_verify_fail",
+            "https://example.com/games.pgn",
+            destination,
+            "games.pgn".into(),
+            app.handle(),
+            &state,
+            None,
+            Some(pgn_content.len() as u32),
+            job_id,
+            true,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, Error::Conflict(_)));
+        let progress_item = state.progress_state.get("progress_verify_fail").unwrap();
+        assert_eq!(progress_item.state, ProgressState::Failed);
+        assert!(progress_item.finished);
+
+        let mut auth = state.pgn_path_authority.lock().unwrap();
+        let auth = auth.as_mut().unwrap();
+        assert_eq!(auth.descriptors().len(), 1);
+        assert!(auth.has_pending_artifact_filename(Path::new("games.pgn")));
+    }
+
+    struct StaleLeaseCorruptPayloadObserver {
+        target: PathBuf,
+        progress_id: String,
+        state_weak: std::sync::Weak<AppState>,
+    }
+
+    impl crate::infra::path_authority::ActivationObserver for StaleLeaseCorruptPayloadObserver {
+        fn observe(&self, stage: crate::infra::path_authority::ActivationObserverStage) {
+            if stage == crate::infra::path_authority::ActivationObserverStage::BeforeRead {
+                std::fs::write(&self.target, b"corrupted payload bytes that do not match")
+                    .expect("fs::write must succeed in test observer");
+                let state = self
+                    .state_weak
+                    .upgrade()
+                    .expect("state_weak upgrade must succeed");
+                state.progress_state.clear(&self.progress_id);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn download_verification_failure_primary_error_survives_stale_or_cleared_lease() {
+        let dir = tempdir().unwrap();
+        let (mut authority, destination, download_root) = test_downloads_destination(&dir);
+        let target_file = download_root.join("games.pgn");
+
+        let mut state = AppState::default();
+        let pgn_content = b"1. e4 e5 2. Nf3 Nc6";
+        let mock = MockTransport {
+            responses: std::sync::Mutex::new(vec![Ok(DownloadResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                content_length: Some(pgn_content.len() as u64),
+                stream: Box::pin(futures_util::stream::iter(vec![Ok(
+                    bytes::Bytes::from_static(pgn_content),
+                )])),
+            })]),
+            requests_seen: std::sync::Mutex::new(vec![]),
+        };
+        state.http_transport = Arc::new(mock);
+        let state = Arc::new(state);
+
+        let observer = Arc::new(StaleLeaseCorruptPayloadObserver {
+            target: target_file,
+            progress_id: "progress_stale_verify".into(),
+            state_weak: Arc::downgrade(&state),
+        });
+        authority.set_activation_observer(Some(observer));
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let err = download_to_destination(
+            "progress_stale_verify",
+            "https://example.com/games.pgn",
+            destination,
+            "games.pgn".into(),
+            app.handle(),
+            &state,
+            None,
+            Some(pgn_content.len() as u32),
+            job_id,
+            true,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        match &err {
+            Error::Conflict(msg) => {
+                assert_eq!(
+                    msg,
+                    "download artifact payload differs from its durable reservation"
+                );
+            }
+            other => panic!("expected Error::Conflict with payload mismatch, got {other:?}"),
+        }
+        assert_eq!(err.category(), crate::error::ErrorCategory::Conflict);
+        assert!(state.progress_state.get("progress_stale_verify").is_none());
+    }
+
+    struct CancellingTransport {
+        job_id: String,
+        progress_id: String,
+        state_weak: std::sync::Mutex<std::sync::Weak<AppState>>,
+        advance_generation: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::infra::net::DownloadTransport for CancellingTransport {
+        async fn request(
+            &self,
+            _url: &str,
+            _headers: HeaderMap,
+        ) -> Result<DownloadResponse, Error> {
+            let weak = self.state_weak.lock().unwrap().clone();
+            let state = weak
+                .upgrade()
+                .expect("state must be alive during transport request");
+            let _ = state.download_registry.cancel(&self.job_id);
+            if self.advance_generation {
+                state.progress_state.start(self.progress_id.clone());
+            }
+            Err(Error::Cancellation)
+        }
+    }
+
+    async fn run_cancellation_lease_case(
+        advance_generation: bool,
+    ) -> (crate::progress::ProgressItem, Error) {
+        let dir = tempdir().unwrap();
+        let (authority, destination, _) = test_downloads_destination(&dir);
+        let mut state = AppState::default();
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let progress_id = "progress_cancel";
+        let transport = Arc::new(CancellingTransport {
+            job_id: job_id.clone(),
+            progress_id: progress_id.into(),
+            state_weak: std::sync::Mutex::new(std::sync::Weak::new()),
+            advance_generation,
+        });
+        state.http_transport = transport.clone();
+        let state = Arc::new(state);
+        *transport.state_weak.lock().unwrap() = Arc::downgrade(&state);
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+
+        let err = download_to_destination(
+            progress_id,
+            "https://example.com/games.pgn",
+            destination,
+            "games.pgn".into(),
+            app.handle(),
+            &state,
+            None,
+            None,
+            job_id,
+            true,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        let item = state.progress_state.get(progress_id).unwrap();
+        (item, err)
+    }
+
+    #[tokio::test]
+    async fn download_cancellation_reporting_with_valid_and_stale_lease() {
+        // Case 1: Valid lease cancellation transitions to Cancelled terminal state
+        let (valid_item, valid_err) = run_cancellation_lease_case(false).await;
+        assert!(matches!(valid_err, Error::Cancellation));
+        assert_eq!(valid_item.state, ProgressState::Cancelled);
+        assert!(valid_item.finished);
+
+        // Case 2: Stale lease leaves replacement progress Running and returns original Error::Cancellation
+        let (stale_item, stale_err) = run_cancellation_lease_case(true).await;
+        assert!(matches!(stale_err, Error::Cancellation));
+        assert_eq!(stale_item.state, ProgressState::Running);
+        assert!(!stale_item.finished);
+        assert_eq!(stale_item.progress, 0.0);
+        assert_eq!(stale_item.generation, 2);
     }
 }

@@ -588,6 +588,12 @@ mod verified {
         pub(super) fn into_inner(self) -> std::fs::File {
             self.0
         }
+        pub(super) fn as_file(&self) -> &std::fs::File {
+            &self.0
+        }
+        pub(super) fn as_file_mut(&mut self) -> &mut std::fs::File {
+            &mut self.0
+        }
         #[cfg(test)]
         pub(super) fn try_clone_inner(&self) -> std::io::Result<std::fs::File> {
             self.0.try_clone()
@@ -595,6 +601,86 @@ mod verified {
     }
 }
 pub(crate) use verified::VerifiedFile;
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActivationObserverStage {
+    BeforeRead,
+    PostVerification,
+}
+
+#[cfg(test)]
+pub(crate) trait ActivationObserver: Send + Sync {
+    fn observe(&self, stage: ActivationObserverStage);
+}
+
+/// Prepared artifact activation evidence produced by [`PathAuthority::prepare_download_artifact`].
+/// Retains the exact no-follow descriptor, pending intent, and root identity evidence.
+/// Fields and constructors are private to this module so callers outside cannot manufacture
+/// verified activation evidence.
+struct PreparedArtifactActivation {
+    descriptor: VerifiedFile,
+    pending: PendingArtifact,
+    root_id: PathRef,
+    root_path: PathBuf,
+    root_identity: Identity,
+    prepared_identity: Identity,
+    prepared_ctime_nanos: i128,
+    #[cfg(test)]
+    observer: Option<Arc<dyn ActivationObserver + Send + Sync>>,
+}
+
+/// Distinct content-verified activation evidence constructed solely by successful descriptor
+/// hashing inside [`PreparedArtifactActivation::verify`]. Retains the descriptor until publication finishes.
+struct ContentVerifiedArtifactActivation {
+    descriptor: VerifiedFile,
+    pending: PendingArtifact,
+    root_id: PathRef,
+    root_path: PathBuf,
+    root_identity: Identity,
+    verified_identity: Identity,
+    verified_ctime_nanos: i128,
+}
+
+impl PreparedArtifactActivation {
+    /// Hashes the retained descriptor against the journalled size/digest without holding
+    /// any authority reference or mutex lock, and verifies descriptor identity and ctime after reading.
+    fn verify(mut self) -> Result<ContentVerifiedArtifactActivation, Error> {
+        #[cfg(test)]
+        let (size, digest) =
+            sha256_open_file(self.descriptor.as_file_mut(), self.observer.as_ref())?;
+        #[cfg(not(test))]
+        let (size, digest) = sha256_open_file(self.descriptor.as_file_mut())?;
+
+        if size != self.pending.payload_size || digest != self.pending.payload_sha256 {
+            return Err(Error::Conflict(
+                "download artifact payload differs from its durable reservation".into(),
+            ));
+        }
+        let (a, b) = opened_file_identity(self.descriptor.as_file())?;
+        let post_identity = Identity { a, b };
+        let post_ctime_nanos = opened_file_change_nanos(self.descriptor.as_file())?;
+        if post_identity != self.prepared_identity || post_ctime_nanos != self.prepared_ctime_nanos
+        {
+            return Err(Error::Conflict(
+                "download artifact has no durable post-rename identity marker".into(),
+            ));
+        }
+        #[cfg(test)]
+        if let Some(observer) = &self.observer {
+            observer.observe(ActivationObserverStage::PostVerification);
+        }
+        Ok(ContentVerifiedArtifactActivation {
+            descriptor: self.descriptor,
+            pending: self.pending,
+            root_id: self.root_id,
+            root_path: self.root_path,
+            root_identity: self.root_identity,
+            verified_identity: post_identity,
+            verified_ctime_nanos: post_ctime_nanos,
+        })
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -1357,7 +1443,14 @@ fn identity(path: &Path) -> Result<Identity, Error> {
 
 fn sha256_file(path: &Path) -> Result<(u64, String), Error> {
     let mut file = fs::File::open(path)?;
-    sha256_open_file(&mut file)
+    #[cfg(test)]
+    {
+        sha256_open_file(&mut file, None)
+    }
+    #[cfg(not(test))]
+    {
+        sha256_open_file(&mut file)
+    }
 }
 
 /// SHA-256 of an exclusive staged tempfile. Runs on the blocking pool so neither
@@ -1368,11 +1461,57 @@ pub(crate) async fn hash_staged_payload(path: PathBuf) -> Result<(u64, String), 
         .await
 }
 
-fn sha256_open_file(file: &mut fs::File) -> Result<(u64, String), Error> {
+/// Activates the download artifact through a single blocking worker with two short authority lock scopes.
+/// Locks to persist the post-rename marker and prepare, drops the lock to verify the descriptor,
+/// then reacquires the lock to commit.
+pub(crate) async fn activate_download_artifact_runtime(
+    authority: &Arc<std::sync::Mutex<Option<PathAuthority>>>,
+    reservation: &PendingArtifactReservation,
+    installed_identity: (u64, u64),
+    installed_ctime_nanos: i128,
+) -> Result<ArtifactPublication, Error> {
+    let authority = Arc::clone(authority);
+    let reservation = reservation.clone();
+    crate::infra::blocking::BLOCKING_GATEWAY
+        .spawn(move || {
+            let prepared = {
+                let mut guard = authority
+                    .lock()
+                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+                let auth = guard
+                    .as_mut()
+                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+                auth.mark_download_artifact_committed(
+                    &reservation,
+                    installed_identity,
+                    installed_ctime_nanos,
+                )?;
+                auth.prepare_download_artifact(&reservation)?
+            };
+            let verified = prepared.verify()?;
+            let mut guard = authority
+                .lock()
+                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+            let auth = guard
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+            auth.commit_download_artifact(verified)
+        })
+        .await
+}
+
+fn sha256_open_file(
+    file: &mut fs::File,
+    #[cfg(test)] observer: Option<&Arc<dyn ActivationObserver + Send + Sync>>,
+) -> Result<(u64, String), Error> {
     let mut hasher = Sha256::new();
     let mut size = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
+        #[cfg(test)]
+        if let Some(observer) = observer {
+            observer.observe(ActivationObserverStage::BeforeRead);
+        }
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -2209,6 +2348,8 @@ pub struct PathAuthority {
     attachments_sealed: bool,
     registry_durability_pending: bool,
     active_image_issuances: Arc<ActiveImageIssuances>,
+    #[cfg(test)]
+    activation_observer: Option<Arc<dyn ActivationObserver + Send + Sync>>,
 }
 fn validate_components(components: &[OsString]) -> Result<(), Error> {
     for name in components {
@@ -2509,9 +2650,28 @@ impl PathAuthority {
             attachments_sealed: false,
             registry_durability_pending: false,
             active_image_issuances: Arc::new(ActiveImageIssuances::new()),
+            #[cfg(test)]
+            activation_observer: None,
         };
         authority.recover_pending_artifacts()?;
         Ok(authority)
+    }
+    #[cfg(test)]
+    pub(crate) fn set_activation_observer(
+        &mut self,
+        observer: Option<Arc<dyn ActivationObserver + Send + Sync>>,
+    ) {
+        self.activation_observer = observer;
+    }
+    #[cfg(test)]
+    pub(crate) fn has_persistent_id(&self, id: &str) -> bool {
+        self.persistent.contains_key(id)
+    }
+    #[cfg(test)]
+    pub(crate) fn has_pending_artifact_filename(&self, filename: &std::path::Path) -> bool {
+        self.pending_artifacts
+            .iter()
+            .any(|p| p.filename.to_path().is_ok_and(|path| path == filename))
     }
     #[cfg(test)]
     pub fn descriptors(&mut self) -> Vec<PathDescriptor> {
@@ -2570,7 +2730,13 @@ impl PathAuthority {
             }
             // Activation resolves and hashes the no-follow opened file descriptor itself. A
             // mismatch is an expected quarantined state during restart, not an open failure.
-            let _ = self.activate_download_artifact(&reservation);
+            if let Err(error) = self.activate_download_artifact(&reservation) {
+                let category = error.category();
+                let reservation_id = &reservation.id.id;
+                log::warn!(
+                    "pending artifact recovery skipped for reservation {reservation_id}: {category}"
+                );
+            }
         }
         Ok(())
     }
@@ -4699,16 +4865,21 @@ impl PathAuthority {
     /// Activates exactly the artifact covered by a durable reservation after atomic replacement.
     /// A failed activation intentionally leaves the durable intent in place so restart recovery
     /// can return the same opaque capability instead of losing a published file.
-    pub(crate) fn activate_download_artifact(
+    fn prepare_download_artifact(
         &mut self,
         reservation: &PendingArtifactReservation,
-    ) -> Result<ArtifactPublication, Error> {
+    ) -> Result<PreparedArtifactActivation, Error> {
         let pending = self
             .pending_artifacts
             .iter()
             .find(|pending| pending.id == reservation.id)
             .cloned()
             .ok_or_else(|| Error::InvalidInput("unknown download artifact reservation".into()))?;
+        if !pending.payload_bound {
+            return Err(Error::Conflict(
+                "download artifact payload differs from its durable reservation".into(),
+            ));
+        }
         let root = self
             .persistent
             .get(&pending.root.id)
@@ -4726,28 +4897,18 @@ impl PathAuthority {
             ));
         }
         let filename = pending.filename.to_path()?;
-        let path = root_path.join(&filename);
         let leaf = filename
             .file_name()
             .ok_or_else(|| Error::InvalidInput("artifact reservation has no leaf".into()))?
             .to_os_string();
-        let resolved = self.resolve(&pending.root, PathOperation::DownloadFile, &[leaf])?;
-        let mut opened = resolved
-            .file
+        let mut resolved = self.resolve(&pending.root, PathOperation::DownloadFile, &[leaf])?;
+        let descriptor = VerifiedFile::from_resolved(&mut resolved)
             .ok_or_else(|| Error::Conflict("artifact target is not a regular file".into()))?;
-        let (a, b) = opened_file_identity(&opened)?;
-        let current = Identity { a, b };
-        if !pending.payload_bound
-            || sha256_open_file(&mut opened)?
-                != (pending.payload_size, pending.payload_sha256.clone())
-        {
-            return Err(Error::Conflict(
-                "download artifact payload differs from its durable reservation".into(),
-            ));
-        }
-        let current_ctime_nanos = opened_file_change_nanos(&opened)?;
-        if pending.installed_identity.as_ref() != Some(&current)
-            || pending.installed_ctime_nanos != Some(current_ctime_nanos)
+        let (a, b) = opened_file_identity(descriptor.as_file())?;
+        let descriptor_identity = Identity { a, b };
+        let descriptor_ctime_nanos = opened_file_change_nanos(descriptor.as_file())?;
+        if pending.installed_identity.as_ref() != Some(&descriptor_identity)
+            || pending.installed_ctime_nanos != Some(descriptor_ctime_nanos)
         {
             return Err(Error::Conflict(
                 "download artifact has no durable post-rename identity marker".into(),
@@ -4756,24 +4917,131 @@ impl PathAuthority {
         if pending
             .baseline
             .as_ref()
-            .is_some_and(|baseline| baseline == &current)
+            .is_some_and(|baseline| baseline == &descriptor_identity)
         {
             return Err(Error::Conflict(
                 "download artifact target was not replaced before activation".into(),
             ));
         }
-        let purpose = purpose_for_shape(PathClass::PersistentFile, false, &pending.operations);
+        #[cfg(test)]
+        let observer = self.activation_observer.clone();
+
+        Ok(PreparedArtifactActivation {
+            descriptor,
+            pending,
+            root_id: root.stored.id.clone(),
+            root_path,
+            root_identity,
+            prepared_identity: descriptor_identity,
+            prepared_ctime_nanos: descriptor_ctime_nanos,
+            #[cfg(test)]
+            observer,
+        })
+    }
+
+    fn commit_download_artifact(
+        &mut self,
+        verified: ContentVerifiedArtifactActivation,
+    ) -> Result<ArtifactPublication, Error> {
+        let current_pending = self
+            .pending_artifacts
+            .iter()
+            .find(|pending| pending.id == verified.pending.id)
+            .cloned()
+            .ok_or_else(|| Error::InvalidInput("unknown download artifact reservation".into()))?;
+
+        if current_pending.operations != verified.pending.operations
+            || current_pending.root != verified.pending.root
+            || current_pending.filename != verified.pending.filename
+            || current_pending.root_identity != verified.pending.root_identity
+            || current_pending.baseline != verified.pending.baseline
+            || !current_pending.payload_bound
+            || current_pending.payload_bound != verified.pending.payload_bound
+            || current_pending.payload_size != verified.pending.payload_size
+            || current_pending.payload_sha256 != verified.pending.payload_sha256
+            || current_pending.installed_identity != verified.pending.installed_identity
+            || current_pending.installed_ctime_nanos != verified.pending.installed_ctime_nanos
+            || current_pending.display_name != verified.pending.display_name
+        {
+            return Err(Error::Conflict(
+                "download artifact reservation changed before activation".into(),
+            ));
+        }
+
+        let root = self
+            .persistent
+            .get(&verified.pending.root.id)
+            .cloned()
+            .ok_or_else(|| {
+                Error::Conflict("download root disappeared before artifact activation".into())
+            })?;
+        if root.stored.id != verified.root_id {
+            return Err(Error::Conflict(
+                "download root changed before artifact activation".into(),
+            ));
+        }
+        let root_path = root.stored.path.to_path()?;
+        let root_identity = validate_target(&root_path, PathClass::PersistentCustomRoot)?;
+        if root_identity != root.stored.identity
+            || verified.pending.root_identity.as_ref() != Some(&root_identity)
+            || root_identity != verified.root_identity
+            || root_path != verified.root_path
+        {
+            return Err(Error::Conflict(
+                "download root changed before artifact activation".into(),
+            ));
+        }
+
+        let filename = verified.pending.filename.to_path()?;
+        let leaf = filename
+            .file_name()
+            .ok_or_else(|| Error::InvalidInput("artifact reservation has no leaf".into()))?
+            .to_os_string();
+        let mut re_resolved =
+            self.resolve(&verified.pending.root, PathOperation::DownloadFile, &[leaf])?;
+        let current_file = re_resolved
+            .file
+            .take()
+            .ok_or_else(|| Error::Conflict("artifact target is not a regular file".into()))?;
+        let (cur_a, cur_b) = opened_file_identity(&current_file)?;
+        let current_leaf_identity = Identity { a: cur_a, b: cur_b };
+        let current_leaf_ctime_nanos = opened_file_change_nanos(&current_file)?;
+
+        if current_leaf_identity != verified.verified_identity
+            || current_leaf_ctime_nanos != verified.verified_ctime_nanos
+        {
+            return Err(Error::Conflict(
+                "download artifact target changed before activation".into(),
+            ));
+        }
+
+        let (ret_a, ret_b) = opened_file_identity(verified.descriptor.as_file())?;
+        let retained_identity = Identity { a: ret_a, b: ret_b };
+        let retained_ctime_nanos = opened_file_change_nanos(verified.descriptor.as_file())?;
+        if retained_identity != verified.verified_identity
+            || retained_ctime_nanos != verified.verified_ctime_nanos
+        {
+            return Err(Error::Conflict(
+                "download artifact target changed before activation".into(),
+            ));
+        }
+
+        let purpose = purpose_for_shape(
+            PathClass::PersistentFile,
+            false,
+            &verified.pending.operations,
+        );
         let operations = purpose
             .map(canonical_operations)
-            .unwrap_or(pending.operations);
+            .unwrap_or(verified.pending.operations);
         let stored = StoredEntry {
-            id: pending.id.clone(),
-            display_name: pending.display_name,
+            id: verified.pending.id.clone(),
+            display_name: verified.pending.display_name,
             class: PathClass::PersistentFile,
             purpose,
             operations,
-            path: NativePath::from_path(&path),
-            identity: current,
+            path: NativePath::from_path(&root_path.join(&filename)),
+            identity: verified.verified_identity,
             target_is_dir: false,
         };
         let mut candidate = self.persistent.clone();
@@ -4787,7 +5055,7 @@ impl PathAuthority {
         let next_pending: Vec<_> = self
             .pending_artifacts
             .iter()
-            .filter(|pending| pending.id != reservation.id)
+            .filter(|pending| pending.id != verified.pending.id)
             .cloned()
             .collect();
         let durability = self.commit_registry(
@@ -4800,9 +5068,20 @@ impl PathAuthority {
             true,
         )?;
         Ok(ArtifactPublication {
-            handle: FileWorkspaceHandle::new(reservation.id.clone()),
+            handle: FileWorkspaceHandle::new(verified.pending.id),
             durability,
         })
+    }
+
+    /// Activates exactly the artifact covered by a durable reservation after atomic replacement.
+    /// Module-private synchronous adapter used only by recovery and tests.
+    fn activate_download_artifact(
+        &mut self,
+        reservation: &PendingArtifactReservation,
+    ) -> Result<ArtifactPublication, Error> {
+        let prepared = self.prepare_download_artifact(reservation)?;
+        let verified = prepared.verify()?;
+        self.commit_download_artifact(verified)
     }
 
     /// Records the exact no-follow inode installed by an already-completed rename. Failure or
@@ -8356,6 +8635,560 @@ mod tests {
             )
             .unwrap();
         assert!(authority.activate_download_artifact(&reservation).is_err());
+    }
+
+    struct TestActivationObserver {
+        authority: std::sync::Weak<std::sync::Mutex<Option<PathAuthority>>>,
+        caller_thread_id: std::thread::ThreadId,
+        observed_stages: std::sync::Mutex<Vec<ActivationObserverStage>>,
+    }
+
+    impl ActivationObserver for TestActivationObserver {
+        fn observe(&self, stage: ActivationObserverStage) {
+            let current_thread = std::thread::current().id();
+            assert_ne!(
+                current_thread, self.caller_thread_id,
+                "observer must execute on a blocking worker thread, not caller thread"
+            );
+            let authority_arc = self
+                .authority
+                .upgrade()
+                .expect("authority must exist during verification");
+            let try_lock = authority_arc.try_lock();
+            assert!(
+                try_lock.is_ok(),
+                "authority mutex must be unlocked during stage {stage:?}"
+            );
+            self.observed_stages.lock().unwrap().push(stage);
+        }
+    }
+
+    struct InstalledArtifactFixture {
+        authority: PathAuthority,
+        app_root: AppOwnedRoot,
+        reservation: PendingArtifactReservation,
+        target_path: PathBuf,
+        installed: AtomicInstalledFile,
+        registry_path: PathBuf,
+    }
+
+    impl InstalledArtifactFixture {
+        fn new(dir: &Path) -> Self {
+            let mut fixture = Self::uncommitted(dir, b"1. e4 e5");
+            fixture.mark_committed();
+            fixture
+        }
+
+        fn with_payload(dir: &Path, payload: &[u8]) -> Self {
+            let mut fixture = Self::uncommitted(dir, payload);
+            fixture.mark_committed();
+            fixture
+        }
+
+        fn uncommitted(dir: &Path, payload: &[u8]) -> Self {
+            let root_path = dir.join("downloads");
+            fs::create_dir_all(&root_path).unwrap();
+            let app_root = AppOwnedRoot::new(
+                "downloads",
+                root_path.clone(),
+                vec![PathOperation::DownloadFile],
+            );
+            let registry_path = dir.join("registry.json");
+            let mut authority =
+                PathAuthority::open(registry_path.clone(), vec![app_root.clone()]).unwrap();
+            let staged = dir.join("staged.pgn");
+            fs::write(&staged, payload).unwrap();
+            let reservation = authority
+                .reserve_download_artifact(
+                    &app_root.id,
+                    OsString::from("games.pgn"),
+                    sha256_file(&staged).unwrap(),
+                    "games.pgn",
+                    vec![PathOperation::ReadPgn],
+                )
+                .unwrap();
+            let installed = authority
+                .resolve(
+                    &app_root.id,
+                    PathOperation::DownloadFile,
+                    &[OsString::from("games.pgn")],
+                )
+                .unwrap()
+                .atomic_install_reserved_download(&reservation, &staged)
+                .unwrap();
+            let target_path = root_path.join("games.pgn");
+            Self {
+                authority,
+                app_root,
+                reservation,
+                target_path,
+                installed,
+                registry_path,
+            }
+        }
+
+        fn mark_committed(&mut self) {
+            self.authority
+                .mark_download_artifact_committed(
+                    &self.reservation,
+                    self.installed.identity,
+                    self.installed.ctime_nanos,
+                )
+                .unwrap();
+        }
+
+        fn prepare_and_verify(&mut self) -> ContentVerifiedArtifactActivation {
+            let prepared = self
+                .authority
+                .prepare_download_artifact(&self.reservation)
+                .expect("prepare must succeed");
+            match prepared.verify() {
+                Ok(v) => v,
+                Err(e) => panic!("verify must succeed: {e:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_activation_runtime_helper_observes_hash_offload_and_lock_freedom() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload_bytes = b"1. e4 e5 2. Nf3 Nc6 3. Bb5";
+        let fixture = InstalledArtifactFixture::with_payload(dir.path(), payload_bytes);
+        let authority = Arc::new(std::sync::Mutex::new(Some(fixture.authority)));
+
+        let observer = Arc::new(TestActivationObserver {
+            authority: Arc::downgrade(&authority),
+            caller_thread_id: std::thread::current().id(),
+            observed_stages: std::sync::Mutex::new(Vec::new()),
+        });
+
+        authority
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .set_activation_observer(Some(observer.clone()));
+
+        let publication = activate_download_artifact_runtime(
+            &authority,
+            &fixture.reservation,
+            fixture.installed.identity,
+            fixture.installed.ctime_nanos,
+        )
+        .await
+        .expect("runtime activation must succeed");
+
+        let mut resolved = authority
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .resolve(&publication.handle.id, PathOperation::ReadPgn, &[])
+            .expect("publication handle must resolve");
+        assert_eq!(resolved.read_bytes().unwrap(), payload_bytes);
+
+        let recorded = observer.observed_stages.lock().unwrap().clone();
+        assert!(!recorded.is_empty(), "observer must have fired");
+        let before_read_count = recorded
+            .iter()
+            .filter(|s| **s == ActivationObserverStage::BeforeRead)
+            .count();
+        assert!(
+            before_read_count >= 1,
+            "must have observed at least one BeforeRead stage"
+        );
+        assert_eq!(
+            *recorded.last().unwrap(),
+            ActivationObserverStage::PostVerification,
+            "last observed stage must be PostVerification"
+        );
+        let post_pos = recorded
+            .iter()
+            .position(|s| *s == ActivationObserverStage::PostVerification)
+            .unwrap();
+        assert_eq!(post_pos, recorded.len() - 1);
+    }
+
+    #[test]
+    fn test_activation_rejects_byte_identical_replacement_on_different_inode_and_retains_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = b"1. d4 d5 2. c4 e6";
+        let mut fixture = InstalledArtifactFixture::with_payload(dir.path(), content);
+
+        let prepared = fixture
+            .authority
+            .prepare_download_artifact(&fixture.reservation)
+            .expect("prepare must succeed");
+
+        let verified = match prepared.verify() {
+            Ok(v) => v,
+            Err(e) => panic!("verify on retained descriptor succeeds: {e:?}"),
+        };
+
+        // Between verification and commit, replace target file with byte-identical content on different inode:
+        fs::remove_file(&fixture.target_path).unwrap();
+        fs::write(&fixture.target_path, content).unwrap();
+
+        let err = fixture
+            .authority
+            .commit_download_artifact(verified)
+            .expect_err("commit must reject byte-identical replacement on different inode");
+
+        assert!(matches!(err, Error::Conflict(_)));
+        assert!(fixture
+            .authority
+            .pending_artifacts
+            .iter()
+            .any(|p| p.id == fixture.reservation.id));
+        assert!(!fixture
+            .authority
+            .persistent
+            .contains_key(&fixture.reservation.id.id));
+    }
+
+    #[test]
+    fn test_activation_mutation_during_and_after_verification_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = InstalledArtifactFixture::new(dir.path());
+
+        // Case a: Mutate/truncate file before/during verification
+        let prepared = fixture
+            .authority
+            .prepare_download_artifact(&fixture.reservation)
+            .unwrap();
+        // Truncate retained file through the pathname (modifies the same inode)
+        {
+            let f = fs::OpenOptions::new()
+                .write(true)
+                .open(&fixture.target_path)
+                .unwrap();
+            f.set_len(2).unwrap();
+        }
+        let verify_err = match prepared.verify() {
+            Ok(_) => panic!("verify must reject mutated content"),
+            Err(e) => e,
+        };
+        assert!(matches!(verify_err, Error::Conflict(_)));
+        assert!(fixture
+            .authority
+            .pending_artifacts
+            .iter()
+            .any(|p| p.id == fixture.reservation.id));
+
+        // Restore file content and ctime marker for case b
+        fs::write(&fixture.target_path, b"1. e4 e5").unwrap();
+        let restored_file = fs::File::open(&fixture.target_path).unwrap();
+        let (new_a, new_b) = opened_file_identity(&restored_file).unwrap();
+        let new_ctime = opened_file_change_nanos(&restored_file).unwrap();
+        fixture
+            .authority
+            .mark_download_artifact_committed(&fixture.reservation, (new_a, new_b), new_ctime)
+            .unwrap();
+
+        // Case b: Mutate/touch file after verification before commit
+        let prepared2 = fixture
+            .authority
+            .prepare_download_artifact(&fixture.reservation)
+            .unwrap();
+        let verified2 = match prepared2.verify() {
+            Ok(v) => v,
+            Err(e) => panic!("verify must succeed: {e:?}"),
+        };
+        // Mutate the file on disk after verification
+        {
+            let mut f = fs::OpenOptions::new()
+                .append(true)
+                .open(&fixture.target_path)
+                .unwrap();
+            f.write_all(b" ").unwrap();
+        }
+        let commit_err = fixture
+            .authority
+            .commit_download_artifact(verified2)
+            .expect_err("commit must reject post-verification modification");
+        assert!(matches!(commit_err, Error::Conflict(_)));
+        assert!(fixture
+            .authority
+            .pending_artifacts
+            .iter()
+            .any(|p| p.id == fixture.reservation.id));
+    }
+
+    struct InjectParentSyncFailure;
+    impl AtomicWriterInjector for InjectParentSyncFailure {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == AtomicFileFaultPoint::ParentSync {
+                return Err(std::io::Error::other("injected parent sync failure"));
+            }
+            Ok(())
+        }
+    }
+
+    struct CountingObserver(std::sync::atomic::AtomicUsize);
+    impl ActivationObserver for CountingObserver {
+        fn observe(&self, _stage: ActivationObserverStage) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_activation_runtime_marker_uncertain_durability_fails_with_archive_commit_marker()
+    {
+        struct ResetInjector;
+        impl Drop for ResetInjector {
+            fn drop(&mut self) {
+                set_test_atomic_file_injector(None);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = InstalledArtifactFixture::uncommitted(dir.path(), b"content");
+        let authority = Arc::new(std::sync::Mutex::new(Some(fixture.authority)));
+
+        let observer = Arc::new(CountingObserver(std::sync::atomic::AtomicUsize::new(0)));
+        authority
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .set_activation_observer(Some(observer.clone()));
+
+        set_test_atomic_file_injector(Some(Arc::new(InjectParentSyncFailure)));
+        let _reset = ResetInjector;
+
+        let result = activate_download_artifact_runtime(
+            &authority,
+            &fixture.reservation,
+            fixture.installed.identity,
+            fixture.installed.ctime_nanos,
+        )
+        .await;
+
+        match result {
+            Err(Error::CommittedDurabilityUncertain(stage)) => {
+                assert_eq!(stage, crate::error::DurabilityStage::ArchiveCommitMarker);
+            }
+            other => {
+                panic!("expected CommittedDurabilityUncertain(ArchiveCommitMarker), got {other:?}")
+            }
+        }
+
+        assert_eq!(
+            observer.0.load(Ordering::SeqCst),
+            0,
+            "verification observer must not be called when marker durability fails"
+        );
+
+        let auth_guard = authority.lock().unwrap();
+        let auth = auth_guard.as_ref().unwrap();
+        assert!(auth
+            .pending_artifacts
+            .iter()
+            .any(|p| p.id == fixture.reservation.id));
+        assert!(!auth.persistent.contains_key(&fixture.reservation.id.id));
+    }
+
+    struct InjectWriteFailure;
+    impl AtomicWriterInjector for InjectWriteFailure {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == AtomicFileFaultPoint::Write {
+                return Err(std::io::Error::other("injected write failure"));
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_activation_runtime_marker_write_failure_returns_io_category_and_retains_pending()
+    {
+        struct ResetInjector;
+        impl Drop for ResetInjector {
+            fn drop(&mut self) {
+                set_test_atomic_file_injector(None);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = InstalledArtifactFixture::uncommitted(dir.path(), b"content");
+        let authority = Arc::new(std::sync::Mutex::new(Some(fixture.authority)));
+
+        let observer = Arc::new(CountingObserver(std::sync::atomic::AtomicUsize::new(0)));
+        authority
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .set_activation_observer(Some(observer.clone()));
+
+        set_test_atomic_file_injector(Some(Arc::new(InjectWriteFailure)));
+        let _reset = ResetInjector;
+
+        let result = activate_download_artifact_runtime(
+            &authority,
+            &fixture.reservation,
+            fixture.installed.identity,
+            fixture.installed.ctime_nanos,
+        )
+        .await;
+
+        let error = result.expect_err("activation must fail on registry write error");
+        assert_eq!(error.category(), crate::error::ErrorCategory::Io);
+
+        assert_eq!(
+            observer.0.load(Ordering::SeqCst),
+            0,
+            "verification observer must not be called when marker write fails"
+        );
+
+        {
+            let auth_guard = authority.lock().unwrap();
+            let auth = auth_guard.as_ref().unwrap();
+            assert!(auth
+                .pending_artifacts
+                .iter()
+                .any(|p| p.id == fixture.reservation.id));
+            assert!(!auth.persistent.contains_key(&fixture.reservation.id.id));
+        }
+
+        drop(_reset);
+        set_test_atomic_file_injector(None);
+
+        // Reopen to assert retained pending intent on disk
+        let reopened = PathAuthority::open(fixture.registry_path, vec![fixture.app_root]).unwrap();
+        assert!(reopened
+            .pending_artifacts
+            .iter()
+            .any(|p| p.id == fixture.reservation.id));
+        assert!(!reopened.persistent.contains_key(&fixture.reservation.id.id));
+    }
+
+    #[test]
+    fn test_activation_commit_rejects_abandoned_pending_or_changed_root() {
+        // Abandon pending intent
+        let dir1 = tempfile::tempdir().unwrap();
+        let mut fixture1 = InstalledArtifactFixture::new(dir1.path());
+        let verified1 = fixture1.prepare_and_verify();
+        fixture1
+            .authority
+            .abandon_download_artifact(&fixture1.reservation);
+        let err1 = fixture1
+            .authority
+            .commit_download_artifact(verified1)
+            .expect_err("commit must reject abandoned intent");
+        assert!(matches!(err1, Error::InvalidInput(_)));
+        assert!(!fixture1
+            .authority
+            .pending_artifacts
+            .iter()
+            .any(|p| p.id == fixture1.reservation.id));
+        assert!(!fixture1
+            .authority
+            .persistent
+            .contains_key(&fixture1.reservation.id.id));
+
+        // Remove root from persistent
+        let dir2 = tempfile::tempdir().unwrap();
+        let mut fixture2 = InstalledArtifactFixture::new(dir2.path());
+        let verified2 = fixture2.prepare_and_verify();
+        fixture2
+            .authority
+            .persistent
+            .remove(&fixture2.app_root.id.id);
+        let err2 = fixture2
+            .authority
+            .commit_download_artifact(verified2)
+            .expect_err("commit must reject removed root");
+        assert!(matches!(err2, Error::Conflict(_)));
+
+        // Change root directory identity
+        let dir3 = tempfile::tempdir().unwrap();
+        let mut fixture3 = InstalledArtifactFixture::new(dir3.path());
+        let verified3 = fixture3.prepare_and_verify();
+        let target_backup = fs::read(&fixture3.target_path).unwrap();
+        let root_dir = fixture3.target_path.parent().unwrap();
+        fs::remove_dir_all(root_dir).unwrap();
+        fs::create_dir(root_dir).unwrap();
+        fs::write(&fixture3.target_path, target_backup).unwrap();
+        let err3 = fixture3
+            .authority
+            .commit_download_artifact(verified3)
+            .expect_err("commit must reject changed root identity");
+        assert!(matches!(err3, Error::Conflict(_)));
+    }
+
+    #[test]
+    fn test_activation_commit_rejects_independent_pending_field_mutations() {
+        // Parameterized test independently mutating each of the 11 grant-relevant fields
+        for field_idx in 0..11 {
+            let dir = tempfile::tempdir().unwrap();
+            let mut fixture = InstalledArtifactFixture::new(dir.path());
+            let verified = fixture.prepare_and_verify();
+
+            let pending = &mut fixture.authority.pending_artifacts[0];
+            match field_idx {
+                0 => pending.operations = vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                1 => pending.root = PathRef::fresh(),
+                2 => pending.filename = NativePath::from_path(Path::new("mutated.pgn")),
+                3 => pending.root_identity = Some(Identity { a: 99999, b: 88888 }),
+                4 => pending.baseline = Some(Identity { a: 99999, b: 88888 }),
+                5 => pending.payload_bound = false,
+                6 => pending.payload_size += 1,
+                7 => pending.payload_sha256 = "0".repeat(64),
+                8 => pending.installed_identity = Some(Identity { a: 99999, b: 88888 }),
+                9 => pending.installed_ctime_nanos = Some(0),
+                10 => pending.display_name = "mutated display name".to_string(),
+                _ => unreachable!(),
+            }
+
+            let err = fixture
+                .authority
+                .commit_download_artifact(verified)
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::Conflict(_)),
+                "field mutation {field_idx} must be rejected with Conflict, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_recovery_leaves_durable_pending_record_unchanged_on_verification_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = InstalledArtifactFixture::with_payload(dir.path(), b"expected content");
+
+        // Corrupt file on disk
+        fs::write(&fixture.target_path, b"corrupted bytes").unwrap();
+
+        // First startup recovery
+        let authority1 = PathAuthority::open(
+            fixture.registry_path.clone(),
+            vec![fixture.app_root.clone()],
+        )
+        .unwrap();
+        assert!(
+            authority1
+                .pending_artifacts
+                .iter()
+                .any(|p| p.id == fixture.reservation.id),
+            "pending record must be retained after recovery verification failure"
+        );
+        assert!(!authority1
+            .persistent
+            .contains_key(&fixture.reservation.id.id));
+
+        // Reopen to verify durable registry file on disk still retains pending record
+        let authority2 =
+            PathAuthority::open(fixture.registry_path, vec![fixture.app_root]).unwrap();
+        assert!(
+            authority2
+                .pending_artifacts
+                .iter()
+                .any(|p| p.id == fixture.reservation.id),
+            "pending record must persist in registry on disk"
+        );
+        assert!(!authority2
+            .persistent
+            .contains_key(&fixture.reservation.id.id));
     }
 
     #[test]

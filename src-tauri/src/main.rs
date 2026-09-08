@@ -2915,10 +2915,47 @@ mod blocking_offload_scans {
             "reserve_download_artifact must not hash the staged payload: {reserve}"
         );
 
-        let activate = body_at_indent(path_authority, "fn activate_download_artifact");
+        let prepare = body_at_indent(path_authority, "fn prepare_download_artifact");
         assert!(
-            activate.contains("sha256_open_file"),
-            "activate_download_artifact must hash the published inode: {activate}"
+            !prepare.contains("sha256_file")
+                && !prepare.contains("sha256_open_file")
+                && !prepare.contains(".read("),
+            "prepare_download_artifact must not read or hash payload: {prepare}"
+        );
+
+        let commit = body_at_indent(path_authority, "fn commit_download_artifact");
+        assert!(
+            !commit.contains("sha256_file")
+                && !commit.contains("sha256_open_file")
+                && !commit.contains(".read("),
+            "commit_download_artifact must not read or hash payload: {commit}"
+        );
+
+        let verify = body_at_indent(path_authority, "fn verify(");
+        assert!(
+            verify.contains("sha256_open_file"),
+            "verify must delegate hashing to sha256_open_file: {verify}"
+        );
+
+        let hash_open = body_at_indent(path_authority, "fn sha256_open_file(");
+        assert!(
+            hash_open.contains(".read(") && hash_open.contains("hasher.finalize()"),
+            "sha256_open_file must hash the descriptor: {hash_open}"
+        );
+
+        let hash_file = body_at_indent(path_authority, "fn sha256_file(");
+        assert!(
+            hash_file.contains("sha256_open_file"),
+            "sha256_file must delegate to sha256_open_file: {hash_file}"
+        );
+
+        let runtime_helper = body_at_indent(
+            path_authority,
+            "pub(crate) async fn activate_download_artifact_runtime",
+        );
+        assert!(
+            runtime_helper.contains("BLOCKING_GATEWAY"),
+            "activate_download_artifact_runtime must offload: {runtime_helper}"
         );
 
         assert_offloads(
@@ -2942,6 +2979,14 @@ mod blocking_offload_scans {
             assert!(
                 hash < reserve,
                 "{signature} must hash the staged payload before reserve_download_artifact: {body}"
+            );
+            assert!(
+                body.contains("activate_download_artifact_runtime"),
+                "{signature} must call activate_download_artifact_runtime: {body}"
+            );
+            assert!(
+                !body.contains("activate_download_artifact("),
+                "{signature} must not invoke synchronous activate_download_artifact: {body}"
             );
         }
     }
