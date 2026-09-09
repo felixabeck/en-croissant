@@ -7265,7 +7265,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Puzzle and theme reads silently discard ordinary backend failures
 
-* **ID:** f-20260909-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260909-04 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** src/components/puzzles/Puzzles.tsx:214 and :292, theme and puzzle request catch paths.
 * **Defect:** A failed getPuzzle returns silently; getPuzzleThemes converts ordinary database or I/O failure into an empty list. Users receive neither a puzzle nor a useful failure notification, or see failure represented as no themes.
 * **Evidence:** Cumulative error-handling lens confidence 99/97; root traced both catch paths. Origin 3afed031 predates the reviewed range; phase2 cancellation changes retained the behavior.
