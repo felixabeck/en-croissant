@@ -7238,6 +7238,10 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Repair:** Preserve the last valid durable workspace when a live write fails validation, and make admission/error handling observable. Keep the existing bound; prove boundary writes and reload preserve existing tabs. Adopted for the active cancellation build's review repair.
 * **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
 
+* **Handled, 2026-09-09:** Implemented in cc5b2c6e: invalid live workspace writes preserve the last durable value, and tab admission refuses the 101st tab without seeding or activating a nonexistent ID. Creation callers handle refusal. The existing 100-tab bound is retained. Workspace, atom lifecycle and caller tests passed in a 61-test focused run. The separate durable tab-creation contract f-20260901-05 is unchanged.
+* **Review provenance:** Plan authorship and arbitration shared root context. Codex detection used the same model family as phases 1, 2, 4 and the repairs; Gemini authored original phase 3. Final delivery gates follow these verified implementation records.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"2d23e1f5f921a75368c7380f5e480ff423810e17e018ffe898b16bcf579c14bd","input_sha256":"b985f7273a36fbfc0febdb8a5ea801d4ea8ab68c5389107138819b8d2fc57c76","kind":"mutation-receipt","operation":"51fdf2964b5f752d90d4df0f4a90a8c78bfe79624ce8030d221f11b0ec0e4385","options":{"section":null},"request_id_sha256":null,"results":["f-20260909-02"],"target":"f-20260909-02","v":1} -->
+
 ---
 
 ## 2026-09-09 — filed through the inbox spool
