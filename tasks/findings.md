@@ -7289,6 +7289,10 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Repair:** Restore role and colour containment for every requested piece, preserving unspecified squares. Add opposite-colour and valid-partial regressions through production matching. Adopted into the active cancellation build's search review repair.
 * **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
 
+* **Handled, 2026-09-09:** Implemented in 5fc49d4d: partial matching requires both role and colour containment while allowing unspecified pieces. Five focused native partial-match tests passed; removing colour containment failed the new regression before restoration.
+* **Review provenance:** Plan authorship and arbitration shared root context. Codex detection used the same model family as phases 1, 2, 4 and the repairs; Gemini authored original phase 3. Final delivery gates follow these verified implementation records.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"3134d6b1c4db9e67392775f99ba87be9eab5907fb6e68f9d2de5aa0c477a3bdd","input_sha256":"85e30b588f99eceaf72c9f78c76b3367d27553ef4f00b9d270ff13c45ef63ed4","kind":"mutation-receipt","operation":"46b92ebb54bb68b41f0c06de581c4e5a33ccb1da46c9144cb7207e92d9488194","options":{"section":null},"request_id_sha256":null,"results":["f-20260909-05"],"target":"f-20260909-05","v":1} -->
+
 ---
 
 ## 2026-09-09 — filed through the inbox spool
