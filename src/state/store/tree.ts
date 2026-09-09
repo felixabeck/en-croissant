@@ -6,7 +6,7 @@ import { type Draft, produce } from "immer";
 import { createStore, type StateCreator, type StoreApi } from "zustand";
 import { persist } from "zustand/middleware";
 import type { BestMoves, Outcome, Score } from "@/bindings";
-import { tabStorage } from "./tabStorage";
+import { tabStorage, TREE_STORAGE_VERSION } from "./tabStorage";
 import { ANNOTATION_INFO, type Annotation } from "@/utils/annotation";
 import { getPGN } from "@/utils/chess";
 import { parseSanOrUci, positionFromFen } from "@/utils/chessops";
@@ -638,6 +638,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
         const store = createStore<TreeStoreState>()(
             persist(withTranspositionMaps(stateCreator), {
                 name: id,
+                version: TREE_STORAGE_VERSION,
                 storage: tabStorage.storageFor<TreeStoreState>(),
                 partialize: (state) => {
                     const { boardStateMap: _boardStateMap, ...rest } = state;

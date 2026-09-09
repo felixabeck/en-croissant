@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { PersistStorage, StorageValue } from "zustand/middleware";
 import { decodeCompressedOrJson, serializeStorageValue } from "./debouncedStorage";
 
-const TREE_STORAGE_VERSION = 1;
+export const TREE_STORAGE_VERSION = 1;
 const DEBOUNCE_MS = 300;
 const MAX_TREE_NODES = 100_000;
 const MAX_TREE_DEPTH = 512;
