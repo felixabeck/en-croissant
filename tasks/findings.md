@@ -5888,7 +5888,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### Every offloaded command uses `spawn` rather than `spawn_cancellable`, because no path carries a `CancellationToken`
 
-* **ID:** f-20260904-05 · **Status:** open · **Area:** bindings-ipc · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
+* **ID:** f-20260904-05 · **Status:** handled · **Area:** bindings-ipc · **Root:** blocking-work-not-offloaded · **Entry:** build · **Blocked:** none
 * **Where:** the ~50 commands converted by `714e470d`, `c5362e0d`, `a22bbdf4` and `f98a3987` across
   `src-tauri/src/main.rs`, `fs.rs`, `puzzle.rs`, `file_workspace.rs`, `db/mod.rs`, `db/search.rs`
   and `chess.rs`; `BlockingGateway::spawn` and `spawn_cancellable` in
