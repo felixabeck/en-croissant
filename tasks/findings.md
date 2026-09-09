@@ -7306,6 +7306,10 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Repair:** Share root ply derivation from parsed FEN fullmove/turn for default and PGN-parsed trees; prove nonstandard White/Black starts and round trips. Adopted for active review repair.
 * **Provenance:** Plan authorship/arbitration share root context; Codex detection shares family with phase1/2/4 code, Gemini authored phase3.
 
+* **Handled, 2026-09-09:** Implemented in 2c8d2c07: shared root ply derives from the FEN fullmove and turn fields; hydrated legacy derived ply is normalized through every branch. Custom White/Black starts and PGN round trips are covered. All 46 focused numbering/chess/store tests passed.
+* **Review provenance:** Plan authorship and arbitration shared root context. Codex detection used the same model family as phases 1, 2, 4 and the repairs; Gemini authored original phase 3. Final delivery gates follow these verified implementation records.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"7df0ade32cc42435d358dcd1cd8ebacf16992b971bef2e211e17253c2007e4db","input_sha256":"60203a62452600e2c491b4569578503fb30c444820a864ded3d8b8311f4e8b25","kind":"mutation-receipt","operation":"96b2b7f135f4bc064b9e8f8ded5abee6034b9c1e677ec763c42e405c58fa7f69","options":{"section":null},"request_id_sha256":null,"results":["f-20260909-06"],"target":"f-20260909-06","v":1} -->
+
 ---
 
 ## 2026-09-09 — filed through the inbox spool
