@@ -7367,7 +7367,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Atomic-file test temporary names leak across parallel tests
 
-* **ID:** f-20260909-10 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260909-10 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** src-tauri/src/infra/fs.rs, unix::test_temp_names and set_test_temp_names.
 * **Defect:** A process-global temporary-name queue supplies the collision test's names to unrelated atomic writers running on parallel test threads. The thread-local BreakCleanup injector searches its own parent for an .atomic- temporary file and can panic when its writer consumed another test's non-prefixed override instead.
 * **Evidence:** Full instrumented run backend-coverage-repair-HDhX3W failed file_post_commit_and_cleanup_precedence_are_explicit at fs.rs:2956 (expect temp), while 900 other tests passed. Root traced the global queue and its sole setter in the collision test; injection ownership is otherwise thread-local.
