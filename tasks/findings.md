@@ -6673,6 +6673,10 @@ Handled structurally rather than by a Bash allowlist: `scripts/leaf-launch.sh` r
 Correction: the "Handled structurally …" annotation above and the earlier status flip to handled were misdirected. They describe agent-kit's f-20260906-04 (the Claude read-only leaf) and were written by a session whose shell stood in this checkout while it meant the kit's ledger. This finding, fetchPositionMoves swallowing a failed query, is untouched and stays open; nothing in it was investigated or fixed. Status restored to open in the same commit.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"f5545ae603a033e70828dff2ad83b8fc267fa6eca63f91292645096094c06a41","input_sha256":"6886cb0b11a83ecd6d8ed1a0ab38e089d11b6d066d7708054808862c18762678","kind":"mutation-receipt","operation":"f5291d2ab216659b3c60a384f9b278569a9b058df8ee60bdcba38090892b47ca","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-04"],"target":"f-20260906-04","v":1} -->
 
+* **Handled, 2026-09-09:** Implemented in a6d72a26: ordinary position-query errors propagate instead of becoming empty successful results; current repertoire failures notify through the existing error UI while stale/cancelled requests remain quiet. Five focused utility/component tests passed, including rejecting false coverage after a query failure.
+* **Review provenance:** Plan authorship and arbitration shared root context. Codex detection used the same model family as phases 1, 2, 4 and the repairs; Gemini authored original phase 3. Final delivery gates follow these verified implementation records.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"f52c98b4f062192b0b44a820731fbae5d76dfeaa6a856229651693b31d7334ea","input_sha256":"b4aa15b71c70751aa1e92abd94e394cd834a2ddddc8b8298121150960ac4b2a7","kind":"mutation-receipt","operation":"af5f834381fb53557405e0d15ca78a9274245264b780ae61e3cd5cd76901f0d9","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-04"],"target":"f-20260906-04","v":1} -->
+
 ---
 
 ## 2026-09-06 — filed through the inbox spool
