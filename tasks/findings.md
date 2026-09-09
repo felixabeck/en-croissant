@@ -6080,6 +6080,10 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Found by:** the `review-engine-protocol` lens (confidence 95) during plan review of the
   progress-discriminator plan, 2026-09-04.
 
+* **Handled, 2026-09-09:** Implemented in 6ab7c3f3 and d835ac77: report promises retain the live per-tab tree owner across provider unmount/remount; only persisted hydration clears stale report state. Actual provider lifecycle tests passed. completeOnProgressSuccess=false is retained because result application, rather than progress success, owns completion. Root integration passed 1,003 frontend tests.
+* **Review provenance:** Plan authorship and arbitration shared root context. Codex detection used the same model family as phases 1, 2, 4 and the repairs; Gemini authored original phase 3. Final delivery gates follow these verified implementation records.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"70d1301029a2130abf6df983c0bf923a7c05bda35523dd61768aa5624eefd069","input_sha256":"89ed1323e7f386fe60cef68a2148fb99ae27d73b841adb2364d94a8e03323d36","kind":"mutation-receipt","operation":"7b7b7f10df3bddee77891f840b23a44a96a821b0ecae615988f0d0bdaf33d475","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-09"],"target":"f-20260904-09","v":1} -->
+
 ### Closing a board tab does not terminate a running analysis report's engine
 
 * **ID:** f-20260904-10 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
