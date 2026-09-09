@@ -7299,7 +7299,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Custom-start move numbering ignores the root FEN fullmove number
 
-* **ID:** f-20260909-06 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260909-06 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** src/utils/treeReducer.ts:95 and src/utils/chess.ts:479.
 * **Defect:** Root halfMoves starts at zero or one based only on turn. From a Black-to-move FEN at fullmove23, the next move renders as 1...e5 instead of23...e5.
 * **Evidence:** Cumulative chess-semantics lens confidence99; root confirmed defaultTree ignores fullmove number. Origin10a49bab predates reviewed range.
