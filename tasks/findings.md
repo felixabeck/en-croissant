@@ -7231,7 +7231,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### An over-limit live workspace write replaces all saved tabs with the default workspace
 
-* **ID:** f-20260909-02 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260909-02 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** src/state/workspace.ts:109, workspaceFromValue and createWorkspaceStorage.setItem.
 * **Defect:** The input schema rejects more than 100 tabs; live serialization converts that rejection into defaultWorkspace and persists it. A 101st tab can therefore erase the previously saved workspace on reload instead of rejecting the write safely.
 * **Evidence:** Cumulative persisted-state lens, confidence 99; root traced the schema maximum and fallback. Origin 3afed031 predates the reviewed range. Related f-20260901-05 owns durable tab creation; this specific destructive validation fallback is separate.
