@@ -7360,3 +7360,17 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Handled, 2026-09-09:** Implemented in 33eb2614: Zustand persistence and the validated storage adapter share TREE_STORAGE_VERSION. Both actual-store hydration tests passed for current and legacy envelopes, restoring moves, headers, cursor and comments. Removing only the version configuration failed both tests; restoration passed.
 * **Review provenance:** Plan authorship and arbitration shared root context. Codex detection used the same model family as phases 1, 2, 4 and the repairs; Gemini authored original phase 3. Final delivery gates follow these verified implementation records.
 <!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"0defeca1fc3223d9e32e9c24c9052a1ab591a446bdbd260ebfaf8b4af18e0d20","input_sha256":"508035e49726a4b5af856f794da17287bbf69de965e21b31cfa3811ebd48b7cf","kind":"mutation-receipt","operation":"5ade37ee66f20c4cd3170f7e84c491b03ef07b0dd64aab4ae9b62725e78990cb","options":{"section":null},"request_id_sha256":null,"results":["f-20260909-09"],"target":"f-20260909-09","v":1} -->
+
+---
+
+## 2026-09-09 — filed through the inbox spool
+
+### Atomic-file test temporary names leak across parallel tests
+
+* **ID:** f-20260909-10 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** src-tauri/src/infra/fs.rs, unix::test_temp_names and set_test_temp_names.
+* **Defect:** A process-global temporary-name queue supplies the collision test's names to unrelated atomic writers running on parallel test threads. The thread-local BreakCleanup injector searches its own parent for an .atomic- temporary file and can panic when its writer consumed another test's non-prefixed override instead.
+* **Evidence:** Full instrumented run backend-coverage-repair-HDhX3W failed file_post_commit_and_cleanup_precedence_are_explicit at fs.rs:2956 (expect temp), while 900 other tests passed. Root traced the global queue and its sole setter in the collision test; injection ownership is otherwise thread-local.
+* **Repair:** Bind temporary-name overrides to the invoking test thread, preserve collision behavior, and prove another thread cannot consume the override. Adopted into this build's gate repair, with a separate commit.
+* **Related:** f-20260829-01 and f-20260830-01 concern earlier recursive-delete coverage and do not own this fixture race.
+* **Provenance:** Plan authorship and arbitration share root context; Codex detection and repair use the same model family as the surrounding code.
