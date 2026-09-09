@@ -2492,3 +2492,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Installed Diesel 2.1.4 lacks a public wrapper, but its shared SQLite exposes documented auto-extension and progress APIs. Root's compiled probe against installed Diesel/libsqlite3 interrupted a real recursive query after two VM callbacks and then successfully reused that connection outside the cancelled scope. Codex probe-6 confirmed API/ABI and factory coverage. A separate pathname adapter would introduce the A-B-A opening flaw flagged by security; full snapshotting would require the separate f-20260905-03 repository design. Reversal is supported when Diesel exposes an equivalent supported callback wrapper, preserving scope isolation, actual query interruption and cleanup proof.
 * **Decided by:** Codex interactive f-20260904-05 build run, 2026-09-08; supported API probe by Codex under the selected Gemini routing · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":16,"effect_sha256":"7899639fe2f25e038b38560a608652d4cd1da06432479fea10faba028ad9ea5e","input_sha256":"3d3f80b25f347b763c0ba6236d7193a5ef4e32046888172cf2750e6246e7fde8","kind":"mutation-receipt","operation":"8727530cfc0620fe4664b383ffeaf148e7ca420b04c1244331fc0f851a9dabb4","options":{"section":null},"request_id_sha256":null,"results":["d-20260908-13","d-20260908-14"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-09 — recorded through the decisions lock
+
+### d-20260909-01 — How should biggest-gap traversal compare opponent positions with descendants?
+
+* **Question:** How should biggest-gap traversal compare opponent positions with descendants?
+* **Governs:** f-20260906-03
+* **Chosen:** Compare every eligible opponent position using its existing missing-games count, independently of descendant eligibility. Keep coverage/game pruning, strict start-path exclusion and the existing tie-break order.
+* **Rejected:** Keep descendant-based suppression, or change the coverage producer to compensate for the selector.
+* **Reason:** The coverage producer already assigns an opponent position the largest missing immediate reply count. Suppressing that position before the maximum comparison loses a valid larger candidate; changing the producer would conflate independent quantities. The regression tests demonstrate the wrong descendant selection before the repair. Reverse by changing the candidate contract and its tests together if the meaning of biggest gap changes.
+* **Decided by:** Codex interactive next-finding run, 2026-09-09, Gemini executor · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"fb94fe130615a5afd1132b690b9b7fcd47acf7423793f0c643ed39296f0507d5","input_sha256":"05d412ea034f60eaa9227a1efc970778abfee48e365529d6f5722cb79abec53b","kind":"mutation-receipt","operation":"70dfe1f89442df6a76a6af71b0878954520b79404b740bd5248e4f834bd7a792","options":{"section":null},"request_id_sha256":null,"results":["d-20260909-01"],"target":"decisions-ledger","v":1} -->
