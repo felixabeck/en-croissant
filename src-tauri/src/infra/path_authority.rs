@@ -1449,6 +1449,7 @@ fn identity(path: &Path) -> Result<Identity, Error> {
     }
 }
 
+#[cfg(test)]
 fn sha256_file(path: &Path) -> Result<(u64, String), Error> {
     let mut file = fs::File::open(path)?;
     #[cfg(test)]
@@ -1463,10 +1464,47 @@ fn sha256_file(path: &Path) -> Result<(u64, String), Error> {
 
 /// SHA-256 of an exclusive staged tempfile. Runs on the blocking pool so neither
 /// the Tokio worker nor the process-wide authority mutex is occupied for the hash.
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) async fn hash_staged_payload(path: PathBuf) -> Result<(u64, String), Error> {
     crate::infra::blocking::BLOCKING_GATEWAY
         .spawn(move || sha256_file(&path))
         .await
+}
+
+pub(crate) async fn hash_staged_payload_cancellable(
+    path: PathBuf,
+    cancellation: tokio_util::sync::CancellationToken,
+) -> Result<(u64, String), Error> {
+    crate::infra::blocking::BLOCKING_GATEWAY
+        .spawn_cancellable(cancellation, move |token| {
+            let mut file = fs::File::open(&path)?;
+            sha256_reader_cancellable(&mut file, token)
+        })
+        .await
+}
+
+fn sha256_reader_cancellable(
+    reader: &mut impl Read,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<(u64, String), Error> {
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        size = size.checked_add(read as u64).ok_or_else(|| {
+            Error::ResourceLimit("artifact payload exceeds supported size".into())
+        })?;
+        hasher.update(&buffer[..read]);
+    }
+    Ok((size, format!("{:x}", hasher.finalize())))
 }
 
 /// Activates the download artifact through a single blocking worker where payload hashing
@@ -2007,6 +2045,17 @@ impl ResolvedPath {
     where
         F: FnOnce(&mut fs::File) -> Result<(), Error>,
     {
+        self.atomic_replace_download_cancellable(&CancellationToken::new(), write)
+    }
+
+    pub(crate) fn atomic_replace_download_cancellable<F>(
+        &self,
+        cancellation: &CancellationToken,
+        write: F,
+    ) -> Result<AtomicFileOutcome, Error>
+    where
+        F: FnOnce(&mut fs::File) -> Result<(), Error>,
+    {
         if self.operation != PathOperation::DownloadFile {
             return Err(Error::InvalidInput(
                 "resolved capability is not a download destination".into(),
@@ -2020,10 +2069,16 @@ impl ResolvedPath {
             .leaf
             .as_ref()
             .ok_or_else(|| Error::Conflict("download leaf descriptor is unavailable".into()))?;
+        let precommit_cancellation = cancellation.clone();
         crate::infra::fs::atomic_replace_at_with_precommit(
             parent,
             leaf,
-            || self.revalidate_logical_parent(),
+            || {
+                if precommit_cancellation.is_cancelled() {
+                    return Err(Error::Cancellation);
+                }
+                self.revalidate_logical_parent()
+            },
             write,
         )
     }
@@ -2036,6 +2091,19 @@ impl ResolvedPath {
         reservation: &PendingArtifactReservation,
         staged_payload: &Path,
     ) -> Result<AtomicInstalledFile, Error> {
+        self.atomic_install_reserved_download_cancellable(
+            reservation,
+            staged_payload,
+            &CancellationToken::new(),
+        )
+    }
+
+    pub(crate) fn atomic_install_reserved_download_cancellable(
+        &self,
+        reservation: &PendingArtifactReservation,
+        staged_payload: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<AtomicInstalledFile, Error> {
         let mut staged = fs::File::open(staged_payload)?;
         let expected_size = reservation.payload_size;
         let expected_hash = reservation.payload_sha256.clone();
@@ -2047,15 +2115,25 @@ impl ResolvedPath {
             .leaf
             .as_ref()
             .ok_or_else(|| Error::Conflict("download leaf descriptor is unavailable".into()))?;
+        let copy_cancellation = cancellation.clone();
+        let precommit_cancellation = cancellation.clone();
         crate::infra::fs::atomic_replace_at_identified_with_precommit(
             parent,
             leaf,
-            || self.revalidate_logical_parent(),
+            || {
+                if precommit_cancellation.is_cancelled() {
+                    return Err(Error::Cancellation);
+                }
+                self.revalidate_logical_parent()
+            },
             move |target| {
                 let mut hasher = Sha256::new();
                 let mut copied = 0_u64;
                 let mut buffer = [0_u8; 64 * 1024];
                 loop {
+                    if copy_cancellation.is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
                     let read = staged.read(&mut buffer)?;
                     if read == 0 {
                         break;
@@ -6313,6 +6391,49 @@ mod tests {
     };
 
     const _: fn(VerifiedFile, u64, usize) -> Result<Vec<u8>, Error> = read_engine_image_bytes;
+
+    #[test]
+    fn staged_hash_core_cancels_between_real_read_chunks() {
+        struct HeldReader {
+            entered: Option<std::sync::mpsc::SyncSender<()>>,
+            release: std::sync::mpsc::Receiver<()>,
+            finished: bool,
+        }
+        impl Read for HeldReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.finished {
+                    return Ok(0);
+                }
+                self.finished = true;
+                if let Some(entered) = self.entered.take() {
+                    let _ = entered.send(());
+                }
+                let _ = self.release.recv_timeout(Duration::from_secs(5));
+                buffer[..64].fill(7);
+                Ok(64)
+            }
+        }
+
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            sha256_reader_cancellable(
+                &mut HeldReader {
+                    entered: Some(entered_tx),
+                    release: release_rx,
+                    finished: false,
+                },
+                &worker_cancellation,
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        cancellation.cancel();
+        release_tx.send(()).unwrap();
+        assert!(matches!(worker.join().unwrap(), Err(Error::Cancellation)));
+    }
+
     type EngineImageReaderForFn = fn(
         &std::sync::Mutex<Option<PathAuthority>>,
         &EngineImageHandle,

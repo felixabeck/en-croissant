@@ -19,7 +19,13 @@ import {
   tabsAtom,
 } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
-import { createTreeStore, type TreeStore } from "@/state/store/tree";
+import {
+  closeTreeStore,
+  createTreeStore,
+  invalidateReportOwner,
+  restoreReportOwner,
+  type TreeStore,
+} from "@/state/store/tree";
 import { tabStorage } from "@/state/store/tabStorage";
 import { createTab, genID, isPersistentGameOrigin, type Tab } from "@/utils/tabs";
 import BoardAnalysis from "../boards/BoardAnalysis";
@@ -91,6 +97,7 @@ export default function BoardsPage() {
           return;
         }
         jotaiStore.set(closingTabsAtom, (previous: Set<string>) => new Set(previous).add(value));
+        const reportInvalidation = invalidateReportOwner(value);
         store.dispose();
         const ownerGameIdAtom = gameIdFamily(value);
         const ownerSessionAtom = gameSessionFamily(value);
@@ -115,8 +122,12 @@ export default function BoardsPage() {
               }
             },
           );
-          startTransition(() => closeWorkspaceTab(value));
+          startTransition(() => {
+            closeWorkspaceTab(value);
+            closeTreeStore(value);
+          });
         } catch (error) {
+          restoreReportOwner(value, reportInvalidation);
           notifyUnlessCancelled(t("Common.Error"), error);
           return;
         } finally {

@@ -169,6 +169,7 @@ fn is_end_reachable(end: u16, pos: u16) -> bool {
     end & !pos == 0
 }
 
+#[cfg(test)]
 pub(crate) fn load_search_index(
     authority: &Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
@@ -800,6 +801,7 @@ fn search_position_blocking<R: tauri::Runtime>(
     Ok((openings, normalized_games))
 }
 
+#[cfg(test)]
 pub fn is_position_in_db(
     authority: &Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
@@ -807,6 +809,27 @@ pub fn is_position_in_db(
     file: &DatabaseHandle,
     query: &GameQuery,
 ) -> Result<bool, Error> {
+    is_position_in_db_cancellable(
+        authority,
+        repository,
+        search_cache,
+        file,
+        query,
+        &CancellationToken::new(),
+    )
+}
+
+pub(crate) fn is_position_in_db_cancellable(
+    authority: &Mutex<Option<PathAuthority>>,
+    repository: &DatabaseRepository,
+    search_cache: &Arc<SearchCache>,
+    file: &DatabaseHandle,
+    query: &GameQuery,
+    cancellation: &CancellationToken,
+) -> Result<bool, Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let database_handle = file;
     let file = resolve_database(authority, database_handle, PathOperation::DatabaseRead)?;
     let database = file.canonicalize()?;
@@ -817,7 +840,8 @@ pub fn is_position_in_db(
         database,
         lock: collision_lock,
     };
-    let _guard = _collision_cleanup.lock.lock();
+    let _guard =
+        crate::infra::cancellable_lock::lock_cancellable(&_collision_cleanup.lock, cancellation)?;
 
     let parsed_position_query: Option<PositionQuery> = if let Some(pq) = &query.position {
         Some(convert_position_query(pq.clone())?)
@@ -828,8 +852,13 @@ pub fn is_position_in_db(
     let start = Instant::now();
     info!("start loading games for is_position_in_db");
 
-    let (identity, mmap_index) =
-        load_search_index(authority, repository, search_cache, database_handle)?;
+    let (identity, mmap_index) = load_search_index_cancellable(
+        authority,
+        repository,
+        search_cache,
+        database_handle,
+        cancellation,
+    )?;
     let cache_key = SearchResultKey::new(query.clone(), identity);
     if let Some(result) = search_cache.get_result(&cache_key) {
         return Ok(!result.0.is_empty());
@@ -837,6 +866,9 @@ pub fn is_position_in_db(
 
     let exists = AtomicBool::new(false);
     let check_entry = |entry: SearchGameEntryRef<'_>| -> Result<(), Error> {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         try_iter_mainline_move_bytes(entry.moves).map_err(|error| {
             Error::InvalidInput(format!(
                 "game {} has invalid move stream: {error}",
@@ -854,7 +886,7 @@ pub fn is_position_in_db(
                     entry.moves,
                     &entry.fen,
                     position_query,
-                    &CancellationToken::new(),
+                    cancellation,
                 )?
                 .is_some()
             {
@@ -865,11 +897,17 @@ pub fn is_position_in_db(
     };
 
     mmap_index.par_iter().try_for_each(check_entry)?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let exists = exists.load(Ordering::Relaxed);
 
     info!("finished search in {:?}", start.elapsed());
 
     if !exists {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         search_cache.insert_result(cache_key, (vec![], vec![]));
     }
 
@@ -1584,6 +1622,43 @@ mod tests {
         assert!(checkpoints.load(Ordering::SeqCst) >= 2);
         assert!(!get_index_path(&database).exists());
         assert!(state.search_cache.results.lock().unwrap().values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn novelty_core_observes_analysis_cancellation_after_engine_exit() {
+        let (_dir, app, handle, database) = position_search_database();
+        let state = app.state::<AppState>();
+        let cancellation = CancellationToken::new();
+        let checkpoints =
+            crate::db::sqlite_cancellation::cancel_on_callback(cancellation.clone(), 2);
+        let permit = state.new_request.clone().try_acquire_owned().unwrap();
+
+        // analyze_game_core has already retired its engine before it calls this
+        // production novelty helper. Cancellation must still reach the real
+        // index-generation SQL scope and suppress every cache publication.
+        let result = crate::chess::novelty_lookup_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            permit,
+            handle,
+            vec![exact_position_query(AFTER_E4_E5_NF3_FEN)],
+            &cancellation,
+        );
+
+        let outcome = match &result {
+            Ok(present) => format!("success with {} presence flags", present.len()),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            matches!(result, Err(Error::Cancellation)),
+            "novelty lookup returned {outcome} after {} SQLite checkpoints",
+            checkpoints.load(Ordering::SeqCst)
+        );
+        assert!(checkpoints.load(Ordering::SeqCst) >= 2);
+        assert!(!get_index_path(&database).exists());
+        assert!(state.search_cache.results.lock().unwrap().values.is_empty());
+        assert!(state.search_cache.indexes.lock().unwrap().values.is_empty());
     }
 
     #[test]

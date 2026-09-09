@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 const fixtures = vi.hoisted(() => ({
   abortGame: vi.fn(),
   closeWorkspaceTab: vi.fn(),
+  closeTreeStore: vi.fn(),
   confirm: null as null | {
     pendingClose: { tabId: string } | null;
     onCancel: () => void;
@@ -13,19 +14,27 @@ const fixtures = vi.hoisted(() => ({
   },
   createTreeStore: vi.fn(() => ({
     dispose: fixtures.dispose,
-    getState: () => ({ dirty: false }),
+    getState: () => ({
+      dirty: fixtures.dirty,
+      setReportInProgress: fixtures.setReportInProgress,
+      setReportOperationId: fixtures.setReportOperationId,
+    }),
   })),
   dispose: vi.fn(),
   dirty: false,
   closeHandler: null as (() => unknown) | null,
   hotkeyBindings: null as Array<[string, () => void]> | null,
   killEngines: vi.fn(),
+  invalidateReportOwner: vi.fn(),
+  restoreReportOwner: vi.fn(),
   notifyUnlessCancelled: vi.fn(),
   tabsOnChange: null as ((value: string | null) => void) | null,
   nextPromise: null as Promise<void> | null,
   nextReady: false,
   resolveNext: null as (() => void) | null,
   persistent: false,
+  setReportInProgress: vi.fn(),
+  setReportOperationId: vi.fn(),
   tabs: [
     { value: "current", name: "Current", type: "new", gameOrigin: { kind: "none" } },
     { value: "next", name: "Next", type: "new", gameOrigin: { kind: "none" } },
@@ -76,7 +85,12 @@ vi.mock("@/platform/native", () => ({ platform: () => "linux" }));
 vi.mock("@/platform/tauri", () => ({
   tauri: { abortGame: fixtures.abortGame, killEngines: fixtures.killEngines },
 }));
-vi.mock("@/state/store/tree", () => ({ createTreeStore: fixtures.createTreeStore }));
+vi.mock("@/state/store/tree", () => ({
+  closeTreeStore: fixtures.closeTreeStore,
+  createTreeStore: fixtures.createTreeStore,
+  invalidateReportOwner: fixtures.invalidateReportOwner,
+  restoreReportOwner: fixtures.restoreReportOwner,
+}));
 vi.mock("@/state/store/tabStorage", () => ({ tabStorage: { clone: vi.fn() } }));
 vi.mock("@/utils/tabs", () => ({
   createTab: vi.fn(),
@@ -264,10 +278,15 @@ beforeEach(() => {
     fixtures.resolveNext = resolve;
   });
   fixtures.killEngines.mockResolvedValue(undefined);
+  fixtures.invalidateReportOwner.mockReturnValue({ previous: {}, invalidated: {} });
   fixtures.abortGame.mockResolvedValue(undefined);
   fixtures.createTreeStore.mockImplementation(() => ({
     dispose: fixtures.dispose,
-    getState: () => ({ dirty: fixtures.dirty }),
+    getState: () => ({
+      dirty: fixtures.dirty,
+      setReportInProgress: fixtures.setReportInProgress,
+      setReportOperationId: fixtures.setReportOperationId,
+    }),
   }));
   container = document.createElement("div");
   document.body.append(container);
@@ -356,6 +375,12 @@ test("keeps the tab when engine teardown rejects", async () => {
   });
 
   expect(fixtures.closeWorkspaceTab).not.toHaveBeenCalled();
+  expect(fixtures.restoreReportOwner).toHaveBeenCalledWith(
+    "current",
+    fixtures.invalidateReportOwner.mock.results[0].value,
+  );
+  expect(fixtures.setReportOperationId).not.toHaveBeenCalled();
+  expect(fixtures.setReportInProgress).not.toHaveBeenCalled();
   expect(fixtures.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", teardownError);
   expect(container.querySelector('[data-testid="view-current"]')).not.toBeNull();
 });

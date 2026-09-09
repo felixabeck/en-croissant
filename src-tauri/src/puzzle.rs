@@ -384,9 +384,12 @@ pub async fn issue_puzzle_workspace(
     .await
     .map_err(map_picker_join)??;
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_puzzle_workspace_blocking(&authority, path))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "issue_puzzle_workspace",
+        move || issue_puzzle_workspace_blocking(&authority, path),
+    )
+    .await
 }
 
 fn issue_puzzle_workspace_blocking(
@@ -419,9 +422,12 @@ pub async fn get_puzzle_workspace(
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
     // `active_or_default_puzzle_workspace` already holds the whole body, so it is the blocking
     // function; a `get_puzzle_workspace_blocking` forwarding to it would be a pass-through.
-    BLOCKING_GATEWAY
-        .spawn(move || active_or_default_puzzle_workspace(&app, &authority))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "get_puzzle_workspace",
+        move || active_or_default_puzzle_workspace(&app, &authority),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -431,9 +437,12 @@ pub async fn issue_puzzle_download_destination(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_puzzle_download_destination_blocking(&authority, app))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "issue_puzzle_download_destination",
+        move || issue_puzzle_download_destination_blocking(&authority, app),
+    )
+    .await
 }
 
 fn issue_puzzle_download_destination_blocking<R: tauri::Runtime>(
@@ -584,21 +593,32 @@ pub async fn delete_puzzle_database(
     file: crate::infra::path_authority::PathRef,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), Error> {
-    let resolved = resolve_puzzle(
-        &state,
-        &file,
-        crate::infra::path_authority::PathOperation::PuzzleDelete,
-    )?;
-    let path = resolved.puzzle_database_path()?;
-    let repository = state.database_repository.clone();
-    let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    delete_puzzle_database_resolved(
-        resolved,
-        path,
-        file,
-        repository,
-        authority,
-        Arc::clone(&state.puzzle_cache),
+    let operation = state.operations.accept("delete_puzzle_database")?;
+    let cancellation = operation.token();
+    let state = state.inner().clone();
+    crate::infra::operations::run_native_operation(
+        operation,
+        "delete_puzzle_database",
+        async move {
+            let resolved = resolve_puzzle(
+                &state,
+                &file,
+                crate::infra::path_authority::PathOperation::PuzzleDelete,
+            )?;
+            let path = resolved.puzzle_database_path()?;
+            let repository = state.database_repository.clone();
+            let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+            delete_puzzle_database_resolved(
+                resolved,
+                path,
+                file,
+                repository,
+                authority,
+                Arc::clone(&state.puzzle_cache),
+                cancellation,
+            )
+            .await
+        },
     )
     .await
 }
@@ -610,10 +630,11 @@ async fn delete_puzzle_database_resolved(
     repository: Arc<DatabaseRepository>,
     authority: Arc<std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>>,
     puzzle_cache: Arc<tokio::sync::Mutex<PuzzleCache>>,
+    cancellation: tokio_util::sync::CancellationToken,
 ) -> Result<(), Error> {
     let deleted_path = path.clone();
     let deletion_and_cleanup = BLOCKING_GATEWAY
-        .spawn(move || {
+        .spawn_cancellable(cancellation, move |_| {
             repository.delete_exclusive(&path, || match resolved.delete_puzzle_database() {
                 Ok(()) => Ok(()),
                 Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -718,6 +739,7 @@ mod tests {
     use diesel::connection::SimpleConnection;
 
     use super::*;
+    use tauri::Manager;
 
     fn puzzle_database(
         name: &str,
@@ -1146,11 +1168,64 @@ mod tests {
             repository,
             Arc::clone(&authority),
             Arc::clone(&cache),
+            tokio_util::sync::CancellationToken::new(),
         ));
 
         assert!(result.is_ok(), "ordinary deletion failed: {result:?}");
         assert!(!path.exists());
         assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
+        assert!(!authority_contains(&authority, &handle));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn production_puzzle_delete_tail_survives_command_caller_drop() {
+        let PuzzleDeletionFixture {
+            _directory,
+            path,
+            repository,
+            authority,
+            cache,
+            handle,
+            resolved: _,
+        } = puzzle_deletion_fixture("caller-drop-delete.db3");
+        let held_connection = repository.schema_specific_connection(&path).unwrap();
+        let mut state = crate::AppState::default();
+        state.database_repository = Arc::clone(&repository);
+        state.pgn_path_authority = Arc::clone(&authority);
+        state.puzzle_cache = Arc::clone(&cache);
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let command_app = app.handle().clone();
+        let command_handle = handle.clone();
+        let caller = tokio::spawn(async move {
+            let state = command_app.state::<crate::AppState>();
+            delete_puzzle_database(command_handle, state).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !repository.deletion_is_waiting(&path).unwrap() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        drop(held_connection);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !app
+                .state::<crate::AppState>()
+                .operations
+                .outstanding_labels()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(!path.exists());
+        assert!(cache.lock().await.key.is_none());
         assert!(!authority_contains(&authority, &handle));
     }
 
@@ -1177,6 +1252,7 @@ mod tests {
             repository,
             Arc::clone(&authority),
             Arc::clone(&cache),
+            tokio_util::sync::CancellationToken::new(),
         ));
 
         assert!(matches!(result, Err(Error::Conflict(_))));
@@ -1208,6 +1284,7 @@ mod tests {
             repository,
             Arc::clone(&authority),
             Arc::clone(&cache),
+            tokio_util::sync::CancellationToken::new(),
         ));
 
         assert!(result.is_ok(), "idempotent deletion failed: {result:?}");
@@ -1241,6 +1318,7 @@ mod tests {
             repository,
             Arc::clone(&authority),
             Arc::clone(&cache),
+            tokio_util::sync::CancellationToken::new(),
         ));
 
         assert!(matches!(

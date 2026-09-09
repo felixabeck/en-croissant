@@ -432,6 +432,25 @@ impl DatabaseRepository {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub fn deletion_is_waiting(&self, path: &Path) -> Result<bool, Error> {
+        let canonical = canonical_database_path(path)?;
+        let entry = self
+            .state
+            .lock()
+            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .entries
+            .get(&canonical)
+            .cloned();
+        Ok(entry.is_some_and(|entry| {
+            entry
+                .lifecycle
+                .lock()
+                .map(|lifecycle| lifecycle.retiring && lifecycle.active != 0)
+                .unwrap_or(false)
+        }))
+    }
+
     /// Reserves a database name before unlinking it so no concurrent command
     /// can recreate a pool for the soon-to-be-deleted inode. The reservation
     /// is released only after the deletion operation has reached a terminal
@@ -475,6 +494,10 @@ impl DatabaseRepository {
     }
 
     fn entry(&self, path: &Path) -> Result<(PathBuf, Arc<DatabaseEntry>), Error> {
+        // Identity and lock-only callers can create the pool before `connection()` is reached.
+        // Register the SQLite auto-extension at the one shared construction boundary so every
+        // pooled connection receives the cancellation progress handler.
+        super::sqlite_cancellation::install()?;
         let canonical = canonical_database_path(path)?;
         let key = canonical
             .to_str()

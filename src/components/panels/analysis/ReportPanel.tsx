@@ -4,7 +4,7 @@ import { IconZoomCheck } from "@tabler/icons-react";
 import cx from "clsx";
 import equal from "fast-deep-equal";
 import { useAtom, useAtomValue } from "jotai";
-import React, { memo, useCallback, useContext, useEffect, useMemo, useRef } from "react";
+import React, { memo, useCallback, useContext, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import EvalChart from "@/components/common/EvalChart";
@@ -16,6 +16,7 @@ import { ANNOTATION_INFO, isBasicAnnotation } from "@/utils/annotation";
 import { getGameStats, getMainLine } from "@/utils/chess";
 import classes from "./AnalysisPanel.module.css";
 import ReportModal from "./ReportModal";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 
 function ReportPanel() {
   const { t } = useTranslation();
@@ -30,9 +31,6 @@ function ReportPanel() {
   const operationId = useStore(store, (s) => s.report.operationId);
   const setInProgress = useStore(store, (s) => s.setReportInProgress);
   const setReportOperationId = useStore(store, (s) => s.setReportOperationId);
-  const rootFingerprint = `${root.fen}\u0000${getMainLine(root).join("\u0000")}`;
-  const rootFingerprintRef = useRef(rootFingerprint);
-  rootFingerprintRef.current = rootFingerprint;
 
   // Inert placeholder that never matches an emitted event; useProgress requires a string.
   const IDLE_REPORT_PROGRESS_ID = `report_${activeTab}`;
@@ -62,32 +60,39 @@ function ReportPanel() {
         if (store.getState().report.operationId !== queriedId) return;
         if (item?.finished) {
           setInProgress(false);
-          setReportOperationId(null);
         }
       })
-      .catch(() => {
-        // A lookup failure is not a finished job; leave in-flight state alone.
-      });
+      .catch((error) => notifyUnlessCancelled(t("Common.Error"), error));
 
     return () => {
       active = false;
     };
-  }, [inProgress, operationId, setInProgress, setReportOperationId, store]);
+  }, [inProgress, operationId, setInProgress, store, t]);
 
   const stats = useMemo(() => getGameStats(root), [root]);
 
-  const handleCancel = useCallback(() => {
+  const handleCancel = useCallback(async () => {
     const id = store.getState().report.operationId;
-    // Invalidate first: native cancellation is asynchronous and may still
-    // resolve successfully after the user switches tabs.
-    setReportOperationId(null);
-    setInProgress(false);
-    if (id) void tauri.cancelAnalysis(id);
-  }, [setInProgress, setReportOperationId, store]);
+    if (!id) return;
+    try {
+      await tauri.cancelAnalysis(id);
+    } catch (error) {
+      notifyUnlessCancelled(t("Common.Error"), error);
+      throw error;
+    }
+    // An acknowledgement for an older operation cannot clear its replacement.
+    if (store.getState().report.operationId === id) {
+      setReportOperationId(null);
+      setInProgress(false);
+    }
+  }, [setInProgress, setReportOperationId, store, t]);
 
   const isCurrentOperation = useCallback(
-    (id: string, fingerprint: string) =>
-      store.getState().report.operationId === id && rootFingerprintRef.current === fingerprint,
+    (id: string, fingerprint: string) => {
+      const current = store.getState();
+      const currentFingerprint = `${current.root.fen}\u0000${getMainLine(current.root).join("\u0000")}`;
+      return current.report.operationId === id && currentFingerprint === fingerprint;
+    },
     [store],
   );
 

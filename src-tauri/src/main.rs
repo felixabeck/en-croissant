@@ -52,7 +52,7 @@ use tauri_plugin_log::{Target, TargetKind};
 
 use crate::chess::{
     analyze_game, cancel_analysis, get_engine_config, get_engine_logs, kill_engine, kill_engines,
-    prepare_engine_search, retire_engine, stop_engine,
+    prepare_analysis, prepare_engine_search, retire_engine, stop_engine,
 };
 use crate::chesscom::{download_chess_com_games, get_public_chess_com_json};
 use crate::db::{
@@ -399,6 +399,7 @@ impl SearchCache {
     }
 }
 
+#[derive(Clone)]
 pub struct AppState {
     pub(crate) database_repository: Arc<db::DatabaseRepository>,
     new_request: Arc<Semaphore>,
@@ -541,8 +542,10 @@ async fn reconcile_startup_path_owners<'a>(
     state: tauri::State<'a, AppState>,
 ) -> Result<(), Error> {
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || {
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "reconcile_startup_path_owners",
+        move || {
             let mut guard = authority
                 .lock()
                 .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
@@ -552,8 +555,9 @@ async fn reconcile_startup_path_owners<'a>(
             crate::infra::path_authority::require_durable(
                 authority.reconcile_startup_owners(owners)?,
             )
-        })
-        .await
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -568,8 +572,10 @@ async fn reconcile_engine_attachments(
         crate::infra::path_authority::EngineAttachmentAction::Reconcile { startup: true, .. }
     );
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || {
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "reconcile_engine_attachments",
+        move || {
             let mut guard = authority
                 .lock()
                 .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
@@ -585,8 +591,9 @@ async fn reconcile_engine_attachments(
                 authority.cleanup_engine_images(&image_dir, false)?;
             }
             Ok(())
-        })
-        .await
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -608,9 +615,12 @@ async fn issue_pgn_workspace(
     .await
     .map_err(map_picker_join)??;
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_pgn_workspace_blocking(&authority, path))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "issue_pgn_workspace",
+        move || issue_pgn_workspace_blocking(&authority, path),
+    )
+    .await
 }
 
 fn issue_pgn_workspace_blocking(
@@ -677,9 +687,12 @@ async fn issue_pgn_export_destination(
     .await
     .map_err(map_picker_join)??;
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_pgn_export_destination_blocking(&authority, path))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "issue_pgn_export_destination",
+        move || issue_pgn_export_destination_blocking(&authority, path),
+    )
+    .await
 }
 
 fn issue_pgn_export_destination_blocking(
@@ -701,6 +714,8 @@ fn issue_pgn_export_destination_blocking(
 
 async fn save_native_export(
     app: &tauri::AppHandle,
+    operations: &OperationRegistry,
+    label: &'static str,
     suggested_name: &str,
     extension: &str,
     bytes: &[u8],
@@ -727,9 +742,10 @@ async fn save_native_export(
     .map_err(map_picker_join)??;
     let extension = extension.to_owned();
     let bytes = bytes.to_vec();
-    BLOCKING_GATEWAY
-        .spawn(move || save_native_export_blocking(path, extension, bytes))
-        .await
+    crate::infra::operations::run_accepted_blocking(operations, label, move || {
+        save_native_export_blocking(path, extension, bytes)
+    })
+    .await
 }
 
 fn save_native_export_blocking(
@@ -753,14 +769,30 @@ fn save_native_export_blocking(
 #[tauri::command]
 #[specta::specta]
 async fn save_board_snapshot(app: tauri::AppHandle, bytes: Vec<u8>) -> Result<(), Error> {
-    save_native_export(&app, "board.png", "png", &bytes).await
+    save_native_export(
+        &app,
+        &app.state::<AppState>().operations,
+        "save_board_snapshot",
+        "board.png",
+        "png",
+        &bytes,
+    )
+    .await
 }
 
 /// Native save dialog and atomic export for renderer-selected engine logs.
 #[tauri::command]
 #[specta::specta]
 async fn save_engine_logs(app: tauri::AppHandle, text: String) -> Result<(), Error> {
-    save_native_export(&app, "engine-logs.csv", "csv", text.as_bytes()).await
+    save_native_export(
+        &app,
+        &app.state::<AppState>().operations,
+        "save_engine_logs",
+        "engine-logs.csv",
+        "csv",
+        text.as_bytes(),
+    )
+    .await
 }
 
 const DOCUMENTATION_URL: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/tree/master/docs");
@@ -780,9 +812,11 @@ fn open_documentation(app: tauri::AppHandle) -> Result<(), Error> {
 #[tauri::command]
 #[specta::specta]
 async fn open_app_log(app: tauri::AppHandle) -> Result<(), Error> {
-    BLOCKING_GATEWAY
-        .spawn(move || open_app_log_blocking(app))
-        .await
+    let operations = app.state::<AppState>().operations.clone();
+    crate::infra::operations::run_accepted_blocking(&operations, "open_app_log", move || {
+        open_app_log_blocking(app)
+    })
+    .await
 }
 
 fn open_app_log_blocking(app: tauri::AppHandle) -> Result<(), Error> {
@@ -815,9 +849,12 @@ async fn issue_download_destination(
     .await
     .map_err(map_picker_join)??;
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_download_destination_blocking(&authority, path))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "issue_download_destination",
+        move || issue_download_destination_blocking(&authority, path),
+    )
+    .await
 }
 
 fn issue_download_destination_blocking(
@@ -875,9 +912,12 @@ async fn issue_database_workspace(
     .await
     .map_err(map_picker_join)??;
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_database_workspace_blocking(&authority, path))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "issue_database_workspace",
+        move || issue_database_workspace_blocking(&authority, path),
+    )
+    .await
 }
 
 fn issue_database_workspace_blocking(
@@ -908,9 +948,12 @@ async fn get_database_workspace(
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::DatabaseRootHandle, Error> {
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || get_database_workspace_blocking(&authority, app))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "get_database_workspace",
+        move || get_database_workspace_blocking(&authority, app),
+    )
+    .await
 }
 
 fn get_database_workspace_blocking(
@@ -992,9 +1035,12 @@ async fn create_workspace_database(
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::DatabaseHandle, Error> {
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || create_workspace_database_blocking(&authority, root, filename))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "create_workspace_database",
+        move || create_workspace_database_blocking(&authority, root, filename),
+    )
+    .await
 }
 
 fn create_workspace_database_blocking(
@@ -1020,9 +1066,12 @@ async fn database_download_destination(
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || database_download_destination_blocking(&authority, root))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "database_download_destination",
+        move || database_download_destination_blocking(&authority, root),
+    )
+    .await
 }
 
 fn database_download_destination_blocking(
@@ -1057,9 +1106,12 @@ async fn issue_engine_workspace(
     .await
     .map_err(map_picker_join)??;
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_engine_workspace_blocking(&authority, path))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "issue_engine_workspace",
+        move || issue_engine_workspace_blocking(&authority, path),
+    )
+    .await
 }
 
 fn issue_engine_workspace_blocking(
@@ -1084,9 +1136,12 @@ async fn get_engine_workspace(
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::EngineRootHandle, Error> {
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || get_engine_workspace_blocking(&authority, app))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "get_engine_workspace",
+        move || get_engine_workspace_blocking(&authority, app),
+    )
+    .await
 }
 
 fn get_engine_workspace_blocking(
@@ -1133,9 +1188,12 @@ async fn issue_engine_binary(
     .await
     .map_err(map_picker_join)??;
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_engine_binary_blocking(&authority, path))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "issue_engine_binary",
+        move || issue_engine_binary_blocking(&authority, path),
+    )
+    .await
 }
 
 fn issue_engine_binary_blocking(
@@ -1181,9 +1239,12 @@ async fn issue_engine_resource(
     .await
     .map_err(map_picker_join)??;
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_engine_resource_blocking(&authority, path, directory))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "issue_engine_resource",
+        move || issue_engine_resource_blocking(&authority, path, directory),
+    )
+    .await
 }
 
 fn issue_engine_resource_blocking(
@@ -1268,7 +1329,11 @@ async fn issue_engine_image(
     .await
     .map_err(map_picker_join)??;
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    issue_engine_image_blocking_async(authority, app, path, None).await
+    let operation = state.operations.accept("issue_engine_image")?;
+    crate::infra::operations::run_native_operation(operation, "issue_engine_image", async move {
+        issue_engine_image_blocking_async(authority, app, path, None).await
+    })
+    .await
 }
 
 fn issue_engine_image_blocking<R: tauri::Runtime>(
@@ -1396,9 +1461,12 @@ async fn read_engine_image(
     state: tauri::State<'_, AppState>,
 ) -> Result<EngineImageData, Error> {
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || read_engine_image_blocking(&authority, image))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "read_engine_image",
+        move || read_engine_image_blocking(&authority, image),
+    )
+    .await
 }
 
 fn read_engine_image_blocking(
@@ -1441,9 +1509,12 @@ async fn issue_opening_book(
     .await
     .map_err(map_picker_join)??;
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_opening_book_blocking(&authority, path))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "issue_opening_book",
+        move || issue_opening_book_blocking(&authority, path),
+    )
+    .await
 }
 
 fn issue_opening_book_blocking(
@@ -1469,9 +1540,12 @@ async fn engine_archive_destination(
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::PathRef, Error> {
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || engine_archive_destination_blocking(&authority, root))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "engine_archive_destination",
+        move || engine_archive_destination_blocking(&authority, root),
+    )
+    .await
 }
 
 fn engine_archive_destination_blocking(
@@ -1494,9 +1568,12 @@ async fn register_installed_engine(
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::EngineHandle, Error> {
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || register_installed_engine_blocking(&authority, root, relative_path))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "register_installed_engine",
+        move || register_installed_engine_blocking(&authority, root, relative_path),
+    )
+    .await
 }
 
 fn register_installed_engine_blocking(
@@ -1520,9 +1597,12 @@ async fn open_engine_workspace(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || open_engine_workspace_blocking(&authority, app, root))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "open_engine_workspace",
+        move || open_engine_workspace_blocking(&authority, app, root),
+    )
+    .await
 }
 
 fn open_engine_workspace_blocking(
@@ -1628,6 +1708,7 @@ async fn shutdown_backend_with_attachments<F>(
     supervisor: &EngineSupervisor,
     games: &GameManager,
     sound: Option<&SoundServerLifecycle>,
+    operations: &OperationRegistry,
     attachments: F,
     budget: Duration,
 ) -> bool
@@ -1635,6 +1716,11 @@ where
     F: std::future::Future<Output = Result<(), String>>,
 {
     log::info!("Shutdown requested: terminating engines and live games");
+    let seal_failure = operations
+        .seal_and_cancel_reads()
+        .err()
+        .map(|error| format!("native operation admission seal failed: {error}"));
+    let operations_for_drain = operations.clone();
     let cleanup = async {
         let engines = supervisor.terminate_all();
         // Reserve half of the process-wide budget for the direct engine
@@ -1647,8 +1733,11 @@ where
                 Ok(())
             }
         };
-        let (engines, games, sound, attachments) = tokio::join!(engines, games, sound, attachments);
-        let mut failures = Vec::new();
+        let native_operations =
+            tokio::task::spawn_blocking(move || operations_for_drain.wait_for_drain(budget));
+        let (engines, games, sound, attachments, native_operations) =
+            tokio::join!(engines, games, sound, attachments, native_operations);
+        let mut failures = seal_failure.into_iter().collect::<Vec<_>>();
         if let Err(error) = engines {
             failures.push(format!("engine teardown failed: {error}"));
         }
@@ -1660,6 +1749,12 @@ where
         }
         if let Err(error) = attachments {
             failures.push(format!("engine attachment teardown failed: {error}"));
+        }
+        match native_operations {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => failures.push("native operation drain timed out".into()),
+            Ok(Err(error)) => failures.push(format!("native operation drain failed: {error}")),
+            Err(error) => failures.push(format!("native operation drain task failed: {error}")),
         }
         failures
     };
@@ -1674,7 +1769,10 @@ where
         }
         Err(_) => {
             log::error!(
-                "Shutdown budget of {budget:?} elapsed while engine, game, sound, or attachment teardown was still running"
+                "Shutdown budget of {budget:?} elapsed with native operations {:?}",
+                operations
+                    .outstanding_diagnostics()
+                    .unwrap_or_else(|error| vec![format!("diagnostics unavailable: {error}")])
             );
             false
         }
@@ -1730,6 +1828,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             close_splashscreen,
             prepare_native_read,
             cancel_native_read,
+            prepare_analysis,
             reconcile_startup_path_owners,
             reconcile_engine_attachments,
             issue_pgn_workspace,
@@ -2054,6 +2153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             state.engine_supervisor.as_ref(),
                             &state.game_manager,
                             app_handle.try_state::<SoundServerLifecycle>().as_deref(),
+                            &state.operations,
                             async {
                                 shutdown_engine_attachments(app_handle.clone())
                                     .await
@@ -2369,11 +2469,13 @@ mod tests {
     async fn shutdown_with_nothing_running_is_a_no_op_and_repeatable() {
         let supervisor = EngineSupervisor::default();
         let games = GameManager::new();
+        let operations = OperationRegistry::default();
         assert!(
             shutdown_backend_with_attachments(
                 &supervisor,
                 &games,
                 None,
+                &operations,
                 std::future::ready(Ok(())),
                 Duration::from_secs(30),
             )
@@ -2384,6 +2486,7 @@ mod tests {
                 &supervisor,
                 &games,
                 None,
+                &operations,
                 std::future::ready(Ok(())),
                 Duration::from_secs(30),
             )
@@ -2392,9 +2495,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutdown_seals_cancels_and_drains_a_real_native_owned_tail() {
+        let supervisor = EngineSupervisor::default();
+        let games = GameManager::new();
+        let operations = OperationRegistry::default();
+        let read_ticket = operations.prepare_read("main").unwrap();
+        let read = operations
+            .claim_read(&read_ticket, "main", "shutdown read")
+            .unwrap();
+        let read_token = read.token();
+        let accepted = operations.accept("shutdown tail").unwrap();
+        let accepted_token = accepted.token();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let caller = tokio::spawn(crate::infra::operations::run_native_operation(
+            accepted,
+            "shutdown tail",
+            async move {
+                let _ = entered_tx.send(());
+                let _ = release_rx.await;
+                Ok::<(), Error>(())
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(1), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        caller.abort();
+        let release = tokio::spawn(async move {
+            accepted_token.cancelled().await;
+            assert!(read_token.is_cancelled());
+            drop(read);
+            release_tx.send(()).unwrap();
+        });
+
+        assert!(
+            shutdown_backend_with_attachments(
+                &supervisor,
+                &games,
+                None,
+                &operations,
+                std::future::ready(Ok(())),
+                Duration::from_secs(2),
+            )
+            .await
+        );
+        tokio::time::timeout(Duration::from_secs(1), release)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(operations.accept("late mutation").is_err());
+        assert!(operations.prepare_read("main").is_err());
+        assert!(operations.wait_for_drain(Duration::ZERO).unwrap());
+    }
+
+    #[tokio::test]
     async fn shutdown_aggregates_attachment_failure_without_skipping_other_teardown() {
         let supervisor = EngineSupervisor::default();
         let games = GameManager::new();
+        let operations = OperationRegistry::default();
         let (sound_shutdown, sound_signal) = tokio::sync::oneshot::channel();
         let sound_joined = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let sound_joined_clone = sound_joined.clone();
@@ -2408,6 +2567,7 @@ mod tests {
                 &supervisor,
                 &games,
                 Some(&sound),
+                &operations,
                 std::future::ready(Err("cleanup failed".into())),
                 Duration::from_secs(30),
             )
@@ -2417,9 +2577,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn poisoned_operation_registry_does_not_skip_independent_shutdown_cleanup() {
+        let supervisor = EngineSupervisor::default();
+        let key = engine::EngineKey::new("shutdown".into(), "poisoned-registry".into()).unwrap();
+        let (actor, _) = engine::EngineActor::recording_test_actor(&[]);
+        supervisor
+            .replace_handle(
+                key.clone(),
+                actor,
+                "test-engine".into(),
+                crate::infra::path_authority::PathRef {
+                    id: "shutdown-test-engine".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let games = GameManager::new();
+        let operations = OperationRegistry::default();
+        operations.poison_for_test();
+        let (sound_shutdown, sound_signal) = tokio::sync::oneshot::channel();
+        let sound_joined = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sound_joined_clone = Arc::clone(&sound_joined);
+        let sound_join = tauri::async_runtime::spawn(async move {
+            let _ = sound_signal.await;
+            sound_joined_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let sound = SoundServerLifecycle::new(Some(sound_shutdown), Some(sound_join));
+        let attachments_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let attachments_ran_clone = Arc::clone(&attachments_ran);
+
+        assert!(
+            !shutdown_backend_with_attachments(
+                &supervisor,
+                &games,
+                Some(&sound),
+                &operations,
+                async move {
+                    attachments_ran_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                },
+                Duration::from_secs(2),
+            )
+            .await
+        );
+        assert!(sound_joined.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(attachments_ran.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(supervisor.get_exact(&key).is_none());
+    }
+
+    #[tokio::test]
     async fn shutdown_timeout_still_runs_sound_teardown_when_attachments_are_pending() {
         let supervisor = EngineSupervisor::default();
         let games = GameManager::new();
+        let operations = OperationRegistry::default();
         let (sound_shutdown, sound_signal) = tokio::sync::oneshot::channel();
         let sound_joined = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let sound_joined_clone = sound_joined.clone();
@@ -2433,6 +2643,7 @@ mod tests {
                 &supervisor,
                 &games,
                 Some(&sound),
+                &operations,
                 async {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     Err("attachment cleanup remained pending".into())
@@ -2586,6 +2797,19 @@ mod blocking_offload_scans {
         &rest[open + 1..close]
     }
 
+    fn call_arguments<'a>(body: &'a str, signature: &str, call: &str) -> &'a str {
+        let start = body
+            .find(call)
+            .unwrap_or_else(|| panic!("{signature} must call {call}: {body}"));
+        let rest = &body[start..];
+        let open = rest
+            .find('(')
+            .unwrap_or_else(|| panic!("{signature} must open the {call} call: {body}"));
+        let close = closing_paren(rest, open)
+            .unwrap_or_else(|| panic!("{signature} has an unbalanced {call} call: {body}"));
+        &rest[open + 1..close]
+    }
+
     /// `body_at_indent` panics when its needle is absent. Runtime-generic
     /// helpers are `fn name<R: …>(`, so the plain `fn {name}(` needle misses
     /// them. Prefer the generic form when it exists. One copy for every scan;
@@ -2630,12 +2854,9 @@ mod blocking_offload_scans {
         }
     }
 
-    /// Asserting that a converted command merely *mentions* `BLOCKING_GATEWAY` does not pin the
-    /// offload: moving the worker call back onto the command future and leaving a decoy
-    /// `BLOCKING_GATEWAY.spawn(|| Ok(()))` behind would keep such a scan green, which is exactly
-    /// the GTK-main-loop regression this range exists to prevent. So each command is paired with
-    /// the worker it offloads, and the worker call must appear exactly once, after the gateway
-    /// acquisition — i.e. inside the spawned closure.
+    /// Follow either the direct gateway dispatch used by transient reads or the accepted helper
+    /// dispatch used by completion-owned commands. The worker must occur exactly once and inside
+    /// the dispatched argument, so removing real delegation or adding a second direct call fails.
     fn assert_offloads(source: &'static str, signature: &str, worker: &str) {
         let body = body_at_indent(source, signature);
         let call = format!("{worker}(");
@@ -2645,12 +2866,181 @@ mod blocking_offload_scans {
             "{signature} must call {call} exactly once, so the closure scan cannot be \
              satisfied while a second call runs on the command future: {body}"
         );
-        let closure = gateway_closure(body, signature);
+        let closure = if body.contains("run_accepted_blocking(") {
+            call_arguments(body, signature, "run_accepted_blocking")
+        } else {
+            gateway_closure(body, signature)
+        };
         assert!(
             closure.contains(call.as_str()),
-            "{signature} must call {call} inside the BLOCKING_GATEWAY closure, not on the \
-             command future; closure was {closure:?}: {body}"
+            "{signature} must call {call} inside its native dispatch, not on the command \
+             future; dispatched arguments were {closure:?}: {body}"
         );
+    }
+
+    #[test]
+    fn accepted_blocking_helper_owns_the_real_gateway_dispatch() {
+        let operations = include_str!("infra/operations.rs");
+        let body = body_at_indent(operations, "pub async fn run_accepted_blocking");
+        let accept = body
+            .find("registry.accept(label)")
+            .expect("accepted admission");
+        let native = body
+            .find("run_native_operation(lease")
+            .expect("native workflow ownership");
+        let gateway = body
+            .find("BLOCKING_GATEWAY")
+            .expect("blocking gateway dispatch");
+        let workflow = gateway_closure(body, "run_accepted_blocking");
+        assert!(accept < native && native < gateway, "{body}");
+        assert_eq!(workflow.trim(), "workflow", "{body}");
+    }
+
+    #[test]
+    fn phase4_accepted_command_inventory_reaches_one_native_owner() {
+        for (file, source, commands) in [
+            (
+                "db/mod.rs",
+                include_str!("db/mod.rs"),
+                &[
+                    "convert_pgn",
+                    "create_indexes",
+                    "delete_indexes",
+                    "edit_db_info",
+                    "delete_database",
+                    "delete_duplicated_games",
+                    "delete_empty_games",
+                    "export_to_pgn",
+                    "delete_db_game",
+                    "write_db_game",
+                    "merge_players",
+                ][..],
+            ),
+            (
+                "file_workspace.rs",
+                include_str!("file_workspace.rs"),
+                &[
+                    "create_workspace_file",
+                    "create_workspace_directory",
+                    "move_workspace_entry",
+                    "rename_workspace_file",
+                    "trash_workspace_entry",
+                    "restore_workspace_entry",
+                    "permanently_delete_workspace_entry",
+                ][..],
+            ),
+        ] {
+            for command in commands {
+                let signature = format!("pub async fn {command}(");
+                let body = body_at_indent(source, &signature);
+                assert!(
+                    body.contains("run_native_operation(")
+                        || body.contains("run_accepted_blocking("),
+                    "{file}::{command} must dispatch through one native owner: {body}"
+                );
+            }
+        }
+
+        for (file, source, command) in [
+            (
+                "puzzle.rs",
+                include_str!("puzzle.rs"),
+                "delete_puzzle_database",
+            ),
+            ("fs.rs", include_str!("fs.rs"), "download_engine_archive"),
+            ("fs.rs", include_str!("fs.rs"), "set_file_as_executable"),
+            (
+                "chesscom.rs",
+                include_str!("chesscom.rs"),
+                "download_chess_com_games",
+            ),
+        ] {
+            let body = body_at_indent(source, &format!("pub async fn {command}("));
+            assert!(
+                body.contains("run_native_operation(") || body.contains("run_accepted_blocking("),
+                "{file}::{command} must dispatch through one native owner: {body}"
+            );
+        }
+
+        for (source, command, route) in [
+            (
+                include_str!("fs.rs"),
+                "download_file",
+                "download_to_destination(",
+            ),
+            (
+                include_str!("fs.rs"),
+                "download_lichess_games",
+                "download_lichess_games_runtime(",
+            ),
+            (
+                include_str!("main.rs"),
+                "save_board_snapshot",
+                "save_native_export(",
+            ),
+            (
+                include_str!("main.rs"),
+                "save_engine_logs",
+                "save_native_export(",
+            ),
+        ] {
+            let body = body_at_indent(source, &format!("async fn {command}("));
+            assert_eq!(body.matches(route).count(), 1, "{command}: {body}");
+        }
+
+        let fs = include_str!("fs.rs");
+        let download_owner = body_at_indent(fs, "async fn download_to_destination");
+        assert!(
+            download_owner.contains("run_native_operation("),
+            "{download_owner}"
+        );
+        let lichess_runtime = body_at_indent(fs, "async fn download_lichess_games_runtime");
+        assert_eq!(
+            lichess_runtime.matches("download_to_destination(").count(),
+            1,
+            "{lichess_runtime}"
+        );
+
+        for command in ["delete_game", "write_game"] {
+            let pgn = include_str!("pgn.rs");
+            let body = body_at_indent(pgn, &format!("pub async fn {command}("));
+            let core = format!("{command}_core(");
+            assert!(
+                body.contains("state.operations.accept("),
+                "{command}: {body}"
+            );
+            assert_eq!(body.matches(&core).count(), 1, "{command}: {body}");
+            let core_body = body_at_indent(pgn, &format!("async fn {command}_core("));
+            assert!(
+                core_body.contains("run_native_operation("),
+                "{command}: {core_body}"
+            );
+        }
+    }
+
+    #[test]
+    fn exit_requested_dispatches_the_production_shutdown_core() {
+        let source = include_str!("main.rs");
+        let exit = source
+            .split("let tauri::RunEvent::ExitRequested")
+            .nth(1)
+            .expect("ExitRequested event branch");
+        let dispatch = body_at_indent(exit, "tauri::async_runtime::spawn(async move {");
+        let cleanup = call_arguments(
+            dispatch,
+            "ExitRequested cleanup",
+            "shutdown_backend_with_attachments",
+        );
+        for argument in [
+            "state.engine_supervisor.as_ref()",
+            "&state.game_manager",
+            "&state.operations",
+            "shutdown_engine_attachments",
+            "SHUTDOWN_BUDGET",
+        ] {
+            assert!(cleanup.contains(argument), "missing {argument}: {cleanup}");
+        }
+        assert!(dispatch.contains("app_handle.exit(0)"), "{dispatch}");
     }
 
     #[test]
@@ -2903,11 +3293,11 @@ mod blocking_offload_scans {
             .find("blocking_save_file")
             .expect("save_native_export must call blocking_save_file");
         let save_gateway = save
-            .find("BLOCKING_GATEWAY")
-            .expect("save_native_export must call BLOCKING_GATEWAY");
+            .find("run_accepted_blocking")
+            .expect("save_native_export must enter accepted ownership");
         assert!(
             save_dialog < save_gateway,
-            "save_native_export must run blocking_save_file before BLOCKING_GATEWAY: {save}"
+            "save_native_export must run blocking_save_file before accepted admission: {save}"
         );
 
         let image = body_at_indent(main, "async fn issue_engine_image(");
@@ -2974,11 +3364,11 @@ mod blocking_offload_scans {
                 .find(picker)
                 .unwrap_or_else(|| panic!("{signature} must call {picker}: {body}"));
             let gateway_at = body
-                .find("BLOCKING_GATEWAY")
-                .unwrap_or_else(|| panic!("{signature} must call BLOCKING_GATEWAY: {body}"));
+                .find("run_accepted_blocking")
+                .unwrap_or_else(|| panic!("{signature} must enter accepted ownership: {body}"));
             assert!(
                 picker_at < gateway_at,
-                "{signature} must run {picker} before BLOCKING_GATEWAY: {body}"
+                "{signature} must run {picker} before accepted admission: {body}"
             );
         }
     }
@@ -3063,8 +3453,11 @@ mod blocking_offload_scans {
             "convert_pgn_blocking must emit ConvertProgress: {convert}"
         );
         let convert_wrapper = body_at_indent(db, "pub async fn convert_pgn(");
+        let convert_dispatch = gateway_closure(convert_wrapper, "convert_pgn");
         assert!(
-            convert_wrapper.contains("description,\n                progress_id,"),
+            convert_dispatch.contains("description,")
+                && convert_dispatch.contains("progress_id,")
+                && convert_dispatch.find("description,") < convert_dispatch.find("progress_id,"),
             "convert_pgn must forward progress_id into convert_pgn_blocking: {convert_wrapper}"
         );
         let players_info = body_at_indent(db, &blocking_fn_signature(db, "get_players_game_info"));
@@ -3236,14 +3629,18 @@ mod blocking_offload_scans {
     #[test]
     fn s7_analyze_game_kills_the_engine_before_the_novelty_lookup() {
         let chess = include_str!("chess.rs");
-        let body = body_at_indent(chess, "pub async fn analyze_game(");
-        assert!(
-            body.contains("BLOCKING_GATEWAY"),
-            "analyze_game must acquire BLOCKING_GATEWAY: {body}"
+        let command = body_at_indent(chess, "pub async fn analyze_game(");
+        assert_eq!(
+            command.matches("analyze_game_core(").count(),
+            1,
+            "{command}"
         );
+        assert!(command.contains("run_native_operation("), "{command}");
+        assert!(!command.contains("novelty_lookup_blocking("), "{command}");
+        let body = body_at_indent(chess, "async fn analyze_game_core(");
         assert_offloads(
             chess,
-            "pub async fn analyze_game(",
+            "async fn analyze_game_core(",
             "novelty_lookup_blocking",
         );
         let last_ingest = body

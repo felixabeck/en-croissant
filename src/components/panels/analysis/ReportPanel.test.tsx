@@ -3,9 +3,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import { tabStorage } from "@/state/store/tabStorage";
-import { createTreeStore, type TreeStore } from "@/state/store/tree";
+import {
+  closeTreeStore,
+  createTreeStore,
+  invalidateReportOwner,
+  restoreReportOwner,
+  type TreeStore,
+} from "@/state/store/tree";
 import { getMainLine } from "@/utils/chess";
-import type { TreeState } from "@/utils/treeReducer";
 import ReportPanel from "./ReportPanel";
 
 const mocks = vi.hoisted(() => ({
@@ -18,6 +23,8 @@ const mocks = vi.hoisted(() => ({
   getProgress: vi.fn(),
   startProgress: vi.fn(),
   analyzeGame: vi.fn(),
+  prepareAnalysis: vi.fn(),
+  notifyUnlessCancelled: vi.fn(),
   setReportingMode: vi.fn(),
   setReportSettings: vi.fn(),
   reportingMode: false,
@@ -32,7 +39,7 @@ const mocks = vi.hoisted(() => ({
   progressButtonProps: null as null | {
     id: string;
     completeOnProgressSuccess?: boolean;
-    onCancel?: () => void;
+    onCancel?: () => void | Promise<void>;
   },
   reportModalProps: null as null | {
     registerOperation: (id: string) => void;
@@ -71,6 +78,7 @@ vi.mock("@/platform/tauri", () => ({
     getProgress: mocks.getProgress,
     startProgress: mocks.startProgress,
     analyzeGame: mocks.analyzeGame,
+    prepareAnalysis: mocks.prepareAnalysis,
   },
 }));
 vi.mock("@/state/atoms", () => ({
@@ -93,10 +101,16 @@ vi.mock("jotai", async (importOriginal) => ({
   },
 }));
 vi.mock("jotai/utils", () => ({ atomWithStorage: () => mocks.reportSettingsAtom }));
-vi.mock("@/components/files/notifyError", () => ({ notifyUnlessCancelled: vi.fn() }));
+vi.mock("@/components/files/notifyError", () => ({
+  notifyUnlessCancelled: mocks.notifyUnlessCancelled,
+}));
 vi.mock("@/components/common/EvalChart", () => ({ default: () => null }));
 vi.mock("@/components/common/ProgressButton", () => ({
-  default: (props: { id: string; completeOnProgressSuccess?: boolean; onCancel?: () => void }) => {
+  default: (props: {
+    id: string;
+    completeOnProgressSuccess?: boolean;
+    onCancel?: () => void | Promise<void>;
+  }) => {
     mocks.progressButtonProps = props;
     return (
       <button type="button" onClick={props.onCancel}>
@@ -175,6 +189,32 @@ function fingerprintOf(store: TreeStore) {
   return `${root.fen}\u0000${getMainLine(root).join("\u0000")}`;
 }
 
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+const completedAnalysis = [
+  {
+    best: [
+      {
+        nodes: 1n,
+        depth: 1,
+        score: { value: { type: "cp" as const, value: 123 }, wdl: null },
+        uciMoves: ["e2e4"],
+        sanMoves: ["e4"],
+        multipv: 1,
+        nps: 1n,
+      },
+    ],
+    novelty: false,
+    is_sacrifice: false,
+  },
+];
+
 let host: HTMLDivElement;
 let root: Root;
 let store: TreeStore;
@@ -191,6 +231,7 @@ async function renderPanel() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.prepareAnalysis.mockResolvedValue("report_tab-1_operation-uuid");
   mocks.reportingMode = false;
   mocks.progressId = undefined;
   mocks.progress.finished = false;
@@ -214,6 +255,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   tabStorage.flush();
   tabStorage.remove("tab-1");
+  closeTreeStore("tab-1");
 });
 
 test("ProgressButton subscribes to the registered operation id without treating success as complete", async () => {
@@ -248,8 +290,9 @@ test("cancel after remount against the same tree store cancels the registered id
   expect(store.getState().report.inProgress).toBe(false);
 });
 
-test("cancel after a board-tab remount hydrating through tabStorage cancels the registered id", async () => {
+test("cancel after a board-tab provider remount uses the stable registered report owner", async () => {
   store = createTreeStore("tab-1");
+  const firstStore = store;
   await renderPanel();
   await act(async () => {
     mocks.reportModalProps!.registerOperation("report_tab-1_uuid");
@@ -257,10 +300,8 @@ test("cancel after a board-tab remount hydrating through tabStorage cancels the 
   tabStorage.flush();
 
   await act(async () => root.unmount());
-  // Zustand persist defaults version to 0; tabStorage writes version 1, so
-  // createTreeStore("tab-1") will not rehydrate. Load the persisted snapshot.
-  const persisted = tabStorage.read("tab-1");
-  store = createTreeStore(undefined, persisted?.state as TreeState);
+  store = createTreeStore("tab-1");
+  expect(store).toBe(firstStore);
   root = createRoot(host);
   await renderPanel();
 
@@ -269,6 +310,41 @@ test("cancel after a board-tab remount hydrating through tabStorage cancels the 
     mocks.progressButtonProps?.onCancel?.();
   });
   expect(mocks.cancelAnalysis).toHaveBeenCalledWith("report_tab-1_uuid");
+});
+
+test("cancel rejection retains the active report and reports the failure once", async () => {
+  const failure = new Error("cancel failed");
+  mocks.cancelAnalysis.mockRejectedValueOnce(failure);
+  await renderPanel();
+  await act(async () => {
+    mocks.reportModalProps!.registerOperation("report_tab-1_uuid");
+    store.getState().setReportInProgress(true);
+  });
+
+  await expect(Promise.resolve(mocks.progressButtonProps!.onCancel!())).rejects.toBe(failure);
+  expect(store.getState().report.operationId).toBe("report_tab-1_uuid");
+  expect(store.getState().report.inProgress).toBe(true);
+  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledOnce();
+  expect(mocks.notifyUnlessCancelled).toHaveBeenCalledWith("Common.Error", failure);
+});
+
+test("a late cancel acknowledgement cannot clear a replacement report", async () => {
+  let acknowledge: () => void = () => undefined;
+  mocks.cancelAnalysis.mockReturnValueOnce(new Promise<void>((resolve) => (acknowledge = resolve)));
+  await renderPanel();
+  await act(async () => {
+    mocks.reportModalProps!.registerOperation("report-A");
+    store.getState().setReportInProgress(true);
+  });
+
+  const cancellation = Promise.resolve(mocks.progressButtonProps!.onCancel!());
+  await act(async () => {
+    store.getState().setReportOperationId("report-B");
+    acknowledge();
+    await cancellation;
+  });
+  expect(store.getState().report.operationId).toBe("report-B");
+  expect(store.getState().report.inProgress).toBe(true);
 });
 
 test("isCurrentOperation reads the live store, not a render snapshot", async () => {
@@ -283,6 +359,12 @@ test("isCurrentOperation reads the live store, not a render snapshot", async () 
   expect(isCurrent("report_tab-1_uuid", fingerprint)).toBe(true);
   expect(isCurrent("report_other", fingerprint)).toBe(false);
   expect(isCurrent("report_tab-1_uuid", "different-fingerprint")).toBe(false);
+
+  await act(async () => root.unmount());
+  root = createRoot(host);
+  await renderPanel();
+  store.getState().setFen("8/8/8/8/8/8/8/K6k w - - 0 1");
+  expect(isCurrent("report_tab-1_uuid", fingerprint)).toBe(false);
 });
 
 test("a finished progress item clears inProgress while leaving the operation id", async () => {
@@ -312,7 +394,7 @@ test("inProgress with no operationId is treated as not running", async () => {
   expect(mocks.getProgress).not.toHaveBeenCalled();
 });
 
-test("a finished progress lookup clears inProgress and the operation id", async () => {
+test("a finished progress lookup keeps report identity until result publication", async () => {
   mocks.getProgress.mockResolvedValue(finishedItem("op-1"));
   store.getState().setReportOperationId("op-1");
   store.getState().setReportInProgress(true);
@@ -323,7 +405,7 @@ test("a finished progress lookup clears inProgress and the operation id", async 
   });
 
   expect(store.getState().report.inProgress).toBe(false);
-  expect(store.getState().report.operationId).toBeNull();
+  expect(store.getState().report.operationId).toBe("op-1");
 });
 
 test("an absent progress lookup leaves a running report intact", async () => {
@@ -406,4 +488,87 @@ test("ReportModal does not take a progress lease when starting analysis", async 
   expect(mocks.analyzeGame).toHaveBeenCalled();
   expect(mocks.startProgress).not.toHaveBeenCalled();
   expect(store.getState().report.operationId).toBe("report_tab-1_operation-uuid");
+});
+
+test("report completion waits for a pending close that rejects, then settles the live store", async () => {
+  const completion = deferred<typeof completedAnalysis>();
+  mocks.reportingMode = true;
+  mocks.analyzeGame.mockReturnValueOnce(completion.promise);
+  store = createTreeStore("tab-1");
+  await renderPanel();
+  await act(async () => {
+    host.querySelector<HTMLButtonElement>("button[type='submit']")!.click();
+    await Promise.resolve();
+  });
+  const close = invalidateReportOwner("tab-1");
+
+  await act(async () => {
+    completion.resolve(completedAnalysis);
+    await Promise.resolve();
+  });
+  expect(store.getState().root.score).toBeNull();
+  expect(store.getState().report.inProgress).toBe(true);
+
+  await act(async () => {
+    restoreReportOwner("tab-1", close);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(store.getState().root.score).toEqual(completedAnalysis[0].best[0].score);
+  expect(store.getState().report.inProgress).toBe(false);
+});
+
+test("report completion waits for a pending close that succeeds, then discards the result", async () => {
+  const completion = deferred<typeof completedAnalysis>();
+  mocks.reportingMode = true;
+  mocks.analyzeGame.mockReturnValueOnce(completion.promise);
+  store = createTreeStore("tab-1");
+  await renderPanel();
+  await act(async () => {
+    host.querySelector<HTMLButtonElement>("button[type='submit']")!.click();
+    await Promise.resolve();
+  });
+  invalidateReportOwner("tab-1");
+
+  await act(async () => {
+    completion.resolve(completedAnalysis);
+    await Promise.resolve();
+  });
+  expect(store.getState().root.score).toBeNull();
+
+  await act(async () => {
+    closeTreeStore("tab-1");
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(store.getState().root.score).toBeNull();
+  expect(createTreeStore("tab-1")).not.toBe(store);
+});
+
+test("close between rollback decision and report continuation cannot republish the result", async () => {
+  const completion = deferred<typeof completedAnalysis>();
+  mocks.reportingMode = true;
+  mocks.analyzeGame.mockReturnValueOnce(completion.promise);
+  store = createTreeStore("tab-1");
+  await renderPanel();
+  await act(async () => {
+    host.querySelector<HTMLButtonElement>("button[type='submit']")!.click();
+    await Promise.resolve();
+  });
+  const close = invalidateReportOwner("tab-1");
+  await act(async () => {
+    completion.resolve(completedAnalysis);
+    await Promise.resolve();
+  });
+
+  await act(async () => {
+    restoreReportOwner("tab-1", close);
+    queueMicrotask(() => closeTreeStore("tab-1"));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(store.getState().root.score).toBeNull();
+  expect(createTreeStore("tab-1")).not.toBe(store);
 });

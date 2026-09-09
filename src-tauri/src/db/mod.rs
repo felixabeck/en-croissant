@@ -9,6 +9,7 @@ mod repository;
 pub(crate) use repository::cancel_snapshot_copy_after_chunks;
 mod schema;
 mod search;
+pub(crate) use search::is_position_in_db_cancellable;
 mod search_index;
 pub(crate) mod sqlite_cancellation;
 
@@ -89,7 +90,7 @@ pub use self::models::Puzzle;
 pub use self::schema::puzzle_themes;
 pub use self::schema::puzzles;
 pub use self::schema::themes;
-pub use self::search::{is_position_in_db, search_position, PositionQueryJs, PositionStats};
+pub use self::search::{search_position, PositionQueryJs, PositionStats};
 
 const INDEXES_SQL: &str = include_str!("indexes.sql");
 
@@ -545,25 +546,30 @@ pub async fn convert_pgn(
     description: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("convert_pgn")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
-    BLOCKING_GATEWAY
-        .spawn(move || {
-            convert_pgn_blocking(
-                &authority,
-                &repository,
-                &search_cache,
-                files,
-                database,
-                timestamp,
-                app,
-                title,
-                description,
-                progress_id,
-            )
-        })
-        .await
+    crate::infra::operations::run_native_operation(operation, "convert_pgn", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                convert_pgn_blocking(
+                    &authority,
+                    &repository,
+                    &search_cache,
+                    files,
+                    database,
+                    timestamp,
+                    app,
+                    title,
+                    description,
+                    progress_id,
+                )
+            })
+            .await
+    })
+    .await
 }
 
 // Individual Arc handles the closure must own: BlockingGateway::spawn is
@@ -928,9 +934,10 @@ pub async fn get_db_info(
 ) -> Result<DatabaseInfo, Error> {
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
-    BLOCKING_GATEWAY
-        .spawn(move || get_db_info_blocking(&authority, &repository, file))
-        .await
+    crate::infra::operations::run_accepted_blocking(&state.operations, "get_db_info", move || {
+        get_db_info_blocking(&authority, &repository, file)
+    })
+    .await
 }
 
 fn get_db_info_blocking(
@@ -993,11 +1000,18 @@ pub async fn create_indexes(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("create_indexes")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
-    BLOCKING_GATEWAY
-        .spawn(move || create_indexes_blocking(&authority, &repository, file))
-        .await
+    crate::infra::operations::run_native_operation(operation, "create_indexes", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                create_indexes_blocking(&authority, &repository, file)
+            })
+            .await
+    })
+    .await
 }
 
 fn create_indexes_blocking(
@@ -1020,11 +1034,18 @@ pub async fn delete_indexes(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("delete_indexes")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
-    BLOCKING_GATEWAY
-        .spawn(move || delete_indexes_blocking(&authority, &repository, file))
-        .await
+    crate::infra::operations::run_native_operation(operation, "delete_indexes", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                delete_indexes_blocking(&authority, &repository, file)
+            })
+            .await
+    })
+    .await
 }
 
 fn delete_indexes_blocking(
@@ -1048,21 +1069,26 @@ pub async fn edit_db_info(
     description: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("edit_db_info")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
-    BLOCKING_GATEWAY
-        .spawn(move || {
-            edit_db_info_blocking(
-                &authority,
-                &repository,
-                &search_cache,
-                file,
-                title,
-                description,
-            )
-        })
-        .await
+    crate::infra::operations::run_native_operation(operation, "edit_db_info", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                edit_db_info_blocking(
+                    &authority,
+                    &repository,
+                    &search_cache,
+                    file,
+                    title,
+                    description,
+                )
+            })
+            .await
+    })
+    .await
 }
 
 fn edit_db_info_blocking(
@@ -1474,9 +1500,12 @@ pub async fn get_latest_game_timestamp(
 ) -> Result<Option<f64>, Error> {
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
-    BLOCKING_GATEWAY
-        .spawn(move || get_latest_game_timestamp_blocking(&authority, &repository, file))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "get_latest_game_timestamp",
+        move || get_latest_game_timestamp_blocking(&authority, &repository, file),
+    )
+    .await
 }
 
 fn get_latest_game_timestamp_blocking(
@@ -1574,9 +1603,10 @@ pub async fn get_player(
 ) -> Result<Option<Player>, Error> {
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
-    BLOCKING_GATEWAY
-        .spawn(move || get_player_blocking(&authority, &repository, file, id))
-        .await
+    crate::infra::operations::run_accepted_blocking(&state.operations, "get_player", move || {
+        get_player_blocking(&authority, &repository, file, id)
+    })
+    .await
 }
 
 fn get_player_blocking(
@@ -2064,12 +2094,19 @@ pub async fn delete_database(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("delete_database")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
-    BLOCKING_GATEWAY
-        .spawn(move || delete_database_blocking(&authority, &repository, &search_cache, file))
-        .await
+    crate::infra::operations::run_native_operation(operation, "delete_database", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                delete_database_blocking(&authority, &repository, &search_cache, file)
+            })
+            .await
+    })
+    .await
 }
 
 fn delete_database_blocking(
@@ -2240,14 +2277,23 @@ pub async fn delete_duplicated_games(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("delete_duplicated_games")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
-    BLOCKING_GATEWAY
-        .spawn(move || {
-            delete_duplicated_games_blocking(&authority, &repository, &search_cache, file)
-        })
-        .await
+    crate::infra::operations::run_native_operation(
+        operation,
+        "delete_duplicated_games",
+        async move {
+            BLOCKING_GATEWAY
+                .spawn_cancellable(cancellation, move |_| {
+                    delete_duplicated_games_blocking(&authority, &repository, &search_cache, file)
+                })
+                .await
+        },
+    )
+    .await
 }
 
 fn delete_duplicated_games_blocking(
@@ -2295,12 +2341,19 @@ pub async fn delete_empty_games(
     file: DatabaseHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("delete_empty_games")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
-    BLOCKING_GATEWAY
-        .spawn(move || delete_empty_games_blocking(&authority, &repository, &search_cache, file))
-        .await
+    crate::infra::operations::run_native_operation(operation, "delete_empty_games", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                delete_empty_games_blocking(&authority, &repository, &search_cache, file)
+            })
+            .await
+    })
+    .await
 }
 
 fn delete_empty_games_blocking(
@@ -2434,11 +2487,18 @@ pub async fn export_to_pgn(
     destination: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("export_to_pgn")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
-    BLOCKING_GATEWAY
-        .spawn(move || export_to_pgn_blocking(&authority, &repository, file, destination))
-        .await
+    crate::infra::operations::run_native_operation(operation, "export_to_pgn", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                export_to_pgn_blocking(&authority, &repository, file, destination)
+            })
+            .await
+    })
+    .await
 }
 
 fn export_to_pgn_blocking(
@@ -2553,14 +2613,19 @@ pub async fn delete_db_game(
     game_id: i32,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("delete_db_game")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
-    BLOCKING_GATEWAY
-        .spawn(move || {
-            delete_db_game_blocking(&authority, &repository, &search_cache, file, game_id)
-        })
-        .await
+    crate::infra::operations::run_native_operation(operation, "delete_db_game", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                delete_db_game_blocking(&authority, &repository, &search_cache, file, game_id)
+            })
+            .await
+    })
+    .await
 }
 
 fn delete_db_game_blocking(
@@ -2598,14 +2663,19 @@ pub async fn write_db_game(
     pgn: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("write_db_game")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
-    BLOCKING_GATEWAY
-        .spawn(move || {
-            write_db_game_blocking(&authority, &repository, &search_cache, file, game_id, pgn)
-        })
-        .await
+    crate::infra::operations::run_native_operation(operation, "write_db_game", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                write_db_game_blocking(&authority, &repository, &search_cache, file, game_id, pgn)
+            })
+            .await
+    })
+    .await
 }
 
 fn write_db_game_blocking(
@@ -2717,21 +2787,26 @@ pub async fn merge_players(
     player2: i32,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("merge_players")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
-    BLOCKING_GATEWAY
-        .spawn(move || {
-            merge_players_blocking(
-                &authority,
-                &repository,
-                &search_cache,
-                file,
-                player1,
-                player2,
-            )
-        })
-        .await
+    crate::infra::operations::run_native_operation(operation, "merge_players", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                merge_players_blocking(
+                    &authority,
+                    &repository,
+                    &search_cache,
+                    file,
+                    player1,
+                    player2,
+                )
+            })
+            .await
+    })
+    .await
 }
 
 fn merge_players_blocking(
@@ -3973,6 +4048,164 @@ mod tests {
         let app = tauri::test::mock_app();
         app.manage(state);
         (dir, app.handle().clone(), handle, database)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn production_database_core_invalidates_cache_after_command_caller_drop() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let index = get_index_path(&database);
+        std::fs::write(&index, b"cache identity").unwrap();
+        let identity = crate::SearchIndexIdentity::for_database(
+            &database,
+            crate::db::search_index::IndexSource::from_database(&database, 0).unwrap(),
+        )
+        .unwrap();
+        let cache_key = crate::SearchResultKey::new(GameQuery::new(), identity);
+        app.state::<AppState>()
+            .search_cache
+            .insert_result(cache_key.clone(), (vec![], vec![]));
+        assert!(app
+            .state::<AppState>()
+            .search_cache
+            .get_result(&cache_key)
+            .is_some());
+        let repository = Arc::clone(&app.state::<AppState>().database_repository);
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            repository
+                .with_write_lock(&database, || {
+                    entered_tx.send(()).unwrap();
+                    let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+                    Ok(())
+                })
+                .unwrap();
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+
+        let command_app = app.clone();
+        let command_handle = handle.clone();
+        let caller = tokio::spawn(async move {
+            let state = command_app.state::<AppState>();
+            edit_db_info(
+                command_handle,
+                Some("after caller drop".into()),
+                Some("tail completed".into()),
+                state,
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while app
+                .state::<AppState>()
+                .operations
+                .outstanding_labels()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !app
+                .state::<AppState>()
+                .operations
+                .outstanding_labels()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let state = app.state::<AppState>();
+        let info = get_db_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            handle,
+        )
+        .unwrap();
+        assert_eq!(info.title, "after caller drop");
+        assert_eq!(info.description, "tail completed");
+        assert!(state.search_cache.get_result(&cache_key).is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn production_database_delete_error_tail_survives_command_caller_drop() {
+        let (dir, app, handle, database) = blocking_database_case();
+        let index = get_index_path(&database);
+        std::fs::write(&index, b"cache identity").unwrap();
+        let identity = crate::SearchIndexIdentity::for_database(
+            &database,
+            crate::db::search_index::IndexSource::from_database(&database, 0).unwrap(),
+        )
+        .unwrap();
+        let cache_key = crate::SearchResultKey::new(GameQuery::new(), identity);
+        app.state::<AppState>()
+            .search_cache
+            .insert_result(cache_key.clone(), (vec![], vec![]));
+
+        let held_connection = app
+            .state::<AppState>()
+            .database_repository
+            .connection(&database)
+            .unwrap();
+        let command_app = app.clone();
+        let caller = tokio::spawn(async move {
+            let state = command_app.state::<AppState>();
+            delete_database(handle, state).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !app
+                .state::<AppState>()
+                .database_repository
+                .deletion_is_waiting(&database)
+                .unwrap()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        caller.abort();
+        let registry = dir.path().join("registry.json");
+        std::fs::remove_file(&registry).unwrap();
+        std::fs::create_dir(&registry).unwrap();
+        drop(held_connection);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !app
+                .state::<AppState>()
+                .operations
+                .outstanding_labels()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(!database.exists(), "the primary database unlink completed");
+        assert!(
+            registry.is_dir(),
+            "the registry replacement failure remained in place"
+        );
+        assert!(app
+            .state::<AppState>()
+            .search_cache
+            .get_result(&cache_key)
+            .is_none());
     }
 
     fn insert_named_game(

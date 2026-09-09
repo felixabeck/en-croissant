@@ -95,6 +95,72 @@ export interface TreeStoreState extends TreeState {
 
 export type TreeStore = StoreApi<TreeStoreState> & { dispose: () => void };
 
+const reportOwners = new Map<string, object>();
+const treeStores = new Map<string, TreeStore>();
+const closingReportOwners = new Map<string, ReportOwnerInvalidation>();
+
+export type ReportOwnerInvalidation = {
+    previous: object | undefined;
+    invalidated: object;
+    decision: Promise<boolean>;
+    decide: (restored: boolean) => void;
+};
+
+export function captureReportOwner(tab: string): object {
+    const existing = reportOwners.get(tab);
+    if (existing) return existing;
+    const owner = {};
+    reportOwners.set(tab, owner);
+    return owner;
+}
+
+export function invalidateReportOwner(tab: string): ReportOwnerInvalidation {
+    let decide: (restored: boolean) => void = () => undefined;
+    const invalidation = {
+        previous: reportOwners.get(tab),
+        invalidated: {},
+        decision: new Promise<boolean>((resolve) => {
+            decide = resolve;
+        }),
+        decide: (restored: boolean) => decide(restored),
+    };
+    reportOwners.set(tab, invalidation.invalidated);
+    closingReportOwners.set(tab, invalidation);
+    return invalidation;
+}
+
+export function restoreReportOwner(tab: string, invalidation: ReportOwnerInvalidation): void {
+    if (
+        reportOwners.get(tab) !== invalidation.invalidated ||
+        closingReportOwners.get(tab) !== invalidation
+    )
+        return;
+    if (invalidation.previous) reportOwners.set(tab, invalidation.previous);
+    else reportOwners.delete(tab);
+    closingReportOwners.delete(tab);
+    invalidation.decide(true);
+}
+
+export function isReportOwnerCurrent(tab: string, owner: object): boolean {
+    return reportOwners.get(tab) === owner;
+}
+
+export async function waitForReportOwner(tab: string, owner: object): Promise<boolean> {
+    if (isReportOwnerCurrent(tab, owner)) return true;
+    const closing = closingReportOwners.get(tab);
+    if (!closing || closing.previous !== owner) return false;
+    const restored = await closing.decision;
+    return restored && isReportOwnerCurrent(tab, owner);
+}
+
+export function closeTreeStore(tab: string): void {
+    const closing = closingReportOwners.get(tab);
+    closingReportOwners.delete(tab);
+    treeStores.delete(tab);
+    reportOwners.delete(tab);
+    closing?.decide(false);
+}
+
 // Defined as an outer function to avoid bloating git diff.
 const withTranspositionMaps =
     (config: StateCreator<TreeStoreState>): StateCreator<TreeStoreState> =>
@@ -116,6 +182,10 @@ const withTranspositionMaps =
     };
 
 export const createTreeStore = (id?: string, initTree?: TreeState) => {
+    if (id) {
+        const existing = treeStores.get(id);
+        if (existing) return existing;
+    }
     const initialTree = initTree ?? defaultTree();
     const stateCreator: StateCreator<TreeStoreState> = (set, get) => ({
         ...initialTree,
@@ -583,15 +653,16 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                 },
             }),
         );
-        return Object.assign(store, {
-            // Zustand vanilla stores have no destroy lifecycle; subscriptions belong to consumers.
+        const ownedStore = Object.assign(store, {
+            // Provider unmount also calls dispose during ordinary tab switching.
             dispose: () => undefined,
         });
+        treeStores.set(id, ownedStore);
+        return ownedStore;
     }
 
     const store = createStore<TreeStoreState>()(withTranspositionMaps(stateCreator));
     return Object.assign(store, {
-        // Zustand vanilla stores have no destroy lifecycle; subscriptions belong to consumers.
         dispose: () => undefined,
     });
 };

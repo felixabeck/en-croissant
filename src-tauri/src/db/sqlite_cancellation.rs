@@ -211,6 +211,11 @@ mod tests {
         let repository = crate::db::DatabaseRepository::default();
         let mut connection = if mode == "pool" {
             repository.initialization_connection(&path).unwrap()
+        } else if mode == "identity-first-pool" {
+            let seed = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
+            drop(seed);
+            repository.database_identity(&path).unwrap();
+            repository.initialization_connection(&path).unwrap()
         } else {
             let seed = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
             drop(seed);
@@ -274,6 +279,14 @@ mod tests {
         isolated_factory_test(
             "db::sqlite_cancellation::tests::pinned_repository_factory_installs_callback_in_isolated_process",
             "pinned",
+        );
+    }
+
+    #[test]
+    fn identity_first_pool_factory_installs_callback_in_isolated_process() {
+        isolated_factory_test(
+            "db::sqlite_cancellation::tests::identity_first_pool_factory_installs_callback_in_isolated_process",
+            "identity-first-pool",
         );
     }
 

@@ -253,6 +253,34 @@ describe("useProgress", () => {
     expect(container.querySelector("output")?.dataset.generation).toBe("1");
   });
 
+  test("an old clear acknowledgement cannot clear a replacement id", async () => {
+    let resolveClear: (value: { status: "ok"; data: bigint }) => void = () => undefined;
+    mocks.clearProgress.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveClear = resolve;
+      }),
+    );
+    mocks.getProgress.mockImplementation(async (id: string) =>
+      id === "second"
+        ? {
+            id,
+            generation: BigInt(1),
+            progress: 35,
+            finished: false,
+            state: "running",
+          }
+        : null,
+    );
+    await act(async () => root.render(<Probe id="first" />));
+    await act(async () => container.querySelector("button")?.click());
+    await act(async () => root.render(<Probe id="second" />));
+    expect(container.querySelector("output")?.textContent).toBe("35:false");
+
+    await act(async () => resolveClear({ status: "ok", data: BigInt(9) }));
+    expect(container.querySelector("output")?.textContent).toBe("35:false");
+    expect(container.querySelector("output")?.dataset.generation).toBe("1");
+  });
+
   test("surfaces a rejected initial progress lookup", async () => {
     const failure = new Error("progress lookup failed");
     mocks.getProgress.mockRejectedValue(failure);

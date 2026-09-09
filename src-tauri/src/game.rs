@@ -2203,14 +2203,6 @@ fn choose_weighted_target(weights: &[u16], mut target: u64) -> usize {
     weights.len().saturating_sub(1)
 }
 
-struct CancelOpeningBookOnDrop(CancellationToken);
-
-impl Drop for CancelOpeningBookOnDrop {
-    fn drop(&mut self) {
-        self.0.cancel();
-    }
-}
-
 async fn apply_opening_book(
     config: GameConfig,
     authority: &std::sync::Mutex<Option<PathAuthority>>,
@@ -2232,7 +2224,6 @@ async fn apply_opening_book(
     let max_ply = opening_book.max_ply.max(1);
 
     let cancellation = CancellationToken::new();
-    let _cancel_on_drop = CancelOpeningBookOnDrop(cancellation.clone());
     BLOCKING_GATEWAY
         .spawn_cancellable(cancellation, move |cancellation| {
             apply_opening_book_descriptor(config, snapshot, max_ply, cancellation)

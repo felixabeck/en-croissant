@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
     getGameEngineLogs: vi.fn(),
     prepareNativeRead: vi.fn(),
     cancelNativeRead: vi.fn(),
+    prepareAnalysis: vi.fn(),
+    cancelAnalysis: vi.fn(),
     getGames: vi.fn(),
     countPgnGames: vi.fn(),
     readGames: vi.fn(),
@@ -34,6 +36,8 @@ vi.mock("@/bindings/generated", () => ({
         getGameEngineLogs: mocks.getGameEngineLogs,
         prepareNativeRead: mocks.prepareNativeRead,
         cancelNativeRead: mocks.cancelNativeRead,
+        prepareAnalysis: mocks.prepareAnalysis,
+        cancelAnalysis: mocks.cancelAnalysis,
         getGames: mocks.getGames,
         countPgnGames: mocks.countPgnGames,
         readGames: mocks.readGames,
@@ -76,6 +80,8 @@ describe("tauri command facade", () => {
     beforeEach(() => {
         mocks.prepareNativeRead.mockReset();
         mocks.cancelNativeRead.mockReset();
+        mocks.prepareAnalysis.mockReset();
+        mocks.cancelAnalysis.mockReset();
         mocks.getGames.mockReset();
         mocks.countPgnGames.mockReset();
         mocks.readGames.mockReset();
@@ -161,6 +167,34 @@ describe("tauri command facade", () => {
         await expect(result).rejects.toMatchObject({ details: { category: "cancelled" } });
         expect(mocks.cancelNativeRead).toHaveBeenCalledWith("late-ticket");
         expect(mocks.getGames).not.toHaveBeenCalled();
+    });
+
+    test("analysis preparation retains abort until the eventual reservation exists", async () => {
+        const controller = new AbortController();
+        let finishPreparation!: (value: unknown) => void;
+        mocks.prepareAnalysis.mockReturnValue(
+            new Promise((resolve) => {
+                finishPreparation = resolve;
+            }),
+        );
+        mocks.cancelAnalysis.mockResolvedValue({ status: "ok", data: null });
+
+        const result = tauri.prepareAnalysis("tab", { signal: controller.signal });
+        controller.abort();
+        finishPreparation({ status: "ok", data: "analysis-ticket" });
+
+        await expect(result).rejects.toMatchObject({ details: { category: "cancelled" } });
+        expect(mocks.cancelAnalysis).toHaveBeenCalledOnce();
+        expect(mocks.cancelAnalysis).toHaveBeenCalledWith("analysis-ticket");
+    });
+
+    test("analysis abort before preparation skips the native command", async () => {
+        const controller = new AbortController();
+        controller.abort();
+        await expect(
+            tauri.prepareAnalysis("tab", { signal: controller.signal }),
+        ).rejects.toMatchObject({ details: { category: "cancelled" } });
+        expect(mocks.prepareAnalysis).not.toHaveBeenCalled();
     });
 
     test("failed preparation removes its abort listener without issuing cleanup", async () => {

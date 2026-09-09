@@ -15,6 +15,7 @@ const progress = vi.hoisted(() => ({
     state: "failed" as "failed" | "succeeded" | "cancelled" | "running",
   },
 }));
+const notifyListenerError = vi.hoisted(() => vi.fn());
 
 vi.mock("@/hooks/useProgress", () => ({
   useProgress: () => progress,
@@ -22,7 +23,14 @@ vi.mock("@/hooks/useProgress", () => ({
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
-vi.mock("./IconAction", () => ({ default: () => null }));
+vi.mock("@/components/files/notifyError", () => ({ notifyListenerError }));
+vi.mock("./IconAction", () => ({
+  default: ({ onClick }: { onClick: () => void }) => (
+    <button type="button" data-testid="cancel" onClick={onClick}>
+      cancel
+    </button>
+  ),
+}));
 import ProgressButton from "./ProgressButton";
 
 vi.mock("@mantine/core", () => ({
@@ -54,6 +62,8 @@ beforeEach(() => {
     finished: true,
     state: "failed",
   };
+  progress.clear.mockReset().mockResolvedValue(undefined);
+  notifyListenerError.mockReset();
 });
 
 afterEach(async () => {
@@ -178,4 +188,53 @@ test("a succeeded download marks the action completed", async () => {
   const button = host.querySelector("button");
   expect(button?.textContent).toContain("Installed");
   expect(button?.disabled).toBe(true);
+});
+
+test("a late clear acknowledgement cannot stop a replacement operation", async () => {
+  progress.finished = false;
+  progress.item = { ...progress.item, finished: false, state: "running" };
+  let resolveClear: () => void = () => undefined;
+  progress.clear.mockReturnValueOnce(new Promise<void>((resolve) => (resolveClear = resolve)));
+  const setInProgress = vi.fn();
+  const render = (id: string) =>
+    root.render(
+      <ProgressButton
+        id={id}
+        initInstalled={false}
+        onClick={() => undefined}
+        onCancel={vi.fn()}
+        labels={{ completed: "Done", action: "Run", inProgress: "Running" }}
+        inProgress
+        setInProgress={setInProgress}
+      />,
+    );
+  await act(async () => render("old"));
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='cancel']")!.click());
+  await act(async () => render("replacement"));
+  await act(async () => resolveClear());
+  expect(setInProgress).not.toHaveBeenCalledWith(false);
+});
+
+test("reports clear rejection while keeping the running UI", async () => {
+  progress.finished = false;
+  progress.item = { ...progress.item, finished: false, state: "running" };
+  const failure = new Error("clear failed");
+  progress.clear.mockRejectedValueOnce(failure);
+  const setInProgress = vi.fn();
+  await act(async () => {
+    root.render(
+      <ProgressButton
+        id="job"
+        initInstalled={false}
+        onClick={() => undefined}
+        onCancel={vi.fn()}
+        labels={{ completed: "Done", action: "Run", inProgress: "Running" }}
+        inProgress
+        setInProgress={setInProgress}
+      />,
+    );
+  });
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='cancel']")!.click());
+  expect(notifyListenerError).toHaveBeenCalledWith(failure);
+  expect(setInProgress).not.toHaveBeenCalledWith(false);
 });

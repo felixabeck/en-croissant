@@ -95,7 +95,7 @@ async function invokeAndWait(session, label, globalName, invokeExpression, succe
       window[${JSON.stringify(globalName)}] = null;
       (${invokeExpression}).then(
         value => { window[${JSON.stringify(globalName)}] = { [${JSON.stringify(successKey)}]: String(value) }; },
-        error => { window[${JSON.stringify(globalName)}] = { rejected: String(error) }; },
+        error => { window[${JSON.stringify(globalName)}] = { rejected: typeof error === "object" ? JSON.stringify(error) : String(error) }; },
       );
       return true;
     `)
@@ -435,6 +435,51 @@ try {
       : undefined,
   );
 
+  const cancelledRead = await invokeAndWait(
+    session,
+    "native read reservation to settle",
+    "__verifyAppPreparedRead",
+    `window.__TAURI_INTERNALS__.invoke("prepare_native_read", {})`,
+  );
+  check(
+    typeof cancelledRead.value === "string",
+    "the native backend mints an opaque read reservation",
+    cancelledRead.rejected ?? cancelledRead.error,
+  );
+  const cancelledTicket = cancelledRead.value;
+  const cancelRead = await invokeAndWait(
+    session,
+    "native read cancellation to settle",
+    "__verifyAppCancelledRead",
+    `window.__TAURI_INTERNALS__.invoke("cancel_native_read", { ticket: ${JSON.stringify(cancelledTicket)} })`,
+  );
+  check(cancelRead.value === "null", "the native backend acknowledges reservation cancellation");
+  const refusedStart = await invokeAndWait(
+    session,
+    "cancelled native read start to settle",
+    "__verifyAppRefusedRead",
+    `window.__TAURI_INTERNALS__.invoke("lex_pgn", { pgn: "1. e4 *", ticket: ${JSON.stringify(cancelledTicket)} })`,
+  );
+  check(
+    typeof refusedStart.rejected === "string" &&
+      /native read reservation is unknown or expired/.test(refusedStart.rejected),
+    "a cancelled reservation cannot be claimed by a later native read",
+    refusedStart.value ?? refusedStart.error,
+  );
+
+  const retainedRead = await invokeAndWait(
+    session,
+    "retained native read reservation to settle",
+    "__verifyAppRetainedRead",
+    `window.__TAURI_INTERNALS__.invoke("prepare_native_read", {})`,
+  );
+  check(
+    typeof retainedRead.value === "string",
+    "a native read reservation is retained until titlebar close",
+    retainedRead.rejected ?? retainedRead.error,
+  );
+  const retainedTicket = retainedRead.value;
+
   if (screenshotPath) {
     await writeFile(screenshotPath, Buffer.from(await session.screenshot(), "base64"));
     console.log(`  ..  page screenshot written to ${screenshotPath}`);
@@ -456,6 +501,10 @@ try {
   );
 
   const log = await readLog();
+  check(
+    log.includes(`destroyed webview main cancelled native reads: ${retainedTicket}`),
+    "the real destroyed-window event cancels the exact retained main-webview reservation",
+  );
   check(
     log.includes("Shutdown requested: terminating engines and live games"),
     "the shutdown sequence started",

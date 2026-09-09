@@ -1,7 +1,8 @@
 import { Box, Button, Group, Progress } from "@mantine/core";
 import { IconX } from "@tabler/icons-react";
-import { memo, useCallback, useEffect } from "react";
+import { memo, useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { notifyListenerError } from "@/components/files/notifyError";
 import { useProgress } from "@/hooks/useProgress";
 import IconAction from "./IconAction";
 import classes from "./ProgressButton.module.css";
@@ -10,7 +11,7 @@ type Props = {
   id: string;
   initInstalled: boolean;
   onClick: (id: string) => void;
-  onCancel?: () => void;
+  onCancel?: () => void | Promise<void>;
   leftIcon?: React.ReactNode;
   labels: {
     completed: string;
@@ -41,6 +42,8 @@ function ProgressButton({
 }: Props) {
   const { t } = useTranslation();
   const { progress, finished, isActive, clear, item } = useProgress(id);
+  const currentId = useRef(id);
+  currentId.current = id;
   const completed = initInstalled || (completeOnProgressSuccess && item?.state === "succeeded");
 
   const showProgress = isActive || inProgress;
@@ -52,16 +55,23 @@ function ProgressButton({
   }, [completeOnProgressSuccess, finished, setInProgress]);
 
   const handleCancel = useCallback(async () => {
-    if (onCancel) {
-      onCancel();
-    }
+    const cancellingId = id;
     try {
-      await clear();
-      setInProgress(false);
+      if (onCancel) {
+        await onCancel();
+      }
     } catch {
       // Keep the running UI if native cancellation could not be acknowledged.
+      return;
     }
-  }, [onCancel, clear, setInProgress]);
+    if (currentId.current !== cancellingId) return;
+    try {
+      await clear();
+      if (currentId.current === cancellingId) setInProgress(false);
+    } catch (error) {
+      notifyListenerError(error);
+    }
+  }, [id, onCancel, clear, setInProgress]);
 
   let label: string;
   if (completed) {

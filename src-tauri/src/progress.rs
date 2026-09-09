@@ -73,9 +73,9 @@ struct ProgressStoreState {
 /// Every update is authenticated by a generation-bound lease. A caller can
 /// report only a job it explicitly started; no stale or arbitrary ID can
 /// recreate an entry after completion, restart, eviction, or clear.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ProgressStore {
-    state: Mutex<ProgressStoreState>,
+    state: std::sync::Arc<Mutex<ProgressStoreState>>,
 }
 
 impl ProgressStore {

@@ -126,6 +126,8 @@ type TauriCommands = Omit<GeneratedCommands, "startGame" | NativeReadCommandName
     ) => ReturnType<GeneratedCommands["startGame"]>;
 } & {
     [Name in NativeReadCommandName]: NativeReadFacade<GeneratedCommands[Name]>;
+} & {
+    prepareAnalysis: (tab: string, options?: NativeReadOptions) => Promise<string>;
 };
 
 const NATIVE_READ_ARITY: Readonly<Record<NativeReadCommandName, number>> = {
@@ -274,6 +276,42 @@ async function invokeNativeRead(
     }
 }
 
+async function prepareAnalysis(
+    tab: string,
+    options: NativeReadOptions | undefined,
+): Promise<string> {
+    const signal = options?.signal;
+    if (signal?.aborted) throw cancellationError();
+
+    let ticket: string | undefined;
+    let aborted = false;
+    let cleanupStarted = false;
+    const cleanup = async () => {
+        if (!ticket || cleanupStarted) return;
+        cleanupStarted = true;
+        try {
+            unwrapCommand(await commands.cancelAnalysis(ticket));
+        } catch (error) {
+            await logCleanupFailure("prepareAnalysis", ticket, error);
+        }
+    };
+    const onAbort = () => {
+        aborted = true;
+        void cleanup();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+        ticket = unwrapCommand(await commands.prepareAnalysis(tab));
+        if (aborted || signal?.aborted) {
+            await cleanup();
+            throw cancellationError();
+        }
+        return ticket;
+    } finally {
+        signal?.removeEventListener("abort", onAbort);
+    }
+}
+
 /**
  * The only renderer boundary that imports generated Tauri commands and events.
  * Commands always either resolve with their successful payload or reject with a
@@ -285,6 +323,12 @@ export const tauri: TauriCommands = new Proxy(commands, {
         if (typeof command !== "function") return command;
         return async (...args: unknown[]) => {
             try {
+                if (property === "prepareAnalysis") {
+                    return await prepareAnalysis(
+                        args[0] as string,
+                        args[1] as NativeReadOptions | undefined,
+                    );
+                }
                 if (property in NATIVE_READ_ARITY) {
                     const name = property as NativeReadCommandName;
                     const arity = NATIVE_READ_ARITY[name];

@@ -26,7 +26,7 @@ use vampirc_uci::{
 };
 
 use crate::{
-    db::{is_position_in_db, DatabaseRepository, GameQuery, PositionQueryJs},
+    db::{DatabaseRepository, GameQuery, PositionQueryJs},
     engine::{
         parse_fen_and_apply_moves, resolve_engine_options, spawn_registered, AdmissionLease,
         EngineActor, EngineDeadlines, EngineKey, EngineLog, EngineOption, EngineRequestId, GoMode,
@@ -43,6 +43,7 @@ use crate::{
     AppState, SearchCache,
 };
 use tokio::sync::OwnedSemaphorePermit;
+use tokio_util::sync::CancellationToken;
 
 pub struct EngineProcess {
     base: Arc<EngineActor>,
@@ -396,8 +397,38 @@ pub struct EngineOptions {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn kill_engines(tab: String, state: tauri::State<'_, AppState>) -> Result<(), Error> {
-    state.engine_supervisor.terminate_tab(&tab).await
+pub async fn kill_engines(
+    tab: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    let analyses = state
+        .operations
+        .cancel_analyses_for_tab(window.label(), &tab)?;
+    let mut failures = Vec::new();
+    for id in analyses {
+        let key = EngineKey::new("analysis".into(), id)?;
+        if let Some(process) = state.engine_supervisor.get_exact(&key) {
+            state
+                .engine_supervisor
+                .cancel_exact(&key, process.generation);
+            if let Err(error) = state
+                .engine_supervisor
+                .terminate_exact(&key, process.generation)
+                .await
+            {
+                failures.push(error.to_string());
+            }
+        }
+    }
+    if let Err(error) = state.engine_supervisor.terminate_tab(&tab).await {
+        failures.push(error.to_string());
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Conflict(failures.join("; ")))
+    }
 }
 
 async fn retire_engine_with_supervisor(
@@ -721,7 +752,22 @@ fn prepare_report_options(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn cancel_analysis(id: String, state: tauri::State<'_, AppState>) -> Result<(), Error> {
+pub fn prepare_analysis(
+    tab: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, Error> {
+    state.operations.prepare_analysis(window.label(), &tab)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn cancel_analysis(
+    id: String,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    state.operations.cancel_analysis(&id, window.label())?;
     let key = EngineKey::new("analysis".into(), id)?;
     if let Some(process) = state.engine_supervisor.get_exact(&key) {
         state
@@ -738,6 +784,7 @@ pub async fn cancel_analysis(id: String, state: tauri::State<'_, AppState>) -> R
 #[allow(clippy::too_many_arguments)]
 pub async fn analyze_game(
     id: String,
+    tab: String,
     engine: EngineHandle,
     engine_id: String,
     go_mode: GoMode,
@@ -745,7 +792,47 @@ pub async fn analyze_game(
     uci_options: Vec<EngineOption>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
 ) -> Result<Vec<MoveAnalysis>, Error> {
+    let label = format!("analyze_game {id}");
+    let operation = state
+        .operations
+        .claim_analysis(&id, window.label(), &tab, &label)?;
+    let cancellation = operation.token();
+    let state = state.inner().clone();
+    crate::infra::operations::run_native_operation(
+        operation,
+        "analyze_game",
+        analyze_game_core(
+            id,
+            engine,
+            engine_id,
+            go_mode,
+            options,
+            uci_options,
+            state,
+            app,
+            cancellation,
+        ),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn analyze_game_core(
+    id: String,
+    engine: EngineHandle,
+    engine_id: String,
+    go_mode: GoMode,
+    options: AnalysisOptions,
+    uci_options: Vec<EngineOption>,
+    state: AppState,
+    app: tauri::AppHandle,
+    cancellation: CancellationToken,
+) -> Result<Vec<MoveAnalysis>, Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::AnalysisCancelled);
+    }
     let executable_ref = engine.id.clone();
     let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineExecute)?;
     let analysis_key = EngineKey::new("analysis".into(), id.clone())?;
@@ -840,12 +927,18 @@ pub async fn analyze_game(
                 .engine_supervisor
                 .terminate_exact(&analysis_key, supervised.generation)
                 .await;
+            let terminal_state = if matches!(error, Error::Cancellation | Error::AnalysisCancelled)
+            {
+                ProgressState::Cancelled
+            } else {
+                ProgressState::Failed
+            };
             let _ = update_progress_with_state(
                 &state.progress_state,
                 &app,
                 &progress_lease,
                 0.0,
-                ProgressState::Failed,
+                terminal_state,
             );
             return match cleanup {
                 Ok(()) => Err(error),
@@ -858,7 +951,7 @@ pub async fn analyze_game(
     }
 
     for (i, (_, moves, _)) in fens.iter().enumerate() {
-        if supervised.cancelled.load(Ordering::SeqCst) {
+        if supervised.cancelled.load(Ordering::SeqCst) || cancellation.is_cancelled() {
             let cleanup = state
                 .engine_supervisor
                 .terminate_exact(&analysis_key, supervised.generation)
@@ -1000,16 +1093,16 @@ pub async fn analyze_game(
         let authority = std::sync::Arc::clone(&state.pgn_path_authority);
         let repository = std::sync::Arc::clone(&state.database_repository);
         let search_cache = std::sync::Arc::clone(&state.search_cache);
-        let permit = match state.new_request.clone().acquire_owned().await {
+        let permit = match tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(Error::AnalysisCancelled),
+            permit = state.new_request.clone().acquire_owned() => permit.map_err(|_| Error::Conflict("position search permit unavailable".into())),
+        } {
             Ok(permit) => permit,
-            Err(_) => {
-                fail_analysis_progress!(Error::Conflict(
-                    "position search permit unavailable".into()
-                ))
-            }
+            Err(error) => fail_analysis_progress!(error),
         };
         match BLOCKING_GATEWAY
-            .spawn(move || {
+            .spawn_cancellable(cancellation.clone(), move |worker_cancellation| {
                 novelty_lookup_blocking(
                     &authority,
                     &repository,
@@ -1017,6 +1110,7 @@ pub async fn analyze_game(
                     permit,
                     reference,
                     queries,
+                    worker_cancellation,
                 )
             })
             .await
@@ -1054,18 +1148,29 @@ pub async fn analyze_game(
 /// position is PRESENT in the reference database"; the caller sets
 /// `analysis.novelty = !found`. A full-index scan per ply is the cost this
 /// offload exists to bound.
-fn novelty_lookup_blocking(
+pub(crate) fn novelty_lookup_blocking(
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
     search_cache: &std::sync::Arc<SearchCache>,
     permit: OwnedSemaphorePermit,
     file: DatabaseHandle,
     queries: Vec<GameQuery>,
+    cancellation: &CancellationToken,
 ) -> Result<Vec<bool>, Error> {
     let _permit = permit;
     let mut present = Vec::with_capacity(queries.len());
     for query in &queries {
-        let found = is_position_in_db(authority, repository, search_cache, &file, query)?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let found = crate::db::is_position_in_db_cancellable(
+            authority,
+            repository,
+            search_cache,
+            &file,
+            query,
+            cancellation,
+        )?;
         present.push(found);
         if !found {
             break;

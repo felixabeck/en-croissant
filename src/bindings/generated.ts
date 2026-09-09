@@ -29,6 +29,14 @@ async cancelNativeRead(ticket: string) : Promise<Result<null, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
+async prepareAnalysis(tab: string) : Promise<Result<string, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("prepare_analysis", { tab }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async reconcileStartupPathOwners(owners: StartupPathOwners) : Promise<Result<null, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("reconcile_startup_path_owners", { owners }) };
@@ -348,9 +356,9 @@ async prepareEngineSearch(id: string, engine: EngineHandle, tab: string) : Promi
     else return { status: "error", error: e  as any };
 }
 },
-async analyzeGame(id: string, engine: EngineHandle, engineId: string, goMode: GoMode, options: AnalysisOptions, uciOptions: EngineOption[]) : Promise<Result<MoveAnalysis[], ErrorPayload>> {
+async analyzeGame(id: string, tab: string, engine: EngineHandle, engineId: string, goMode: GoMode, options: AnalysisOptions, uciOptions: EngineOption[]) : Promise<Result<MoveAnalysis[], ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("analyze_game", { id, engine, engineId, goMode, options, uciOptions }) };
+    return { status: "ok", data: await TAURI_INVOKE("analyze_game", { id, tab, engine, engineId, goMode, options, uciOptions }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

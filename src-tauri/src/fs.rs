@@ -1,8 +1,7 @@
 use std::{
-    collections::HashMap,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -49,71 +48,42 @@ pub struct ArtifactIntegrity {
 /// Bounded lifecycle-owned cancellation registry. A lease removes itself on every ordinary
 /// return, error, cancellation, and deadline unwind; IDs therefore cannot accumulate forever.
 #[derive(Default)]
-pub struct DownloadRegistry {
-    active: Mutex<HashMap<String, CancellationToken>>,
-}
+pub struct DownloadRegistry;
 
 pub struct DownloadLease {
-    registry: Arc<DownloadRegistry>,
-    id: String,
-    token: CancellationToken,
+    operation: crate::infra::operations::OperationLease,
 }
 
 impl DownloadRegistry {
-    fn active(&self) -> Result<MutexGuard<'_, HashMap<String, CancellationToken>>, Error> {
-        self.active
-            .lock()
-            .map_err(|_| Error::Conflict("download registry was poisoned".into()))
-    }
-
-    pub fn begin(self: &Arc<Self>, id: &str) -> Result<DownloadLease, Error> {
-        let mut active = self.active()?;
-        if active.contains_key(id) {
-            return Err(Error::Conflict(
-                "download operation is already active".into(),
-            ));
-        }
-        if active.len() >= MAX_ACTIVE_DOWNLOADS {
-            return Err(Error::ResourceLimit("too many active downloads".into()));
-        }
-        let token = CancellationToken::new();
-        active.insert(id.to_owned(), token.clone());
+    pub fn begin(
+        self: &Arc<Self>,
+        operations: &crate::infra::operations::OperationRegistry,
+        id: &str,
+    ) -> Result<DownloadLease, Error> {
+        let _ = self;
+        let label = format!("download publication {id}");
         Ok(DownloadLease {
-            registry: Arc::clone(self),
-            id: id.to_owned(),
-            token,
+            operation: operations.accept_download(id, &label, MAX_ACTIVE_DOWNLOADS)?,
         })
     }
 
-    pub fn cancel(&self, id: &str) -> Result<bool, Error> {
-        let active = self.active()?;
-        let Some(token) = active.get(id) else {
-            return Ok(false);
-        };
-        token.cancel();
-        Ok(true)
+    pub fn cancel(
+        &self,
+        operations: &crate::infra::operations::OperationRegistry,
+        id: &str,
+    ) -> Result<bool, Error> {
+        let _ = self;
+        operations.cancel_accepted(id)
     }
 }
 
 impl DownloadLease {
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
-        self.token.clone()
+        self.operation.token()
     }
-}
 
-impl Drop for DownloadLease {
-    fn drop(&mut self) {
-        let mut active = self
-            .registry
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if active
-            .get(&self.id)
-            .is_some_and(|registered| registered == &self.token)
-        {
-            active.remove(&self.id);
-        }
+    pub(crate) fn into_operation(self) -> crate::infra::operations::OperationLease {
+        self.operation
     }
 }
 
@@ -586,26 +556,33 @@ where
                     ));
                 }
                 if is_zip {
-                    extract_zip(file, &path, limits)?;
+                    extract_zip_cancellable(file, &path, limits, cancellation)?;
                 } else if is_tar {
-                    extract_tar(file, &path, limits)?;
+                    extract_tar_cancellable(file, &path, limits, cancellation)?;
                 } else {
-                    extract_gz(file, &path, limits)?;
+                    extract_gz_cancellable(file, &path, limits, cancellation)?;
                 }
             } else {
                 let target_dir = path.parent().unwrap_or_else(|| Path::new("."));
                 std::fs::create_dir_all(target_dir)?;
                 let outcome = atomic_replace(&path, |target_file| {
-                    std::io::copy(&mut file, target_file)?;
+                    let mut buffer = [0_u8; 64 * 1024];
+                    loop {
+                        if cancellation.is_cancelled() {
+                            return Err(Error::Cancellation);
+                        }
+                        let read = file.read(&mut buffer)?;
+                        if read == 0 {
+                            break;
+                        }
+                        target_file.write_all(&buffer[..read])?;
+                    }
                     Ok(())
                 })?;
                 crate::infra::fs::require_durable(
                     outcome,
                     crate::error::DurabilityStage::ArchiveFileReplacement,
                 )?;
-            }
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancellation);
             }
             Ok(())
         })
@@ -666,21 +643,34 @@ pub(crate) async fn download_to_destination<R: tauri::Runtime>(
     register_pgn_artifact: bool,
     integrity: Option<&ArtifactIntegrity>,
 ) -> Result<Option<crate::infra::path_authority::ArtifactPublication>, Error> {
-    download_to_destination_inner(
-        id,
-        url,
-        destination,
-        filename,
-        app,
-        state,
-        bearer_token,
-        total_size,
-        job_id,
-        register_pgn_artifact,
-        integrity,
-    )
+    let lease = state.download_registry.begin(&state.operations, &job_id)?;
+    let cancellation = lease.cancellation_token();
+    let operation = lease.into_operation();
+    let id = id.to_owned();
+    let url = url.to_owned();
+    let app = app.clone();
+    let state = state.clone();
+    let bearer_token = bearer_token.map(str::to_owned);
+    let integrity = integrity.cloned();
+    crate::infra::operations::run_native_operation(operation, "download publication", async move {
+        download_to_destination_inner(
+            &id,
+            &url,
+            destination,
+            filename,
+            &app,
+            &state,
+            bearer_token.as_deref(),
+            total_size,
+            job_id,
+            register_pgn_artifact,
+            integrity.as_ref(),
+            cancellation.clone(),
+        )
+        .await
+        .map_err(sanitize_download_error)
+    })
     .await
-    .map_err(sanitize_download_error)
 }
 
 fn cleanup_download_reservation_best_effort(
@@ -770,6 +760,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
     job_id: String,
     register_pgn_artifact: bool,
     integrity: Option<&ArtifactIntegrity>,
+    cancellation: CancellationToken,
 ) -> Result<Option<crate::infra::path_authority::ArtifactPublication>, Error> {
     // Validate and reserve all fallible producer prerequisites before starting
     // visible progress. No failed setup may leave a running progress entry.
@@ -794,7 +785,6 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
         )?;
         (op, resolved)
     };
-    let lease = state.download_registry.begin(&job_id)?;
     let staged = tempfile::tempdir().map_err(|error| Error::Io(Box::new(error)))?;
     let staged_file = staged.path().join("payload");
     let progress_lease = begin_progress(&state.progress_state, app, id.to_owned())?;
@@ -807,7 +797,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
             state.http_transport.as_ref(),
             bearer_token,
             total_size,
-            lease.cancellation_token(),
+            cancellation.clone(),
             integrity.map(|metadata| metadata.sha256.as_str()),
             |progress| {
                 update_progress_with_state(
@@ -835,14 +825,18 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
     }
 
     let reservation = if register_pgn_artifact {
-        let payload =
-            match crate::infra::path_authority::hash_staged_payload(staged_file.clone()).await {
-                Ok(payload) => payload,
-                Err(error) => {
-                    report_download_error(state, app, &progress_lease, &job_id, &error);
-                    return Err(error);
-                }
-            };
+        let payload = match crate::infra::path_authority::hash_staged_payload_cancellable(
+            staged_file.clone(),
+            cancellation.clone(),
+        )
+        .await
+        {
+            Ok(payload) => payload,
+            Err(error) => {
+                report_download_error(state, app, &progress_lease, &job_id, &error);
+                return Err(error);
+            }
+        };
         let reservation_result = (|| {
             let mut authority = state
                 .pgn_path_authority
@@ -871,23 +865,29 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
     };
     let install_reservation = reservation.clone();
     let install_result = crate::infra::blocking::BLOCKING_GATEWAY
-        .spawn(move || match install_reservation.as_ref() {
-            Some(reservation) => resolved
-                .atomic_install_reserved_download(reservation, &staged_file)
-                .map(|installed| {
-                    (
-                        installed.outcome,
-                        Some((installed.identity, installed.ctime_nanos)),
+        .spawn_cancellable(cancellation.clone(), move |worker_cancellation| {
+            match install_reservation.as_ref() {
+                Some(reservation) => resolved
+                    .atomic_install_reserved_download_cancellable(
+                        reservation,
+                        &staged_file,
+                        worker_cancellation,
                     )
-                }),
-            None => {
-                let mut staged = std::fs::File::open(staged_file)?;
-                resolved
-                    .atomic_replace_download(|target| {
-                        std::io::copy(&mut staged, target)?;
-                        Ok(())
-                    })
-                    .map(|outcome| (outcome, None))
+                    .map(|installed| {
+                        (
+                            installed.outcome,
+                            Some((installed.identity, installed.ctime_nanos)),
+                        )
+                    }),
+                None => {
+                    let mut staged = std::fs::File::open(staged_file)?;
+                    resolved
+                        .atomic_replace_download_cancellable(worker_cancellation, |target| {
+                            copy_cancellable(&mut staged, target, worker_cancellation)?;
+                            Ok(())
+                        })
+                        .map(|outcome| (outcome, None))
+                }
             }
         })
         .await;
@@ -940,10 +940,17 @@ pub(crate) async fn install_staged_pgn_artifact(
     filename: String,
     staged: tempfile::NamedTempFile,
     state: &AppState,
+    cancellation: &CancellationToken,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
     let filename = std::ffi::OsString::from(filename);
-    let payload =
-        crate::infra::path_authority::hash_staged_payload(staged.path().to_path_buf()).await?;
+    let payload = crate::infra::path_authority::hash_staged_payload_cancellable(
+        staged.path().to_path_buf(),
+        cancellation.clone(),
+    )
+    .await?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let reservation = state
         .pgn_path_authority
         .lock()
@@ -970,8 +977,12 @@ pub(crate) async fn install_staged_pgn_artifact(
         )?;
     let installation_reservation = reservation.clone();
     let install = crate::infra::blocking::BLOCKING_GATEWAY
-        .spawn(move || {
-            resolved.atomic_install_reserved_download(&installation_reservation, staged.path())
+        .spawn_cancellable(cancellation.clone(), move |worker_cancellation| {
+            resolved.atomic_install_reserved_download_cancellable(
+                &installation_reservation,
+                staged.path(),
+                worker_cancellation,
+            )
         })
         .await;
     let target_durability = match install {
@@ -1142,99 +1153,120 @@ pub async fn download_engine_archive(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    let result = async {
-        let directory_name = std::ffi::OsString::from(directory_name);
-        let (op, resolved) =
-            resolve_engine_archive_destination(state.inner(), &destination, &directory_name)?;
-        uuid::Uuid::parse_str(&job_id)
-            .map_err(|_| Error::InvalidInput("download job ID must be a UUID".into()))?;
-        validate_artifact_integrity(op, &url, Some(&integrity))?;
-        let lease = state.download_registry.begin(&job_id)?;
-        let staging = private_tempdir()?;
-        let extracted = staging.path().join("extracted");
-        let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
-        let result = match tokio::time::timeout(
-            DOWNLOAD_DEADLINE,
-            download_file_core_control_with_integrity(
-                op,
-                &url,
-                &extracted,
-                state.http_transport.as_ref(),
-                None,
-                None,
-                lease.cancellation_token(),
-                Some(&integrity.sha256),
-                |progress| {
+    let lease = state.download_registry.begin(&state.operations, &job_id)?;
+    let cancellation = lease.cancellation_token();
+    let operation = lease.into_operation();
+    let state = state.inner().clone();
+    crate::infra::operations::run_native_operation(
+        operation,
+        "download_engine_archive",
+        async move {
+            let result = async {
+                let directory_name = std::ffi::OsString::from(directory_name);
+                let (op, resolved) =
+                    resolve_engine_archive_destination(&state, &destination, &directory_name)?;
+                uuid::Uuid::parse_str(&job_id)
+                    .map_err(|_| Error::InvalidInput("download job ID must be a UUID".into()))?;
+                validate_artifact_integrity(op, &url, Some(&integrity))?;
+                let staging = private_tempdir()?;
+                let extracted = staging.path().join("extracted");
+                let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
+                let result = match tokio::time::timeout(
+                    DOWNLOAD_DEADLINE,
+                    download_file_core_control_with_integrity(
+                        op,
+                        &url,
+                        &extracted,
+                        state.http_transport.as_ref(),
+                        None,
+                        None,
+                        cancellation.clone(),
+                        Some(&integrity.sha256),
+                        |progress| {
+                            update_progress_with_state(
+                                &state.progress_state,
+                                &app,
+                                &progress_lease,
+                                progress,
+                                ProgressState::Running,
+                            )
+                        },
+                    ),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        let error = Error::EngineTimeout(
+                            "engine archive download deadline exceeded".into(),
+                        );
+                        update_progress_with_state(
+                            &state.progress_state,
+                            &app,
+                            &progress_lease,
+                            0.0,
+                            ProgressState::Failed,
+                        )?;
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = result {
+                    let terminal = if matches!(error, Error::Cancellation) {
+                        ProgressState::Cancelled
+                    } else {
+                        ProgressState::Failed
+                    };
                     update_progress_with_state(
                         &state.progress_state,
                         &app,
                         &progress_lease,
-                        progress,
-                        ProgressState::Running,
-                    )
-                },
-            ),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                let error =
-                    Error::EngineTimeout("engine archive download deadline exceeded".into());
+                        0.0,
+                        terminal,
+                    )?;
+                    return Err(error);
+                }
+                if cancellation.is_cancelled() {
+                    update_progress_with_state(
+                        &state.progress_state,
+                        &app,
+                        &progress_lease,
+                        0.0,
+                        ProgressState::Cancelled,
+                    )?;
+                    return Err(Error::Cancellation);
+                }
+                let install_result = crate::infra::blocking::BLOCKING_GATEWAY
+                    .spawn(move || resolved.atomic_install_download_dir(&extracted))
+                    .await;
+                if let Err(error) = install_result {
+                    update_progress_with_state(
+                        &state.progress_state,
+                        &app,
+                        &progress_lease,
+                        0.0,
+                        ProgressState::Failed,
+                    )?;
+                    return Err(error);
+                }
                 update_progress_with_state(
                     &state.progress_state,
                     &app,
                     &progress_lease,
-                    0.0,
-                    ProgressState::Failed,
-                )?;
-                return Err(error);
+                    100.0,
+                    ProgressState::Succeeded,
+                )
             }
-        };
-        if let Err(error) = result {
-            let terminal = if matches!(error, Error::Cancellation) {
-                ProgressState::Cancelled
-            } else {
-                ProgressState::Failed
-            };
-            update_progress_with_state(
-                &state.progress_state,
-                &app,
-                &progress_lease,
-                0.0,
-                terminal,
-            )?;
-            return Err(error);
-        }
-        let install_result = crate::infra::blocking::BLOCKING_GATEWAY
-            .spawn(move || resolved.atomic_install_download_dir(&extracted))
             .await;
-        if let Err(error) = install_result {
-            update_progress_with_state(
-                &state.progress_state,
-                &app,
-                &progress_lease,
-                0.0,
-                ProgressState::Failed,
-            )?;
-            return Err(error);
-        }
-        update_progress_with_state(
-            &state.progress_state,
-            &app,
-            &progress_lease,
-            100.0,
-            ProgressState::Succeeded,
-        )
-    }
-    .await;
-    result.map_err(sanitize_download_error)
+            result.map_err(sanitize_download_error)
+        },
+    )
+    .await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn cancel_download(id: String, state: tauri::State<'_, AppState>) -> Result<bool, Error> {
-    state.download_registry.cancel(&id)
+    state.download_registry.cancel(&state.operations, &id)
 }
 
 fn create_private_dir_all(path: &Path) -> Result<(), Error> {
@@ -1316,10 +1348,11 @@ fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
     Ok(p.to_path_buf())
 }
 
-fn extract_zip(
+fn extract_zip_cancellable(
     file: std::fs::File,
     target_path: &Path,
     limits: ArchiveLimits,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     let target_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
     create_private_dir_all(target_dir)?;
@@ -1333,6 +1366,9 @@ fn extract_zip(
     }
 
     for i in 0..archive.len() {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         let mut file = archive
             .by_index(i)
             .map_err(|_| Error::InvalidInput("Invalid zip entry".into()))?;
@@ -1365,6 +1401,7 @@ fn extract_zip(
                 size,
                 &mut total_expanded,
                 limits.expanded,
+                cancellation,
             )?;
         }
     }
@@ -1373,10 +1410,11 @@ fn extract_zip(
     Ok(())
 }
 
-fn extract_tar(
+fn extract_tar_cancellable(
     file: std::fs::File,
     target_path: &Path,
     limits: ArchiveLimits,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     let target_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
     create_private_dir_all(target_dir)?;
@@ -1387,6 +1425,9 @@ fn extract_tar(
     let mut total_expanded = 0u64;
 
     for entry in archive.entries()? {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         let mut entry = entry?;
 
         entry_count += 1;
@@ -1427,6 +1468,7 @@ fn extract_tar(
                 size,
                 &mut total_expanded,
                 limits.expanded,
+                cancellation,
             )?;
         }
     }
@@ -1435,7 +1477,12 @@ fn extract_tar(
     Ok(())
 }
 
-fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) -> Result<(), Error> {
+fn extract_gz_cancellable(
+    file: std::fs::File,
+    target_path: &Path,
+    limits: ArchiveLimits,
+    cancellation: &CancellationToken,
+) -> Result<(), Error> {
     let target_dir = target_path.parent().unwrap_or_else(|| Path::new("."));
     create_private_dir_all(target_dir)?;
 
@@ -1449,6 +1496,7 @@ fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) ->
             limits.per_entry,
             &mut total_expanded,
             limits.expanded,
+            cancellation,
         )?;
         let expanded = target_file.metadata()?.len();
         if compressed == 0 || expanded > compressed.saturating_mul(limits.ratio) {
@@ -1467,10 +1515,14 @@ fn bounded_copy(
     per_entry_limit: u64,
     total_expanded: &mut u64,
     total_limit: u64,
+    cancellation: &CancellationToken,
 ) -> Result<u64, Error> {
     let mut buffer = [0u8; 64 * 1024];
     let mut written = 0u64;
     loop {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         let read = input.read(&mut buffer)?;
         if read == 0 {
             return Ok(written);
@@ -1488,6 +1540,51 @@ fn bounded_copy(
         }
         output.write_all(&buffer[..read])?;
     }
+}
+
+fn copy_cancellable(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    cancellation: &CancellationToken,
+) -> Result<u64, Error> {
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut copied = 0_u64;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(copied);
+        }
+        output.write_all(&buffer[..read])?;
+        copied = copied.checked_add(read as u64).ok_or_else(|| {
+            Error::ResourceLimit("download payload exceeds supported size".into())
+        })?;
+    }
+}
+
+#[cfg(test)]
+fn extract_zip(
+    file: std::fs::File,
+    target_path: &Path,
+    limits: ArchiveLimits,
+) -> Result<(), Error> {
+    extract_zip_cancellable(file, target_path, limits, &CancellationToken::new())
+}
+
+#[cfg(test)]
+fn extract_tar(
+    file: std::fs::File,
+    target_path: &Path,
+    limits: ArchiveLimits,
+) -> Result<(), Error> {
+    extract_tar_cancellable(file, target_path, limits, &CancellationToken::new())
+}
+
+#[cfg(test)]
+fn extract_gz(file: std::fs::File, target_path: &Path, limits: ArchiveLimits) -> Result<(), Error> {
+    extract_gz_cancellable(file, target_path, limits, &CancellationToken::new())
 }
 
 fn private_output_file(path: &Path) -> Result<std::fs::File, Error> {
@@ -1508,9 +1605,12 @@ pub async fn set_file_as_executable(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
     let authority = Arc::clone(&state.pgn_path_authority);
-    crate::infra::blocking::BLOCKING_GATEWAY
-        .spawn(move || set_file_as_executable_blocking(&authority, file))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "set_file_as_executable",
+        move || set_file_as_executable_blocking(&authority, file),
+    )
+    .await
 }
 
 fn set_file_as_executable_blocking(
@@ -1538,9 +1638,10 @@ pub async fn file_exists(
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, Error> {
     let authority = Arc::clone(&state.pgn_path_authority);
-    crate::infra::blocking::BLOCKING_GATEWAY
-        .spawn(move || file_exists_blocking(&authority, file))
-        .await
+    crate::infra::operations::run_accepted_blocking(&state.operations, "file_exists", move || {
+        file_exists_blocking(&authority, file)
+    })
+    .await
 }
 
 fn file_exists_blocking(
@@ -1568,9 +1669,12 @@ pub async fn get_file_metadata(
     state: tauri::State<'_, AppState>,
 ) -> Result<FileMetadata, Error> {
     let authority = Arc::clone(&state.pgn_path_authority);
-    crate::infra::blocking::BLOCKING_GATEWAY
-        .spawn(move || get_file_metadata_blocking(&authority, file))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "get_file_metadata",
+        move || get_file_metadata_blocking(&authority, file),
+    )
+    .await
 }
 
 fn get_file_metadata_blocking(
@@ -1634,6 +1738,54 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[test]
+    fn archive_copy_core_cancels_between_real_chunks_before_publication() {
+        struct HeldReader {
+            entered: Option<std::sync::mpsc::SyncSender<()>>,
+            release: std::sync::mpsc::Receiver<()>,
+            finished: bool,
+        }
+        impl Read for HeldReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.finished {
+                    return Ok(0);
+                }
+                self.finished = true;
+                if let Some(entered) = self.entered.take() {
+                    let _ = entered.send(());
+                }
+                let _ = self.release.recv_timeout(Duration::from_secs(5));
+                buffer[..64].fill(3);
+                Ok(64)
+            }
+        }
+
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let mut total = 0;
+            bounded_copy(
+                &mut HeldReader {
+                    entered: Some(entered_tx),
+                    release: release_rx,
+                    finished: false,
+                },
+                &mut output,
+                1024,
+                &mut total,
+                1024,
+                &worker_cancellation,
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        cancellation.cancel();
+        release_tx.send(()).unwrap();
+        assert!(matches!(worker.join().unwrap(), Err(Error::Cancellation)));
+    }
 
     fn test_path_authority(dir: &tempfile::TempDir) -> crate::infra::path_authority::PathAuthority {
         crate::infra::path_authority::PathAuthority::open(
@@ -1906,60 +2058,13 @@ mod tests {
     #[test]
     fn download_registry_is_bounded_exact_and_cleans_up() {
         let registry = Arc::new(DownloadRegistry::default());
-        let first = registry.begin("job").unwrap();
-        assert!(registry.begin("job").is_err());
-        assert!(registry.cancel("job").unwrap());
-        assert!(first.token.is_cancelled());
+        let operations = crate::infra::operations::OperationRegistry::default();
+        let first = registry.begin(&operations, "job").unwrap();
+        assert!(registry.begin(&operations, "job").is_err());
+        assert!(registry.cancel(&operations, "job").unwrap());
+        assert!(first.cancellation_token().is_cancelled());
         drop(first);
-        assert!(!registry.cancel("job").unwrap());
-    }
-
-    struct PoisonDownloadRegistryOnDrop(Arc<DownloadRegistry>);
-
-    impl Drop for PoisonDownloadRegistryOnDrop {
-        fn drop(&mut self) {
-            let _guard = self.0.active.lock().unwrap();
-            panic!("poison download registry");
-        }
-    }
-
-    #[test]
-    fn lease_cleanup_removes_its_registration_during_poisoning_unwind() {
-        let registry = Arc::new(DownloadRegistry::default());
-        let registry_for_unwind = registry.clone();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-            let lease = registry_for_unwind.begin("job").unwrap();
-            let _poison_on_drop = PoisonDownloadRegistryOnDrop(registry_for_unwind.clone());
-            std::hint::black_box(&lease);
-        }));
-
-        assert!(result.is_err());
-        assert!(registry.active.lock().unwrap_err().into_inner().is_empty());
-        assert!(matches!(registry.begin("other"), Err(Error::Conflict(_))));
-        assert!(matches!(registry.cancel("job"), Err(Error::Conflict(_))));
-    }
-
-    #[test]
-    fn poisoned_cleanup_preserves_a_newer_lease_with_the_same_id() {
-        let registry = Arc::new(DownloadRegistry::default());
-        let stale = registry.begin("job").unwrap();
-        let replacement = CancellationToken::new();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = registry.active.lock().unwrap();
-            panic!("poison download registry");
-        }));
-        assert!(result.is_err());
-        registry
-            .active
-            .lock()
-            .unwrap_err()
-            .into_inner()
-            .insert("job".into(), replacement.clone());
-
-        drop(stale);
-
-        let active = registry.active.lock().unwrap_err().into_inner();
-        assert_eq!(active.get("job"), Some(&replacement));
+        assert!(!registry.cancel(&operations, "job").unwrap());
     }
 
     #[test]
@@ -2636,6 +2741,46 @@ mod tests {
         }
     }
 
+    struct HoldSecondPrecommit {
+        seen: std::sync::atomic::AtomicUsize,
+        entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl crate::infra::fs::AtomicWriterInjector for HoldSecondPrecommit {
+        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == crate::infra::fs::AtomicFileFaultPoint::PreCommitRevalidate
+                && self.seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+            {
+                if let Some(entered) = self.entered.lock().unwrap().take() {
+                    let _ = entered.send(());
+                }
+                let _ = self
+                    .release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5));
+            }
+            Ok(())
+        }
+    }
+
+    struct CancelSecondParentSync {
+        seen: std::sync::atomic::AtomicUsize,
+        cancellation: CancellationToken,
+    }
+
+    impl crate::infra::fs::AtomicWriterInjector for CancelSecondParentSync {
+        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == crate::infra::fs::AtomicFileFaultPoint::ParentSync
+                && self.seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+            {
+                self.cancellation.cancel();
+            }
+            Ok(())
+        }
+    }
+
     fn test_downloads_destination(
         dir: &tempfile::TempDir,
     ) -> (
@@ -2758,6 +2903,7 @@ mod tests {
             "staged_games.pgn".into(),
             staged_file,
             &state,
+            &CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -2779,6 +2925,86 @@ mod tests {
                 .unwrap()
                 .has_persistent_id(&staged_result.handle.id.id));
         }
+    }
+
+    #[tokio::test]
+    async fn staged_artifact_cancels_at_real_install_precommit_without_publication() {
+        let _guard = ResetAtomicInjectorGuard;
+        let dir = tempdir().unwrap();
+        let (authority, destination, download_root) = test_downloads_destination(&dir);
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let state = Arc::new(state);
+        let target = download_root.join("held-install.pgn");
+        std::fs::write(&target, b"previous").unwrap();
+        let mut staged = tempfile::NamedTempFile::new().unwrap();
+        staged.write_all(b"replacement").unwrap();
+        let cancellation = CancellationToken::new();
+        let task_cancellation = cancellation.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(HoldSecondPrecommit {
+            seen: std::sync::atomic::AtomicUsize::new(0),
+            entered: std::sync::Mutex::new(Some(entered_tx)),
+            release: std::sync::Mutex::new(release_rx),
+        })));
+        let task_state = Arc::clone(&state);
+        let task = tokio::spawn(async move {
+            install_staged_pgn_artifact(
+                destination,
+                "held-install.pgn".into(),
+                staged,
+                &task_state,
+                &task_cancellation,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        cancellation.cancel();
+        release_tx.send(()).unwrap();
+        assert!(matches!(task.await.unwrap(), Err(Error::Cancellation)));
+        assert_eq!(std::fs::read(target).unwrap(), b"previous");
+    }
+
+    #[tokio::test]
+    async fn staged_artifact_keeps_postrename_result_and_activation_after_late_cancellation() {
+        let _guard = ResetAtomicInjectorGuard;
+        let dir = tempdir().unwrap();
+        let (authority, destination, download_root) = test_downloads_destination(&dir);
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let cancellation = CancellationToken::new();
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(CancelSecondParentSync {
+            seen: std::sync::atomic::AtomicUsize::new(0),
+            cancellation: cancellation.clone(),
+        })));
+        let mut staged = tempfile::NamedTempFile::new().unwrap();
+        staged.write_all(b"committed").unwrap();
+        let artifact = install_staged_pgn_artifact(
+            destination,
+            "late-cancel.pgn".into(),
+            staged,
+            &state,
+            &cancellation,
+        )
+        .await
+        .unwrap();
+
+        assert!(cancellation.is_cancelled());
+        assert_eq!(
+            std::fs::read(download_root.join("late-cancel.pgn")).unwrap(),
+            b"committed"
+        );
+        assert!(state
+            .pgn_path_authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .has_persistent_id(&artifact.handle.id.id));
     }
 
     type ObserverAction =
@@ -3099,7 +3325,9 @@ mod tests {
             let state = weak
                 .upgrade()
                 .expect("state must be alive during transport request");
-            let _ = state.download_registry.cancel(&self.job_id);
+            let _ = state
+                .download_registry
+                .cancel(&state.operations, &self.job_id);
             if self.advance_generation {
                 state
                     .progress_state
@@ -3165,5 +3393,104 @@ mod tests {
         assert!(!stale_item.finished);
         assert_eq!(stale_item.progress, 0.0);
         assert_eq!(stale_item.generation, 2);
+    }
+
+    struct HeldTailTransport {
+        started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: tokio::sync::Notify,
+    }
+
+    struct ReleaseHeldTransport(Arc<HeldTailTransport>);
+
+    impl Drop for ReleaseHeldTransport {
+        fn drop(&mut self) {
+            self.0.release.notify_waiters();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::infra::net::DownloadTransport for HeldTailTransport {
+        async fn request(
+            &self,
+            _url: &str,
+            _headers: HeaderMap,
+        ) -> Result<DownloadResponse, Error> {
+            if let Some(started) = self.started.lock().unwrap().take() {
+                let _ = started.send(());
+            }
+            self.release.notified().await;
+            Ok(mock_successful_response(b"caller-drop-tail"))
+        }
+    }
+
+    #[tokio::test]
+    async fn production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop() {
+        for publication_fail in [false, true] {
+            let dir = tempdir().unwrap();
+            let (authority, destination, download_root) = test_downloads_destination(&dir);
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let transport = Arc::new(HeldTailTransport {
+                started: std::sync::Mutex::new(Some(started_tx)),
+                release: tokio::sync::Notify::new(),
+            });
+            let _release_on_drop = ReleaseHeldTransport(transport.clone());
+            let mut state = AppState::default();
+            state.http_transport = transport.clone();
+            *state.pgn_path_authority.lock().unwrap() = Some(authority);
+            let state = Arc::new(state);
+            let app = test_progress_app();
+            let app_handle = app.handle().clone();
+            let owned_state = Arc::clone(&state);
+            let job_id = uuid::Uuid::new_v4().to_string();
+            let progress_id = format!("caller-drop-{publication_fail}");
+            let filename = format!("caller-drop-{publication_fail}.bin");
+            let task_progress = progress_id.clone();
+            let task_filename = filename.clone();
+            let operation = tokio::spawn(async move {
+                download_to_destination(
+                    &task_progress,
+                    "https://example.com/held.bin",
+                    destination,
+                    task_filename,
+                    &app_handle,
+                    &owned_state,
+                    None,
+                    None,
+                    job_id,
+                    true,
+                    None,
+                )
+                .await
+            });
+
+            tokio::time::timeout(Duration::from_secs(1), started_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            operation.abort();
+            if publication_fail {
+                *state.pgn_path_authority.lock().unwrap() = None;
+            }
+            transport.release.notify_one();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !state.operations.outstanding_labels().unwrap().is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+
+            let item = state.progress_state.get(&progress_id).unwrap().unwrap();
+            if publication_fail {
+                assert_eq!(item.state, ProgressState::Failed);
+                assert!(!download_root.join(filename).exists());
+            } else {
+                assert_eq!(item.state, ProgressState::Succeeded);
+                assert_eq!(
+                    std::fs::read(download_root.join(filename)).unwrap(),
+                    b"caller-drop-tail"
+                );
+            }
+        }
     }
 }

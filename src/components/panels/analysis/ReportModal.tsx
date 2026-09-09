@@ -11,6 +11,7 @@ import { TreeStateContext } from "@/components/common/TreeStateContext";
 import AppModal from "../../common/AppModal";
 import { enginesAtom, referenceDbAtom } from "@/state/atoms";
 import { createZodStorage } from "@/state/utils";
+import { captureReportOwner, isReportOwnerCurrent, waitForReportOwner } from "@/state/store/tree";
 import { goModeSchema, type LocalEngine } from "@/utils/engines";
 import { z } from "zod";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
@@ -88,16 +89,18 @@ function ReportModal({
   );
   const store = useContext(TreeStateContext)!;
   const addAnalysis = useStore(store, (s) => s.addAnalysis);
+  const prepareGeneration = useRef(0);
+  const pendingPreparation = useRef<AbortController | null>(null);
 
-  const [reportSettings, setReportSettings] = useAtom(reportSettingsAtom);
-  const mounted = useRef(true);
   useEffect(
     () => () => {
-      mounted.current = false;
+      prepareGeneration.current += 1;
+      pendingPreparation.current?.abort();
     },
     [],
   );
 
+  const [reportSettings, setReportSettings] = useAtom(reportSettingsAtom);
   const form = useForm({
     initialValues: reportSettings,
     validate: {
@@ -121,18 +124,37 @@ function ReportModal({
     form.setValues({ ...reportSettings, engine });
   }, [form, localEngines, reportSettings]);
 
-  function analyze() {
+  async function analyze() {
+    pendingPreparation.current?.abort();
+    const preparation = new AbortController();
+    pendingPreparation.current = preparation;
+    const generation = ++prepareGeneration.current;
+    const ownerEpoch = captureReportOwner(tab);
     setReportSettings(form.values);
     const rootFingerprint = `${initialFen}\u0000${moves.join("\u0000")}`;
-    const operationId = `report_${tab}_${crypto.randomUUID()}`;
+    const variations = form.values.variations;
+    const engine = localEngines.find((e) => e.id === form.values.engine);
+    if (!engine) return;
+    let operationId: string;
+    try {
+      operationId = await tauri.prepareAnalysis(tab, { signal: preparation.signal });
+    } catch (error) {
+      notifyUnlessCancelled(t("Common.Error"), error);
+      return;
+    } finally {
+      if (pendingPreparation.current === preparation) pendingPreparation.current = null;
+    }
+    if (generation !== prepareGeneration.current || !isReportOwnerCurrent(tab, ownerEpoch)) {
+      try {
+        await tauri.cancelAnalysis(operationId);
+      } catch (error) {
+        notifyUnlessCancelled(t("Common.Error"), error);
+      }
+      return;
+    }
     registerOperation(operationId);
     setInProgress(true);
     closeReportingMode();
-    const engine = localEngines.find((e) => e.id === form.values.engine);
-    if (!engine) {
-      setInProgress(false);
-      return;
-    }
     const engineSettings = (engine?.settings ?? []).map((s) =>
       s.type === "resource" ? s : { ...s, value: s.value.toString() },
     );
@@ -140,6 +162,7 @@ function ReportModal({
     tauri
       .analyzeGame(
         operationId,
+        tab,
         engine.handle,
         engine.id,
         form.values.goMode,
@@ -152,18 +175,30 @@ function ReportModal({
         },
         engineSettings,
       )
-      .then((analysis) => {
+      .then(async (analysis) => {
         // The immutable root fingerprint prevents a late completion from
         // applying to an edited/switched game even when a tab id is reused.
-        if (mounted.current && isCurrentOperation(operationId, rootFingerprint)) {
+        if (
+          (await waitForReportOwner(tab, ownerEpoch)) &&
+          isReportOwnerCurrent(tab, ownerEpoch) &&
+          isCurrentOperation(operationId, rootFingerprint)
+        ) {
           addAnalysis(analysis, {
-            showVariations: form.values.variations,
+            showVariations: variations,
           });
         }
       })
-      .catch((error) => notifyUnlessCancelled(t("Common.Error"), error))
-      .finally(() => {
-        if (mounted.current && isCurrentOperation(operationId, rootFingerprint))
+      .catch(async (error) => {
+        if ((await waitForReportOwner(tab, ownerEpoch)) && isReportOwnerCurrent(tab, ownerEpoch)) {
+          notifyUnlessCancelled(t("Common.Error"), error);
+        }
+      })
+      .finally(async () => {
+        if (
+          (await waitForReportOwner(tab, ownerEpoch)) &&
+          isReportOwnerCurrent(tab, ownerEpoch) &&
+          isCurrentOperation(operationId, rootFingerprint)
+        )
           setInProgress(false);
       });
   }

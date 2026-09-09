@@ -27,6 +27,8 @@ function newestProgress(
 export function useProgress(id: string) {
     const [item, setItem] = useState<ProgressItem | null>(null);
     const minimumGeneration = useRef<bigint>(BigInt(0));
+    const currentId = useRef(id);
+    currentId.current = id;
 
     useEffect(() => {
         let active = true;
@@ -71,7 +73,9 @@ export function useProgress(id: string) {
     );
 
     const clear = useCallback(async () => {
+        const clearingId = id;
         const generation = await tauri.clearProgress(id);
+        if (currentId.current !== clearingId) return;
         minimumGeneration.current = generation;
         setItem(null);
     }, [id]);

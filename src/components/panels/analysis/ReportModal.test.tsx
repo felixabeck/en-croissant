@@ -3,10 +3,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import ReportModal from "./ReportModal";
+import { invalidateReportOwner } from "@/state/store/tree";
 
 const mocks = vi.hoisted(() => ({
   addAnalysis: vi.fn(),
   analyzeGame: vi.fn(),
+  cancelAnalysis: vi.fn(),
+  prepareAnalysis: vi.fn(),
   startProgress: vi.fn(),
   enginesAtom: Symbol("enginesAtom"),
   referenceDbAtom: Symbol("referenceDbAtom"),
@@ -28,7 +31,12 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/platform/tauri", () => ({
-  tauri: { analyzeGame: mocks.analyzeGame, startProgress: mocks.startProgress },
+  tauri: {
+    analyzeGame: mocks.analyzeGame,
+    cancelAnalysis: mocks.cancelAnalysis,
+    prepareAnalysis: mocks.prepareAnalysis,
+    startProgress: mocks.startProgress,
+  },
 }));
 vi.mock("@/components/files/notifyError", () => ({
   notifyUnlessCancelled: mocks.notifyUnlessCancelled,
@@ -109,6 +117,7 @@ let root: Root;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.prepareAnalysis.mockResolvedValue("report_tab-id_operation-uuid");
   localStorage.removeItem("report-settings");
   localStorage.setItem(
     "report-settings",
@@ -152,6 +161,95 @@ async function renderReportModal() {
   });
 }
 
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+test("completion survives modal unmount while an actual tab close rejects the late result", async () => {
+  const completion = deferred<never[]>();
+  mocks.analyzeGame.mockReturnValueOnce(completion.promise);
+  await renderReportModal();
+  await act(async () => {
+    host.querySelector("button")!.click();
+    await Promise.resolve();
+    root.render(<div />);
+  });
+  await act(async () => completion.resolve([]));
+  expect(mocks.addAnalysis).toHaveBeenCalledOnce();
+
+  const afterClose = deferred<never[]>();
+  mocks.analyzeGame.mockReturnValueOnce(afterClose.promise);
+  await renderReportModal();
+  await act(async () => {
+    host.querySelector("button")!.click();
+    await Promise.resolve();
+    invalidateReportOwner("tab-id");
+    afterClose.resolve([]);
+  });
+  expect(mocks.addAnalysis).toHaveBeenCalledTimes(1);
+});
+
+test("a close while preparation is pending cancels the eventual reservation before dispatch", async () => {
+  const prepared = deferred<string>();
+  mocks.prepareAnalysis.mockReturnValueOnce(prepared.promise);
+  await renderReportModal();
+  await act(async () => {
+    host.querySelector("button")!.click();
+    invalidateReportOwner("tab-id");
+    prepared.resolve("late-ticket");
+  });
+  expect(mocks.cancelAnalysis).toHaveBeenCalledWith("late-ticket");
+  expect(mocks.analyzeGame).not.toHaveBeenCalled();
+});
+
+test("modal unmount aborts pending preparation and cancels its eventual reservation", async () => {
+  const prepared = deferred<string>();
+  mocks.prepareAnalysis.mockReturnValueOnce(prepared.promise);
+  await renderReportModal();
+  await act(async () => {
+    host.querySelector("button")!.click();
+    await Promise.resolve();
+    root.render(<div />);
+  });
+  await act(async () => {
+    prepared.resolve("unmounted-ticket");
+  });
+  expect(mocks.prepareAnalysis.mock.calls[0][1].signal.aborted).toBe(true);
+  expect(mocks.cancelAnalysis).toHaveBeenCalledWith("unmounted-ticket");
+  expect(mocks.analyzeGame).not.toHaveBeenCalled();
+});
+
+test("a replacement request retains cancellation while the older preparation is pending", async () => {
+  const first = deferred<string>();
+  const second = deferred<string>();
+  mocks.prepareAnalysis.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  mocks.analyzeGame.mockResolvedValue([]);
+  await renderReportModal();
+  await act(async () => {
+    host.querySelector("button")!.click();
+    host.querySelector("button")!.click();
+    second.resolve("current-ticket");
+    await Promise.resolve();
+    first.resolve("superseded-ticket");
+  });
+  expect(mocks.prepareAnalysis.mock.calls[0][1].signal.aborted).toBe(true);
+  expect(mocks.cancelAnalysis).toHaveBeenCalledWith("superseded-ticket");
+  expect(mocks.analyzeGame).toHaveBeenCalledOnce();
+  expect(mocks.analyzeGame).toHaveBeenCalledWith(
+    "current-ticket",
+    "tab-id",
+    expect.anything(),
+    "engine-id",
+    expect.anything(),
+    expect.anything(),
+    [],
+  );
+});
+
 test("passes the immutable engine id and catches analysis rejection", async () => {
   const failure = new Error("analysis failed");
   mocks.analyzeGame.mockRejectedValue(failure);
@@ -165,6 +263,7 @@ test("passes the immutable engine id and catches analysis rejection", async () =
 
   expect(mocks.analyzeGame).toHaveBeenCalledWith(
     "report_tab-id_operation-uuid",
+    "tab-id",
     { id: { id: "engine-handle" }, kind: "engine" },
     "engine-id",
     { t: "Time", c: 500 },
@@ -191,6 +290,7 @@ test("hydrates missing goMode with the default while preserving the selected eng
 
   expect(mocks.analyzeGame).toHaveBeenCalledWith(
     "report_tab-id_operation-uuid",
+    "tab-id",
     expect.anything(),
     "engine-id",
     { t: "Time", c: 500 },
@@ -229,6 +329,7 @@ test("defaults an invalid goMode during hydration instead of crashing render", a
 
   expect(mocks.analyzeGame).toHaveBeenCalledWith(
     expect.any(String),
+    "tab-id",
     expect.anything(),
     "engine-id",
     { t: "Time", c: 500 },

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Provider as JotaiProvider, createStore as createJotaiStore } from "jotai";
 import { MantineProvider } from "@mantine/core";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
-import { createTreeStore, type TreeStore } from "@/state/store/tree";
+import { closeTreeStore, createTreeStore, type TreeStore } from "@/state/store/tree";
 import { activeTabAtom, currentTabAtom, tabsAtom } from "@/state/atoms";
 import { cancellationError } from "@/platform/tauri";
 import type { Tab } from "@/state/workspaceTypes";
@@ -176,6 +176,8 @@ describe("InfoPanel game loading and cancellation", () => {
       root?.unmount();
     });
     container?.remove();
+    closeTreeStore(tabAId);
+    closeTreeStore(tabBId);
   });
 
   function renderPanel(store: TreeStore = treeStore) {

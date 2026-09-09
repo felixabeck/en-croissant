@@ -28,14 +28,81 @@ enum ReadState {
 
 struct ReadEntry {
     owner: String,
+    tab: Option<String>,
     state: ReadState,
+}
+
+#[derive(Clone, Copy)]
+enum ReservationKind<'a> {
+    Read,
+    Analysis { tab: &'a str },
+}
+
+impl<'a> ReservationKind<'a> {
+    fn tab(self) -> Option<&'a str> {
+        match self {
+            Self::Read => None,
+            Self::Analysis { tab } => Some(tab),
+        }
+    }
+
+    fn lease_kind(self) -> LeaseKind {
+        match self {
+            Self::Read => LeaseKind::Read,
+            Self::Analysis { .. } => LeaseKind::Analysis,
+        }
+    }
+
+    fn capacity_error(self) -> &'static str {
+        match self {
+            Self::Read => "too many native read operations",
+            Self::Analysis { .. } => "too many prepared analysis operations",
+        }
+    }
+
+    fn unknown_error(self) -> &'static str {
+        match self {
+            Self::Read => "native read reservation is unknown or expired",
+            Self::Analysis { .. } => "analysis reservation is unknown or expired",
+        }
+    }
+
+    fn owner_error(self) -> &'static str {
+        match self {
+            Self::Read => "native read reservation belongs to another webview",
+            Self::Analysis { .. } => "analysis reservation belongs to another webview or tab",
+        }
+    }
+
+    fn wrong_kind_error(self, cancelling: bool) -> &'static str {
+        match (self, cancelling) {
+            (Self::Read, false) => "analysis reservation cannot be claimed as a native read",
+            (Self::Read, true) => "analysis reservation cannot be cancelled as a native read",
+            (Self::Analysis { .. }, _) => {
+                "native read reservation cannot be cancelled as an analysis"
+            }
+        }
+    }
+
+    fn claimed_error(self) -> &'static str {
+        match self {
+            Self::Read => "native read reservation was already claimed",
+            Self::Analysis { .. } => "analysis reservation was already claimed",
+        }
+    }
 }
 
 #[derive(Default)]
 struct RegistryState {
     reads: HashMap<String, ReadEntry>,
-    accepted: HashMap<String, String>,
+    accepted: HashMap<String, AcceptedEntry>,
     sealed: bool,
+}
+
+struct AcceptedEntry {
+    label: String,
+    cancellation: CancellationToken,
+    download: bool,
 }
 
 struct RegistryInner {
@@ -85,7 +152,7 @@ impl OperationRegistry {
         });
     }
 
-    pub fn prepare_read(&self, owner: &str) -> Result<String, Error> {
+    fn prepare_reservation(&self, owner: &str, kind: ReservationKind<'_>) -> Result<String, Error> {
         let mut state = self.state()?;
         Self::purge_expired(&mut state, Instant::now(), self.reservation_ttl);
         if state.sealed {
@@ -94,15 +161,14 @@ impl OperationRegistry {
             ));
         }
         if state.reads.len() >= MAX_NATIVE_READS {
-            return Err(Error::ResourceLimit(
-                "too many native read operations".into(),
-            ));
+            return Err(Error::ResourceLimit(kind.capacity_error().into()));
         }
         let ticket = Uuid::new_v4().to_string();
         state.reads.insert(
             ticket.clone(),
             ReadEntry {
                 owner: owner.to_owned(),
+                tab: kind.tab().map(str::to_owned),
                 state: ReadState::Reserved {
                     created_at: Instant::now(),
                 },
@@ -111,10 +177,11 @@ impl OperationRegistry {
         Ok(ticket)
     }
 
-    pub fn claim_read(
+    fn claim_reservation(
         &self,
         ticket: &str,
         owner: &str,
+        kind: ReservationKind<'_>,
         label: &str,
     ) -> Result<OperationLease, Error> {
         let mut state = self.state()?;
@@ -124,18 +191,26 @@ impl OperationRegistry {
                 "native operation admission is sealed".into(),
             ));
         }
-        let entry = state.reads.get_mut(ticket).ok_or_else(|| {
-            Error::Conflict("native read reservation is unknown or expired".into())
-        })?;
-        if entry.owner != owner {
-            return Err(Error::Conflict(
-                "native read reservation belongs to another webview".into(),
-            ));
+        let entry = state
+            .reads
+            .get_mut(ticket)
+            .ok_or_else(|| Error::Conflict(kind.unknown_error().into()))?;
+        match kind {
+            ReservationKind::Read if entry.owner != owner => {
+                return Err(Error::Conflict(kind.owner_error().into()));
+            }
+            ReservationKind::Read if entry.tab.is_some() => {
+                return Err(Error::Conflict(kind.wrong_kind_error(false).into()));
+            }
+            ReservationKind::Analysis { tab }
+                if entry.owner != owner || entry.tab.as_deref() != Some(tab) =>
+            {
+                return Err(Error::Conflict(kind.owner_error().into()));
+            }
+            _ => {}
         }
         if !matches!(entry.state, ReadState::Reserved { .. }) {
-            return Err(Error::Conflict(
-                "native read reservation was already claimed".into(),
-            ));
+            return Err(Error::Conflict(kind.claimed_error().into()));
         }
         let cancellation = CancellationToken::new();
         entry.state = ReadState::Active {
@@ -147,12 +222,92 @@ impl OperationRegistry {
                 registry: Arc::clone(&self.inner),
                 id: ticket.to_owned(),
                 cancellation,
-                kind: LeaseKind::Read,
+                kind: kind.lease_kind(),
             }),
         })
     }
 
+    fn cancel_reservation(
+        &self,
+        ticket: &str,
+        owner: &str,
+        requested_analysis: bool,
+    ) -> Result<(), Error> {
+        let mut state = self.state()?;
+        Self::purge_expired(&mut state, Instant::now(), self.reservation_ttl);
+        let Some(entry) = state.reads.get(ticket) else {
+            return Ok(());
+        };
+        if entry.owner != owner {
+            let message = if requested_analysis {
+                "analysis reservation belongs to another webview"
+            } else {
+                "native read reservation belongs to another webview"
+            };
+            return Err(Error::Conflict(message.into()));
+        }
+        if entry.tab.is_some() != requested_analysis {
+            let kind = if requested_analysis {
+                ReservationKind::Analysis { tab: "" }
+            } else {
+                ReservationKind::Read
+            };
+            return Err(Error::Conflict(kind.wrong_kind_error(true).into()));
+        }
+        Self::cancel_entry(&mut state, ticket);
+        Ok(())
+    }
+
+    fn cancel_entry(state: &mut RegistryState, ticket: &str) {
+        if let Some(entry) = state.reads.get(ticket) {
+            match &entry.state {
+                ReadState::Reserved { .. } => {
+                    state.reads.remove(ticket);
+                }
+                ReadState::Active { cancellation, .. } => cancellation.cancel(),
+            }
+        }
+    }
+
+    pub fn prepare_read(&self, owner: &str) -> Result<String, Error> {
+        self.prepare_reservation(owner, ReservationKind::Read)
+    }
+
+    pub fn claim_read(
+        &self,
+        ticket: &str,
+        owner: &str,
+        label: &str,
+    ) -> Result<OperationLease, Error> {
+        self.claim_reservation(ticket, owner, ReservationKind::Read, label)
+    }
+
     pub fn accept(&self, label: &str) -> Result<OperationLease, Error> {
+        self.accept_with_id(&Uuid::new_v4().to_string(), label)
+    }
+
+    /// Admits an application-owned operation under an externally stable identity. This is used
+    /// by downloads, whose public cancellation IDs predate the shared registry.
+    pub fn accept_with_id(&self, id: &str, label: &str) -> Result<OperationLease, Error> {
+        self.accept_bounded_with_id(id, label, false, MAX_ACCEPTED_OPERATIONS)
+    }
+
+    pub fn accept_download(
+        &self,
+        id: &str,
+        label: &str,
+        download_cap: usize,
+    ) -> Result<OperationLease, Error> {
+        self.accept_bounded_with_id(id, label, true, download_cap)
+    }
+
+    fn accept_bounded_with_id(
+        &self,
+        id: &str,
+        label: &str,
+        download: bool,
+        class_cap: usize,
+    ) -> Result<OperationLease, Error> {
         let mut state = self.state()?;
         if state.sealed {
             return Err(Error::Conflict(
@@ -164,37 +319,81 @@ impl OperationRegistry {
                 "too many accepted native operations".into(),
             ));
         }
-        let id = Uuid::new_v4().to_string();
+        if download
+            && state
+                .accepted
+                .values()
+                .filter(|entry| entry.download)
+                .count()
+                >= class_cap
+        {
+            return Err(Error::ResourceLimit("too many active downloads".into()));
+        }
+        if state.accepted.contains_key(id) {
+            return Err(Error::Conflict("native operation is already active".into()));
+        }
         let cancellation = CancellationToken::new();
-        state.accepted.insert(id.clone(), label.to_owned());
+        state.accepted.insert(
+            id.to_owned(),
+            AcceptedEntry {
+                label: label.to_owned(),
+                cancellation: cancellation.clone(),
+                download,
+            },
+        );
         Ok(OperationLease {
             inner: Arc::new(LeaseHandle {
                 registry: Arc::clone(&self.inner),
-                id,
+                id: id.to_owned(),
                 cancellation,
                 kind: LeaseKind::Accepted,
             }),
         })
     }
 
-    pub fn cancel_read(&self, ticket: &str, owner: &str) -> Result<(), Error> {
-        let mut state = self.state()?;
-        Self::purge_expired(&mut state, Instant::now(), self.reservation_ttl);
-        let Some(entry) = state.reads.get(ticket) else {
-            return Ok(());
+    pub fn cancel_accepted(&self, id: &str) -> Result<bool, Error> {
+        let state = self.state()?;
+        let Some(entry) = state.accepted.get(id) else {
+            return Ok(false);
         };
-        if entry.owner != owner {
-            return Err(Error::Conflict(
-                "native read reservation belongs to another webview".into(),
-            ));
+        entry.cancellation.cancel();
+        Ok(true)
+    }
+
+    pub fn prepare_analysis(&self, owner: &str, tab: &str) -> Result<String, Error> {
+        self.prepare_reservation(owner, ReservationKind::Analysis { tab })
+    }
+
+    pub fn claim_analysis(
+        &self,
+        ticket: &str,
+        owner: &str,
+        tab: &str,
+        label: &str,
+    ) -> Result<OperationLease, Error> {
+        self.claim_reservation(ticket, owner, ReservationKind::Analysis { tab }, label)
+    }
+
+    pub fn cancel_analysis(&self, ticket: &str, owner: &str) -> Result<(), Error> {
+        self.cancel_reservation(ticket, owner, true)
+    }
+
+    pub fn cancel_analyses_for_tab(&self, owner: &str, tab: &str) -> Result<Vec<String>, Error> {
+        let mut state = self.state()?;
+        let tickets: Vec<_> = state
+            .reads
+            .iter()
+            .filter(|(_, entry)| entry.owner == owner && entry.tab.as_deref() == Some(tab))
+            .map(|(ticket, _)| ticket.clone())
+            .collect();
+        for ticket in &tickets {
+            Self::cancel_entry(&mut state, ticket);
         }
-        match &entry.state {
-            ReadState::Reserved { .. } => {
-                state.reads.remove(ticket);
-            }
-            ReadState::Active { cancellation, .. } => cancellation.cancel(),
-        }
-        Ok(())
+        Ok(tickets)
+    }
+
+    pub fn cancel_read(&self, ticket: &str, owner: &str) -> Result<(), Error> {
+        self.cancel_reservation(ticket, owner, false)
     }
 
     pub fn cancel_owner(&self, owner: &str) -> Result<Vec<String>, Error> {
@@ -206,14 +405,7 @@ impl OperationRegistry {
             .map(|(ticket, _)| ticket.clone())
             .collect();
         for ticket in &tickets {
-            if let Some(entry) = state.reads.get(ticket) {
-                match &entry.state {
-                    ReadState::Reserved { .. } => {
-                        state.reads.remove(ticket);
-                    }
-                    ReadState::Active { cancellation, .. } => cancellation.cancel(),
-                }
-            }
+            Self::cancel_entry(&mut state, ticket);
         }
         Ok(tickets)
     }
@@ -229,6 +421,9 @@ impl OperationRegistry {
                 true
             }
         });
+        for entry in state.accepted.values() {
+            entry.cancellation.cancel();
+        }
         Ok(())
     }
 
@@ -271,10 +466,51 @@ impl OperationRegistry {
                 ReadState::Active { label, .. } => Some(label.clone()),
                 ReadState::Reserved { .. } => None,
             })
-            .chain(state.accepted.values().cloned())
+            .chain(state.accepted.values().map(|entry| entry.label.clone()))
             .collect();
         labels.sort();
         Ok(labels)
+    }
+
+    pub fn outstanding_diagnostics(&self) -> Result<Vec<String>, Error> {
+        let state = self.state()?;
+        let mut diagnostics: Vec<_> = state
+            .reads
+            .iter()
+            .filter_map(|(id, entry)| match &entry.state {
+                ReadState::Active { label, .. } => Some(format!(
+                    "{id} [{}] {label}",
+                    if entry.tab.is_some() {
+                        "analysis-active"
+                    } else {
+                        "read-active"
+                    }
+                )),
+                ReadState::Reserved { .. } => None,
+            })
+            .chain(state.accepted.iter().map(|(id, entry)| {
+                format!(
+                    "{id} [{}] {}",
+                    if entry.download {
+                        "download-accepted"
+                    } else {
+                        "accepted-active"
+                    },
+                    entry.label
+                )
+            }))
+            .collect();
+        diagnostics.sort();
+        Ok(diagnostics)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_for_test(&self) {
+        let inner = Arc::clone(&self.inner);
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = inner.state.lock().unwrap();
+            panic!("poison operation registry");
+        });
     }
 }
 
@@ -282,6 +518,7 @@ impl OperationRegistry {
 enum LeaseKind {
     Read,
     Accepted,
+    Analysis,
 }
 
 #[derive(Clone)]
@@ -351,6 +588,26 @@ where
     result
 }
 
+/// Completion-owns one admitted blocking workflow. Call this only at an outer command boundary;
+/// the closure must not acquire the blocking gateway again.
+pub async fn run_accepted_blocking<T, F>(
+    registry: &OperationRegistry,
+    label: &'static str,
+    workflow: F,
+) -> Result<T, Error>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, Error> + Send + 'static,
+{
+    let lease = registry.accept(label)?;
+    run_native_operation(lease, label, async move {
+        crate::infra::blocking::BLOCKING_GATEWAY
+            .spawn(workflow)
+            .await
+    })
+    .await
+}
+
 impl Drop for LeaseHandle {
     fn drop(&mut self) {
         let mut state = match self.registry.state.lock() {
@@ -363,6 +620,9 @@ impl Drop for LeaseHandle {
             }
             LeaseKind::Accepted => {
                 state.accepted.remove(&self.id);
+            }
+            LeaseKind::Analysis => {
+                state.reads.remove(&self.id);
             }
         }
         self.registry.changed.notify_all();
@@ -391,6 +651,87 @@ mod tests {
         let lease = registry.claim_read(&ticket, "main", "query").unwrap();
         registry.cancel_read(&ticket, "main").unwrap();
         assert!(lease.token().is_cancelled());
+    }
+
+    #[test]
+    fn analysis_reservations_bind_owner_and_tab_and_cancel_before_claim() {
+        let registry = OperationRegistry::default();
+        let wrong_owner = registry.prepare_analysis("first", "tab-a").unwrap();
+        assert!(registry
+            .claim_analysis(&wrong_owner, "second", "tab-a", "analysis")
+            .is_err());
+        assert!(registry
+            .claim_analysis(&wrong_owner, "first", "tab-b", "analysis")
+            .is_err());
+
+        registry.cancel_analysis(&wrong_owner, "first").unwrap();
+        assert!(registry
+            .claim_analysis(&wrong_owner, "first", "tab-a", "analysis")
+            .is_err());
+
+        let active_id = registry.prepare_analysis("first", "tab-a").unwrap();
+        let active = registry
+            .claim_analysis(&active_id, "first", "tab-a", "analysis")
+            .unwrap();
+        assert!(registry
+            .outstanding_diagnostics()
+            .unwrap()
+            .contains(&format!("{active_id} [analysis-active] analysis")));
+        assert!(registry
+            .claim_analysis(&active_id, "first", "tab-a", "analysis")
+            .is_err());
+        let other_id = registry.prepare_analysis("first", "tab-b").unwrap();
+        let other = registry
+            .claim_analysis(&other_id, "first", "tab-b", "analysis")
+            .unwrap();
+        let other_owner_id = registry.prepare_analysis("second", "tab-a").unwrap();
+        let other_owner = registry
+            .claim_analysis(&other_owner_id, "second", "tab-a", "analysis")
+            .unwrap();
+
+        assert_eq!(
+            registry.cancel_analyses_for_tab("first", "tab-a").unwrap(),
+            vec![active_id]
+        );
+        assert!(active.token().is_cancelled());
+        assert!(!other.token().is_cancelled());
+        assert!(!other_owner.token().is_cancelled());
+    }
+
+    #[test]
+    fn downloads_share_accepted_capacity_and_keep_their_narrower_cap() {
+        let registry = OperationRegistry::default();
+        let downloads: Vec<_> = (0..32)
+            .map(|index| {
+                registry
+                    .accept_download(&format!("download-{index}"), "download", 32)
+                    .unwrap()
+            })
+            .collect();
+        assert!(matches!(
+            registry.accept_download("download-excess", "download", 32),
+            Err(Error::ResourceLimit(_))
+        ));
+        let accepted: Vec<_> = (downloads.len()..MAX_ACCEPTED_OPERATIONS)
+            .map(|_| registry.accept("accepted").unwrap())
+            .collect();
+        assert!(matches!(
+            registry.accept("excess"),
+            Err(Error::ResourceLimit(_))
+        ));
+
+        assert!(registry.cancel_accepted("download-0").unwrap());
+        assert!(downloads[0].token().is_cancelled());
+        assert!(registry
+            .outstanding_diagnostics()
+            .unwrap()
+            .contains(&"download-0 [download-accepted] download".to_owned()));
+        assert!(!downloads[1].token().is_cancelled());
+        drop(downloads);
+        drop(accepted);
+        assert!(registry
+            .accept_download("download-recovered", "download", 32)
+            .is_ok());
     }
 
     #[test]

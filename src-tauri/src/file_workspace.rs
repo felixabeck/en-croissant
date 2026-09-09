@@ -393,9 +393,12 @@ pub async fn issue_file_workspace(
     .await
     .map_err(map_picker_join)??;
     let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || issue_file_workspace_blocking(&pgn_path_authority, path))
-        .await
+    crate::infra::operations::run_accepted_blocking(
+        &state.operations,
+        "issue_file_workspace",
+        move || issue_file_workspace_blocking(&pgn_path_authority, path),
+    )
+    .await
 }
 
 fn issue_file_workspace_blocking(
@@ -558,32 +561,38 @@ pub async fn create_workspace_file(
     pgn: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkspaceEntry, Error> {
-    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
-    let workspace_mutation = Arc::clone(&state.workspace_mutation);
-    let mut entry = BLOCKING_GATEWAY
-        .spawn(move || {
-            create_workspace_file_blocking(
-                workspace,
-                parent,
-                name,
-                metadata,
-                pgn,
-                &pgn_path_authority,
-                &workspace_mutation,
-            )
-        })
-        .await?;
-    let resolved = {
-        authority(&state.pgn_path_authority)?
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-            .resolve(entry.handle.path_ref(), PathOperation::ReadPgn, &[])?
-    };
-    entry.game_count = Some(
-        pgn::count_pgn_games_core(resolved, &CancellationToken::new(), &state.pgn_repository)
-            .await?,
-    );
-    Ok(entry)
+    let operation = state.operations.accept("create_workspace_file")?;
+    let cancellation = operation.token();
+    let state = state.inner().clone();
+    crate::infra::operations::run_native_operation(operation, "create_workspace_file", async move {
+        let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+        let workspace_mutation = Arc::clone(&state.workspace_mutation);
+        let mut entry = BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                create_workspace_file_blocking(
+                    workspace,
+                    parent,
+                    name,
+                    metadata,
+                    pgn,
+                    &pgn_path_authority,
+                    &workspace_mutation,
+                )
+            })
+            .await?;
+        let resolved = {
+            authority(&state.pgn_path_authority)?
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+                .resolve(entry.handle.path_ref(), PathOperation::ReadPgn, &[])?
+        };
+        entry.game_count = Some(
+            pgn::count_pgn_games_core(resolved, &CancellationToken::new(), &state.pgn_repository)
+                .await?,
+        );
+        Ok(entry)
+    })
+    .await
 }
 
 fn create_workspace_file_blocking(
@@ -676,19 +685,28 @@ pub async fn create_workspace_directory(
     name: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<WorkspaceEntry, Error> {
+    let operation = state.operations.accept("create_workspace_directory")?;
+    let cancellation = operation.token();
     let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
-    BLOCKING_GATEWAY
-        .spawn(move || {
-            create_workspace_directory_inner(
-                workspace,
-                parent,
-                name,
-                &pgn_path_authority,
-                &workspace_mutation,
-            )
-        })
-        .await
+    crate::infra::operations::run_native_operation(
+        operation,
+        "create_workspace_directory",
+        async move {
+            BLOCKING_GATEWAY
+                .spawn_cancellable(cancellation, move |_| {
+                    create_workspace_directory_inner(
+                        workspace,
+                        parent,
+                        name,
+                        &pgn_path_authority,
+                        &workspace_mutation,
+                    )
+                })
+                .await
+        },
+    )
+    .await
 }
 
 fn create_workspace_directory_inner(
@@ -754,19 +772,24 @@ pub async fn move_workspace_entry(
     target_directory: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("move_workspace_entry")?;
+    let cancellation = operation.token();
     let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
-    BLOCKING_GATEWAY
-        .spawn(move || {
-            move_workspace_entry_blocking(
-                workspace,
-                entry,
-                target_directory,
-                &pgn_path_authority,
-                &workspace_mutation,
-            )
-        })
-        .await
+    crate::infra::operations::run_native_operation(operation, "move_workspace_entry", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                move_workspace_entry_blocking(
+                    workspace,
+                    entry,
+                    target_directory,
+                    &pgn_path_authority,
+                    &workspace_mutation,
+                )
+            })
+            .await
+    })
+    .await
 }
 
 fn move_workspace_entry_blocking(
@@ -802,20 +825,25 @@ pub async fn rename_workspace_file(
     metadata: WorkspaceMetadata,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("rename_workspace_file")?;
+    let cancellation = operation.token();
     let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
-    BLOCKING_GATEWAY
-        .spawn(move || {
-            rename_workspace_file_blocking(
-                workspace,
-                entry,
-                name,
-                metadata,
-                &pgn_path_authority,
-                &workspace_mutation,
-            )
-        })
-        .await
+    crate::infra::operations::run_native_operation(operation, "rename_workspace_file", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                rename_workspace_file_blocking(
+                    workspace,
+                    entry,
+                    name,
+                    metadata,
+                    &pgn_path_authority,
+                    &workspace_mutation,
+                )
+            })
+            .await
+    })
+    .await
 }
 
 fn rename_workspace_file_blocking(
@@ -874,11 +902,18 @@ pub async fn trash_workspace_entry(
     entry: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("trash_workspace_entry")?;
+    let cancellation = operation.token();
     let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
-    BLOCKING_GATEWAY
-        .spawn(move || trash_entry(&pgn_path_authority, &workspace_mutation, &workspace, &entry))
-        .await
+    crate::infra::operations::run_native_operation(operation, "trash_workspace_entry", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |_| {
+                trash_entry(&pgn_path_authority, &workspace_mutation, &workspace, &entry)
+            })
+            .await
+    })
+    .await
 }
 
 fn trash_entry(
@@ -930,11 +965,22 @@ pub async fn restore_workspace_entry(
     entry: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = state.operations.accept("restore_workspace_entry")?;
+    let cancellation = operation.token();
     let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
-    BLOCKING_GATEWAY
-        .spawn(move || restore_entry(&pgn_path_authority, &workspace_mutation, &workspace, &entry))
-        .await
+    crate::infra::operations::run_native_operation(
+        operation,
+        "restore_workspace_entry",
+        async move {
+            BLOCKING_GATEWAY
+                .spawn_cancellable(cancellation, move |_| {
+                    restore_entry(&pgn_path_authority, &workspace_mutation, &workspace, &entry)
+                })
+                .await
+        },
+    )
+    .await
 }
 
 fn restore_entry(
@@ -976,20 +1022,31 @@ pub async fn permanently_delete_workspace_entry(
     entry: FileWorkspaceHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    permanently_delete_entry(state.inner(), &workspace, &entry).await
+    let operation = state
+        .operations
+        .accept("permanently_delete_workspace_entry")?;
+    let cancellation = operation.token();
+    let state = state.inner().clone();
+    crate::infra::operations::run_native_operation(
+        operation,
+        "permanently_delete_workspace_entry",
+        async move { permanently_delete_entry(&state, &workspace, &entry, cancellation).await },
+    )
+    .await
 }
 
 async fn permanently_delete_entry(
     state: &AppState,
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
+    cancellation: tokio_util::sync::CancellationToken,
 ) -> Result<(), Error> {
     let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
     let workspace = workspace.clone();
     let entry = entry.clone();
     let (dropped_engine_executables, result) = BLOCKING_GATEWAY
-        .spawn(move || {
+        .spawn_cancellable(cancellation, move |_| {
             Ok(permanently_delete_entry_blocking(
                 &pgn_path_authority,
                 &workspace_mutation,
@@ -1136,6 +1193,7 @@ mod tests {
         io::{Seek, Write},
         sync::{Arc, Mutex as StdMutex},
     };
+    use tauri::Manager;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -1158,6 +1216,51 @@ mod tests {
             .expect_err("an aborted task must return a join error");
         assert!(error.is_cancelled());
         assert!(matches!(map_picker_join(error), Error::Cancellation));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn production_workspace_file_tail_finishes_after_command_caller_drop() {
+        let (directory, state, workspace) = workspace_state();
+        let (hook, entered, release) = crate::pgn::BoundedHook::new();
+        state.pgn_repository.set_count_hook(Some(hook)).unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let handle = app.handle().clone();
+        let caller = tokio::spawn(async move {
+            let state = handle.state::<AppState>();
+            create_workspace_file(
+                workspace.clone(),
+                workspace,
+                "completed.pgn".into(),
+                WorkspaceMetadata::default(),
+                "1. e4 *".into(),
+                state,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), entered)
+            .await
+            .unwrap()
+            .unwrap();
+        caller.abort();
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !app
+                .state::<AppState>()
+                .operations
+                .outstanding_labels()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(directory.path().join("workspace/completed.pgn")).unwrap(),
+            "1. e4 *"
+        );
     }
 
     fn workspace_state() -> (TempDir, AppState, FileWorkspaceHandle) {
@@ -1267,7 +1370,13 @@ mod tests {
         point: RemovalFaultPoint,
     ) -> Result<(), Error> {
         set_test_removal_injector(Some(Arc::new(RemovalFault(point))));
-        let result = permanently_delete_entry(state, workspace, entry).await;
+        let result = permanently_delete_entry(
+            state,
+            workspace,
+            entry,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
         set_test_removal_injector(None);
         result
     }
@@ -1354,9 +1463,14 @@ mod tests {
         let (_directory, state, workspace) = workspace_state();
         let (child, entry) = registered_child_directory(&state, &workspace, "victim");
         set_test_atomic_file_injector(Some(Arc::new(RegistryWriteFailure)));
-        let error = permanently_delete_entry(&state, &workspace, &entry)
-            .await
-            .expect_err("registry failure after unlink must be applied-despite-error");
+        let error = permanently_delete_entry(
+            &state,
+            &workspace,
+            &entry,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("registry failure after unlink must be applied-despite-error");
         set_test_atomic_file_injector(None);
 
         assert!(!child.exists());
@@ -1396,9 +1510,14 @@ mod tests {
         fs::create_dir(root.join("victim.info")).expect("invalid sidecar directory");
         let entry = registered_child_file(&state, &workspace, &file);
 
-        let error = permanently_delete_entry(&state, &workspace, &entry)
-            .await
-            .expect_err("sidecar cleanup failure must be applied-despite-error");
+        let error = permanently_delete_entry(
+            &state,
+            &workspace,
+            &entry,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("sidecar cleanup failure must be applied-despite-error");
 
         assert!(!file.exists());
         assert!(matches!(
@@ -1471,9 +1590,14 @@ mod tests {
         let key = EngineKey::new("tab".into(), "operation".into()).expect("engine key");
         supervise_test_engine(&state, &key, "application-engine", executable.clone()).await;
 
-        permanently_delete_entry(&state, &workspace, &entry)
-            .await
-            .expect("permanent delete");
+        permanently_delete_entry(
+            &state,
+            &workspace,
+            &entry,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("permanent delete");
 
         assert!(state.engine_supervisor.get_exact(&key).is_none());
         let (retired_actor, _) = crate::engine::EngineActor::recording_test_actor(&[]);
@@ -1506,6 +1630,158 @@ mod tests {
             .get_exact(&replacement_key)
             .is_some());
         state.engine_supervisor.terminate_all().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn production_delete_retirement_tail_survives_command_caller_drop() {
+        let (_directory, state, workspace) = workspace_state();
+        let (child, entry) = registered_child_directory(&state, &workspace, "dropped-caller");
+        let executable_path = child.join("engine");
+        fs::write(&executable_path, b"engine").unwrap();
+        let executable = registered_engine_file(&state, &executable_path);
+        let key = EngineKey::new("tab".into(), "caller-drop".into()).unwrap();
+        supervise_test_engine(&state, &key, "application-engine", executable.clone()).await;
+        let mutation = Arc::clone(&state.workspace_mutation);
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            let _guard = mutation.lock().unwrap();
+            entered_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let command_app = app.handle().clone();
+        let caller = tokio::spawn(async move {
+            let state = command_app.state::<AppState>();
+            permanently_delete_workspace_entry(workspace, entry, state).await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while app
+                .state::<AppState>()
+                .operations
+                .outstanding_labels()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !app
+                .state::<AppState>()
+                .operations
+                .outstanding_labels()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let state = app.state::<AppState>();
+        assert!(!child.exists());
+        assert!(state.engine_supervisor.get_exact(&key).is_none());
+        let (actor, _) = crate::engine::EngineActor::recording_test_actor(&[]);
+        assert!(matches!(
+            state
+                .engine_supervisor
+                .replace_handle(
+                    EngineKey::new("tab".into(), "retired-after-drop".into()).unwrap(),
+                    actor,
+                    "other-engine".into(),
+                    executable,
+                )
+                .await,
+            Err(Error::Conflict(message)) if message == "engine executable is retired"
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn production_delete_error_retirement_tail_survives_command_caller_drop() {
+        let (directory, state, workspace) = workspace_state();
+        let (child, entry) = registered_child_directory(&state, &workspace, "dropped-error");
+        let executable_path = child.join("engine");
+        fs::write(&executable_path, b"engine").unwrap();
+        let executable = registered_engine_file(&state, &executable_path);
+        let key = EngineKey::new("tab".into(), "caller-drop-error".into()).unwrap();
+        supervise_test_engine(&state, &key, "application-engine", executable.clone()).await;
+        let mutation = Arc::clone(&state.workspace_mutation);
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            let _guard = mutation.lock().unwrap();
+            entered_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let command_app = app.handle().clone();
+        let caller = tokio::spawn(async move {
+            let state = command_app.state::<AppState>();
+            permanently_delete_workspace_entry(workspace, entry, state).await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while app
+                .state::<AppState>()
+                .operations
+                .outstanding_labels()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        let registry = directory.path().join("registry.json");
+        fs::remove_file(&registry).unwrap();
+        fs::create_dir(&registry).unwrap();
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !app
+                .state::<AppState>()
+                .operations
+                .outstanding_labels()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let state = app.state::<AppState>();
+        assert!(!child.exists(), "the workspace unlink completed");
+        assert!(registry.is_dir(), "the registry replacement failed");
+        assert!(state.engine_supervisor.get_exact(&key).is_none());
+        let (actor, _) = crate::engine::EngineActor::recording_test_actor(&[]);
+        assert!(matches!(
+            state
+                .engine_supervisor
+                .replace_handle(
+                    EngineKey::new("tab".into(), "retired-after-error".into()).unwrap(),
+                    actor,
+                    "other-engine".into(),
+                    executable,
+                )
+                .await,
+            Err(Error::Conflict(message)) if message == "engine executable is retired"
+        ));
     }
 
     #[tokio::test]
@@ -1541,7 +1817,13 @@ mod tests {
         supervise_test_engine(&state, &key, "application-engine", executable).await;
         set_test_atomic_file_injector(Some(Arc::new(RegistryWriteFailure)));
 
-        let result = permanently_delete_entry(&state, &workspace, &entry).await;
+        let result = permanently_delete_entry(
+            &state,
+            &workspace,
+            &entry,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
         set_test_atomic_file_injector(None);
 
         assert!(matches!(
