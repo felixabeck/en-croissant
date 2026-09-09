@@ -7260,3 +7260,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Evidence:** Cumulative PGN/index lens confidence 100; root inspected the predicate. Origin 97c29add removed the colour checks from ca2ed804 before the current reviewed range.
 * **Repair:** Restore role and colour containment for every requested piece, preserving unspecified squares. Add opposite-colour and valid-partial regressions through production matching. Adopted into the active cancellation build's search review repair.
 * **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
+
+---
+
+## 2026-09-09 — filed through the inbox spool
+
+### Custom-start move numbering ignores the root FEN fullmove number
+
+* **ID:** f-20260909-06 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/utils/treeReducer.ts:95 and src/utils/chess.ts:479.
+* **Defect:** Root halfMoves starts at zero or one based only on turn. From a Black-to-move FEN at fullmove23, the next move renders as 1...e5 instead of23...e5.
+* **Evidence:** Cumulative chess-semantics lens confidence99; root confirmed defaultTree ignores fullmove number. Origin10a49bab predates reviewed range.
+* **Repair:** Share root ply derivation from parsed FEN fullmove/turn for default and PGN-parsed trees; prove nonstandard White/Black starts and round trips. Adopted for active review repair.
+* **Provenance:** Plan authorship/arbitration share root context; Codex detection shares family with phase1/2/4 code, Gemini authored phase3.
