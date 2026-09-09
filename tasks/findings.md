@@ -6649,7 +6649,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### A failed position query is indistinguishable from a fully covered position
 
-* **ID:** f-20260906-04 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260906-04 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/utils/repertoire.ts:52-54` — the bare `catch { return { moves: [], total: 0 }; }`
   in `fetchPositionMoves`, consumed at `src/utils/repertoire.ts:119`.
 * **Defect:** any failure of `searchPosition` — unreadable database, lock contention, a dropped
