@@ -7195,7 +7195,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Native game events discard transport failures without a delivery recovery contract
 
-* **ID:** f-20260908-03 · **Status:** open · **Area:** engine-uci · **Root:** native-game-event-delivery · **Entry:** build · **Blocked:** none
+* **ID:** f-20260908-03 · **Status:** handled · **Area:** engine-uci · **Root:** native-game-event-delivery · **Entry:** build · **Blocked:** none
 * **Where:** src-tauri/src/game.rs:768-784 emit_terminal_event and :2916 engine GameMoveEvent emission; renderer BoardGame post-adoption query is one-shot.
 * **Defect:** terminal emission sets terminal_event_emitted before ignoring emit errors; engine move emission uses unwrap_or(()). An actual transport failure is neither observable nor retried/reconciled. If a surviving renderer misses an engine move or terminal transition, it can remain on stale state. Root verified both discarded Results; the trigger is an injected or actual emit failure, not demonstrated in the real app.
 * **Root evidence:** both are native game snapshots published through best-effort Tauri emission without a common failure/recovery owner.
