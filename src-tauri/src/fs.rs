@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -26,6 +27,27 @@ const MAX_ARCHIVE_PATH_BYTES: usize = 1024;
 const MAX_ARCHIVE_PATH_COMPONENTS: usize = crate::infra::fs::MAX_REMOVE_TREE_DEPTH - 1;
 const ARTIFACT_MANIFEST_PUBLIC_KEY: &str =
     "RWSF3PMxhuaQf7613UytN4bdF7FQyBymLJVDIG3OE8xNa+0fcs6KE6/J";
+
+/// Signals a staging producer at its deadline but keeps awaiting its real exit. The caller's
+/// native lease therefore continues to account for a blocking extractor and its private cleanup.
+/// This helper is used only before publication; committed durability tails have no deadline race.
+async fn await_staging_deadline<T>(
+    deadline: Duration,
+    cancellation: &CancellationToken,
+    timeout_message: &'static str,
+    producer: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::pin!(producer);
+    tokio::select! {
+        biased;
+        result = &mut producer => result,
+        _ = tokio::time::sleep(deadline) => {
+            cancellation.cancel();
+            let _ = producer.await;
+            Err(Error::EngineTimeout(timeout_message.into()))
+        }
+    }
+}
 
 fn download_target_durability(
     outcome: crate::infra::fs::AtomicFileOutcome,
@@ -788,8 +810,10 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
     let staged = tempfile::tempdir().map_err(|error| Error::Io(Box::new(error)))?;
     let staged_file = staged.path().join("payload");
     let progress_lease = begin_progress(&state.progress_state, app, id.to_owned())?;
-    let result = match tokio::time::timeout(
+    let result = await_staging_deadline(
         DOWNLOAD_DEADLINE,
+        &cancellation,
+        "download deadline exceeded",
         download_file_core_control_with_integrity(
             op,
             url,
@@ -810,15 +834,7 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
             },
         ),
     )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => {
-            let error = Error::EngineTimeout("download deadline exceeded".into());
-            report_download_error(state, app, &progress_lease, &job_id, &error);
-            return Err(error);
-        }
-    };
+    .await;
     if let Err(error) = result {
         report_download_error(state, app, &progress_lease, &job_id, &error);
         return Err(error);
@@ -1171,8 +1187,10 @@ pub async fn download_engine_archive(
                 let staging = private_tempdir()?;
                 let extracted = staging.path().join("extracted");
                 let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
-                let result = match tokio::time::timeout(
+                let result = await_staging_deadline(
                     DOWNLOAD_DEADLINE,
+                    &cancellation,
+                    "engine archive download deadline exceeded",
                     download_file_core_control_with_integrity(
                         op,
                         &url,
@@ -1193,68 +1211,25 @@ pub async fn download_engine_archive(
                         },
                     ),
                 )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => {
-                        let error = Error::EngineTimeout(
-                            "engine archive download deadline exceeded".into(),
-                        );
-                        update_progress_with_state(
-                            &state.progress_state,
-                            &app,
-                            &progress_lease,
-                            0.0,
-                            ProgressState::Failed,
-                        )?;
-                        return Err(error);
-                    }
-                };
+                .await;
                 if let Err(error) = result {
-                    let terminal = if matches!(error, Error::Cancellation) {
-                        ProgressState::Cancelled
-                    } else {
-                        ProgressState::Failed
-                    };
-                    update_progress_with_state(
-                        &state.progress_state,
-                        &app,
-                        &progress_lease,
-                        0.0,
-                        terminal,
-                    )?;
+                    report_download_error(&state, &app, &progress_lease, &job_id, &error);
                     return Err(error);
                 }
                 if cancellation.is_cancelled() {
-                    update_progress_with_state(
-                        &state.progress_state,
-                        &app,
-                        &progress_lease,
-                        0.0,
-                        ProgressState::Cancelled,
-                    )?;
-                    return Err(Error::Cancellation);
+                    let error = Error::Cancellation;
+                    report_download_error(&state, &app, &progress_lease, &job_id, &error);
+                    return Err(error);
                 }
                 let install_result = crate::infra::blocking::BLOCKING_GATEWAY
                     .spawn(move || resolved.atomic_install_download_dir(&extracted))
                     .await;
                 if let Err(error) = install_result {
-                    update_progress_with_state(
-                        &state.progress_state,
-                        &app,
-                        &progress_lease,
-                        0.0,
-                        ProgressState::Failed,
-                    )?;
+                    report_download_error(&state, &app, &progress_lease, &job_id, &error);
                     return Err(error);
                 }
-                update_progress_with_state(
-                    &state.progress_state,
-                    &app,
-                    &progress_lease,
-                    100.0,
-                    ProgressState::Succeeded,
-                )
+                report_download_success(&state, &app, &progress_lease, &job_id);
+                Ok(())
             }
             .await;
             result.map_err(sanitize_download_error)
@@ -2057,7 +2032,7 @@ mod tests {
 
     #[test]
     fn download_registry_is_bounded_exact_and_cleans_up() {
-        let registry = Arc::new(DownloadRegistry::default());
+        let registry = Arc::new(DownloadRegistry);
         let operations = crate::infra::operations::OperationRegistry::default();
         let first = registry.begin(&operations, "job").unwrap();
         assert!(registry.begin(&operations, "job").is_err());
@@ -3434,8 +3409,10 @@ mod tests {
                 release: tokio::sync::Notify::new(),
             });
             let _release_on_drop = ReleaseHeldTransport(transport.clone());
-            let mut state = AppState::default();
-            state.http_transport = transport.clone();
+            let state = AppState {
+                http_transport: transport.clone(),
+                ..AppState::default()
+            };
             *state.pgn_path_authority.lock().unwrap() = Some(authority);
             let state = Arc::new(state);
             let app = test_progress_app();
@@ -3492,5 +3469,127 @@ mod tests {
                 );
             }
         }
+    }
+
+    struct HoldExtractionWrite {
+        entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    struct ExtractionTestGuard {
+        release: Option<std::sync::mpsc::Sender<()>>,
+    }
+
+    impl ExtractionTestGuard {
+        fn release(&mut self) {
+            if let Some(release) = self.release.take() {
+                let _ = release.send(());
+            }
+        }
+    }
+
+    impl Drop for ExtractionTestGuard {
+        fn drop(&mut self) {
+            self.release();
+            crate::infra::fs::set_test_atomic_file_injector(None);
+        }
+    }
+
+    impl crate::infra::fs::AtomicWriterInjector for HoldExtractionWrite {
+        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == crate::infra::fs::AtomicFileFaultPoint::Write {
+                if let Some(entered) = self.entered.lock().unwrap().take() {
+                    let _ = entered.send(());
+                }
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|_| std::io::Error::other("extraction release timed out"))?;
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn staging_deadline_keeps_accepted_lease_until_real_extractor_cleanup() {
+        let dir = tempdir().unwrap();
+        let archive_path = dir.path().join("held.gz");
+        let target = dir.path().join("published-engine");
+        {
+            let mut encoder = flate2::write::GzEncoder::new(
+                std::fs::File::create(&archive_path).unwrap(),
+                flate2::Compression::default(),
+            );
+            encoder.write_all(b"held extraction payload").unwrap();
+            encoder.finish().unwrap();
+        }
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut guard = ExtractionTestGuard {
+            release: Some(release_tx),
+        };
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(HoldExtractionWrite {
+            entered: std::sync::Mutex::new(Some(entered_tx)),
+            release: std::sync::Mutex::new(release_rx),
+        })));
+
+        let registry = crate::infra::operations::OperationRegistry::default();
+        let lease = registry.accept("held engine extraction").unwrap();
+        let cancellation = lease.token();
+        let deadline_observer = cancellation.clone();
+        let worker_cancellation = cancellation.clone();
+        let producer = tokio::spawn(crate::infra::blocking::BLOCKING_GATEWAY.spawn_cancellable(
+            worker_cancellation,
+            move |token| {
+                extract_gz_cancellable(
+                    std::fs::File::open(archive_path)?,
+                    &target,
+                    OpClass::Engine.limits(),
+                    token,
+                )
+            },
+        ));
+
+        tokio::time::timeout(Duration::from_secs(5), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let task = tokio::spawn(crate::infra::operations::run_native_operation(
+            lease,
+            "held engine extraction",
+            async move {
+                await_staging_deadline(
+                    Duration::from_millis(10),
+                    &cancellation,
+                    "test extraction deadline exceeded",
+                    async move {
+                        producer.await.map_err(|error| {
+                            Error::Conflict(format!("extractor task failed: {error}"))
+                        })?
+                    },
+                )
+                .await
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(1), deadline_observer.cancelled())
+            .await
+            .expect("the staging deadline must signal cancellation");
+        assert!(!registry.wait_for_drain(Duration::ZERO).unwrap());
+        assert!(registry
+            .outstanding_labels()
+            .unwrap()
+            .contains(&"held engine extraction".to_owned()));
+        assert!(!dir.path().join("published-engine").exists());
+
+        guard.release();
+        let result = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, Err(Error::EngineTimeout(_))));
+        assert!(registry.wait_for_drain(Duration::from_secs(1)).unwrap());
+        assert!(!dir.path().join("published-engine").exists());
     }
 }

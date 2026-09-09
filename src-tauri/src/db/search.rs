@@ -25,9 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     db::{
-        encoding::{
-            decode_move, try_iter_mainline_move_bytes, try_iter_mainline_move_bytes_cancellable,
-        },
+        encoding::{decode_move, try_iter_mainline_move_bytes_cancellable},
         get_db_or_create, get_material_count, get_pawn_home,
         models::*,
         normalize_games, resolve_database,
@@ -790,7 +788,7 @@ fn search_position_blocking<R: tauri::Runtime>(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let normalized_games = normalize_games(games)?;
+    let normalized_games = normalize_games(games, cancellation)?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
@@ -869,7 +867,10 @@ pub(crate) fn is_position_in_db_cancellable(
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        try_iter_mainline_move_bytes(entry.moves).map_err(|error| {
+        try_iter_mainline_move_bytes_cancellable(entry.moves, cancellation).map_err(|error| {
+            if matches!(error, Error::Cancellation) {
+                return Error::Cancellation;
+            }
             Error::InvalidInput(format!(
                 "game {} has invalid move stream: {error}",
                 entry.id
@@ -1621,6 +1622,34 @@ mod tests {
         assert!(matches!(result, Err(Error::Cancellation)));
         assert!(checkpoints.load(Ordering::SeqCst) >= 2);
         assert!(!get_index_path(&database).exists());
+        assert!(state.search_cache.results.lock().unwrap().values.is_empty());
+    }
+
+    #[test]
+    fn search_position_cancels_during_post_sql_normalization_without_cache_publication() {
+        let (_dir, app, handle, _database) = position_search_database();
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(
+                crate::progress::ProgressEvent
+            ))
+            .mount_events(&app);
+        let state = app.state::<AppState>();
+        let progress = JobProgress::new(app.clone(), "normalization-search".into()).unwrap();
+        let permit = state.new_request.clone().try_acquire_owned().unwrap();
+        let cancellation = CancellationToken::new();
+        crate::db::encoding::cancel_decode_after_checkpoints(cancellation.clone(), 2);
+        let result = search_position_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            permit,
+            progress.lease(),
+            app.clone(),
+            handle,
+            exact_position_query(STARTING_FEN),
+            &cancellation,
+        );
+        assert!(matches!(result, Err(Error::Cancellation)));
         assert!(state.search_cache.results.lock().unwrap().values.is_empty());
     }
 

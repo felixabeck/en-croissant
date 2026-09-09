@@ -225,6 +225,64 @@ async function logCleanupFailure(command: PropertyKey, ticket: string, cause: un
     }
 }
 
+async function withPreparedTicket<T>({
+    signal,
+    operation,
+    prepare,
+    cancel,
+    continuation,
+}: {
+    signal?: AbortSignal;
+    operation: PropertyKey;
+    prepare: () => Promise<CommandResult<string>>;
+    cancel: (ticket: string) => Promise<CommandResult<unknown>>;
+    continuation: (ticket: string) => Promise<T>;
+}): Promise<T> {
+    if (signal?.aborted) throw cancellationError();
+
+    let ticket: string | undefined;
+    let aborted = false;
+    let cleanupPromise: Promise<void> | undefined;
+    const cleanup = () => {
+        const cleanupTicket = ticket;
+        if (!cleanupTicket) return Promise.resolve();
+        cleanupPromise ??= (async () => {
+            try {
+                unwrapCommand(await cancel(cleanupTicket));
+            } catch (error) {
+                await logCleanupFailure(operation, cleanupTicket, error);
+            }
+        })();
+        return cleanupPromise;
+    };
+    const onAbort = () => {
+        aborted = true;
+        void cleanup();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+        ticket = unwrapCommand(await prepare());
+        if (aborted || signal?.aborted) {
+            await cleanup();
+            throw cancellationError();
+        }
+        let result: T;
+        try {
+            result = await continuation(ticket);
+        } catch (error) {
+            await cleanup();
+            throw error;
+        }
+        if (aborted || signal?.aborted) {
+            await cleanup();
+            throw cancellationError();
+        }
+        return result;
+    } finally {
+        signal?.removeEventListener("abort", onAbort);
+    }
+}
+
 async function invokeNativeRead(
     commandName: PropertyKey,
     command: (...args: unknown[]) => Promise<unknown>,
@@ -233,83 +291,29 @@ async function invokeNativeRead(
 ): Promise<unknown> {
     const signal = options?.signal;
     if (!signal) return command(...args, null);
-    if (signal.aborted) throw cancellationError();
-
-    let ticket: string | undefined;
-    let aborted = false;
-    let cleanupStarted = false;
-    const cleanup = async () => {
-        if (!ticket || cleanupStarted) return;
-        cleanupStarted = true;
-        try {
-            unwrapCommand(await commands.cancelNativeRead(ticket));
-        } catch (error) {
-            await logCleanupFailure(commandName, ticket, error);
-        }
-    };
-    const onAbort = () => {
-        aborted = true;
-        void cleanup();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    try {
-        ticket = unwrapCommand(await commands.prepareNativeRead());
-        if (aborted || signal.aborted) {
-            await cleanup();
-            throw cancellationError();
-        }
-        let result: unknown;
-        try {
-            result = await command(...args, ticket);
-            if (isCommandResult(result)) result = unwrapCommand(result);
-        } catch (error) {
-            if (!cleanupStarted) await cleanup();
-            throw error;
-        }
-        if (aborted || signal.aborted) {
-            await cleanup();
-            throw cancellationError();
-        }
-        return result;
-    } finally {
-        signal.removeEventListener("abort", onAbort);
-    }
+    return withPreparedTicket({
+        signal,
+        operation: commandName,
+        prepare: () => commands.prepareNativeRead(),
+        cancel: (ticket) => commands.cancelNativeRead(ticket),
+        continuation: async (ticket) => {
+            const result = await command(...args, ticket);
+            return isCommandResult(result) ? unwrapCommand(result) : result;
+        },
+    });
 }
 
 async function prepareAnalysis(
     tab: string,
     options: NativeReadOptions | undefined,
 ): Promise<string> {
-    const signal = options?.signal;
-    if (signal?.aborted) throw cancellationError();
-
-    let ticket: string | undefined;
-    let aborted = false;
-    let cleanupStarted = false;
-    const cleanup = async () => {
-        if (!ticket || cleanupStarted) return;
-        cleanupStarted = true;
-        try {
-            unwrapCommand(await commands.cancelAnalysis(ticket));
-        } catch (error) {
-            await logCleanupFailure("prepareAnalysis", ticket, error);
-        }
-    };
-    const onAbort = () => {
-        aborted = true;
-        void cleanup();
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-    try {
-        ticket = unwrapCommand(await commands.prepareAnalysis(tab));
-        if (aborted || signal?.aborted) {
-            await cleanup();
-            throw cancellationError();
-        }
-        return ticket;
-    } finally {
-        signal?.removeEventListener("abort", onAbort);
-    }
+    return withPreparedTicket({
+        signal: options?.signal,
+        operation: "prepareAnalysis",
+        prepare: () => commands.prepareAnalysis(tab),
+        cancel: (ticket) => commands.cancelAnalysis(ticket),
+        continuation: async (ticket) => ticket,
+    });
 }
 
 /**

@@ -7,6 +7,7 @@
 use crate::{
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
+    infra::cancellable_lock::lock_std_cancellable,
     infra::path_authority::{
         workspace_sidecar_leaf as sidecar_leaf, CommitDurability, FileWorkspaceDescriptor,
         FileWorkspaceHandle, PathAuthority, PathClass, PathOperation, PathRef,
@@ -568,7 +569,7 @@ pub async fn create_workspace_file(
         let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
         let workspace_mutation = Arc::clone(&state.workspace_mutation);
         let mut entry = BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
+            .spawn_cancellable(cancellation, move |token| {
                 create_workspace_file_blocking(
                     workspace,
                     parent,
@@ -577,6 +578,7 @@ pub async fn create_workspace_file(
                     pgn,
                     &pgn_path_authority,
                     &workspace_mutation,
+                    token,
                 )
             })
             .await?;
@@ -595,6 +597,9 @@ pub async fn create_workspace_file(
     .await
 }
 
+// This core deliberately mirrors the flat command boundary plus its two shared owners. Grouping
+// those values would introduce a one-off request type with no second consumer.
+#[allow(clippy::too_many_arguments)]
 fn create_workspace_file_blocking(
     workspace: FileWorkspaceHandle,
     parent: FileWorkspaceHandle,
@@ -603,11 +608,14 @@ fn create_workspace_file_blocking(
     pgn: String,
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace_mutation: &Mutex<()>,
+    cancellation: &CancellationToken,
 ) -> Result<WorkspaceEntry, Error> {
     let metadata_bytes = serialize_metadata(&metadata)?;
-    let _guard = workspace_mutation
-        .lock()
-        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let _guard = lock_std_cancellable(
+        workspace_mutation,
+        cancellation,
+        "workspace mutation lock was poisoned",
+    )?;
     let root = mutation_target(pgn_path_authority, &workspace)?;
     let parent_target = mutation_target(pgn_path_authority, &parent)?;
     ensure_registered_descendant(&root, &parent_target)?;
@@ -615,6 +623,9 @@ fn create_workspace_file_blocking(
     let filename = pgn_name(&name)?;
     let target_leaf = std::ffi::OsString::from(&filename);
     let target = parent_target.path().join(&filename);
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let installed =
         crate::infra::fs::atomic_replace_at_identified(parent_dir, &target_leaf, |file| {
             use std::io::Write;
@@ -694,13 +705,14 @@ pub async fn create_workspace_directory(
         "create_workspace_directory",
         async move {
             BLOCKING_GATEWAY
-                .spawn_cancellable(cancellation, move |_| {
+                .spawn_cancellable(cancellation, move |token| {
                     create_workspace_directory_inner(
                         workspace,
                         parent,
                         name,
                         &pgn_path_authority,
                         &workspace_mutation,
+                        token,
                     )
                 })
                 .await
@@ -715,10 +727,13 @@ fn create_workspace_directory_inner(
     name: String,
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace_mutation: &Mutex<()>,
+    cancellation: &CancellationToken,
 ) -> Result<WorkspaceEntry, Error> {
-    let _guard = workspace_mutation
-        .lock()
-        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let _guard = lock_std_cancellable(
+        workspace_mutation,
+        cancellation,
+        "workspace mutation lock was poisoned",
+    )?;
     let root = mutation_target(pgn_path_authority, &workspace)?;
     let parent_target = mutation_target(pgn_path_authority, &parent)?;
     ensure_registered_descendant(&root, &parent_target)?;
@@ -726,6 +741,9 @@ fn create_workspace_directory_inner(
     let name = validate_name(&name)?.to_string();
     let target = parent_target.path().join(&name);
     let target_leaf = std::ffi::OsString::from(&name);
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     crate::infra::fs::create_dir_at(parent_dir, &target_leaf)?;
     let identity = crate::infra::fs::entry_identity_at(parent_dir, &target_leaf, true)?;
     let handle = match register_created_entry(
@@ -778,13 +796,14 @@ pub async fn move_workspace_entry(
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
     crate::infra::operations::run_native_operation(operation, "move_workspace_entry", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
+            .spawn_cancellable(cancellation, move |token| {
                 move_workspace_entry_blocking(
                     workspace,
                     entry,
                     target_directory,
                     &pgn_path_authority,
                     &workspace_mutation,
+                    token,
                 )
             })
             .await
@@ -798,10 +817,13 @@ fn move_workspace_entry_blocking(
     target_directory: FileWorkspaceHandle,
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace_mutation: &Mutex<()>,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    let _guard = workspace_mutation
-        .lock()
-        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let _guard = lock_std_cancellable(
+        workspace_mutation,
+        cancellation,
+        "workspace mutation lock was poisoned",
+    )?;
     let root = mutation_target(pgn_path_authority, &workspace)?;
     let source = mutation_target(pgn_path_authority, &entry)?;
     let destination = mutation_target(pgn_path_authority, &target_directory)?;
@@ -811,6 +833,9 @@ fn move_workspace_entry_blocking(
     let target = destination.path().join(&name);
     if source.path() == target {
         return Ok(());
+    }
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
     }
     paired_rename(&source, destination.directory()?, &name)?;
     rebind_after_move(pgn_path_authority, &entry, &source, &target)
@@ -831,7 +856,7 @@ pub async fn rename_workspace_file(
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
     crate::infra::operations::run_native_operation(operation, "rename_workspace_file", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
+            .spawn_cancellable(cancellation, move |token| {
                 rename_workspace_file_blocking(
                     workspace,
                     entry,
@@ -839,6 +864,7 @@ pub async fn rename_workspace_file(
                     metadata,
                     &pgn_path_authority,
                     &workspace_mutation,
+                    token,
                 )
             })
             .await
@@ -853,11 +879,14 @@ fn rename_workspace_file_blocking(
     metadata: WorkspaceMetadata,
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace_mutation: &Mutex<()>,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     let metadata_bytes = serialize_metadata(&metadata)?;
-    let _guard = workspace_mutation
-        .lock()
-        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let _guard = lock_std_cancellable(
+        workspace_mutation,
+        cancellation,
+        "workspace mutation lock was poisoned",
+    )?;
     let root = mutation_target(pgn_path_authority, &workspace)?;
     let source = mutation_target(pgn_path_authority, &entry)?;
     ensure_registered_descendant(&root, &source)?;
@@ -871,6 +900,9 @@ fn rename_workspace_file_blocking(
         .ok_or_else(|| Error::InvalidInput("workspace file has no parent".into()))?
         .join(&filename);
     let target_leaf = std::ffi::OsString::from(&filename);
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     paired_rename(&source, &source.parent, &target_leaf)?;
     let info_leaf = sidecar_leaf(&target_leaf)?;
     let sidecar_outcome =
@@ -908,8 +940,14 @@ pub async fn trash_workspace_entry(
     let workspace_mutation = Arc::clone(&state.workspace_mutation);
     crate::infra::operations::run_native_operation(operation, "trash_workspace_entry", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
-                trash_entry(&pgn_path_authority, &workspace_mutation, &workspace, &entry)
+            .spawn_cancellable(cancellation, move |token| {
+                trash_entry(
+                    &pgn_path_authority,
+                    &workspace_mutation,
+                    &workspace,
+                    &entry,
+                    token,
+                )
             })
             .await
     })
@@ -921,15 +959,21 @@ fn trash_entry(
     workspace_mutation: &Mutex<()>,
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    let _guard = workspace_mutation
-        .lock()
-        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let _guard = lock_std_cancellable(
+        workspace_mutation,
+        cancellation,
+        "workspace mutation lock was poisoned",
+    )?;
     let root = mutation_target(pgn_path_authority, workspace)?;
     let source = mutation_target(pgn_path_authority, entry)?;
     ensure_registered_descendant(&root, &source)?;
     let root_dir = root.directory()?;
     let trash = std::ffi::OsString::from(TRASH_DIRECTORY);
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     // Both components are created through retained descriptors; no recursive pathname creation.
     match crate::infra::fs::create_dir_at(root_dir, &trash) {
         Ok(()) => {}
@@ -974,8 +1018,14 @@ pub async fn restore_workspace_entry(
         "restore_workspace_entry",
         async move {
             BLOCKING_GATEWAY
-                .spawn_cancellable(cancellation, move |_| {
-                    restore_entry(&pgn_path_authority, &workspace_mutation, &workspace, &entry)
+                .spawn_cancellable(cancellation, move |token| {
+                    restore_entry(
+                        &pgn_path_authority,
+                        &workspace_mutation,
+                        &workspace,
+                        &entry,
+                        token,
+                    )
                 })
                 .await
         },
@@ -988,10 +1038,13 @@ fn restore_entry(
     workspace_mutation: &Mutex<()>,
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    let _guard = workspace_mutation
-        .lock()
-        .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+    let _guard = lock_std_cancellable(
+        workspace_mutation,
+        cancellation,
+        "workspace mutation lock was poisoned",
+    )?;
     let root = mutation_target(pgn_path_authority, workspace)?;
     let source = mutation_target(pgn_path_authority, entry)?;
     let trash_root = root.path().join(TRASH_DIRECTORY);
@@ -1000,6 +1053,9 @@ fn restore_entry(
         .strip_prefix(&trash_root)
         .map_err(|_| Error::InvalidInput("workspace entry is not in trash".into()))?;
     let target = root.path().join(&source.leaf);
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     if source.is_dir {
         crate::infra::fs::rename_entry_at(
             &source.parent,
@@ -1046,12 +1102,13 @@ async fn permanently_delete_entry(
     let workspace = workspace.clone();
     let entry = entry.clone();
     let (dropped_engine_executables, result) = BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation, move |_| {
+        .spawn_cancellable(cancellation, move |token| {
             Ok(permanently_delete_entry_blocking(
                 &pgn_path_authority,
                 &workspace_mutation,
                 &workspace,
                 &entry,
+                token,
             ))
         })
         .await?;
@@ -1074,15 +1131,21 @@ fn permanently_delete_entry_blocking(
     workspace_mutation: &Mutex<()>,
     workspace: &FileWorkspaceHandle,
     entry: &FileWorkspaceHandle,
+    cancellation: &CancellationToken,
 ) -> (Vec<PathRef>, Result<(), Error>) {
     let mut dropped_engine_executables = Vec::<PathRef>::new();
     let result = (|| {
-        let _guard = workspace_mutation
-            .lock()
-            .map_err(|_| Error::Conflict("workspace mutation lock was poisoned".into()))?;
+        let _guard = lock_std_cancellable(
+            workspace_mutation,
+            cancellation,
+            "workspace mutation lock was poisoned",
+        )?;
         let root = mutation_target(pgn_path_authority, workspace)?;
         let source = mutation_target(pgn_path_authority, entry)?;
         ensure_registered_descendant(&root, &source)?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         let removal_error = match crate::infra::fs::remove_entry_at(
             &source.parent,
             &source.leaf,
@@ -1195,6 +1258,406 @@ mod tests {
     };
     use tauri::Manager;
     use tempfile::TempDir;
+
+    #[derive(Clone, Copy, Debug)]
+    enum QueuedWorkspaceCommand {
+        CreateFile,
+        CreateDirectory,
+        Move,
+        Rename,
+        Trash,
+        Restore,
+        PermanentlyDelete,
+    }
+
+    /// Owns the contended standard mutex on a bounded worker thread so async tests never retain
+    /// a `MutexGuard` across `.await`. Drop always releases and joins the holder.
+    struct HeldWorkspaceMutation {
+        release: Option<std::sync::mpsc::SyncSender<()>>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl HeldWorkspaceMutation {
+        fn new(mutation: Arc<StdMutex<()>>) -> Self {
+            let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+            let worker = std::thread::spawn(move || {
+                let _guard = mutation.lock().expect("hold workspace mutation lock");
+                entered_tx.send(()).expect("report held workspace lock");
+                let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            });
+            entered_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("workspace lock holder must start");
+            Self {
+                release: Some(release_tx),
+                worker: Some(worker),
+            }
+        }
+
+        fn release(&mut self) {
+            if let Some(release) = self.release.take() {
+                release.send(()).expect("release workspace lock");
+            }
+            if let Some(worker) = self.worker.take() {
+                worker.join().expect("join workspace lock holder");
+            }
+        }
+    }
+
+    impl Drop for HeldWorkspaceMutation {
+        fn drop(&mut self) {
+            if let Some(release) = self.release.take() {
+                let _ = release.send(());
+            }
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    fn workspace_tree_snapshot(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        fn visit(root: &Path, directory: &Path, entries: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
+            let mut children = fs::read_dir(directory)
+                .expect("read workspace")
+                .map(|child| child.expect("workspace child").path())
+                .collect::<Vec<_>>();
+            children.sort();
+            for child in children {
+                let relative = child
+                    .strip_prefix(root)
+                    .expect("relative path")
+                    .to_path_buf();
+                if child.is_dir() {
+                    entries.push((relative, None));
+                    visit(root, &child, entries);
+                } else {
+                    entries.push((relative, Some(fs::read(&child).expect("read child"))));
+                }
+            }
+        }
+        let mut entries = Vec::new();
+        visit(root, root, &mut entries);
+        entries
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn shutdown_cancels_every_workspace_command_at_the_actual_mutation_lock() {
+        for command in [
+            QueuedWorkspaceCommand::CreateFile,
+            QueuedWorkspaceCommand::CreateDirectory,
+            QueuedWorkspaceCommand::Move,
+            QueuedWorkspaceCommand::Rename,
+            QueuedWorkspaceCommand::Trash,
+            QueuedWorkspaceCommand::Restore,
+            QueuedWorkspaceCommand::PermanentlyDelete,
+        ] {
+            let (_directory, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+            let source_path = root.join("source.pgn");
+            fs::write(&source_path, b"[Event \"Source\"]\n\n1. e4 *\n").expect("source");
+            let source = registered_child_file(&state, &workspace, &source_path);
+            let (_destination_path, destination) =
+                registered_child_directory(&state, &workspace, "destination");
+            if matches!(command, QueuedWorkspaceCommand::Restore) {
+                trash_entry(
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    &workspace,
+                    &source,
+                    &CancellationToken::new(),
+                )
+                .expect("prepare trashed entry");
+            }
+            let source_before = mutation_target(&state.pgn_path_authority, &source)
+                .expect("source target")
+                .path()
+                .to_path_buf();
+            let descriptor_ids_before = {
+                let mut authority = authority(&state.pgn_path_authority).expect("authority");
+                authority
+                    .as_mut()
+                    .expect("initialized authority")
+                    .descriptors()
+                    .iter()
+                    .map(|descriptor| descriptor.id.clone())
+                    .collect::<Vec<_>>()
+            };
+            let tree_before = workspace_tree_snapshot(&root);
+            let mutation = Arc::clone(&state.workspace_mutation);
+            let _held = HeldWorkspaceMutation::new(Arc::clone(&mutation));
+            let waiting = crate::infra::cancellable_lock::observe_std_lock_wait(mutation.as_ref());
+            let app = tauri::test::mock_app();
+            app.manage(state);
+            let command_app = app.handle().clone();
+            let command_workspace = workspace.clone();
+            let command_source = source.clone();
+            let command_destination = destination.clone();
+            let task = tokio::spawn(async move {
+                let state = command_app.state::<AppState>();
+                match command {
+                    QueuedWorkspaceCommand::CreateFile => create_workspace_file(
+                        command_workspace.clone(),
+                        command_workspace,
+                        "created.pgn".into(),
+                        WorkspaceMetadata::default(),
+                        "1. d4 *".into(),
+                        state,
+                    )
+                    .await
+                    .map(|_| ()),
+                    QueuedWorkspaceCommand::CreateDirectory => create_workspace_directory(
+                        command_workspace.clone(),
+                        command_workspace,
+                        "created".into(),
+                        state,
+                    )
+                    .await
+                    .map(|_| ()),
+                    QueuedWorkspaceCommand::Move => {
+                        move_workspace_entry(
+                            command_workspace,
+                            command_source.clone(),
+                            command_destination.clone(),
+                            state,
+                        )
+                        .await
+                    }
+                    QueuedWorkspaceCommand::Rename => {
+                        rename_workspace_file(
+                            command_workspace,
+                            command_source.clone(),
+                            "renamed.pgn".into(),
+                            WorkspaceMetadata::default(),
+                            state,
+                        )
+                        .await
+                    }
+                    QueuedWorkspaceCommand::Trash => {
+                        trash_workspace_entry(command_workspace, command_source.clone(), state)
+                            .await
+                    }
+                    QueuedWorkspaceCommand::Restore => {
+                        restore_workspace_entry(command_workspace, command_source.clone(), state)
+                            .await
+                    }
+                    QueuedWorkspaceCommand::PermanentlyDelete => {
+                        permanently_delete_workspace_entry(
+                            command_workspace,
+                            command_source.clone(),
+                            state,
+                        )
+                        .await
+                    }
+                }
+            });
+            waiting
+                .recv_timeout(Duration::from_secs(5))
+                .expect("command must contend on the exact held mutation lock");
+            app.state::<AppState>()
+                .operations
+                .seal_and_request_cancellation()
+                .expect("request shutdown cancellation");
+            let error = tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .expect("queued command must stop while lock remains held")
+                .expect("join queued command")
+                .expect_err("queued command must cancel");
+            assert!(
+                matches!(error, Error::Cancellation),
+                "{command:?}: {error:?}"
+            );
+            assert!(
+                mutation.try_lock().is_err(),
+                "{command:?}: cancellation must return while the exact lock remains held"
+            );
+            assert_eq!(workspace_tree_snapshot(&root), tree_before, "{command:?}");
+            let state = app.state::<AppState>();
+            assert_eq!(
+                mutation_target(&state.pgn_path_authority, &source)
+                    .expect("source authority remains")
+                    .path(),
+                source_before,
+                "{command:?}"
+            );
+            let descriptor_ids_after = {
+                let mut authority = authority(&state.pgn_path_authority).expect("authority");
+                authority
+                    .as_mut()
+                    .expect("initialized authority")
+                    .descriptors()
+                    .iter()
+                    .map(|descriptor| descriptor.id.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(descriptor_ids_after, descriptor_ids_before, "{command:?}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn every_workspace_command_finishes_its_tail_after_caller_abort() {
+        for command in [
+            QueuedWorkspaceCommand::CreateFile,
+            QueuedWorkspaceCommand::CreateDirectory,
+            QueuedWorkspaceCommand::Move,
+            QueuedWorkspaceCommand::Rename,
+            QueuedWorkspaceCommand::Trash,
+            QueuedWorkspaceCommand::Restore,
+            QueuedWorkspaceCommand::PermanentlyDelete,
+        ] {
+            let (_directory, state, workspace) = workspace_state();
+            let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+            let source_path = root.join("source.pgn");
+            fs::write(&source_path, b"[Event \"Source\"]\n\n1. e4 *\n").expect("source");
+            let source = registered_child_file(&state, &workspace, &source_path);
+            let (destination_path, destination) =
+                registered_child_directory(&state, &workspace, "destination");
+            if matches!(command, QueuedWorkspaceCommand::Restore) {
+                trash_entry(
+                    &state.pgn_path_authority,
+                    &state.workspace_mutation,
+                    &workspace,
+                    &source,
+                    &CancellationToken::new(),
+                )
+                .expect("prepare trashed entry");
+            }
+            let mutation = Arc::clone(&state.workspace_mutation);
+            let mut held = HeldWorkspaceMutation::new(Arc::clone(&mutation));
+            let waiting = crate::infra::cancellable_lock::observe_std_lock_wait(mutation.as_ref());
+            let app = tauri::test::mock_app();
+            app.manage(state);
+            let command_app = app.handle().clone();
+            let command_workspace = workspace.clone();
+            let command_source = source.clone();
+            let command_destination = destination.clone();
+            let caller = tokio::spawn(async move {
+                let state = command_app.state::<AppState>();
+                match command {
+                    QueuedWorkspaceCommand::CreateFile => create_workspace_file(
+                        command_workspace.clone(),
+                        command_workspace,
+                        "created.pgn".into(),
+                        WorkspaceMetadata::default(),
+                        "1. d4 *".into(),
+                        state,
+                    )
+                    .await
+                    .map(|_| ()),
+                    QueuedWorkspaceCommand::CreateDirectory => create_workspace_directory(
+                        command_workspace.clone(),
+                        command_workspace,
+                        "created".into(),
+                        state,
+                    )
+                    .await
+                    .map(|_| ()),
+                    QueuedWorkspaceCommand::Move => {
+                        move_workspace_entry(
+                            command_workspace,
+                            command_source.clone(),
+                            command_destination,
+                            state,
+                        )
+                        .await
+                    }
+                    QueuedWorkspaceCommand::Rename => {
+                        rename_workspace_file(
+                            command_workspace,
+                            command_source.clone(),
+                            "renamed.pgn".into(),
+                            WorkspaceMetadata::default(),
+                            state,
+                        )
+                        .await
+                    }
+                    QueuedWorkspaceCommand::Trash => {
+                        trash_workspace_entry(command_workspace, command_source.clone(), state)
+                            .await
+                    }
+                    QueuedWorkspaceCommand::Restore => {
+                        restore_workspace_entry(command_workspace, command_source.clone(), state)
+                            .await
+                    }
+                    QueuedWorkspaceCommand::PermanentlyDelete => {
+                        permanently_delete_workspace_entry(
+                            command_workspace,
+                            command_source.clone(),
+                            state,
+                        )
+                        .await
+                    }
+                }
+            });
+            waiting
+                .recv_timeout(Duration::from_secs(5))
+                .expect("command must contend on the exact held mutation lock");
+            caller.abort();
+            let _ = caller.await;
+            held.release();
+            let operations = app.state::<AppState>().operations.clone();
+            let drained = tokio::task::spawn_blocking(move || {
+                operations.wait_for_drain(Duration::from_secs(5)).unwrap()
+            })
+            .await
+            .expect("join drain");
+            assert!(drained, "{command:?} must retain its accepted owner");
+            let state = app.state::<AppState>();
+            match command {
+                QueuedWorkspaceCommand::CreateFile => {
+                    assert_eq!(
+                        fs::read_to_string(root.join("created.pgn")).unwrap(),
+                        "1. d4 *"
+                    );
+                    assert!(root.join("created.info").is_file());
+                }
+                QueuedWorkspaceCommand::CreateDirectory => {
+                    assert!(root.join("created").is_dir());
+                }
+                QueuedWorkspaceCommand::Move => {
+                    assert!(!source_path.exists());
+                    assert!(destination_path.join("source.pgn").is_file());
+                    assert_eq!(
+                        mutation_target(&state.pgn_path_authority, &source)
+                            .expect("moved authority")
+                            .path(),
+                        destination_path.join("source.pgn")
+                    );
+                }
+                QueuedWorkspaceCommand::Rename => {
+                    assert!(!source_path.exists());
+                    assert!(root.join("renamed.pgn").is_file());
+                    assert!(root.join("renamed.info").is_file());
+                    assert_eq!(
+                        mutation_target(&state.pgn_path_authority, &source)
+                            .expect("renamed authority")
+                            .path(),
+                        root.join("renamed.pgn")
+                    );
+                }
+                QueuedWorkspaceCommand::Trash => {
+                    assert!(!source_path.exists());
+                    let target = mutation_target(&state.pgn_path_authority, &source)
+                        .expect("trash authority");
+                    assert!(target.path().is_file());
+                    assert!(target.path().starts_with(root.join(TRASH_DIRECTORY)));
+                }
+                QueuedWorkspaceCommand::Restore => {
+                    assert!(source_path.is_file());
+                    assert_eq!(
+                        mutation_target(&state.pgn_path_authority, &source)
+                            .expect("restored authority")
+                            .path(),
+                        source_path
+                    );
+                }
+                QueuedWorkspaceCommand::PermanentlyDelete => {
+                    assert!(!source_path.exists());
+                    assert!(mutation_target(&state.pgn_path_authority, &source).is_err());
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn test_map_picker_join_panic_is_not_cancellation() {
@@ -1799,6 +2262,7 @@ mod tests {
             &state.workspace_mutation,
             &workspace,
             &entry,
+            &CancellationToken::new(),
         )
         .expect("trash directory");
 
@@ -1848,6 +2312,7 @@ mod tests {
             &state.workspace_mutation,
             &workspace,
             &entry,
+            &CancellationToken::new(),
         )
         .expect("trash directory");
         mutation_target(&state.pgn_path_authority, &descendant_entry)
@@ -1857,6 +2322,7 @@ mod tests {
             &state.workspace_mutation,
             &workspace,
             &entry,
+            &CancellationToken::new(),
         )
         .expect("restore directory");
         mutation_target(&state.pgn_path_authority, &descendant_entry)
@@ -2127,6 +2593,7 @@ mod tests {
             "*".into(),
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &CancellationToken::new(),
         );
         assert!(matches!(create, Err(Error::ResourceLimit(_))));
         let root = workspace_root(&state.pgn_path_authority, &workspace).unwrap();
@@ -2141,6 +2608,7 @@ mod tests {
             "*".into(),
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &CancellationToken::new(),
         )
         .unwrap();
         let rename = rename_workspace_file_blocking(
@@ -2150,6 +2618,7 @@ mod tests {
             oversized,
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &CancellationToken::new(),
         );
         assert!(matches!(rename, Err(Error::ResourceLimit(_))));
         assert!(root.join("before.pgn").is_file());
@@ -2261,6 +2730,7 @@ mod tests {
             "*".into(),
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &CancellationToken::new(),
         )
         .expect("created file");
         let root = mutation_target(&state.pgn_path_authority, &workspace)
@@ -2278,6 +2748,7 @@ mod tests {
             },
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &CancellationToken::new(),
         );
         set_test_atomic_file_injector(None);
         (directory, state, root, created.handle, result)
@@ -2393,6 +2864,7 @@ mod tests {
             "created".into(),
             &state.pgn_path_authority,
             &state.workspace_mutation,
+            &CancellationToken::new(),
         )
         .expect_err("uncertain registry durability must be surfaced");
         set_test_atomic_file_injector(None);

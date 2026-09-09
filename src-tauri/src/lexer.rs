@@ -201,7 +201,7 @@ pub fn lex_pgn_cancellable(
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn lex_pgn_sync(pgn: &str) -> Result<Vec<Token>, String> {
     lex_pgn_cancellable(pgn, None).map_err(|e| e.to_string())
 }

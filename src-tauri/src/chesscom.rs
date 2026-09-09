@@ -272,6 +272,9 @@ fn report_terminal_progress<R: tauri::Runtime>(
     }
 }
 
+// This core mirrors the accepted command boundary: destination authority, request identity,
+// progress owner, cancellation owner and deadline are intentionally explicit and independently
+// validated before publication.
 #[allow(clippy::too_many_arguments)]
 async fn download_chess_com_games_core<R: tauri::Runtime>(
     destination: PathRef,

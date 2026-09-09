@@ -3,11 +3,47 @@ use shakmaty::{
     fen::Fen, san::SanPlus, CastlingMode, Chess, FromSetup, Move, Position, PositionError,
 };
 use std::io::{self, ErrorKind};
+use tokio_util::sync::CancellationToken;
 
 pub const VARIATION_START_MARKER: u8 = 255;
 pub const VARIATION_END_MARKER: u8 = 254;
 pub const COMMENT_MARKER: u8 = 253;
 pub const NAG_MARKER: u8 = 252;
+const ANNOTATION_CHECKPOINT_BYTES: usize = 4 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    static DECODE_CANCELLATION_HOOK: std::cell::RefCell<Option<Box<dyn FnMut() -> bool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn cancel_decode_after_checkpoints(cancellation: CancellationToken, checkpoints: usize) {
+    let mut seen = 0usize;
+    DECODE_CANCELLATION_HOOK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            seen += 1;
+            if seen >= checkpoints {
+                cancellation.cancel();
+                true
+            } else {
+                false
+            }
+        }));
+    });
+}
+
+#[cfg(test)]
+fn test_cancellation_checkpoint() {
+    DECODE_CANCELLATION_HOOK.with(|hook| {
+        let current = hook.borrow_mut().take();
+        if let Some(mut current) = current {
+            if !current() {
+                *hook.borrow_mut() = Some(current);
+            }
+        }
+    });
+}
 
 pub fn encode_move(m: &Move, chess: &Chess) -> Result<u8, Error> {
     let moves = chess.legal_moves();
@@ -111,6 +147,8 @@ fn validate_mainline_move_bytes(
     let mut cursor = 0usize;
     let mut variation_depth = 0usize;
     while cursor < bytes.len() {
+        #[cfg(test)]
+        test_cancellation_checkpoint();
         if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
             return Err(Error::Cancellation);
         }
@@ -136,11 +174,27 @@ fn validate_mainline_move_bytes(
                     .get(cursor..length_end)
                     .ok_or_else(|| invalid_data("truncated comment or NAG length"))?;
                 let length = u16::from_le_bytes([length_bytes[0], length_bytes[1]]) as usize;
-                cursor = cursor
+                let payload_start = cursor
+                    .checked_add(2)
+                    .ok_or_else(|| invalid_data("annotation payload offset overflow"))?;
+                let payload_end = cursor
                     .checked_add(2)
                     .and_then(|start| start.checked_add(length))
                     .filter(|end| *end <= bytes.len())
                     .ok_or_else(|| invalid_data("truncated comment or NAG payload"))?;
+                let mut payload_cursor = payload_start;
+                while payload_cursor < payload_end {
+                    #[cfg(test)]
+                    test_cancellation_checkpoint();
+                    if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+                        return Err(Error::Cancellation);
+                    }
+                    checkpoint(payload_cursor);
+                    payload_cursor = payload_cursor
+                        .saturating_add(ANNOTATION_CHECKPOINT_BYTES)
+                        .min(payload_end);
+                }
+                cursor = payload_end;
             }
             _ => {}
         }
@@ -200,7 +254,23 @@ fn invalid_data(message: &str) -> Error {
     Error::from(io::Error::new(ErrorKind::InvalidData, message.to_string()))
 }
 
-pub fn decode_game(moves_bytes: &[u8], initial_fen: Fen) -> Result<DecodedGame, Error> {
+#[cfg(test)]
+fn decode_game(moves_bytes: &[u8], initial_fen: Fen) -> Result<DecodedGame, Error> {
+    decode_game_cancellable_with_checkpoint(
+        moves_bytes,
+        initial_fen,
+        &CancellationToken::new(),
+        || {},
+    )
+}
+
+fn decode_game_cancellable_with_checkpoint(
+    moves_bytes: &[u8],
+    initial_fen: Fen,
+    cancellation: &CancellationToken,
+    mut checkpoint: impl FnMut(),
+) -> Result<DecodedGame, Error> {
+    cancellation_check(cancellation, &mut checkpoint)?;
     let setup = initial_fen.into_setup();
     let castling_mode = CastlingMode::detect(&setup);
     let root_position = Chess::from_setup(setup, castling_mode)
@@ -215,6 +285,7 @@ pub fn decode_game(moves_bytes: &[u8], initial_fen: Fen) -> Result<DecodedGame, 
 
     let mut cursor = 0usize;
     while cursor < moves_bytes.len() {
+        cancellation_check(cancellation, &mut checkpoint)?;
         let byte = moves_bytes[cursor];
         cursor += 1;
 
@@ -260,7 +331,11 @@ pub fn decode_game(moves_bytes: &[u8], initial_fen: Fen) -> Result<DecodedGame, 
                 let payload = &moves_bytes[cursor..cursor + len];
                 cursor += len;
 
+                // Encoded annotations are capped at u16::MAX bytes. Check immediately before
+                // and after that bounded allocation, then again before the payload is rendered.
+                cancellation_check(cancellation, &mut checkpoint)?;
                 let comment = String::from_utf8_lossy(payload).to_string();
+                cancellation_check(cancellation, &mut checkpoint)?;
                 if let Some(frame) = stack.last_mut() {
                     frame.nodes.push(DecodedGameNode::Comment(comment));
                 }
@@ -278,7 +353,9 @@ pub fn decode_game(moves_bytes: &[u8], initial_fen: Fen) -> Result<DecodedGame, 
                 let payload = &moves_bytes[cursor..cursor + len];
                 cursor += len;
 
+                cancellation_check(cancellation, &mut checkpoint)?;
                 let nag = String::from_utf8_lossy(payload).to_string();
+                cancellation_check(cancellation, &mut checkpoint)?;
                 if let Some(frame) = stack.last_mut() {
                     frame.nodes.push(DecodedGameNode::Nag(nag));
                 }
@@ -304,7 +381,22 @@ pub fn decode_game(moves_bytes: &[u8], initial_fen: Fen) -> Result<DecodedGame, 
     let root = stack
         .pop()
         .ok_or_else(|| invalid_data("Missing root decode frame at end of parsing"))?;
+    cancellation_check(cancellation, &mut checkpoint)?;
     Ok(DecodedGame { nodes: root.nodes })
+}
+
+fn cancellation_check(
+    cancellation: &CancellationToken,
+    checkpoint: &mut impl FnMut(),
+) -> Result<(), Error> {
+    checkpoint();
+    #[cfg(test)]
+    test_cancellation_checkpoint();
+    if cancellation.is_cancelled() {
+        Err(Error::Cancellation)
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -330,13 +422,19 @@ fn parse_initial_render_state(initial_fen: &Fen) -> RenderState {
     }
 }
 
-fn render_nodes(nodes: &[DecodedGameNode], state: &mut RenderState) -> String {
+fn render_nodes_cancellable(
+    nodes: &[DecodedGameNode],
+    state: &mut RenderState,
+    cancellation: &CancellationToken,
+    checkpoint: &mut impl FnMut(),
+) -> Result<String, Error> {
     let mut out = String::new();
     let mut prev_was_move = false;
     let mut last_pre_move_state = None;
     let mut has_emitted_move = false;
     let mut force_black_prefix = false;
     for node in nodes {
+        cancellation_check(cancellation, checkpoint)?;
         match node {
             DecodedGameNode::Move(san) => {
                 if !out.is_empty() {
@@ -396,7 +494,9 @@ fn render_nodes(nodes: &[DecodedGameNode], state: &mut RenderState) -> String {
                     out.push(' ');
                 }
                 out.push('{');
+                cancellation_check(cancellation, checkpoint)?;
                 out.push_str(comment);
+                cancellation_check(cancellation, checkpoint)?;
                 out.push('}');
                 prev_was_move = false;
             }
@@ -406,21 +506,60 @@ fn render_nodes(nodes: &[DecodedGameNode], state: &mut RenderState) -> String {
                 }
                 out.push('(');
                 let mut variation_state = last_pre_move_state.unwrap_or(*state);
-                out.push_str(&render_nodes(children, &mut variation_state));
+                out.push_str(&render_nodes_cancellable(
+                    children,
+                    &mut variation_state,
+                    cancellation,
+                    checkpoint,
+                )?);
                 out.push(')');
                 force_black_prefix = true;
                 prev_was_move = false;
             }
         }
     }
-    out
+    cancellation_check(cancellation, checkpoint)?;
+    Ok(out)
+}
+
+#[cfg(test)]
+fn render_nodes(nodes: &[DecodedGameNode], state: &mut RenderState) -> String {
+    render_nodes_cancellable(nodes, state, &CancellationToken::new(), &mut || {})
+        .expect("a fresh test cancellation token cannot cancel rendering")
 }
 
 pub fn decode_game_to_movetext(moves_bytes: &[u8], initial_fen: Fen) -> Result<String, Error> {
+    decode_game_to_movetext_cancellable(moves_bytes, initial_fen, &CancellationToken::new())
+}
+
+pub fn decode_game_to_movetext_cancellable(
+    moves_bytes: &[u8],
+    initial_fen: Fen,
+    cancellation: &CancellationToken,
+) -> Result<String, Error> {
+    decode_game_to_movetext_cancellable_with_checkpoint(
+        moves_bytes,
+        initial_fen,
+        cancellation,
+        || {},
+    )
+}
+
+fn decode_game_to_movetext_cancellable_with_checkpoint(
+    moves_bytes: &[u8],
+    initial_fen: Fen,
+    cancellation: &CancellationToken,
+    mut checkpoint: impl FnMut(),
+) -> Result<String, Error> {
     let render_state = parse_initial_render_state(&initial_fen);
-    let decoded = decode_game(moves_bytes, initial_fen)?;
+    let decoded = decode_game_cancellable_with_checkpoint(
+        moves_bytes,
+        initial_fen,
+        cancellation,
+        &mut checkpoint,
+    )?;
     let mut state = render_state;
-    Ok(render_nodes(&decoded.nodes, &mut state))
+    render_nodes_cancellable(&decoded.nodes, &mut state, cancellation, &mut checkpoint)
 }
 
 #[cfg(test)]
@@ -891,6 +1030,69 @@ mod tests {
             checkpoints > 90_000,
             "validation did not traverse the move stream"
         );
+    }
+
+    #[test]
+    fn cancellable_decoder_stops_before_copying_a_large_annotation() {
+        prepare_mutation_test();
+        let mut bytes = Vec::new();
+        encode_comment(&"x".repeat(u16::MAX as usize), &mut bytes);
+        let cancellation = CancellationToken::new();
+        let mut checkpoints = 0usize;
+        let result =
+            decode_game_cancellable_with_checkpoint(&bytes, Fen::default(), &cancellation, || {
+                checkpoints += 1;
+                if checkpoints == 3 {
+                    cancellation.cancel();
+                }
+            });
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert_eq!(
+            checkpoints, 3,
+            "decoder reached the bounded pre-copy checkpoint"
+        );
+    }
+
+    #[test]
+    fn cancellable_movetext_render_stops_after_decode_before_publication() {
+        prepare_mutation_test();
+        let mut bytes = Vec::new();
+        encode_comment(&"visible only after rendering".repeat(1_000), &mut bytes);
+        let cancellation = CancellationToken::new();
+        let mut checkpoints = 0usize;
+        let result = decode_game_to_movetext_cancellable_with_checkpoint(
+            &bytes,
+            Fen::default(),
+            &cancellation,
+            || {
+                checkpoints += 1;
+                if checkpoints == 6 {
+                    cancellation.cancel();
+                }
+            },
+        );
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert_eq!(checkpoints, 6, "render traversal observed the inner token");
+    }
+
+    #[test]
+    fn render_cancellation_checkpoint_prevents_move_state_mutation() {
+        prepare_mutation_test();
+        let cancellation = CancellationToken::new();
+        cancel_decode_after_checkpoints(cancellation.clone(), 1);
+        let mut state = RenderState {
+            move_number: 1,
+            white_to_move: true,
+        };
+        let result = render_nodes_cancellable(
+            &[DecodedGameNode::Move("e4".into())],
+            &mut state,
+            &cancellation,
+            &mut || {},
+        );
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert_eq!(state.move_number, 1);
+        assert!(state.white_to_move, "cancelled render mutated move state");
     }
 
     #[test]

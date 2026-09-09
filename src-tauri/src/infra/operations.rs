@@ -218,12 +218,10 @@ impl OperationRegistry {
             label: label.to_owned(),
         };
         Ok(OperationLease {
-            inner: Arc::new(LeaseHandle {
-                registry: Arc::clone(&self.inner),
-                id: ticket.to_owned(),
-                cancellation,
-                kind: kind.lease_kind(),
-            }),
+            registry: Arc::clone(&self.inner),
+            id: ticket.to_owned(),
+            cancellation,
+            kind: kind.lease_kind(),
         })
     }
 
@@ -283,13 +281,12 @@ impl OperationRegistry {
     }
 
     pub fn accept(&self, label: &str) -> Result<OperationLease, Error> {
-        self.accept_with_id(&Uuid::new_v4().to_string(), label)
-    }
-
-    /// Admits an application-owned operation under an externally stable identity. This is used
-    /// by downloads, whose public cancellation IDs predate the shared registry.
-    pub fn accept_with_id(&self, id: &str, label: &str) -> Result<OperationLease, Error> {
-        self.accept_bounded_with_id(id, label, false, MAX_ACCEPTED_OPERATIONS)
+        self.accept_bounded_with_id(
+            &Uuid::new_v4().to_string(),
+            label,
+            false,
+            MAX_ACCEPTED_OPERATIONS,
+        )
     }
 
     pub fn accept_download(
@@ -342,12 +339,10 @@ impl OperationRegistry {
             },
         );
         Ok(OperationLease {
-            inner: Arc::new(LeaseHandle {
-                registry: Arc::clone(&self.inner),
-                id: id.to_owned(),
-                cancellation,
-                kind: LeaseKind::Accepted,
-            }),
+            registry: Arc::clone(&self.inner),
+            id: id.to_owned(),
+            cancellation,
+            kind: LeaseKind::Accepted,
         })
     }
 
@@ -410,8 +405,7 @@ impl OperationRegistry {
         Ok(tickets)
     }
 
-    #[allow(dead_code)] // Phase 4 connects the accepted phase-2 primitive to shutdown.
-    pub fn seal_and_cancel_reads(&self) -> Result<(), Error> {
+    pub fn seal_and_request_cancellation(&self) -> Result<(), Error> {
         let mut state = self.state()?;
         state.sealed = true;
         state.reads.retain(|_, entry| match &entry.state {
@@ -429,7 +423,6 @@ impl OperationRegistry {
 
     /// Waits until every claimed read and accepted operation has released its native lease.
     /// Prepared reads are not work and are removed by sealing before a shutdown drain begins.
-    #[allow(dead_code)] // Phase 4 connects the accepted phase-2 drain primitive to shutdown.
     pub fn wait_for_drain(&self, timeout: Duration) -> Result<bool, Error> {
         let deadline = Instant::now() + timeout;
         let mut state = self.state()?;
@@ -456,7 +449,7 @@ impl OperationRegistry {
         Ok(true)
     }
 
-    #[allow(dead_code)] // Phase 4 consumes these labels in shutdown diagnostics.
+    #[cfg(test)]
     pub fn outstanding_labels(&self) -> Result<Vec<String>, Error> {
         let state = self.state()?;
         let mut labels: Vec<_> = state
@@ -521,12 +514,7 @@ enum LeaseKind {
     Analysis,
 }
 
-#[derive(Clone)]
 pub struct OperationLease {
-    inner: Arc<LeaseHandle>,
-}
-
-struct LeaseHandle {
     registry: Arc<RegistryInner>,
     id: String,
     cancellation: CancellationToken,
@@ -535,16 +523,11 @@ struct LeaseHandle {
 
 impl OperationLease {
     pub fn token(&self) -> CancellationToken {
-        self.inner.cancellation.clone()
-    }
-
-    #[allow(dead_code)] // Phase 4 uses accepted-operation identities for diagnostics.
-    pub fn id(&self) -> &str {
-        &self.inner.id
+        self.cancellation.clone()
     }
 
     fn kind(&self) -> LeaseKind {
-        self.inner.kind
+        self.kind
     }
 }
 
@@ -563,6 +546,7 @@ where
     F: Future<Output = Result<T, Error>> + Send + 'static,
 {
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    let operation_id = lease.id.clone();
     let awaiter_guard = (lease.kind() == LeaseKind::Read).then(|| lease.token().drop_guard());
     tokio::spawn(async move {
         let result = match std::panic::AssertUnwindSafe(workflow).catch_unwind().await {
@@ -572,7 +556,11 @@ where
             ))),
         };
         if let Err(error) = &result {
-            log::error!("native operation failed ({label}): {error}");
+            if matches!(error, Error::Cancellation | Error::AnalysisCancelled) {
+                log::debug!("native operation cancelled id={operation_id} label={label}");
+            } else {
+                log::error!("native operation failed id={operation_id} label={label}: {error}");
+            }
         }
         // The workflow, including all async cleanup, is complete before its lease is released.
         drop(lease);
@@ -608,7 +596,7 @@ where
     .await
 }
 
-impl Drop for LeaseHandle {
+impl Drop for OperationLease {
     fn drop(&mut self) {
         let mut state = match self.registry.state.lock() {
             Ok(state) => state,
@@ -779,7 +767,7 @@ mod tests {
         let registry = OperationRegistry::default();
         let ticket = registry.prepare_read("main").unwrap();
         let lease = registry.claim_read(&ticket, "main", "held").unwrap();
-        registry.seal_and_cancel_reads().unwrap();
+        registry.seal_and_request_cancellation().unwrap();
         assert!(lease.token().is_cancelled());
         assert!(registry.prepare_read("main").is_err());
         assert!(registry.accept("accepted").is_err());
@@ -831,7 +819,7 @@ mod tests {
         let ticket = registry.prepare_read("main").unwrap();
         let read = registry.claim_read(&ticket, "main", "read").unwrap();
         let accepted = registry.accept("accepted").unwrap();
-        registry.seal_and_cancel_reads().unwrap();
+        registry.seal_and_request_cancellation().unwrap();
         assert!(!registry.wait_for_drain(Duration::from_millis(1)).unwrap());
         drop(read);
         assert!(!registry.wait_for_drain(Duration::from_millis(1)).unwrap());

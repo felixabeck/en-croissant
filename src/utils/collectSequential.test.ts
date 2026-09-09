@@ -55,7 +55,38 @@ describe("collectSequential", () => {
             { operation: "metadata" },
         );
         expect(result).toEqual([2]);
-        expect(fallback).toHaveBeenCalledOnce();
+        expect(fallback).toHaveBeenCalledWith("Sequential collection logging failed", {
+            operation: "metadata",
+            itemIndex: 0,
+            primaryFailure: { category: "unexpected", message: "failed item" },
+            loggerFailure: { category: "unexpected", message: "logger unavailable" },
+        });
+        fallback.mockRestore();
+    });
+
+    test("logger fallback redacts failure details", async () => {
+        mocks.logError.mockRejectedValue(
+            new Error("Bearer logger-secret at /tmp/private-logger.log"),
+        );
+        const fallback = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const result = await collectSequential(
+            [1, 2],
+            async (item) => {
+                if (item === 1) {
+                    throw new Error("token=primary-secret at /home/user/private.pgn");
+                }
+                return item;
+            },
+            { operation: "metadata" },
+        );
+
+        expect(result).toEqual([2]);
+        expect(mocks.logError.mock.calls[0][0]).not.toContain("primary-secret");
+        const fallbackContext = JSON.stringify(fallback.mock.calls[0]);
+        expect(fallbackContext).not.toContain("primary-secret");
+        expect(fallbackContext).not.toContain("logger-secret");
+        expect(fallbackContext).not.toContain("/home/user");
+        expect(fallbackContext).not.toContain("/tmp/private-logger.log");
         fallback.mockRestore();
     });
 });

@@ -24,6 +24,7 @@ const MAX_CONNECTIONS_PER_DATABASE: u32 = 16;
 // Must exceed `PRAGMA busy_timeout = 30000` in `db/mod.rs` so an ordinary
 // contended write completes rather than tripping retirement.
 const RETIRE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+const RETIRE_CANCELLATION_POLL: Duration = Duration::from_millis(25);
 
 #[cfg(test)]
 thread_local! {
@@ -455,11 +456,36 @@ impl DatabaseRepository {
     /// can recreate a pool for the soon-to-be-deleted inode. The reservation
     /// is released only after the deletion operation has reached a terminal
     /// success/failure result.
+    #[cfg(test)]
     pub fn delete_exclusive<T>(
         &self,
         path: &Path,
         operation: impl FnOnce() -> Result<T, Error>,
     ) -> Result<T, Error> {
+        self.delete_exclusive_inner(path, None, operation)
+    }
+
+    /// Reserves and retires a database entry cooperatively. Cancellation may stop the wait only
+    /// before `operation` starts; once unlink begins, the operation and its caller-owned cleanup
+    /// tail retain the committed outcome.
+    pub fn delete_exclusive_cancellable<T>(
+        &self,
+        path: &Path,
+        cancellation: &CancellationToken,
+        operation: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        self.delete_exclusive_inner(path, Some(cancellation), operation)
+    }
+
+    fn delete_exclusive_inner<T>(
+        &self,
+        path: &Path,
+        cancellation: Option<&CancellationToken>,
+        operation: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(Error::Cancellation);
+        }
         let canonical = canonical_database_path(path)?;
         let entry = {
             let mut state = self
@@ -474,7 +500,7 @@ impl DatabaseRepository {
             state.entries.get(&canonical).cloned()
         };
         if let Some(entry) = &entry {
-            if let Err(error) = entry.retire_and_wait(self.retire_wait) {
+            if let Err(error) = entry.retire_and_wait_cancellable(self.retire_wait, cancellation) {
                 let mut state = self
                     .state
                     .lock()
@@ -482,6 +508,17 @@ impl DatabaseRepository {
                 state.tombstones.remove(&canonical);
                 return Err(error);
             }
+        }
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            if let Some(entry) = &entry {
+                entry.cancel_retirement()?;
+            }
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+            state.tombstones.remove(&canonical);
+            return Err(Error::Cancellation);
         }
         let result = operation();
         let mut state = self
@@ -661,6 +698,14 @@ impl DatabaseEntry {
     }
 
     fn retire_and_wait(&self, timeout: Duration) -> Result<(), Error> {
+        self.retire_and_wait_cancellable(timeout, None)
+    }
+
+    fn retire_and_wait_cancellable(
+        &self,
+        timeout: Duration,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<(), Error> {
         let mut lifecycle = self
             .lifecycle
             .lock()
@@ -668,6 +713,11 @@ impl DatabaseEntry {
         lifecycle.retiring = true;
         let deadline = Instant::now() + timeout;
         while lifecycle.active != 0 {
+            if cancellation.is_some_and(CancellationToken::is_cancelled) {
+                lifecycle.retiring = false;
+                self.lifecycle_changed.notify_all();
+                return Err(Error::Cancellation);
+            }
             let now = Instant::now();
             if now >= deadline {
                 lifecycle.retiring = false;
@@ -676,15 +726,39 @@ impl DatabaseEntry {
             }
             let (guard, wait_result) = self
                 .lifecycle_changed
-                .wait_timeout(lifecycle, deadline.saturating_duration_since(now))
+                .wait_timeout(
+                    lifecycle,
+                    if cancellation.is_some() {
+                        deadline
+                            .saturating_duration_since(now)
+                            .min(RETIRE_CANCELLATION_POLL)
+                    } else {
+                        deadline.saturating_duration_since(now)
+                    },
+                )
                 .map_err(|_| Error::Conflict("database lifecycle lock poisoned".into()))?;
             lifecycle = guard;
-            if wait_result.timed_out() && lifecycle.active != 0 {
+            if wait_result.timed_out() && lifecycle.active != 0 && Instant::now() >= deadline {
                 lifecycle.retiring = false;
                 self.lifecycle_changed.notify_all();
                 return Err(Error::Conflict("database retirement timed out".into()));
             }
         }
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            lifecycle.retiring = false;
+            self.lifecycle_changed.notify_all();
+            return Err(Error::Cancellation);
+        }
+        Ok(())
+    }
+
+    fn cancel_retirement(&self) -> Result<(), Error> {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .map_err(|_| Error::Conflict("database lifecycle lock poisoned".into()))?;
+        lifecycle.retiring = false;
+        self.lifecycle_changed.notify_all();
         Ok(())
     }
 
@@ -868,6 +942,53 @@ mod tests {
         assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
         drop(active_read);
         assert!(done_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+    }
+
+    #[test]
+    fn active_connection_delete_wait_cancels_and_restores_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let repository = Arc::new(DatabaseRepository::default());
+        let mut setup = repository.initialization_connection(&path).unwrap();
+        migrations::prepare_database(&mut setup, "title", "description").unwrap();
+        drop(setup);
+        repository.mark_schema_validated(&path).unwrap();
+        let active_read = repository.connection(&path).unwrap();
+        let cancellation = CancellationToken::new();
+        let worker_token = cancellation.clone();
+        let worker_repository = Arc::clone(&repository);
+        let worker_path = path.clone();
+        let (done, done_rx) = mpsc::channel();
+        let operation_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_operation_ran = Arc::clone(&operation_ran);
+        let worker = std::thread::spawn(move || {
+            let result =
+                worker_repository.delete_exclusive_cancellable(&worker_path, &worker_token, || {
+                    worker_operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                });
+            done.send(result).unwrap();
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !repository.deletion_is_waiting(&path).unwrap() {
+            assert!(
+                Instant::now() < deadline,
+                "delete never entered retirement wait"
+            );
+            std::thread::yield_now();
+        }
+        cancellation.cancel();
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Err(Error::Cancellation)
+        ));
+        worker.join().unwrap();
+        assert!(!operation_ran.load(std::sync::atomic::Ordering::SeqCst));
+
+        drop(active_read);
+        repository.connection(&path).unwrap();
+        repository.delete_exclusive(&path, || Ok(())).unwrap();
     }
 
     #[test]

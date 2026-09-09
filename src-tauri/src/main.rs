@@ -453,7 +453,7 @@ impl AppState {
             puzzle_cache: Arc::new(tokio::sync::Mutex::new(crate::puzzle::PuzzleCache::new())),
             http_transport,
             json_http_client,
-            download_registry: Arc::new(crate::fs::DownloadRegistry::default()),
+            download_registry: Arc::new(crate::fs::DownloadRegistry),
         })
     }
 }
@@ -1717,7 +1717,7 @@ where
 {
     log::info!("Shutdown requested: terminating engines and live games");
     let seal_failure = operations
-        .seal_and_cancel_reads()
+        .seal_and_request_cancellation()
         .err()
         .map(|error| format!("native operation admission seal failed: {error}"));
     let operations_for_drain = operations.clone();
@@ -2465,6 +2465,106 @@ mod tests {
         assert!(save_native_export_blocking(path, "png".into(), b"png".to_vec()).is_ok());
     }
 
+    struct HeldNativeExport {
+        entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        fail: bool,
+    }
+
+    impl crate::infra::fs::AtomicWriterInjector for HeldNativeExport {
+        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point != crate::infra::fs::AtomicFileFaultPoint::Write {
+                return Ok(());
+            }
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                let _ = entered.send(());
+            }
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|_| std::io::Error::other("native export release timed out"))?;
+            if self.fail {
+                Err(std::io::Error::other("injected native export failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct NativeExportTestGuard(Option<std::sync::mpsc::Sender<()>>);
+
+    impl NativeExportTestGuard {
+        fn release(&mut self) {
+            if let Some(release) = self.0.take() {
+                let _ = release.send(());
+            }
+        }
+    }
+
+    impl Drop for NativeExportTestGuard {
+        fn drop(&mut self) {
+            self.release();
+            crate::infra::fs::set_test_atomic_file_injector(None);
+        }
+    }
+
+    #[tokio::test]
+    async fn native_export_core_keeps_real_success_and_error_tails_after_caller_drop() {
+        for fail in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("board.png");
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let mut guard = NativeExportTestGuard(Some(release_tx));
+            crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(HeldNativeExport {
+                entered: std::sync::Mutex::new(Some(entered_tx)),
+                release: std::sync::Mutex::new(release_rx),
+                fail,
+            })));
+
+            let operations = OperationRegistry::default();
+            let task_operations = operations.clone();
+            let task_path = path.clone();
+            let caller = tokio::spawn(async move {
+                crate::infra::operations::run_accepted_blocking(
+                    &task_operations,
+                    "save_board_snapshot",
+                    move || {
+                        save_native_export_blocking(
+                            task_path,
+                            "png".into(),
+                            b"owned export".to_vec(),
+                        )
+                    },
+                )
+                .await
+            });
+            tokio::time::timeout(Duration::from_secs(5), entered_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            caller.abort();
+            assert_eq!(
+                operations.outstanding_labels().unwrap(),
+                vec!["save_board_snapshot"]
+            );
+            guard.release();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !operations.outstanding_labels().unwrap().is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            if fail {
+                assert!(!path.exists());
+            } else {
+                assert_eq!(std::fs::read(path).unwrap(), b"owned export");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn shutdown_with_nothing_running_is_a_no_op_and_repeatable() {
         let supervisor = EngineSupervisor::default();
@@ -2859,6 +2959,22 @@ mod blocking_offload_scans {
     /// the dispatched argument, so removing real delegation or adding a second direct call fails.
     fn assert_offloads(source: &'static str, signature: &str, worker: &str) {
         let body = body_at_indent(source, signature);
+        assert_body_offloads(body, signature, worker);
+    }
+
+    fn command_dispatch_body(source: &'static str, name: &str) -> &'static str {
+        let body = body_at_indent(source, &format!("pub async fn {name}("));
+        let core_call = format!("{name}_command_core(");
+        if body.contains(&core_call) {
+            assert_eq!(body.matches(&core_call).count(), 1, "{body}");
+            assert!(!body.contains(&format!("{name}_blocking(")), "{body}");
+            body_at_indent(source, &format!("async fn {name}_command_core"))
+        } else {
+            body
+        }
+    }
+
+    fn assert_body_offloads(body: &'static str, signature: &str, worker: &str) {
         let call = format!("{worker}(");
         let occurrences = body.matches(call.as_str()).count();
         assert_eq!(
@@ -2931,8 +3047,7 @@ mod blocking_offload_scans {
             ),
         ] {
             for command in commands {
-                let signature = format!("pub async fn {command}(");
-                let body = body_at_indent(source, &signature);
+                let body = command_dispatch_body(source, command);
                 assert!(
                     body.contains("run_native_operation(")
                         || body.contains("run_accepted_blocking("),
@@ -3428,8 +3543,8 @@ mod blocking_offload_scans {
                 !blocking.trim().is_empty(),
                 "{name}_blocking must exist: {blocking}"
             );
-            assert_offloads(
-                db,
+            assert_body_offloads(
+                command_dispatch_body(db, name),
                 &format!("pub async fn {name}("),
                 &format!("{name}_blocking"),
             );
@@ -3452,7 +3567,7 @@ mod blocking_offload_scans {
             convert.contains("ConvertProgress"),
             "convert_pgn_blocking must emit ConvertProgress: {convert}"
         );
-        let convert_wrapper = body_at_indent(db, "pub async fn convert_pgn(");
+        let convert_wrapper = command_dispatch_body(db, "convert_pgn");
         let convert_dispatch = gateway_closure(convert_wrapper, "convert_pgn");
         assert!(
             convert_dispatch.contains("description,")
@@ -3578,12 +3693,6 @@ mod blocking_offload_scans {
             "sha256_open_file must hash the descriptor: {hash_open}"
         );
 
-        let hash_file = body_at_indent(path_authority, "fn sha256_file(");
-        assert!(
-            hash_file.contains("sha256_open_file"),
-            "sha256_file must delegate to sha256_open_file: {hash_file}"
-        );
-
         let runtime_helper = body_at_indent(
             path_authority,
             "pub(crate) async fn activate_download_artifact_runtime",
@@ -3593,10 +3702,21 @@ mod blocking_offload_scans {
             "activate_download_artifact_runtime must offload: {runtime_helper}"
         );
 
-        assert_offloads(
+        let cancellable_hash = body_at_indent(
             path_authority,
-            "pub(crate) async fn hash_staged_payload(",
-            "sha256_file",
+            "pub(crate) async fn hash_staged_payload_cancellable(",
+        );
+        assert!(
+            cancellable_hash.contains("BLOCKING_GATEWAY"),
+            "{cancellable_hash}"
+        );
+        assert!(
+            cancellable_hash.contains("spawn_cancellable"),
+            "{cancellable_hash}"
+        );
+        assert!(
+            cancellable_hash.contains("sha256_reader_cancellable"),
+            "{cancellable_hash}"
         );
 
         let fs = include_str!("fs.rs");
@@ -3643,17 +3763,22 @@ mod blocking_offload_scans {
             "async fn analyze_game_core(",
             "novelty_lookup_blocking",
         );
-        let last_ingest = body
-            .rmatch_indices("ingest_info_line")
+        let position_loop = body_at_indent(chess, "async fn analyze_position_with_owner(");
+        assert!(
+            position_loop.contains("ingest_info_line("),
+            "{position_loop}"
+        );
+        let last_position = body
+            .rmatch_indices("analyze_position_with_owner(")
             .next()
             .map(|(index, _)| index)
-            .expect("analyze_game must call ingest_info_line");
+            .expect("analyze_game must call its production UCI position loop");
         let first_novelty = body
             .find("novelty_lookup_blocking")
             .expect("analyze_game must call novelty_lookup_blocking");
         let terminate_between = body
             .match_indices("terminate_exact")
-            .any(|(index, _)| index > last_ingest && index < first_novelty);
+            .any(|(index, _)| index > last_position && index < first_novelty);
         assert!(
             terminate_between,
             "analyze_game must call terminate_exact after the UCI loop and before novelty_lookup_blocking: {body}"

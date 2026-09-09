@@ -68,6 +68,29 @@ pub(crate) struct BoundedHook {
 }
 
 #[cfg(test)]
+#[derive(Clone, Default)]
+struct OneShotSignal(Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>);
+
+#[cfg(test)]
+impl OneShotSignal {
+    fn new() -> (Self, tokio::sync::oneshot::Receiver<()>) {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        (
+            Self(Arc::new(std::sync::Mutex::new(Some(sender)))),
+            receiver,
+        )
+    }
+
+    fn notify(&self) {
+        if let Ok(mut sender) = self.0.lock() {
+            if let Some(sender) = sender.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 impl BoundedHook {
     pub(crate) fn new() -> (
         Self,
@@ -101,6 +124,7 @@ impl BoundedHook {
 #[cfg(test)]
 std::thread_local! {
     static TEST_READ_CHUNK_HOOK: std::cell::RefCell<Option<BoundedHook>> = const { std::cell::RefCell::new(None) };
+    static TEST_SCAN_LINE_HOOK: std::cell::RefCell<Option<BoundedHook>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -113,6 +137,16 @@ fn current_read_chunk_hook() -> Option<BoundedHook> {
     TEST_READ_CHUNK_HOOK.with(|cell| cell.borrow().clone())
 }
 
+#[cfg(test)]
+fn set_scan_line_hook(hook: Option<BoundedHook>) {
+    TEST_SCAN_LINE_HOOK.with(|cell| *cell.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+fn current_scan_line_hook() -> Option<BoundedHook> {
+    TEST_SCAN_LINE_HOOK.with(|cell| cell.borrow().clone())
+}
+
 #[derive(Default)]
 struct PgnRepositoryInner {
     cache: HashMap<CacheKey, CachedScan>,
@@ -122,7 +156,11 @@ struct PgnRepositoryInner {
     #[cfg(test)]
     read_chunk_hook: Option<BoundedHook>,
     #[cfg(test)]
+    scan_line_hook: Option<BoundedHook>,
+    #[cfg(test)]
     edit_worker_hook: Option<BoundedHook>,
+    #[cfg(test)]
+    edit_lock_wait_signal: Option<OneShotSignal>,
     #[cfg(test)]
     count_hook: Option<BoundedHook>,
     #[cfg(test)]
@@ -165,6 +203,17 @@ impl PgnRepository {
     }
 
     #[cfg(test)]
+    fn set_scan_line_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
+        self.inner()?.scan_line_hook = hook;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn scan_line_hook(&self) -> Result<Option<BoundedHook>, Error> {
+        Ok(self.inner()?.scan_line_hook.clone())
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_edit_worker_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
         self.inner()?.edit_worker_hook = hook;
         Ok(())
@@ -173,6 +222,21 @@ impl PgnRepository {
     #[cfg(test)]
     pub(crate) fn edit_worker_hook(&self) -> Result<Option<BoundedHook>, Error> {
         Ok(self.inner()?.edit_worker_hook.clone())
+    }
+
+    #[cfg(test)]
+    fn observe_edit_lock_wait(&self) -> Result<tokio::sync::oneshot::Receiver<()>, Error> {
+        let (signal, receiver) = OneShotSignal::new();
+        self.inner()?.edit_lock_wait_signal = Some(signal);
+        Ok(receiver)
+    }
+
+    #[cfg(test)]
+    fn notify_edit_lock_wait(&self) -> Result<(), Error> {
+        if let Some(signal) = self.inner()?.edit_lock_wait_signal.take() {
+            signal.notify();
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -414,6 +478,10 @@ fn scan_games_cancelled<R: Read + Seek>(
         if bytes == 0 {
             break;
         }
+        #[cfg(test)]
+        if let Some(hook) = current_scan_line_hook() {
+            hook.notify_and_wait();
+        }
         let line = std::str::from_utf8(&line).map_err(|_| malformed("PGN is not valid UTF-8"))?;
         let header = is_tag_header(line, in_brace_comment);
         let escaped_or_line_comment = !in_brace_comment
@@ -460,8 +528,21 @@ fn scan_file(
     cancellation: &CancellationToken,
 ) -> Result<(CacheKey, Arc<[GameRange]>), Error> {
     let key = snapshot_key(&snapshot);
-    let games = scan_games_cancelled(snapshot.file, cancellation)?.into();
+    let games = map_scan_result(
+        scan_games_cancelled(snapshot.file, cancellation),
+        cancellation,
+    )?
+    .into();
     Ok((key, games))
+}
+
+fn map_scan_result<T>(result: io::Result<T>, cancellation: &CancellationToken) -> Result<T, Error> {
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::Interrupted && cancellation.is_cancelled() => {
+            Err(Error::Cancellation)
+        }
+        result => result.map_err(Error::from),
+    }
 }
 
 async fn scan_current(
@@ -482,8 +563,21 @@ async fn scan_current(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
+    #[cfg(test)]
+    let scan_line_hook = repository.scan_line_hook()?;
     let (key, games) = BLOCKING_GATEWAY
         .spawn_cancellable(cancellation.clone(), move |token| {
+            #[cfg(test)]
+            let _guard = scan_line_hook.map(|hook| {
+                set_scan_line_hook(Some(hook));
+                struct HookGuard;
+                impl Drop for HookGuard {
+                    fn drop(&mut self) {
+                        set_scan_line_hook(None);
+                    }
+                }
+                HookGuard
+            });
             scan_file(snapshot, token)
         })
         .await?;
@@ -754,24 +848,27 @@ pub async fn read_games_core(
 async fn commit_pgn_mutation(
     resolved: crate::infra::path_authority::ResolvedPath,
     key: CacheKey,
-    identity: &crate::infra::path_authority::PgnSnapshotIdentity,
     target: GameRange,
     replacement: Option<Vec<u8>>,
     repository: &PgnRepository,
     operation_name: &'static str,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let commit_snapshot = resolved.pgn_snapshot()?;
     if snapshot_key(&commit_snapshot) != key {
         return Err(Error::Conflict("PGN changed after scan".into()));
     }
-    let cancellation = CancellationToken::new();
+    let identity = key.identity.clone();
     #[cfg(test)]
     let edit_hook = repository.edit_worker_hook()?;
     #[cfg(test)]
     let atomic_injector = repository.atomic_file_injector()?;
 
     let edit_result = BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation, move |token| {
+        .spawn_cancellable(cancellation.clone(), move |token| {
             #[cfg(test)]
             if let Some(ref hook) = edit_hook {
                 hook.notify_and_wait();
@@ -799,7 +896,7 @@ async fn commit_pgn_mutation(
         Err(err) => return Err(err),
     };
 
-    if let Err(invalidation_error) = repository.invalidate(identity) {
+    if let Err(invalidation_error) = repository.invalidate(&identity) {
         log::warn!("{operation_name} cache invalidation failed: {invalidation_error}");
         if edit_outcome.is_ok() {
             return Err(invalidation_error);
@@ -832,14 +929,22 @@ pub async fn delete_game_core(
     n: i32,
     repository: PgnRepository,
 ) -> Result<(), Error> {
+    let cancellation = lease.token();
     crate::infra::operations::run_native_operation(lease, "delete_game", async move {
         let n = checked_index(n)?;
         let scan_snapshot = resolved.pgn_snapshot()?;
         let identity = scan_snapshot.identity.clone();
         let lock = repository.edit_lock(identity.clone())?;
-        let _guard = lock.lock().await;
-        let token = CancellationToken::new();
-        let (key, games) = scan_current(scan_snapshot, &repository, &token).await?;
+        #[cfg(test)]
+        repository.notify_edit_lock_wait()?;
+        let _guard = tokio::select! {
+            guard = lock.lock() => guard,
+            _ = cancellation.cancelled() => return Err(Error::Cancellation),
+        };
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let (key, games) = scan_current(scan_snapshot, &repository, &cancellation).await?;
         let range = games
             .get(n)
             .cloned()
@@ -847,11 +952,11 @@ pub async fn delete_game_core(
         commit_pgn_mutation(
             resolved,
             key,
-            &identity,
             range,
             None,
             &repository,
             "delete_game",
+            &cancellation,
         )
         .await
     })
@@ -883,6 +988,7 @@ pub async fn write_game_core(
     pgn: String,
     repository: PgnRepository,
 ) -> Result<(), Error> {
+    let cancellation = lease.token();
     crate::infra::operations::run_native_operation(lease, "write_game", async move {
         let n = checked_index(n)?;
         if pgn.len() > MAX_PGN_BYTES {
@@ -895,9 +1001,16 @@ pub async fn write_game_core(
         let scan_snapshot = resolved.pgn_snapshot()?;
         let identity = scan_snapshot.identity.clone();
         let lock = repository.edit_lock(identity.clone())?;
-        let _guard = lock.lock().await;
-        let token = CancellationToken::new();
-        let (key, games) = scan_current(scan_snapshot, &repository, &token).await?;
+        #[cfg(test)]
+        repository.notify_edit_lock_wait()?;
+        let _guard = tokio::select! {
+            guard = lock.lock() => guard,
+            _ = cancellation.cancelled() => return Err(Error::Cancellation),
+        };
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let (key, games) = scan_current(scan_snapshot, &repository, &cancellation).await?;
         let target = if let Some(range) = games.get(n).cloned() {
             range
         } else if n == games.len() {
@@ -911,11 +1024,11 @@ pub async fn write_game_core(
         commit_pgn_mutation(
             resolved,
             key,
-            &identity,
             target,
             Some(replacement),
             &repository,
             "write_game",
+            &cancellation,
         )
         .await
     })
@@ -1746,19 +1859,122 @@ mod tests {
         );
     }
 
-    #[test]
-    fn scan_file_observes_cancellation() {
+    async fn queued_edit_shutdown_preserves_file(write: bool) {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join(if write {
+            "queued-write.pgn"
+        } else {
+            "queued-delete.pgn"
+        });
+        let original = b"[Event \"First\"]\n\n1. e4\n\n[Event \"Second\"]\n\n1. d4\n";
+        std::fs::write(&path, original).expect("write PGN");
+        let resolved = writable_for(&directory, &path);
+        let snapshot = resolved.pgn_snapshot().expect("snapshot");
+        let identity = snapshot.identity.clone();
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let repository = state.pgn_repository.clone();
+        let operations = state.operations.clone();
+        let (old_key, _) = scan_current(snapshot, &repository, &CancellationToken::new())
+            .await
+            .expect("warm cache");
+        let lock = repository.edit_lock(identity).expect("edit lock");
+        let held = lock.lock().await;
+        let waiting = repository
+            .observe_edit_lock_wait()
+            .expect("observe edit wait");
+        let lease = operations
+            .accept(if write { "write_game" } else { "delete_game" })
+            .expect("accept edit");
+        let task = if write {
+            tokio::spawn(write_game_core(
+                lease,
+                resolved,
+                0,
+                "[Event \"Replacement\"]\n\n1. c4\n".into(),
+                repository.clone(),
+            ))
+        } else {
+            tokio::spawn(delete_game_core(lease, resolved, 0, repository.clone()))
+        };
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("edit wait timeout")
+            .expect("edit reached held lock");
+        operations
+            .seal_and_request_cancellation()
+            .expect("request shutdown cancellation");
+        let error = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("queued edit must stop while lock remains held")
+            .expect("join queued edit")
+            .expect_err("queued edit must cancel");
+        assert!(matches!(error, Error::Cancellation));
+        assert_eq!(std::fs::read(&path).expect("read unchanged PGN"), original);
+        assert!(
+            repository.get(&old_key).expect("read cache").is_some(),
+            "pre-mutation cancellation must preserve the current scan cache"
+        );
+        drop(held);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_cancels_write_queued_at_actual_edit_lock() {
+        queued_edit_shutdown_preserves_file(true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_cancels_delete_queued_at_actual_edit_lock() {
+        queued_edit_shutdown_preserves_file(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn active_production_scan_serializes_as_cancellation() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("cancelled.pgn");
         std::fs::write(&path, b"[Event \"A\"]\n\n1. e4\n").expect("write PGN");
+        let repository = PgnRepository::default();
+        let (hook, entered, release) = BoundedHook::new();
+        repository
+            .set_scan_line_hook(Some(hook))
+            .expect("set scan hook");
         let cancellation = CancellationToken::new();
+        let worker_token = cancellation.clone();
+        let task = tokio::spawn(async move {
+            count_pgn_games_core(resolved_for(&directory, &path), &worker_token, &repository).await
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .expect("scan entry timeout")
+            .expect("scan entered");
         cancellation.cancel();
-        let error = scan_file(snapshot_for(&directory, &path), &cancellation)
+        release.send(()).expect("release scan");
+        let error = task
+            .await
+            .expect("join active scan")
             .expect_err("cancelled scan must fail");
+        assert!(matches!(error, Error::Cancellation));
+        let serialized = serde_json::to_value(&error).expect("serialize cancellation");
+        assert_eq!(serialized["category"], "cancellation");
+    }
+
+    #[test]
+    fn unrelated_interrupted_and_malformed_scans_remain_io_errors() {
+        let interrupted = map_scan_result::<()>(
+            Err(io::Error::new(io::ErrorKind::Interrupted, "unrelated read")),
+            &CancellationToken::new(),
+        )
+        .expect_err("unrelated interruption must remain I/O");
         assert!(matches!(
-            error,
+            interrupted,
             Error::Io(ref source) if source.kind() == io::ErrorKind::Interrupted
         ));
+
+        let malformed = scan_games(Cursor::new(b"[Event \"A\"]\n\n{ open\n"))
+            .expect_err("unclosed comment must be malformed");
+        assert_eq!(malformed.kind(), io::ErrorKind::InvalidData);
+        let serialized = serde_json::to_value(Error::from(malformed)).expect("serialize I/O");
+        assert_eq!(serialized["category"], "io");
     }
 
     #[test]

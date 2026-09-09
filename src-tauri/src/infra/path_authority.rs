@@ -44,6 +44,41 @@ const MAX_PENDING_ARTIFACTS: usize = 256;
 const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LEGACY_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
 
+fn map_db3_children_cancellable<T>(
+    root: &Path,
+    cancellation: &CancellationToken,
+    mut map: impl FnMut(OsString, String) -> Result<T, Error>,
+) -> Result<Vec<T>, Error> {
+    let mut children = Vec::new();
+    for entry in fs::read_dir(root)? {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension() != Some(OsStr::new("db3")) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            continue;
+        }
+        let filename = entry.file_name();
+        let display_name = filename.to_string_lossy().into_owned();
+        children.push((display_name, filename));
+    }
+    children.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    let mut mapped = Vec::with_capacity(children.len());
+    for (display_name, filename) in children {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        mapped.push(map(filename, display_name)?);
+    }
+    Ok(mapped)
+}
+
 fn engine_file_operations() -> Vec<PathOperation> {
     vec![
         PathOperation::EngineExecute,
@@ -1449,29 +1484,6 @@ fn identity(path: &Path) -> Result<Identity, Error> {
     }
 }
 
-#[cfg(test)]
-fn sha256_file(path: &Path) -> Result<(u64, String), Error> {
-    let mut file = fs::File::open(path)?;
-    #[cfg(test)]
-    {
-        sha256_open_file(&mut file, None)
-    }
-    #[cfg(not(test))]
-    {
-        sha256_open_file(&mut file)
-    }
-}
-
-/// SHA-256 of an exclusive staged tempfile. Runs on the blocking pool so neither
-/// the Tokio worker nor the process-wide authority mutex is occupied for the hash.
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) async fn hash_staged_payload(path: PathBuf) -> Result<(u64, String), Error> {
-    crate::infra::blocking::BLOCKING_GATEWAY
-        .spawn(move || sha256_file(&path))
-        .await
-}
-
 pub(crate) async fn hash_staged_payload_cancellable(
     path: PathBuf,
     cancellation: tokio_util::sync::CancellationToken,
@@ -1482,6 +1494,12 @@ pub(crate) async fn hash_staged_payload_cancellable(
             sha256_reader_cancellable(&mut file, token)
         })
         .await
+}
+
+#[cfg(test)]
+fn sha256_file(path: &Path) -> Result<(u64, String), Error> {
+    let mut file = fs::File::open(path)?;
+    sha256_open_file(&mut file, None)
 }
 
 fn sha256_reader_cancellable(
@@ -2041,6 +2059,7 @@ impl ResolvedPath {
             },
         })
     }
+    #[cfg(test)]
     pub(crate) fn atomic_replace_download<F>(&self, write: F) -> Result<AtomicFileOutcome, Error>
     where
         F: FnOnce(&mut fs::File) -> Result<(), Error>,
@@ -2086,6 +2105,7 @@ impl ResolvedPath {
     /// Streams a previously reserved staging file into the private atomic temporary inode and
     /// verifies its exact reservation digest before `renameat`. A substituted staging pathname
     /// therefore fails before the visible target changes.
+    #[cfg(test)]
     pub(crate) fn atomic_install_reserved_download(
         &self,
         reservation: &PendingArtifactReservation,
@@ -3716,29 +3736,12 @@ impl PathAuthority {
         cancellation: &CancellationToken,
     ) -> Result<Vec<PuzzleDatabaseDescriptor>, Error> {
         let root_path = self.puzzle_root_path(root)?;
-        let mut descriptors = Vec::new();
-        for entry in fs::read_dir(root_path)? {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancellation);
-            }
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension() != Some(OsStr::new("db3")) {
-                continue;
-            }
-            let metadata = fs::symlink_metadata(&path)?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                continue;
-            }
-            let filename = entry.file_name();
-            let file = self.register_puzzle_child(root, &filename)?;
-            descriptors.push(PuzzleDatabaseDescriptor {
-                file,
-                filename: filename.to_string_lossy().into_owned(),
-            });
-        }
-        descriptors.sort_by(|a, b| a.filename.cmp(&b.filename));
-        Ok(descriptors)
+        map_db3_children_cancellable(&root_path, cancellation, |filename, display_name| {
+            Ok(PuzzleDatabaseDescriptor {
+                file: self.register_puzzle_child(root, &filename)?,
+                filename: display_name,
+            })
+        })
     }
 
     pub(crate) fn puzzle_download_destination(
@@ -3794,31 +3797,13 @@ impl PathAuthority {
         cancellation: &CancellationToken,
     ) -> Result<Vec<DatabaseDescriptor>, Error> {
         let root_path = self.database_root_path(root)?;
-        let mut descriptors = Vec::new();
-        for entry in fs::read_dir(root_path)? {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancellation);
-            }
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension() != Some(OsStr::new("db3")) {
-                continue;
-            }
-            let metadata = fs::symlink_metadata(&path)?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                continue;
-            }
-            let filename = entry.file_name().to_string_lossy().into_owned();
-            let handle =
-                self.register_database_child(root, &entry.file_name(), filename.clone())?;
-            descriptors.push(DatabaseDescriptor {
-                handle,
-                filename,
+        map_db3_children_cancellable(&root_path, cancellation, |filename, display_name| {
+            Ok(DatabaseDescriptor {
+                handle: self.register_database_child(root, &filename, display_name.clone())?,
+                filename: display_name,
                 availability: PathAvailability::Available,
-            });
-        }
-        descriptors.sort_by(|a, b| a.filename.cmp(&b.filename));
-        Ok(descriptors)
+            })
+        })
     }
 
     /// Registers an exact database child after validating it relative to the

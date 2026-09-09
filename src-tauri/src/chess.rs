@@ -818,6 +818,121 @@ pub async fn analyze_game(
     .await
 }
 
+fn analysis_terminal_state(error: &Error) -> ProgressState {
+    if matches!(error, Error::Cancellation | Error::AnalysisCancelled) {
+        ProgressState::Cancelled
+    } else {
+        ProgressState::Failed
+    }
+}
+
+fn ensure_analysis_owner_active(
+    supervised: &crate::engine::SupervisedEngine,
+    cancellation: &CancellationToken,
+) -> Result<(), Error> {
+    if supervised.cancelled.load(Ordering::SeqCst) || cancellation.is_cancelled() {
+        Err(Error::AnalysisCancelled)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+type AnalysisLineHook = Box<dyn FnOnce(&str)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static ANALYSIS_LINE_DEQUEUED_HOOK: std::cell::RefCell<Option<AnalysisLineHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+async fn analyze_position_with_owner(
+    proc: &mut EngineProcess,
+    supervised: &crate::engine::SupervisedEngine,
+    cancellation: &CancellationToken,
+    go_mode: &GoMode,
+    moves: &[String],
+) -> Result<MoveAnalysis, Error> {
+    ensure_analysis_owner_active(supervised, cancellation)?;
+    proc.go(go_mode).await?;
+
+    let mut current_analysis = MoveAnalysis::default();
+    loop {
+        let line = proc.next_line_cancellable(&supervised.cancelled).await?;
+        let Some(line) = line else {
+            return Err(Error::EngineDisconnected);
+        };
+        #[cfg(test)]
+        ANALYSIS_LINE_DEQUEUED_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook(&line);
+            }
+        });
+        match parse_one(&line) {
+            UciMessage::Info(attrs) => {
+                match parse_uci_attrs(attrs, &proc.options.fen.parse()?, moves) {
+                    Ok(best_moves) => {
+                        if let Some(set) = ingest_info_line(
+                            &mut proc.best_moves,
+                            proc.last_depth,
+                            proc.real_multipv,
+                            best_moves,
+                        ) {
+                            if set.publishable {
+                                current_analysis.best = set.lines;
+                                proc.last_depth = set.depth;
+                            }
+                        }
+                    }
+                    Err(Error::NoMovesFound) => {}
+                    Err(error) => warn!("Failed to parse info line: {line}, error: {error:?}"),
+                }
+            }
+            UciMessage::BestMove { .. } => {
+                ensure_analysis_owner_active(supervised, cancellation)?;
+                break;
+            }
+            _ => {}
+        }
+    }
+    ensure_analysis_owner_active(supervised, cancellation)?;
+    Ok(current_analysis)
+}
+
+async fn finish_analysis_failure<R: tauri::Runtime>(
+    supervisor: &crate::engine::EngineSupervisor,
+    key: &EngineKey,
+    generation: u64,
+    progress_state: &crate::progress::ProgressStore,
+    app: &tauri::AppHandle<R>,
+    progress: &crate::progress::ProgressLease,
+    error: Error,
+) -> Error {
+    let cleanup = supervisor.terminate_exact(key, generation).await;
+    if let Err(terminal) = update_progress_with_state(
+        progress_state,
+        app,
+        progress,
+        0.0,
+        analysis_terminal_state(&error),
+    ) {
+        log::warn!(
+            "analysis terminal progress generation {} failed: {}",
+            progress.generation,
+            terminal.category()
+        );
+    }
+    match cleanup {
+        Ok(()) => error,
+        Err(cleanup) => Error::OperationAndCleanup {
+            primary: error.to_string(),
+            cleanup: cleanup.to_string(),
+        },
+    }
+}
+
+// Keep the command's independently validated engine, report and native-owner fields visible at
+// this internal boundary; grouping them would hide which values participate in stale-result checks.
 #[allow(clippy::too_many_arguments)]
 async fn analyze_game_core(
     id: String,
@@ -898,13 +1013,35 @@ async fn analyze_game_core(
     // Validate all position input and acquire the progress lease before a
     // child exists. Every path after this registration goes through the
     // cleanup-aware failure macro below.
+    let admission = match state
+        .engine_supervisor
+        .admit_for_operation(
+            analysis_key.clone(),
+            engine_id.clone(),
+            executable_ref.clone(),
+            cancellation.clone(),
+        )
+        .await
+    {
+        Ok(admission) => admission,
+        Err(error) => {
+            let _ = update_progress_with_state(
+                &state.progress_state,
+                &app,
+                &progress_lease,
+                0.0,
+                analysis_terminal_state(&error),
+            );
+            return Err(error);
+        }
+    };
     let (mut proc, supervised) = match EngineProcess::new(
         state.engine_supervisor.clone(),
         analysis_key.clone(),
         executable.with_resource_leases(child_leases),
         engine_id,
         executable_ref,
-        None,
+        Some(admission),
     )
     .await
     {
@@ -915,7 +1052,7 @@ async fn analyze_game_core(
                 &app,
                 &progress_lease,
                 0.0,
-                ProgressState::Failed,
+                analysis_terminal_state(&error),
             );
             return Err(error);
         }
@@ -923,58 +1060,22 @@ async fn analyze_game_core(
     macro_rules! fail_analysis_progress {
         ($error:expr) => {{
             let error = $error;
-            let cleanup = state
-                .engine_supervisor
-                .terminate_exact(&analysis_key, supervised.generation)
-                .await;
-            let terminal_state = if matches!(error, Error::Cancellation | Error::AnalysisCancelled)
-            {
-                ProgressState::Cancelled
-            } else {
-                ProgressState::Failed
-            };
-            let _ = update_progress_with_state(
+            return Err(finish_analysis_failure(
+                state.engine_supervisor.as_ref(),
+                &analysis_key,
+                supervised.generation,
                 &state.progress_state,
                 &app,
                 &progress_lease,
-                0.0,
-                terminal_state,
-            );
-            return match cleanup {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(Error::OperationAndCleanup {
-                    primary: error.to_string(),
-                    cleanup: cleanup.to_string(),
-                }),
-            };
+                error,
+            )
+            .await);
         }};
     }
 
     for (i, (_, moves, _)) in fens.iter().enumerate() {
-        if supervised.cancelled.load(Ordering::SeqCst) || cancellation.is_cancelled() {
-            let cleanup = state
-                .engine_supervisor
-                .terminate_exact(&analysis_key, supervised.generation)
-                .await;
-            let terminal = update_progress_with_state(
-                &state.progress_state,
-                &app,
-                &progress_lease,
-                0.0,
-                ProgressState::Cancelled,
-            );
-            return match (cleanup, terminal) {
-                (Ok(()), Ok(())) => Err(Error::AnalysisCancelled),
-                (Err(cleanup), Ok(())) => Err(Error::OperationAndCleanup {
-                    primary: Error::AnalysisCancelled.to_string(),
-                    cleanup: cleanup.to_string(),
-                }),
-                (Ok(()), Err(terminal)) => Err(terminal),
-                (Err(cleanup), Err(terminal)) => Err(Error::OperationAndCleanup {
-                    primary: terminal.to_string(),
-                    cleanup: cleanup.to_string(),
-                }),
-            };
+        if let Err(cancelled) = ensure_analysis_owner_active(&supervised, &cancellation) {
+            fail_analysis_progress!(cancelled);
         }
 
         if let Err(error) = update_progress_with_state(
@@ -1020,48 +1121,12 @@ async fn analyze_game_core(
             fail_analysis_progress!(error);
         }
 
-        if let Err(error) = proc.go(&go_mode).await {
-            fail_analysis_progress!(error);
+        match analyze_position_with_owner(&mut proc, &supervised, &cancellation, &go_mode, moves)
+            .await
+        {
+            Ok(current_analysis) => analysis.push(current_analysis),
+            Err(error) => fail_analysis_progress!(error),
         }
-
-        let mut current_analysis = MoveAnalysis::default();
-        loop {
-            let line = match proc.next_line_cancellable(&supervised.cancelled).await {
-                Ok(line) => line,
-                Err(error) => fail_analysis_progress!(error),
-            };
-            let Some(line) = line else {
-                fail_analysis_progress!(Error::EngineDisconnected);
-            };
-            match parse_one(&line) {
-                UciMessage::Info(attrs) => {
-                    match parse_uci_attrs(attrs, &proc.options.fen.parse()?, moves) {
-                        Ok(best_moves) => {
-                            if let Some(set) = ingest_info_line(
-                                &mut proc.best_moves,
-                                proc.last_depth,
-                                proc.real_multipv,
-                                best_moves,
-                            ) {
-                                if set.publishable {
-                                    current_analysis.best = set.lines;
-                                    proc.last_depth = set.depth;
-                                }
-                            }
-                        }
-                        Err(Error::NoMovesFound) => {}
-                        Err(e) => {
-                            warn!("Failed to parse info line: {}, error: {:?}", line, e);
-                        }
-                    }
-                }
-                UciMessage::BestMove { .. } => {
-                    break;
-                }
-                _ => {}
-            }
-        }
-        analysis.push(current_analysis);
     }
 
     if options.reversed {
@@ -1282,6 +1347,168 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn analysis_cancellation_uses_cancelled_terminal_state() {
+        assert_eq!(
+            analysis_terminal_state(&Error::Cancellation),
+            ProgressState::Cancelled
+        );
+        assert_eq!(
+            analysis_terminal_state(&Error::AnalysisCancelled),
+            ProgressState::Cancelled
+        );
+        assert_eq!(
+            analysis_terminal_state(&Error::EngineDisconnected),
+            ProgressState::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn analysis_rechecks_owner_after_readyok_and_bestmove_dequeue() {
+        let (actor, writes) = EngineActor::recording_test_actor(&["readyok"]);
+        let supervised = SupervisedEngine {
+            generation: 41,
+            engine_id: "engine".into(),
+            executable: crate::infra::path_authority::PathRef {
+                id: "engine-path".into(),
+            },
+            actor: actor.clone(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        let mut process = EngineProcess {
+            base: actor.clone(),
+            last_depth: 0,
+            best_moves: Vec::new(),
+            last_best_moves: Vec::new(),
+            last_progress: 0.0,
+            options: EngineOptions::default(),
+            resource_leases: Vec::new(),
+            go_mode: GoMode::Depth(1),
+            running: false,
+            request_id: None,
+            real_multipv: 0,
+            start: Instant::now(),
+        };
+        process
+            .set_options(
+                EngineOptions {
+                    fen: start_fen().to_string(),
+                    moves: Vec::new(),
+                    extra_options: Vec::new(),
+                },
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(matches!(
+            analyze_position_with_owner(
+                &mut process,
+                &supervised,
+                &cancellation,
+                &GoMode::Depth(1),
+                &[],
+            )
+            .await,
+            Err(Error::AnalysisCancelled)
+        ));
+        assert!(!writes
+            .lock()
+            .await
+            .iter()
+            .any(|line| line.starts_with("go")));
+        actor.terminate().await.unwrap();
+
+        let (actor, writes) = EngineActor::recording_test_actor(&["bestmove e2e4"]);
+        let supervisor = Arc::new(crate::engine::EngineSupervisor::default());
+        let key = EngineKey::new("analysis".into(), "owned-sequence".into()).unwrap();
+        let supervised = supervisor
+            .replace_handle(
+                key.clone(),
+                actor.clone(),
+                "engine".into(),
+                crate::infra::path_authority::PathRef {
+                    id: "engine-path".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let other_key = EngineKey::new("analysis".into(), "other-sequence".into()).unwrap();
+        let (other_actor, _) = EngineActor::recording_test_actor(&[]);
+        let other = supervisor
+            .replace_handle(
+                other_key.clone(),
+                other_actor,
+                "other-engine".into(),
+                crate::infra::path_authority::PathRef {
+                    id: "other-engine-path".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let mut process = EngineProcess {
+            base: actor.clone(),
+            last_depth: 0,
+            best_moves: Vec::new(),
+            last_best_moves: Vec::new(),
+            last_progress: 0.0,
+            options: EngineOptions::default(),
+            resource_leases: Vec::new(),
+            go_mode: GoMode::Depth(1),
+            running: false,
+            request_id: None,
+            real_multipv: 1,
+            start: Instant::now(),
+        };
+        let cancellation = CancellationToken::new();
+        let cancel_at_dequeue = cancellation.clone();
+        ANALYSIS_LINE_DEQUEUED_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move |line| {
+                    if matches!(parse_one(line), UciMessage::BestMove { .. }) {
+                        cancel_at_dequeue.cancel();
+                    }
+                })))
+                .is_none());
+        });
+        let error = analyze_position_with_owner(
+            &mut process,
+            &supervised,
+            &cancellation,
+            &GoMode::Depth(1),
+            &[],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, Error::AnalysisCancelled));
+        assert!(writes.lock().await.iter().any(|line| line == "go depth 1"));
+
+        let app = engine_test_app();
+        let progress_state = crate::progress::ProgressStore::default();
+        let progress = begin_progress(&progress_state, &app, "analysis-sequence".into()).unwrap();
+        let error = finish_analysis_failure(
+            supervisor.as_ref(),
+            &key,
+            supervised.generation,
+            &progress_state,
+            &app,
+            &progress,
+            error,
+        )
+        .await;
+        assert!(matches!(error, Error::AnalysisCancelled));
+        assert!(supervisor.get_exact(&key).is_none());
+        assert_eq!(
+            supervisor.get_exact(&other_key).unwrap().generation,
+            other.generation
+        );
+        supervisor
+            .terminate_exact(&other_key, other.generation)
+            .await
+            .unwrap();
+    }
+
     fn string_option(name: &str, value: &str) -> EngineOption {
         EngineOption::String {
             name: name.into(),
@@ -1300,7 +1527,10 @@ mod tests {
     fn engine_test_app() -> tauri::AppHandle<tauri::test::MockRuntime> {
         let app = tauri::test::mock_app();
         tauri_specta::Builder::<tauri::test::MockRuntime>::new()
-            .events(tauri_specta::collect_events!(BestMovesPayload))
+            .events(tauri_specta::collect_events!(
+                BestMovesPayload,
+                crate::progress::ProgressEvent
+            ))
             .mount_events(&app);
         app.manage(AppState::default());
         app.handle().clone()
@@ -1828,18 +2058,14 @@ mod tests {
                 "pub async fn get_best_moves",
                 "process_interactive_search_output(",
             ),
-            ("pub async fn analyze_game", "ingest_info_line("),
+            ("pub async fn analyze_game(", "analyze_game_core("),
+            (
+                "async fn analyze_game_core(",
+                "analyze_position_with_owner(",
+            ),
+            ("async fn analyze_position_with_owner(", "ingest_info_line("),
         ] {
-            let start = production
-                .find(function)
-                .expect("production loop should exist");
-            let after_start = &production[start + function.len()..];
-            let end = ["pub async fn", "pub struct", "#[cfg(test)]"]
-                .iter()
-                .filter_map(|marker| after_start.find(marker))
-                .min()
-                .unwrap_or(after_start.len());
-            let body = &after_start[..end];
+            let body = crate::infra::blocking::source_scan::body_at_indent(production, function);
             assert!(
                 body.contains(expected_call),
                 "{function} must use {expected_call}"

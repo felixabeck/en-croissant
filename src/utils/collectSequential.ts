@@ -6,6 +6,12 @@ function cancellation(signal?: AbortSignal): never | void {
     throw new DOMException("Cancellation", "AbortError");
 }
 
+function safeFailureContext(cause: unknown) {
+    const normalized = normalizeError(cause);
+    const redactedMessage = normalizeError(new Error(normalized.message)).message;
+    return { category: normalized.category, message: redactedMessage };
+}
+
 /** Maps sequentially, retaining successful siblings while propagating owner cancellation. */
 export async function collectSequential<T, R>(
     items: readonly T[],
@@ -21,13 +27,19 @@ export async function collectSequential<T, R>(
             results.push(result);
         } catch (cause) {
             cancellation(options.signal);
-            const normalized = normalizeError(cause);
-            if (normalized.category === "cancelled") throw cause;
-            const message = `${options.operation} item ${index} failed: ${normalized.message}`;
+            const primaryFailure = safeFailureContext(cause);
+            if (primaryFailure.category === "cancelled") throw cause;
+            const message = `${options.operation} item ${index} failed: ${primaryFailure.message}`;
             await Promise.resolve()
                 .then(() => logError(message))
-                .catch(() => {
-                    console.error("Sequential collection logging failed");
+                .catch((loggingCause) => {
+                    const loggerFailure = safeFailureContext(loggingCause);
+                    console.error("Sequential collection logging failed", {
+                        operation: options.operation,
+                        itemIndex: index,
+                        primaryFailure,
+                        loggerFailure,
+                    });
                 });
         }
     }

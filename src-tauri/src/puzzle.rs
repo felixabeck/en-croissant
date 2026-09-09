@@ -634,11 +634,13 @@ async fn delete_puzzle_database_resolved(
 ) -> Result<(), Error> {
     let deleted_path = path.clone();
     let deletion_and_cleanup = BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation, move |_| {
-            repository.delete_exclusive(&path, || match resolved.delete_puzzle_database() {
-                Ok(()) => Ok(()),
-                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error),
+        .spawn_cancellable(cancellation, move |token| {
+            repository.delete_exclusive_cancellable(&path, token, || {
+                match resolved.delete_puzzle_database() {
+                    Ok(()) => Ok(()),
+                    Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(error),
+                }
             })?;
             let cleanup = authority
                 .lock()
@@ -1189,10 +1191,12 @@ mod tests {
             resolved: _,
         } = puzzle_deletion_fixture("caller-drop-delete.db3");
         let held_connection = repository.schema_specific_connection(&path).unwrap();
-        let mut state = crate::AppState::default();
-        state.database_repository = Arc::clone(&repository);
-        state.pgn_path_authority = Arc::clone(&authority);
-        state.puzzle_cache = Arc::clone(&cache);
+        let state = crate::AppState {
+            database_repository: Arc::clone(&repository),
+            pgn_path_authority: Arc::clone(&authority),
+            puzzle_cache: Arc::clone(&cache),
+            ..Default::default()
+        };
         let app = tauri::test::mock_app();
         app.manage(state);
         let command_app = app.handle().clone();
@@ -1227,6 +1231,64 @@ mod tests {
         assert!(!path.exists());
         assert!(cache.lock().await.key.is_none());
         assert!(!authority_contains(&authority, &handle));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_cancels_puzzle_delete_while_waiting_for_active_connection() {
+        let PuzzleDeletionFixture {
+            _directory,
+            path,
+            repository,
+            authority,
+            cache,
+            handle,
+            resolved: _,
+        } = puzzle_deletion_fixture("queued-shutdown-delete.db3");
+        let held_connection = repository.schema_specific_connection(&path).unwrap();
+        let state = crate::AppState {
+            database_repository: Arc::clone(&repository),
+            pgn_path_authority: Arc::clone(&authority),
+            puzzle_cache: Arc::clone(&cache),
+            ..Default::default()
+        };
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let command_app = app.handle().clone();
+        let command_handle = handle.clone();
+        let caller = tokio::spawn(async move {
+            let state = command_app.state::<crate::AppState>();
+            delete_puzzle_database(command_handle, state).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !repository.deletion_is_waiting(&path).unwrap() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("delete must wait on the held production connection");
+        app.state::<crate::AppState>()
+            .operations
+            .seal_and_request_cancellation()
+            .expect("request shutdown cancellation");
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5), caller)
+            .await
+            .expect("delete must cancel while the connection remains held")
+            .expect("join delete")
+            .expect_err("queued delete must cancel");
+        assert!(matches!(error, Error::Cancellation));
+        assert!(
+            path.exists(),
+            "pre-unlink cancellation must preserve the database"
+        );
+        assert!(
+            cache.lock().await.key.is_some(),
+            "cache remains authoritative"
+        );
+        assert!(authority_contains(&authority, &handle));
+        drop(held_connection);
+        repository
+            .schema_specific_connection(&path)
+            .expect("cancellation must unwind repository retirement state");
     }
 
     #[test]

@@ -197,6 +197,19 @@ describe("tauri command facade", () => {
         expect(mocks.prepareAnalysis).not.toHaveBeenCalled();
     });
 
+    test("successful analysis preparation transfers reservation ownership to its caller", async () => {
+        const controller = new AbortController();
+        mocks.prepareAnalysis.mockResolvedValue({ status: "ok", data: "analysis-ticket" });
+
+        await expect(tauri.prepareAnalysis("tab", { signal: controller.signal })).resolves.toBe(
+            "analysis-ticket",
+        );
+        controller.abort();
+        await Promise.resolve();
+
+        expect(mocks.cancelAnalysis).not.toHaveBeenCalled();
+    });
+
     test("failed preparation removes its abort listener without issuing cleanup", async () => {
         const controller = new AbortController();
         const remove = vi.spyOn(controller.signal, "removeEventListener");

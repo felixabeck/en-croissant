@@ -557,6 +557,7 @@ pub(crate) struct AdmissionLease {
     admissions: Arc<DashMap<EngineKey, EngineAdmission>>,
     key: EngineKey,
     admission: EngineAdmission,
+    operation_cancellation: Option<CancellationToken>,
     disarmed: bool,
 }
 
@@ -566,14 +567,20 @@ impl AdmissionLease {
     }
 
     fn cancel_error(&self) -> Option<Error> {
-        self.admission
-            .cancelled
-            .load(Ordering::SeqCst)
-            .then_some(Error::Cancellation)
+        (self.admission.cancelled.load(Ordering::SeqCst)
+            || self
+                .operation_cancellation
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled))
+        .then_some(Error::Cancellation)
     }
 
     fn disarm(&mut self) {
         self.disarmed = true;
+    }
+
+    fn operation_cancellation(&self) -> Option<CancellationToken> {
+        self.operation_cancellation.clone()
     }
 }
 
@@ -674,6 +681,7 @@ impl EngineSupervisor {
             admissions: self.admissions.clone(),
             key,
             admission,
+            operation_cancellation: None,
             disarmed: false,
         };
         {
@@ -710,6 +718,24 @@ impl EngineSupervisor {
         }
         self.validate_admission_policy(&lease.admission.engine_id, &lease.admission.executable)?;
         Ok(lease)
+    }
+
+    /// Reserves the exact engine generation and binds its publication barrier to the owning
+    /// native operation. Cancellation is checked by the admission lease before an actor can be
+    /// published, without creating a second engine identity or cancellation registry.
+    pub(crate) async fn admit_for_operation(
+        &self,
+        key: EngineKey,
+        engine_id: String,
+        executable: PathRef,
+        cancellation: CancellationToken,
+    ) -> Result<AdmissionLease, Error> {
+        let mut admission = self.admit(key, engine_id, executable, false).await?;
+        admission.operation_cancellation = Some(cancellation);
+        if let Some(error) = admission.cancel_error() {
+            return Err(error);
+        }
+        Ok(admission)
     }
 
     pub async fn prepare_engine_search(
@@ -777,6 +803,7 @@ impl EngineSupervisor {
                 prepared: false,
                 ..admission
             },
+            operation_cancellation: None,
             disarmed: false,
         })
     }
@@ -1337,6 +1364,7 @@ where
     F: FnOnce(Arc<EngineActor>) -> Fut,
     Fut: std::future::Future<Output = Result<T, Error>>,
 {
+    let operation_cancellation = admission.operation_cancellation();
     let mut actor_guard =
         PendingActorGuard::new(actor.clone(), key.clone(), Some(admission.generation()));
     let published = supervisor
@@ -1353,7 +1381,17 @@ where
         generation: supervised.generation,
         taken: false,
     };
-    match initialize(actor).await {
+    let initialized = initialize(actor);
+    tokio::pin!(initialized);
+    let initialized = match operation_cancellation {
+        Some(cancellation) => tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(Error::Cancellation),
+            value = &mut initialized => value,
+        },
+        None => initialized.await,
+    };
+    match initialized {
         Ok(value) => {
             guard.disarm();
             Ok((supervised, value))
@@ -3287,6 +3325,7 @@ mod tests {
             admissions: admissions.clone(),
             key: key.clone(),
             admission: old,
+            operation_cancellation: None,
             disarmed: false,
         };
         admissions.insert(
@@ -3383,6 +3422,64 @@ mod tests {
             .consume_engine_search(other_key, "engine".into(), executable, &other_generation)
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn operation_cancellation_during_initialization_reaps_only_its_exact_actor() {
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("analysis".into(), "owned".into()).unwrap();
+        let other_key = EngineKey::new("analysis".into(), "other".into()).unwrap();
+        let operation = CancellationToken::new();
+        let admission = supervisor
+            .admit_for_operation(
+                key.clone(),
+                "owned-engine".into(),
+                path_ref("owned-path"),
+                operation.clone(),
+            )
+            .await
+            .unwrap();
+        let ((actor, _), terminated) = actor_with(&[], false, None);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let initializing = tokio::spawn(initialize_admitted_actor(
+            supervisor.clone(),
+            key.clone(),
+            Arc::new(actor),
+            admission,
+            move |_| async move {
+                let _ = entered_tx.send(());
+                std::future::pending::<Result<(), Error>>().await
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(1), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let other_operation = CancellationToken::new();
+        let other_admission = supervisor
+            .admit_for_operation(
+                other_key.clone(),
+                "other-engine".into(),
+                path_ref("other-path"),
+                other_operation.clone(),
+            )
+            .await
+            .unwrap();
+        operation.cancel();
+
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), initializing)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(Error::Cancellation)
+        ));
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(supervisor.get_exact(&key).is_none());
+        assert!(!other_operation.is_cancelled());
+        assert!(other_admission.cancel_error().is_none());
+        assert!(supervisor.admissions.contains_key(&other_key));
     }
 
     #[tokio::test]

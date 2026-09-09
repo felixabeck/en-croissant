@@ -646,6 +646,11 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                 },
                 onRehydrateStorage: () => (state, error) => {
                     if (!error && state) {
+                        // A renderer reload cannot resume the JavaScript completion owner that
+                        // registered this operation. Treat persisted report identity as stale;
+                        // ordinary provider remounts reuse the live store and never rehydrate.
+                        state.report.inProgress = false;
+                        state.report.operationId = null;
                         state.boardStateMap = buildTranspositionMaps(
                             state.root,
                             state.headers.start || [],
