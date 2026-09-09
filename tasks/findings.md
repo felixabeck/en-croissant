@@ -6047,7 +6047,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### The analysis report's result is dropped when the panel unmounts, so a report finished in the background is silently lost
 
-* **ID:** f-20260904-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260904-09 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/components/panels/analysis/ReportModal.tsx:56-60` (`mounted.current`) and
   `:120-129` (the `.then` that calls `addAnalysis`, and the `.finally` that clears
   `report.inProgress`); the unmount boundaries are `src/components/tabs/BoardsPage.tsx:194` and
