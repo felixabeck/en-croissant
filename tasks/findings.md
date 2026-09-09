@@ -7273,3 +7273,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Evidence:** Cumulative chess-semantics lens confidence99; root confirmed defaultTree ignores fullmove number. Origin10a49bab predates reviewed range.
 * **Repair:** Share root ply derivation from parsed FEN fullmove/turn for default and PGN-parsed trees; prove nonstandard White/Black starts and round trips. Adopted for active review repair.
 * **Provenance:** Plan authorship/arbitration share root context; Codex detection shares family with phase1/2/4 code, Gemini authored phase3.
+
+---
+
+## 2026-09-09 — filed through the inbox spool
+
+### Tree sibling mutations leave cursor and repertoire-start paths pointing at other nodes
+
+* **ID:** f-20260909-07 · **Status:** open · **Area:** chess-tree · **Root:** tree-path-rebasing · **Entry:** lens · **Blocked:** none
+* **Where:** src/state/store/tree.ts:789–812, deleteMove and promoteVariation.
+* **Defect:** Deleting a sibling rewrites an unrelated cursor index to zero, while surviving headers.start paths are not rebased on deletion or promotion. With branches e4/d4/c4, deleting d4 redirects the c4 cursor to e4; promoting c4 leaves its repertoire start referring to another branch.
+* **Evidence:** Cumulative chess-semantics lens confidence99 for both manifestations; root traced splice, cursor assignment and missing start rebasing. Originse401958e/e125544e predate reviewed range.
+* **Repair:** Share identity-preserving path rebasing for affected cursor/start paths after sibling deletion/promotion and update derived maps. Test before/after sibling and descendant paths. Adopted for active review repair.
+* **Provenance:** Plan authorship/arbitration share root context; Codex detection shares family with phase1/2/4 code, Gemini authored phase3.
