@@ -7340,6 +7340,10 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Repair:** Use the existing canonical position identity and test clock-different transpositions plus genuinely distinct positions. Adopted for active review repair.
 * **Provenance:** Plan authorship/arbitration share root context; Codex detection shares family with phase1/2/4 code, Gemini authored phase3.
 
+* **Handled, 2026-09-09:** Implemented in 18f6a1a2: practice card generation and deck synchronization use canonical board identity rather than full FEN clocks. Both focused tests passed for clock-different transpositions and distinct positions.
+* **Review provenance:** Plan authorship and arbitration shared root context. Codex detection used the same model family as phases 1, 2, 4 and the repairs; Gemini authored original phase 3. Final delivery gates follow these verified implementation records.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"03c32dbf4ce8ea4abc4390276a00ef3830b110b443d5b63f9a9793d5068e6264","input_sha256":"3e0d5dc2df522852ff728e2d8ca20ce0a43401fb95704cc756493aa39ffd2901","kind":"mutation-receipt","operation":"c82dc3526f3190e25fe4090b8f1af120a812c3723d4f1a7b3f3d8bfbc6847943","options":{"section":null},"request_id_sha256":null,"results":["f-20260909-08"],"target":"f-20260909-08","v":1} -->
+
 ---
 
 ## 2026-09-09 — filed through the inbox spool
