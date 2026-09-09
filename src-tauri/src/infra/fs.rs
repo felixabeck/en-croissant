@@ -520,20 +520,29 @@ mod unix {
     }
     fn temp_name() -> std::ffi::OsString {
         #[cfg(test)]
-        if let Some(name) = test_temp_names().lock().expect("test temp names").pop() {
+        if let Some(name) = TEST_TEMP_NAMES.with(|names| names.borrow_mut().pop()) {
             return name;
         }
         format!(".atomic-{}", uuid::Uuid::new_v4()).into()
     }
     #[cfg(test)]
-    fn test_temp_names() -> &'static std::sync::Mutex<Vec<std::ffi::OsString>> {
-        static NAMES: std::sync::OnceLock<std::sync::Mutex<Vec<std::ffi::OsString>>> =
-            std::sync::OnceLock::new();
-        NAMES.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+    std::thread_local! {
+        static TEST_TEMP_NAMES: std::cell::RefCell<Vec<std::ffi::OsString>> =
+            const { std::cell::RefCell::new(Vec::new()) };
     }
     #[cfg(test)]
-    pub(super) fn set_test_temp_names(names: Vec<std::ffi::OsString>) {
-        *test_temp_names().lock().expect("test temp names") = names;
+    pub(super) struct TestTempNamesGuard(Vec<std::ffi::OsString>);
+    #[cfg(test)]
+    impl Drop for TestTempNamesGuard {
+        fn drop(&mut self) {
+            let previous = std::mem::take(&mut self.0);
+            TEST_TEMP_NAMES.with(|names| *names.borrow_mut() = previous);
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn scoped_test_temp_names(names: Vec<std::ffi::OsString>) -> TestTempNamesGuard {
+        let previous = TEST_TEMP_NAMES.with(|current| current.replace(names));
+        TestTempNamesGuard(previous)
     }
     fn cleanup(dir: &File, temp: &OsStr, primary: Error) -> Error {
         #[cfg(test)]
@@ -3418,7 +3427,8 @@ mod tests {
             let final_parent = root.path().join("final");
             std::os::unix::fs::symlink(&real, &final_parent).expect("symlink");
             assert!(atomic_replace(&final_parent.join("target"), |_| Ok(())).is_err());
-            unix::set_test_temp_names(vec!["available".into(), "collision".into()]);
+            let _temp_names =
+                unix::scoped_test_temp_names(vec!["available".into(), "collision".into()]);
             std::fs::write(root.path().join("collision"), b"collision").expect("collision");
             atomic_replace(&root.path().join("target"), |f| {
                 f.write_all(b"new").map_err(io)
@@ -3430,6 +3440,104 @@ mod tests {
                 b"new"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temporary_name_overrides_are_thread_owned_and_scoped() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (first_ready_tx, first_ready_rx) = mpsc::channel();
+        let (second_ready_tx, second_ready_rx) = mpsc::channel();
+        let (run_first_tx, run_first_rx) = mpsc::channel();
+        let (first_done_tx, first_done_rx) = mpsc::channel();
+
+        let first = std::thread::spawn(move || {
+            let root = tempfile::tempdir().expect("first tempdir");
+            std::fs::write(root.path().join(".atomic-first-collision"), b"collision")
+                .expect("first collision");
+            let observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            {
+                let _names = unix::scoped_test_temp_names(vec![
+                    ".atomic-first-unused".into(),
+                    ".atomic-first-available".into(),
+                    ".atomic-first-collision".into(),
+                ]);
+                first_ready_tx.send(()).expect("first ready");
+                run_first_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("run first");
+                let observed_in_write = observed.clone();
+                atomic_replace(&root.path().join("target"), |_| {
+                    observed_in_write.store(
+                        root.path().join(".atomic-first-available").exists(),
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    Ok(())
+                })
+                .expect("first replacement")
+                .expect_durable();
+            }
+            first_done_tx.send(()).expect("first done");
+            atomic_replace(&root.path().join("after-scope"), |_| {
+                assert!(!root.path().join(".atomic-first-unused").exists());
+                Ok(())
+            })
+            .expect("first replacement after scope")
+            .expect_durable();
+            let unwind = std::panic::catch_unwind(|| {
+                let _names =
+                    unix::scoped_test_temp_names(vec![".atomic-first-panic-unused".into()]);
+                panic!("exercise temporary-name guard cleanup");
+            });
+            assert!(unwind.is_err());
+            atomic_replace(&root.path().join("after-unwind"), |_| {
+                assert!(!root.path().join(".atomic-first-panic-unused").exists());
+                Ok(())
+            })
+            .expect("first replacement after unwind")
+            .expect_durable();
+            observed.load(std::sync::atomic::Ordering::SeqCst)
+        });
+
+        first_ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("first installed names");
+        let second = std::thread::spawn(move || {
+            let root = tempfile::tempdir().expect("second tempdir");
+            std::fs::write(root.path().join(".atomic-second-collision"), b"collision")
+                .expect("second collision");
+            let observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let _names = unix::scoped_test_temp_names(vec![
+                ".atomic-second-available".into(),
+                ".atomic-second-collision".into(),
+            ]);
+            second_ready_tx.send(()).expect("second ready");
+            first_done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("first finished replacement");
+            let observed_in_write = observed.clone();
+            atomic_replace(&root.path().join("target"), |_| {
+                observed_in_write.store(
+                    root.path().join(".atomic-second-available").exists(),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                Ok(())
+            })
+            .expect("second replacement")
+            .expect_durable();
+            observed.load(std::sync::atomic::Ordering::SeqCst)
+        });
+
+        second_ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("second installed names");
+        run_first_tx.send(()).expect("run first replacement");
+        let first_observed_own_name = first.join().expect("first thread");
+        let second_observed_own_name = second.join().expect("second thread");
+        assert!(first_observed_own_name);
+        assert!(second_observed_own_name);
     }
 
     #[test]
