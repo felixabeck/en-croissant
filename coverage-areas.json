@@ -168,6 +168,7 @@
         "src/platform/operation.ts",
         "src/platform/tauri.ts",
         "src/platform/useTauriListener.ts",
+        "src/utils/collectSequential.ts",
         "src/utils/pathCapabilities.ts",
         "src/utils/sound.ts"
       ]
