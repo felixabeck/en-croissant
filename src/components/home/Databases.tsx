@@ -17,10 +17,12 @@ import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import type { DatabaseInfo as PlainDatabaseInfo, PlayerGameInfo } from "@/bindings";
 import { notifyListenerError } from "@/components/files/notifyError";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { sessionsAtom } from "@/state/atoms";
 import { useTauriListener } from "@/platform/useTauriListener";
 import { activeDatabaseViewStore } from "@/state/store/database";
 import { databaseHandleKey, getDatabases, query_players } from "@/utils/db";
+import { collectSequential } from "@/utils/collectSequential";
 import type { Session } from "@/utils/session";
 import { DatabaseViewStateContext } from "../databases/DatabaseViewStateContext";
 import PersonalPlayerCard from "./PersonalCard";
@@ -88,54 +90,64 @@ function Databases() {
     }
   }, [sessions]);
 
-  const { data: databases } = useSWRImmutable<DatabaseInfo[]>(
-    sessions.length === 0 ? null : ["personalDatabases", sessions],
-    async () => {
-      const dbs = (await getDatabases()).filter((db) => db.type === "success");
+  const databasesKey = sessions.length === 0 ? null : ["personalDatabases", sessions];
+  const databasesOwner = useNativeRequestOwner(databasesKey);
+  const { data: databases } = useSWRImmutable<DatabaseInfo[]>(databasesKey, () =>
+    databasesOwner!.run(async (signal) => {
+      const dbs = (await getDatabases({ signal })).filter((db) => db.type === "success");
       return dbs.filter((db) => isDatabaseFromSession(db, sessions));
-    },
+    }),
   );
 
+  const personalKey = databases && name ? ["personalInfo", name, databases] : null;
+  const personalOwner = useNativeRequestOwner(personalKey);
   const {
     data: personalInfo,
     isLoading,
     error,
   } = useSWRImmutable<PersonalInfo[]>(
-    databases && name ? ["personalInfo", name, databases] : null,
-    async ([, playerName, playerDatabases]: [string, string, DatabaseInfo[]]) => {
-      const progressKey = personalInfoProgressKey(playerName, playerDatabases);
-      const map = new Map<string, number>();
-      ownedProgressByKey.clear();
-      ownedProgressByKey.set(progressKey, map);
-      const playerDbs = playerDbNames.find((p) => p.name === playerName)?.databases;
-      if (!playerDbs) return [];
-      const results = await Promise.allSettled(
-        playerDatabases
-          .filter((db) => playerDbs.includes((db.type === "success" && db.title) || ""))
-          .map(async (db) => {
-            const players = await query_players(db.file, {
-              name: db.username,
-              options: {
-                pageSize: 1,
-                direction: "asc",
-                sort: "id",
-                skipCount: false,
+    personalKey,
+    ([, playerName, playerDatabases]: [string, string, DatabaseInfo[]]) =>
+      personalOwner!.run(async (signal) => {
+        const progressKey = personalInfoProgressKey(playerName, playerDatabases);
+        const map = new Map<string, number>();
+        ownedProgressByKey.clear();
+        ownedProgressByKey.set(progressKey, map);
+        const playerDbs = playerDbNames.find((p) => p.name === playerName)?.databases;
+        if (!playerDbs) return [];
+        const candidates = playerDatabases.filter((db) =>
+          playerDbs.includes((db.type === "success" && db.title) || ""),
+        );
+        return collectSequential(
+          candidates,
+          async (db) => {
+            const players = await query_players(
+              db.file,
+              {
+                name: db.username,
+                options: {
+                  pageSize: 1,
+                  direction: "asc",
+                  sort: "id",
+                  skipCount: false,
+                },
               },
-            });
+              { signal },
+            );
             if (players.data.length === 0) {
               throw new Error("Player not found in database");
             }
             const player = players.data[0];
             const progressId = crypto.randomUUID();
             map.set(progressId, 0);
-            const info = await tauri.getPlayersGameInfo(progressId, db.file, player.id);
+            const info = await tauri.getPlayersGameInfo(progressId, db.file, player.id, {
+              signal,
+            });
             return { db, info };
-          }),
-      );
-      return results
-        .filter((r) => r.status === "fulfilled")
-        .map((r) => (r as PromiseFulfilledResult<PersonalInfo>).value);
-    },
+          },
+          { signal, operation: "personal database summary" },
+        );
+      }),
   );
 
   const [progress, setProgress] = useState(0);

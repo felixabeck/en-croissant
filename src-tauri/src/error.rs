@@ -217,6 +217,9 @@ pub enum Error {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    #[error("Progress lease is stale, cleared, or expired")]
+    StaleProgressLease,
+
     #[error("Resource limit: {0}")]
     ResourceLimit(String),
 
@@ -282,7 +285,8 @@ impl Error {
             | Self::GameNotInProgress
             | Self::NotHumanTurn
             | Self::NotEngineTurn
-            | Self::Conflict(_) => ErrorCategory::Conflict,
+            | Self::Conflict(_)
+            | Self::StaleProgressLease => ErrorCategory::Conflict,
             Self::ResourceLimit(_) => ErrorCategory::ResourceLimit,
             Self::OAuthFailure(_) => ErrorCategory::Authentication,
             Self::CredentialFailure(_) | Self::CredentialRecoveryRequired => {

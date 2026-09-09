@@ -2840,7 +2840,11 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, Error::Conflict(_)));
-        let progress_item = state.progress_state.get("progress_verify_fail").unwrap();
+        let progress_item = state
+            .progress_state
+            .get("progress_verify_fail")
+            .unwrap()
+            .unwrap();
         assert_eq!(progress_item.state, ProgressState::Failed);
         assert!(progress_item.finished);
 
@@ -2871,7 +2875,7 @@ mod tests {
                     let state = state_weak
                         .upgrade()
                         .expect("state_weak upgrade must succeed");
-                    state.progress_state.clear(&action_progress_id);
+                    state.progress_state.clear(&action_progress_id).unwrap();
                 }
             })),
         });
@@ -2906,7 +2910,11 @@ mod tests {
             other => panic!("expected Error::Conflict with payload mismatch, got {other:?}"),
         }
         assert_eq!(err.category(), crate::error::ErrorCategory::Conflict);
-        assert!(state.progress_state.get("progress_stale_verify").is_none());
+        assert!(state
+            .progress_state
+            .get("progress_stale_verify")
+            .unwrap()
+            .is_none());
     }
 
     struct AuthorityUnsetTransport {
@@ -2966,7 +2974,7 @@ mod tests {
 
         assert!(matches!(err, Error::Conflict(_)));
         assert_eq!(err.category(), crate::error::ErrorCategory::Conflict);
-        let progress_item = state.progress_state.get(progress_id).unwrap();
+        let progress_item = state.progress_state.get(progress_id).unwrap().unwrap();
         assert_eq!(progress_item.state, ProgressState::Failed);
         assert!(progress_item.finished);
     }
@@ -2997,9 +3005,12 @@ mod tests {
                         .upgrade()
                         .expect("state_weak upgrade must succeed");
                     if replace_with_new_lease {
-                        state.progress_state.start(action_progress_id.clone());
+                        state
+                            .progress_state
+                            .start(action_progress_id.clone())
+                            .unwrap();
                     } else {
-                        state.progress_state.clear(&action_progress_id);
+                        state.progress_state.clear(&action_progress_id).unwrap();
                     }
                 }
             })),
@@ -3044,7 +3055,7 @@ mod tests {
             pgn_content
         );
 
-        let item = state.progress_state.get(progress_id);
+        let item = state.progress_state.get(progress_id).unwrap();
         (item, publication)
     }
 
@@ -3090,7 +3101,10 @@ mod tests {
                 .expect("state must be alive during transport request");
             let _ = state.download_registry.cancel(&self.job_id);
             if self.advance_generation {
-                state.progress_state.start(self.progress_id.clone());
+                state
+                    .progress_state
+                    .start(self.progress_id.clone())
+                    .unwrap();
             }
             Err(Error::Cancellation)
         }
@@ -3132,7 +3146,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        let item = state.progress_state.get(progress_id).unwrap();
+        let item = state.progress_state.get(progress_id).unwrap().unwrap();
         (item, err)
     }
 

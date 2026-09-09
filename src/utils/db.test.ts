@@ -1,5 +1,20 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseHandle } from "@/bindings";
+
+const mocks = vi.hoisted(() => ({
+    getDatabaseWorkspace: vi.fn(),
+    listWorkspaceDatabases: vi.fn(),
+    getDbInfo: vi.fn(),
+    logError: vi.fn(),
+}));
+vi.mock("@/platform/tauri", () => ({
+    tauri: {
+        getDatabaseWorkspace: mocks.getDatabaseWorkspace,
+        listWorkspaceDatabases: mocks.listWorkspaceDatabases,
+        getDbInfo: mocks.getDbInfo,
+    },
+}));
+vi.mock("@/platform/native", () => ({ error: mocks.logError }));
 import {
     conversionProgressId,
     databaseHandleFromKey,
@@ -8,6 +23,7 @@ import {
     defaultPuzzleDatabaseProgressId,
     getDefaultDatabases,
     getDefaultPuzzleDatabases,
+    getDatabases,
     manifestDatabaseInstallCard,
     manifestPuzzleDatabaseInstallCard,
     sameDatabaseHandle,
@@ -15,6 +31,11 @@ import {
 } from "./db";
 
 afterEach(() => vi.unstubAllGlobals());
+beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getDatabaseWorkspace.mockResolvedValue({ id: { id: "root" }, kind: "databaseRoot" });
+    mocks.logError.mockResolvedValue(undefined);
+});
 
 const handle = (id: string): DatabaseHandle => ({ id: { id }, kind: "database" });
 
@@ -46,6 +67,126 @@ describe("database capability UI mapping", () => {
         expect(sameDatabaseHandle(handle("same"), handle("same"))).toBe(true);
         expect(sameDatabaseHandle(handle("first"), handle("second"))).toBe(false);
         expect(sameDatabaseHandle(handle("first"), null)).toBe(false);
+    });
+});
+
+describe("production database metadata pipeline", () => {
+    it("hydrates more than 128 entries sequentially as successful managed databases", async () => {
+        const descriptors = Array.from({ length: 130 }, (_, index) => ({
+            handle: handle(`db-${index}`),
+            filename: `db-${index}.db3`,
+            availability: "available" as const,
+        }));
+        mocks.listWorkspaceDatabases.mockResolvedValue(descriptors);
+        let active = 0;
+        let maximumActive = 0;
+        mocks.getDbInfo.mockImplementation(async (file: DatabaseHandle) => {
+            active += 1;
+            maximumActive = Math.max(maximumActive, active);
+            await Promise.resolve();
+            active -= 1;
+            const id = file.id.id;
+            return {
+                title: id,
+                description: "",
+                player_count: 0,
+                event_count: 0,
+                game_count: 0,
+                storage_size: 0n,
+                indexed: false,
+            };
+        });
+
+        const result = await getDatabases();
+        expect(result).toHaveLength(130);
+        expect(result.every((item) => item.type === "success")).toBe(true);
+        expect(result.map((item) => item.file.id.id)).toEqual(
+            descriptors.map((item) => item.handle.id.id),
+        );
+        expect(maximumActive).toBe(1);
+    });
+
+    it("retains successful siblings and diagnoses ordinary metadata rejection", async () => {
+        const descriptors = ["one", "failed", "three"].map((id) => ({
+            handle: handle(id),
+            filename: `${id}.db3`,
+            availability: "available" as const,
+        }));
+        mocks.listWorkspaceDatabases.mockResolvedValue(descriptors);
+        mocks.getDbInfo.mockImplementation(async (file: DatabaseHandle) => {
+            if (file.id.id === "failed") throw new Error("metadata unavailable");
+            return {
+                title: file.id.id,
+                description: "",
+                player_count: 0,
+                event_count: 0,
+                game_count: 0,
+                storage_size: 0n,
+                indexed: false,
+            };
+        });
+
+        const result = await getDatabases();
+        expect(result.map((item) => item.file.id.id)).toEqual(["one", "three"]);
+        expect(mocks.logError).toHaveBeenCalledOnce();
+    });
+
+    it("owner cancellation between metadata entries rejects without partial publication", async () => {
+        const controller = new AbortController();
+        const descriptors = ["one", "two", "three"].map((id) => ({
+            handle: handle(id),
+            filename: `${id}.db3`,
+            availability: "available" as const,
+        }));
+        mocks.listWorkspaceDatabases.mockResolvedValue(descriptors);
+        let resolveFirst!: (value: object) => void;
+        mocks.getDbInfo.mockReturnValueOnce(
+            new Promise((resolve) => {
+                resolveFirst = resolve;
+            }),
+        );
+        const result = getDatabases({ signal: controller.signal });
+        await vi.waitFor(() => expect(mocks.getDbInfo).toHaveBeenCalledOnce());
+        resolveFirst({
+            title: "one",
+            description: "",
+            player_count: 0,
+            event_count: 0,
+            game_count: 0,
+            storage_size: 0n,
+            indexed: false,
+        });
+        controller.abort();
+        await expect(result).rejects.toMatchObject({ name: "AbortError" });
+        expect(mocks.getDbInfo).toHaveBeenCalledOnce();
+        expect(mocks.logError).not.toHaveBeenCalled();
+    });
+
+    it("cancellation immediately after final metadata resolution rejects without diagnostics", async () => {
+        const controller = new AbortController();
+        mocks.listWorkspaceDatabases.mockResolvedValue([
+            { handle: handle("only"), filename: "only.db3", availability: "available" },
+        ]);
+        let resolveMetadata!: (value: object) => void;
+        mocks.getDbInfo.mockReturnValue(
+            new Promise((resolve) => {
+                resolveMetadata = resolve;
+            }),
+        );
+        const result = getDatabases({ signal: controller.signal });
+        await vi.waitFor(() => expect(mocks.getDbInfo).toHaveBeenCalledOnce());
+        resolveMetadata({
+            title: "only",
+            description: "",
+            player_count: 0,
+            event_count: 0,
+            game_count: 0,
+            storage_size: 0n,
+            indexed: false,
+        });
+        controller.abort();
+        await expect(result).rejects.toMatchObject({ name: "AbortError" });
+        expect(mocks.logError).not.toHaveBeenCalled();
     });
 });
 

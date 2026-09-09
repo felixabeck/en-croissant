@@ -18,8 +18,8 @@ export interface Puzzle {
 
 /** Native code enumerates and grants puzzle capabilities; renderer code never
  * reconstructs a database path from a directory and filename. */
-export async function getPuzzleDatabases(): Promise<PuzzleDatabaseInfo[]> {
-    return await tauri.listPuzzleDatabases();
+export async function getPuzzleDatabases(signal?: AbortSignal): Promise<PuzzleDatabaseInfo[]> {
+    return await tauri.listPuzzleDatabases({ signal });
 }
 
 export async function choosePuzzleDatabase(): Promise<PuzzleRootDescriptor> {

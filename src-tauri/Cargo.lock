@@ -807,6 +807,7 @@ dependencies = [
  "nonzero_ext",
  "oauth2",
  "once_cell",
+ "parking_lot",
  "pgn-reader",
  "polyglot-book-rs",
  "rand 0.8.5",

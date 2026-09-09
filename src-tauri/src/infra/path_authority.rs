@@ -220,6 +220,8 @@ type RefreshEntryHook = Box<dyn Fn(&str)>;
 std::thread_local! {
     static DATABASE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static PUZZLE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
     static DATABASE_CHILD_POST_CREATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static INSTALLED_ENGINE_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -3630,13 +3632,17 @@ impl PathAuthority {
         Ok(())
     }
 
-    pub(crate) fn list_puzzle_children(
+    pub(crate) fn list_puzzle_children_cancellable(
         &mut self,
         root: &PuzzleRootHandle,
+        cancellation: &CancellationToken,
     ) -> Result<Vec<PuzzleDatabaseDescriptor>, Error> {
         let root_path = self.puzzle_root_path(root)?;
         let mut descriptors = Vec::new();
         for entry in fs::read_dir(root_path)? {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
             let entry = entry?;
             let path = entry.path();
             if path.extension() != Some(OsStr::new("db3")) {
@@ -3683,6 +3689,12 @@ impl PathAuthority {
             PathOperation::PuzzleRead,
             &[filename.to_os_string()],
         )?;
+        #[cfg(test)]
+        PUZZLE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
         let path = self.puzzle_root_path(root)?.join(filename);
         let commit = self.get_or_create_persistent_file_verified(
             &path,
@@ -3698,13 +3710,17 @@ impl PathAuthority {
     /// discovered native files into persistent opaque handles.  File names are
     /// backend-derived display metadata only; callers cannot feed them back as
     /// paths.
-    pub(crate) fn list_database_children(
+    pub(crate) fn list_database_children_cancellable(
         &mut self,
         root: &DatabaseRootHandle,
+        cancellation: &CancellationToken,
     ) -> Result<Vec<DatabaseDescriptor>, Error> {
         let root_path = self.database_root_path(root)?;
         let mut descriptors = Vec::new();
         for entry in fs::read_dir(root_path)? {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
             let entry = entry?;
             let path = entry.path();
             if path.extension() != Some(OsStr::new("db3")) {
@@ -6686,7 +6702,9 @@ mod tests {
             .create_database_child(&root, OsStr::new("created.db3"))
             .unwrap();
         assert_eq!(fs::read(root_path.join("created.db3")).unwrap(), b"");
-        let listed = authority.list_database_children(&root).unwrap();
+        let listed = authority
+            .list_database_children_cancellable(&root, &CancellationToken::new())
+            .unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].handle, created);
 
@@ -6707,6 +6725,70 @@ mod tests {
         ] {
             assert!(authority.create_database_child(&root, filename).is_err());
         }
+    }
+
+    #[test]
+    fn list_workspace_databases_cancels_between_entries_before_later_durable_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("databases");
+        fs::create_dir(&root_path).unwrap();
+        for name in ["one.db3", "two.db3", "three.db3"] {
+            fs::write(root_path.join(name), b"database").unwrap();
+        }
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "Databases", None)
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let cancel_after_first = cancellation.clone();
+        DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || cancel_after_first.cancel())))
+                .is_none());
+        });
+
+        assert!(matches!(
+            authority.list_database_children_cancellable(&root, &cancellation),
+            Err(Error::Cancellation)
+        ));
+        let registered = authority
+            .persistent
+            .values()
+            .filter(|entry| entry.stored.purpose == Some(EntryPurpose::DatabaseFile))
+            .count();
+        assert_eq!(registered, 1, "only the completed entry may be durable");
+    }
+
+    #[test]
+    fn list_puzzle_databases_cancels_between_entries_before_later_durable_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("puzzles");
+        fs::create_dir(&root_path).unwrap();
+        for name in ["one.db3", "two.db3", "three.db3"] {
+            fs::write(root_path.join(name), b"database").unwrap();
+        }
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_puzzle_root(&root_path, "Puzzles", None)
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let cancel_after_first = cancellation.clone();
+        PUZZLE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || cancel_after_first.cancel())))
+                .is_none());
+        });
+
+        assert!(matches!(
+            authority.list_puzzle_children_cancellable(&root, &cancellation),
+            Err(Error::Cancellation)
+        ));
+        let registered = authority
+            .persistent
+            .values()
+            .filter(|entry| entry.stored.purpose == Some(EntryPurpose::PuzzleFile))
+            .count();
+        assert_eq!(registered, 1, "only the completed entry may be durable");
     }
 
     #[cfg(unix)]
@@ -10412,7 +10494,7 @@ mod tests {
         assert!(root_path.join("created.db3").exists());
         assert_eq!(
             authority
-                .list_database_children(&root)
+                .list_database_children_cancellable(&root, &CancellationToken::new())
                 .unwrap()
                 .iter()
                 .filter(|item| item.filename == "created.db3")

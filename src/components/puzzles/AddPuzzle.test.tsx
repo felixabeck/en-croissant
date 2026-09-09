@@ -161,6 +161,20 @@ test("keeps the modal open silently when choosing a workspace is cancelled", asy
   expect(mocks.notify).not.toHaveBeenCalled();
 });
 
+test("surfaces an ordinary preview-list failure after workspace selection", async () => {
+  mocks.choosePuzzleDatabase.mockResolvedValue(undefined);
+  mocks.getPuzzleDatabases.mockRejectedValue(new Error("listing failed"));
+  const actions = await render();
+  await act(async () => host.querySelector("button")!.click());
+  expect(actions.setPuzzleDbs).not.toHaveBeenCalled();
+  expect(actions.setOpened).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith({
+    color: "red",
+    title: "Common.Error",
+    message: "Safe error",
+  });
+});
+
 test("wires progress id from the download URL, not the manifest index", async () => {
   mocks.defaultDatabases = [tacticsManifest];
   await render();
@@ -211,4 +225,44 @@ test("reports a failed download without replacing the installed database list", 
     title: "Common.Error",
     message: "Safe error",
   });
+});
+
+test("unmount cancels a held workspace preview and refuses its stale database list", async () => {
+  mocks.choosePuzzleDatabase.mockResolvedValue(undefined);
+  let signal!: AbortSignal;
+  let resolve!: (value: Array<{ title: string }>) => void;
+  mocks.getPuzzleDatabases.mockImplementation(
+    (nextSignal: AbortSignal) =>
+      new Promise((done) => {
+        signal = nextSignal;
+        resolve = done;
+      }),
+  );
+  const actions = await render();
+  await act(async () => host.querySelector("button")!.click());
+  await vi.waitFor(() => expect(mocks.getPuzzleDatabases).toHaveBeenCalledOnce());
+  await act(async () => root.unmount());
+  expect(signal.aborted).toBe(true);
+  resolve([{ title: "Stale.db3" }]);
+  await act(async () => Promise.resolve());
+  expect(actions.setPuzzleDbs).not.toHaveBeenCalled();
+  expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("unmount during the accepted picker prevents a later preview", async () => {
+  let finishPicker!: () => void;
+  mocks.choosePuzzleDatabase.mockReturnValue(
+    new Promise<void>((resolve) => {
+      finishPicker = resolve;
+    }),
+  );
+  const actions = await render();
+  await act(async () => host.querySelector("button")!.click());
+  await act(async () => root.unmount());
+  await act(async () => finishPicker());
+  expect(actions.onWorkspaceChanged).toHaveBeenCalledOnce();
+  expect(mocks.getPuzzleDatabases).not.toHaveBeenCalled();
+  expect(actions.setPuzzleDbs).not.toHaveBeenCalled();
+  expect(actions.setOpened).not.toHaveBeenCalled();
+  expect(mocks.notify).not.toHaveBeenCalled();
 });

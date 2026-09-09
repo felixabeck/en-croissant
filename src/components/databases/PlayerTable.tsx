@@ -8,6 +8,7 @@ import useSWR from "swr";
 import { useStore } from "zustand";
 import type { Player, PlayerSort } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { query_players } from "@/utils/db";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GridLayout from "./GridLayout";
@@ -25,8 +26,10 @@ function PlayerTable() {
   const selectedPlayer = useStore(store, (s) => s.players.selectedPlayer);
   const setSelectedPlayer = useStore(store, (s) => s.setPlayersSelectedPlayer);
 
-  const { data, error, isLoading } = useSWR(["players", file, query], () =>
-    query_players(file, query),
+  const requestKey = ["players", file, query] as const;
+  const requestOwner = useNativeRequestOwner(requestKey);
+  const { data, error, isLoading } = useSWR(requestKey, () =>
+    requestOwner!.run((signal) => query_players(file, query, { signal })),
   );
   const players = data?.data ?? [];
   const count = data?.count;

@@ -6,6 +6,11 @@ const mocks = vi.hoisted(() => ({
   clearProgress: vi.fn(),
   getProgress: vi.fn(),
   listen: vi.fn(),
+  notifyListenerError: vi.fn(),
+}));
+
+vi.mock("@/components/files/notifyError", () => ({
+  notifyListenerError: mocks.notifyListenerError,
 }));
 
 vi.mock("@/bindings/generated", () => ({
@@ -54,6 +59,7 @@ beforeEach(() => {
   mocks.clearProgress.mockResolvedValue({ status: "ok", data: BigInt(0) });
   mocks.getProgress.mockReset();
   mocks.listen.mockReset();
+  mocks.notifyListenerError.mockReset();
   mocks.listen.mockImplementation(async (handler: (event: { payload: Progress }) => void) => {
     eventHandler = handler;
     return vi.fn();
@@ -245,5 +251,17 @@ describe("useProgress", () => {
     expect(container.querySelector("output")?.dataset.generation).toBe("8");
     await act(async () => root.render(<Probe id="second" />));
     expect(container.querySelector("output")?.dataset.generation).toBe("1");
+  });
+
+  test("surfaces a rejected initial progress lookup", async () => {
+    const failure = new Error("progress lookup failed");
+    mocks.getProgress.mockRejectedValue(failure);
+    await act(async () => root.render(<Probe id="job" />));
+    await vi.waitFor(() =>
+      expect(mocks.notifyListenerError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: failure.message }),
+      ),
+    );
+    expect(container.querySelector("output")?.dataset.generation).toBe("none");
   });
 });

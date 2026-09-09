@@ -23,6 +23,7 @@ import useSWR from "swr";
 import { useStore } from "zustand";
 import type { GameSort, NormalizedGame, Outcome } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { activeTabAtom, tabsAtom } from "@/state/atoms";
 import { query_games } from "@/utils/db";
 import { createTab } from "@/utils/tabs";
@@ -51,8 +52,10 @@ function GameTable() {
   const [, setTabs] = useAtom(tabsAtom);
   const setActiveTab = useSetAtom(activeTabAtom);
 
-  const { data, error, isLoading, mutate } = useSWR(["games", file, query], () =>
-    query_games(file, query),
+  const requestKey = ["games", file, query] as const;
+  const requestOwner = useNativeRequestOwner(requestKey);
+  const { data, error, isLoading, mutate } = useSWR(requestKey, () =>
+    requestOwner!.run((signal) => query_games(file, query, { signal })),
   );
 
   const games = data?.data ?? [];

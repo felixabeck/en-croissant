@@ -103,10 +103,18 @@ pub fn iter_mainline_move_bytes(bytes: &[u8]) -> MainlineMoveBytesIter<'_> {
 /// Callers that process database-owned move streams must use this boundary so
 /// truncated comments/NAGs and unbalanced variations cannot be treated as a
 /// valid shorter game.
-pub fn try_iter_mainline_move_bytes(bytes: &[u8]) -> Result<MainlineMoveBytesIter<'_>, Error> {
+fn validate_mainline_move_bytes(
+    bytes: &[u8],
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+    mut checkpoint: impl FnMut(usize),
+) -> Result<(), Error> {
     let mut cursor = 0usize;
     let mut variation_depth = 0usize;
     while cursor < bytes.len() {
+        if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+            return Err(Error::Cancellation);
+        }
+        checkpoint(cursor);
         let marker = bytes[cursor];
         cursor += 1;
         match marker {
@@ -140,6 +148,32 @@ pub fn try_iter_mainline_move_bytes(bytes: &[u8]) -> Result<MainlineMoveBytesIte
     if variation_depth != 0 {
         return Err(invalid_data("unclosed variation"));
     }
+    if cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+        return Err(Error::Cancellation);
+    }
+    Ok(())
+}
+
+pub fn try_iter_mainline_move_bytes(bytes: &[u8]) -> Result<MainlineMoveBytesIter<'_>, Error> {
+    validate_mainline_move_bytes(bytes, None, |_| {})?;
+    Ok(MainlineMoveBytesIter::new(bytes))
+}
+
+pub fn try_iter_mainline_move_bytes_cancellable<'a>(
+    bytes: &'a [u8],
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<MainlineMoveBytesIter<'a>, Error> {
+    validate_mainline_move_bytes(bytes, Some(cancellation), |_| {})?;
+    Ok(MainlineMoveBytesIter::new(bytes))
+}
+
+#[cfg(test)]
+fn try_iter_mainline_move_bytes_with_checkpoint<'a>(
+    bytes: &'a [u8],
+    cancellation: &tokio_util::sync::CancellationToken,
+    checkpoint: impl FnMut(usize),
+) -> Result<MainlineMoveBytesIter<'a>, Error> {
+    validate_mainline_move_bytes(bytes, Some(cancellation), checkpoint)?;
     Ok(MainlineMoveBytesIter::new(bytes))
 }
 
@@ -833,6 +867,30 @@ mod tests {
         assert!(try_iter_mainline_move_bytes(&[NAG_MARKER, 1]).is_err());
         assert!(try_iter_mainline_move_bytes(&[VARIATION_END_MARKER]).is_err());
         assert!(try_iter_mainline_move_bytes(&[VARIATION_START_MARKER, 0]).is_err());
+    }
+
+    #[test]
+    fn cancellable_validation_stops_during_actual_large_comment_and_move_traversal() {
+        prepare_mutation_test();
+        let mut bytes = Vec::new();
+        for _ in 0..96 {
+            bytes.extend(std::iter::repeat_n(0, 2_048));
+            encode_comment(&"x".repeat(60_000), &mut bytes);
+        }
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let mut checkpoints = 0usize;
+        let result =
+            try_iter_mainline_move_bytes_with_checkpoint(&bytes, &cancellation, |cursor| {
+                checkpoints += 1;
+                if cursor > bytes.len() / 2 {
+                    cancellation.cancel();
+                }
+            });
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert!(
+            checkpoints > 90_000,
+            "validation did not traverse the move stream"
+        );
     }
 
     #[test]

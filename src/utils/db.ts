@@ -14,6 +14,7 @@ import {
 } from "@/bindings";
 import type { LocalOptions } from "@/components/panels/database/DatabasePanel";
 import { capabilityKey } from "@/utils/pathCapabilities";
+import { collectSequential } from "@/utils/collectSequential";
 
 export type SuccessDatabaseInfo = Extract<DatabaseInfo, { type: "success" }>;
 export type ManagedDatabaseInfo = DatabaseInfo & { file: DatabaseHandle };
@@ -167,52 +168,65 @@ function normalizeRange(range?: [number, number] | null): [number, number] | und
 export async function query_games(
     db: DatabaseHandle,
     query: GameQuery,
+    options?: { signal?: AbortSignal },
 ): Promise<QueryResponse<NormalizedGame[]>> {
-    return await tauri.getGames(db, {
-        player1: query.player1,
-        range1: normalizeRange(query.range1),
-        player2: query.player2,
-        range2: normalizeRange(query.range2),
-        tournament_id: query.tournament_id,
-        sides: query.sides,
-        outcome: query.outcome,
-        start_date: query.start_date,
-        end_date: query.end_date,
-        position: null,
-        options: {
-            skipCount: query.options?.skipCount ?? false,
-            page: query.options?.page,
-            pageSize: query.options?.pageSize,
-            sort: query.options?.sort || "id",
-            direction: query.options?.direction || "desc",
+    return await tauri.getGames(
+        db,
+        {
+            player1: query.player1,
+            range1: normalizeRange(query.range1),
+            player2: query.player2,
+            range2: normalizeRange(query.range2),
+            tournament_id: query.tournament_id,
+            sides: query.sides,
+            outcome: query.outcome,
+            start_date: query.start_date,
+            end_date: query.end_date,
+            position: null,
+            options: {
+                skipCount: query.options?.skipCount ?? false,
+                page: query.options?.page,
+                pageSize: query.options?.pageSize,
+                sort: query.options?.sort || "id",
+                direction: query.options?.direction || "desc",
+            },
         },
-    });
+        options,
+    );
 }
 
 export async function query_players(
     db: DatabaseHandle,
     query: PlayerQuery,
+    options?: { signal?: AbortSignal },
 ): Promise<QueryResponse<Player[]>> {
-    return await tauri.getPlayers(db, {
-        options: {
-            skipCount: query.options.skipCount || false,
-            page: query.options.page,
-            pageSize: query.options.pageSize,
-            sort: query.options.sort,
-            direction: query.options.direction,
+    return await tauri.getPlayers(
+        db,
+        {
+            options: {
+                skipCount: query.options.skipCount || false,
+                page: query.options.page,
+                pageSize: query.options.pageSize,
+                sort: query.options.sort,
+                direction: query.options.direction,
+            },
+            name: query.name,
+            range: normalizeRange(query.range),
         },
-        name: query.name,
-        range: normalizeRange(query.range),
-    });
+        options,
+    );
 }
 
-export async function getDatabases(): Promise<ManagedDatabaseInfo[]> {
+export async function getDatabases(
+    options: { signal?: AbortSignal } = {},
+): Promise<ManagedDatabaseInfo[]> {
     const root = await tauri.getDatabaseWorkspace();
-    const databases = await tauri.listWorkspaceDatabases(root);
-    const results = await Promise.allSettled(
-        databases.map((database) => getDatabase(database.handle, database.filename)),
+    const databases = await tauri.listWorkspaceDatabases(root, options);
+    return collectSequential(
+        databases,
+        (database) => getDatabase(database.handle, database.filename),
+        { signal: options.signal, operation: "getDatabases metadata" },
     );
-    return results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
 }
 
 async function getDatabase(file: DatabaseHandle, _filename: string): Promise<ManagedDatabaseInfo> {
@@ -249,18 +263,22 @@ export interface Opening {
     draw: number;
 }
 
-export async function getTournamentGames(file: DatabaseHandle, id: number) {
-    return await query_games(file, {
-        options: {
-            direction: "asc",
-            sort: "id",
-            skipCount: true,
+export async function getTournamentGames(file: DatabaseHandle, id: number, signal?: AbortSignal) {
+    return await query_games(
+        file,
+        {
+            options: {
+                direction: "asc",
+                sort: "id",
+                skipCount: true,
+            },
+            tournament_id: id,
         },
-        tournament_id: id,
-    });
+        { signal },
+    );
 }
 
-export async function searchPosition(options: LocalOptions, tab: string) {
+export async function searchPosition(options: LocalOptions, tab: string, signal?: AbortSignal) {
     return await tauri.searchPosition(
         options.path!,
         {
@@ -275,5 +293,6 @@ export async function searchPosition(options: LocalOptions, tab: string) {
             wanted_result: options.result,
         },
         tab,
+        { signal },
     );
 }

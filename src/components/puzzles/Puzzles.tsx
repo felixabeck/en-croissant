@@ -71,6 +71,8 @@ const addOptionLabel = (label: string) => `+ ${label}`;
 
 function Puzzles({ id }: { id: string }) {
   const { t } = useTranslation();
+  const commonErrorRef = useRef(t("Common.Error"));
+  commonErrorRef.current = t("Common.Error");
   const store = useContext(TreeStateContext)!;
   const setFen = useStore(store, (s) => s.setFen);
   const goToStart = useStore(store, (s) => s.goToStart);
@@ -92,6 +94,9 @@ function Puzzles({ id }: { id: string }) {
   const [settingsOpened, setSettingsOpened] = useState(false);
   const requestGeneration = useRef(0);
   const puzzleRequest = useRef<AbortController | null>(null);
+  const listingController = useRef<AbortController | null>(null);
+  const themeController = useRef<AbortController | null>(null);
+  const completedThemeController = useRef<AbortController | null>(null);
   const resetWorkspaceRef = useRef<() => void>(() => {});
   const workspaceRef = useRef<string | null>(null);
   const workspaceRequest = useRef(0);
@@ -106,15 +111,39 @@ function Puzzles({ id }: { id: string }) {
       : null;
   const effectiveSelectedDbRef = useRef(effectiveSelectedDb);
   effectiveSelectedDbRef.current = effectiveSelectedDb;
+  const effectiveSelectedDbKey = effectiveSelectedDb ? capabilityKey(effectiveSelectedDb) : null;
 
-  useEffect(() => () => puzzleRequest.current?.abort(), []);
+  useEffect(() => {
+    requestGeneration.current++;
+    puzzleRequest.current?.abort();
+    completedThemeController.current?.abort();
+    completedThemeController.current = null;
+  }, [effectiveSelectedDbKey]);
+
+  useEffect(() => {
+    completedThemeController.current?.abort();
+    completedThemeController.current = null;
+  }, [currentPuzzle]);
+
+  useEffect(
+    () => () => {
+      puzzleRequest.current?.abort();
+      listingController.current?.abort();
+      themeController.current?.abort();
+      completedThemeController.current?.abort();
+    },
+    [],
+  );
 
   useEffect(() => {
     let active = true;
     const listingRequest = ++workspaceRequest.current;
+    listingController.current?.abort();
+    const controller = new AbortController();
+    listingController.current = controller;
     requestGeneration.current++;
     puzzleRequest.current?.abort();
-    void Promise.all([tauri.getPuzzleWorkspace(), getPuzzleDatabases()])
+    void Promise.all([tauri.getPuzzleWorkspace(), getPuzzleDatabases(controller.signal)])
       .then(([workspace, databases]) => {
         if (!active || listingRequest !== workspaceRequest.current) return;
         const workspaceKey = capabilityKey(workspace.root);
@@ -136,14 +165,22 @@ function Puzzles({ id }: { id: string }) {
           resetWorkspaceRef.current();
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (active && listingRequest === workspaceRequest.current) {
           setPuzzleDbs([]);
           setListedWorkspaceGeneration(null);
+          if (normalizeError(error).category !== "cancelled") {
+            notifications.show({
+              title: commonErrorRef.current,
+              message: normalizeError(error).message,
+              color: "red",
+            });
+          }
         }
       });
     return () => {
       active = false;
+      controller.abort();
     };
   }, [workspaceGeneration]);
 
@@ -158,6 +195,9 @@ function Puzzles({ id }: { id: string }) {
   useEffect(() => {
     const generation = ++requestGeneration.current;
     let cancelled = false;
+    themeController.current?.abort();
+    const controller = new AbortController();
+    themeController.current = controller;
     setThemesTableMissing(false);
 
     if (!effectiveSelectedDb) {
@@ -166,7 +206,7 @@ function Puzzles({ id }: { id: string }) {
     }
 
     void tauri
-      .getPuzzleThemes(effectiveSelectedDb)
+      .getPuzzleThemes(effectiveSelectedDb, { signal: controller.signal })
       .then((themes) => {
         if (cancelled || generation !== requestGeneration.current) return;
         setAvailableThemes(themes);
@@ -180,6 +220,7 @@ function Puzzles({ id }: { id: string }) {
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [effectiveSelectedDb]);
 
@@ -245,7 +286,9 @@ function Puzzles({ id }: { id: string }) {
     puzzleRequest.current = request;
     let result;
     try {
-      result = await tauri.getPuzzle(db, range[0], range[1], effectiveSelectedTheme);
+      result = await tauri.getPuzzle(db, range[0], range[1], effectiveSelectedTheme, {
+        signal: request.signal,
+      });
     } catch {
       return;
     }
@@ -286,9 +329,15 @@ function Puzzles({ id }: { id: string }) {
     if (effectiveSelectedDb && puzzle?.id) {
       const database = effectiveSelectedDb;
       const generation = requestGeneration.current;
+      completedThemeController.current?.abort();
+      const controller = new AbortController();
+      completedThemeController.current = controller;
       try {
-        const themes = await tauri.getThemesForPuzzle(database, puzzle.id);
+        const themes = await tauri.getThemesForPuzzle(database, puzzle.id, {
+          signal: controller.signal,
+        });
         if (
+          controller.signal.aborted ||
           generation !== requestGeneration.current ||
           !effectiveSelectedDbRef.current ||
           capabilityKey(effectiveSelectedDbRef.current) !== capabilityKey(database)
@@ -299,8 +348,14 @@ function Puzzles({ id }: { id: string }) {
           puzzles[currentPuzzle].themes = themes;
           return [...puzzles];
         });
-      } catch {
-        // A stale/deleted database must not change an already completed puzzle.
+      } catch (error) {
+        if (!controller.signal.aborted && normalizeError(error).category !== "cancelled") {
+          notifications.show({
+            title: t("Common.Error"),
+            message: normalizeError(error).message,
+            color: "red",
+          });
+        }
       }
     }
   }

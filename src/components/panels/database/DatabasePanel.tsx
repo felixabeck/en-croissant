@@ -15,6 +15,7 @@ import { useAtom, useAtomValue } from "jotai";
 import { memo, useContext, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr/immutable";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
 import { type DatabaseHandle } from "@/bindings";
@@ -77,7 +78,7 @@ function sortOpenings(openings: Opening[]) {
   return openings.sort((a, b) => b.black + b.draw + b.white - (a.black + a.draw + a.white));
 }
 
-async function fetchOpening(db: DBType, tab: string) {
+async function fetchOpening(db: DBType, tab: string, signal?: AbortSignal) {
   return match(db)
     .with({ type: "lch_all" }, async ({ fen, options, handle }) => {
       const data = await getLichessGames(fen, options, handle);
@@ -105,7 +106,7 @@ async function fetchOpening(db: DBType, tab: string) {
     })
     .with({ type: "local" }, async ({ options }) => {
       if (!options.path) throw Error("Missing reference database");
-      const positionData = await searchPosition(options, tab);
+      const positionData = await searchPosition(options, tab, signal);
       return {
         openings: sortOpenings(positionData[0]),
         games: positionData[1],
@@ -129,7 +130,10 @@ function DatabasePanel() {
   const explorerHandle = sessions.find((session) => session.lichess?.handle)?.lichess?.handle;
   const missingExplorerAuthentication = db !== "local" && !explorerHandle;
 
-  const { data: databases } = useSWR(db === "local" ? "databases" : null, () => getDatabases());
+  const databaseOwner = useNativeRequestOwner(db === "local" ? "databases" : null);
+  const { data: databases } = useSWR(db === "local" ? "databases" : null, () =>
+    databaseOwner!.run((signal) => getDatabases({ signal })),
+  );
 
   const dbSelectData = (databases ?? [])
     .filter((d) => d.type === "success")
@@ -169,16 +173,15 @@ function DatabasePanel() {
 
   const tab = useAtomValue(currentTabAtom);
   const [tabType, setTabType] = useAtom(currentDbTabAtom);
+  const openingKey = tabType !== "options" && !missingExplorerAuthentication ? dbType : null;
+  const openingOwner = useNativeRequestOwner(openingKey);
 
   const {
     data: openingData,
     isLoading,
     error,
-  } = useSWR(
-    tabType !== "options" && !missingExplorerAuthentication ? dbType : null,
-    async (dbType: DBType) => {
-      return fetchOpening(dbType, tab?.value || "");
-    },
+  } = useSWR(openingKey, (dbType: DBType) =>
+    openingOwner!.run((signal) => fetchOpening(dbType, tab?.value || "", signal)),
   );
 
   const grandTotal = openingData?.openings?.reduce(

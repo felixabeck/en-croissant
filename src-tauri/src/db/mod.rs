@@ -5,9 +5,12 @@ mod migrations;
 mod models;
 mod ops;
 mod repository;
+#[cfg(test)]
+pub(crate) use repository::cancel_snapshot_copy_after_chunks;
 mod schema;
 mod search;
 mod search_index;
+pub(crate) mod sqlite_cancellation;
 
 use crate::{
     db::{
@@ -28,7 +31,10 @@ use crate::{
         },
     },
     opening::get_opening_from_setup,
-    progress::{update_progress_with_state, JobProgress, ProgressLease, ProgressState},
+    progress::{
+        complete_preserving_result, update_progress_with_state, JobProgress, ProgressLease,
+        ProgressState,
+    },
     AppState, SearchCache,
 };
 use chrono::{NaiveDate, NaiveTime};
@@ -66,6 +72,7 @@ use std::{
 use log::info;
 use tauri::Manager;
 use tauri_specta::Event as _;
+use tokio_util::sync::CancellationToken;
 
 use self::encoding::{
     encode_comment, encode_move, encode_nag, VARIATION_END_MARKER, VARIATION_START_MARKER,
@@ -90,6 +97,14 @@ const DELETE_INDEXES_SQL: &str = include_str!("delete_indexes.sql");
 
 /// Established cap for replaying plies during statistics opening lookup.
 const OPENING_STATISTICS_PLY_LIMIT: usize = 55;
+
+fn cancellation_check(cancellation: &CancellationToken) -> Result<(), Error> {
+    if cancellation.is_cancelled() {
+        Err(Error::Cancellation)
+    } else {
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 const CREATE_TABLES_SQL: &str = include_str!("create.sql");
@@ -687,7 +702,9 @@ pub fn generate_search_index(
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
+    cancellation_check(cancellation)?;
     let db_path = resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
     let target = authority
         .lock()
@@ -695,9 +712,9 @@ pub fn generate_search_index(
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .database_file_target(handle, PathOperation::DatabaseMutate)?;
-    repository.with_write_lock(&db_path, || {
-        repository.with_index_lock(&db_path, || {
-            generate_search_index_locked(&db_path, &target, repository, search_cache)
+    repository.with_write_lock_cancellable(&db_path, cancellation, || {
+        repository.with_index_lock_cancellable(&db_path, cancellation, || {
+            generate_search_index_locked(&db_path, &target, repository, search_cache, cancellation)
         })
     })
 }
@@ -723,7 +740,9 @@ fn generate_search_index_locked(
     target: &DatabaseFileTarget,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
+    cancellation_check(cancellation)?;
     let mut database_connection = get_db_or_create(repository, db_path)?;
     let db = &mut *database_connection;
     let index_leaf = search_index::preferred_sidecar_leaf(&target.leaf);
@@ -734,45 +753,54 @@ fn generate_search_index_locked(
     let source = IndexSource::from_database_identity(
         &repository.database_identity_expected(db_path, target.identity)?,
     )?;
-    let rows = games::table
-        .select((
-            games::id,
-            games::white_id,
-            games::black_id,
-            games::date,
-            games::result,
-            games::moves,
-            games::fen,
-            games::pawn_home,
-            games::white_material,
-            games::black_material,
-            games::white_elo,
-            games::black_elo,
-        ))
-        .load_iter::<SearchIndexGameRecord, DefaultLoadingMode>(db)?
-        .map(|row| {
-            let game = row.map_err(Error::from)?;
-            SearchGameEntry::from_game_data(crate::db::search_index::SearchGameData {
-                id: game.id,
-                white_id: game.white_id,
-                black_id: game.black_id,
-                date: game.date,
-                result: game.result,
-                moves: game.moves,
-                fen: game.fen,
-                pawn_home: game.pawn_home,
-                white_material: game.white_material,
-                black_material: game.black_material,
-                white_elo: game.white_elo,
-                black_elo: game.black_elo,
-            })
-        });
-
-    crate::infra::fs::require_durable(
-        search_index::write_entries_to_at(&target.parent, &index_leaf, source, rows)?,
+    let outcome = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
+        let rows = games::table
+            .select((
+                games::id,
+                games::white_id,
+                games::black_id,
+                games::date,
+                games::result,
+                games::moves,
+                games::fen,
+                games::pawn_home,
+                games::white_material,
+                games::black_material,
+                games::white_elo,
+                games::black_elo,
+            ))
+            .load_iter::<SearchIndexGameRecord, DefaultLoadingMode>(db)?
+            .map(|row| {
+                cancellation_check(cancellation)?;
+                let game = row.map_err(Error::from)?;
+                SearchGameEntry::from_game_data_cancellable(
+                    crate::db::search_index::SearchGameData {
+                        id: game.id,
+                        white_id: game.white_id,
+                        black_id: game.black_id,
+                        date: game.date,
+                        result: game.result,
+                        moves: game.moves,
+                        fen: game.fen,
+                        pawn_home: game.pawn_home,
+                        white_material: game.white_material,
+                        black_material: game.black_material,
+                        white_elo: game.white_elo,
+                        black_elo: game.black_elo,
+                    },
+                    cancellation,
+                )
+            });
+        search_index::write_entries_to_at(&target.parent, &index_leaf, source, rows, cancellation)
+    })?;
+    // Publication has committed once `write_entries_to_at` returns. From here on the durability
+    // and cache-invalidation tail must finish even if cancellation arrives concurrently.
+    let durability = crate::infra::fs::require_durable(
+        outcome,
         crate::error::DurabilityStage::SearchIndexReplacement,
-    )?;
+    );
     search_cache.invalidate_database(db_path);
+    durability?;
 
     info!("Search index generated in {:?}", start.elapsed());
     Ok(())
@@ -1195,13 +1223,22 @@ pub struct QueryResponse<T> {
 pub async fn get_games(
     file: DatabaseHandle,
     query: GameQuery,
+    ticket: Option<String>,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<QueryResponse<Vec<NormalizedGame>>, Error> {
+    let operation = crate::native_read_operation(ticket, &window, &state, "get_games")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
-    BLOCKING_GATEWAY
-        .spawn(move || get_games_blocking(&authority, &repository, file, query))
-        .await
+    crate::infra::operations::run_native_operation(operation, "get_games", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |token| {
+                get_games_blocking(&authority, &repository, file, query, token)
+            })
+            .await
+    })
+    .await
 }
 
 fn get_games_blocking(
@@ -1209,7 +1246,9 @@ fn get_games_blocking(
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     query: GameQuery,
+    cancellation: &CancellationToken,
 ) -> Result<QueryResponse<Vec<NormalizedGame>>, Error> {
+    cancellation_check(cancellation)?;
     let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
     let mut database_connection = get_db_or_create(repository, &file)?;
@@ -1388,11 +1427,10 @@ fn get_games_blocking(
     };
 
     if !query_options.skip_count {
-        count = Some(
-            count_query
-                .select(diesel::dsl::count(games::id))
-                .first(db)?,
-        );
+        count = Some(sqlite_cancellation::with_sqlite_cancellation(
+            cancellation,
+            || count_query.select(diesel::dsl::count(games::id)).first(db),
+        )?);
     }
 
     // println!(
@@ -1400,7 +1438,9 @@ fn get_games_blocking(
     //     diesel::debug_query::<diesel::sqlite::Sqlite, _>(&sql_query)
     // );
 
-    let games: Vec<(Game, Player, Player, Event, Site)> = sql_query.load(db)?;
+    let games: Vec<(Game, Player, Player, Event, Site)> =
+        sqlite_cancellation::with_sqlite_cancellation(cancellation, || sql_query.load(db))?;
+    cancellation_check(cancellation)?;
     let normalized_games = normalize_games(games)?;
 
     Ok(QueryResponse {
@@ -1561,13 +1601,22 @@ fn get_player_blocking(
 pub async fn get_players(
     file: DatabaseHandle,
     query: PlayerQuery,
+    ticket: Option<String>,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<QueryResponse<Vec<Player>>, Error> {
+    let operation = crate::native_read_operation(ticket, &window, &state, "get_players")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
-    BLOCKING_GATEWAY
-        .spawn(move || get_players_blocking(&authority, &repository, file, query))
-        .await
+    crate::infra::operations::run_native_operation(operation, "get_players", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |token| {
+                get_players_blocking(&authority, &repository, file, query, token)
+            })
+            .await
+    })
+    .await
 }
 
 fn get_players_blocking(
@@ -1575,7 +1624,9 @@ fn get_players_blocking(
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     query: PlayerQuery,
+    cancellation: &CancellationToken,
 ) -> Result<QueryResponse<Vec<Player>>, Error> {
+    cancellation_check(cancellation)?;
     let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
     let mut database_connection = get_db_or_create(repository, &file)?;
@@ -1598,7 +1649,10 @@ fn get_players_blocking(
     }
 
     if !query.options.skip_count {
-        count = Some(count_query.count().get_result(db)?);
+        count = Some(sqlite_cancellation::with_sqlite_cancellation(
+            cancellation,
+            || count_query.count().get_result(db),
+        )?);
     }
 
     let (limit, offset) = pagination_limit_offset(query.options.page, query.options.page_size)?;
@@ -1625,7 +1679,10 @@ fn get_players_blocking(
         },
     };
 
-    let players = sql_query.load::<Player>(db)?;
+    let players = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
+        sql_query.load::<Player>(db)
+    })?;
+    cancellation_check(cancellation)?;
 
     Ok(QueryResponse {
         data: players,
@@ -1652,13 +1709,22 @@ pub struct TournamentQuery {
 pub async fn get_tournaments(
     file: DatabaseHandle,
     query: TournamentQuery,
+    ticket: Option<String>,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<QueryResponse<Vec<Event>>, Error> {
+    let operation = crate::native_read_operation(ticket, &window, &state, "get_tournaments")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
-    BLOCKING_GATEWAY
-        .spawn(move || get_tournaments_blocking(&authority, &repository, file, query))
-        .await
+    crate::infra::operations::run_native_operation(operation, "get_tournaments", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |token| {
+                get_tournaments_blocking(&authority, &repository, file, query, token)
+            })
+            .await
+    })
+    .await
 }
 
 fn get_tournaments_blocking(
@@ -1666,7 +1732,9 @@ fn get_tournaments_blocking(
     repository: &DatabaseRepository,
     file: DatabaseHandle,
     query: TournamentQuery,
+    cancellation: &CancellationToken,
 ) -> Result<QueryResponse<Vec<Event>>, Error> {
+    cancellation_check(cancellation)?;
     let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
     let mut database_connection = get_db_or_create(repository, &file)?;
@@ -1684,7 +1752,10 @@ fn get_tournaments_blocking(
     }
 
     if !query.options.skip_count {
-        count = Some(count_query.count().get_result(db)?);
+        count = Some(sqlite_cancellation::with_sqlite_cancellation(
+            cancellation,
+            || count_query.count().get_result(db),
+        )?);
     }
 
     let (limit, offset) = pagination_limit_offset(query.options.page, query.options.page_size)?;
@@ -1707,7 +1778,10 @@ fn get_tournaments_blocking(
         },
     };
 
-    let events = sql_query.load::<Event>(db)?;
+    let events = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
+        sql_query.load::<Event>(db)
+    })?;
+    cancellation_check(cancellation)?;
 
     Ok(QueryResponse {
         data: events,
@@ -1782,32 +1856,39 @@ pub async fn get_players_game_info(
     progress_id: String,
     file: DatabaseHandle,
     id: i32,
+    ticket: Option<String>,
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<PlayerGameInfo, Error> {
-    // `.ok()` rather than `?`: this command returns data that
-    // `src/components/home/Databases.tsx` consumes through `Promise.allSettled`,
-    // which swallows rejections. Failing because a progress emit failed would
-    // silently drop one personal database from the home card with no error
-    // anywhere.
-    let progress = JobProgress::new(app.clone(), progress_id).ok();
+    let operation = crate::native_read_operation(ticket, &window, &state, "get_players_game_info")?;
+    let cancellation = operation.token();
+    let progress = JobProgress::best_effort(app.clone(), progress_id, "get_players_game_info");
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
     let lease = progress.as_ref().map(JobProgress::lease);
     let worker_app = app.clone();
-    let result = BLOCKING_GATEWAY
-        .spawn(move || {
-            get_players_game_info_blocking(&authority, &repository, file, id, worker_app, lease)
-        })
-        .await;
-    if let Some(progress) = &progress {
-        progress.complete(if result.is_ok() {
-            ProgressState::Succeeded
-        } else {
-            ProgressState::Failed
-        });
-    }
-    result
+    crate::infra::operations::run_native_operation(operation, "get_players_game_info", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |token| {
+                let result = get_players_game_info_blocking(
+                    &authority,
+                    &repository,
+                    file,
+                    id,
+                    worker_app,
+                    lease,
+                    token,
+                );
+                complete_preserving_result(result, |state| {
+                    if let Some(progress) = &progress {
+                        progress.complete(state);
+                    }
+                })
+            })
+            .await
+    })
+    .await
 }
 
 fn get_players_game_info_blocking<R: tauri::Runtime>(
@@ -1817,7 +1898,9 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
     id: i32,
     app: tauri::AppHandle<R>,
     lease: Option<ProgressLease>,
+    cancellation: &CancellationToken,
 ) -> Result<PlayerGameInfo, Error> {
+    cancellation_check(cancellation)?;
     let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
     let mut database_connection = get_db_or_create(repository, &file)?;
@@ -1854,7 +1937,8 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
         Option<String>,
         Option<String>,
     );
-    let info: Vec<GameInfo> = sql_query.load(db)?;
+    let info: Vec<GameInfo> =
+        sqlite_cancellation::with_sqlite_cancellation(cancellation, || sql_query.load(db))?;
 
     let mut game_info = PlayerGameInfo::default();
     let progress = AtomicUsize::new(0);
@@ -1873,6 +1957,9 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
                 site,
                 player,
             )| {
+                if cancellation.is_cancelled() {
+                    return None;
+                }
                 let is_white = *white_id == id;
                 let is_black = *black_id == id;
                 if !is_white && !is_black {
@@ -1904,6 +1991,9 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
                 let mut setups = vec![];
                 let mut chess = Chess::default();
                 for byte in move_bytes.take(OPENING_STATISTICS_PLY_LIMIT) {
+                    if cancellation.is_cancelled() {
+                        return None;
+                    }
                     let Some(m) = decode_move(byte, &chess) else {
                         break;
                     };
@@ -1961,6 +2051,7 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
         .into_iter()
         .map(|((site, player), data)| SiteStatsData { site, player, data })
         .collect();
+    cancellation_check(cancellation)?;
 
     println!("get_players_game_info {:?}: {:?}", file, timer.elapsed());
 
@@ -2753,14 +2844,23 @@ pub fn clear_games(state: tauri::State<'_, AppState>) {
 #[specta::specta]
 pub async fn preload_reference_db(
     file: DatabaseHandle,
+    ticket: Option<String>,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    let operation = crate::native_read_operation(ticket, &window, &state, "preload_reference_db")?;
+    let cancellation = operation.token();
     let authority = Arc::clone(&state.pgn_path_authority);
     let repository = Arc::clone(&state.database_repository);
     let search_cache = Arc::clone(&state.search_cache);
-    BLOCKING_GATEWAY
-        .spawn(move || preload_reference_db_blocking(&authority, &repository, &search_cache, file))
-        .await
+    crate::infra::operations::run_native_operation(operation, "preload_reference_db", async move {
+        BLOCKING_GATEWAY
+            .spawn_cancellable(cancellation, move |token| {
+                preload_reference_db_blocking(&authority, &repository, &search_cache, file, token)
+            })
+            .await
+    })
+    .await
 }
 
 fn preload_reference_db_blocking(
@@ -2768,8 +2868,15 @@ fn preload_reference_db_blocking(
     repository: &DatabaseRepository,
     search_cache: &Arc<SearchCache>,
     file: DatabaseHandle,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    let (_, index) = search::load_search_index(authority, repository, search_cache, &file)?;
+    let (_, index) = search::load_search_index_cancellable(
+        authority,
+        repository,
+        search_cache,
+        &file,
+        cancellation,
+    )?;
     info!("Preloaded reference database with {} games", index.len());
     Ok(())
 }
@@ -3017,6 +3124,7 @@ mod tests {
                 &state.pgn_path_authority,
                 &state.database_repository,
                 &state.search_cache,
+                &CancellationToken::new(),
             )
         });
         result.unwrap();
@@ -3052,6 +3160,7 @@ mod tests {
             &state.pgn_path_authority,
             &state.database_repository,
             &state.search_cache,
+            &CancellationToken::new(),
         );
         set_test_atomic_file_injector(None);
 
@@ -3102,6 +3211,7 @@ mod tests {
             &state.pgn_path_authority,
             &state.database_repository,
             &state.search_cache,
+            &CancellationToken::new(),
         );
         assert!(matches!(result, Err(Error::InvalidInput(_))));
         assert_eq!(std::fs::read(index_path).unwrap(), previous);
@@ -4479,6 +4589,7 @@ mod tests {
                 sides: Some(Sides::WhiteBlack),
                 ..GameQuery::new()
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(games.count, Some(1));
@@ -4509,6 +4620,7 @@ mod tests {
                 }),
                 ..GameQuery::new()
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(dated.count, Some(1));
@@ -4531,6 +4643,7 @@ mod tests {
                 }),
                 ..GameQuery::new()
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(any_side.count, None);
@@ -4547,6 +4660,7 @@ mod tests {
                 range2: Some((2800, 2900)),
                 ..GameQuery::new()
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(as_black.count, Some(0));
@@ -4588,6 +4702,7 @@ mod tests {
                 name: Some("Carlsen".into()),
                 range: None,
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(players.count, Some(1));
@@ -4608,6 +4723,7 @@ mod tests {
                 name: None,
                 range: Some((2800, 2900)),
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(rated.count, None);
@@ -4630,6 +4746,7 @@ mod tests {
                 },
                 name: Some("Candidates".into()),
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(tournaments.count, Some(1));
@@ -4649,6 +4766,7 @@ mod tests {
                 },
                 name: None,
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(paged_events.count, None);
@@ -4819,6 +4937,7 @@ mod tests {
             &state.database_repository,
             handle.clone(),
             GameQuery::new(),
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(after_empty.count, Some(4));
@@ -4840,6 +4959,7 @@ mod tests {
             &state.database_repository,
             handle.clone(),
             GameQuery::new(),
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(after_duplicates.count, Some(3));
@@ -4866,6 +4986,7 @@ mod tests {
                 name: Some("Source".into()),
                 range: None,
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         let target = get_players_blocking(
@@ -4883,6 +5004,7 @@ mod tests {
                 name: Some("Target".into()),
                 range: None,
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(source.data.len(), 1);
@@ -4917,6 +5039,7 @@ mod tests {
                 sides: Some(Sides::WhiteBlack),
                 ..GameQuery::new()
             },
+            &CancellationToken::new(),
         )
         .unwrap();
         let rewritten_ids: Vec<i32> = rewritten.data.iter().map(|game| game.id).collect();
@@ -4938,6 +5061,7 @@ mod tests {
             &state.database_repository,
             handle,
             GameQuery::new(),
+            &CancellationToken::new(),
         )
         .unwrap();
         assert_eq!(remaining.count, Some(2));
@@ -5049,6 +5173,7 @@ mod tests {
             player_id,
             app.clone(),
             None,
+            &CancellationToken::new(),
         )
         .unwrap()
     }
@@ -5418,6 +5543,7 @@ mod tests {
             player_id,
             app.clone(),
             Some(lease),
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -5428,7 +5554,7 @@ mod tests {
                 .any(|frame| frame.id == progress_id && frame.progress == 50.0),
             "blocking body must emit a 50.0 Running frame under the lease id, got {captured:?}"
         );
-        let item = state.progress_state.get(progress_id).unwrap();
+        let item = state.progress_state.get(progress_id).unwrap().unwrap();
         assert_eq!(item.state, crate::progress::ProgressState::Running);
         assert_eq!(item.progress, 50.0);
     }
@@ -5463,6 +5589,7 @@ mod tests {
             player_id,
             app.clone(),
             Some(lease),
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -5471,9 +5598,133 @@ mod tests {
             captured.is_empty(),
             "zero kept rows must not emit a Running frame, got {captured:?}"
         );
-        let item = state.progress_state.get(progress_id).unwrap();
+        let item = state.progress_state.get(progress_id).unwrap().unwrap();
         assert_eq!(item.state, crate::progress::ProgressState::Running);
         assert_eq!(item.progress, 0.0);
+    }
+
+    fn assert_cancelled_during_real_sql<T>(
+        run: impl FnOnce(&CancellationToken) -> Result<T, Error>,
+    ) {
+        let cancellation = CancellationToken::new();
+        let checkpoints = sqlite_cancellation::cancel_on_callback(cancellation.clone(), 2);
+        assert!(matches!(run(&cancellation), Err(Error::Cancellation)));
+        assert!(
+            checkpoints.load(Ordering::SeqCst) >= 2,
+            "the production query did not reach two SQLite VM checkpoints"
+        );
+    }
+
+    #[test]
+    fn get_games_production_core_cancels_during_real_sql_without_publication() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+        let state = app.state::<AppState>();
+        assert_cancelled_during_real_sql(|token| {
+            get_games_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                GameQuery::new(),
+                token,
+            )
+        });
+    }
+
+    #[test]
+    fn get_players_production_core_cancels_during_real_sql_without_publication() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+        let state = app.state::<AppState>();
+        assert_cancelled_during_real_sql(|token| {
+            get_players_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                PlayerQuery {
+                    options: QueryOptions {
+                        skip_count: false,
+                        page: None,
+                        page_size: None,
+                        sort: PlayerSort::Id,
+                        direction: SortDirection::Asc,
+                    },
+                    name: None,
+                    range: None,
+                },
+                token,
+            )
+        });
+    }
+
+    #[test]
+    fn get_tournaments_production_core_cancels_during_real_sql_without_publication() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+        let state = app.state::<AppState>();
+        assert_cancelled_during_real_sql(|token| {
+            get_tournaments_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                TournamentQuery {
+                    options: QueryOptions {
+                        skip_count: false,
+                        page: None,
+                        page_size: None,
+                        sort: TournamentSort::Id,
+                        direction: SortDirection::Asc,
+                    },
+                    name: None,
+                },
+                token,
+            )
+        });
+    }
+
+    #[test]
+    fn get_players_game_info_production_core_cancels_during_real_sql_without_publication() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+        let player_id = {
+            let state = app.state::<AppState>();
+            let mut connection = state.database_repository.connection(&database).unwrap();
+            games::table
+                .find(game_id)
+                .select(games::white_id)
+                .first::<i32>(&mut *connection)
+                .unwrap()
+        };
+        let app_handle = app.clone();
+        let state = app.state::<AppState>();
+        assert_cancelled_during_real_sql(|token| {
+            get_players_game_info_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                player_id,
+                app_handle,
+                None,
+                token,
+            )
+        });
+    }
+
+    #[test]
+    fn preload_reference_db_production_core_cancels_during_index_sql_without_cache_publication() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+        let state = app.state::<AppState>();
+        assert_cancelled_during_real_sql(|token| {
+            preload_reference_db_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                handle.clone(),
+                token,
+            )
+        });
+        assert!(!get_index_path(&database).exists());
     }
 
     fn mount_convert_progress_events(app: &tauri::AppHandle<tauri::test::MockRuntime>) {

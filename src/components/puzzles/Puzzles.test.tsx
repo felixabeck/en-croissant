@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   getPuzzle: vi.fn(),
   soundResourcePath: vi.fn(),
   deletePuzzleDatabase: vi.fn(),
+  getThemesForPuzzle: vi.fn(),
   notificationShow: vi.fn(),
 }));
 
@@ -41,6 +42,7 @@ vi.mock("@/platform/tauri", async () => {
       getPuzzle: mocks.getPuzzle,
       soundResourcePath: mocks.soundResourcePath,
       deletePuzzleDatabase: mocks.deletePuzzleDatabase,
+      getThemesForPuzzle: mocks.getThemesForPuzzle,
     },
   };
 });
@@ -48,8 +50,23 @@ vi.mock("@mantine/notifications", () => ({
   notifications: { show: mocks.notificationShow },
 }));
 vi.mock("./PuzzleBoard", () => ({
-  default: ({ puzzles, db }: { puzzles: unknown[]; db: { id: string } | null }) => (
-    <div data-testid="puzzle-state" data-count={puzzles.length} data-database={db?.id ?? "none"} />
+  default: ({
+    puzzles,
+    db,
+    changeCompletion,
+  }: {
+    puzzles: Array<{ themes?: string[] }>;
+    db: { id: string } | null;
+    changeCompletion: (completion: "correct") => Promise<void>;
+  }) => (
+    <div
+      data-testid="puzzle-state"
+      data-count={puzzles.length}
+      data-database={db?.id ?? "none"}
+      data-themes={(puzzles[0]?.themes ?? []).join(",")}
+    >
+      <button data-testid="complete-puzzle" onClick={() => void changeCompletion("correct")} />
+    </div>
   ),
 }));
 vi.mock("./AddPuzzle", () => ({
@@ -226,6 +243,117 @@ test("does not show the alert when puzzle themes load", async () => {
     expect(mocks.getPuzzleThemes).toHaveBeenCalled();
   });
   expect(outdatedAlert()).toBeUndefined();
+});
+
+test("unmount cancels the held native puzzle database listing", async () => {
+  let signal!: AbortSignal;
+  mocks.listPuzzleDatabases.mockImplementation(
+    ({ signal: next }: { signal: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        signal = next;
+        next.addEventListener("abort", () => reject(commandError("cancellation", "cancelled")), {
+          once: true,
+        });
+      }),
+  );
+  await renderPuzzles();
+  await vi.waitFor(() => expect(mocks.listPuzzleDatabases).toHaveBeenCalledOnce());
+  await act(async () => root.unmount());
+  expect(signal.aborted).toBe(true);
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test("database replacement cancels held theme and puzzle requests and rejects stale publication", async () => {
+  let themeSignal!: AbortSignal;
+  let puzzleSignal!: AbortSignal;
+  let resolvePuzzle!: (value: NativePuzzle) => void;
+  mocks.getPuzzleThemes.mockImplementation(
+    (_database: unknown, { signal }: { signal: AbortSignal }) => {
+      themeSignal = signal;
+      return new Promise(() => undefined);
+    },
+  );
+  mocks.getPuzzle.mockImplementation(
+    (
+      _database: unknown,
+      _min: unknown,
+      _max: unknown,
+      _theme: unknown,
+      { signal }: { signal: AbortSignal },
+    ) => {
+      puzzleSignal = signal;
+      return new Promise((done) => {
+        resolvePuzzle = done;
+      });
+    },
+  );
+  const store = await renderPuzzles();
+  await vi.waitFor(() => expect(mocks.getPuzzleThemes).toHaveBeenCalledOnce());
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')?.click();
+  });
+  await vi.waitFor(() => expect(mocks.getPuzzle).toHaveBeenCalledOnce());
+  await act(async () => store.set(selectedPuzzleDbAtom, otherDb));
+  expect(themeSignal.aborted).toBe(true);
+  expect(puzzleSignal.aborted).toBe(true);
+  resolvePuzzle({
+    id: 99,
+    fen: "8/8/8/8/8/8/8/8 w - - 0 1",
+    moves: "e2e4",
+    rating: 1200,
+    rating_deviation: 10,
+    popularity: 1,
+    nb_plays: 1,
+  });
+  await act(async () => Promise.resolve());
+  expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
+    "0",
+  );
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test("puzzle or database replacement cancels completed-theme ownership and refuses stale themes", async () => {
+  mocks.getPuzzleThemes.mockResolvedValue(["fork"]);
+  mocks.getPuzzle.mockResolvedValue({
+    id: 1,
+    fen: "8/8/8/8/8/8/8/8 w - - 0 1",
+    moves: "e2e4",
+    rating: 1200,
+    rating_deviation: 10,
+    popularity: 1,
+    nb_plays: 1,
+  });
+  let completedSignal!: AbortSignal;
+  let resolveThemes!: (value: string[]) => void;
+  mocks.getThemesForPuzzle.mockImplementation(
+    (_database: unknown, _id: unknown, { signal }: { signal: AbortSignal }) =>
+      new Promise((done) => {
+        completedSignal = signal;
+        resolveThemes = done;
+      }),
+  );
+  const store = await renderPuzzles();
+  await vi.waitFor(() => expect(mocks.getPuzzleThemes).toHaveBeenCalledOnce());
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')?.click();
+  });
+  await vi.waitFor(() =>
+    expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
+      "1",
+    ),
+  );
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('[data-testid="complete-puzzle"]')?.click();
+  });
+  await vi.waitFor(() => expect(mocks.getThemesForPuzzle).toHaveBeenCalledOnce());
+  await act(async () => store.set(selectedPuzzleDbAtom, otherDb));
+  expect(completedSignal.aborted).toBe(true);
+  resolveThemes(["stale-theme"]);
+  await act(async () => Promise.resolve());
+  expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-themes")).toBe(
+    "",
+  );
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
 });
 
 test("retains a stored database across workspace switches and restores it on return", async () => {
@@ -439,6 +567,7 @@ test("landed deletion does not clear a concurrently selected different database"
       expect.any(Number),
       expect.any(Number),
       null,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     ),
   );
 

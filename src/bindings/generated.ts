@@ -13,6 +13,22 @@ async closeSplashscreen() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async prepareNativeRead() : Promise<Result<string, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("prepare_native_read") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async cancelNativeRead(ticket: string) : Promise<Result<null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("cancel_native_read", { ticket }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async reconcileStartupPathOwners(owners: StartupPathOwners) : Promise<Result<null, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("reconcile_startup_path_owners", { owners }) };
@@ -132,9 +148,9 @@ async getDatabaseWorkspace() : Promise<Result<DatabaseRootHandle, ErrorPayload>>
     else return { status: "error", error: e  as any };
 }
 },
-async listWorkspaceDatabases(root: DatabaseRootHandle) : Promise<Result<DatabaseDescriptor[], ErrorPayload>> {
+async listWorkspaceDatabases(root: DatabaseRootHandle, ticket: string | null) : Promise<Result<DatabaseDescriptor[], ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("list_workspace_databases", { root }) };
+    return { status: "ok", data: await TAURI_INVOKE("list_workspace_databases", { root, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -391,9 +407,9 @@ async getEngineLogs(engine: string, tab: string) : Promise<Result<EngineLog[], E
 async memorySize() : Promise<number> {
     return await TAURI_INVOKE("memory_size");
 },
-async getPuzzle(file: PathRef, minRating: number, maxRating: number, theme: string | null) : Promise<Result<Puzzle, ErrorPayload>> {
+async getPuzzle(file: PathRef, minRating: number, maxRating: number, theme: string | null, ticket: string | null) : Promise<Result<Puzzle, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_puzzle", { file, minRating, maxRating, theme }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_puzzle", { file, minRating, maxRating, theme, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -423,9 +439,9 @@ async getPuzzleWorkspace() : Promise<Result<PuzzleRootDescriptor, ErrorPayload>>
     else return { status: "error", error: e  as any };
 }
 },
-async listPuzzleDatabases() : Promise<Result<PuzzleDatabaseInfo[], ErrorPayload>> {
+async listPuzzleDatabases(ticket: string | null) : Promise<Result<PuzzleDatabaseInfo[], ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("list_puzzle_databases") };
+    return { status: "ok", data: await TAURI_INVOKE("list_puzzle_databases", { ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -463,9 +479,9 @@ async getOpeningFromName(name: string) : Promise<Result<string, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
-async getPlayersGameInfo(progressId: string, file: DatabaseHandle, id: number) : Promise<Result<PlayerGameInfo, ErrorPayload>> {
+async getPlayersGameInfo(progressId: string, file: DatabaseHandle, id: number, ticket: string | null) : Promise<Result<PlayerGameInfo, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_players_game_info", { progressId, file, id }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_players_game_info", { progressId, file, id, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -754,9 +770,9 @@ async cancelDownload(id: string) : Promise<Result<boolean, ErrorPayload>> {
     else return { status: "error", error: e  as any };
 }
 },
-async getTournaments(file: DatabaseHandle, query: TournamentQuery) : Promise<Result<QueryResponse<Event[]>, ErrorPayload>> {
+async getTournaments(file: DatabaseHandle, query: TournamentQuery, ticket: string | null) : Promise<Result<QueryResponse<Event[]>, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_tournaments", { file, query }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_tournaments", { file, query, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -770,9 +786,9 @@ async getDbInfo(file: DatabaseHandle) : Promise<Result<DatabaseInfo, ErrorPayloa
     else return { status: "error", error: e  as any };
 }
 },
-async getGames(file: DatabaseHandle, query: GameQuery) : Promise<Result<QueryResponse<NormalizedGame[]>, ErrorPayload>> {
+async getGames(file: DatabaseHandle, query: GameQuery, ticket: string | null) : Promise<Result<QueryResponse<NormalizedGame[]>, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_games", { file, query }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_games", { file, query, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -786,41 +802,41 @@ async getLatestGameTimestamp(file: DatabaseHandle) : Promise<Result<number | nul
     else return { status: "error", error: e  as any };
 }
 },
-async searchPosition(file: DatabaseHandle, query: GameQuery, tabId: string) : Promise<Result<[PositionStats[], NormalizedGame[]], ErrorPayload>> {
+async searchPosition(file: DatabaseHandle, query: GameQuery, tabId: string, ticket: string | null) : Promise<Result<[PositionStats[], NormalizedGame[]], ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("search_position", { file, query, tabId }) };
+    return { status: "ok", data: await TAURI_INVOKE("search_position", { file, query, tabId, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getPlayers(file: DatabaseHandle, query: PlayerQuery) : Promise<Result<QueryResponse<Player[]>, ErrorPayload>> {
+async getPlayers(file: DatabaseHandle, query: PlayerQuery, ticket: string | null) : Promise<Result<QueryResponse<Player[]>, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_players", { file, query }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_players", { file, query, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getPuzzleDbInfo(file: PathRef) : Promise<Result<PuzzleDatabaseInfo, ErrorPayload>> {
+async getPuzzleDbInfo(file: PathRef, ticket: string | null) : Promise<Result<PuzzleDatabaseInfo, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_puzzle_db_info", { file }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_puzzle_db_info", { file, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getPuzzleThemes(file: PathRef) : Promise<Result<string[], ErrorPayload>> {
+async getPuzzleThemes(file: PathRef, ticket: string | null) : Promise<Result<string[], ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_puzzle_themes", { file }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_puzzle_themes", { file, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getThemesForPuzzle(file: PathRef, puzzleId: number) : Promise<Result<string[], ErrorPayload>> {
+async getThemesForPuzzle(file: PathRef, puzzleId: number, ticket: string | null) : Promise<Result<string[], ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_themes_for_puzzle", { file, puzzleId }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_themes_for_puzzle", { file, puzzleId, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -890,16 +906,21 @@ async getGameEngineLogs(gameId: string, expectedSession: bigint, color: string) 
     else return { status: "error", error: e  as any };
 }
 },
-async preloadReferenceDb(file: DatabaseHandle) : Promise<Result<null, ErrorPayload>> {
+async preloadReferenceDb(file: DatabaseHandle, ticket: string | null) : Promise<Result<null, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("preload_reference_db", { file }) };
+    return { status: "ok", data: await TAURI_INVOKE("preload_reference_db", { file, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async getProgress(id: string) : Promise<ProgressItem | null> {
-    return await TAURI_INVOKE("get_progress", { id });
+async getProgress(id: string) : Promise<Result<ProgressItem | null, ErrorPayload>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_progress", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async startProgress(id: string) : Promise<Result<ProgressLease, ErrorPayload>> {
     try {

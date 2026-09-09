@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import useSWR from "swr";
 import { useStore } from "zustand";
 import { type Event, type TournamentSort } from "@/bindings";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GridLayout from "./GridLayout";
 import classes from "./styles.module.css";
@@ -23,8 +24,10 @@ function TournamentTable() {
   const setQuery = useStore(store, (s) => s.setTournamentsQuery);
   const setSelected = useStore(store, (s) => s.setTournamentsSelectedTournament);
 
-  const { data, error, isLoading } = useSWR(["tournaments", file, query], () =>
-    tauri.getTournaments(file, query),
+  const requestKey = ["tournaments", file, query] as const;
+  const requestOwner = useNativeRequestOwner(requestKey);
+  const { data, error, isLoading } = useSWR(requestKey, () =>
+    requestOwner!.run((signal) => tauri.getTournaments(file, query, { signal })),
   );
   const tournaments = data?.data ?? [];
   const count = data?.count;

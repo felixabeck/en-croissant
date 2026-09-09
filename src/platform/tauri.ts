@@ -11,6 +11,7 @@ import {
     type TimeControl,
 } from "@/bindings/generated";
 import { normalizeError } from "./errors";
+import { error as logError } from "./native";
 
 const MAX_SAFE_COUNTER = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -95,11 +96,47 @@ type FacadeCommand<T> = T extends (...args: any[]) => Promise<any>
 type GeneratedCommands = {
     [Name in keyof typeof commands]: FacadeCommand<(typeof commands)[Name]>;
 };
-type TauriCommands = Omit<GeneratedCommands, "startGame"> & {
+export type NativeReadOptions = { signal?: AbortSignal };
+type NativeReadCommandName =
+    | "searchPosition"
+    | "getPlayersGameInfo"
+    | "preloadReferenceDb"
+    | "getGames"
+    | "getPlayers"
+    | "getTournaments"
+    | "listWorkspaceDatabases"
+    | "getPuzzle"
+    | "listPuzzleDatabases"
+    | "getPuzzleDbInfo"
+    | "getPuzzleThemes"
+    | "getThemesForPuzzle";
+type NativeReadFacade<T> = T extends (
+    ...args: [...infer Args, string | null]
+) => Promise<infer Result>
+    ? (...args: [...Args, NativeReadOptions?]) => Promise<Result>
+    : never;
+type TauriCommands = Omit<GeneratedCommands, "startGame" | NativeReadCommandName> & {
     startGame: (
         gameId: string,
         config: GameConfigInput,
     ) => ReturnType<GeneratedCommands["startGame"]>;
+} & {
+    [Name in NativeReadCommandName]: NativeReadFacade<GeneratedCommands[Name]>;
+};
+
+const NATIVE_READ_ARITY: Readonly<Record<NativeReadCommandName, number>> = {
+    searchPosition: 3,
+    getPlayersGameInfo: 3,
+    preloadReferenceDb: 1,
+    getGames: 2,
+    getPlayers: 2,
+    getTournaments: 2,
+    listWorkspaceDatabases: 1,
+    getPuzzle: 4,
+    listPuzzleDatabases: 0,
+    getPuzzleDbInfo: 1,
+    getPuzzleThemes: 1,
+    getThemesForPuzzle: 2,
 };
 
 const EXPECTED_SESSION_COMMANDS = new Set<PropertyKey>([
@@ -161,6 +198,74 @@ function isCommandResult(value: unknown): value is CommandResult<unknown> {
     );
 }
 
+function cancellationError(): TauriCommandError {
+    return new TauriCommandError({
+        tag: "backend-error",
+        category: "cancellation",
+        message: "Cancellation",
+    });
+}
+
+async function logCleanupFailure(command: PropertyKey, ticket: string, cause: unknown) {
+    const message = `native read cleanup failed (${String(command)}, ${ticket}): ${normalizeError(cause).message}`;
+    try {
+        await logError(message);
+    } catch (loggingError) {
+        console.error("Native read cleanup logging failed", normalizeError(loggingError));
+    }
+}
+
+async function invokeNativeRead(
+    commandName: PropertyKey,
+    command: (...args: unknown[]) => Promise<unknown>,
+    args: unknown[],
+    options: NativeReadOptions | undefined,
+): Promise<unknown> {
+    const signal = options?.signal;
+    if (!signal) return command(...args, null);
+    if (signal.aborted) throw cancellationError();
+
+    let ticket: string | undefined;
+    let aborted = false;
+    let cleanupStarted = false;
+    const cleanup = async () => {
+        if (!ticket || cleanupStarted) return;
+        cleanupStarted = true;
+        try {
+            unwrapCommand(await commands.cancelNativeRead(ticket));
+        } catch (error) {
+            await logCleanupFailure(commandName, ticket, error);
+        }
+    };
+    const onAbort = () => {
+        aborted = true;
+        void cleanup();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+        ticket = unwrapCommand(await commands.prepareNativeRead());
+        if (aborted || signal.aborted) {
+            await cleanup();
+            throw cancellationError();
+        }
+        let result: unknown;
+        try {
+            result = await command(...args, ticket);
+            if (isCommandResult(result)) result = unwrapCommand(result);
+        } catch (error) {
+            if (!cleanupStarted) await cleanup();
+            throw error;
+        }
+        if (aborted || signal.aborted) {
+            await cleanup();
+            throw cancellationError();
+        }
+        return result;
+    } finally {
+        signal.removeEventListener("abort", onAbort);
+    }
+}
+
 /**
  * The only renderer boundary that imports generated Tauri commands and events.
  * Commands always either resolve with their successful payload or reject with a
@@ -172,6 +277,14 @@ export const tauri: TauriCommands = new Proxy(commands, {
         if (typeof command !== "function") return command;
         return async (...args: unknown[]) => {
             try {
+                if (property in NATIVE_READ_ARITY) {
+                    const name = property as NativeReadCommandName;
+                    const arity = NATIVE_READ_ARITY[name];
+                    const options =
+                        args.length > arity ? (args.pop() as NativeReadOptions) : undefined;
+                    const result = await invokeNativeRead(property, command, args, options);
+                    return isCommandResult(result) ? unwrapCommand(result) : result;
+                }
                 if (EXPECTED_SESSION_COMMANDS.has(property)) {
                     args[1] = encodeGameCounter(args[1] as bigint);
                 }

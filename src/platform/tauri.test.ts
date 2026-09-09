@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     closeSplashscreen: vi.fn(),
@@ -9,8 +9,14 @@ const mocks = vi.hoisted(() => ({
     resignGame: vi.fn(),
     abortGame: vi.fn(),
     getGameEngineLogs: vi.fn(),
+    prepareNativeRead: vi.fn(),
+    cancelNativeRead: vi.fn(),
+    getGames: vi.fn(),
+    logError: vi.fn(),
     listeners: new Map<string, (event: any) => void>(),
 }));
+
+vi.mock("./native", () => ({ error: mocks.logError }));
 
 vi.mock("@/bindings/generated", () => ({
     commands: {
@@ -22,6 +28,9 @@ vi.mock("@/bindings/generated", () => ({
         resignGame: mocks.resignGame,
         abortGame: mocks.abortGame,
         getGameEngineLogs: mocks.getGameEngineLogs,
+        prepareNativeRead: mocks.prepareNativeRead,
+        cancelNativeRead: mocks.cancelNativeRead,
+        getGames: mocks.getGames,
     },
     events: Object.fromEntries(
         ["clockUpdateEvent", "gameMoveEvent", "gameOverEvent"].map((name) => [
@@ -56,6 +65,174 @@ const wireState = {
 };
 
 describe("tauri command facade", () => {
+    beforeEach(() => {
+        mocks.prepareNativeRead.mockReset();
+        mocks.cancelNativeRead.mockReset();
+        mocks.getGames.mockReset();
+        mocks.logError.mockReset().mockResolvedValue(undefined);
+    });
+    test("a signal reserves a ticket and passes it outside positional arguments", async () => {
+        mocks.prepareNativeRead.mockResolvedValue({ status: "ok", data: "ticket-1" });
+        mocks.getGames.mockResolvedValue({ status: "ok", data: { data: [], count: 0 } });
+        const signal = new AbortController().signal;
+        await tauri.getGames({ id: { id: "db" }, kind: "database" }, {} as never, { signal });
+        expect(mocks.getGames).toHaveBeenCalledWith(
+            { id: { id: "db" }, kind: "database" },
+            {},
+            "ticket-1",
+        );
+    });
+
+    test("abort before preparation rejects without native dispatch", async () => {
+        const controller = new AbortController();
+        controller.abort();
+        await expect(
+            tauri.getGames({ id: { id: "db" }, kind: "database" }, {} as never, {
+                signal: controller.signal,
+            }),
+        ).rejects.toMatchObject({ details: { category: "cancelled" } });
+        expect(mocks.prepareNativeRead).not.toHaveBeenCalled();
+        expect(mocks.getGames).not.toHaveBeenCalled();
+    });
+
+    test("abort during preparation cancels the eventual reservation without dispatch", async () => {
+        const controller = new AbortController();
+        let finishPreparation!: (value: unknown) => void;
+        mocks.prepareNativeRead.mockReturnValue(
+            new Promise((resolve) => {
+                finishPreparation = resolve;
+            }),
+        );
+        mocks.cancelNativeRead.mockResolvedValue({ status: "ok", data: null });
+        const result = tauri.getGames({ id: { id: "db" }, kind: "database" }, {} as never, {
+            signal: controller.signal,
+        });
+        controller.abort();
+        finishPreparation({ status: "ok", data: "late-ticket" });
+        await expect(result).rejects.toMatchObject({ details: { category: "cancelled" } });
+        expect(mocks.cancelNativeRead).toHaveBeenCalledWith("late-ticket");
+        expect(mocks.getGames).not.toHaveBeenCalled();
+    });
+
+    test("failed preparation removes its abort listener without issuing cleanup", async () => {
+        const controller = new AbortController();
+        const remove = vi.spyOn(controller.signal, "removeEventListener");
+        mocks.prepareNativeRead.mockRejectedValue(new Error("prepare failed"));
+        await expect(
+            tauri.getGames({ id: { id: "db" }, kind: "database" }, {} as never, {
+                signal: controller.signal,
+            }),
+        ).rejects.toThrow("prepare failed");
+        expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+        expect(mocks.cancelNativeRead).not.toHaveBeenCalled();
+        expect(mocks.getGames).not.toHaveBeenCalled();
+    });
+
+    test("active abort cancels exactly its ticket and cannot return buffered success", async () => {
+        const controller = new AbortController();
+        mocks.prepareNativeRead.mockResolvedValue({ status: "ok", data: "active-ticket" });
+        mocks.cancelNativeRead.mockResolvedValue({ status: "ok", data: null });
+        let finishCommand!: (value: unknown) => void;
+        mocks.getGames.mockReturnValue(new Promise((resolve) => (finishCommand = resolve)));
+        const result = tauri.getGames({ id: { id: "db" }, kind: "database" }, {} as never, {
+            signal: controller.signal,
+        });
+        await Promise.resolve();
+        controller.abort();
+        finishCommand({ status: "ok", data: { data: [], count: 0 } });
+        await expect(result).rejects.toMatchObject({ details: { category: "cancelled" } });
+        expect(mocks.cancelNativeRead).toHaveBeenCalledOnce();
+        expect(mocks.cancelNativeRead).toHaveBeenCalledWith("active-ticket");
+    });
+
+    test("simultaneous owners cancel independently", async () => {
+        const first = new AbortController();
+        const second = new AbortController();
+        mocks.prepareNativeRead
+            .mockResolvedValueOnce({ status: "ok", data: "ticket-first" })
+            .mockResolvedValueOnce({ status: "ok", data: "ticket-second" });
+        mocks.cancelNativeRead.mockResolvedValue({ status: "ok", data: null });
+        const completions = new Map<string, (value: unknown) => void>();
+        mocks.getGames.mockImplementation(
+            (_file: unknown, _query: unknown, ticket: string) =>
+                new Promise((resolve) => completions.set(ticket, resolve)),
+        );
+        const firstResult = tauri.getGames({ id: { id: "first" }, kind: "database" }, {} as never, {
+            signal: first.signal,
+        });
+        const secondResult = tauri.getGames(
+            { id: { id: "second" }, kind: "database" },
+            {} as never,
+            { signal: second.signal },
+        );
+        await vi.waitFor(() => expect(completions.size).toBe(2));
+        first.abort();
+        completions.get("ticket-first")!({ status: "ok", data: { data: [], count: 0 } });
+        completions.get("ticket-second")!({ status: "ok", data: { data: [], count: 0 } });
+        await expect(firstResult).rejects.toMatchObject({ details: { category: "cancelled" } });
+        await expect(secondResult).resolves.toEqual({ data: [], count: 0 });
+        expect(mocks.cancelNativeRead).toHaveBeenCalledOnce();
+        expect(mocks.cancelNativeRead).toHaveBeenCalledWith("ticket-first");
+    });
+
+    test("completion before abort retires the listener without native cancellation", async () => {
+        const controller = new AbortController();
+        mocks.prepareNativeRead.mockResolvedValue({ status: "ok", data: "completed-ticket" });
+        mocks.getGames.mockResolvedValue({ status: "ok", data: { data: [], count: 0 } });
+        await expect(
+            tauri.getGames({ id: { id: "db" }, kind: "database" }, {} as never, {
+                signal: controller.signal,
+            }),
+        ).resolves.toEqual({ data: [], count: 0 });
+        controller.abort();
+        await Promise.resolve();
+        expect(mocks.cancelNativeRead).not.toHaveBeenCalled();
+    });
+
+    test("generated command errors clean up their claimed reservation", async () => {
+        mocks.prepareNativeRead.mockResolvedValue({ status: "ok", data: "failed-ticket" });
+        mocks.cancelNativeRead.mockResolvedValue({ status: "ok", data: null });
+        mocks.getGames.mockResolvedValue({
+            status: "error",
+            error: { tag: "backend-error", category: "conflict", message: "claim failed" },
+        });
+        await expect(
+            tauri.getGames({ id: { id: "db" }, kind: "database" }, {} as never, {
+                signal: new AbortController().signal,
+            }),
+        ).rejects.toMatchObject({ details: { category: "validation" } });
+        expect(mocks.cancelNativeRead).toHaveBeenCalledWith("failed-ticket");
+    });
+
+    test("cleanup rejection preserves the primary error and logs the secondary", async () => {
+        mocks.prepareNativeRead.mockResolvedValue({ status: "ok", data: "cleanup-ticket" });
+        mocks.cancelNativeRead.mockResolvedValue({ status: "error", error: "cleanup failed" });
+        mocks.getGames.mockResolvedValue({ status: "error", error: "primary failed" });
+        await expect(
+            tauri.getGames({ id: { id: "db" }, kind: "database" }, {} as never, {
+                signal: new AbortController().signal,
+            }),
+        ).rejects.toThrow("primary failed");
+        expect(mocks.logError).toHaveBeenCalledOnce();
+        expect(mocks.logError.mock.calls[0][0]).toContain("cleanup-ticket");
+    });
+    test("rejected cleanup logger uses safe fallback without changing the primary error", async () => {
+        const fallback = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        mocks.prepareNativeRead.mockResolvedValue({ status: "ok", data: "fallback-ticket" });
+        mocks.cancelNativeRead.mockResolvedValue({ status: "error", error: "cleanup failed" });
+        mocks.logError.mockRejectedValue(new Error("logger failed"));
+        mocks.getGames.mockResolvedValue({ status: "error", error: "primary failed" });
+        await expect(
+            tauri.getGames({ id: { id: "db" }, kind: "database" }, {} as never, {
+                signal: new AbortController().signal,
+            }),
+        ).rejects.toThrow("primary failed");
+        expect(fallback).toHaveBeenCalledWith(
+            "Native read cleanup logging failed",
+            expect.objectContaining({ message: "logger failed" }),
+        );
+        fallback.mockRestore();
+    });
     test("returns command payloads instead of generated Result wrappers", async () => {
         mocks.closeSplashscreen.mockResolvedValue({ status: "ok", data: null });
         await expect(tauri.closeSplashscreen()).resolves.toBeNull();

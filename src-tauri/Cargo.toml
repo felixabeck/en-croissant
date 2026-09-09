@@ -66,6 +66,7 @@ tauri-plugin-log = "2.8.0"
 tauri-plugin-window-state = "2.4.1"
 tauri-plugin-opener = "2"
 memmap2 = "0.9"
+parking_lot = "0.12.1"
 rkyv = { version = "0.8", features = ["bytecheck"] }
 polyglot-book-rs = "0.1.0"
 tokio-util = { version = "0.7.19", features = ["io"] }

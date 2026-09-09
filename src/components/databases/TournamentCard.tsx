@@ -3,13 +3,15 @@ import { IconEye } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useAtom, useSetAtom } from "jotai";
 import { DataTable, type DataTableSortStatus } from "mantine-datatable";
-import { useContext, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import { match } from "ts-pattern";
 import { useStore } from "zustand";
 import type { DatabaseHandle, Event, NormalizedGame } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { activeTabAtom, tabsAtom } from "@/state/atoms";
 import type { DatabaseViewStore } from "@/state/store/database";
 import { getTournamentGames } from "@/utils/db";
@@ -43,14 +45,20 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: Databas
   const setActiveTab = useSetAtom(activeTabAtom);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const requestKey = ["tournament-games", file, tournament.id] as const;
+  const requestOwner = useNativeRequestOwner(requestKey);
 
-  const { data: games, isLoading } = useSWRImmutable(
-    ["tournament-games", file, tournament.id],
-    async ([_key, file, id]) => {
-      const games = await getTournamentGames(file, id);
-      return games.data;
-    },
+  const {
+    data: games,
+    error,
+    isLoading,
+  } = useSWRImmutable(requestKey, ([_key, file, id]) =>
+    requestOwner!.run(async (signal) => (await getTournamentGames(file, id, signal)).data),
   );
+
+  useEffect(() => {
+    if (error) notifyUnlessCancelled(t("Common.Error"), error);
+  }, [error, t]);
 
   const [sort, setSort] = useState<DataTableSortStatus<NormalizedGame>>({
     columnAccessor: "date",

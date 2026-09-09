@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   query_players: vi.fn(),
   getPlayersGameInfo: vi.fn(),
   progress: vi.fn(),
+  logError: vi.fn(),
 }));
 
 vi.mock("@/platform/tauri", async () => {
@@ -29,6 +30,7 @@ vi.mock("@/utils/db", async () => {
     query_players: mocks.query_players,
   };
 });
+vi.mock("@/platform/native", () => ({ error: mocks.logError }));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/components/files/notifyError", () => ({ notifyListenerError: vi.fn() }));
 vi.mock("./PersonalCard", () => ({ default: () => <div>player-card</div> }));
@@ -118,6 +120,7 @@ beforeEach(() => {
     progressListener = listener;
     return () => undefined;
   });
+  mocks.logError.mockResolvedValue(undefined);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -161,6 +164,9 @@ test("a ProgressEvent under a foreign PlayerCard id does not move the bar", asyn
 
 test("two owned ids average", async () => {
   mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
+  mocks.getPlayersGameInfo
+    .mockResolvedValueOnce({ siteStatsData: [] })
+    .mockReturnValueOnce(new Promise(() => undefined));
   await renderDatabases();
   await vi.waitFor(() => expect(mocks.getPlayersGameInfo).toHaveBeenCalledTimes(2));
   const firstId = mocks.getPlayersGameInfo.mock.calls[0][0] as string;
@@ -226,4 +232,66 @@ test("a foreign event arriving before any id is registered renders 0% not NaN%",
   expect(displayedProgress()).not.toContain("75%");
 
   resolvePlayers({ data: [{ id: 7, name: "Magnus", elo: null }], count: 1 });
+});
+
+test("unmount while query_players is held cancels it and admits no info or later pair", async () => {
+  mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
+  let querySignal!: AbortSignal;
+  mocks.query_players.mockImplementation(
+    (_file: unknown, _query: unknown, options: { signal: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        querySignal = options.signal;
+        querySignal.addEventListener(
+          "abort",
+          () => reject(new DOMException("Cancellation", "AbortError")),
+          { once: true },
+        );
+      }),
+  );
+  await renderDatabases();
+  await vi.waitFor(() => expect(mocks.query_players).toHaveBeenCalledOnce());
+  await act(async () => root.render(null));
+  await vi.waitFor(() => expect(querySignal.aborted).toBe(true));
+  expect(mocks.getPlayersGameInfo).not.toHaveBeenCalled();
+  expect(mocks.query_players).toHaveBeenCalledOnce();
+  expect(mocks.logError).not.toHaveBeenCalled();
+});
+
+test("unmount while getPlayersGameInfo is held cancels it and admits no subsequent pair", async () => {
+  mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
+  mocks.query_players.mockResolvedValue({
+    data: [{ id: 7, name: "Magnus", elo: null }],
+    count: 1,
+  });
+  let infoSignal!: AbortSignal;
+  mocks.getPlayersGameInfo.mockImplementation(
+    (_progress: unknown, _file: unknown, _id: unknown, options: { signal: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        infoSignal = options.signal;
+        infoSignal.addEventListener(
+          "abort",
+          () => reject(new DOMException("Cancellation", "AbortError")),
+          { once: true },
+        );
+      }),
+  );
+  await renderDatabases();
+  await vi.waitFor(() => expect(mocks.getPlayersGameInfo).toHaveBeenCalledOnce());
+  await act(async () => root.render(null));
+  await vi.waitFor(() => expect(infoSignal.aborted).toBe(true));
+  expect(mocks.query_players).toHaveBeenCalledOnce();
+  expect(mocks.getPlayersGameInfo).toHaveBeenCalledOnce();
+  expect(mocks.logError).not.toHaveBeenCalled();
+});
+
+test("ordinary failed personal item retains successful sibling and reports a diagnostic", async () => {
+  mocks.getDatabases.mockResolvedValue([database("db-1"), database("db-2")]);
+  mocks.query_players
+    .mockRejectedValueOnce(new Error("player lookup failed"))
+    .mockResolvedValueOnce({ data: [{ id: 8, name: "Magnus", elo: null }], count: 1 });
+  mocks.getPlayersGameInfo.mockResolvedValue({ siteStatsData: [] });
+  await renderDatabases();
+  await vi.waitFor(() => expect(mocks.query_players).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(mocks.getPlayersGameInfo).toHaveBeenCalledOnce());
+  expect(mocks.logError).toHaveBeenCalledOnce();
 });

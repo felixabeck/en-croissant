@@ -64,7 +64,7 @@ const preloadReferenceDb = async (
   if (referenceDb && !signal.aborted) {
     info(`Preloading reference database: ${referenceDb}`);
     try {
-      await tauri.preloadReferenceDb(referenceDb);
+      await tauri.preloadReferenceDb(referenceDb, { signal });
     } catch (e) {
       if (signal.aborted) return;
       info(`Failed to preload reference database: ${e}`);

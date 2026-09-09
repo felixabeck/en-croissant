@@ -35,9 +35,11 @@ const tauriBootstrap = () => {
     const callbacks = new Map<number, (payload: unknown) => void>();
     const listeners: Listener[] = [];
     let nextCallback = 1;
+    let nextNativeTicket = 1;
 
     const defaultCommands: Record<string, Response> = {
         close_splashscreen: { result: null },
+        cancel_native_read: { result: null },
         reconcile_startup_path_owners: { result: null },
         reconcile_engine_attachments: { result: null },
         list_lichess_accounts: { result: [] },
@@ -79,6 +81,7 @@ const tauriBootstrap = () => {
 
     const invoke = async (command: string, args: Record<string, unknown> = {}) => {
         state.invocations.push({ command, args });
+        if (command === "prepare_native_read") return `e2e-native-read-${nextNativeTicket++}`;
         if (command === "plugin:event|listen") {
             const callback = args.handler;
             if (typeof callback === "number")

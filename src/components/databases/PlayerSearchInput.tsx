@@ -24,6 +24,16 @@ export function PlayerSearchInput({
   const [tempValue, setTempValue] = useState("");
   const [data, setData] = useState<Player[]>([]);
   const playerLookupVersion = useRef(0);
+  const searchController = useRef<AbortController | null>(null);
+
+  useEffect(() => () => searchController.current?.abort(), []);
+
+  useEffect(() => {
+    playerLookupVersion.current += 1;
+    searchController.current?.abort();
+    searchController.current = null;
+    setData([]);
+  }, [file]);
 
   useEffect(() => {
     const lookupVersion = ++playerLookupVersion.current;
@@ -47,7 +57,10 @@ export function PlayerSearchInput({
   }, [file, t, value]);
 
   async function handleChange(val: string) {
-    playerLookupVersion.current++;
+    const lookupVersion = ++playerLookupVersion.current;
+    searchController.current?.abort();
+    const controller = new AbortController();
+    searchController.current = controller;
     setTempValue(val);
     if (val.trim().length === 0) {
       setValue(undefined);
@@ -59,17 +72,27 @@ export function PlayerSearchInput({
       setValue(player.id);
     }
 
-    const res = await query_players(file, {
-      name: val,
-      options: {
-        page: 1,
-        pageSize: 5,
-        skipCount: true,
-        sort: "elo",
-        direction: "asc",
-      },
-    });
-    setData(res.data);
+    try {
+      const res = await query_players(
+        file,
+        {
+          name: val,
+          options: {
+            page: 1,
+            pageSize: 5,
+            skipCount: true,
+            sort: "elo",
+            direction: "asc",
+          },
+        },
+        { signal: controller.signal },
+      );
+      if (playerLookupVersion.current === lookupVersion && !controller.signal.aborted) {
+        setData(res.data);
+      }
+    } catch (cause) {
+      if (!controller.signal.aborted) notifyUnlessCancelled(t("Common.Error"), cause);
+    }
   }
   return (
     <Autocomplete

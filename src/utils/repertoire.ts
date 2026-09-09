@@ -4,6 +4,7 @@ import { searchPosition } from "./db";
 import { getNodeAtPath, type TreeNode, treeIterator, getBoardState } from "./treeReducer";
 import { TreeStoreState } from "@/state/store/tree";
 import { memoize } from "proxy-memoize";
+import { normalizeError } from "@/platform/errors";
 
 export type PositionMove = {
     san: string;
@@ -21,6 +22,7 @@ export type PositionMove = {
 export async function fetchPositionMoves(
     dbPath: DatabaseHandle,
     fen: string,
+    signal?: AbortSignal,
 ): Promise<{
     moves: { move: string; white: number; draw: number; black: number }[];
     total: number;
@@ -36,6 +38,7 @@ export async function fetchPositionMoves(
                 result: "any",
             } as LocalOptions,
             "coverage-calc",
+            signal,
         );
         const summary = openings.find((op) => op.move === "*");
         const moves = openings
@@ -49,7 +52,10 @@ export async function fetchPositionMoves(
         const gamesEndingHere = summary ? summary.white + summary.draw + summary.black : 0;
         const gamesContinuing = moves.reduce((acc, m) => acc + m.white + m.draw + m.black, 0);
         return { moves, total: gamesEndingHere + gamesContinuing };
-    } catch {
+    } catch (error) {
+        if (signal?.aborted || normalizeError(error).category === "cancelled") {
+            throw error;
+        }
         return { moves: [], total: 0 };
     }
 }
@@ -66,12 +72,14 @@ async function buildDbCache(
     root: TreeNode,
     startPath: number[],
     dbPath: DatabaseHandle,
+    signal?: AbortSignal,
 ): Promise<DbCache> {
     const startNode = startPath.length > 0 ? getNodeAtPath(root, startPath) : root;
 
     const fenSet = new Set<string>();
     const stack: TreeNode[] = [startNode];
     while (stack.length > 0) {
+        if (signal?.aborted) throw new DOMException("Cancellation", "AbortError");
         const node = stack.pop()!;
         fenSet.add(getBoardState(node.fen));
         for (const child of node.children) stack.push(child);
@@ -82,7 +90,7 @@ async function buildDbCache(
 
     for (let i = 0; i < fenList.length; i++) {
         const fen = fenList[i];
-        const data = await fetchPositionMoves(dbPath, fen);
+        const data = await fetchPositionMoves(dbPath, fen, signal);
 
         const enrichedMoves = data.moves.map((m) => ({
             move: m.move,
@@ -241,6 +249,7 @@ export async function computeTreeCoverage(
     minGames: number,
     startPath: number[],
     stateMoves: Map<string, Map<string, string>>,
+    signal?: AbortSignal,
 ): Promise<{
     coverageMap: Map<string, number>;
     gamesMap: Map<string, number>;
@@ -250,7 +259,9 @@ export async function computeTreeCoverage(
         { moves: { move: string; white: number; draw: number; black: number }[]; total: number }
     >;
 }> {
-    const dbCache = await buildDbCache(root, startPath, dbPath);
+    const dbCache = await buildDbCache(root, startPath, dbPath, signal);
+
+    if (signal?.aborted) throw new DOMException("Cancellation", "AbortError");
 
     const memo = new Map<string, { coverage: number; missing: number }>();
     for (const fen of dbCache.keys()) {

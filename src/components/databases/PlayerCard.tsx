@@ -3,18 +3,22 @@ import { Center, Loader, Paper, Stack, Text } from "@mantine/core";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import { type DatabaseHandle, type Player } from "@/bindings";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import PersonalPlayerCard from "../home/PersonalCard";
 
 function PlayerCard({ player, file }: { player: Player; file: DatabaseHandle }) {
   const { t } = useTranslation();
+  const requestKey = ["player-game-info", file, player.id] as const;
+  const requestOwner = useNativeRequestOwner(requestKey);
   const {
     data: info,
     isLoading,
     error,
-  } = useSWRImmutable(["player-game-info", file, player.id], async ([, file, id]) => {
-    const games = await tauri.getPlayersGameInfo(crypto.randomUUID(), file, id);
-    return games;
-  });
+  } = useSWRImmutable(requestKey, ([, file, id]) =>
+    requestOwner!.run((signal) =>
+      tauri.getPlayersGameInfo(crypto.randomUUID(), file, id, { signal }),
+    ),
+  );
 
   return (
     <>

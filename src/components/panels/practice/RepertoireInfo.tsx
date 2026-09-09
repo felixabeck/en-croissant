@@ -82,6 +82,16 @@ function RepertoireInfo() {
   const [coverageLoading, setCoverageLoading] = useState(false);
   const coverageVersionRef = useRef(0);
   const firstCoverageRun = useRef(true);
+  const positionRequest = useRef<AbortController | null>(null);
+  const coverageRequest = useRef<AbortController | null>(null);
+
+  useEffect(
+    () => () => {
+      positionRequest.current?.abort();
+      coverageRequest.current?.abort();
+    },
+    [],
+  );
 
   const startPath = useMemo(() => headers.start || [], [headers.start]);
   const hasStart = headers.start != null && headers.start.length > 0;
@@ -118,9 +128,13 @@ function RepertoireInfo() {
     const boardFen = getBoardState(currentNode.fen);
     if (dbMovesMap.has(boardFen)) return;
 
+    positionRequest.current?.abort();
+    const controller = new AbortController();
+    positionRequest.current = controller;
     setCurrentPosLoading(true);
-    fetchPositionMoves(referenceDb, boardFen)
+    fetchPositionMoves(referenceDb, boardFen, controller.signal)
       .then((data) => {
+        if (controller.signal.aborted) return;
         setDbMovesMap((prev) => {
           if (prev.has(boardFen)) return prev; // may have been filled by coverage meanwhile
           const next = new Map(prev);
@@ -129,7 +143,10 @@ function RepertoireInfo() {
         });
         setCurrentPosLoading(false);
       })
-      .catch(() => setCurrentPosLoading(false));
+      .catch(() => {
+        if (!controller.signal.aborted) setCurrentPosLoading(false);
+      });
+    return () => controller.abort();
   }, [currentNode.fen, referenceDb, dbMovesMap]);
 
   useEffect(() => {
@@ -148,12 +165,23 @@ function RepertoireInfo() {
     }
 
     const version = ++coverageVersionRef.current;
+    coverageRequest.current?.abort();
+    const controller = new AbortController();
+    coverageRequest.current = controller;
     firstCoverageRun.current = false;
     setCoverageLoading(true);
 
-    computeTreeCoverage(root, orientation, referenceDb, minGames, startPath, startStateMoves).then(
-      (result) => {
-        if (version === coverageVersionRef.current) {
+    computeTreeCoverage(
+      root,
+      orientation,
+      referenceDb,
+      minGames,
+      startPath,
+      startStateMoves,
+      controller.signal,
+    )
+      .then((result) => {
+        if (version === coverageVersionRef.current && !controller.signal.aborted) {
           setCoverageMap(result.coverageMap);
           setGamesMap(result.gamesMap);
           setMissingGamesMap(result.missingGamesMap);
@@ -161,8 +189,13 @@ function RepertoireInfo() {
           setCoverageLoading(false);
           store.getState().save(); // sets dirty to false
         }
-      },
-    );
+      })
+      .catch(() => {
+        if (!controller.signal.aborted && version === coverageVersionRef.current) {
+          setCoverageLoading(false);
+        }
+      });
+    return () => controller.abort();
   }, [referenceDb, minGames, orientation, dirty, root, startPath, startStateMoves, store]);
 
   const nodeToPath = useMemo(() => {

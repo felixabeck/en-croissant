@@ -14,6 +14,7 @@ import {
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import TournamentTable from "./TournamentTable";
 import useSWR from "swr";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { getDatabases } from "@/utils/db";
 import { resolveDatabaseRoute } from "./databaseRoute";
 
@@ -24,7 +25,10 @@ function DatabaseView() {
   const clearDatabase = useActiveDatabaseViewStore((s) => s.clearDatabase);
   const setActiveTab = useActiveDatabaseViewStore((s) => s.setActiveTab);
   const { databaseId } = useParams({ from: "/databases/$databaseId" });
-  const { data: databases } = useSWR("databases", getDatabases);
+  const databaseOwner = useNativeRequestOwner("databases");
+  const { data: databases } = useSWR("databases", () =>
+    databaseOwner!.run((signal) => getDatabases({ signal })),
+  );
 
   const resolution = useMemo(
     () => resolveDatabaseRoute(databases, databaseId, database),

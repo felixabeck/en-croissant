@@ -1,7 +1,7 @@
 import { tauri } from "@/platform/tauri";
 import { Alert, Box, Button, Divider, Group, Paper, ScrollArea, Stack, Text } from "@mantine/core";
 import { IconAlertCircle } from "@tabler/icons-react";
-import { type Dispatch, type SetStateAction, useState } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWRImmutable from "swr/immutable";
 import { type PuzzleDatabaseInfo } from "@/bindings";
@@ -30,23 +30,41 @@ function AddPuzzle({
   onWorkspaceChanged: () => void;
 }) {
   const { t } = useTranslation();
+  const previewRequest = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (!opened) previewRequest.current?.abort();
+    return () => previewRequest.current?.abort();
+  }, [opened]);
   const { data: dbs, error } = useSWRImmutable(
     "default_puzzle_databases",
     getDefaultPuzzleDatabases,
   );
   async function chooseLocalWorkspace() {
+    previewRequest.current?.abort();
+    const controller = new AbortController();
+    previewRequest.current = controller;
     try {
       await choosePuzzleDatabase();
       onWorkspaceChanged();
-      setPuzzleDbs(await getPuzzleDatabases());
+      if (controller.signal.aborted) return;
+      const databases = await getPuzzleDatabases(controller.signal);
+      if (controller.signal.aborted || previewRequest.current !== controller) return;
+      setPuzzleDbs(databases);
       setOpened(false);
     } catch (error) {
-      notifyUnlessCancelled(t("Common.Error"), error);
+      if (!controller.signal.aborted) notifyUnlessCancelled(t("Common.Error"), error);
     }
   }
 
   return (
-    <AppModal opened={opened} onClose={() => setOpened(false)} title={t("Databases.Add.Title")}>
+    <AppModal
+      opened={opened}
+      onClose={() => {
+        previewRequest.current?.abort();
+        setOpened(false);
+      }}
+      title={t("Databases.Add.Title")}
+    >
       <ScrollArea.Autosize mah={500} offsetScrollbars>
         <Stack>
           <Button variant="default" onClick={() => void chooseLocalWorkspace()}>

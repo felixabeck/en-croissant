@@ -28,6 +28,7 @@ import { useAtom } from "jotai";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWR, { useSWRConfig } from "swr";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import type { DatabaseHandle, DatabaseInfo } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import { clearOwnedConversion, databaseConversionStateAtom, referenceDbAtom } from "@/state/atoms";
@@ -55,7 +56,13 @@ import { PlayerSearchInput } from "./PlayerSearchInput";
 export default function DatabasesPage() {
   const { t } = useTranslation();
 
-  const { data: databases, error, isLoading, mutate } = useSWR("databases", () => getDatabases());
+  const databaseOwner = useNativeRequestOwner("databases");
+  const {
+    data: databases,
+    error,
+    isLoading,
+    mutate,
+  } = useSWR("databases", () => databaseOwner!.run((signal) => getDatabases({ signal })));
   const { mutate: mutateCache } = useSWRConfig();
 
   const [open, setOpen] = useState(false);

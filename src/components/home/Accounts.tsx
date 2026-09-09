@@ -29,7 +29,8 @@ function Accounts() {
   const [databases, setDatabases] = useState<ManagedDatabaseInfo[]>([]);
   useEffect(() => {
     let active = true;
-    void getDatabases()
+    const controller = new AbortController();
+    void getDatabases({ signal: controller.signal })
       .then((dbs) => {
         if (active) setDatabases(dbs);
       })
@@ -40,6 +41,7 @@ function Accounts() {
       });
     return () => {
       active = false;
+      controller.abort();
     };
   }, []);
   const [open, setOpen] = useState(false);

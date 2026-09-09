@@ -47,7 +47,7 @@ use oauth::AuthLifecycle;
 #[cfg(debug_assertions)]
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use sysinfo::SystemExt;
-use tauri::{Manager, Window};
+use tauri::{Manager, WebviewWindow, Window};
 use tauri_plugin_log::{Target, TargetKind};
 
 use crate::chess::{
@@ -66,6 +66,7 @@ use crate::game::{
     take_back_game_move, ClockUpdateEvent, GameMoveEvent, GameOverEvent,
 };
 use crate::infra::blocking::BLOCKING_GATEWAY;
+use crate::infra::operations::{OperationLease, OperationRegistry};
 
 use crate::file_workspace::{
     create_workspace_directory, create_workspace_file, issue_file_workspace, list_file_workspace,
@@ -274,8 +275,8 @@ impl<K: Clone + Eq + std::hash::Hash, V: Clone> BoundedSearchCache<K, V> {
 pub(crate) struct SearchCache {
     results: Mutex<BoundedSearchCache<SearchResultKey, CachedSearchResult>>,
     indexes: Mutex<BoundedSearchCache<SearchIndexIdentity, MmapSearchIndex>>,
-    collisions: DashMap<(GameQuery, PathBuf), Arc<Mutex<()>>>,
-    generation_locks: DashMap<PathBuf, Arc<Mutex<()>>>,
+    collisions: DashMap<(GameQuery, PathBuf), Arc<parking_lot::Mutex<()>>>,
+    generation_locks: DashMap<PathBuf, Arc<parking_lot::Mutex<()>>>,
 }
 
 impl SearchCache {
@@ -332,23 +333,31 @@ impl SearchCache {
             .insert(identity, index, SEARCH_INDEX_CACHE_CAPACITY);
     }
 
-    pub(crate) fn collision_lock(&self, query: GameQuery, database: PathBuf) -> Arc<Mutex<()>> {
+    pub(crate) fn collision_lock(
+        &self,
+        query: GameQuery,
+        database: PathBuf,
+    ) -> Arc<parking_lot::Mutex<()>> {
         self.collisions
             .entry((query, database))
-            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
             .value()
             .clone()
     }
 
-    pub(crate) fn generation_lock(&self, index: PathBuf) -> Arc<Mutex<()>> {
+    pub(crate) fn generation_lock(&self, index: PathBuf) -> Arc<parking_lot::Mutex<()>> {
         self.generation_locks
             .entry(index)
-            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
             .value()
             .clone()
     }
 
-    pub(crate) fn remove_generation_lock_if_idle(&self, index: &Path, lock: &Arc<Mutex<()>>) {
+    pub(crate) fn remove_generation_lock_if_idle(
+        &self,
+        index: &Path,
+        lock: &Arc<parking_lot::Mutex<()>>,
+    ) {
         if Arc::strong_count(lock) == 2 {
             self.generation_locks
                 .remove_if(index, |_, existing| Arc::ptr_eq(existing, lock));
@@ -359,7 +368,7 @@ impl SearchCache {
         &self,
         query: &GameQuery,
         database: &Path,
-        lock: &Arc<Mutex<()>>,
+        lock: &Arc<parking_lot::Mutex<()>>,
     ) {
         // One strong reference is held by the map and one by the cleanup
         // guard. Any waiter holds another reference, so it keeps the key alive
@@ -404,6 +413,7 @@ pub struct AppState {
     credentials: Arc<crate::credentials::CredentialManager>,
     game_manager: Arc<GameManager>,
     progress_state: progress::ProgressStore,
+    pub(crate) operations: OperationRegistry,
     puzzle_cache: Arc<tokio::sync::Mutex<crate::puzzle::PuzzleCache>>,
     pub http_transport: Arc<dyn crate::infra::net::DownloadTransport>,
     pub(crate) json_http_client: Arc<reqwest::Client>,
@@ -438,11 +448,71 @@ impl AppState {
             credentials,
             game_manager: Arc::new(GameManager::default()),
             progress_state: Default::default(),
+            operations: Default::default(),
             puzzle_cache: Arc::new(tokio::sync::Mutex::new(crate::puzzle::PuzzleCache::new())),
             http_transport,
             json_http_client,
             download_registry: Arc::new(crate::fs::DownloadRegistry::default()),
         })
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+fn prepare_native_read(
+    window: WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, Error> {
+    state.operations.prepare_read(window.label())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn cancel_native_read(
+    ticket: String,
+    window: WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), Error> {
+    state.operations.cancel_read(&ticket, window.label())
+}
+
+pub(crate) fn native_read_operation(
+    ticket: Option<String>,
+    window: &WebviewWindow,
+    state: &AppState,
+    label: &str,
+) -> Result<OperationLease, Error> {
+    native_read_operation_for_owner(ticket, window.label(), state, label)
+}
+
+fn native_read_operation_for_owner(
+    ticket: Option<String>,
+    owner: &str,
+    state: &AppState,
+    label: &str,
+) -> Result<OperationLease, Error> {
+    match ticket {
+        Some(ticket) => state.operations.claim_read(&ticket, owner, label),
+        None => state.operations.accept(label),
+    }
+}
+
+fn cancel_destroyed_window_operations(state: &AppState, label: &str) {
+    cancel_destroyed_window_operations_in_registry(&state.operations, label);
+}
+
+fn cancel_destroyed_window_operations_in_registry(operations: &OperationRegistry, label: &str) {
+    match operations.cancel_owner(label) {
+        Ok(tickets) if !tickets.is_empty() => {
+            log::info!(
+                "destroyed webview {label} cancelled native reads: {}",
+                tickets.join(",")
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            log::error!("could not cancel native reads for destroyed webview {label}: {error}")
+        }
     }
 }
 
@@ -873,24 +943,45 @@ fn get_database_workspace_blocking(
 #[specta::specta]
 async fn list_workspace_databases(
     root: crate::infra::path_authority::DatabaseRootHandle,
+    ticket: Option<String>,
+    window: WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<crate::infra::path_authority::DatabaseDescriptor>, Error> {
+    let operation = native_read_operation(ticket, &window, &state, "list_workspace_databases")?;
+    let cancellation = operation.token();
     let authority = std::sync::Arc::clone(&state.pgn_path_authority);
-    BLOCKING_GATEWAY
-        .spawn(move || list_workspace_databases_blocking(&authority, root))
-        .await
+    crate::infra::operations::run_native_operation(
+        operation,
+        "list_workspace_databases",
+        async move {
+            BLOCKING_GATEWAY
+                .spawn_cancellable(cancellation, move |token| {
+                    if token.is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
+                    let databases = list_workspace_databases_blocking(&authority, root, token)?;
+                    if token.is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
+                    Ok(databases)
+                })
+                .await
+        },
+    )
+    .await
 }
 
 fn list_workspace_databases_blocking(
     authority: &std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
     root: crate::infra::path_authority::DatabaseRootHandle,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<crate::infra::path_authority::DatabaseDescriptor>, Error> {
     authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .list_database_children(&root)
+        .list_database_children_cancellable(&root, cancellation)
 }
 
 #[tauri::command]
@@ -1637,6 +1728,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let specta_builder = tauri_specta::Builder::new()
         .commands(tauri_specta::collect_commands!(
             close_splashscreen,
+            prepare_native_read,
+            cancel_native_read,
             reconcile_startup_path_owners,
             reconcile_engine_attachments,
             issue_pgn_workspace,
@@ -1925,6 +2018,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.run({
         let guard = Arc::new(ExitGuard::default());
         move |app, event| {
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } = &event
+            {
+                cancel_destroyed_window_operations(&app.state::<AppState>(), label);
+            }
             let tauri::RunEvent::ExitRequested { api, .. } = &event else {
                 return;
             };
@@ -2060,10 +2161,129 @@ mod search_cache_tests {
         let first = cache.generation_lock(PathBuf::from("one.ecsi"));
         let same = cache.generation_lock(PathBuf::from("one.ecsi"));
         let other = cache.generation_lock(PathBuf::from("two.ecsi"));
-        let held = first.lock().unwrap();
-        assert!(same.try_lock().is_err());
-        assert!(other.try_lock().is_ok());
+        let held = first.lock();
+        assert!(same.try_lock().is_none());
+        assert!(other.try_lock().is_some());
         drop(held);
+    }
+}
+
+#[cfg(test)]
+mod native_window_operation_wiring_tests {
+    use super::*;
+
+    #[test]
+    fn destroyed_window_dispatches_its_actual_label() {
+        let source = include_str!("main.rs");
+        let event_loop = source
+            .split("move |app, event| {")
+            .nth(1)
+            .expect("application event loop must exist")
+            .split("let tauri::RunEvent::ExitRequested")
+            .next()
+            .expect("window event branch must precede exit handling");
+        assert!(event_loop.contains("WindowEvent::Destroyed"));
+        assert!(event_loop.contains("cancel_destroyed_window_operations"));
+        assert!(event_loop.contains(", label);"));
+        assert!(!event_loop
+            .contains("cancel_destroyed_window_operations(&app.state::<AppState>(), \"main\")"));
+    }
+
+    #[tokio::test]
+    async fn destroyed_window_core_cancels_held_worker_but_not_other_owners() {
+        let operations = OperationRegistry::default();
+        let destroyed_ticket = operations.prepare_read("destroyed").unwrap();
+        let destroyed = operations
+            .claim_read(&destroyed_ticket, "destroyed", "held worker")
+            .unwrap();
+        let other_ticket = operations.prepare_read("other").unwrap();
+        let other = operations
+            .claim_read(&other_ticket, "other", "other worker")
+            .unwrap();
+        let accepted = operations.accept("accepted").unwrap();
+
+        let cancellation = destroyed.token();
+        let worker_token = cancellation.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = tokio::spawn(crate::infra::operations::run_native_operation(
+            destroyed,
+            "held worker",
+            async move {
+                BLOCKING_GATEWAY
+                    .spawn_cancellable(worker_token, move |token| {
+                        let _ = started_tx.send(());
+                        release_rx
+                            .recv_timeout(Duration::from_secs(5))
+                            .map_err(|_| Error::Conflict("test worker release timed out".into()))?;
+                        if token.is_cancelled() {
+                            Err::<(), _>(Error::Cancellation)
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .await
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(5), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        cancel_destroyed_window_operations_in_registry(&operations, "destroyed");
+
+        assert!(cancellation.is_cancelled());
+        assert!(operations
+            .outstanding_labels()
+            .unwrap()
+            .contains(&"held worker".to_string()));
+        assert!(!other.token().is_cancelled());
+        assert!(!accepted.token().is_cancelled());
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(5), worker)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(Error::Cancellation)
+        ));
+        assert!(!operations
+            .outstanding_labels()
+            .unwrap()
+            .contains(&"held worker".to_string()));
+    }
+
+    #[test]
+    fn raw_read_claims_reject_wrong_owner_duplicate_and_expired_without_accepted_fallback() {
+        let mut state = AppState::default();
+        let ticket = state.operations.prepare_read("owner").unwrap();
+        assert!(
+            native_read_operation_for_owner(Some(ticket.clone()), "wrong", &state, "raw read")
+                .is_err()
+        );
+        assert!(state.operations.outstanding_labels().unwrap().is_empty());
+        let lease =
+            native_read_operation_for_owner(Some(ticket.clone()), "owner", &state, "raw read")
+                .unwrap();
+        assert!(
+            native_read_operation_for_owner(Some(ticket), "owner", &state, "raw read").is_err()
+        );
+        drop(lease);
+
+        state.operations = OperationRegistry::with_reservation_ttl(Duration::ZERO);
+        let expired = state.operations.prepare_read("owner").unwrap();
+        assert!(
+            native_read_operation_for_owner(Some(expired), "owner", &state, "raw read").is_err()
+        );
+        assert!(state.operations.outstanding_labels().unwrap().is_empty());
+
+        let accepted =
+            native_read_operation_for_owner(None, "owner", &state, "accepted read").unwrap();
+        assert_eq!(
+            state.operations.outstanding_labels().unwrap(),
+            vec!["accepted read"]
+        );
+        drop(accepted);
     }
 }
 
@@ -2803,7 +3023,8 @@ mod blocking_offload_scans {
                 &format!("{name}_blocking"),
             );
         }
-        let search_blocking = body_at_indent(search, "fn search_position_blocking(");
+        let search_blocking =
+            body_at_indent(search, &blocking_fn_signature(search, "search_position"));
         assert!(
             !search_blocking.trim().is_empty(),
             "search_position_blocking must exist: {search_blocking}"
@@ -2842,22 +3063,22 @@ mod blocking_offload_scans {
         }
         let players_wrapper = body_at_indent(db, "pub async fn get_players_game_info(");
         assert!(
-            players_wrapper.contains("JobProgress::new(app.clone(), progress_id)"),
-            "get_players_game_info must construct JobProgress from the renderer-minted id: {players_wrapper}"
+            players_wrapper.contains("JobProgress::best_effort("),
+            "get_players_game_info must diagnose optional progress initialization without failing data delivery: {players_wrapper}"
         );
         assert!(
             players_wrapper.contains(
-                "get_players_game_info_blocking(&authority, &repository, file, id, worker_app, lease)"
+                "get_players_game_info_blocking("
             ),
             "get_players_game_info must forward the JobProgress lease into the blocking call: {players_wrapper}"
         );
         assert!(
-            players_wrapper.contains(".ok()"),
-            "get_players_game_info must not fail the command when progress cannot start: {players_wrapper}"
+            !players_wrapper.contains(".ok()"),
+            "get_players_game_info must not silently discard progress initialization failures: {players_wrapper}"
         );
         assert!(
             players_wrapper.contains("complete("),
-            "get_players_game_info must complete the lease on the async side: {players_wrapper}"
+            "get_players_game_info must complete the lease from the worker-owned closure: {players_wrapper}"
         );
 
         assert!(
@@ -2876,11 +3097,11 @@ mod blocking_offload_scans {
         }
         assert!(
             search_wrapper.contains("JobProgress"),
-            "search_position must keep JobProgress on the async frame: {search_wrapper}"
+            "search_position must retain JobProgress through worker completion: {search_wrapper}"
         );
         assert!(
             search_wrapper.contains("complete("),
-            "search_position must complete the lease on the async side: {search_wrapper}"
+            "search_position must complete the lease from the worker-owned closure: {search_wrapper}"
         );
 
         let search_signature = search_blocking

@@ -9,6 +9,7 @@ use std::{
 use memmap2::Mmap;
 use rayon::prelude::*;
 use rkyv::{Archive, Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     db::DatabaseIdentity,
@@ -291,12 +292,13 @@ pub(crate) fn write_entries_to_at<I>(
     leaf: &OsStr,
     source: IndexSource,
     entries: I,
+    cancellation: &CancellationToken,
 ) -> Result<AtomicFileOutcome, Error>
 where
     I: IntoIterator<Item = Result<SearchGameEntry, Error>>,
 {
     atomic_replace_at(parent, leaf, |file| {
-        write_chunked_archive(file, source, entries)
+        write_chunked_archive_cancellable(file, source, entries, cancellation)
     })
 }
 
@@ -328,7 +330,14 @@ fn estimated_entry_bytes(entry: &SearchGameEntry) -> usize {
         .saturating_add(entry.moves.len())
 }
 
-fn write_chunk<W: Write>(file: &mut W, entries: &mut Vec<SearchGameEntry>) -> Result<u64, Error> {
+fn write_chunk<W: Write>(
+    file: &mut W,
+    entries: &mut Vec<SearchGameEntry>,
+    cancellation: &CancellationToken,
+) -> Result<u64, Error> {
+    for entry in entries.iter() {
+        crate::db::encoding::try_iter_mainline_move_bytes_cancellable(&entry.moves, cancellation)?;
+    }
     let index = SearchIndexChunk {
         entries: std::mem::take(entries),
     };
@@ -350,11 +359,28 @@ fn write_chunk<W: Write>(file: &mut W, entries: &mut Vec<SearchGameEntry>) -> Re
     Ok(entry_count)
 }
 
+#[cfg(test)]
 fn write_chunked_archive<W, I>(file: &mut W, source: IndexSource, entries: I) -> Result<(), Error>
 where
     W: Write + Seek,
     I: IntoIterator<Item = Result<SearchGameEntry, Error>>,
 {
+    write_chunked_archive_cancellable(file, source, entries, &CancellationToken::new())
+}
+
+fn write_chunked_archive_cancellable<W, I>(
+    file: &mut W,
+    source: IndexSource,
+    entries: I,
+    cancellation: &CancellationToken,
+) -> Result<(), Error>
+where
+    W: Write + Seek,
+    I: IntoIterator<Item = Result<SearchGameEntry, Error>>,
+{
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let source_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&source).map_err(|error| {
         Error::InvalidInput(format!("index source serialization failed: {error}"))
     })?;
@@ -383,14 +409,21 @@ where
     let mut total_entries = 0_u64;
     let mut chunk_count = 0_u64;
     for entry in entries {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         let entry = entry?;
+        crate::db::encoding::try_iter_mainline_move_bytes_cancellable(&entry.moves, cancellation)?;
         let entry_bytes = estimated_entry_bytes(&entry);
         if !chunk.is_empty()
             && (chunk.len() >= CHUNK_ENTRY_LIMIT
                 || estimated_bytes.saturating_add(entry_bytes) > CHUNK_PAYLOAD_TARGET_BYTES)
         {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
             total_entries = total_entries
-                .checked_add(write_chunk(file, &mut chunk)?)
+                .checked_add(write_chunk(file, &mut chunk, cancellation)?)
                 .ok_or_else(|| Error::ResourceLimit("search index entry count overflow".into()))?;
             chunk_count = chunk_count
                 .checked_add(1)
@@ -404,8 +437,11 @@ where
         chunk.push(entry);
     }
     if !chunk.is_empty() {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         total_entries = total_entries
-            .checked_add(write_chunk(file, &mut chunk)?)
+            .checked_add(write_chunk(file, &mut chunk, cancellation)?)
             .ok_or_else(|| Error::ResourceLimit("search index entry count overflow".into()))?;
         chunk_count = chunk_count
             .checked_add(1)
@@ -415,7 +451,13 @@ where
         let _ = write_padding(file, position)?;
     }
     file.seek(SeekFrom::Start(0))?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     write_header(file, source_len, total_entries, chunk_count)?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     Ok(())
 }
 
@@ -503,7 +545,17 @@ pub struct SearchGameData {
 
 impl SearchGameEntry {
     pub fn from_game_data(data: SearchGameData) -> Result<Self, Error> {
-        crate::db::encoding::try_iter_mainline_move_bytes(&data.moves)?;
+        Self::from_game_data_cancellable(data, &CancellationToken::new())
+    }
+
+    pub(crate) fn from_game_data_cancellable(
+        data: SearchGameData,
+        cancellation: &CancellationToken,
+    ) -> Result<Self, Error> {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        crate::db::encoding::try_iter_mainline_move_bytes_cancellable(&data.moves, cancellation)?;
         Ok(Self {
             id: data.id,
             white_id: data.white_id,
@@ -563,6 +615,31 @@ impl MmapSearchIndex {
     }
 
     pub(crate) fn open_file(file: File) -> io::Result<Self> {
+        Self::open_file_inner(file, None)
+    }
+
+    pub(crate) fn open_file_cancellable(
+        file: File,
+        cancellation: &CancellationToken,
+    ) -> Result<Self, Error> {
+        Self::open_file_inner(file, Some(cancellation)).map_err(|error| {
+            if error.kind() == io::ErrorKind::Interrupted && cancellation.is_cancelled() {
+                Error::Cancellation
+            } else {
+                Error::from(error)
+            }
+        })
+    }
+
+    fn open_file_inner(file: File, cancellation: Option<&CancellationToken>) -> io::Result<Self> {
+        let check = || {
+            if cancellation.is_some_and(CancellationToken::is_cancelled) {
+                Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
         let file_len = checked_usize(file.metadata()?.len(), "archive file length")?;
         if file_len < HEADER_SIZE {
             return Err(invalid_data("File too small for header"));
@@ -598,6 +675,7 @@ impl MmapSearchIndex {
         let mut chunks = Vec::new();
         let mut counted_entries = 0_usize;
         for _ in 0..header.chunk_count {
+            check()?;
             if cursor % ARCHIVE_ALIGNMENT != 0 {
                 return Err(invalid_data("misaligned chunk header"));
             }
@@ -636,6 +714,28 @@ impl MmapSearchIndex {
             })?;
             if archived.entries.len() != entry_count {
                 return Err(invalid_data("chunk entry count does not match payload"));
+            }
+            for entry in archived.entries.iter() {
+                check()?;
+                let validation = match cancellation {
+                    Some(cancellation) => {
+                        crate::db::encoding::try_iter_mainline_move_bytes_cancellable(
+                            entry.moves.as_slice(),
+                            cancellation,
+                        )
+                        .map(|_| ())
+                    }
+                    None => {
+                        crate::db::encoding::try_iter_mainline_move_bytes(entry.moves.as_slice())
+                            .map(|_| ())
+                    }
+                };
+                validation.map_err(|error| match error {
+                    Error::Cancellation => {
+                        io::Error::new(io::ErrorKind::Interrupted, "search index open cancelled")
+                    }
+                    error => invalid_data(format!("invalid move stream: {error}")),
+                })?;
             }
             chunks.push(ChunkMetadata {
                 payload_offset,
@@ -815,10 +915,14 @@ pub fn promote_legacy_index_sidecar(db_path: &Path) -> Result<Option<PathBuf>, E
     let (parent, database_leaf) = crate::infra::fs::open_verified_parent(&database, object, false)?;
     let preferred_leaf = preferred_sidecar_leaf(&database_leaf);
     let legacy_leaf = legacy_sidecar_leaf(&database_leaf);
-    Ok(
-        promote_legacy_index_sidecar_at(&parent, &preferred_leaf, &legacy_leaf, &identity)?
-            .then(|| database.with_file_name(preferred_leaf)),
-    )
+    Ok(promote_legacy_index_sidecar_at(
+        &parent,
+        &preferred_leaf,
+        &legacy_leaf,
+        &identity,
+        &CancellationToken::new(),
+    )?
+    .then(|| database.with_file_name(preferred_leaf)))
 }
 
 #[cfg(unix)]
@@ -827,6 +931,7 @@ pub(crate) fn promote_legacy_index_sidecar_at(
     preferred_leaf: &OsStr,
     legacy_leaf: &OsStr,
     db_identity: &DatabaseIdentity,
+    cancellation: &CancellationToken,
 ) -> Result<bool, Error> {
     use rustix::{
         fs::{self as rfs, AtFlags, Mode, OFlags},
@@ -851,10 +956,10 @@ pub(crate) fn promote_legacy_index_sidecar_at(
     if !source.metadata()?.is_file() {
         return Ok(false);
     }
-    let archive = match MmapSearchIndex::open_file(source.try_clone()?) {
+    let archive = match MmapSearchIndex::open_file_cancellable(source.try_clone()?, cancellation) {
         Ok(archive) => archive,
-        Err(error) if error.kind() == io::ErrorKind::InvalidData => return Ok(false),
-        Err(error) => return Err(Error::from(error)),
+        Err(Error::Io(error)) if error.kind() == io::ErrorKind::InvalidData => return Ok(false),
+        Err(error) => return Err(error),
     };
     let expected = IndexSource::from_database_identity(db_identity)?;
     if archive.source() != &expected {
@@ -865,6 +970,9 @@ pub(crate) fn promote_legacy_index_sidecar_at(
         legacy_file_identity_at(parent, legacy_leaf, legacy_object)?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
             let read = source.read(&mut buffer).map_err(Error::from)?;
             if read == 0 {
                 break;
@@ -1367,6 +1475,7 @@ mod tests {
             OsStr::new("atomic.ecsi"),
             IndexSource::default(),
             rows,
+            &CancellationToken::new(),
         );
         assert!(matches!(result, Err(Error::InvalidInput(_))));
         let mapped = MmapSearchIndex::open(&path).unwrap();
@@ -1523,8 +1632,13 @@ mod tests {
         set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
             "injected parent sync failure",
         ))));
-        let result =
-            promote_legacy_index_sidecar_at(&parent, &preferred_leaf, &legacy_leaf, &identity);
+        let result = promote_legacy_index_sidecar_at(
+            &parent,
+            &preferred_leaf,
+            &legacy_leaf,
+            &identity,
+            &CancellationToken::new(),
+        );
         set_test_atomic_file_injector(None);
 
         assert!(matches!(
@@ -1568,7 +1682,13 @@ mod tests {
         let leaf = OsStr::new("database.db3.ecsi");
         symlink(&outside, dir.path().join(leaf)).unwrap();
 
-        let result = write_entries_to_at(&parent, leaf, IndexSource::default(), std::iter::empty());
+        let result = write_entries_to_at(
+            &parent,
+            leaf,
+            IndexSource::default(),
+            std::iter::empty(),
+            &CancellationToken::new(),
+        );
         assert!(matches!(result, Err(Error::InvalidInput(_))));
         assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
     }

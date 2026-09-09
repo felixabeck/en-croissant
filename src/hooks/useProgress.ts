@@ -41,9 +41,8 @@ export function useProgress(id: string) {
                     );
                 }
             })
-            .catch(() => {
-                // A transient native lookup error must not turn an already-running
-                // subscription into an unhandled renderer rejection.
+            .catch((error) => {
+                if (active) notifyListenerError(error);
             });
         return () => {
             active = false;

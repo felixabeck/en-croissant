@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    io::{Read, Seek, SeekFrom, Write},
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex},
@@ -10,6 +11,8 @@ use diesel::{
     r2d2::{ConnectionManager, Pool, PooledConnection},
     Connection, SqliteConnection,
 };
+use parking_lot::Mutex as ParkingMutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 
@@ -21,6 +24,34 @@ const MAX_CONNECTIONS_PER_DATABASE: u32 = 16;
 // Must exceed `PRAGMA busy_timeout = 30000` in `db/mod.rs` so an ordinary
 // contended write completes rather than tripping retirement.
 const RETIRE_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+#[cfg(test)]
+thread_local! {
+    static SNAPSHOT_COPY_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+struct SnapshotCopyHookGuard;
+
+#[cfg(test)]
+impl Drop for SnapshotCopyHookGuard {
+    fn drop(&mut self) {
+        SNAPSHOT_COPY_HOOK.with(|hook| *hook.borrow_mut() = None);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn cancel_snapshot_copy_after_chunks(cancellation: CancellationToken, chunks: usize) {
+    let mut seen = 0usize;
+    SNAPSHOT_COPY_HOOK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            seen += 1;
+            if seen >= chunks {
+                cancellation.cancel();
+            }
+        }));
+    });
+}
 
 type SqlitePool = Pool<ConnectionManager<SqliteConnection>>;
 /// A pooled connection cannot outlive the repository lifecycle lease which
@@ -62,14 +93,12 @@ impl DerefMut for DatabaseConnection {
 /// the pool that is subsequently acquired inside that section.
 pub struct DatabaseWriteLease {
     _lease: EntryLease,
-    lock: Arc<Mutex<()>>,
+    lock: Arc<ParkingMutex<()>>,
 }
 
 impl DatabaseWriteLease {
-    pub fn lock(&self) -> Result<std::sync::MutexGuard<'_, ()>, Error> {
-        self.lock
-            .lock()
-            .map_err(|_| Error::Conflict("database write lock poisoned".into()))
+    pub fn lock(&self) -> Result<parking_lot::MutexGuard<'_, ()>, Error> {
+        Ok(self.lock.lock())
     }
 }
 
@@ -87,8 +116,8 @@ pub struct DatabaseIdentity {
 
 struct DatabaseEntry {
     pool: SqlitePool,
-    write_lock: Arc<Mutex<()>>,
-    index_lock: Arc<Mutex<()>>,
+    write_lock: Arc<ParkingMutex<()>>,
+    index_lock: Arc<ParkingMutex<()>>,
     state: Mutex<EntryState>,
     lifecycle: Mutex<LifecycleState>,
     lifecycle_changed: Condvar,
@@ -157,6 +186,7 @@ impl DatabaseRepository {
     }
 
     pub fn connection(&self, path: &Path) -> Result<DatabaseConnection, Error> {
+        super::sqlite_cancellation::install()?;
         loop {
             let (canonical, entry) = self.entry(path)?;
             if !entry.path_matches_known_object(&canonical)? {
@@ -193,6 +223,7 @@ impl DatabaseRepository {
     }
 
     pub fn initialization_connection(&self, path: &Path) -> Result<DatabaseConnection, Error> {
+        super::sqlite_cancellation::install()?;
         loop {
             let (canonical, entry) = self.entry(path)?;
             if !entry.path_matches_known_object(&canonical)? {
@@ -227,22 +258,43 @@ impl DatabaseRepository {
     /// descriptors, and resolves `/proc/self/fd` back to a mutable filename;
     /// a private snapshot is therefore the portable way to prevent an
     /// A→B→A replacement from redirecting the connection.
-    pub fn schema_specific_connection_expected_file(
+    pub fn schema_specific_connection_expected_file_cancellable(
         &self,
         file: std::fs::File,
         expected_object: (u64, u64),
+        cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<DatabaseConnection, Error> {
+        #[cfg(test)]
+        let _copy_hook_guard = SnapshotCopyHookGuard;
+        super::sqlite_cancellation::install()?;
         if crate::infra::path_authority::opened_file_identity(&file)? != expected_object {
             return Err(Error::Conflict(
                 "database changed after capability resolution".into(),
             ));
         }
-        use std::io::{Seek, SeekFrom};
-
         let mut source = file.try_clone()?;
         source.seek(SeekFrom::Start(0))?;
         let mut snapshot = tempfile::NamedTempFile::new()?;
-        std::io::copy(&mut source, snapshot.as_file_mut())?;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            let read = source.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            snapshot.as_file_mut().write_all(&buffer[..read])?;
+            #[cfg(test)]
+            SNAPSHOT_COPY_HOOK.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().as_mut() {
+                    hook();
+                }
+            });
+        }
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         snapshot.as_file_mut().sync_all()?;
         let snapshot_path = snapshot.path().to_string_lossy().into_owned();
         let connection = SqliteConnection::establish(&snapshot_path).map_err(|error| {
@@ -319,10 +371,20 @@ impl DatabaseRepository {
     ) -> Result<T, Error> {
         let (_, entry) = self.entry(path)?;
         let _lease = entry.acquire()?;
-        let _guard = entry
-            .write_lock
-            .lock()
-            .map_err(|_| Error::Conflict("database write lock poisoned".into()))?;
+        let _guard = entry.write_lock.lock();
+        operation()
+    }
+
+    pub fn with_write_lock_cancellable<T>(
+        &self,
+        path: &Path,
+        cancellation: &CancellationToken,
+        operation: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let (_, entry) = self.entry(path)?;
+        let _lease = entry.acquire()?;
+        let _guard =
+            crate::infra::cancellable_lock::lock_cancellable(&entry.write_lock, cancellation)?;
         operation()
     }
 
@@ -341,10 +403,20 @@ impl DatabaseRepository {
     ) -> Result<T, Error> {
         let (_, entry) = self.entry(path)?;
         let _lease = entry.acquire()?;
-        let _guard = entry
-            .index_lock
-            .lock()
-            .map_err(|_| Error::Conflict("database index lock poisoned".into()))?;
+        let _guard = entry.index_lock.lock();
+        operation()
+    }
+
+    pub fn with_index_lock_cancellable<T>(
+        &self,
+        path: &Path,
+        cancellation: &CancellationToken,
+        operation: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let (_, entry) = self.entry(path)?;
+        let _lease = entry.acquire()?;
+        let _guard =
+            crate::infra::cancellable_lock::lock_cancellable(&entry.index_lock, cancellation)?;
         operation()
     }
 
@@ -432,8 +504,8 @@ impl DatabaseRepository {
             .build(ConnectionManager::<SqliteConnection>::new(key))?;
         let entry = Arc::new(DatabaseEntry {
             pool,
-            write_lock: Arc::new(Mutex::new(())),
-            index_lock: Arc::new(Mutex::new(())),
+            write_lock: Arc::new(ParkingMutex::new(())),
+            index_lock: Arc::new(ParkingMutex::new(())),
             state: Mutex::new(EntryState {
                 last_used: now,
                 ..EntryState::default()
@@ -828,5 +900,49 @@ mod tests {
             MAX_OPEN_DATABASES + 1
         );
         drop(leases);
+    }
+
+    #[test]
+    fn production_generation_write_and_index_lock_waits_cancel_while_contended() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let repository = Arc::new(DatabaseRepository::default());
+        let connection = repository.initialization_connection(&path).unwrap();
+        drop(connection);
+        let entry = repository.entry(&path).unwrap().1;
+
+        for (name, held) in [
+            ("write", entry.write_lock.lock()),
+            ("index", entry.index_lock.lock()),
+        ] {
+            let cancellation = CancellationToken::new();
+            let worker_token = cancellation.clone();
+            let worker_repository = Arc::clone(&repository);
+            let worker_path = path.clone();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let result = if name == "write" {
+                    worker_repository.with_write_lock_cancellable(
+                        &worker_path,
+                        &worker_token,
+                        || Ok(()),
+                    )
+                } else {
+                    worker_repository.with_index_lock_cancellable(
+                        &worker_path,
+                        &worker_token,
+                        || Ok(()),
+                    )
+                };
+                let _ = done_tx.send(result);
+            });
+            cancellation.cancel();
+            assert!(matches!(
+                done_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Err(Error::Cancellation)
+            ));
+            worker.join().unwrap();
+            drop(held);
+        }
     }
 }

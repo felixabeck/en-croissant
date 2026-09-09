@@ -130,8 +130,11 @@ impl ProgressStore {
         }
     }
 
-    fn start_at(&self, id: String, now: Instant) -> ProgressLease {
-        let mut state = self.state.lock().expect("progress store poisoned");
+    fn start_at(&self, id: String, now: Instant) -> Result<ProgressLease, Error> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Conflict("progress store poisoned".into()))?;
         Self::purge_expired_at(&mut state, now);
         // Starting the same ID deliberately invalidates its former producer.
         state.entries.remove(&id);
@@ -152,10 +155,10 @@ impl ProgressStore {
                 last_access,
             },
         );
-        ProgressLease { id, generation }
+        Ok(ProgressLease { id, generation })
     }
 
-    pub fn start(&self, id: String) -> ProgressLease {
+    pub fn start(&self, id: String) -> Result<ProgressLease, Error> {
         self.start_at(id, Instant::now())
     }
 
@@ -166,14 +169,18 @@ impl ProgressStore {
         requested_state: ProgressState,
         now: Instant,
     ) -> Result<(ProgressItem, bool), Error> {
-        let mut state = self.state.lock().expect("progress store poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Conflict("progress store poisoned".into()))?;
         Self::purge_expired_at(&mut state, now);
         let last_access = Self::tick_access(&mut state);
-        let stored = state.entries.get_mut(&lease.id).ok_or_else(|| {
-            Error::Conflict("progress lease is stale, cleared, or expired".into())
-        })?;
+        let stored = state
+            .entries
+            .get_mut(&lease.id)
+            .ok_or(Error::StaleProgressLease)?;
         if stored.item.generation != lease.generation {
-            return Err(Error::Conflict("progress lease generation is stale".into()));
+            return Err(Error::StaleProgressLease);
         }
         let existing = &stored.item;
         let progress = Self::sanitize(progress);
@@ -211,26 +218,32 @@ impl ProgressStore {
         self.transition_at(lease, progress, requested_state, Instant::now())
     }
 
-    fn get_at(&self, id: &str, now: Instant) -> Option<ProgressItem> {
-        let mut state = self.state.lock().expect("progress store poisoned");
+    fn get_at(&self, id: &str, now: Instant) -> Result<Option<ProgressItem>, Error> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Conflict("progress store poisoned".into()))?;
         Self::purge_expired_at(&mut state, now);
         let access = Self::tick_access(&mut state);
-        state.entries.get_mut(id).map(|stored| {
+        Ok(state.entries.get_mut(id).map(|stored| {
             stored.last_access = access;
             stored.item.clone()
-        })
+        }))
     }
 
-    pub fn get(&self, id: &str) -> Option<ProgressItem> {
+    pub fn get(&self, id: &str) -> Result<Option<ProgressItem>, Error> {
         self.get_at(id, Instant::now())
     }
 
     /// Clearing removes visible state and advances the global generation clock,
     /// preventing an old producer from recreating the cleared ID.
-    pub fn clear(&self, id: &str) -> u64 {
-        let mut state = self.state.lock().expect("progress store poisoned");
+    pub fn clear(&self, id: &str) -> Result<u64, Error> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Conflict("progress store poisoned".into()))?;
         state.entries.remove(id);
-        Self::next_generation(&mut state)
+        Ok(Self::next_generation(&mut state))
     }
 }
 
@@ -259,9 +272,9 @@ pub fn begin_progress<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     id: String,
 ) -> Result<ProgressLease, Error> {
-    let lease = store.start(id);
+    let lease = store.start(id)?;
     let item = store
-        .get(&lease.id)
+        .get(&lease.id)?
         .ok_or_else(|| Error::Conflict("new progress entry disappeared".into()))?;
     emit(app, item, false)?;
     Ok(lease)
@@ -274,11 +287,34 @@ pub fn update_progress_with_state<R: tauri::Runtime>(
     progress: f32,
     state: ProgressState,
 ) -> Result<(), Error> {
+    update_progress_with_emitter(store, lease, progress, state, |item| emit(app, item, false))
+}
+
+fn update_progress_with_emitter(
+    store: &ProgressStore,
+    lease: &ProgressLease,
+    progress: f32,
+    state: ProgressState,
+    emit_item: impl FnOnce(ProgressItem) -> Result<(), Error>,
+) -> Result<(), Error> {
     let (item, changed) = store.transition(lease, progress, state)?;
     if changed {
-        emit(app, item, false)?;
+        emit_item(item)?;
     }
     Ok(())
+}
+
+/// Records terminal progress without allowing progress delivery to replace the work result.
+pub fn complete_preserving_result<T>(
+    result: Result<T, Error>,
+    complete: impl FnOnce(ProgressState),
+) -> Result<T, Error> {
+    complete(match &result {
+        Ok(_) => ProgressState::Succeeded,
+        Err(Error::Cancellation) => ProgressState::Cancelled,
+        Err(_) => ProgressState::Failed,
+    });
+    result
 }
 
 /// Job progress goes through the one shared progress store instead of a
@@ -297,6 +333,22 @@ impl<R: tauri::Runtime> JobProgress<R> {
             begin_progress(&state.progress_state, &app, id)?
         };
         Ok(Self { app, lease })
+    }
+
+    /// Starts optional progress reporting without changing the data operation's outcome.
+    /// Initialization failures are diagnosed with a fixed operation label and opaque progress id.
+    pub fn best_effort(
+        app: tauri::AppHandle<R>,
+        id: String,
+        operation: &'static str,
+    ) -> Option<Self> {
+        match Self::new(app, id.clone()) {
+            Ok(progress) => Some(progress),
+            Err(error) => {
+                log::error!("progress initialization failed for {operation} ({id}): {error}");
+                None
+            }
+        }
     }
 
     pub fn lease(&self) -> ProgressLease {
@@ -318,13 +370,33 @@ impl<R: tauri::Runtime> JobProgress<R> {
     /// that is still running.
     fn transition(&self, progress: f32, state: ProgressState) {
         let app_state = self.app.state::<AppState>();
-        let _ = update_progress_with_state(
+        self.transition_with(
             &app_state.progress_state,
-            &self.app,
-            &self.lease,
             progress,
             state,
+            |item| emit(&self.app, item, false),
+            |message| log::error!("{message}"),
         );
+    }
+
+    fn transition_with(
+        &self,
+        store: &ProgressStore,
+        progress: f32,
+        state: ProgressState,
+        emit_item: impl FnOnce(ProgressItem) -> Result<(), Error>,
+        diagnose: impl FnOnce(String),
+    ) {
+        if let Err(error) =
+            update_progress_with_emitter(store, &self.lease, progress, state, emit_item)
+        {
+            if !matches!(error, Error::StaleProgressLease) {
+                diagnose(format!(
+                    "progress update failed for {} generation {}: {error}",
+                    self.lease.id, self.lease.generation
+                ));
+            }
+        }
     }
 }
 
@@ -349,7 +421,10 @@ pub fn start_progress(
 
 #[tauri::command]
 #[specta::specta]
-pub fn get_progress(id: String, state: tauri::State<'_, crate::AppState>) -> Option<ProgressItem> {
+pub fn get_progress(
+    id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Option<ProgressItem>, Error> {
     state.progress_state.get(&id)
 }
 
@@ -378,7 +453,7 @@ pub fn clear_progress(
     state: tauri::State<'_, crate::AppState>,
     app: tauri::AppHandle,
 ) -> Result<u64, Error> {
-    let generation = state.progress_state.clear(&id);
+    let generation = state.progress_state.clear(&id)?;
     emit(
         &app,
         ProgressItem {
@@ -403,23 +478,23 @@ mod tests {
     #[test]
     fn stale_reporter_is_rejected_after_restart_and_clear() {
         let store = ProgressStore::default();
-        let first = store.start("job".into());
-        let second = store.start("job".into());
+        let first = store.start("job".into()).unwrap();
+        let second = store.start("job".into()).unwrap();
         assert!(store
             .transition(&first, 50.0, ProgressState::Running)
             .is_err());
-        store.clear("job");
+        store.clear("job").unwrap();
         assert!(store
             .transition(&second, 50.0, ProgressState::Running)
             .is_err());
-        let third = store.start("job".into());
+        let third = store.start("job".into()).unwrap();
         assert!(third.generation > second.generation);
     }
 
     #[test]
     fn terminal_transition_is_immutable_and_all_terminal_states_are_explicit() {
         let store = ProgressStore::default();
-        let success = store.start("success".into());
+        let success = store.start("success".into()).unwrap();
         let (done, _) = store
             .transition(&success, 100.0, ProgressState::Succeeded)
             .unwrap();
@@ -430,7 +505,7 @@ mod tests {
         assert_eq!(unchanged, done);
 
         for terminal in [ProgressState::Failed, ProgressState::Cancelled] {
-            let lease = store.start(format!("{terminal:?}"));
+            let lease = store.start(format!("{terminal:?}")).unwrap();
             assert_eq!(
                 store.transition(&lease, 10.0, terminal).unwrap().0.state,
                 terminal
@@ -441,7 +516,7 @@ mod tests {
     #[test]
     fn concurrent_reporters_cannot_regress_or_replace_terminal_state() {
         let store = Arc::new(ProgressStore::default());
-        let lease = store.start("job".into());
+        let lease = store.start("job".into()).unwrap();
         let mut workers = Vec::new();
         for progress in [10.0, 90.0, 25.0, 75.0, f32::NAN, 101.0] {
             let store = store.clone();
@@ -455,7 +530,7 @@ mod tests {
         for worker in workers {
             worker.join().unwrap();
         }
-        assert_eq!(store.get("job").unwrap().progress, 100.0);
+        assert_eq!(store.get("job").unwrap().unwrap().progress, 100.0);
         store
             .transition(&lease, 100.0, ProgressState::Succeeded)
             .unwrap();
@@ -473,8 +548,8 @@ mod tests {
     fn reads_expire_terminal_entries_earlier_than_running_entries() {
         let store = ProgressStore::default();
         let now = Instant::now();
-        let done = store.start_at("done".into(), now);
-        let running = store.start_at("running".into(), now);
+        let done = store.start_at("done".into(), now).unwrap();
+        let running = store.start_at("running".into(), now).unwrap();
         store
             .transition_at(&done, 100.0, ProgressState::Succeeded, now)
             .unwrap();
@@ -482,10 +557,14 @@ mod tests {
             .transition_at(&running, 50.0, ProgressState::Running, now)
             .unwrap();
         let after_terminal_ttl = now + TERMINAL_TTL + Duration::from_millis(1);
-        assert!(store.get_at("done", after_terminal_ttl).is_none());
-        assert!(store.get_at("running", after_terminal_ttl).is_some());
+        assert!(store.get_at("done", after_terminal_ttl).unwrap().is_none());
+        assert!(store
+            .get_at("running", after_terminal_ttl)
+            .unwrap()
+            .is_some());
         assert!(store
             .get_at("running", now + RUNNING_TTL + Duration::from_millis(1))
+            .unwrap()
             .is_none());
     }
 
@@ -496,17 +575,17 @@ mod tests {
         let mut first = None;
         let mut second = None;
         for index in 0..PROGRESS_CAPACITY {
-            let lease = store.start_at(format!("{index:04}"), now);
+            let lease = store.start_at(format!("{index:04}"), now).unwrap();
             if index == 0 {
                 first = Some(lease);
             } else if index == 1 {
                 second = Some(lease);
             }
         }
-        assert!(store.get_at("0000", now).is_some());
-        store.start_at("overflow".into(), now);
-        assert!(store.get_at("0000", now).is_some());
-        assert!(store.get_at("0001", now).is_none());
+        assert!(store.get_at("0000", now).unwrap().is_some());
+        store.start_at("overflow".into(), now).unwrap();
+        assert!(store.get_at("0000", now).unwrap().is_some());
+        assert!(store.get_at("0001", now).unwrap().is_none());
         assert!(store
             .transition(first.as_ref().unwrap(), 50.0, ProgressState::Running)
             .is_ok());
@@ -533,6 +612,7 @@ mod tests {
             .state::<crate::AppState>()
             .progress_state
             .get("job")
+            .unwrap()
             .unwrap();
         assert_eq!(item.state, ProgressState::Succeeded);
         assert_eq!(item.progress, 100.0);
@@ -547,6 +627,7 @@ mod tests {
             .state::<crate::AppState>()
             .progress_state
             .get("job")
+            .unwrap()
             .unwrap();
         assert_eq!(item.state, ProgressState::Cancelled);
         assert!(item.finished);
@@ -562,8 +643,100 @@ mod tests {
             .state::<crate::AppState>()
             .progress_state
             .get("job")
+            .unwrap()
             .unwrap();
         assert_eq!(item.state, ProgressState::Succeeded);
         assert_eq!(item.progress, 100.0);
+    }
+
+    #[test]
+    fn injected_emit_failure_is_diagnosed_without_replacing_the_worker_result() {
+        let app = job_progress_test_app();
+        let progress = JobProgress::new(app.clone(), "job".into()).unwrap();
+        let state = app.state::<crate::AppState>();
+        let mut diagnostics = Vec::new();
+
+        let result = complete_preserving_result(Ok::<_, Error>(42), |terminal| {
+            progress.transition_with(
+                &state.progress_state,
+                100.0,
+                terminal,
+                |_| Err(Error::Conflict("injected progress emit failure".into())),
+                |message| diagnostics.push(message),
+            );
+        });
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(
+            state.progress_state.get("job").unwrap().unwrap().state,
+            ProgressState::Succeeded
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].contains("injected progress emit failure"));
+    }
+
+    #[test]
+    fn poisoned_store_operations_return_typed_failures() {
+        let store = Arc::new(ProgressStore::default());
+        let lease = store.start("before-poison".into()).unwrap();
+        let poisoned = Arc::clone(&store);
+        let _ = thread::spawn(move || {
+            let _guard = poisoned.state.lock().unwrap();
+            panic!("poison progress store");
+        })
+        .join();
+        assert!(matches!(store.start("job".into()), Err(Error::Conflict(_))));
+        assert!(matches!(store.get("job"), Err(Error::Conflict(_))));
+        assert!(matches!(store.clear("job"), Err(Error::Conflict(_))));
+        assert!(matches!(
+            store.transition(&lease, 1.0, ProgressState::Running),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn clear_expiry_and_eviction_do_not_release_a_held_native_blocking_worker() {
+        let registry = crate::infra::operations::OperationRegistry::default();
+        let operation = registry.accept("held progress worker").unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let native = tokio::spawn(crate::infra::operations::run_native_operation(
+            operation,
+            "held progress worker",
+            async move {
+                crate::infra::blocking::BLOCKING_GATEWAY
+                    .spawn(move || {
+                        release_rx
+                            .recv_timeout(Duration::from_secs(2))
+                            .map_err(|_| Error::Conflict("held progress worker timed out".into()))
+                    })
+                    .await
+            },
+        ));
+        tokio::task::yield_now().await;
+
+        let store = ProgressStore::default();
+        let now = Instant::now();
+        store.start_at("clear".into(), now).unwrap();
+        store.clear("clear").unwrap();
+        assert_eq!(
+            registry.outstanding_labels().unwrap(),
+            vec!["held progress worker"]
+        );
+
+        store.start_at("expire".into(), now).unwrap();
+        assert!(store
+            .get_at("expire", now + RUNNING_TTL + Duration::from_millis(1))
+            .unwrap()
+            .is_none());
+        assert_eq!(registry.outstanding_labels().unwrap().len(), 1);
+
+        for index in 0..=PROGRESS_CAPACITY {
+            store.start_at(format!("evict-{index}"), now).unwrap();
+        }
+        assert_eq!(registry.outstanding_labels().unwrap().len(), 1);
+
+        release_tx.send(()).unwrap();
+        native.await.unwrap().unwrap();
+        assert!(registry.wait_for_drain(Duration::ZERO).unwrap());
     }
 }

@@ -24,6 +24,7 @@ import classes from "./InfoPanel.module.css";
 import PgnInput from "./PgnInput";
 import { getStats } from "@/utils/repertoire";
 import useSWR from "swr";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { getDatabases, sameDatabaseHandle } from "@/utils/db";
 import { databaseHandleKey } from "@/utils/db";
 import { useNavigate } from "@tanstack/react-router";
@@ -83,7 +84,10 @@ function InfoPanel({ addGame }: { addGame?: () => void }) {
 
 function DatabaseInfo({ path, id: _id }: { path: DatabaseHandle; id: number }) {
   const { t } = useTranslation();
-  const { data: databases, isLoading } = useSWR("databases", () => getDatabases());
+  const databaseOwner = useNativeRequestOwner("databases");
+  const { data: databases, isLoading } = useSWR("databases", () =>
+    databaseOwner!.run((signal) => getDatabases({ signal })),
+  );
 
   const dbInfo = databases?.find((db) => sameDatabaseHandle(db.file, path));
   const navigate = useNavigate();

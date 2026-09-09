@@ -1,7 +1,9 @@
 pub mod blocking;
+pub mod cancellable_lock;
 pub mod fs;
 pub(crate) mod keyed_locks;
 pub mod net;
+pub mod operations;
 pub mod path_authority;
 pub mod runtime;
 pub mod validation;
