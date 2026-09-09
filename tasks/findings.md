@@ -7221,3 +7221,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Evidence:** Cumulative persisted-state lens, confidence 99; root traced the schema maximum and fallback. Origin 3afed031 predates the reviewed range. Related f-20260901-05 owns durable tab creation; this specific destructive validation fallback is separate.
 * **Repair:** Preserve the last valid durable workspace when a live write fails validation, and make admission/error handling observable. Keep the existing bound; prove boundary writes and reload preserve existing tabs. Adopted for the active cancellation build's review repair.
 * **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
+
+---
+
+## 2026-09-09 — filed through the inbox spool
+
+### Board layout persistence bypasses validation and write-failure handling
+
+* **ID:** f-20260909-03 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/components/tabs/BoardsPage.tsx:416, windowsStateAtom.
+* **Defect:** Raw atomWithStorage accepts malformed or obsolete Mosaic pane IDs and lets quota-full writes reject without the application's persistence error path. Reload can render blank panes.
+* **Evidence:** Cumulative persisted-state lens, confidence 98; root confirmed the raw adapter and unrestricted hydration. Origin 089e8ffd predates the reviewed range.
+* **Repair:** Use the existing validated, canonical persistence adapter with a bounded layout schema and safe fallback/error reporting. Prove corrupt pane hydration and storage failure. Adopted for the active cancellation build's review repair.
+* **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
