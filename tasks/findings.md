@@ -7247,3 +7247,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Evidence:** Cumulative error-handling lens confidence 99/97; root traced both catch paths. Origin 3afed031 predates the reviewed range; phase2 cancellation changes retained the behavior.
 * **Repair:** Report current ordinary failures through existing error UI while preserving quiet cancellation, stale-request guards, and the established outdated-schema state. Add current-error and obsolete-error tests. Adopted for the active cancellation build's review repair.
 * **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
+
+---
+
+## 2026-09-09 — filed through the inbox spool
+
+### Partial position search ignores the colours of requested pieces
+
+* **ID:** f-20260909-05 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src-tauri/src/db/search.rs:133, PositionQuery::Partial matching.
+* **Defect:** The predicate checks piece-role bitboards but omits white/black containment. A white queen requested on d4 therefore matches a black queen on d4.
+* **Evidence:** Cumulative PGN/index lens confidence 100; root inspected the predicate. Origin 97c29add removed the colour checks from ca2ed804 before the current reviewed range.
+* **Repair:** Restore role and colour containment for every requested piece, preserving unspecified squares. Add opposite-colour and valid-partial regressions through production matching. Adopted into the active cancellation build's search review repair.
+* **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
