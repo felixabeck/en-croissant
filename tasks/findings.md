@@ -6086,7 +6086,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### Closing a board tab does not terminate a running analysis report's engine
 
-* **ID:** f-20260904-10 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260904-10 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/chess.rs:685` — `EngineKey::new("analysis".into(), id.clone())` gives
   every report actor the literal tab `"analysis"`; `src-tauri/src/chess.rs:396-397` `kill_engines(tab)`
   and the supervisor's `terminate_tab` match on `key.tab == <ui tab id>`; the renderer side is
