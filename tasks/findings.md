@@ -7323,6 +7323,10 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Repair:** Share identity-preserving path rebasing for affected cursor/start paths after sibling deletion/promotion and update derived maps. Test before/after sibling and descendant paths. Adopted for active review repair.
 * **Provenance:** Plan authorship/arbitration share root context; Codex detection shares family with phase1/2/4 code, Gemini authored phase3.
 
+* **Handled, 2026-09-09:** Implemented in b82021ec: shared path rebasing preserves cursor and repertoire-start identity after deletion/promotion and refreshes derived maps. All 32 focused store tests passed, including sibling and descendant paths.
+* **Review provenance:** Plan authorship and arbitration shared root context. Codex detection used the same model family as phases 1, 2, 4 and the repairs; Gemini authored original phase 3. Final delivery gates follow these verified implementation records.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"df5380353e594b64f0eaea3116f8b1e88adb238c2ab183a0626bacc176244e4f","input_sha256":"fa8e584ea198c66105677a39c71c55b4a547aeed3ef0861251fdbe6bf3ca300b","kind":"mutation-receipt","operation":"4e1a07ffd61080282cc95c531300b461574ab0cd6d48b520ea8d26091a940e21","options":{"section":null},"request_id_sha256":null,"results":["f-20260909-07"],"target":"f-20260909-07","v":1} -->
+
 ---
 
 ## 2026-09-09 — filed through the inbox spool
