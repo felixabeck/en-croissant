@@ -35,6 +35,7 @@ import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { type PathRef, type PuzzleDatabaseInfo } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import {
   activeTabAtom,
   currentPuzzleAtom,
@@ -213,10 +214,13 @@ function Puzzles({ id }: { id: string }) {
       })
       .catch((error: Error) => {
         if (cancelled || generation !== requestGeneration.current) return;
+        const normalized = normalizeError(error);
         setAvailableThemes([]);
-        setThemesTableMissing(
-          normalizeError(error).backendCategory === "puzzle-themes-unavailable",
-        );
+        const themesUnavailable = normalized.backendCategory === "puzzle-themes-unavailable";
+        setThemesTableMissing(themesUnavailable);
+        if (!themesUnavailable) {
+          notifyUnlessCancelled(commonErrorRef.current, error);
+        }
       });
     return () => {
       cancelled = true;
@@ -289,7 +293,16 @@ function Puzzles({ id }: { id: string }) {
       result = await tauri.getPuzzle(db, range[0], range[1], effectiveSelectedTheme, {
         signal: request.signal,
       });
-    } catch {
+    } catch (error) {
+      const currentDatabase = effectiveSelectedDbRef.current;
+      if (
+        !request.signal.aborted &&
+        generation === requestGeneration.current &&
+        currentDatabase &&
+        capabilityKey(currentDatabase) === capabilityKey(db)
+      ) {
+        notifyUnlessCancelled(commonErrorRef.current, error);
+      }
       return;
     }
     if (

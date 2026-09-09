@@ -12,6 +12,8 @@ import type {
 import { TreeStateProvider } from "@/components/common/TreeStateContext";
 import {
   currentPuzzleTimerAtom,
+  puzzleRatingRangeAtom,
+  puzzleThemeAtom,
   puzzleWorkspaceGenerationAtom,
   selectedPuzzleDbAtom,
   trackPuzzleTimeAtom,
@@ -152,12 +154,23 @@ let host: HTMLDivElement;
 let portals: HTMLDivElement;
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   localStorage.clear();
   sessionStorage.clear();
   localStorage.setItem("puzzle-db", JSON.stringify(selectedDb));
   mocks.getPuzzleWorkspace.mockResolvedValue(workspace);
   mocks.listPuzzleDatabases.mockResolvedValue([selectedDatabase]);
+  mocks.getPuzzleThemes.mockResolvedValue([]);
+  mocks.getPuzzle.mockResolvedValue({
+    id: 1,
+    fen: "8/8/8/8/8/8/8/K6k w - - 0 1",
+    moves: "a1a2",
+    rating: 1200,
+    rating_deviation: 50,
+    popularity: 1,
+    nb_plays: 1,
+  });
+  mocks.getThemesForPuzzle.mockResolvedValue([]);
   mocks.deletePuzzleDatabase.mockResolvedValue(undefined);
   mocks.soundResourcePath.mockRejectedValue(new Error("sound disabled in test"));
   host = document.createElement("div");
@@ -216,23 +229,36 @@ test("shows the outdated-database alert for puzzle-themes-unavailable", async ()
   await vi.waitFor(() => {
     expect(outdatedAlert()).toBeTruthy();
   });
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
 });
 
-test("does not show the alert for a database failure that still mentions no such table", async () => {
+test("reports a current theme database failure without showing the unavailable alert", async () => {
   mocks.getPuzzleThemes.mockRejectedValue(commandError("database", "no such table: themes"));
   await renderPuzzles();
   await vi.waitFor(() => {
-    expect(mocks.getPuzzleThemes).toHaveBeenCalled();
+    expect(mocks.notificationShow).toHaveBeenCalledWith(
+      expect.objectContaining({ color: "red", message: "no such table: themes" }),
+    );
   });
   expect(outdatedAlert()).toBeUndefined();
 });
 
-test("does not show the alert for a missing-resource failure that shares not-found", async () => {
+test("reports an ordinary missing-resource theme failure without the unavailable alert", async () => {
   mocks.getPuzzleThemes.mockRejectedValue(commandError("missing-resource", "native failed"));
   await renderPuzzles();
   await vi.waitFor(() => {
-    expect(mocks.getPuzzleThemes).toHaveBeenCalled();
+    expect(mocks.notificationShow).toHaveBeenCalledWith(
+      expect.objectContaining({ color: "red", message: "native failed" }),
+    );
   });
+  expect(outdatedAlert()).toBeUndefined();
+});
+
+test("keeps a current cancelled theme request quiet", async () => {
+  mocks.getPuzzleThemes.mockRejectedValue(commandError("cancellation", "Cancellation"));
+  await renderPuzzles();
+  await vi.waitFor(() => expect(mocks.getPuzzleThemes).toHaveBeenCalled());
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
   expect(outdatedAlert()).toBeUndefined();
 });
 
@@ -242,6 +268,79 @@ test("does not show the alert when puzzle themes load", async () => {
   await vi.waitFor(() => {
     expect(mocks.getPuzzleThemes).toHaveBeenCalled();
   });
+  expect(outdatedAlert()).toBeUndefined();
+});
+
+test("successful puzzle requests retain the saved theme and rating range", async () => {
+  mocks.getPuzzleThemes.mockResolvedValue(["fork"]);
+  const store = await renderPuzzles();
+  await act(async () => {
+    store.set(puzzleThemeAtom, "fork");
+    store.set(puzzleRatingRangeAtom, [1000, 1400]);
+  });
+  await vi.waitFor(() => expect(mocks.getPuzzleThemes).toHaveBeenCalled());
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')?.click();
+  });
+  await vi.waitFor(() =>
+    expect(mocks.getPuzzle).toHaveBeenCalledWith(
+      selectedDb,
+      1000,
+      1400,
+      "fork",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    ),
+  );
+  expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
+    "1",
+  );
+});
+
+test("reports a current puzzle request failure", async () => {
+  mocks.getPuzzleThemes.mockResolvedValue(["fork"]);
+  mocks.getPuzzle.mockRejectedValue(commandError("database", "puzzle query failed"));
+  await renderPuzzles();
+  await vi.waitFor(() => expect(mocks.getPuzzleThemes).toHaveBeenCalled());
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')?.click();
+  });
+  await vi.waitFor(() =>
+    expect(mocks.notificationShow).toHaveBeenCalledWith(
+      expect.objectContaining({ color: "red", message: "puzzle query failed" }),
+    ),
+  );
+  expect(document.querySelector('[data-testid="puzzle-state"]')?.getAttribute("data-count")).toBe(
+    "0",
+  );
+});
+
+test("keeps a stale puzzle request failure quiet after database replacement", async () => {
+  mocks.getPuzzleThemes.mockResolvedValue(["fork"]);
+  let rejectPuzzle!: (error: unknown) => void;
+  mocks.getPuzzle.mockImplementation(
+    () => new Promise((_resolve, reject) => (rejectPuzzle = reject)),
+  );
+  const store = await renderPuzzles();
+  await vi.waitFor(() => expect(mocks.getPuzzleThemes).toHaveBeenCalled());
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('[aria-label="Puzzle.NewPuzzle"]')?.click();
+  });
+  await vi.waitFor(() => expect(mocks.getPuzzle).toHaveBeenCalled());
+  await act(async () => store.set(selectedPuzzleDbAtom, otherDb));
+  await act(async () => rejectPuzzle(commandError("database", "stale puzzle failure")));
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
+});
+
+test("keeps a stale theme failure quiet after database replacement", async () => {
+  let rejectThemes!: (error: unknown) => void;
+  mocks.getPuzzleThemes.mockImplementation(
+    () => new Promise((_resolve, reject) => (rejectThemes = reject)),
+  );
+  const store = await renderPuzzles();
+  await vi.waitFor(() => expect(mocks.getPuzzleThemes).toHaveBeenCalled());
+  await act(async () => store.set(selectedPuzzleDbAtom, otherDb));
+  await act(async () => rejectThemes(commandError("database", "stale theme failure")));
+  expect(mocks.notificationShow).not.toHaveBeenCalled();
   expect(outdatedAlert()).toBeUndefined();
 });
 
