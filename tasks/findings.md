@@ -7286,3 +7286,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Evidence:** Cumulative chess-semantics lens confidence99 for both manifestations; root traced splice, cursor assignment and missing start rebasing. Originse401958e/e125544e predate reviewed range.
 * **Repair:** Share identity-preserving path rebasing for affected cursor/start paths after sibling deletion/promotion and update derived maps. Test before/after sibling and descendant paths. Adopted for active review repair.
 * **Provenance:** Plan authorship/arbitration share root context; Codex detection shares family with phase1/2/4 code, Gemini authored phase3.
+
+---
+
+## 2026-09-09 — filed through the inbox spool
+
+### Practice-card deduplication treats FEN clock differences as different positions
+
+* **ID:** f-20260909-08 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/components/files/opening.ts:32, buildFromTree.
+* **Defect:** Deduplication compares full FEN strings. Transpositions with identical board/turn/castling/en-passant but different clocks create separately scheduled cards for one repertoire position.
+* **Evidence:** Cumulative chess-semantics lens confidence97; root confirmed full-FEN comparison violates the existing getBoardState identity rule. Originb279d5bf predates reviewed range.
+* **Repair:** Use the existing canonical position identity and test clock-different transpositions plus genuinely distinct positions. Adopted for active review repair.
+* **Provenance:** Plan authorship/arbitration share root context; Codex detection shares family with phase1/2/4 code, Gemini authored phase3.
