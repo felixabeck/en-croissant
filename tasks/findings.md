@@ -7333,7 +7333,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Practice-card deduplication treats FEN clock differences as different positions
 
-* **ID:** f-20260909-08 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260909-08 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** src/components/files/opening.ts:32, buildFromTree.
 * **Defect:** Deduplication compares full FEN strings. Transpositions with identical board/turn/castling/en-passant but different clocks create separately scheduled cards for one repertoire position.
 * **Evidence:** Cumulative chess-semantics lens confidence97; root confirmed full-FEN comparison violates the existing getBoardState identity rule. Originb279d5bf predates reviewed range.
