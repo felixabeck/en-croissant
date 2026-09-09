@@ -6628,7 +6628,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### `findBiggestGap` discards a large opponent gap whenever any descendant has a smaller one
 
-* **ID:** f-20260906-03 · **Status:** open · **Area:** chess-tree · **Root:** repertoire-gap-selection · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260906-03 · **Status:** handled · **Area:** chess-tree · **Root:** repertoire-gap-selection · **Entry:** inline · **Blocked:** none
 * **Where:** `src/utils/repertoire.ts:347` — `else if (!isUserTurn && !childHasGap)`.
 * **Defect:** on an opponent node the position is only eligible to be a gap when **no** child
   subtree reported one. `childHasGap` is set by the loop above from any descendant at any depth. So
