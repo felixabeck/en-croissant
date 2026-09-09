@@ -7272,6 +7272,10 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Repair:** Report current ordinary failures through existing error UI while preserving quiet cancellation, stale-request guards, and the established outdated-schema state. Add current-error and obsolete-error tests. Adopted for the active cancellation build's review repair.
 * **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
 
+* **Handled, 2026-09-09:** Implemented in 87ff739f: current ordinary puzzle/theme failures notify while cancellation and obsolete requests remain quiet; the established outdated-schema state is preserved. All 21 puzzle component tests passed, including current and stale error cases.
+* **Review provenance:** Plan authorship and arbitration shared root context. Codex detection used the same model family as phases 1, 2, 4 and the repairs; Gemini authored original phase 3. Final delivery gates follow these verified implementation records.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"a26680b87c8d44c0e94e45d16516252c3141f483ca6fc8f67e3411cf2a6a1112","input_sha256":"2f35060d8abae3ccf12be61670fc6c03008814842a857643f8227564b3413cc6","kind":"mutation-receipt","operation":"833b0a784835ea8906221e555a8f4eb57b4da702986ea0908526d9d079a4624c","options":{"section":null},"request_id_sha256":null,"results":["f-20260909-04"],"target":"f-20260909-04","v":1} -->
+
 ---
 
 ## 2026-09-09 — filed through the inbox spool
