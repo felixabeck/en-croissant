@@ -7282,7 +7282,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Partial position search ignores the colours of requested pieces
 
-* **ID:** f-20260909-05 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260909-05 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** src-tauri/src/db/search.rs:133, PositionQuery::Partial matching.
 * **Defect:** The predicate checks piece-role bitboards but omits white/black containment. A white queen requested on d4 therefore matches a black queen on d4.
 * **Evidence:** Cumulative PGN/index lens confidence 100; root inspected the predicate. Origin 97c29add removed the colour checks from ca2ed804 before the current reviewed range.
