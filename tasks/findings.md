@@ -6116,6 +6116,10 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Found by:** the `review-engine-protocol` lens (confidence 93) during plan review of the
   progress-discriminator plan, 2026-09-04.
 
+* **Handled, 2026-09-09:** Implemented in 6ab7c3f3 and d835ac77: tab closure cancels the exact retained analysis operation ticket, including cancellation before native claim. Native owner cancellation covers engine initialization, UCI waits, post-dequeue publication and exact-generation reap without killing siblings. Production-path cancellation and shutdown tests passed within the 900-test native suite (one ignored); renderer ownership tests passed.
+* **Review provenance:** Plan authorship and arbitration shared root context. Codex detection used the same model family as phases 1, 2, 4 and the repairs; Gemini authored original phase 3. Final delivery gates follow these verified implementation records.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"6d78112f30062be51d5217229a0328f4fa727f0b7a99f0ec17fe9a25db56517d","input_sha256":"50eaf3f6f62bf876c0c18e61e3a46750cb27631bfce7868297bc78c25b8be5a1","kind":"mutation-receipt","operation":"3241c36a57d0b08995eb932f954256729f91a67aabbfe896d08df1da4289f08d","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-10"],"target":"f-20260904-10","v":1} -->
+
 ### Cancelling an analysis report before its engine is published is a silent no-op
 
 * **ID:** f-20260904-11 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
