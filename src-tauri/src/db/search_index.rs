@@ -298,11 +298,12 @@ where
     I: IntoIterator<Item = Result<SearchGameEntry, Error>>,
 {
     atomic_replace_at(parent, leaf, |file| {
-        write_chunked_archive_cancellable(file, source, entries, cancellation)
+        let mut entries = entries.into_iter();
+        write_chunked_archive_cancellable(file, source, &mut entries, cancellation)
     })
 }
 
-fn write_header<W: Write>(
+fn write_header<W: Write + ?Sized>(
     file: &mut W,
     source_len: u64,
     entry_count: u64,
@@ -317,7 +318,7 @@ fn write_header<W: Write>(
     Ok(())
 }
 
-fn write_padding<W: Write>(file: &mut W, position: usize) -> Result<usize, Error> {
+fn write_padding<W: Write + ?Sized>(file: &mut W, position: usize) -> Result<usize, Error> {
     let aligned = align_up(position).map_err(Error::from)?;
     file.write_all(&[0; ARCHIVE_ALIGNMENT][..aligned - position])?;
     Ok(aligned)
@@ -330,7 +331,7 @@ fn estimated_entry_bytes(entry: &SearchGameEntry) -> usize {
         .saturating_add(entry.moves.len())
 }
 
-fn write_chunk<W: Write>(
+fn write_chunk<W: Write + ?Sized>(
     file: &mut W,
     entries: &mut Vec<SearchGameEntry>,
     cancellation: &CancellationToken,
@@ -365,19 +366,20 @@ where
     W: Write + Seek,
     I: IntoIterator<Item = Result<SearchGameEntry, Error>>,
 {
-    write_chunked_archive_cancellable(file, source, entries, &CancellationToken::new())
+    let mut entries = entries.into_iter();
+    write_chunked_archive_cancellable(file, source, &mut entries, &CancellationToken::new())
 }
 
-fn write_chunked_archive_cancellable<W, I>(
-    file: &mut W,
+trait WriteSeek: Write + Seek {}
+
+impl<W: Write + Seek + ?Sized> WriteSeek for W {}
+
+fn write_chunked_archive_cancellable(
+    file: &mut dyn WriteSeek,
     source: IndexSource,
-    entries: I,
+    entries: &mut dyn Iterator<Item = Result<SearchGameEntry, Error>>,
     cancellation: &CancellationToken,
-) -> Result<(), Error>
-where
-    W: Write + Seek,
-    I: IntoIterator<Item = Result<SearchGameEntry, Error>>,
-{
+) -> Result<(), Error> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }

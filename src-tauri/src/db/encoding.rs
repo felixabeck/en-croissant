@@ -142,7 +142,7 @@ pub fn iter_mainline_move_bytes(bytes: &[u8]) -> MainlineMoveBytesIter<'_> {
 fn validate_mainline_move_bytes(
     bytes: &[u8],
     cancellation: Option<&tokio_util::sync::CancellationToken>,
-    mut checkpoint: impl FnMut(usize),
+    checkpoint: &mut dyn FnMut(usize),
 ) -> Result<(), Error> {
     let mut cursor = 0usize;
     let mut variation_depth = 0usize;
@@ -209,7 +209,7 @@ fn validate_mainline_move_bytes(
 }
 
 pub fn try_iter_mainline_move_bytes(bytes: &[u8]) -> Result<MainlineMoveBytesIter<'_>, Error> {
-    validate_mainline_move_bytes(bytes, None, |_| {})?;
+    validate_mainline_move_bytes(bytes, None, &mut |_| {})?;
     Ok(MainlineMoveBytesIter::new(bytes))
 }
 
@@ -217,7 +217,7 @@ pub fn try_iter_mainline_move_bytes_cancellable<'a>(
     bytes: &'a [u8],
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<MainlineMoveBytesIter<'a>, Error> {
-    validate_mainline_move_bytes(bytes, Some(cancellation), |_| {})?;
+    validate_mainline_move_bytes(bytes, Some(cancellation), &mut |_| {})?;
     Ok(MainlineMoveBytesIter::new(bytes))
 }
 
@@ -225,9 +225,9 @@ pub fn try_iter_mainline_move_bytes_cancellable<'a>(
 fn try_iter_mainline_move_bytes_with_checkpoint<'a>(
     bytes: &'a [u8],
     cancellation: &tokio_util::sync::CancellationToken,
-    checkpoint: impl FnMut(usize),
+    mut checkpoint: impl FnMut(usize),
 ) -> Result<MainlineMoveBytesIter<'a>, Error> {
-    validate_mainline_move_bytes(bytes, Some(cancellation), checkpoint)?;
+    validate_mainline_move_bytes(bytes, Some(cancellation), &mut checkpoint)?;
     Ok(MainlineMoveBytesIter::new(bytes))
 }
 
@@ -256,11 +256,12 @@ fn invalid_data(message: &str) -> Error {
 
 #[cfg(test)]
 fn decode_game(moves_bytes: &[u8], initial_fen: Fen) -> Result<DecodedGame, Error> {
+    let mut checkpoint = || {};
     decode_game_cancellable_with_checkpoint(
         moves_bytes,
         initial_fen,
         &CancellationToken::new(),
-        || {},
+        &mut checkpoint,
     )
 }
 
@@ -268,9 +269,9 @@ fn decode_game_cancellable_with_checkpoint(
     moves_bytes: &[u8],
     initial_fen: Fen,
     cancellation: &CancellationToken,
-    mut checkpoint: impl FnMut(),
+    checkpoint: &mut dyn FnMut(),
 ) -> Result<DecodedGame, Error> {
-    cancellation_check(cancellation, &mut checkpoint)?;
+    cancellation_check(cancellation, checkpoint)?;
     let setup = initial_fen.into_setup();
     let castling_mode = CastlingMode::detect(&setup);
     let root_position = Chess::from_setup(setup, castling_mode)
@@ -285,7 +286,7 @@ fn decode_game_cancellable_with_checkpoint(
 
     let mut cursor = 0usize;
     while cursor < moves_bytes.len() {
-        cancellation_check(cancellation, &mut checkpoint)?;
+        cancellation_check(cancellation, checkpoint)?;
         let byte = moves_bytes[cursor];
         cursor += 1;
 
@@ -333,9 +334,9 @@ fn decode_game_cancellable_with_checkpoint(
 
                 // Encoded annotations are capped at u16::MAX bytes. Check immediately before
                 // and after that bounded allocation, then again before the payload is rendered.
-                cancellation_check(cancellation, &mut checkpoint)?;
+                cancellation_check(cancellation, checkpoint)?;
                 let comment = String::from_utf8_lossy(payload).to_string();
-                cancellation_check(cancellation, &mut checkpoint)?;
+                cancellation_check(cancellation, checkpoint)?;
                 if let Some(frame) = stack.last_mut() {
                     frame.nodes.push(DecodedGameNode::Comment(comment));
                 }
@@ -353,9 +354,9 @@ fn decode_game_cancellable_with_checkpoint(
                 let payload = &moves_bytes[cursor..cursor + len];
                 cursor += len;
 
-                cancellation_check(cancellation, &mut checkpoint)?;
+                cancellation_check(cancellation, checkpoint)?;
                 let nag = String::from_utf8_lossy(payload).to_string();
-                cancellation_check(cancellation, &mut checkpoint)?;
+                cancellation_check(cancellation, checkpoint)?;
                 if let Some(frame) = stack.last_mut() {
                     frame.nodes.push(DecodedGameNode::Nag(nag));
                 }
@@ -381,13 +382,13 @@ fn decode_game_cancellable_with_checkpoint(
     let root = stack
         .pop()
         .ok_or_else(|| invalid_data("Missing root decode frame at end of parsing"))?;
-    cancellation_check(cancellation, &mut checkpoint)?;
+    cancellation_check(cancellation, checkpoint)?;
     Ok(DecodedGame { nodes: root.nodes })
 }
 
 fn cancellation_check(
     cancellation: &CancellationToken,
-    checkpoint: &mut impl FnMut(),
+    checkpoint: &mut dyn FnMut(),
 ) -> Result<(), Error> {
     checkpoint();
     #[cfg(test)]
@@ -426,7 +427,7 @@ fn render_nodes_cancellable(
     nodes: &[DecodedGameNode],
     state: &mut RenderState,
     cancellation: &CancellationToken,
-    checkpoint: &mut impl FnMut(),
+    checkpoint: &mut dyn FnMut(),
 ) -> Result<String, Error> {
     let mut out = String::new();
     let mut prev_was_move = false;
@@ -537,11 +538,12 @@ pub fn decode_game_to_movetext_cancellable(
     initial_fen: Fen,
     cancellation: &CancellationToken,
 ) -> Result<String, Error> {
+    let mut checkpoint = || {};
     decode_game_to_movetext_cancellable_with_checkpoint(
         moves_bytes,
         initial_fen,
         cancellation,
-        || {},
+        &mut checkpoint,
     )
 }
 
@@ -549,17 +551,17 @@ fn decode_game_to_movetext_cancellable_with_checkpoint(
     moves_bytes: &[u8],
     initial_fen: Fen,
     cancellation: &CancellationToken,
-    mut checkpoint: impl FnMut(),
+    checkpoint: &mut dyn FnMut(),
 ) -> Result<String, Error> {
     let render_state = parse_initial_render_state(&initial_fen);
     let decoded = decode_game_cancellable_with_checkpoint(
         moves_bytes,
         initial_fen,
         cancellation,
-        &mut checkpoint,
+        checkpoint,
     )?;
     let mut state = render_state;
-    render_nodes_cancellable(&decoded.nodes, &mut state, cancellation, &mut checkpoint)
+    render_nodes_cancellable(&decoded.nodes, &mut state, cancellation, checkpoint)
 }
 
 #[cfg(test)]
@@ -1039,13 +1041,17 @@ mod tests {
         encode_comment(&"x".repeat(u16::MAX as usize), &mut bytes);
         let cancellation = CancellationToken::new();
         let mut checkpoints = 0usize;
-        let result =
-            decode_game_cancellable_with_checkpoint(&bytes, Fen::default(), &cancellation, || {
+        let result = decode_game_cancellable_with_checkpoint(
+            &bytes,
+            Fen::default(),
+            &cancellation,
+            &mut || {
                 checkpoints += 1;
                 if checkpoints == 3 {
                     cancellation.cancel();
                 }
-            });
+            },
+        );
         assert!(matches!(result, Err(Error::Cancellation)));
         assert_eq!(
             checkpoints, 3,
@@ -1064,7 +1070,7 @@ mod tests {
             &bytes,
             Fen::default(),
             &cancellation,
-            || {
+            &mut || {
                 checkpoints += 1;
                 if checkpoints == 6 {
                     cancellation.cancel();

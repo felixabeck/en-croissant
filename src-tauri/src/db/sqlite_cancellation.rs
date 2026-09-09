@@ -125,15 +125,7 @@ impl Drop for ScopeGuard {
     }
 }
 
-/// Runs one synchronous Diesel query, including iterator consumption, under the SQLite VM
-/// cancellation callback. Connection acquisition and schema work must happen before this scope.
-pub fn with_sqlite_cancellation<T, E>(
-    cancellation: &CancellationToken,
-    query: impl FnOnce() -> Result<T, E>,
-) -> Result<T, Error>
-where
-    E: Into<Error>,
-{
+fn enter_scope(cancellation: &CancellationToken) -> Result<ScopeGuard, Error> {
     SCOPE
         .try_with(|scope| {
             let mut scope = scope.try_borrow_mut().map_err(|_| {
@@ -147,11 +139,12 @@ where
                 interrupted: false,
                 callback_panicked: false,
             });
-            Ok(())
+            Ok(ScopeGuard)
         })
-        .map_err(|_| Error::Conflict("SQLite cancellation thread state is unavailable".into()))??;
-    let guard = ScopeGuard;
-    let result = query();
+        .map_err(|_| Error::Conflict("SQLite cancellation thread state is unavailable".into()))?
+}
+
+fn finish_scope(guard: ScopeGuard, query_failed: bool) -> Result<(), Error> {
     let (interrupted, callback_panicked) = SCOPE
         .try_with(|scope| {
             let scope = scope.borrow();
@@ -167,11 +160,25 @@ where
             "SQLite cancellation callback panicked".into(),
         ));
     }
-    match result {
-        Err(_) if interrupted => Err(Error::Cancellation),
-        Ok(value) => Ok(value),
-        Err(error) => Err(error.into()),
+    if interrupted && query_failed {
+        return Err(Error::Cancellation);
     }
+    Ok(())
+}
+
+/// Runs one synchronous Diesel query, including iterator consumption, under the SQLite VM
+/// cancellation callback. Connection acquisition and schema work must happen before this scope.
+pub fn with_sqlite_cancellation<T, E>(
+    cancellation: &CancellationToken,
+    query: impl FnOnce() -> Result<T, E>,
+) -> Result<T, Error>
+where
+    E: Into<Error>,
+{
+    let guard = enter_scope(cancellation)?;
+    let result = query().map_err(Into::into);
+    finish_scope(guard, result.is_err())?;
+    result
 }
 
 #[cfg(test)]

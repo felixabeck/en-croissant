@@ -1823,6 +1823,28 @@ mod tests {
         (dir, app, handle, database)
     }
 
+    fn run_position_search(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        handle: &DatabaseHandle,
+        query: GameQuery,
+        progress_id: &str,
+    ) -> Result<(Vec<PositionStats>, Vec<NormalizedGame>), Error> {
+        let state = app.state::<AppState>();
+        let progress = JobProgress::new(app.clone(), progress_id.into()).unwrap();
+        let permit = state.new_request.clone().try_acquire_owned().unwrap();
+        search_position_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            permit,
+            progress.lease(),
+            app.clone(),
+            handle.clone(),
+            query,
+            &CancellationToken::new(),
+        )
+    }
+
     fn exact_position_query(fen: &str) -> GameQuery {
         GameQuery::new().position(PositionQueryJs {
             fen: fen.to_string(),
@@ -1914,5 +1936,76 @@ mod tests {
             matches!(invalid, Err(Error::InvalidInput(_))),
             "an unsupported position query type must be rejected, not treated as a miss"
         );
+    }
+
+    #[test]
+    fn production_position_search_applies_filters_and_reuses_exact_cached_results() {
+        let (_dir, app, handle, database) = position_search_database();
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(
+                crate::progress::ProgressEvent
+            ))
+            .mount_events(&app);
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        let white_id = players::table
+            .filter(players::name.eq("Carlsen"))
+            .select(players::id)
+            .first::<i32>(&mut connection)
+            .unwrap();
+        let black_id = players::table
+            .filter(players::name.eq("Nakamura"))
+            .select(players::id)
+            .first::<i32>(&mut connection)
+            .unwrap();
+        drop(connection);
+
+        let query = exact_position_query(STARTING_FEN);
+        let first = run_position_search(&app, &handle, query.clone(), "search-success").unwrap();
+        assert_eq!(first.0.len(), 1);
+        assert_eq!(first.0[0].move_, "e4");
+        assert_eq!(
+            (first.0[0].white, first.0[0].draw, first.0[0].black),
+            (1, 0, 0)
+        );
+        assert_eq!(first.1.len(), 1);
+
+        let cached = run_position_search(&app, &handle, query, "search-cached").unwrap();
+        assert_eq!(cached.0[0].move_, "e4");
+        assert_eq!(cached.1[0].white, "Carlsen");
+
+        let mut matching_filters = exact_position_query(STARTING_FEN);
+        matching_filters.player1 = Some(white_id);
+        matching_filters.player2 = Some(black_id);
+        matching_filters.wanted_result = Some("whitewon".into());
+        matching_filters.start_date = Some("2026.01.01".into());
+        matching_filters.end_date = Some("2026.12.31".into());
+        let matched =
+            run_position_search(&app, &handle, matching_filters, "search-filter-hit").unwrap();
+        assert_eq!(matched.0[0].white, 1);
+        assert_eq!(matched.1.len(), 1);
+
+        let mut wrong_white = exact_position_query(STARTING_FEN);
+        wrong_white.player1 = Some(white_id + 10_000);
+        let excluded_white =
+            run_position_search(&app, &handle, wrong_white, "search-white-miss").unwrap();
+        assert_eq!((excluded_white.0.len(), excluded_white.1.len()), (0, 0));
+
+        let mut wrong_black = exact_position_query(STARTING_FEN);
+        wrong_black.player2 = Some(black_id + 10_000);
+        let excluded_black =
+            run_position_search(&app, &handle, wrong_black, "search-black-miss").unwrap();
+        assert_eq!((excluded_black.0.len(), excluded_black.1.len()), (0, 0));
+
+        let mut wrong_result = exact_position_query(STARTING_FEN);
+        wrong_result.wanted_result = Some("draw".into());
+        let excluded_result =
+            run_position_search(&app, &handle, wrong_result, "search-result-miss").unwrap();
+        assert_eq!((excluded_result.0.len(), excluded_result.1.len()), (0, 0));
+
+        let mut wrong_date = exact_position_query(STARTING_FEN);
+        wrong_date.start_date = Some("2027.01.01".into());
+        let excluded_date =
+            run_position_search(&app, &handle, wrong_date, "search-date-miss").unwrap();
+        assert_eq!((excluded_date.0.len(), excluded_date.1.len()), (0, 0));
     }
 }
