@@ -16,7 +16,7 @@ const fixtures = vi.hoisted(() => ({
   logColorChange: null as null | ((value: string) => void),
   onMove: null as null | ((uci: string) => Promise<boolean>),
   onTakeBack: null as null | (() => Promise<void>),
-  positionTurn: "white" as "white" | "black",
+  positionTurn: undefined as "white" | "black" | undefined,
   boardProps: null as any,
   playPremove: vi.fn(),
   queuePremove: vi.fn(),
@@ -68,12 +68,28 @@ vi.mock("@/state/atoms", async () => {
   };
 });
 
-vi.mock("zustand", () => ({
-  useStore: (_store: unknown, selector: (state: unknown) => unknown) => selector(fixtures.tree),
-}));
-vi.mock("@/utils/chessops", () => ({
-  positionFromFen: () => [{ turn: fixtures.positionTurn ?? "white" }, null],
-}));
+vi.mock("zustand", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("zustand")>();
+  return {
+    ...actual,
+    useStore: (_store: unknown, selector: (state: unknown) => unknown) =>
+      selector(fixtures.treeStore ? fixtures.treeStore.getState() : fixtures.tree),
+  };
+});
+vi.mock("@/utils/chessops", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/utils/chessops")>();
+  return {
+    ...actual,
+    positionFromFen: (fen: string) => {
+      const res = actual.positionFromFen(fen);
+      if (fixtures.positionTurn !== undefined && res[0]) {
+        res[0].turn = fixtures.positionTurn;
+      }
+      return res;
+    },
+  };
+});
+vi.mock("@/utils/sound", () => ({ playSound: vi.fn() }));
 vi.mock("@/platform/tauri", async () => {
   const subscribe = (name: string) =>
     vi.fn(async (listener, onError) => {
@@ -215,6 +231,7 @@ import {
   tabsAtom,
 } from "@/state/atoms";
 import BoardGame from "./BoardGame";
+import { makeUci, parseUci } from "chessops";
 import { INITIAL_FEN } from "chessops/fen";
 import { TreeStateContext } from "../common/TreeStateContext";
 
@@ -261,14 +278,18 @@ function button(label: string) {
   return found;
 }
 
-function treeMoves() {
+function treeMoves(rootNode = fixtures.tree.root) {
   const moves: any[] = [];
-  let node = fixtures.tree.root;
+  let node = rootNode;
   while (node.children.length) {
     node = node.children[0];
     moves.push(node.move);
   }
   return moves;
+}
+
+function mainlineUcis(rootNode: any) {
+  return treeMoves(rootNode).map(makeUci);
 }
 
 async function render(tabId = "tab-a") {
@@ -281,9 +302,9 @@ async function render(tabId = "tab-a") {
   );
 }
 
-async function start() {
+async function start(tabId = "tab-a") {
   await act(async () => button("Board.Opponent.StartGame").click());
-  const pending = store.get(pendingGameStartFamily("tab-a"));
+  const pending = store.get(pendingGameStartFamily(tabId));
   if (pending) await act(async () => pending);
 }
 
@@ -296,7 +317,7 @@ beforeEach(() => {
   fixtures.logRefresh = null;
   fixtures.logColorChange = null;
   fixtures.boardProps = null;
-  fixtures.positionTurn = "white";
+  fixtures.positionTurn = undefined;
   fixtures.queuePremove.mockReturnValue(true);
   fixtures.setEngineLogs = [];
   const rootNode = () => ({ fen: INITIAL_FEN, children: [] as any[] });
@@ -320,6 +341,34 @@ beforeEach(() => {
       const child = { fen: node.fen, move: payload, clock, children: [] };
       node.children.push(child);
       fixtures.appendMove({ payload, clock });
+    }),
+    deleteMove: vi.fn((path?: number[]) => {
+      if (!path || path.length === 0) {
+        fixtures.tree.root.children = [];
+        return;
+      }
+      let node = fixtures.tree.root;
+      for (let i = 0; i < path.length - 1; i++) {
+        const childIndex = path[i] ?? 0;
+        if (!node.children || !node.children[childIndex]) return;
+        node = node.children[childIndex];
+      }
+      const deleteIndex = path[path.length - 1] ?? 0;
+      if (node && node.children) {
+        node.children.splice(deleteIndex, 1);
+      }
+    }),
+    goToMove: vi.fn(),
+    promoteToMainline: vi.fn(),
+    makeMove: vi.fn(({ payload, mainline, clock }: any) => {
+      let node = fixtures.tree.root;
+      while (node.children.length) node = node.children[0];
+      const child = { fen: node.fen, move: payload, clock, children: [] };
+      if (mainline) {
+        node.children.unshift(child);
+      } else {
+        node.children.push(child);
+      }
     }),
     reset: vi.fn(() => {
       fixtures.tree.root = rootNode();
@@ -420,6 +469,129 @@ test("auto-flip after a terminal human move preserves live result and headers", 
       event: "Concurrent header edit",
     }),
   );
+});
+
+test("an accepted move remains successful and flips once after a newer periodic snapshot", async () => {
+  vi.useFakeTimers();
+  store.set(flipBoardAfterMoveAtom, true);
+  const moveReply = Promise.withResolvers<any>();
+  fixtures.makeGameMove.mockReturnValueOnce(moveReply.promise);
+  await render();
+  await start();
+  const gameId = store.get(gameIdFamily("tab-a"))!;
+  fixtures.setHeaders.mockClear();
+  fixtures.getGameState.mockResolvedValueOnce(
+    state({
+      gameId,
+      revision: 2n,
+      moves: [{ uci: "e2e4", clock: 299000n }],
+      whiteTime: 299000n,
+      blackTime: 298000n,
+      turn: "black",
+    }),
+  );
+
+  let moveResult!: Promise<boolean>;
+  act(() => {
+    moveResult = fixtures.onMove!("e2e4");
+  });
+  await act(async () => vi.advanceTimersByTimeAsync(1000));
+  expect(treeMoves()).toEqual([expect.objectContaining({ from: 12, to: 28 })]);
+  expect(fixtures.boardProps.whiteTime).toBe(299000);
+  expect(fixtures.boardProps.blackTime).toBe(298000);
+
+  await act(async () =>
+    moveReply.resolve(
+      state({
+        gameId,
+        revision: 1n,
+        moves: [{ uci: "e2e4", clock: 299000n }],
+        whiteTime: 300000n,
+        blackTime: 300000n,
+        turn: "black",
+      }),
+    ),
+  );
+
+  await expect(moveResult).resolves.toBe(true);
+  expect(treeMoves()).toEqual([expect.objectContaining({ from: 12, to: 28 })]);
+  expect(fixtures.boardProps.whiteTime).toBe(299000);
+  expect(fixtures.boardProps.blackTime).toBe(298000);
+  expect(fixtures.setHeaders).toHaveBeenCalledOnce();
+  expect(fixtures.setHeaders).toHaveBeenCalledWith(
+    expect.objectContaining({ orientation: "black" }),
+  );
+  vi.useRealTimers();
+});
+
+test.each([
+  { name: "game id", identity: { gameId: "wrong-game" } },
+  { name: "session", identity: { session: 2n } },
+])("a move response with the wrong $name is not accepted", async ({ identity }) => {
+  store.set(flipBoardAfterMoveAtom, true);
+  const moveReply = Promise.withResolvers<any>();
+  fixtures.makeGameMove.mockReturnValueOnce(moveReply.promise);
+  await render();
+  await start();
+  const gameId = store.get(gameIdFamily("tab-a"))!;
+  fixtures.setHeaders.mockClear();
+  fixtures.notify.mockClear();
+
+  let moveResult!: Promise<boolean>;
+  act(() => {
+    moveResult = fixtures.onMove!("e2e4");
+  });
+  await act(async () =>
+    moveReply.resolve(
+      state({
+        gameId,
+        revision: 1n,
+        moves: [{ uci: "e2e4", clock: null }],
+        ...identity,
+      }),
+    ),
+  );
+
+  await expect(moveResult).resolves.toBe(false);
+  expect(treeMoves()).toEqual([]);
+  expect(fixtures.setHeaders).not.toHaveBeenCalled();
+  expect(fixtures.notify).not.toHaveBeenCalled();
+});
+
+test("an exact accepted move response is silent after its owner retires", async () => {
+  store.set(flipBoardAfterMoveAtom, true);
+  const moveReply = Promise.withResolvers<any>();
+  fixtures.makeGameMove.mockReturnValueOnce(moveReply.promise);
+  await render();
+  await start();
+  const gameId = store.get(gameIdFamily("tab-a"))!;
+  let moveResult!: Promise<boolean>;
+  act(() => {
+    moveResult = fixtures.onMove!("e2e4");
+  });
+  await act(async () =>
+    fixtures.listeners.get("gameOver")?.({
+      payload: {
+        gameId,
+        session: 1n,
+        revision: 2n,
+        result: { type: "draw", reason: "stalemate" },
+        moves: [],
+      },
+    }),
+  );
+  fixtures.setHeaders.mockClear();
+  fixtures.notify.mockClear();
+
+  await act(async () =>
+    moveReply.resolve(state({ gameId, revision: 1n, moves: [{ uci: "e2e4", clock: null }] })),
+  );
+
+  await expect(moveResult).resolves.toBe(false);
+  expect(store.get(gameStateFamily("tab-a"))).toBe("gameOver");
+  expect(treeMoves()).toEqual([]);
+  expect(fixtures.setHeaders).not.toHaveBeenCalled();
+  expect(fixtures.notify).not.toHaveBeenCalled();
 });
 
 test("start remains loading through prior cleanup and native admission", async () => {
@@ -1923,103 +2095,276 @@ describe("native game delivery reconciliation", () => {
     vi.useRealTimers();
   });
 
-  test("reconciliation stops and silences on unmount, close intent, reset, replacement, or terminal completion", async () => {
+  test("a replacement game starts with fresh reconciliation notification and backoff state", async () => {
     vi.useFakeTimers();
-
-    const resetTabA = () => {
-      store.set(gameIdFamily("tab-a"), null);
-      store.set(gameSessionFamily("tab-a"), null);
-      store.set(gameStateFamily("tab-a"), "settingUp");
-      store.set(pendingGameStartFamily("tab-a"), null);
-    };
-
-    // 1. Unmount
     await render();
     await start();
-    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+    const gameA = store.get(gameIdFamily("tab-a"))!;
+    fixtures.notify.mockClear();
     fixtures.getGameState.mockClear();
-    await act(async () => root.unmount());
-    await act(async () => vi.advanceTimersByTimeAsync(5000));
-    expect(fixtures.getGameState).not.toHaveBeenCalled();
-    root = createRoot(host);
 
-    // 2. Close intent
-    resetTabA();
-    await render();
-    await start();
-    fixtures.getGameState.mockClear();
-    store.set(closingTabsAtom, new Set(["tab-a"]));
-    await act(async () => vi.advanceTimersByTimeAsync(2000));
-    expect(fixtures.getGameState).not.toHaveBeenCalled();
-    store.set(closingTabsAtom, new Set());
-    await act(async () => root.unmount());
-    root = createRoot(host);
-
-    // 3. Reset
-    resetTabA();
-    fixtures.resignGame.mockImplementationOnce(async (gameId, session) =>
-      state({
-        gameId,
-        session,
-        revision: 1n,
-        status: { finished: { result: { type: "blackWins", reason: "resignation" } } },
-      }),
-    );
-    await render();
-    await start();
-    fixtures.getGameState.mockClear();
-    await act(async () => button("Board.Opponent.Resign").click());
-    expect(store.get(gameStateFamily("tab-a"))).toBe("gameOver");
-    await act(async () => button("Home.NewGame").click());
-    expect(store.get(gameStateFamily("tab-a"))).toBe("settingUp");
-    await act(async () => vi.advanceTimersByTimeAsync(2000));
-    expect(fixtures.getGameState).not.toHaveBeenCalled();
-    await act(async () => root.unmount());
-    root = createRoot(host);
-
-    // 4. Replacement
-    resetTabA();
-    await render();
-    await start();
-    const gameA = store.get(gameIdFamily("tab-a"));
-    expect(gameA).not.toBeNull();
-    await act(async () => root.unmount());
-    root = createRoot(host);
-    await render("tab-b");
-    await start();
-    const gameB = store.get(gameIdFamily("tab-b"));
-    fixtures.getGameState.mockClear();
+    fixtures.getGameState.mockRejectedValueOnce(new Error("game A outage"));
     await act(async () => vi.advanceTimersByTimeAsync(1000));
-    expect(fixtures.getGameState).toHaveBeenCalledWith(gameB, 1n);
-    await act(async () => root.unmount());
-    root = createRoot(host);
+    expect(fixtures.notify).toHaveBeenCalledTimes(1);
 
-    // 5. Current-session GameOver event receipt
-    resetTabA();
-    await render();
-    await start();
-    const activeGame = store.get(gameIdFamily("tab-a"));
-    const activeSession = store.get(gameSessionFamily("tab-a"))!;
-    fixtures.getGameState.mockClear();
     await act(async () =>
       fixtures.listeners.get("gameOver")?.({
         payload: {
-          gameId: activeGame,
-          session: activeSession,
+          gameId: gameA,
+          session: 1n,
           revision: 1n,
           result: { type: "draw", reason: "stalemate" },
           moves: [],
         },
       }),
     );
-    expect(store.get(gameStateFamily("tab-a"))).toBe("gameOver");
-    await act(async () => vi.advanceTimersByTimeAsync(5000));
-    expect(fixtures.getGameState).not.toHaveBeenCalled();
+    await act(async () => button("Home.NewGame").click());
 
-    // 6. Native emit return alone cannot stop reconciliation
-    await act(async () => root.unmount());
-    root = createRoot(host);
-    resetTabA();
+    fixtures.getGameState.mockClear();
+    fixtures.getGameState.mockRejectedValueOnce(new Error("game B outage"));
+    await start();
+    const gameB = store.get(gameIdFamily("tab-a"))!;
+    expect(gameB).not.toBe(gameA);
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+    expect(fixtures.getGameState).toHaveBeenCalledWith(gameB, 1n);
+    expect(fixtures.notify).toHaveBeenCalledTimes(2);
+
+    await act(async () => vi.advanceTimersByTimeAsync(999));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(2);
+  });
+
+  const latePriorOwnerSettlements = [
+    {
+      name: "resolved",
+      settle: async (pending: ReturnType<typeof Promise.withResolvers<any>>, gameId: string) =>
+        pending.resolve(
+          state({
+            gameId,
+            session: 1n,
+            revision: 2n,
+            moves: [{ uci: "a2a3", clock: null }],
+          }),
+        ),
+    },
+    {
+      name: "rejected",
+      settle: async (pending: ReturnType<typeof Promise.withResolvers<any>>) =>
+        pending.reject(new Error("late game A outage")),
+    },
+  ];
+
+  test.each(latePriorOwnerSettlements)(
+    "a late $name game A query wakes game B without overlap or stale application",
+    async ({ settle }) => {
+      vi.useFakeTimers();
+      await render();
+      await start();
+      const gameA = store.get(gameIdFamily("tab-a"))!;
+      fixtures.getGameState.mockClear();
+      fixtures.notify.mockClear();
+      const pending = Promise.withResolvers<any>();
+      fixtures.getGameState.mockImplementationOnce(() => pending.promise);
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+      expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+
+      await act(async () =>
+        fixtures.listeners.get("gameOver")?.({
+          payload: {
+            gameId: gameA,
+            session: 1n,
+            revision: 1n,
+            result: { type: "draw", reason: "stalemate" },
+            moves: [],
+          },
+        }),
+      );
+      await act(async () => button("Home.NewGame").click());
+      await start();
+      const gameB = store.get(gameIdFamily("tab-a"))!;
+      expect(gameB).not.toBe(gameA);
+      expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+
+      await act(async () => settle(pending, gameA));
+      expect(treeMoves()).toEqual([]);
+      expect(fixtures.notify).not.toHaveBeenCalled();
+      await act(async () => vi.advanceTimersByTimeAsync(999));
+      expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(fixtures.getGameState).toHaveBeenCalledTimes(2);
+      expect(fixtures.getGameState).toHaveBeenLastCalledWith(gameB, 1n);
+      expect(treeMoves()).toEqual([]);
+      expect(fixtures.notify).not.toHaveBeenCalled();
+    },
+  );
+
+  type RetirementContext = { gameId: string; session: bigint };
+  type RetirementCase = {
+    name: string;
+    retire: (context: RetirementContext) => Promise<unknown>;
+    expectedOutcome: unknown;
+  };
+
+  const retirementCases: RetirementCase[] = [
+    {
+      name: "unmount",
+      retire: async () => {
+        await act(async () => root.unmount());
+        root = createRoot(host);
+      },
+      expectedOutcome: undefined,
+    },
+    {
+      name: "close intent",
+      retire: async () => {
+        await act(async () => store.set(closingTabsAtom, new Set(["tab-a"])));
+      },
+      expectedOutcome: undefined,
+    },
+    {
+      name: "reset",
+      retire: async ({ gameId, session }) => {
+        fixtures.resignGame.mockResolvedValueOnce(
+          state({
+            gameId,
+            session,
+            revision: 1n,
+            status: { finished: { result: { type: "blackWins", reason: "resignation" } } },
+          }),
+        );
+        await act(async () => button("Board.Opponent.Resign").click());
+        const afterResign = store.get(gameStateFamily("tab-a"));
+        await act(async () => button("Home.NewGame").click());
+        return [afterResign, store.get(gameStateFamily("tab-a"))];
+      },
+      expectedOutcome: ["gameOver", "settingUp"],
+    },
+    {
+      name: "replacement",
+      retire: async () => {
+        await act(async () => root.unmount());
+        root = createRoot(host);
+        await render("tab-b");
+        await start("tab-b");
+        const gameB = store.get(gameIdFamily("tab-b"));
+        return {
+          gameExists: gameB !== null,
+          queried: fixtures.getGameState.mock.calls.some(
+            ([gameId, session]) => gameId === gameB && session === 1n,
+          ),
+        };
+      },
+      expectedOutcome: { gameExists: true, queried: true },
+    },
+    {
+      name: "GameOver receipt",
+      retire: async ({ gameId, session }) => {
+        await act(async () =>
+          fixtures.listeners.get("gameOver")?.({
+            payload: {
+              gameId,
+              session,
+              revision: 1n,
+              result: { type: "draw", reason: "stalemate" },
+              moves: [],
+            },
+          }),
+        );
+        return store.get(gameStateFamily("tab-a"));
+      },
+      expectedOutcome: "gameOver",
+    },
+  ];
+
+  describe.each(retirementCases)(
+    "$name reconciliation retirement",
+    ({ retire, expectedOutcome }) => {
+      test("stops periodic polling normally", async () => {
+        vi.useFakeTimers();
+        await render();
+        await start();
+        const context = {
+          gameId: store.get(gameIdFamily("tab-a"))!,
+          session: store.get(gameSessionFamily("tab-a"))!,
+        };
+        fixtures.getGameState.mockClear();
+
+        const outcome = await retire(context);
+        await act(async () => vi.advanceTimersByTimeAsync(5000));
+
+        expect(outcome).toEqual(expectedOutcome);
+        expect(fixtures.getGameState).not.toHaveBeenCalledWith(context.gameId, context.session);
+      });
+
+      test("silences a late resolved periodic query", async () => {
+        vi.useFakeTimers();
+        await render();
+        await start();
+        const context = {
+          gameId: store.get(gameIdFamily("tab-a"))!,
+          session: store.get(gameSessionFamily("tab-a"))!,
+        };
+        fixtures.getGameState.mockClear();
+        const pending = Promise.withResolvers<any>();
+        fixtures.getGameState.mockImplementationOnce(() => pending.promise);
+        await act(async () => vi.advanceTimersByTimeAsync(1000));
+        expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+
+        const outcome = await retire(context);
+        await act(async () => {
+          pending.resolve(
+            state({
+              ...context,
+              revision: 2n,
+              moves: [{ uci: "e2e4", clock: null }],
+            }),
+          );
+        });
+        await act(async () => vi.advanceTimersByTimeAsync(5000));
+
+        expect(outcome).toEqual(expectedOutcome);
+        expect(treeMoves()).toEqual([]);
+        expect(fixtures.notify).not.toHaveBeenCalled();
+        expect(
+          fixtures.getGameState.mock.calls.filter(
+            ([gameId, session]) => gameId === context.gameId && session === context.session,
+          ),
+        ).toHaveLength(1);
+      });
+
+      test("silences a late rejected periodic query", async () => {
+        vi.useFakeTimers();
+        await render();
+        await start();
+        const context = {
+          gameId: store.get(gameIdFamily("tab-a"))!,
+          session: store.get(gameSessionFamily("tab-a"))!,
+        };
+        fixtures.getGameState.mockClear();
+        const pending = Promise.withResolvers<any>();
+        fixtures.getGameState.mockImplementationOnce(() => pending.promise);
+        await act(async () => vi.advanceTimersByTimeAsync(1000));
+        expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+
+        const outcome = await retire(context);
+        await act(async () => pending.reject(new Error("late retired query")));
+        await act(async () => vi.advanceTimersByTimeAsync(5000));
+
+        expect(outcome).toEqual(expectedOutcome);
+        expect(treeMoves()).toEqual([]);
+        expect(fixtures.notify).not.toHaveBeenCalled();
+        expect(
+          fixtures.getGameState.mock.calls.filter(
+            ([gameId, session]) => gameId === context.gameId && session === context.session,
+          ),
+        ).toHaveLength(1);
+      });
+    },
+  );
+
+  test("a native move receipt does not stop reconciliation", async () => {
+    vi.useFakeTimers();
     await render();
     await start();
     const liveGame = store.get(gameIdFamily("tab-a"));
@@ -2043,8 +2388,170 @@ describe("native game delivery reconciliation", () => {
     vi.useRealTimers();
   });
 
+  test("failed close resumption recovers dropped move and terminal snapshot when timer fires during close", async () => {
+    vi.useFakeTimers();
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"))!;
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+    fixtures.getGameState.mockClear();
+
+    // Enter close intent
+    store.set(closingTabsAtom, new Set(["tab-a"]));
+
+    // Timer fires during close window - reconciliation should NOT poll while closing
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(fixtures.getGameState).not.toHaveBeenCalled();
+
+    // Backend drops a move and finishes while close was attempted
+    const terminalState = state({
+      gameId,
+      session: 1n,
+      revision: 2n,
+      status: { finished: { result: { type: "whiteWins", reason: "checkmate" } } },
+      moves: [{ uci: "e2e4", clock: null }],
+    });
+    fixtures.getGameState.mockResolvedValueOnce(terminalState);
+
+    // Failed close: clear marker while preserving identity
+    await act(async () => {
+      store.set(closingTabsAtom, new Set());
+    });
+
+    // Reconciliation resumes and recovers dropped move + terminal snapshot without events
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledWith(gameId, 1n);
+    expect(treeMoves()).toEqual([expect.objectContaining({ from: 12, to: 28 })]);
+    expect(store.get(gameStateFamily("tab-a"))).toBe("gameOver");
+    expect(fixtures.notify).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  test("failed close resumption recovers dropped move and terminal snapshot when query settles during close", async () => {
+    vi.useFakeTimers();
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"))!;
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+    fixtures.getGameState.mockClear();
+
+    const pendingQuery = Promise.withResolvers<any>();
+    fixtures.getGameState.mockImplementationOnce(() => pendingQuery.promise);
+
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+
+    // Enter close intent while query is pending
+    store.set(closingTabsAtom, new Set(["tab-a"]));
+
+    // Query settles during close with stale move
+    await act(async () => {
+      pendingQuery.resolve(
+        state({
+          gameId,
+          session: 1n,
+          revision: 2n,
+          moves: [{ uci: "d2d4", clock: null }],
+        }),
+      );
+    });
+
+    // Settled during close: must not apply or notify
+    expect(treeMoves()).toEqual([]);
+    expect(fixtures.notify).not.toHaveBeenCalled();
+
+    // Backend dropped a move and finished
+    const terminalState = state({
+      gameId,
+      session: 1n,
+      revision: 3n,
+      status: { finished: { result: { type: "blackWins", reason: "resignation" } } },
+      moves: [{ uci: "e2e4", clock: null }],
+    });
+    fixtures.getGameState.mockResolvedValueOnce(terminalState);
+
+    // Failed close: clear marker while preserving identity
+    await act(async () => {
+      store.set(closingTabsAtom, new Set());
+    });
+
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(2);
+    expect(treeMoves()).toEqual([expect.objectContaining({ from: 12, to: 28 })]);
+    expect(store.get(gameStateFamily("tab-a"))).toBe("gameOver");
+    expect(fixtures.notify).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  test("releasing close while query is pending prevents overlapping requests and discards stale pending result", async () => {
+    vi.useFakeTimers();
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"))!;
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+    fixtures.getGameState.mockClear();
+
+    const pendingQuery = Promise.withResolvers<any>();
+    fixtures.getGameState.mockImplementationOnce(() => pendingQuery.promise);
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+
+    // Enter close intent while query is pending
+    await act(async () => {
+      store.set(closingTabsAtom, new Set(["tab-a"]));
+    });
+
+    // Release close intent while query is STILL pending
+    await act(async () => {
+      store.set(closingTabsAtom, new Set());
+    });
+
+    // No overlapping request issued
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+
+    // Stale pending result resolves
+    await act(async () => {
+      pendingQuery.resolve(
+        state({
+          gameId,
+          session: 1n,
+          revision: 2n,
+          moves: [{ uci: "a2a3", clock: null }],
+        }),
+      );
+    });
+
+    // Stale result discarded; must not mutate tree
+    expect(treeMoves()).toEqual([]);
+
+    // Next periodic poll fetches fresh authoritative state
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 3n,
+        moves: [{ uci: "e2e4", clock: null }],
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(2);
+    expect(treeMoves()).toEqual([expect.objectContaining({ from: 12, to: 28 })]);
+
+    vi.useRealTimers();
+  });
+
   test("reconciliation under StrictMode replay maintains single active polling loop", async () => {
     vi.useFakeTimers();
+    const strictGameId = "tab-a-strict-game";
+    const strictSession = 1n;
+    store.set(gameIdFamily("tab-a"), strictGameId);
+    store.set(gameSessionFamily("tab-a"), strictSession);
+    store.set(gameStateFamily("tab-a"), "playing");
+    const replayedQuery = Promise.withResolvers<any>();
+    fixtures.getGameState.mockImplementationOnce(() => replayedQuery.promise);
+
     await act(async () =>
       root.render(
         <StrictMode>
@@ -2054,12 +2561,170 @@ describe("native game delivery reconciliation", () => {
         </StrictMode>,
       ),
     );
-    await start();
-    const gameId = store.get(gameIdFamily("tab-a"));
-    fixtures.getGameState.mockClear();
-    await act(async () => vi.advanceTimersByTimeAsync(1000));
     expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
-    expect(fixtures.getGameState).toHaveBeenCalledWith(gameId, 1n);
+    expect(fixtures.getGameState).toHaveBeenCalledWith(strictGameId, strictSession);
+
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      replayedQuery.resolve(state({ gameId: strictGameId, session: strictSession }));
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(999));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(2);
+    expect(fixtures.getGameState).toHaveBeenLastCalledWith(strictGameId, strictSession);
+
+    vi.useRealTimers();
+  });
+
+  test("syncTreeWithMoves preserves metadata and side variations on retained prefix across takeback and rewrite", async () => {
+    vi.useFakeTimers();
+    const { createTreeStore } =
+      await vi.importActual<typeof import("@/state/store/tree")>("@/state/store/tree");
+    const realStore = createTreeStore();
+    fixtures.treeStore = realStore;
+
+    // 1. e2e4 {book} (!)
+    realStore.getState().makeMove({ payload: parseUci("e2e4")!, mainline: true });
+    realStore.getState().setComment("book");
+    realStore.getState().setAnnotation("!");
+    realStore.getState().setShapes([{ brush: "green", orig: "e4", dest: "e5" }]);
+
+    // 1... e7e5 (mainline)
+    realStore.getState().makeMove({ payload: parseUci("e7e5")!, mainline: true });
+    realStore.getState().setComment("mainline reply");
+    realStore.getState().setScore({ value: { type: "cp", value: 24 }, wdl: null });
+
+    // 1... c7c5 (variation on e4)
+    realStore.getState().goToMove([0]);
+    realStore.getState().makeMove({ payload: parseUci("c7c5")!, mainline: false });
+
+    // Continue mainline: 2. Nf3 Nc6
+    realStore.getState().goToMove([0, 0]);
+    realStore.getState().makeMove({ payload: parseUci("g1f3")!, mainline: true });
+    realStore.getState().makeMove({ payload: parseUci("b8c6")!, mainline: true });
+    realStore.getState().goToMove([0, 0]);
+    realStore.getState().makeMove({ payload: parseUci("d2d4")!, mainline: false });
+    realStore.getState().setHeaders({
+      ...realStore.getState().headers,
+      event: "Annotated game",
+      other: { Source: "fixture" },
+    });
+
+    // Verify initial tree state
+    expect(realStore.getState().root.children[0].comment).toBe("book");
+    expect(realStore.getState().root.children[0].annotations).toEqual(["!"]);
+    expect(realStore.getState().root.children[0].shapes).toEqual([
+      { brush: "green", orig: "e4", dest: "e5" },
+    ]);
+    expect(realStore.getState().root.children[0].children.length).toBe(2);
+    expect(realStore.getState().root.children[0].children[0].san).toBe("e5");
+    expect(realStore.getState().root.children[0].children[1].san).toBe("c5");
+
+    const gameId = "real-store-game";
+    store.set(gameIdFamily("tab-a"), gameId);
+    store.set(gameSessionFamily("tab-a"), 1n);
+    store.set(gameStateFamily("tab-a"), "playing");
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 1n,
+        moves: [
+          { uci: "e2e4", clock: null },
+          { uci: "e7e5", clock: null },
+          { uci: "g1f3", clock: null },
+          { uci: "b8c6", clock: null },
+        ],
+      }),
+    );
+
+    await render();
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+
+    // A. Takeback to e4 e5
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 2n,
+        moves: [
+          { uci: "e2e4", clock: null },
+          { uci: "e7e5", clock: null },
+        ],
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+
+    // Retained prefix e4 e5 has retained metadata and variation on e4
+    const stateAfterTakeback = realStore.getState();
+    const e4AfterTakeback = stateAfterTakeback.root.children[0];
+    expect(e4AfterTakeback.comment).toBe("book");
+    expect(e4AfterTakeback.annotations).toEqual(["!"]);
+    expect(e4AfterTakeback.shapes).toEqual([{ brush: "green", orig: "e4", dest: "e5" }]);
+    expect(e4AfterTakeback.children.length).toBe(2);
+    expect(e4AfterTakeback.children[0].san).toBe("e5");
+    expect(e4AfterTakeback.children[0].comment).toBe("mainline reply");
+    expect(e4AfterTakeback.children[0].score).toEqual({
+      value: { type: "cp", value: 24 },
+      wdl: null,
+    });
+    expect(e4AfterTakeback.children[1].san).toBe("c5");
+    expect(mainlineUcis(stateAfterTakeback.root)).toEqual(["e2e4", "e7e5"]);
+    // Nf3 Nc6 beyond e5 have been deleted
+    expect(e4AfterTakeback.children[0].children).toHaveLength(0);
+    expect(stateAfterTakeback.headers).toEqual(
+      expect.objectContaining({ event: "Annotated game", other: { Source: "fixture" } }),
+    );
+
+    // Recreate the old continuation so the next snapshot is a rewrite, not a strict extension.
+    realStore.getState().goToMove([0, 0]);
+    realStore.getState().makeMove({ payload: parseUci("g1f3")!, mainline: true });
+    realStore.getState().makeMove({ payload: parseUci("b8c6")!, mainline: true });
+    realStore.getState().goToMove([0, 0]);
+    realStore.getState().makeMove({ payload: parseUci("d2d4")!, mainline: false });
+    realStore.getState().makeMove({ payload: parseUci("d7d5")!, mainline: true });
+
+    // B. Rewritten non-prefix continuation: e4 e5 Nf3 Nc6 -> e4 e5 d4
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 3n,
+        moves: [
+          { uci: "e2e4", clock: null },
+          { uci: "e7e5", clock: null },
+          { uci: "d2d4", clock: null },
+        ],
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+
+    const stateAfterRewrite = realStore.getState();
+    const e4AfterRewrite = stateAfterRewrite.root.children[0];
+    expect(e4AfterRewrite.comment).toBe("book");
+    expect(e4AfterRewrite.annotations).toEqual(["!"]);
+    expect(e4AfterRewrite.shapes).toEqual([{ brush: "green", orig: "e4", dest: "e5" }]);
+    expect(e4AfterRewrite.children.length).toBe(2);
+    expect(e4AfterRewrite.children[0].san).toBe("e5");
+    expect(e4AfterRewrite.children[0].comment).toBe("mainline reply");
+    expect(e4AfterRewrite.children[0].score).toEqual({
+      value: { type: "cp", value: 24 },
+      wdl: null,
+    });
+    expect(e4AfterRewrite.children[1].san).toBe("c5");
+    expect(e4AfterRewrite.children[0].children).toHaveLength(2);
+    expect(e4AfterRewrite.children[0].children[0].san).toBe("d4");
+    expect(e4AfterRewrite.children[0].children[0].children).toHaveLength(0);
+    expect(e4AfterRewrite.children[0].children[1].san).toBe("Nf3");
+
+    // Exact backend mainline: e4 e5 d4
+    expect(mainlineUcis(stateAfterRewrite.root)).toEqual(["e2e4", "e7e5", "d2d4"]);
+    expect(stateAfterRewrite.headers).toEqual(
+      expect.objectContaining({ event: "Annotated game", other: { Source: "fixture" } }),
+    );
 
     vi.useRealTimers();
   });

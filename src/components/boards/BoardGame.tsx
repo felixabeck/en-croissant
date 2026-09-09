@@ -61,8 +61,9 @@ import {
   tabsAtom,
 } from "@/state/atoms";
 import { positionFromFen } from "@/utils/chessops";
+import { isPrefix } from "@/utils/misc";
 import { useTauriListener } from "@/platform/useTauriListener";
-import type { GameHeaders } from "@/utils/treeReducer";
+import { getNodeAtPath, type GameHeaders, type TreeNode } from "@/utils/treeReducer";
 import EngineLogsView from "../common/EngineLogsView";
 import FileInput from "../common/FileInput";
 import GameInfo from "../common/GameInfo";
@@ -82,6 +83,23 @@ function gameResultToOutcome(result: GameResult): Outcome {
   if (result.type === "whiteWins") return "1-0";
   if (result.type === "blackWins") return "0-1";
   return "1/2-1/2";
+}
+
+const RECONCILIATION_INTERVAL_MS = 1000;
+const RECONCILIATION_INITIAL_BACKOFF_MS = 1000;
+const RECONCILIATION_BACKOFF_FACTOR = 2;
+const RECONCILIATION_MAX_BACKOFF_MS = 8000;
+
+function getMainlineUcis(root: TreeNode): string[] {
+  const moves: string[] = [];
+  let node = root;
+  while (node.children.length > 0) {
+    node = node.children[0];
+    if (node.move) {
+      moves.push(makeUci(node.move));
+    }
+  }
+  return moves;
 }
 
 type BackendMove = { uci: string; clock: number | null };
@@ -170,6 +188,8 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
 
   const [, setTabs] = useAtom(tabsAtom);
   const autoFlipBoard = useAtomValue(flipBoardAfterMoveAtom);
+  const closingTabs = useAtomValue(closingTabsAtom);
+  const isTabClosing = closingTabs.has(ownerTabId);
 
   const boardRef = useRef(null);
   const cgRef = useRef<ChessgroundRef>(null);
@@ -205,7 +225,16 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
   const logSequenceRef = useRef(0);
   const logsOpenedRef = useRef(false);
   const mountedRef = useRef(true);
+  mountedRef.current = true;
   const mountLeaseRef = useRef<symbol | null>(null);
+  const reconciliationInFlightRef = useRef(false);
+  const reconciliationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconciliationPollRef = useRef<(() => Promise<void>) | null>(null);
+  const reconciliationScheduleRef = useRef<((delayMs: number) => void) | null>(null);
+  const reconciliationBackoffMsRef = useRef(RECONCILIATION_INITIAL_BACKOFF_MS);
+  const reconciliationOutageNotifiedRef = useRef(false);
+  const reconciliationRequestIdRef = useRef(0);
+  const reconciliationValidAfterRequestIdRef = useRef(0);
   const [pendingCommand, setPendingCommand] = useState<
     "start" | "move" | "takeback" | "abort" | "resign" | null
   >(null);
@@ -264,6 +293,15 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
   const invalidateUiSession = useCallback(
     (preserveCommandToken?: symbol) => {
       clearQueuedGameUpdates();
+      if (reconciliationTimerRef.current !== null) {
+        clearTimeout(reconciliationTimerRef.current);
+        reconciliationTimerRef.current = null;
+      }
+      reconciliationPollRef.current = null;
+      reconciliationScheduleRef.current = null;
+      reconciliationBackoffMsRef.current = RECONCILIATION_INITIAL_BACKOFF_MS;
+      reconciliationOutageNotifiedRef.current = false;
+      reconciliationValidAfterRequestIdRef.current = reconciliationRequestIdRef.current + 1;
       sessionGenerationRef.current += 1;
       if (!preserveCommandToken || commandTokenRef.current !== preserveCommandToken) {
         commandTokenRef.current = null;
@@ -373,53 +411,48 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
 
   const syncTreeWithMoves = useCallback(
     (backendMoves: BackendMove[]) => {
-      const tree = store.getState();
-      const treeMoves: string[] = [];
-      let node = tree.root;
-      while (node.children.length > 0) {
-        node = node.children[0];
-        if (node.move) {
-          treeMoves.push(makeUci(node.move));
+      let changed = false;
+      for (let i = 0; i < backendMoves.length; i++) {
+        const move = backendMoves[i];
+        const parentPath = Array(i).fill(0);
+        const parentNode = getNodeAtPath(store.getState().root, parentPath);
+        const matchingChildIndex = parentNode?.children.findIndex(
+          (child) => child.move && makeUci(child.move) === move.uci,
+        );
+        if (matchingChildIndex === 0) continue;
+        if (matchingChildIndex !== undefined && matchingChildIndex > 0) {
+          store.getState().promoteToMainline([...parentPath, matchingChildIndex]);
+          changed = true;
+          continue;
         }
-      }
 
-      let needsReset = false;
-      for (let i = 0; i < treeMoves.length; i++) {
-        if (i >= backendMoves.length || treeMoves[i] !== backendMoves[i].uci) {
-          needsReset = true;
-          break;
-        }
-      }
-
-      if (needsReset) {
-        tree.setFen(tree.root.fen);
-        for (const move of backendMoves) {
-          const parsed = parseUci(move.uci);
-          if (parsed) {
+        const parsed = parseUci(move.uci);
+        if (parsed) {
+          if (parentNode && parentNode.children.length > 0) {
+            store.getState().goToMove(parentPath);
+            store.getState().makeMove({
+              payload: parsed,
+              mainline: true,
+              clock: move.clock !== null ? Number(move.clock) : undefined,
+            });
+          } else {
             store.getState().appendMove({
               payload: parsed,
               clock: move.clock !== null ? Number(move.clock) : undefined,
             });
           }
+          changed = true;
         }
-        return true;
       }
 
-      if (backendMoves.length > treeMoves.length) {
-        for (let i = treeMoves.length; i < backendMoves.length; i++) {
-          const move = backendMoves[i];
-          const parsed = parseUci(move.uci);
-          if (parsed) {
-            store.getState().appendMove({
-              payload: parsed,
-              clock: move.clock !== null ? Number(move.clock) : undefined,
-            });
-          }
-        }
-        return true;
+      const endpointPath = Array(backendMoves.length).fill(0);
+      let endpoint = getNodeAtPath(store.getState().root, endpointPath);
+      while (endpoint && endpoint.children.length > 0) {
+        store.getState().deleteMove([...endpointPath, 0]);
+        changed = true;
+        endpoint = getNodeAtPath(store.getState().root, endpointPath);
       }
-
-      return false;
+      return changed;
     },
     [store],
   );
@@ -439,15 +472,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
   }, [root]);
 
   function getTreeMoves(): string[] {
-    const moves: string[] = [];
-    let node = root;
-    while (node.children.length > 0) {
-      node = node.children[0];
-      if (node.move) {
-        moves.push(makeUci(node.move));
-      }
-    }
-    return moves;
+    return getMainlineUcis(root);
   }
 
   const syncTreeWithMovesRef = useRef(syncTreeWithMoves);
@@ -731,7 +756,8 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         unavailable: false,
         action: ({ gameId, session }) => tauri.makeGameMove(gameId, session, uci),
         onSuccess: (state, { gameId, session, generation }) => {
-          if (!applyAuthoritativeState(state, gameId, session, generation)) return false;
+          if (state.gameId !== gameId || state.session !== session) return false;
+          applyAuthoritativeState(state, gameId, session, generation);
           if (!isPlayerVsEngine && autoFlipBoard) toggleOrientation();
           return true;
         },
@@ -945,6 +971,12 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
 
   useEffect(() => {
     if (gameState !== "playing" || !gameId) {
+      if (reconciliationTimerRef.current !== null) {
+        clearTimeout(reconciliationTimerRef.current);
+        reconciliationTimerRef.current = null;
+      }
+      reconciliationPollRef.current = null;
+      reconciliationScheduleRef.current = null;
       return;
     }
     const polledGameId = gameId;
@@ -952,107 +984,100 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     if (expectedSession === null) return;
     const generation = sessionGenerationRef.current;
 
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let backoffMs = 1000;
-    let outageNotified = false;
-    let inFlight = false;
+    if (isTabClosing) {
+      if (reconciliationTimerRef.current !== null) {
+        clearTimeout(reconciliationTimerRef.current);
+        reconciliationTimerRef.current = null;
+      }
+      reconciliationPollRef.current = null;
+      reconciliationScheduleRef.current = null;
+      reconciliationValidAfterRequestIdRef.current = reconciliationRequestIdRef.current + 1;
+      return;
+    }
 
-    const isCurrent = () =>
-      !cancelled &&
+    const isCurrentEpoch = () =>
       ownsMountedOwner() &&
       !atomStore.get(closingTabsAtom).has(ownerTabId) &&
       ownsUiSession(polledGameId, expectedSession, generation) &&
       atomStore.get(ownerGameStateAtom) === "playing";
 
-    if (!isCurrent()) return;
+    if (!isCurrentEpoch()) return;
 
     const scheduleNext = (delayMs: number) => {
-      if (!isCurrent()) return;
-      timer = setTimeout(() => {
-        timer = null;
-        void poll();
+      if (!isCurrentEpoch() || reconciliationTimerRef.current !== null) return;
+      reconciliationTimerRef.current = setTimeout(() => {
+        reconciliationTimerRef.current = null;
+        void reconciliationPollRef.current?.();
       }, delayMs);
     };
 
     const poll = async () => {
-      if (!isCurrent() || inFlight) return;
-      inFlight = true;
+      if (!isCurrentEpoch() || reconciliationInFlightRef.current) return;
+      reconciliationInFlightRef.current = true;
+      const requestId = ++reconciliationRequestIdRef.current;
+      let nextDelay = RECONCILIATION_INTERVAL_MS;
 
       try {
         const state = await tauri.getGameState(polledGameId, expectedSession);
-        if (!isCurrent()) return;
+        const canApply =
+          isCurrentEpoch() && requestId >= reconciliationValidAfterRequestIdRef.current;
 
-        backoffMs = 1000;
-        outageNotified = false;
+        if (canApply) {
+          reconciliationBackoffMsRef.current = RECONCILIATION_INITIAL_BACKOFF_MS;
+          reconciliationOutageNotifiedRef.current = false;
 
-        let eligibleForPremove = false;
-        if (state.status === "playing" && isPlayerVsEngine) {
-          const nextTurnIsHuman =
-            state.turn === "white"
-              ? players.white.type === "human"
-              : players.black.type === "human";
-          if (nextTurnIsHuman) {
-            const currentLiveMoves: string[] = [];
-            let node = store.getState().root;
-            while (node.children.length > 0) {
-              node = node.children[0];
-              if (node.move) {
-                currentLiveMoves.push(makeUci(node.move));
-              }
-            }
-            if (state.moves.length > currentLiveMoves.length) {
-              let isPrefix = true;
-              for (let i = 0; i < currentLiveMoves.length; i++) {
-                if (state.moves[i].uci !== currentLiveMoves[i]) {
-                  isPrefix = false;
-                  break;
-                }
-              }
-              if (isPrefix) {
+          let eligibleForPremove = false;
+          if (state.status === "playing" && isPlayerVsEngine) {
+            const nextTurnIsHuman =
+              state.turn === "white"
+                ? players.white.type === "human"
+                : players.black.type === "human";
+            if (nextTurnIsHuman) {
+              const currentLiveMoves = getMainlineUcis(store.getState().root);
+              const backendUcis = state.moves.map((m) => m.uci);
+              if (
+                backendUcis.length > currentLiveMoves.length &&
+                isPrefix(currentLiveMoves, backendUcis)
+              ) {
                 eligibleForPremove = true;
               }
             }
           }
-        }
 
-        const applied = applyAuthoritativeState(state, polledGameId, expectedSession, generation);
+          const applied = applyAuthoritativeState(state, polledGameId, expectedSession, generation);
 
-        if (applied && eligibleForPremove) {
-          scheduleDeferredPremove(polledGameId, expectedSession, generation);
-        }
-
-        if (isCurrent()) {
-          scheduleNext(1000);
+          if (applied && eligibleForPremove) {
+            scheduleDeferredPremove(polledGameId, expectedSession, generation);
+          }
         }
       } catch (error) {
-        if (!isCurrent()) return;
+        const canReport =
+          isCurrentEpoch() && requestId >= reconciliationValidAfterRequestIdRef.current;
 
-        if (!outageNotified) {
-          outageNotified = true;
-          notifyUnlessCancelled(tRef.current("Common.Error"), error);
-        }
+        if (canReport) {
+          if (!reconciliationOutageNotifiedRef.current) {
+            reconciliationOutageNotifiedRef.current = true;
+            notifyUnlessCancelled(tRef.current("Common.Error"), error);
+          }
 
-        const nextDelay = backoffMs;
-        backoffMs = Math.min(backoffMs * 2, 8000);
-
-        if (isCurrent()) {
-          scheduleNext(nextDelay);
+          nextDelay = reconciliationBackoffMsRef.current;
+          reconciliationBackoffMsRef.current = Math.min(
+            reconciliationBackoffMsRef.current * RECONCILIATION_BACKOFF_FACTOR,
+            RECONCILIATION_MAX_BACKOFF_MS,
+          );
         }
       } finally {
-        inFlight = false;
+        reconciliationInFlightRef.current = false;
+        reconciliationScheduleRef.current?.(nextDelay);
       }
     };
 
-    void poll();
+    reconciliationPollRef.current = poll;
+    reconciliationScheduleRef.current = scheduleNext;
 
-    return () => {
-      cancelled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    };
+    if (!reconciliationInFlightRef.current && reconciliationTimerRef.current === null) {
+      void poll();
+    }
   }, [
     gameId,
     gameState,
@@ -1067,6 +1092,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     isPlayerVsEngine,
     scheduleDeferredPremove,
     store,
+    isTabClosing,
   ]);
 
   const movable = useMemo(() => {
@@ -1146,12 +1172,12 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      invalidateUiSession();
       const ownedGameId = liveGameIdRef.current;
       const ownedSession = backendSessionRef.current;
       void Promise.resolve()
         .then(async () => {
           if (mountLeaseRef.current !== mountLease) return;
+          invalidateUiSession();
           if (ownedGameId && ownedSession !== null) {
             await cleanupExactIdentity(ownedGameId, ownedSession, { finish: true });
           }
