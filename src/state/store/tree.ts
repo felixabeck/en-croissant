@@ -498,8 +498,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                     state.dirty = true;
                     let p = path;
                     while (p.some((v) => v !== 0)) {
-                        promoteVariation(state, p);
-                        p = state.position;
+                        p = promoteVariation(state, p);
                     }
                 }),
             ),
@@ -783,37 +782,57 @@ function is50MoveRule(fen: string) {
     return halfmoveClock >= 100;
 }
 
+function rebasePathAfterDelete(target: number[], deleted: number[]): number[] | undefined {
+    if (isPrefix(deleted, target)) return undefined;
+    const parentDepth = deleted.length - 1;
+    if (
+        target.length > parentDepth &&
+        isPrefix(deleted.slice(0, -1), target) &&
+        target[parentDepth] > deleted[parentDepth]
+    ) {
+        const rebased = [...target];
+        rebased[parentDepth] -= 1;
+        return rebased;
+    }
+    return target;
+}
+
+function rebasePathAfterPromotion(target: number[], parent: number[], promotedIndex: number) {
+    if (target.length <= parent.length || !isPrefix(parent, target)) return target;
+    const rebased = [...target];
+    const siblingIndex = rebased[parent.length];
+    if (siblingIndex === promotedIndex) rebased[parent.length] = 0;
+    else if (siblingIndex < promotedIndex) rebased[parent.length] += 1;
+    return rebased;
+}
+
 function deleteMove(state: TreeState, path: number[]) {
+    if (path.length === 0) return;
     const node = getNodeAtPath(state.root, path);
     if (!node) return;
     const parent = getNodeAtPath(state.root, path.slice(0, -1));
     if (!parent) return;
     const index = parent.children.findIndex((n) => n === node);
+    if (index < 0) return;
     parent.children.splice(index, 1);
-    if (isPrefix(path, state.position)) {
-        state.position = path.slice(0, -1);
-    } else if (isPrefix(path.slice(0, -1), state.position)) {
-        if (state.position.length >= path.length) {
-            state.position[path.length - 1] = 0;
-        }
-    }
-    if (state.headers.start && isPrefix(path, state.headers.start)) {
-        state.headers.start = undefined;
-    }
+    state.position = rebasePathAfterDelete(state.position, path) ?? path.slice(0, -1);
+    if (state.headers.start) state.headers.start = rebasePathAfterDelete(state.headers.start, path);
 }
 
-function promoteVariation(state: TreeState, path: number[]) {
+function promoteVariation(state: TreeState, path: number[]): number[] {
     // get last element different from 0
     const i = path.findLastIndex((v) => v !== 0);
-    if (i === -1) return state;
+    if (i === -1) return path;
 
     const v = path[i];
     const promotablePath = path.slice(0, i);
     const node = getNodeAtPath(state.root, promotablePath);
-    if (!node) return state;
+    if (!node) return path;
     node.children.unshift(node.children.splice(v, 1)[0]);
-    state.position = path;
-    state.position[i] = 0;
+    state.position = rebasePathAfterPromotion(state.position, promotablePath, v);
+    if (state.headers.start)
+        state.headers.start = rebasePathAfterPromotion(state.headers.start, promotablePath, v);
+    return rebasePathAfterPromotion(path, promotablePath, v);
 }
 
 function setShapes(state: TreeState, shapes: DrawShape[]) {

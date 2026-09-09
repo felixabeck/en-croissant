@@ -568,7 +568,7 @@ test("should handle promoteVariation", () => {
     expect(getNewState()).toStrictEqual({
         ...treeE4D5Nf3(),
         dirty: true,
-        position: [0],
+        position: [1, 0],
         root: {
             ...treeE4D5Nf3().root,
             children: [
