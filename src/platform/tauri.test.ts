@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
     prepareNativeRead: vi.fn(),
     cancelNativeRead: vi.fn(),
     getGames: vi.fn(),
+    countPgnGames: vi.fn(),
+    readGames: vi.fn(),
+    lexPgn: vi.fn(),
+    listFileWorkspace: vi.fn(),
     logError: vi.fn(),
     listeners: new Map<string, (event: any) => void>(),
 }));
@@ -31,6 +35,10 @@ vi.mock("@/bindings/generated", () => ({
         prepareNativeRead: mocks.prepareNativeRead,
         cancelNativeRead: mocks.cancelNativeRead,
         getGames: mocks.getGames,
+        countPgnGames: mocks.countPgnGames,
+        readGames: mocks.readGames,
+        lexPgn: mocks.lexPgn,
+        listFileWorkspace: mocks.listFileWorkspace,
     },
     events: Object.fromEntries(
         ["clockUpdateEvent", "gameMoveEvent", "gameOverEvent"].map((name) => [
@@ -69,6 +77,10 @@ describe("tauri command facade", () => {
         mocks.prepareNativeRead.mockReset();
         mocks.cancelNativeRead.mockReset();
         mocks.getGames.mockReset();
+        mocks.countPgnGames.mockReset();
+        mocks.readGames.mockReset();
+        mocks.lexPgn.mockReset();
+        mocks.listFileWorkspace.mockReset();
         mocks.logError.mockReset().mockResolvedValue(undefined);
     });
     test("a signal reserves a ticket and passes it outside positional arguments", async () => {
@@ -81,6 +93,43 @@ describe("tauri command facade", () => {
             {},
             "ticket-1",
         );
+    });
+
+    test("pgn and workspace reads reserve tickets and pass outside positional arguments", async () => {
+        mocks.prepareNativeRead.mockResolvedValue({ status: "ok", data: "ticket-pgn" });
+        mocks.countPgnGames.mockResolvedValue({ status: "ok", data: 42 });
+        mocks.readGames.mockResolvedValue({ status: "ok", data: ['[Event "A"]'] });
+        mocks.lexPgn.mockResolvedValue({ status: "ok", data: [] });
+        mocks.listFileWorkspace.mockResolvedValue({ status: "ok", data: [] });
+
+        const signal = new AbortController().signal;
+        const fileHandle = { id: { id: "f1" }, kind: "fileWorkspace" as const };
+        const wsHandle = { id: { id: "ws1" }, kind: "fileWorkspace" as const };
+
+        await tauri.countPgnGames(fileHandle, { signal });
+        expect(mocks.countPgnGames).toHaveBeenCalledWith(fileHandle, "ticket-pgn");
+
+        await tauri.readGames(fileHandle, 0, 10, { signal });
+        expect(mocks.readGames).toHaveBeenCalledWith(fileHandle, 0, 10, "ticket-pgn");
+
+        await tauri.lexPgn("1. e4", { signal });
+        expect(mocks.lexPgn).toHaveBeenCalledWith("1. e4", "ticket-pgn");
+
+        await tauri.listFileWorkspace(wsHandle, { signal });
+        expect(mocks.listFileWorkspace).toHaveBeenCalledWith(wsHandle, "ticket-pgn");
+
+        // Without signal, passes null
+        await tauri.countPgnGames(fileHandle);
+        expect(mocks.countPgnGames).toHaveBeenCalledWith(fileHandle, null);
+
+        await tauri.readGames(fileHandle, 0, 10);
+        expect(mocks.readGames).toHaveBeenCalledWith(fileHandle, 0, 10, null);
+
+        await tauri.lexPgn("1. e4");
+        expect(mocks.lexPgn).toHaveBeenCalledWith("1. e4", null);
+
+        await tauri.listFileWorkspace(wsHandle);
+        expect(mocks.listFileWorkspace).toHaveBeenCalledWith(wsHandle, null);
     });
 
     test("abort before preparation rejects without native dispatch", async () => {

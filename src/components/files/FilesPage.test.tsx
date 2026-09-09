@@ -44,7 +44,13 @@ vi.mock("jotai", () => ({
       : ["", mocks.setWorkspaceDisplayName],
 }));
 vi.mock("@/state/atoms", () => stateAtoms);
-vi.mock("swr", () => ({ default: () => ({ data: mocks.data, mutate: mocks.mutate }) }));
+vi.mock("swr", async () => {
+  const actual = await vi.importActual<typeof import("swr")>("swr");
+  return {
+    ...actual,
+    default: () => ({ data: mocks.data, mutate: mocks.mutate }),
+  };
+});
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: { defaultValue?: string; name?: string }) =>

@@ -1,4 +1,4 @@
-import { tauri } from "@/platform/tauri";
+import { cancellationError, tauri } from "@/platform/tauri";
 import type { DrawShape } from "@lichess-org/chessground/draw";
 import { type Color, type Move, makeSquare, makeUci, parseUci, type Role } from "chessops";
 import { type Chess, normalizeMove } from "chessops/chess";
@@ -455,8 +455,18 @@ function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves = 0
     return tree;
 }
 
-export async function parsePGN(pgn: string, initialFen?: string): Promise<TreeState> {
-    const tokens = await tauri.lexPgn(pgn);
+export async function parsePGN(
+    pgn: string,
+    initialFen?: string,
+    options?: { signal?: AbortSignal },
+): Promise<TreeState> {
+    if (options?.signal?.aborted) {
+        throw cancellationError();
+    }
+    const tokens = await tauri.lexPgn(pgn, options);
+    if (options?.signal?.aborted) {
+        throw cancellationError();
+    }
 
     const headers = getPgnHeaders(tokens);
     const fen = initialFen?.trim() || headers.fen.trim();
@@ -470,6 +480,9 @@ export async function parsePGN(pgn: string, initialFen?: string): Promise<TreeSt
     );
     tree.headers = headers;
     tree.position = parseStartHeader(headers.start, tree.root);
+    if (options?.signal?.aborted) {
+        throw cancellationError();
+    }
     return tree;
 }
 

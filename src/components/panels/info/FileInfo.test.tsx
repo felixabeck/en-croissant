@@ -132,6 +132,28 @@ test("keeps a cancelled reload silent", async () => {
   expect(mocks.setGames).not.toHaveBeenCalled();
 });
 
+test("rapid reload or unmount aborts previous count signal", async () => {
+  const signals: AbortSignal[] = [];
+  mocks.countPgnGames.mockImplementation((_handle: unknown, options?: { signal?: AbortSignal }) => {
+    if (options?.signal) signals.push(options.signal);
+    return new Promise(() => {});
+  });
+
+  await clickReload();
+  expect(signals).toHaveLength(1);
+  expect(signals[0].aborted).toBe(false);
+
+  // Second reload click cancels first
+  await clickReload();
+  expect(signals).toHaveLength(2);
+  expect(signals[0].aborted).toBe(true);
+  expect(signals[1].aborted).toBe(false);
+
+  // Unmount cancels second
+  await act(async () => root.unmount());
+  expect(signals[1].aborted).toBe(true);
+});
+
 test("reload updater leaves a non-file tab unchanged", async () => {
   mocks.countPgnGames.mockResolvedValueOnce(9);
   await clickReload();
@@ -160,6 +182,39 @@ test("reload ignores a count that finished after the tab changed", async () => {
   await act(async () => resolveCount(11));
   expect(mocks.setCurrentTab).not.toHaveBeenCalled();
   expect(mocks.setGames).not.toHaveBeenCalled();
+});
+
+test("reload aborts and ignores count when file changes within the same tab", async () => {
+  let capturedSignal!: AbortSignal;
+  let resolveCount!: (value: number) => void;
+  mocks.countPgnGames.mockImplementationOnce(
+    (_handle: unknown, options?: { signal?: AbortSignal }) => {
+      if (options?.signal) capturedSignal = options.signal;
+      return new Promise((resolve) => {
+        resolveCount = resolve;
+      });
+    },
+  );
+  act(() => {
+    container.querySelector("button")!.click();
+  });
+  expect(capturedSignal.aborted).toBe(false);
+
+  // Switch file within same tab
+  currentTab.gameOrigin.file = {
+    ...currentTab.gameOrigin.file,
+    handle: { id: { id: "workspace-token-2" }, kind: "fileWorkspace" as const },
+    name: "other.pgn",
+    numGames: 5,
+  };
+  await act(async () => root.render(<FileInfo setGames={mocks.setGames} />));
+  expect(capturedSignal.aborted).toBe(true);
+
+  // Stale resolve should not apply
+  await act(async () => resolveCount(99));
+  expect(mocks.setCurrentTab).not.toHaveBeenCalled();
+  expect(mocks.setGames).not.toHaveBeenCalled();
+  expect(mocks.notify).not.toHaveBeenCalled();
 });
 
 test("renders a zero game count when the file has none recorded", async () => {

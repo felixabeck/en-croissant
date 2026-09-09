@@ -125,11 +125,12 @@ export default function NewTabHome({ id }: { id: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     const checkFiles = async () => {
       const checkedRecentFiles = await Promise.all(
         recentFiles.map(async (file) => {
           try {
-            await tauri.countPgnGames(file.handle);
+            await tauri.countPgnGames(file.handle, { signal: controller.signal });
             return file;
           } catch (cause) {
             return normalizeError(cause).category === "not-found" ? null : file;
@@ -137,13 +138,14 @@ export default function NewTabHome({ id }: { id: string }) {
         }),
       );
       const filtered = checkedRecentFiles.filter((file): file is RecentFile => file !== null);
-      if (!cancelled && filtered.length !== recentFiles.length) {
+      if (!cancelled && !controller.signal.aborted && filtered.length !== recentFiles.length) {
         setRecentFiles(filtered);
       }
     };
     void checkFiles();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [recentFiles, setRecentFiles]);
 

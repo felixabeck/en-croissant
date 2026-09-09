@@ -8,7 +8,11 @@ use std::{
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::{error::Error, infra::blocking::BLOCKING_GATEWAY, AppState};
+use crate::{
+    error::Error,
+    infra::{blocking::BLOCKING_GATEWAY, operations::OperationLease},
+    AppState,
+};
 
 fn resolve_pgn(
     state: &AppState,
@@ -30,13 +34,6 @@ const MAX_PAGE_LEN: usize = 1_000;
 const MAX_PGN_BYTES: usize = 10 * 1024 * 1024;
 const MAX_CACHE_ENTRIES: usize = 128;
 const MAX_CACHE_BYTES: usize = 4 * 1024 * 1024;
-
-struct CancelOnDrop(CancellationToken);
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        self.0.cancel();
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FileRevision {
@@ -63,25 +60,87 @@ struct CachedScan {
     last_used: u64,
 }
 
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct BoundedHook {
+    entered: Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    release: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+#[cfg(test)]
+impl BoundedHook {
+    pub(crate) fn new() -> (
+        Self,
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        (
+            Self {
+                entered: Arc::new(std::sync::Mutex::new(Some(entered_tx))),
+                release: Arc::new(std::sync::Mutex::new(release_rx)),
+            },
+            entered_rx,
+            release_tx,
+        )
+    }
+
+    pub(crate) fn notify_and_wait(&self) {
+        if let Ok(mut guard) = self.entered.lock() {
+            if let Some(tx) = guard.take() {
+                let _ = tx.send(());
+            }
+        }
+        if let Ok(guard) = self.release.lock() {
+            let _ = guard.recv_timeout(std::time::Duration::from_secs(5));
+        }
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_READ_CHUNK_HOOK: std::cell::RefCell<Option<BoundedHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_read_chunk_hook(hook: Option<BoundedHook>) {
+    TEST_READ_CHUNK_HOOK.with(|cell| *cell.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+fn current_read_chunk_hook() -> Option<BoundedHook> {
+    TEST_READ_CHUNK_HOOK.with(|cell| cell.borrow().clone())
+}
+
 #[derive(Default)]
 struct PgnRepositoryInner {
     cache: HashMap<CacheKey, CachedScan>,
     locks: HashMap<crate::infra::path_authority::PgnSnapshotIdentity, Arc<Mutex<()>>>,
     clock: u64,
     retained_bytes: usize,
+    #[cfg(test)]
+    read_chunk_hook: Option<BoundedHook>,
+    #[cfg(test)]
+    edit_worker_hook: Option<BoundedHook>,
+    #[cfg(test)]
+    count_hook: Option<BoundedHook>,
+    #[cfg(test)]
+    atomic_file_injector: Option<Arc<dyn crate::infra::fs::AtomicWriterInjector + Send + Sync>>,
 }
 
 /// Bounded PGN state. Cache entries are revision-specific; edit locks are retained only while
 /// another caller still owns an `Arc` for that exact canonical path.
+#[derive(Clone)]
 pub struct PgnRepository {
-    inner: std::sync::Mutex<PgnRepositoryInner>,
+    inner: Arc<std::sync::Mutex<PgnRepositoryInner>>,
     cache_byte_limit: usize,
 }
 
 impl Default for PgnRepository {
     fn default() -> Self {
         Self {
-            inner: std::sync::Mutex::new(PgnRepositoryInner::default()),
+            inner: Arc::new(std::sync::Mutex::new(PgnRepositoryInner::default())),
             cache_byte_limit: MAX_CACHE_BYTES,
         }
     }
@@ -92,6 +151,55 @@ impl PgnRepository {
         self.inner
             .lock()
             .map_err(|_| Error::Conflict("PGN repository lock was poisoned".into()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_read_chunk_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
+        self.inner()?.read_chunk_hook = hook;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_chunk_hook(&self) -> Result<Option<BoundedHook>, Error> {
+        Ok(self.inner()?.read_chunk_hook.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_edit_worker_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
+        self.inner()?.edit_worker_hook = hook;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn edit_worker_hook(&self) -> Result<Option<BoundedHook>, Error> {
+        Ok(self.inner()?.edit_worker_hook.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_count_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
+        self.inner()?.count_hook = hook;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn count_hook(&self) -> Result<Option<BoundedHook>, Error> {
+        Ok(self.inner()?.count_hook.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_atomic_file_injector(
+        &self,
+        injector: Option<Arc<dyn crate::infra::fs::AtomicWriterInjector + Send + Sync>>,
+    ) -> Result<(), Error> {
+        self.inner()?.atomic_file_injector = injector;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn atomic_file_injector(
+        &self,
+    ) -> Result<Option<Arc<dyn crate::infra::fs::AtomicWriterInjector + Send + Sync>>, Error> {
+        Ok(self.inner()?.atomic_file_injector.clone())
     }
 
     fn tick(inner: &mut PgnRepositoryInner) -> u64 {
@@ -359,16 +467,29 @@ fn scan_file(
 async fn scan_current(
     snapshot: crate::infra::path_authority::PgnSnapshot,
     repository: &PgnRepository,
+    cancellation: &CancellationToken,
 ) -> Result<(CacheKey, Arc<[GameRange]>), Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let key = snapshot_key(&snapshot);
     if let Some(games) = repository.get(&key)? {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         return Ok((key, games));
     }
-    let cancellation = CancellationToken::new();
-    let _cancel_on_drop = CancelOnDrop(cancellation.clone());
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let (key, games) = BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation, move |token| scan_file(snapshot, token))
+        .spawn_cancellable(cancellation.clone(), move |token| {
+            scan_file(snapshot, token)
+        })
         .await?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     repository.retain_if_within_budget(key.clone(), games.clone())?;
     Ok((key, games))
 }
@@ -410,7 +531,19 @@ fn read_ranges(
         }
         file.seek(SeekFrom::Start(range.start))?;
         let mut data = vec![0; len];
-        file.read_exact(&mut data)?;
+        let mut offset = 0;
+        while offset < len {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            let chunk = (len - offset).min(64 * 1024);
+            file.read_exact(&mut data[offset..offset + chunk])?;
+            offset += chunk;
+            #[cfg(test)]
+            if let Some(hook) = current_read_chunk_hook() {
+                hook.notify_and_wait();
+            }
+        }
         games.push(
             String::from_utf8(data)
                 .map_err(|error| malformed(&format!("invalid UTF-8 PGN: {error}")))?,
@@ -507,25 +640,41 @@ fn edit_existing(
 #[specta::specta]
 pub async fn count_pgn_games(
     file: crate::infra::path_authority::FileWorkspaceHandle,
+    ticket: Option<String>,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<i32, Error> {
-    count_pgn_games_core(
-        resolve_pgn(
-            &state,
-            &file,
-            crate::infra::path_authority::PathOperation::ReadPgn,
-        )?,
-        state,
-    )
+    let operation = crate::native_read_operation(ticket, &window, &state, "count_pgn_games")?;
+    let cancellation = operation.token();
+    let repository = state.pgn_repository.clone();
+    let resolved = resolve_pgn(
+        &state,
+        &file,
+        crate::infra::path_authority::PathOperation::ReadPgn,
+    )?;
+    crate::infra::operations::run_native_operation(operation, "count_pgn_games", async move {
+        count_pgn_games_core(resolved, &cancellation, &repository).await
+    })
     .await
 }
 
 pub async fn count_pgn_games_core(
     resolved: crate::infra::path_authority::ResolvedPath,
-    state: tauri::State<'_, AppState>,
+    cancellation: &CancellationToken,
+    repository: &PgnRepository,
 ) -> Result<i32, Error> {
-    let (key, games) = scan_current(resolved.pgn_snapshot()?, &state.pgn_repository).await?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    #[cfg(test)]
+    if let Some(hook) = repository.count_hook()? {
+        hook.notify_and_wait();
+    }
+    let (key, games) = scan_current(resolved.pgn_snapshot()?, repository, cancellation).await?;
     let _ = key;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     i32::try_from(games.len())
         .map_err(|_| Error::ResourceLimit("PGN count exceeds IPC limit".into()))
 }
@@ -536,18 +685,21 @@ pub async fn read_games(
     file: crate::infra::path_authority::FileWorkspaceHandle,
     start: i32,
     end: i32,
+    ticket: Option<String>,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, Error> {
-    read_games_core(
-        resolve_pgn(
-            &state,
-            &file,
-            crate::infra::path_authority::PathOperation::ReadPgn,
-        )?,
-        start,
-        end,
-        state,
-    )
+    let operation = crate::native_read_operation(ticket, &window, &state, "read_games")?;
+    let cancellation = operation.token();
+    let repository = state.pgn_repository.clone();
+    let resolved = resolve_pgn(
+        &state,
+        &file,
+        crate::infra::path_authority::PathOperation::ReadPgn,
+    )?;
+    crate::infra::operations::run_native_operation(operation, "read_games", async move {
+        read_games_core(resolved, start, end, &cancellation, &repository).await
+    })
     .await
 }
 
@@ -555,12 +707,19 @@ pub async fn read_games_core(
     resolved: crate::infra::path_authority::ResolvedPath,
     start: i32,
     end: i32,
-    state: tauri::State<'_, AppState>,
+    cancellation: &CancellationToken,
+    repository: &PgnRepository,
 ) -> Result<Vec<String>, Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let (start, count) = checked_range(start, end)?;
     let snapshot = resolved.pgn_snapshot()?;
     let read_file = snapshot.file.try_clone()?;
-    let (_key, games) = scan_current(snapshot, &state.pgn_repository).await?;
+    let (_key, games) = scan_current(snapshot, repository, cancellation).await?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let end = start
         .checked_add(count)
         .ok_or_else(|| Error::InvalidInput("game range overflows".into()))?;
@@ -572,13 +731,82 @@ pub async fn read_games_core(
             .ok_or_else(|| Error::InvalidInput("game index is out of bounds".into()))?
             .to_vec()
     };
-    let cancellation = CancellationToken::new();
-    let _cancel_on_drop = CancelOnDrop(cancellation.clone());
+    #[cfg(test)]
+    let test_hook = repository.read_chunk_hook()?;
     BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation, move |token| {
+        .spawn_cancellable(cancellation.clone(), move |token| {
+            #[cfg(test)]
+            let _guard = test_hook.map(|hook| {
+                set_read_chunk_hook(Some(hook));
+                struct HookGuard;
+                impl Drop for HookGuard {
+                    fn drop(&mut self) {
+                        set_read_chunk_hook(None);
+                    }
+                }
+                HookGuard
+            });
             read_ranges(read_file, requested, token)
         })
         .await
+}
+
+async fn commit_pgn_mutation(
+    resolved: crate::infra::path_authority::ResolvedPath,
+    key: CacheKey,
+    identity: &crate::infra::path_authority::PgnSnapshotIdentity,
+    target: GameRange,
+    replacement: Option<Vec<u8>>,
+    repository: &PgnRepository,
+    operation_name: &'static str,
+) -> Result<(), Error> {
+    let commit_snapshot = resolved.pgn_snapshot()?;
+    if snapshot_key(&commit_snapshot) != key {
+        return Err(Error::Conflict("PGN changed after scan".into()));
+    }
+    let cancellation = CancellationToken::new();
+    #[cfg(test)]
+    let edit_hook = repository.edit_worker_hook()?;
+    #[cfg(test)]
+    let atomic_injector = repository.atomic_file_injector()?;
+
+    let edit_result = BLOCKING_GATEWAY
+        .spawn_cancellable(cancellation, move |token| {
+            #[cfg(test)]
+            if let Some(ref hook) = edit_hook {
+                hook.notify_and_wait();
+            }
+            #[cfg(test)]
+            let _injector_guard = atomic_injector.map(|inj| {
+                crate::infra::fs::set_test_atomic_file_injector(Some(inj));
+                struct InjectorGuard;
+                impl Drop for InjectorGuard {
+                    fn drop(&mut self) {
+                        crate::infra::fs::set_test_atomic_file_injector(None);
+                    }
+                }
+                InjectorGuard
+            });
+            edit_existing(&resolved, key, commit_snapshot, target, replacement, token)
+        })
+        .await;
+
+    let edit_outcome = match edit_result {
+        Ok(()) => Ok(()),
+        Err(Error::CommittedDurabilityUncertain(stage)) => {
+            Err(Error::CommittedDurabilityUncertain(stage))
+        }
+        Err(err) => return Err(err),
+    };
+
+    if let Err(invalidation_error) = repository.invalidate(identity) {
+        log::warn!("{operation_name} cache invalidation failed: {invalidation_error}");
+        if edit_outcome.is_ok() {
+            return Err(invalidation_error);
+        }
+    }
+
+    edit_outcome
 }
 
 #[tauri::command]
@@ -588,46 +816,46 @@ pub async fn delete_game(
     n: i32,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    delete_game_core(
-        resolve_pgn(
-            &state,
-            &file,
-            crate::infra::path_authority::PathOperation::WritePgn,
-        )?,
-        n,
-        state,
-    )
-    .await
+    let lease = state.operations.accept("delete_game")?;
+    let resolved = resolve_pgn(
+        &state,
+        &file,
+        crate::infra::path_authority::PathOperation::WritePgn,
+    )?;
+    let repository = state.pgn_repository.clone();
+    delete_game_core(lease, resolved, n, repository).await
 }
 
 pub async fn delete_game_core(
+    lease: OperationLease,
     resolved: crate::infra::path_authority::ResolvedPath,
     n: i32,
-    state: tauri::State<'_, AppState>,
+    repository: PgnRepository,
 ) -> Result<(), Error> {
-    let n = checked_index(n)?;
-    let scan_snapshot = resolved.pgn_snapshot()?;
-    let identity = scan_snapshot.identity.clone();
-    let lock = state.pgn_repository.edit_lock(identity.clone())?;
-    let _guard = lock.lock().await;
-    let (key, games) = scan_current(scan_snapshot, &state.pgn_repository).await?;
-    let range = games
-        .get(n)
-        .cloned()
-        .ok_or_else(|| Error::InvalidInput("game index is out of bounds".into()))?;
-    let commit_snapshot = resolved.pgn_snapshot()?;
-    if snapshot_key(&commit_snapshot) != key {
-        return Err(Error::Conflict("PGN changed after scan".into()));
-    }
-    let cancellation = CancellationToken::new();
-    let _cancel_on_drop = CancelOnDrop(cancellation.clone());
-    BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation, move |token| {
-            edit_existing(&resolved, key, commit_snapshot, range, None, token)
-        })
-        .await?;
-    state.pgn_repository.invalidate(&identity)?;
-    Ok(())
+    crate::infra::operations::run_native_operation(lease, "delete_game", async move {
+        let n = checked_index(n)?;
+        let scan_snapshot = resolved.pgn_snapshot()?;
+        let identity = scan_snapshot.identity.clone();
+        let lock = repository.edit_lock(identity.clone())?;
+        let _guard = lock.lock().await;
+        let token = CancellationToken::new();
+        let (key, games) = scan_current(scan_snapshot, &repository, &token).await?;
+        let range = games
+            .get(n)
+            .cloned()
+            .ok_or_else(|| Error::InvalidInput("game index is out of bounds".into()))?;
+        commit_pgn_mutation(
+            resolved,
+            key,
+            &identity,
+            range,
+            None,
+            &repository,
+            "delete_game",
+        )
+        .await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -638,68 +866,60 @@ pub async fn write_game(
     pgn: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
-    write_game_core(
-        resolve_pgn(
-            &state,
-            &file,
-            crate::infra::path_authority::PathOperation::WritePgn,
-        )?,
-        n,
-        pgn,
-        state,
-    )
-    .await
+    let lease = state.operations.accept("write_game")?;
+    let resolved = resolve_pgn(
+        &state,
+        &file,
+        crate::infra::path_authority::PathOperation::WritePgn,
+    )?;
+    let repository = state.pgn_repository.clone();
+    write_game_core(lease, resolved, n, pgn, repository).await
 }
 
 pub async fn write_game_core(
+    lease: OperationLease,
     resolved: crate::infra::path_authority::ResolvedPath,
     n: i32,
     pgn: String,
-    state: tauri::State<'_, AppState>,
+    repository: PgnRepository,
 ) -> Result<(), Error> {
-    let n = checked_index(n)?;
-    if pgn.len() > MAX_PGN_BYTES {
-        return Err(Error::ResourceLimit(
-            "replacement PGN exceeds 10 MiB".into(),
-        ));
-    }
-    // Validate text before creating a replacement; malformed UTF-8 cannot enter through String.
-    let replacement = pgn.into_bytes();
-    let scan_snapshot = resolved.pgn_snapshot()?;
-    let identity = scan_snapshot.identity.clone();
-    let lock = state.pgn_repository.edit_lock(identity.clone())?;
-    let _guard = lock.lock().await;
-    let (key, games) = scan_current(scan_snapshot, &state.pgn_repository).await?;
-    let target = if let Some(range) = games.get(n).cloned() {
-        range
-    } else if n == games.len() {
-        GameRange {
-            start: key.revision.size,
-            end: key.revision.size,
+    crate::infra::operations::run_native_operation(lease, "write_game", async move {
+        let n = checked_index(n)?;
+        if pgn.len() > MAX_PGN_BYTES {
+            return Err(Error::ResourceLimit(
+                "replacement PGN exceeds 10 MiB".into(),
+            ));
         }
-    } else {
-        return Err(Error::InvalidInput("game index is out of bounds".into()));
-    };
-    let commit_snapshot = resolved.pgn_snapshot()?;
-    if snapshot_key(&commit_snapshot) != key {
-        return Err(Error::Conflict("PGN changed after scan".into()));
-    }
-    let cancellation = CancellationToken::new();
-    let _cancel_on_drop = CancelOnDrop(cancellation.clone());
-    BLOCKING_GATEWAY
-        .spawn_cancellable(cancellation, move |token| {
-            edit_existing(
-                &resolved,
-                key,
-                commit_snapshot,
-                target,
-                Some(replacement),
-                token,
-            )
-        })
-        .await?;
-    state.pgn_repository.invalidate(&identity)?;
-    Ok(())
+        // Validate text before creating a replacement; malformed UTF-8 cannot enter through String.
+        let replacement = pgn.into_bytes();
+        let scan_snapshot = resolved.pgn_snapshot()?;
+        let identity = scan_snapshot.identity.clone();
+        let lock = repository.edit_lock(identity.clone())?;
+        let _guard = lock.lock().await;
+        let token = CancellationToken::new();
+        let (key, games) = scan_current(scan_snapshot, &repository, &token).await?;
+        let target = if let Some(range) = games.get(n).cloned() {
+            range
+        } else if n == games.len() {
+            GameRange {
+                start: key.revision.size,
+                end: key.revision.size,
+            }
+        } else {
+            return Err(Error::InvalidInput("game index is out of bounds".into()));
+        };
+        commit_pgn_mutation(
+            resolved,
+            key,
+            &identity,
+            target,
+            Some(replacement),
+            &repository,
+            "write_game",
+        )
+        .await
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -708,6 +928,7 @@ mod tests {
     use std::{
         io::{BufWriter, Cursor},
         path::Path,
+        time::Duration,
     };
     use tauri::Manager;
 
@@ -877,21 +1098,42 @@ mod tests {
         std::fs::write(&path, b"[Event \"A\"]\n\n1. e4\n[Event \"B\"]\n\n1. d4\n")
             .expect("write PGN");
         let app = mock_app();
+        let state = app.state::<AppState>();
 
-        let page = read_games_core(resolved_for(&directory, &path), 0, 1, app.state())
-            .await
-            .expect("read complete two-game page");
+        let page = read_games_core(
+            resolved_for(&directory, &path),
+            0,
+            1,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("read complete two-game page");
         assert_eq!(page.len(), 2);
         assert!(page[0].starts_with("[Event \"A\"]"));
         assert!(page[1].starts_with("[Event \"B\"]"));
 
-        let partial = read_games_core(resolved_for(&directory, &path), 1, 2, app.state()).await;
+        let partial = read_games_core(
+            resolved_for(&directory, &path),
+            1,
+            2,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await;
         assert!(matches!(
             partial,
             Err(Error::InvalidInput(message)) if message == "game index is out of bounds"
         ));
 
-        let missing = read_games_core(resolved_for(&directory, &path), 2, 2, app.state()).await;
+        let missing = read_games_core(
+            resolved_for(&directory, &path),
+            2,
+            2,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await;
         assert!(matches!(
             missing,
             Err(Error::InvalidInput(message)) if message == "game index is out of bounds"
@@ -904,17 +1146,74 @@ mod tests {
         let path = directory.path().join("empty.pgn");
         std::fs::write(&path, b"").expect("write empty PGN");
         let app = mock_app();
+        let state = app.state::<AppState>();
 
-        let opening = read_games_core(resolved_for(&directory, &path), 0, 0, app.state())
-            .await
-            .expect("empty opening range remains valid");
+        let opening = read_games_core(
+            resolved_for(&directory, &path),
+            0,
+            0,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await
+        .expect("empty opening range remains valid");
         assert!(opening.is_empty());
 
-        let missing = read_games_core(resolved_for(&directory, &path), 1, 1, app.state()).await;
+        let missing = read_games_core(
+            resolved_for(&directory, &path),
+            1,
+            1,
+            &CancellationToken::new(),
+            &state.pgn_repository,
+        )
+        .await;
         assert!(matches!(
             missing,
             Err(Error::InvalidInput(message)) if message == "game index is out of bounds"
         ));
+    }
+
+    #[tokio::test]
+    async fn cancel_long_single_game_read() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("long-game.pgn");
+        let mut content = String::from("[Event \"Long Game\"]\n\n");
+        while content.len() < 128 * 1024 {
+            content.push_str(
+                "1. e4 e5 2. Nf3 Nc6 { Comment padding to ensure multiple read chunks } ",
+            );
+        }
+        content.push_str("1-0\n");
+        std::fs::write(&path, content.as_bytes()).expect("write large PGN");
+
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let resolved = resolved_for(&directory, &path);
+        let token = CancellationToken::new();
+
+        let (hook, entered, release) = BoundedHook::new();
+        state
+            .pgn_repository
+            .set_read_chunk_hook(Some(hook))
+            .expect("set read chunk hook");
+
+        let repo = state.pgn_repository.clone();
+        let token_clone = token.clone();
+        let read_task =
+            tokio::spawn(async move { read_games_core(resolved, 0, 0, &token_clone, &repo).await });
+
+        // Prove stopping already-running actual read work: wait until chunk reading is active
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .expect("read chunk entered timeout")
+            .expect("entered must receive");
+
+        // Cancel while running in the chunk reading loop
+        token.cancel();
+        drop(release);
+
+        let result = read_task.await.expect("read task must join");
+        assert!(matches!(result, Err(Error::Cancellation)));
     }
 
     #[test]
@@ -1145,12 +1444,14 @@ mod tests {
         let (_, scanned) = scan_current(
             resolved.pgn_snapshot().expect("first snapshot"),
             &repository,
+            &CancellationToken::new(),
         )
         .await
         .expect("initial scan");
         let (_, hit) = scan_current(
             resolved.pgn_snapshot().expect("second snapshot"),
             &repository,
+            &CancellationToken::new(),
         )
         .await
         .expect("cached scan");
@@ -1165,7 +1466,7 @@ mod tests {
         let base = snapshot_key(&snapshot_for(&directory, &path));
         let range_bytes = std::mem::size_of::<GameRange>();
         let repository = PgnRepository {
-            inner: std::sync::Mutex::new(PgnRepositoryInner::default()),
+            inner: Arc::new(std::sync::Mutex::new(PgnRepositoryInner::default())),
             cache_byte_limit: range_bytes * 4,
         };
         let key_one = key_with_size(&base, 1);
@@ -1222,10 +1523,10 @@ mod tests {
         let read_file = snapshot.file.try_clone().expect("clone PGN descriptor");
         let range_bytes = std::mem::size_of::<GameRange>();
         let repository = PgnRepository {
-            inner: std::sync::Mutex::new(PgnRepositoryInner::default()),
+            inner: Arc::new(std::sync::Mutex::new(PgnRepositoryInner::default())),
             cache_byte_limit: range_bytes,
         };
-        let (key, ranges) = scan_current(snapshot, &repository)
+        let (key, ranges) = scan_current(snapshot, &repository, &CancellationToken::new())
             .await
             .expect("scan remains available to caller");
         assert_eq!(ranges.len(), 2);
@@ -1235,6 +1536,214 @@ mod tests {
         assert!(games[1].starts_with("[Event \"B\"]"));
         assert!(repository.get(&key).expect("read cache").is_none());
         assert_eq!(repository.inner().expect("inspect cache").retained_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn held_accepted_write_caller_dropped_commits_and_invalidates_cache() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("write-held.pgn");
+        std::fs::write(&path, b"[Event \"Initial\"]\n\n1. e4\n").expect("write PGN");
+        let resolved = writable_for(&directory, &path);
+        let snapshot = resolved.pgn_snapshot().expect("snapshot");
+
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let repository = state.pgn_repository.clone();
+        let operations = state.operations.clone();
+
+        // Warm the cache so we can verify post-worker invalidation
+        let (old_key, _) = scan_current(snapshot, &repository, &CancellationToken::new())
+            .await
+            .expect("warm cache");
+        assert!(repository.get(&old_key).unwrap().is_some());
+
+        // Install bounded hook on the worker
+        let (hook, entered, release) = BoundedHook::new();
+        repository
+            .set_edit_worker_hook(Some(hook))
+            .expect("set edit hook");
+
+        let lease = operations.accept("write_game").unwrap();
+        let replacement = "[Event \"Updated\"]\n\n1. d4 d5 1-0\n".to_string();
+        let caller_task = tokio::spawn(write_game_core(
+            lease,
+            resolved,
+            0,
+            replacement,
+            repository.clone(),
+        ));
+
+        // Wait until worker is actively inside the blocking edit task
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .expect("timeout waiting for worker entry")
+            .expect("worker must enter blocking task");
+
+        // Drop the caller future while the accepted worker is running
+        caller_task.abort();
+        let _ = caller_task.await;
+
+        // Release the worker to finish commit and invalidation
+        drop(release);
+
+        let drained = tokio::task::spawn_blocking(move || {
+            operations.wait_for_drain(Duration::from_secs(5)).unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(drained, "operations must drain after held write");
+
+        // Assert exact old cached identity was invalidated and removed
+        assert!(
+            repository.get(&old_key).unwrap().is_none(),
+            "exact old cache identity must be invalidated"
+        );
+
+        let content = std::fs::read_to_string(&path).expect("read committed file");
+        assert!(
+            content.contains("[Event \"Updated\"]"),
+            "file on disk must contain the updated game"
+        );
+    }
+
+    #[tokio::test]
+    async fn held_accepted_delete_caller_dropped_commits_and_invalidates_cache() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("delete-held.pgn");
+        std::fs::write(
+            &path,
+            b"[Event \"First\"]\n\n1. e4\n\n[Event \"Second\"]\n\n1. d4\n",
+        )
+        .expect("write PGN");
+        let resolved = writable_for(&directory, &path);
+        let snapshot = resolved.pgn_snapshot().expect("snapshot");
+
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let repository = state.pgn_repository.clone();
+        let operations = state.operations.clone();
+
+        // Warm the cache
+        let (old_key, _) = scan_current(snapshot, &repository, &CancellationToken::new())
+            .await
+            .expect("warm cache");
+        assert!(repository.get(&old_key).unwrap().is_some());
+
+        // Install bounded hook on the worker
+        let (hook, entered, release) = BoundedHook::new();
+        repository
+            .set_edit_worker_hook(Some(hook))
+            .expect("set edit hook");
+
+        let lease = operations.accept("delete_game").unwrap();
+        let caller_task = tokio::spawn(delete_game_core(lease, resolved, 0, repository.clone()));
+
+        // Wait until worker is actively inside the blocking edit task
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .expect("timeout waiting for worker entry")
+            .expect("worker must enter blocking task");
+
+        // Drop the caller future while the accepted worker is running
+        caller_task.abort();
+        let _ = caller_task.await;
+
+        // Release the worker to finish commit and invalidation
+        drop(release);
+
+        let drained = tokio::task::spawn_blocking(move || {
+            operations.wait_for_drain(Duration::from_secs(5)).unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(drained, "operations must drain after held delete");
+
+        // Assert exact old cached identity was invalidated and removed
+        assert!(
+            repository.get(&old_key).unwrap().is_none(),
+            "exact old cache identity must be invalidated"
+        );
+
+        let content = std::fs::read_to_string(&path).expect("read committed file");
+        assert!(
+            !content.contains("[Event \"First\"]") && content.contains("[Event \"Second\"]"),
+            "file on disk must have first game deleted and second game preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn held_accepted_write_caller_dropped_with_uncertain_durability_invalidates_cache() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("write-uncertain.pgn");
+        std::fs::write(&path, b"[Event \"Initial\"]\n\n1. e4\n").expect("write PGN");
+        let resolved = writable_for(&directory, &path);
+        let snapshot = resolved.pgn_snapshot().expect("snapshot");
+
+        let app = mock_app();
+        let state = app.state::<AppState>();
+        let repository = state.pgn_repository.clone();
+        let operations = state.operations.clone();
+
+        // Warm the cache
+        let (old_key, _) = scan_current(snapshot, &repository, &CancellationToken::new())
+            .await
+            .expect("warm cache");
+        assert!(repository.get(&old_key).unwrap().is_some());
+
+        // Configure atomic file injector for parent sync fault (committed durability uncertain)
+        repository
+            .set_atomic_file_injector(Some(std::sync::Arc::new(
+                crate::infra::fs::ParentSyncFault("injected sync fault"),
+            )))
+            .expect("set atomic injector");
+
+        // Install bounded hook on the worker
+        let (hook, entered, release) = BoundedHook::new();
+        repository
+            .set_edit_worker_hook(Some(hook))
+            .expect("set edit hook");
+
+        let lease = operations.accept("write_game").unwrap();
+        let replacement = "[Event \"Updated\"]\n\n1. d4 d5 1-0\n".to_string();
+        let caller_task = tokio::spawn(write_game_core(
+            lease,
+            resolved,
+            0,
+            replacement,
+            repository.clone(),
+        ));
+
+        // Wait until worker is actively inside the blocking edit task
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .expect("timeout waiting for worker entry")
+            .expect("worker must enter blocking task");
+
+        // Drop the caller future
+        caller_task.abort();
+        let _ = caller_task.await;
+
+        // Release the worker
+        drop(release);
+
+        let drained = tokio::task::spawn_blocking(move || {
+            operations.wait_for_drain(Duration::from_secs(5)).unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(drained, "operations must drain after held write");
+
+        // Assert exact old cached identity was invalidated despite durability uncertainty
+        assert!(
+            repository.get(&old_key).unwrap().is_none(),
+            "cache identity must be invalidated on committed durability uncertainty"
+        );
+
+        let content = std::fs::read_to_string(&path).expect("read committed file");
+        assert!(
+            content.contains("[Event \"Updated\"]"),
+            "committed file must be on disk"
+        );
     }
 
     #[test]

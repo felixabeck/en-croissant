@@ -4,6 +4,9 @@ import { useContext } from "react";
 import useSWRImmutable from "swr/immutable";
 import { useStore } from "zustand";
 import { Chessground } from "@/chessground/Chessground";
+import { useTranslation } from "react-i18next";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { parsePGN } from "@/utils/chess";
 import { type GameHeaders, getNodeAtPath, type TreeState } from "@/utils/treeReducer";
 import GameNotation from "../common/GameNotation";
@@ -22,8 +25,20 @@ function GamePreviewWrapper({
   hideControls?: boolean;
   showOpening?: boolean;
 }) {
-  const { data: parsedGame } = useSWRImmutable([pgn, headers?.fen], async ([pgn, fen]) => {
-    return await parsePGN(pgn, fen);
+  const { t } = useTranslation();
+  const requestKey = [pgn, headers?.fen] as const;
+  const requestOwner = useNativeRequestOwner(requestKey);
+  const { data: parsedGame } = useSWRImmutable(requestKey, async ([p, fen]) => {
+    return await requestOwner!.run(async (signal) => {
+      try {
+        return await parsePGN(p, fen, { signal });
+      } catch (error) {
+        if (!signal.aborted) {
+          notifyUnlessCancelled(t("Common.Error"), error);
+        }
+        throw error;
+      }
+    });
   });
 
   return (

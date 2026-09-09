@@ -35,11 +35,11 @@ export default function GameSelector({
   deleteGame?: (index: number) => void;
 }) {
   const loadPage = useCallback(
-    async (startIndex: number, stopIndex: number) => {
-      const data = await tauri.readGames(path, startIndex, stopIndex);
+    async (startIndex: number, stopIndex: number, options?: { signal?: AbortSignal }) => {
+      const data = await tauri.readGames(path, startIndex, stopIndex, options);
       return await Promise.all(
         data.map(async (game, index) => {
-          const { headers } = await parsePGN(game);
+          const { headers } = await parsePGN(game, undefined, options);
           return [startIndex + index, getGameName(headers)] as const;
         }),
       );

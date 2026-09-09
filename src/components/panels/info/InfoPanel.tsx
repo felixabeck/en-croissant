@@ -2,8 +2,9 @@ import { tauri } from "@/platform/tauri";
 import { Accordion, Box, Divider, Group, ScrollArea, Stack, Text } from "@mantine/core";
 import { useToggle } from "@mantine/hooks";
 import { IconPlus } from "@tabler/icons-react";
+import { errorUnlessCancelled } from "@/platform/errors";
 import { useAtom, useAtomValue } from "jotai";
-import { use, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
@@ -29,6 +30,8 @@ import { getDatabases, sameDatabaseHandle } from "@/utils/db";
 import { databaseHandleKey } from "@/utils/db";
 import { useNavigate } from "@tanstack/react-router";
 import { useActiveDatabaseViewStore } from "@/state/store/database";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 
 function InfoPanel({ addGame }: { addGame?: () => void }) {
   const store = use(TreeStateContext)!;
@@ -162,35 +165,84 @@ function GameSelectorAccordion({
     enabled: !!tabFile,
   });
 
-  if (!tabFile) return null;
-  const filePath = tabFile.handle;
+  const tabId = currentTab?.value;
+  const fileKey = tabFile ? fileWorkspaceKey(tabFile.handle) : null;
+  const pageAbortRef = useRef<AbortController | null>(null);
+  const pageGenerationRef = useRef(0);
+  const currentIdentityRef = useRef({ tabId, fileKey, store });
+  currentIdentityRef.current = { tabId, fileKey, store };
+
+  useEffect(() => {
+    return () => {
+      pageGenerationRef.current += 1;
+      pageAbortRef.current?.abort();
+      pageAbortRef.current = null;
+    };
+  }, [tabId, fileKey, store]);
 
   async function setPage(page: number, forced?: boolean) {
+    if (!tabFile) return;
     if (!forced && dirty) {
       setTempPage(page);
       toggleConfirmChanges();
       return;
     }
 
-    const data = await tauri.readGames(filePath, page, page);
-    const tree = await parsePGN(data[0]);
-    setState(tree);
+    pageAbortRef.current?.abort();
+    const controller = new AbortController();
+    pageAbortRef.current = controller;
+    const generation = ++pageGenerationRef.current;
+    const activeTabId = tabId;
+    const activeFileKey = fileKey;
+    const activeStore = store;
+    const filePath = tabFile.handle;
 
-    setCurrentTab((prev) => {
-      if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
-        return prev;
+    const isObsolete = () =>
+      generation !== pageGenerationRef.current ||
+      controller.signal.aborted ||
+      currentIdentityRef.current.tabId !== activeTabId ||
+      currentIdentityRef.current.fileKey !== activeFileKey ||
+      currentIdentityRef.current.store !== activeStore;
+
+    try {
+      const data = await tauri.readGames(filePath, page, page, { signal: controller.signal });
+      if (isObsolete()) {
+        return;
       }
-      return {
-        ...prev,
-        gameOrigin: {
-          ...prev.gameOrigin,
-          gameNumber: page,
-        },
-      };
-    });
+      const tree = await parsePGN(data[0], undefined, { signal: controller.signal });
+      if (isObsolete()) {
+        return;
+      }
+      setState(tree);
+
+      setCurrentTab((prev) => {
+        if (prev.value !== activeTabId) return prev;
+        if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
+          return prev;
+        }
+        if (fileWorkspaceKey(prev.gameOrigin.file.handle) !== activeFileKey) {
+          return prev;
+        }
+        return {
+          ...prev,
+          gameOrigin: {
+            ...prev.gameOrigin,
+            gameNumber: page,
+          },
+        };
+      });
+    } catch (error) {
+      if (isObsolete()) {
+        return;
+      }
+      if (errorUnlessCancelled(error) === null) return;
+      notifyUnlessCancelled(t("Common.Error"), error);
+    }
   }
 
   async function deleteGame(index: number) {
+    if (!tabFile) return;
+    const filePath = tabFile.handle;
     await tauri.deleteGame(filePath, index);
     setCurrentTab((prev) => {
       if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
@@ -209,6 +261,9 @@ function GameSelectorAccordion({
     });
     setGames(new Map());
   }
+
+  if (!tabFile) return null;
+  const filePath = tabFile.handle;
 
   return (
     <>

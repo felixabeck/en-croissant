@@ -268,9 +268,9 @@ async issueFileWorkspace() : Promise<Result<FileWorkspaceDescriptor, ErrorPayloa
     else return { status: "error", error: e  as any };
 }
 },
-async listFileWorkspace(workspace: FileWorkspaceHandle) : Promise<Result<WorkspaceEntry[], ErrorPayload>> {
+async listFileWorkspace(workspace: FileWorkspaceHandle, ticket: string | null) : Promise<Result<WorkspaceEntry[], ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("list_file_workspace", { workspace }) };
+    return { status: "ok", data: await TAURI_INVOKE("list_file_workspace", { workspace, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -535,25 +535,25 @@ async getPlayer(file: DatabaseHandle, id: number) : Promise<Result<Player | null
     else return { status: "error", error: e  as any };
 }
 },
-async countPgnGames(file: FileWorkspaceHandle) : Promise<Result<number, ErrorPayload>> {
+async countPgnGames(file: FileWorkspaceHandle, ticket: string | null) : Promise<Result<number, ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("count_pgn_games", { file }) };
+    return { status: "ok", data: await TAURI_INVOKE("count_pgn_games", { file, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async readGames(file: FileWorkspaceHandle, start: number, end: number) : Promise<Result<string[], ErrorPayload>> {
+async readGames(file: FileWorkspaceHandle, start: number, end: number, ticket: string | null) : Promise<Result<string[], ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("read_games", { file, start, end }) };
+    return { status: "ok", data: await TAURI_INVOKE("read_games", { file, start, end, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async lexPgn(pgn: string) : Promise<Result<Token[], ErrorPayload>> {
+async lexPgn(pgn: string, ticket: string | null) : Promise<Result<Token[], ErrorPayload>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("lex_pgn", { pgn }) };
+    return { status: "ok", data: await TAURI_INVOKE("lex_pgn", { pgn, ticket }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

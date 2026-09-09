@@ -5,6 +5,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { useAtom, useSetAtom } from "jotai";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { errorUnlessCancelled } from "@/platform/errors";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { activeTabAtom, tabsAtom } from "@/state/atoms";
 import { IconAction } from "@/components/common/IconAction";
 import { openFile } from "@/utils/files";
@@ -38,13 +40,26 @@ function FileCard({
   }, [selected]);
 
   useEffect(() => {
+    const controller = new AbortController();
     async function loadGames() {
-      const data = await tauri.readGames(selected.handle, page, page);
-
-      setSelectedGame(data[0]);
+      try {
+        const data = await tauri.readGames(selected.handle, page, page, {
+          signal: controller.signal,
+        });
+        if (!controller.signal.aborted) {
+          setSelectedGame(data[0]);
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        if (errorUnlessCancelled(error) === null) return;
+        notifyUnlessCancelled(t("Common.Error"), error);
+      }
     }
-    loadGames();
-  }, [selected, page]);
+    void loadGames();
+    return () => {
+      controller.abort();
+    };
+  }, [selected, page, t]);
 
   async function openGame() {
     await openFile(selected, setTabs, setActiveTab, {

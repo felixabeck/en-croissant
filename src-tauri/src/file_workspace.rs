@@ -22,6 +22,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, UNIX_EPOCH},
 };
+use tokio_util::sync::CancellationToken;
 
 const TRASH_DIRECTORY: &str = ".en-croissant-trash";
 const MAX_WORKSPACE_METADATA_BYTES: usize = 1024 * 1024;
@@ -257,13 +258,18 @@ pub(crate) fn map_picker_join(error: tokio::task::JoinError) -> Error {
 fn collect_tree_entries(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
+    token: &CancellationToken,
 ) -> Result<(Vec<WorkspaceEntry>, Vec<FileWorkspaceHandle>), Error> {
     fn visit(
         pgn_path_authority: &Mutex<Option<PathAuthority>>,
         workspace: &FileWorkspaceHandle,
         path: PathBuf,
         missing: &mut Vec<FileWorkspaceHandle>,
+        token: &CancellationToken,
     ) -> Result<Option<WorkspaceEntry>, Error> {
+        if token.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         let meta = fs::symlink_metadata(&path)?;
         if meta.file_type().is_symlink()
             || path.file_name().is_some_and(|name| name == TRASH_DIRECTORY)
@@ -277,16 +283,23 @@ fn collect_tree_entries(
             .into_owned();
         if meta.is_dir() {
             let handle = register_entry(pgn_path_authority, workspace, &path, name.clone())?;
-            let mut children = fs::read_dir(&path)?
-                .map(|entry| entry.map_err(Error::from))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .map(|entry| entry.path())
-                .collect::<Vec<_>>();
+            if token.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            let mut children = Vec::new();
+            for entry in fs::read_dir(&path)? {
+                if token.is_cancelled() {
+                    return Err(Error::Cancellation);
+                }
+                children.push(entry?.path());
+            }
             children.sort();
             let mut output = Vec::new();
             for child in children {
-                if let Some(entry) = visit(pgn_path_authority, workspace, child, missing)? {
+                if token.is_cancelled() {
+                    return Err(Error::Cancellation);
+                }
+                if let Some(entry) = visit(pgn_path_authority, workspace, child, missing, token)? {
                     output.push(entry);
                 }
             }
@@ -321,18 +334,25 @@ fn collect_tree_entries(
         }))
     }
 
+    if token.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     let root = workspace_root(pgn_path_authority, workspace)?;
-    let mut paths = fs::read_dir(root)?
-        .map(|entry| entry.map_err(Error::from))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .map(|entry| entry.path())
-        .collect::<Vec<_>>();
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(root)? {
+        if token.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        paths.push(entry?.path());
+    }
     paths.sort();
     let mut entries = Vec::new();
     let mut missing = Vec::new();
     for path in paths {
-        if let Some(entry) = visit(pgn_path_authority, workspace, path, &mut missing)? {
+        if token.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        if let Some(entry) = visit(pgn_path_authority, workspace, path, &mut missing, token)? {
             entries.push(entry);
         }
     }
@@ -411,27 +431,57 @@ fn issue_file_workspace_blocking(
     })
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn list_file_workspace(
-    workspace: FileWorkspaceHandle,
-    state: tauri::State<'_, AppState>,
+pub(crate) async fn list_file_workspace_core(
+    workspace: &FileWorkspaceHandle,
+    authority_arc: &Arc<Mutex<Option<PathAuthority>>>,
+    repository: &crate::pgn::PgnRepository,
+    cancellation: &CancellationToken,
 ) -> Result<Vec<WorkspaceEntry>, Error> {
-    let pgn_path_authority = Arc::clone(&state.pgn_path_authority);
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    let pgn_path_authority = Arc::clone(authority_arc);
+    let workspace_for_tree = workspace.clone();
     let (mut entries, missing) = BLOCKING_GATEWAY
-        .spawn(move || collect_tree_entries(&pgn_path_authority, &workspace))
+        .spawn_cancellable(cancellation.clone(), move |token| {
+            collect_tree_entries(&pgn_path_authority, &workspace_for_tree, token)
+        })
         .await?;
     for handle in missing {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
         let resolved = {
-            authority(&state.pgn_path_authority)?
+            authority(authority_arc)?
                 .as_mut()
                 .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
                 .resolve(handle.path_ref(), PathOperation::ReadPgn, &[])?
         };
-        let game_count = pgn::count_pgn_games_core(resolved, state.clone()).await?;
+        let game_count = pgn::count_pgn_games_core(resolved, cancellation, repository).await?;
         set_workspace_game_count(&mut entries, &handle, game_count);
     }
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
     Ok(entries)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn list_file_workspace(
+    workspace: FileWorkspaceHandle,
+    ticket: Option<String>,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<WorkspaceEntry>, Error> {
+    let operation = crate::native_read_operation(ticket, &window, &state, "list_file_workspace")?;
+    let cancellation = operation.token();
+    let authority_arc = Arc::clone(&state.pgn_path_authority);
+    let repository = state.pgn_repository.clone();
+    crate::infra::operations::run_native_operation(operation, "list_file_workspace", async move {
+        list_file_workspace_core(&workspace, &authority_arc, &repository, &cancellation).await
+    })
+    .await
 }
 
 #[cfg(unix)]
@@ -529,7 +579,10 @@ pub async fn create_workspace_file(
             .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
             .resolve(entry.handle.path_ref(), PathOperation::ReadPgn, &[])?
     };
-    entry.game_count = Some(pgn::count_pgn_games_core(resolved, state).await?);
+    entry.game_count = Some(
+        pgn::count_pgn_games_core(resolved, &CancellationToken::new(), &state.pgn_repository)
+            .await?,
+    );
     Ok(entry)
 }
 
@@ -2063,5 +2116,87 @@ mod tests {
         set_test_atomic_file_injector(None);
         assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
         assert!(root.path().join("created").is_dir());
+    }
+
+    #[test]
+    fn collect_tree_entries_stops_traversal_when_cancelled() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        fs::write(root.join("game1.pgn"), b"[Event \"Test 1\"]\n\n1. e4 e5 *").expect("write pgn");
+        fs::write(root.join("game2.pgn"), b"[Event \"Test 2\"]\n\n1. d4 d5 *").expect("write pgn");
+        let sub = root.join("subdir");
+        fs::create_dir(&sub).expect("create subdir");
+        fs::write(sub.join("game3.pgn"), b"[Event \"Test 3\"]\n\n1. c4 c5 *").expect("write pgn");
+
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = collect_tree_entries(&state.pgn_path_authority, &workspace, &token);
+        assert!(matches!(result, Err(Error::Cancellation)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn multi_file_count_cancellation_stops_subsequent_counts() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        fs::write(root.join("a.pgn"), b"[Event \"A\"]\n\n1. e4 e5 *").expect("write a");
+        fs::write(root.join("b.pgn"), b"[Event \"B\"]\n\n1. d4 d5 *").expect("write b");
+        fs::write(root.join("c.pgn"), b"[Event \"C\"]\n\n1. c4 c5 *").expect("write c");
+
+        let token = CancellationToken::new();
+        let (hook, entered, release) = pgn::BoundedHook::new();
+        state
+            .pgn_repository
+            .set_count_hook(Some(hook))
+            .expect("set count hook");
+
+        let listing_task = tokio::spawn({
+            let workspace = workspace.clone();
+            let authority = Arc::clone(&state.pgn_path_authority);
+            let repository = state.pgn_repository.clone();
+            let token = token.clone();
+            async move { list_file_workspace_core(&workspace, &authority, &repository, &token).await }
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered)
+            .await
+            .expect("timeout waiting for count entry")
+            .expect("entered count");
+
+        token.cancel();
+        let _ = release.send(());
+
+        let result = listing_task.await.expect("join");
+        assert!(matches!(result, Err(Error::Cancellation)));
+    }
+
+    #[tokio::test]
+    async fn parent_token_survives_child_reads() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("root");
+        fs::write(root.join("a.pgn"), b"[Event \"A\"]\n\n1. e4 e5 *").expect("write a");
+
+        let parent = CancellationToken::new();
+        let child_token = parent.child_token();
+
+        child_token.cancel();
+        assert!(child_token.is_cancelled());
+        assert!(!parent.is_cancelled());
+
+        let (entries, missing) =
+            collect_tree_entries(&state.pgn_path_authority, &workspace, &parent).expect("collect");
+        assert_eq!(missing.len(), 1);
+        let _ = entries;
+
+        let resolved = authority(&state.pgn_path_authority)
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .resolve(missing[0].path_ref(), PathOperation::ReadPgn, &[])
+            .unwrap();
+        let count = pgn::count_pgn_games_core(resolved, &parent, &state.pgn_repository)
+            .await
+            .expect("count");
+        assert_eq!(count, 1);
+        assert!(!parent.is_cancelled());
     }
 }

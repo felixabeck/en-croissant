@@ -109,7 +109,11 @@ type NativeReadCommandName =
     | "listPuzzleDatabases"
     | "getPuzzleDbInfo"
     | "getPuzzleThemes"
-    | "getThemesForPuzzle";
+    | "getThemesForPuzzle"
+    | "countPgnGames"
+    | "readGames"
+    | "lexPgn"
+    | "listFileWorkspace";
 type NativeReadFacade<T> = T extends (
     ...args: [...infer Args, string | null]
 ) => Promise<infer Result>
@@ -137,6 +141,10 @@ const NATIVE_READ_ARITY: Readonly<Record<NativeReadCommandName, number>> = {
     getPuzzleDbInfo: 1,
     getPuzzleThemes: 1,
     getThemesForPuzzle: 2,
+    countPgnGames: 1,
+    readGames: 3,
+    lexPgn: 1,
+    listFileWorkspace: 1,
 };
 
 const EXPECTED_SESSION_COMMANDS = new Set<PropertyKey>([
@@ -198,7 +206,7 @@ function isCommandResult(value: unknown): value is CommandResult<unknown> {
     );
 }
 
-function cancellationError(): TauriCommandError {
+export function cancellationError(): TauriCommandError {
     return new TauriCommandError({
         tag: "backend-error",
         category: "cancellation",

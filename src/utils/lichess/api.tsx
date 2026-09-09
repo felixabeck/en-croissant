@@ -19,6 +19,7 @@ import {
   type LichessGamesOptions,
   type MasterGamesOptions,
 } from "@/utils/lichess/explorer";
+import { collectSequential } from "@/utils/collectSequential";
 import { countMainPly } from "@/utils/treeReducer";
 
 export const MIN_DATE = new Date(1952, 0, 1);
@@ -187,11 +188,18 @@ type PositionGames = {
   month: string;
 }[];
 
-export async function convertToNormalized(data: PositionGames): Promise<NormalizedGame[]> {
-  const results = await Promise.allSettled(
-    data.map(async (game, i) => {
+export async function convertToNormalized(
+  data: PositionGames,
+  options?: { signal?: AbortSignal },
+): Promise<NormalizedGame[]> {
+  return await collectSequential(
+    data,
+    async (game, i) => {
       const pgn = await getLichessGame(game.id);
-      const { headers, root } = await parsePGN(pgn);
+      if (options?.signal?.aborted) {
+        throw new DOMException("Cancellation", "AbortError");
+      }
+      const { headers, root } = await parsePGN(pgn, undefined, options);
       const normalized: NormalizedGame = {
         ...headers,
         id: i,
@@ -201,15 +209,14 @@ export async function convertToNormalized(data: PositionGames): Promise<Normaliz
         site_id: 0,
         moves: pgn,
         ply_count: countMainPly(root),
-        // ply_count: root,
       };
       return normalized;
-    }),
+    },
+    { signal: options?.signal, operation: "Lichess game normalization" },
   );
-  return results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
 }
 
-type PositionData = {
+export type PositionData = {
   white: number;
   black: number;
   draws: number;

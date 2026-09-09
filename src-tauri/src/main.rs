@@ -2814,7 +2814,10 @@ mod blocking_offload_scans {
                 "pub async fn issue_file_workspace(",
                 "issue_file_workspace_blocking",
             ),
-            ("pub async fn list_file_workspace(", "collect_tree_entries"),
+            (
+                "pub(crate) async fn list_file_workspace_core(",
+                "collect_tree_entries",
+            ),
             (
                 "pub async fn create_workspace_file(",
                 "create_workspace_file_blocking",
@@ -2871,6 +2874,24 @@ mod blocking_offload_scans {
         assert!(
             delete_command.contains("permanently_delete_entry"),
             "permanently_delete_workspace_entry must forward to permanently_delete_entry: {delete_command}"
+        );
+        let list_command = body_at_indent(file_workspace, "pub async fn list_file_workspace(");
+        assert_eq!(
+            list_command.matches("list_file_workspace_core(").count(),
+            1,
+            "list_file_workspace must forward exactly once to list_file_workspace_core: {list_command}"
+        );
+        assert!(
+            !list_command.contains("BLOCKING_GATEWAY"),
+            "list_file_workspace must not acquire BLOCKING_GATEWAY directly: {list_command}"
+        );
+        assert!(
+            !list_command.contains("collect_tree_entries"),
+            "list_file_workspace must delegate collect_tree_entries offloading to list_file_workspace_core: {list_command}"
+        );
+        assert!(
+            !list_command.contains("count_pgn_games_core"),
+            "list_file_workspace must delegate count_pgn_games_core to list_file_workspace_core: {list_command}"
         );
     }
 
@@ -3346,7 +3367,10 @@ mod blocking_offload_scans {
     fn s9_nested_awaits_stay_on_the_async_side() {
         let source = include_str!("file_workspace.rs");
         for (signature, token) in [
-            ("async fn list_file_workspace(", "count_pgn_games_core"),
+            (
+                "pub(crate) async fn list_file_workspace_core(",
+                "count_pgn_games_core",
+            ),
             ("async fn create_workspace_file(", "count_pgn_games_core"),
             ("async fn permanently_delete_entry(", "retire_executables"),
         ] {

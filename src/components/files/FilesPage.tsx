@@ -6,6 +6,7 @@ import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr";
+import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
 import { fileWorkspaceAtom, fileWorkspaceDisplayNameAtom } from "@/state/atoms";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import DirectoryTree from "./DirectoryTree";
@@ -41,9 +42,12 @@ export default function FilesPage() {
   useEffect(() => {
     if (action) actionInputRef.current?.focus();
   }, [action]);
-  const { data, error, mutate } = useSWR(
-    workspace ? ["file-workspace", workspace] : null,
-    async () => (await tauri.listFileWorkspace(workspace!)).map(workspaceEntryToEntry),
+  const workspaceKey = workspace ? ["file-workspace", workspace] : null;
+  const workspaceOwner = useNativeRequestOwner(workspaceKey);
+  const { data, error, mutate } = useSWR(workspaceKey, async () =>
+    workspaceOwner!.run(async (signal) =>
+      (await tauri.listFileWorkspace(workspace!, { signal })).map(workspaceEntryToEntry),
+    ),
   );
   useEffect(() => {
     setSelected(null);

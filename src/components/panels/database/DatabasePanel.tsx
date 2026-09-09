@@ -38,7 +38,12 @@ import {
   searchPosition,
 } from "@/utils/db";
 import { formatNumber } from "@/utils/format";
-import { convertToNormalized, getLichessGames, getMasterGames } from "@/utils/lichess/api";
+import {
+  convertToNormalized,
+  getLichessGames,
+  getMasterGames,
+  type PositionData,
+} from "@/utils/lichess/api";
 import type { LichessGamesOptions, MasterGamesOptions } from "@/utils/lichess/explorer";
 import DatabaseLoader from "./DatabaseLoader";
 import GamesTable from "./GamesTable";
@@ -48,7 +53,7 @@ import LichessOptionsPanel from "./options/LichessOptionsPanel";
 import LocalOptionsPanel from "./options/LocalOptionsPanel";
 import MasterOptionsPanel from "./options/MastersOptionsPanel";
 
-type DBType =
+export type DBType =
   | { type: "local"; options: LocalOptions }
   | {
       type: "lch_all";
@@ -78,32 +83,36 @@ function sortOpenings(openings: Opening[]) {
   return openings.sort((a, b) => b.black + b.draw + b.white - (a.black + a.draw + a.white));
 }
 
-async function fetchOpening(db: DBType, tab: string, signal?: AbortSignal) {
+export async function fetchOnlineOpening<T>(
+  fetcher: (fen: string, options: T, handle: string) => Promise<PositionData>,
+  fen: string,
+  options: T,
+  handle: string,
+  signal?: AbortSignal,
+) {
+  const data = await fetcher(fen, options, handle);
+  if (signal?.aborted) {
+    throw new DOMException("Cancellation", "AbortError");
+  }
+  return {
+    openings: data.moves.map((move) => ({
+      move: move.san,
+      white: move.white,
+      black: move.black,
+      draw: move.draws,
+    })),
+    games: await convertToNormalized(data.topGames || data.recentGames || [], { signal }),
+  };
+}
+
+export async function fetchOpening(db: DBType, tab: string, signal?: AbortSignal) {
   return match(db)
-    .with({ type: "lch_all" }, async ({ fen, options, handle }) => {
-      const data = await getLichessGames(fen, options, handle);
-      return {
-        openings: data.moves.map((move) => ({
-          move: move.san,
-          white: move.white,
-          black: move.black,
-          draw: move.draws,
-        })),
-        games: await convertToNormalized(data.topGames || data.recentGames || []),
-      };
-    })
-    .with({ type: "lch_master" }, async ({ fen, options, handle }) => {
-      const data = await getMasterGames(fen, options, handle);
-      return {
-        openings: data.moves.map((move) => ({
-          move: move.san,
-          white: move.white,
-          black: move.black,
-          draw: move.draws,
-        })),
-        games: await convertToNormalized(data.topGames || data.recentGames || []),
-      };
-    })
+    .with({ type: "lch_all" }, async ({ fen, options, handle }) =>
+      fetchOnlineOpening(getLichessGames, fen, options, handle, signal),
+    )
+    .with({ type: "lch_master" }, async ({ fen, options, handle }) =>
+      fetchOnlineOpening(getMasterGames, fen, options, handle, signal),
+    )
     .with({ type: "local" }, async ({ options }) => {
       if (!options.path) throw Error("Missing reference database");
       const positionData = await searchPosition(options, tab, signal);
