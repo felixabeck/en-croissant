@@ -782,14 +782,14 @@ impl GameController {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum GameEventKind {
+enum GameEventKind {
     Move,
     Clock,
     GameOver,
 }
 
 impl GameEventKind {
-    pub(crate) fn as_str(&self) -> &'static str {
+    fn as_str(&self) -> &'static str {
         match self {
             Self::Move => "move",
             Self::Clock => "clock",
@@ -809,10 +809,10 @@ fn safe_tauri_error_label(error: &tauri::Error) -> &'static str {
 }
 
 #[derive(Default, Clone, Copy, Debug)]
-pub(crate) struct EmissionDiagnosticLatch {
-    pub(crate) move_failed: bool,
-    pub(crate) clock_failed: bool,
-    pub(crate) terminal_failed: bool,
+struct EmissionDiagnosticLatch {
+    move_failed: bool,
+    clock_failed: bool,
+    terminal_failed: bool,
 }
 
 fn attempt_game_event_emission<F>(
@@ -4478,109 +4478,143 @@ mod tests {
 
     #[test]
     fn emission_diagnostics_and_safe_label_mapping_are_session_isolated() {
+        let capture = crate::error::LogCaptureScope::start();
+        const RAW_MARKER: &str = "raw-sensitive-error-marker-must-never-leak-to-logs";
+
         let mut ctrl1 = GameController::new("session-1".into(), 1, human_config()).unwrap();
 
-        // Safe label mapping:
-        assert_eq!(
-            safe_tauri_error_label(&tauri::Error::Json(
-                serde_json::from_str::<i32>("bad").unwrap_err()
-            )),
-            "serialization"
-        );
-        assert_eq!(
-            safe_tauri_error_label(&tauri::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "broken"
-            ))),
-            "io"
-        );
-        assert_eq!(
-            safe_tauri_error_label(&tauri::Error::FailedToReceiveMessage),
-            "message-receive"
-        );
-        assert_eq!(
-            safe_tauri_error_label(&tauri::Error::NoParent),
-            "other-tauri"
-        );
-
-        // Session 1: Move failure sets latch and returns safe label.
+        // 1. Session 1: First Move failure emits safe diagnostic log with all fields and returns safe label.
         let res1 = ctrl1.attempt_event_emission(GameEventKind::Move, 1, || {
             Err(tauri::Error::Json(
-                serde_json::from_str::<i32>("bad").unwrap_err(),
+                serde_json::from_str::<i32>(RAW_MARKER).unwrap_err(),
             ))
         });
         assert_eq!(res1, Some("serialization"));
-        assert!(ctrl1.emission_diagnostics.move_failed);
+        let records = capture.records();
+        assert_eq!(
+            records.len(),
+            1,
+            "first move failure must emit exactly one log record"
+        );
+        assert_eq!(records[0].level, log::Level::Warn);
+        assert!(records[0].message.contains("kind=move"));
+        assert!(records[0].message.contains("game_id=session-1"));
+        assert!(records[0].message.contains("session=1"));
+        assert!(records[0].message.contains("revision=1"));
+        assert!(records[0].message.contains("cause=serialization"));
 
-        // Second Move failure in same session is suppressed.
+        // 2. Second Move failure in same session is suppressed (at most one failure per kind/session).
         let res2 = ctrl1.attempt_event_emission(GameEventKind::Move, 2, || {
-            Err(tauri::Error::Io(std::io::Error::other("err")))
+            Err(tauri::Error::Io(std::io::Error::other(RAW_MARKER)))
         });
         assert_eq!(res2, None);
+        assert_eq!(
+            capture.records().len(),
+            1,
+            "subsequent move failure in same session must be suppressed"
+        );
 
-        // Subsequent successful Move emission still happens even after latch is set.
+        // 3. Subsequent successful Move emission still happens even after latch is set.
         let mut move_emitted = false;
         let res_ok = ctrl1.attempt_event_emission(GameEventKind::Move, 3, || {
             move_emitted = true;
             Ok(())
         });
-        assert!(move_emitted);
+        assert!(
+            move_emitted,
+            "move emission must still be attempted after latching"
+        );
         assert_eq!(res_ok, None);
 
-        // Session 1: Clock failure sets latch and returns safe label.
+        // 4. Session 1: First Clock failure emits safe diagnostic log and returns safe label.
         let res_clock1 = ctrl1.attempt_event_emission(GameEventKind::Clock, 1, || {
             Err(tauri::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
-                "broken",
+                RAW_MARKER,
             )))
         });
         assert_eq!(res_clock1, Some("io"));
-        assert!(ctrl1.emission_diagnostics.clock_failed);
+        let records = capture.records();
+        assert_eq!(
+            records.len(),
+            2,
+            "first clock failure must emit exactly one log record"
+        );
+        assert_eq!(records[1].level, log::Level::Warn);
+        assert!(records[1].message.contains("kind=clock"));
+        assert!(records[1].message.contains("game_id=session-1"));
+        assert!(records[1].message.contains("session=1"));
+        assert!(records[1].message.contains("revision=1"));
+        assert!(records[1].message.contains("cause=io"));
 
-        // Second Clock failure suppressed.
+        // 5. Second Clock failure suppressed.
         let res_clock2 =
             ctrl1.attempt_event_emission(GameEventKind::Clock, 2, || Err(tauri::Error::NoParent));
         assert_eq!(res_clock2, None);
+        assert_eq!(
+            capture.records().len(),
+            2,
+            "subsequent clock failure in same session must be suppressed"
+        );
 
-        // Subsequent successful Clock emission still happens.
+        // 6. Subsequent successful Clock emission still happens.
         let mut clock_emitted = false;
         let res_clock_ok = ctrl1.attempt_event_emission(GameEventKind::Clock, 3, || {
             clock_emitted = true;
             Ok(())
         });
-        assert!(clock_emitted);
+        assert!(
+            clock_emitted,
+            "clock emission must still be attempted after latching"
+        );
         assert_eq!(res_clock_ok, None);
 
-        // Session 1: Terminal failure sets latch and returns safe label.
+        // 7. Session 1: First Terminal failure emits safe diagnostic log and returns safe label.
         let res_term1 = ctrl1.attempt_event_emission(GameEventKind::GameOver, 1, || {
             Err(tauri::Error::FailedToReceiveMessage)
         });
         assert_eq!(res_term1, Some("message-receive"));
-        assert!(ctrl1.emission_diagnostics.terminal_failed);
+        let records = capture.records();
+        assert_eq!(
+            records.len(),
+            3,
+            "first terminal failure must emit exactly one log record"
+        );
+        assert_eq!(records[2].level, log::Level::Warn);
+        assert!(records[2].message.contains("kind=game-over"));
+        assert!(records[2].message.contains("game_id=session-1"));
+        assert!(records[2].message.contains("session=1"));
+        assert!(records[2].message.contains("revision=1"));
+        assert!(records[2].message.contains("cause=message-receive"));
 
-        // Second Terminal failure suppressed.
+        // 8. Second Terminal failure suppressed.
         let res_term2 = ctrl1
             .attempt_event_emission(GameEventKind::GameOver, 2, || Err(tauri::Error::NoParent));
         assert_eq!(res_term2, None);
+        assert_eq!(
+            capture.records().len(),
+            3,
+            "subsequent terminal failure in same session must be suppressed"
+        );
 
-        // Subsequent successful GameOver emission still happens.
+        // 9. Subsequent successful GameOver emission still happens.
         let mut term_emitted = false;
         let res_term_ok = ctrl1.attempt_event_emission(GameEventKind::GameOver, 3, || {
             term_emitted = true;
             Ok(())
         });
-        assert!(term_emitted);
+        assert!(
+            term_emitted,
+            "terminal emission must still be attempted after latching"
+        );
         assert_eq!(res_term_ok, None);
 
-        // Session 2 isolation: A fresh session must report all 3 kinds of first failures again.
+        // 10. Session 2 isolation: A fresh session reports anew for each kind.
         let mut ctrl2 = GameController::new("session-2".into(), 2, human_config()).unwrap();
-        assert!(!ctrl2.emission_diagnostics.move_failed);
-        assert!(!ctrl2.emission_diagnostics.clock_failed);
-        assert!(!ctrl2.emission_diagnostics.terminal_failed);
 
         let s2_move = ctrl2.attempt_event_emission(GameEventKind::Move, 1, || {
             Err(tauri::Error::Json(
-                serde_json::from_str::<i32>("bad").unwrap_err(),
+                serde_json::from_str::<i32>(RAW_MARKER).unwrap_err(),
             ))
         });
         assert_eq!(s2_move, Some("serialization"));
@@ -4588,7 +4622,7 @@ mod tests {
         let s2_clock = ctrl2.attempt_event_emission(GameEventKind::Clock, 1, || {
             Err(tauri::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
-                "broken",
+                RAW_MARKER,
             )))
         });
         assert_eq!(s2_clock, Some("io"));
@@ -4597,6 +4631,42 @@ mod tests {
             Err(tauri::Error::FailedToReceiveMessage)
         });
         assert_eq!(s2_term, Some("message-receive"));
+
+        let all_records = capture.records();
+        assert_eq!(
+            all_records.len(),
+            6,
+            "session 2 must report all three failures anew"
+        );
+        assert_eq!(all_records[3].level, log::Level::Warn);
+        assert!(all_records[3].message.contains("kind=move"));
+        assert!(all_records[3].message.contains("game_id=session-2"));
+        assert!(all_records[3].message.contains("session=2"));
+        assert!(all_records[3].message.contains("revision=1"));
+        assert!(all_records[3].message.contains("cause=serialization"));
+
+        assert_eq!(all_records[4].level, log::Level::Warn);
+        assert!(all_records[4].message.contains("kind=clock"));
+        assert!(all_records[4].message.contains("game_id=session-2"));
+        assert!(all_records[4].message.contains("session=2"));
+        assert!(all_records[4].message.contains("revision=1"));
+        assert!(all_records[4].message.contains("cause=io"));
+
+        assert_eq!(all_records[5].level, log::Level::Warn);
+        assert!(all_records[5].message.contains("kind=game-over"));
+        assert!(all_records[5].message.contains("game_id=session-2"));
+        assert!(all_records[5].message.contains("session=2"));
+        assert!(all_records[5].message.contains("revision=1"));
+        assert!(all_records[5].message.contains("cause=message-receive"));
+
+        // 11. Raw error marker must be absent across all captured records.
+        assert!(
+            capture
+                .messages()
+                .iter()
+                .all(|msg| !msg.contains(RAW_MARKER)),
+            "raw error marker must not appear in any diagnostic warning output"
+        );
     }
 
     #[tokio::test]
@@ -4626,7 +4696,6 @@ mod tests {
             "terminal attempt must be claimed even if emission fails"
         );
         assert!(ctrl.terminal_attempt_claimed);
-        assert!(ctrl.emission_diagnostics.terminal_failed);
 
         // Second call must return false (once-only claim)
         let second_claim = attempt_terminal_event_emission_with(&mut ctrl, |_| Ok(()));
@@ -4661,107 +4730,437 @@ mod tests {
     }
 
     #[test]
-    fn every_production_game_publisher_routes_through_emission_helper() {
-        let source = include_str!("game.rs");
-        let prod_source = source
-            .split_once("mod tests {")
-            .map(|(prod, _)| prod)
-            .unwrap_or(source);
+    fn move_and_clock_emission_failures_preserve_authoritative_state() {
+        let mut config = human_config();
+        config.white_time_control = Some(TimeControl {
+            initial_time: 60_000,
+            increment: 1_000,
+        });
+        config.black_time_control = Some(TimeControl {
+            initial_time: 60_000,
+            increment: 1_000,
+        });
+        let mut ctrl = GameController::new("session-auth".into(), 1, config).unwrap();
+        assert_eq!(ctrl.moves.len(), 0);
+        assert_eq!(ctrl.position.turn(), Color::White);
+        let initial_fen =
+            Fen::from_position(ctrl.position.clone(), EnPassantMode::Legal).to_string();
+        assert_eq!(
+            initial_fen,
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        );
+        assert_eq!(ctrl.clock.as_ref().unwrap().white_time, Some(60_000));
+        assert_eq!(ctrl.clock.as_ref().unwrap().black_time, Some(60_000));
 
-        // The production source must never discard emits via unwrap_or(())
+        // 1. Move emission failure preserves applied move in authoritative state
+        let game_move = ctrl.apply_move("e2e4").expect("legal move");
+        assert_eq!(ctrl.moves.len(), 1);
+        assert_eq!(ctrl.moves[0].uci, "e2e4");
+        assert_eq!(ctrl.position.turn(), Color::Black);
+
+        let fen_after_move =
+            Fen::from_position(ctrl.position.clone(), EnPassantMode::Legal).to_string();
+        assert_eq!(
+            fen_after_move,
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        );
+        assert_eq!(game_move.fen_after, fen_after_move);
+
+        let stored_white_pre_move_emit = ctrl.clock.as_ref().unwrap().white_time;
+        let stored_black_pre_move_emit = ctrl.clock.as_ref().unwrap().black_time;
+
+        let move_revision = ctrl.move_event_revision();
+        let res = ctrl.attempt_event_emission(GameEventKind::Move, move_revision, || {
+            Err(tauri::Error::Json(
+                serde_json::from_str::<i32>("bad").unwrap_err(),
+            ))
+        });
+        assert_eq!(res, Some("serialization"));
+        assert_eq!(ctrl.moves.len(), 1);
+        assert_eq!(ctrl.moves[0].uci, "e2e4");
+        assert_eq!(ctrl.position.turn(), Color::Black);
+        assert_eq!(ctrl.status, GameStatus::Playing);
+
+        // Assert FEN consistency across failed move emission
+        let fen_after_failed_emit =
+            Fen::from_position(ctrl.position.clone(), EnPassantMode::Legal).to_string();
+        assert_eq!(fen_after_failed_emit, fen_after_move);
+        let state = ctrl.get_state();
+        assert_eq!(state.current_fen, fen_after_move);
+        assert_eq!(state.moves.len(), 1);
+        assert_eq!(state.moves[0].uci, "e2e4");
+        assert_eq!(state.turn, "black");
+
+        // Assert stored clock times remain unchanged across failed move emission
+        assert_eq!(
+            ctrl.clock.as_ref().unwrap().white_time,
+            stored_white_pre_move_emit
+        );
+        assert_eq!(
+            ctrl.clock.as_ref().unwrap().black_time,
+            stored_black_pre_move_emit
+        );
+
+        // 2. Clock emission failure preserves clock time and revision in authoritative state
+        // Control last_tick to a known deterministic offset in the past
+        ctrl.clock.as_mut().unwrap().last_tick = Instant::now() - Duration::from_secs(5);
+        let stored_white_pre_clock = ctrl.clock.as_ref().unwrap().white_time;
+        let stored_black_pre_clock = ctrl.clock.as_ref().unwrap().black_time;
+
+        let before_revision = ctrl.revision;
+        ctrl.bump_revision();
+        let clock_revision = ctrl.revision;
+        assert_eq!(clock_revision, before_revision + 1);
+
+        let res_clock = ctrl.attempt_event_emission(GameEventKind::Clock, clock_revision, || {
+            Err(tauri::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "broken",
+            )))
+        });
+        assert_eq!(res_clock, Some("io"));
+        assert_eq!(ctrl.revision, clock_revision);
+        assert_eq!(ctrl.status, GameStatus::Playing);
+
+        // Assert stored times remain unchanged across failed clock emission
+        assert_eq!(
+            ctrl.clock.as_ref().unwrap().white_time,
+            stored_white_pre_clock
+        );
+        assert_eq!(
+            ctrl.clock.as_ref().unwrap().black_time,
+            stored_black_pre_clock
+        );
+
+        // Assert authoritative returned times have controlled last_tick and deterministic bounds
+        let (auth_white, auth_black) = ctrl.get_current_times();
+        assert_eq!(auth_white, stored_white_pre_clock);
+        let black_stored = stored_black_pre_clock.unwrap();
+        let black_current = auth_black.unwrap();
         assert!(
-            !prod_source.contains(".emit(app).unwrap_or(())"),
+            black_current <= black_stored.saturating_sub(5_000)
+                && black_current >= black_stored.saturating_sub(6_000),
+            "black authoritative returned time ({black_current}) must reflect controlled elapsed time within deterministic bounds [{}, {}]",
+            black_stored.saturating_sub(6_000),
+            black_stored.saturating_sub(5_000)
+        );
+
+        // Assert FEN consistency across failed clock emission
+        let fen_after_clock_emit =
+            Fen::from_position(ctrl.position.clone(), EnPassantMode::Legal).to_string();
+        assert_eq!(fen_after_clock_emit, fen_after_move);
+        let state_after_clock = ctrl.get_state();
+        assert_eq!(state_after_clock.current_fen, fen_after_move);
+    }
+
+    struct RoutingAnchor {
+        name: &'static str,
+        start_marker: &'static str,
+        end_marker: &'static str,
+        expected_patterns: &'static [RoutingPattern],
+    }
+
+    struct RoutingPattern {
+        text: &'static str,
+        count: usize,
+    }
+
+    const ROUTING_ANCHORS: &[RoutingAnchor] = &[
+        RoutingAnchor {
+            name: "terminal_helper_common_attempt",
+            start_marker: "fn attempt_terminal_event_emission_with<F>(",
+            end_marker: "fn attempt_terminal_event_emission(",
+            expected_patterns: &[RoutingPattern {
+                text: "controller.attempt_event_emission(GameEventKind::GameOver, revision, || emitter(&event));",
+                count: 1,
+            }],
+        },
+        RoutingAnchor {
+            name: "initial_terminal",
+            start_marker: "// A FEN (or a validated initial move sequence) may already be",
+            end_marker: "let _ = start_loop.send(());",
+            expected_patterns: &[
+                RoutingPattern {
+                    text: "attempt_terminal_event_emission(&mut controller, &app)",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "live.shutdown.send(true);",
+                    count: 1,
+                },
+            ],
+        },
+        RoutingAnchor {
+            name: "human_move",
+            start_marker: "pub async fn make_move(",
+            end_marker: "pub async fn take_back_move(",
+            expected_patterns: &[
+                RoutingPattern {
+                    text: ".attempt_event_emission(GameEventKind::Move, move_revision, || move_event.emit(app));",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "attempt_terminal_event_emission(&mut controller, app)",
+                    count: 2,
+                },
+                RoutingPattern {
+                    text: "game.shutdown.send(true);",
+                    count: 2,
+                },
+            ],
+        },
+        RoutingAnchor {
+            name: "takeback_move",
+            start_marker: "pub async fn take_back_move(",
+            end_marker: "pub async fn resign(",
+            expected_patterns: &[
+                RoutingPattern {
+                    text: ".attempt_event_emission(GameEventKind::Move, move_revision, || move_event.emit(app));",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "attempt_terminal_event_emission(&mut controller, app)",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "game.shutdown.send(true);",
+                    count: 1,
+                },
+            ],
+        },
+        RoutingAnchor {
+            name: "resignation",
+            start_marker: "pub async fn resign(",
+            end_marker: "pub async fn shutdown_all(",
+            expected_patterns: &[
+                RoutingPattern {
+                    text: "attempt_terminal_event_emission(&mut controller, app);",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "game.shutdown.send(true);",
+                    count: 1,
+                },
+            ],
+        },
+        RoutingAnchor {
+            name: "engine_error_terminal",
+            start_marker: "Some(Ok(Err(e))) => {",
+            end_marker: "Some(Err(join_error)) => {",
+            expected_patterns: &[RoutingPattern {
+                text: "attempt_terminal_event_emission(&mut ctrl, &app);",
+                count: 1,
+            }],
+        },
+        RoutingAnchor {
+            name: "game_loop_shutdown_task_cleanup",
+            start_marker: "_ = shutdown_rx.changed() => {",
+            end_marker: "result = async {",
+            expected_patterns: &[
+                RoutingPattern {
+                    text: "task.abort();",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "let _ = task.await;",
+                    count: 1,
+                },
+            ],
+        },
+        RoutingAnchor {
+            name: "engine_join_error_terminal",
+            start_marker: "Some(Err(join_error)) => {",
+            end_marker: "error!(\"game loop observed an impossible empty engine-task completion\");",
+            expected_patterns: &[RoutingPattern {
+                text: "attempt_terminal_event_emission(&mut ctrl, &app);",
+                count: 1,
+            }],
+        },
+        RoutingAnchor {
+            name: "clock_timeout_terminal",
+            start_marker: "if let Some(result) = ctrl.settle_active_clock() {",
+            end_marker: "let (white_time, black_time) = ctrl.get_current_times();",
+            expected_patterns: &[RoutingPattern {
+                text: "attempt_terminal_event_emission(&mut ctrl, &app);",
+                count: 1,
+            }],
+        },
+        RoutingAnchor {
+            name: "clock_tick_emission",
+            start_marker: "let (white_time, black_time) = ctrl.get_current_times();
+                    ctrl.bump_revision();",
+            end_marker: "is_finished = ctrl.status != GameStatus::Playing;",
+            expected_patterns: &[RoutingPattern {
+                text: "ctrl.attempt_event_emission(GameEventKind::Clock, clock_revision, || {",
+                count: 1,
+            }],
+        },
+        RoutingAnchor {
+            name: "game_loop_completion_and_cleanup",
+            start_marker: "        }
+    }
+
+    if let Some(task) = engine_task.take() {",
+            end_marker: "fn try_polyglot_book_move(",
+            expected_patterns: &[
+                RoutingPattern {
+                    text: "task.abort();",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "let _ = task.await;",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "terminate_game_engines(&live.engine_supervisor, engines).await",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "complete_exact(&game_id, live.session, &controller)",
+                    count: 1,
+                },
+            ],
+        },
+        RoutingAnchor {
+            name: "book_move",
+            start_marker: "if let Some(book_uci) = book_move {",
+            end_marker: "let (engine_arc, go_mode, initial_fen, moves, turn) = {",
+            expected_patterns: &[
+                RoutingPattern {
+                    text: "ctrl.attempt_event_emission(GameEventKind::Move, move_revision, || {",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "attempt_terminal_event_emission(&mut ctrl, app);",
+                    count: 2,
+                },
+            ],
+        },
+        RoutingAnchor {
+            name: "engine_move",
+            start_marker: "let game_move = match ctrl.apply_move(&best_move) {",
+            end_marker: "pub async fn start_game(",
+            expected_patterns: &[
+                RoutingPattern {
+                    text: "ctrl.attempt_event_emission(GameEventKind::Move, move_revision, || move_event.emit(app));",
+                    count: 1,
+                },
+                RoutingPattern {
+                    text: "attempt_terminal_event_emission(&mut ctrl, app);",
+                    count: 2,
+                },
+            ],
+        },
+    ];
+
+    fn normalize_routing_source(source: &str) -> String {
+        source.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn routing_anchor_body<'a>(prod_source: &'a str, anchor: &RoutingAnchor) -> &'a str {
+        let start_marker = normalize_routing_source(anchor.start_marker);
+        let end_marker = normalize_routing_source(anchor.end_marker);
+        let start_pos = prod_source.find(&start_marker).unwrap_or_else(|| {
+            panic!(
+                "anchor '{}' start marker not found: '{}'",
+                anchor.name, anchor.start_marker
+            )
+        });
+        let after_start_pos = start_pos + start_marker.len();
+        let end_offset = prod_source[after_start_pos..]
+            .find(&end_marker)
+            .unwrap_or_else(|| {
+                panic!(
+                    "anchor '{}' end marker not found after its start: '{}'",
+                    anchor.name, anchor.end_marker
+                )
+            });
+        &prod_source[after_start_pos..after_start_pos + end_offset]
+    }
+
+    fn verify_production_routing(normalized_prod_source: &str) {
+        assert!(
+            !normalized_prod_source.contains(".emit(app).unwrap_or(())"),
             "production publishers must not use bare discarded unwrap_or(()) emits"
         );
         assert!(
-            !prod_source.contains("emit_terminal_event"),
+            !normalized_prod_source.contains("emit_terminal_event"),
             "emit_terminal_event must be fully replaced by attempt_terminal_event_emission"
         );
 
-        // Human move routing anchor
-        let make_move_chunk = prod_source
-            .split_once("pub async fn make_move(")
-            .map(|(_, suffix)| suffix)
-            .expect("make_move must exist");
-        let make_move_body = make_move_chunk
-            .split_once("pub async fn take_back_move(")
-            .map(|(prefix, _)| prefix)
-            .unwrap_or(make_move_chunk);
-        assert!(
-            make_move_body.contains(".attempt_event_emission(GameEventKind::Move"),
-            "make_move must route GameMoveEvent through attempt_event_emission"
-        );
-        assert!(
-            make_move_body.contains("attempt_terminal_event_emission(&mut controller, app)"),
-            "make_move must route terminal emission through attempt_terminal_event_emission"
-        );
+        for anchor in ROUTING_ANCHORS {
+            let body = routing_anchor_body(normalized_prod_source, anchor);
 
-        // Takeback routing anchor
-        let take_back_chunk = source
-            .split_once("pub async fn take_back_move(")
-            .map(|(_, suffix)| suffix)
-            .expect("take_back_move must exist");
-        let take_back_body = take_back_chunk
-            .split_once("pub async fn resign_game(")
-            .map(|(prefix, _)| prefix)
-            .unwrap_or(take_back_chunk);
-        assert!(
-            take_back_body.contains(".attempt_event_emission(GameEventKind::Move"),
-            "take_back_move must route GameMoveEvent through attempt_event_emission"
-        );
-        assert!(
-            take_back_body.contains("attempt_terminal_event_emission(&mut controller, app)"),
-            "take_back_move must route terminal emission through attempt_terminal_event_emission"
-        );
+            for pattern in anchor.expected_patterns {
+                let normalized_pattern = normalize_routing_source(pattern.text);
+                assert_eq!(
+                    body.matches(&normalized_pattern).count(),
+                    pattern.count,
+                    "anchor '{}' expected exactly {} occurrence(s) of pattern '{}' within boundaries",
+                    anchor.name,
+                    pattern.count,
+                    pattern.text
+                );
+            }
+        }
+    }
 
-        // Book move routing anchor
-        let book_chunk = prod_source
-            .split_once("let game_move = match ctrl.apply_move(&book_uci)")
-            .map(|(_, suffix)| suffix)
-            .expect("book move application must exist");
-        let book_body = book_chunk
-            .split_once("let (engine_arc, go_mode")
-            .map(|(prefix, _)| prefix)
-            .unwrap_or(book_chunk);
-        assert!(
-            book_body.contains("ctrl.attempt_event_emission(GameEventKind::Move"),
-            "book move must route GameMoveEvent through attempt_event_emission"
-        );
-        assert!(
-            book_body.contains("attempt_terminal_event_emission(&mut ctrl, app)"),
-            "book move must route terminal emission through attempt_terminal_event_emission"
-        );
+    #[test]
+    fn every_production_game_publisher_routes_through_emission_helper() {
+        let source = include_str!("game.rs");
+        let (prod_source, _) = source
+            .split_once("mod tests {")
+            .expect("production code must be separated by mod tests");
+        let normalized_prod_source = normalize_routing_source(prod_source);
 
-        // Engine move routing anchor
-        let engine_move_chunk = prod_source
-            .split_once("let game_move = match ctrl.apply_move(&best_move)")
-            .map(|(_, suffix)| suffix)
-            .expect("engine move application must exist");
-        let engine_move_body = engine_move_chunk
-            .split_once("pub async fn start_game(")
-            .map(|(prefix, _)| prefix)
-            .unwrap_or(engine_move_chunk);
-        assert!(
-            engine_move_body.contains("ctrl.attempt_event_emission(GameEventKind::Move"),
-            "engine move must route GameMoveEvent through attempt_event_emission"
-        );
-        assert!(
-            engine_move_body.contains("attempt_terminal_event_emission(&mut ctrl, app)"),
-            "engine move must route terminal emission through attempt_terminal_event_emission"
-        );
+        verify_production_routing(&normalized_prod_source);
+    }
 
-        // Clock tick routing anchor
-        let clock_tick_chunk = source
-            .split_once("_ = clock_interval.tick() => {")
-            .map(|(_, suffix)| suffix)
-            .expect("clock tick interval branch must exist");
-        let clock_tick_body = clock_tick_chunk
-            .split_once("is_finished = ctrl.status != GameStatus::Playing;")
-            .map(|(prefix, _)| prefix)
-            .unwrap_or(clock_tick_chunk);
-        assert!(
-            clock_tick_body.contains("ctrl.attempt_event_emission(GameEventKind::Clock"),
-            "clock tick must route ClockUpdateEvent through attempt_event_emission"
+    #[test]
+    fn routing_anchors_fail_closed_when_production_wiring_is_removed() {
+        let source = include_str!("game.rs");
+        let (prod_source, _) = source
+            .split_once("mod tests {")
+            .expect("production code must be separated by mod tests");
+        let normalized_prod_source = normalize_routing_source(prod_source);
+
+        verify_production_routing(&normalized_prod_source);
+
+        let mut checked_occurrences = 0;
+        for anchor in ROUTING_ANCHORS {
+            let body = routing_anchor_body(&normalized_prod_source, anchor);
+            let body_start = body.as_ptr() as usize - normalized_prod_source.as_ptr() as usize;
+            for pattern in anchor.expected_patterns {
+                let normalized_pattern = normalize_routing_source(pattern.text);
+                let positions = body
+                    .match_indices(&normalized_pattern)
+                    .map(|(position, _)| body_start + position)
+                    .collect::<Vec<_>>();
+                assert_eq!(positions.len(), pattern.count);
+
+                for position in positions {
+                    let mut altered_source = normalized_prod_source.clone();
+                    altered_source.replace_range(
+                        position..position + normalized_pattern.len(),
+                        "/* removed for negative control */",
+                    );
+
+                    let result = std::panic::catch_unwind(|| {
+                        verify_production_routing(&altered_source);
+                    });
+                    assert!(
+                        result.is_err(),
+                        "removing one occurrence of pattern '{}' from anchor '{}' must fail routing verification",
+                        pattern.text,
+                        anchor.name
+                    );
+                    checked_occurrences += 1;
+                }
+            }
+        }
+        assert_eq!(
+            checked_occurrences, 29,
+            "all 29 production routing and cleanup occurrences must be tested individually"
         );
     }
 }

@@ -425,9 +425,96 @@ impl Type for Error {
 }
 
 #[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct CapturedLogRecord {
+    pub level: log::Level,
+    pub message: String,
+}
+
+#[cfg(test)]
+pub(crate) struct LogCaptureScope {
+    prev: Option<Vec<CapturedLogRecord>>,
+}
+
+#[cfg(test)]
+struct CapturingLogger;
+
+#[cfg(test)]
+static CAPTURING_LOGGER: CapturingLogger = CapturingLogger;
+#[cfg(test)]
+static LOGGER_INIT: std::sync::Once = std::sync::Once::new();
+
+#[cfg(test)]
+thread_local! {
+    static LOCAL_CAPTURE: std::cell::RefCell<Option<Vec<CapturedLogRecord>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+impl log::Log for CapturingLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            let captured = CapturedLogRecord {
+                level: record.level(),
+                message: record.args().to_string(),
+            };
+            LOCAL_CAPTURE.with(|cell| {
+                if let Some(logs) = cell.borrow_mut().as_mut() {
+                    logs.push(captured);
+                }
+            });
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+#[cfg(test)]
+fn install_capturing_logger() {
+    LOGGER_INIT.call_once(|| {
+        log::set_logger(&CAPTURING_LOGGER)
+            .expect("capturing logger could not be installed in this test binary");
+        log::set_max_level(log::LevelFilter::Info);
+    });
+}
+
+#[cfg(test)]
+impl LogCaptureScope {
+    pub(crate) fn start() -> Self {
+        install_capturing_logger();
+        let prev = LOCAL_CAPTURE.with(|cell| cell.borrow_mut().replace(Vec::new()));
+        Self { prev }
+    }
+
+    pub(crate) fn records(&self) -> Vec<CapturedLogRecord> {
+        LOCAL_CAPTURE.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .map(|logs| logs.clone())
+                .unwrap_or_default()
+        })
+    }
+
+    pub(crate) fn messages(&self) -> Vec<String> {
+        self.records().into_iter().map(|r| r.message).collect()
+    }
+}
+
+#[cfg(test)]
+impl Drop for LogCaptureScope {
+    fn drop(&mut self) {
+        LOCAL_CAPTURE.with(|cell| {
+            *cell.borrow_mut() = self.prev.take();
+        });
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, Once};
 
     fn parsed_payload(serialized: &str) -> serde_json::Value {
         let payload: serde_json::Value =
@@ -455,37 +542,6 @@ mod tests {
         assert_eq!(payload["category"], "network");
         assert_eq!(payload["message"], "network failure");
         assert!(!serialized.contains("http"));
-    }
-
-    struct CapturingLogger;
-
-    static CAPTURED_LOGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    static CAPTURING_LOGGER: CapturingLogger = CapturingLogger;
-    static LOGGER_INIT: Once = Once::new();
-
-    impl log::Log for CapturingLogger {
-        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-            metadata.level() <= log::Level::Info
-        }
-
-        fn log(&self, record: &log::Record<'_>) {
-            if self.enabled(record.metadata()) {
-                CAPTURED_LOGS
-                    .lock()
-                    .expect("captured log mutex poisoned")
-                    .push(record.args().to_string());
-            }
-        }
-
-        fn flush(&self) {}
-    }
-
-    fn install_capturing_logger() {
-        LOGGER_INIT.call_once(|| {
-            log::set_logger(&CAPTURING_LOGGER)
-                .expect("capturing logger could not be installed in this test binary");
-            log::set_max_level(log::LevelFilter::Info);
-        });
     }
 
     #[test]
@@ -556,12 +612,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn durability_producer_logs_native_cause() {
-        install_capturing_logger();
+        let capture = LogCaptureScope::start();
         const CAUSE: &str = "/private/durability-log-test: native cause";
-        CAPTURED_LOGS
-            .lock()
-            .expect("captured log mutex poisoned")
-            .clear();
 
         struct ResetAtomicInjector;
         impl Drop for ResetAtomicInjector {
@@ -597,9 +649,8 @@ mod tests {
                 DurabilityStage::RegistryReplacement
             )
         ));
-        assert!(CAPTURED_LOGS
-            .lock()
-            .expect("captured log mutex poisoned")
+        assert!(capture
+            .messages()
             .iter()
             .any(|message| message.contains(CAUSE)));
     }
@@ -783,14 +834,13 @@ mod tests {
 
     #[test]
     fn serialize_emits_no_log_record_of_the_native_cause() {
-        install_capturing_logger();
+        let capture = LogCaptureScope::start();
         const MARKER: &str = "/private/serialize-no-log-marker-f20260830";
         let error = Error::from(std::io::Error::other(MARKER));
         let _serialized = serde_json::to_string(&error).expect("serialize error");
         assert!(
-            CAPTURED_LOGS
-                .lock()
-                .expect("captured log mutex poisoned")
+            capture
+                .messages()
                 .iter()
                 .all(|message| !message.contains(MARKER)),
             "serializing Error must not log the native cause"
