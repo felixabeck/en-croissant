@@ -7248,7 +7248,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Board layout persistence bypasses validation and write-failure handling
 
-* **ID:** f-20260909-03 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260909-03 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** src/components/tabs/BoardsPage.tsx:416, windowsStateAtom.
 * **Defect:** Raw atomWithStorage accepts malformed or obsolete Mosaic pane IDs and lets quota-full writes reject without the application's persistence error path. Reload can render blank panes.
 * **Evidence:** Cumulative persisted-state lens, confidence 98; root confirmed the raw adapter and unrestricted hydration. Origin 089e8ffd predates the reviewed range.
