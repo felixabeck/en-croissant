@@ -3,7 +3,7 @@ import { type Card, createEmptyCard, fsrs, type Grade, generatorParameters } fro
 import { z } from "zod";
 import type { PracticeData } from "@/state/atoms";
 import { isPrefix } from "@/utils/misc";
-import { type TreeNode, treeIterator } from "@/utils/treeReducer";
+import { getBoardState, type TreeNode, treeIterator } from "@/utils/treeReducer";
 
 const params = generatorParameters({ enable_fuzz: true });
 
@@ -29,7 +29,7 @@ export function buildFromTree(tree: TreeNode, color: "white" | "black", start: n
             item.node.children.length === 0 ||
             isPrefix(item.position, start) ||
             !item.node.children[0].san ||
-            cards.find((c) => c.fen === item.node.fen)
+            cards.find((c) => getBoardState(c.fen) === getBoardState(item.node.fen))
         ) {
             continue;
         }
@@ -124,13 +124,13 @@ export function syncDeck(
 
     const existingByFen = new Map<string, Position>();
     for (const pos of existing) {
-        existingByFen.set(pos.fen, pos);
+        existingByFen.set(getBoardState(pos.fen), pos);
     }
 
     let added = 0;
     const merged: Position[] = [];
     for (const pos of freshPositions) {
-        const prev = existingByFen.get(pos.fen);
+        const prev = existingByFen.get(getBoardState(pos.fen));
         if (prev) {
             merged.push({ ...prev, answer: pos.answer });
         } else {
@@ -139,8 +139,8 @@ export function syncDeck(
         }
     }
 
-    const freshFens = new Set(freshPositions.map((p) => p.fen));
-    const removed = existing.filter((p) => !freshFens.has(p.fen)).length;
+    const freshFens = new Set(freshPositions.map((p) => getBoardState(p.fen)));
+    const removed = existing.filter((p) => !freshFens.has(getBoardState(p.fen))).length;
 
     return { positions: merged, added, removed };
 }
