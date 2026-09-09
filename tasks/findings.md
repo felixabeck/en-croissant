@@ -7208,3 +7208,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Required proof:** drive the real final archive command/core with a valid mocked archive and authority-resolved engine workspace, assert installed contents, then exercise prepublication failure/cancellation and exact staging cleanup without weakening parent/inode checks.
 * **Design boundary:** choose an authority-preserving, lifetime-owned sibling staging representation; do not merely remove the same-parent guard or reopen an unchecked parent pathname. The separate staging-authority questions in `f-20260905-06` and `f-20260905-08` already need a design run. This functional failure is distinct from their allowlist/token questions and from `f-20260906-08` (installed executable mode).
 * **Found by:** Codex root source tracing during the resumed native-blocking-cancellation build, 2026-09-09. Plan authorship and arbitration share root context; Codex detection shares family with phases 1/2/4, Gemini authored phase 3.
+
+---
+
+## 2026-09-09 — filed through the inbox spool
+
+### An over-limit live workspace write replaces all saved tabs with the default workspace
+
+* **ID:** f-20260909-02 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/state/workspace.ts:109, workspaceFromValue and createWorkspaceStorage.setItem.
+* **Defect:** The input schema rejects more than 100 tabs; live serialization converts that rejection into defaultWorkspace and persists it. A 101st tab can therefore erase the previously saved workspace on reload instead of rejecting the write safely.
+* **Evidence:** Cumulative persisted-state lens, confidence 99; root traced the schema maximum and fallback. Origin 3afed031 predates the reviewed range. Related f-20260901-05 owns durable tab creation; this specific destructive validation fallback is separate.
+* **Repair:** Preserve the last valid durable workspace when a live write fails validation, and make admission/error handling observable. Keep the existing bound; prove boundary writes and reload preserve existing tabs. Adopted for the active cancellation build's review repair.
+* **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
