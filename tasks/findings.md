@@ -7316,7 +7316,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Tree sibling mutations leave cursor and repertoire-start paths pointing at other nodes
 
-* **ID:** f-20260909-07 · **Status:** open · **Area:** chess-tree · **Root:** tree-path-rebasing · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260909-07 · **Status:** handled · **Area:** chess-tree · **Root:** tree-path-rebasing · **Entry:** lens · **Blocked:** none
 * **Where:** src/state/store/tree.ts:789–812, deleteMove and promoteVariation.
 * **Defect:** Deleting a sibling rewrites an unrelated cursor index to zero, while surviving headers.start paths are not rebased on deletion or promotion. With branches e4/d4/c4, deleting d4 redirects the c4 cursor to e4; promoting c4 leaves its repertoire start referring to another branch.
 * **Evidence:** Cumulative chess-semantics lens confidence99 for both manifestations; root traced splice, cursor assignment and missing start rebasing. Originse401958e/e125544e predate reviewed range.
