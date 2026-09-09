@@ -348,16 +348,11 @@ export async function getOpening(root: TreeNode, position: number[]): Promise<st
     return await tauri.getOpeningFromFens(fens);
 }
 
-function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves = 0): TreeState {
+function innerParsePGN(tokens: Token[], fen: string = INITIAL_FEN, halfMoves?: number): TreeState {
     const tree = defaultTree(fen);
     let root = tree.root;
     let prevNode = root;
-    root.halfMoves = halfMoves;
-    const setup = parseFen(fen).unwrap();
-
-    if (halfMoves === 0 && setup.turn === "black") {
-        root.halfMoves += 1;
-    }
+    if (halfMoves !== undefined) root.halfMoves = halfMoves;
 
     for (let i = 0; i < tokens.length; i++) {
         const token = tokens[i];
@@ -471,13 +466,7 @@ export async function parsePGN(
     const headers = getPgnHeaders(tokens);
     const fen = initialFen?.trim() || headers.fen.trim();
 
-    const [pos] = positionFromFen(fen);
-
-    const tree = innerParsePGN(
-        tokens,
-        initialFen?.trim() || headers.fen.trim(),
-        pos?.turn === "black" ? 1 : 0,
-    );
+    const tree = innerParsePGN(tokens, fen);
     tree.headers = headers;
     tree.position = parseStartHeader(headers.start, tree.root);
     if (options?.signal?.aborted) {

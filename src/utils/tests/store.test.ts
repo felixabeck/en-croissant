@@ -395,12 +395,10 @@ test("should handle setComment", () => {
 
 test("should handle setFen", () => {
     store.getState().setState({ ...treeE4D5(), position: [0] });
-    store.getState().setFen("rnbq1bnr/ppppkppp/8/4p3/4P3/8/PPPPKPPP/RNBQ1BNR w - - 2 3");
+    const fen = "rnbq1bnr/ppppkppp/8/4p3/4P3/8/PPPPKPPP/RNBQ1BNR w - - 2 3";
+    store.getState().setFen(fen);
 
-    const newRoot = {
-        ...defaultTree().root,
-        fen: "rnbq1bnr/ppppkppp/8/4p3/4P3/8/PPPPKPPP/RNBQ1BNR w - - 2 3",
-    };
+    const newRoot = defaultTree(fen).root;
     expect(getNewState()).toStrictEqual({
         ...defaultTree(),
         dirty: true,

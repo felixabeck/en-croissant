@@ -23,6 +23,7 @@ import {
     treeIteratorMainLine,
     buildTranspositionMaps,
     getBoardState,
+    normalizeTreeHalfMoves,
 } from "@/utils/treeReducer";
 
 export interface TreeStoreState extends TreeState {
@@ -651,6 +652,7 @@ export const createTreeStore = (id?: string, initTree?: TreeState) => {
                         // ordinary provider remounts reuse the live store and never rehydrate.
                         state.report.inProgress = false;
                         state.report.operationId = null;
+                        normalizeTreeHalfMoves(state.root);
                         state.boardStateMap = buildTranspositionMaps(
                             state.root,
                             state.headers.start || [],

@@ -9,6 +9,7 @@ import {
     getBoardState,
     getGameName,
     getNodeAtPath,
+    rootHalfMoves,
     treeIterator,
     treeIteratorMainLine,
     type TreeNode,
@@ -104,6 +105,16 @@ test("defaultTree normalizes the root while preserving complete deterministic de
         },
     });
     expect(defaultTree().root.halfMoves).toBe(0);
+});
+
+test("root move numbering derives from the FEN fullmove and side to move", () => {
+    const white = "8/8/8/8/8/8/8/K6k w - - 0 23";
+    const black = "8/8/8/8/8/8/8/K6k b - - 0 23";
+
+    expect(rootHalfMoves(white)).toBe(44);
+    expect(rootHalfMoves(black)).toBe(45);
+    expect(defaultTree(white).root.halfMoves).toBe(44);
+    expect(defaultTree(black).root.halfMoves).toBe(45);
 });
 
 describe("game display name", () => {

@@ -1,9 +1,8 @@
 import type { DrawShape } from "@lichess-org/chessground/draw";
 import type { Move } from "chessops";
-import { INITIAL_FEN } from "chessops/fen";
+import { INITIAL_FEN, parseFen } from "chessops/fen";
 import type { Outcome, Score } from "@/bindings";
 import type { Annotation } from "./annotation";
-import { positionFromFen } from "./chessops";
 
 export interface TreeState {
     root: TreeNode;
@@ -80,7 +79,6 @@ export function countMainPly(node: TreeNode): number {
 
 export function defaultTree(fen?: string): TreeState {
     const normalizedFen = fen?.trim() || INITIAL_FEN;
-    const [pos] = positionFromFen(normalizedFen);
 
     return {
         dirty: false,
@@ -92,7 +90,7 @@ export function defaultTree(fen?: string): TreeState {
             children: [],
             score: null,
             depth: null,
-            halfMoves: pos?.turn === "black" ? 1 : 0,
+            halfMoves: rootHalfMoves(normalizedFen),
             shapes: [],
             annotations: [],
             comment: "",
@@ -112,6 +110,23 @@ export function defaultTree(fen?: string): TreeState {
         },
         boardStateMap: {},
     };
+}
+
+export function rootHalfMoves(fen: string): number {
+    return parseFen(fen).unwrap(
+        (setup) => (setup.fullmoves - 1) * 2 + (setup.turn === "black" ? 1 : 0),
+        () => 0,
+    );
+}
+
+export function normalizeTreeHalfMoves(root: TreeNode): void {
+    const initial = rootHalfMoves(root.fen);
+    const stack = [{ node: root, halfMoves: initial }];
+    while (stack.length > 0) {
+        const { node, halfMoves } = stack.pop()!;
+        node.halfMoves = halfMoves;
+        for (const child of node.children) stack.push({ node: child, halfMoves: halfMoves + 1 });
+    }
 }
 
 export function createNode({
