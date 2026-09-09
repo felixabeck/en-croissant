@@ -5,8 +5,8 @@ use parking_lot::Mutex as ParkingMutex;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use shakmaty::{
-    fen::Fen, san::SanPlus, Bitboard, ByColor, CastlingMode, Chess, EnPassantMode, FromSetup,
-    Position, Setup,
+    fen::Fen, san::SanPlus, Bitboard, ByColor, CastlingMode, Chess, Color, EnPassantMode,
+    FromSetup, Position, Setup,
 };
 use specta::Type;
 use std::{
@@ -134,6 +134,14 @@ impl PositionQuery {
                     && is_contained(tested_board.rooks(), query_board.rooks())
                     && is_contained(tested_board.queens(), query_board.queens())
                     && is_contained(tested_board.kings(), query_board.kings())
+                    && is_contained(
+                        tested_board.by_color(Color::White),
+                        query_board.by_color(Color::White),
+                    )
+                    && is_contained(
+                        tested_board.by_color(Color::Black),
+                        query_board.by_color(Color::Black),
+                    )
             }
         }
     }
@@ -1220,6 +1228,13 @@ mod tests {
         assert!(query.matches(&chess));
     }
 
+    fn assert_partial_no_match(fen1: &str, fen2: &str) {
+        let query = PositionQuery::partial_from_fen(fen1).unwrap();
+        let fen = Fen::from_ascii(fen2.as_bytes()).unwrap();
+        let chess = Chess::from_setup(fen.into_setup(), shakmaty::CastlingMode::Chess960).unwrap();
+        assert!(!query.matches(&chess));
+    }
+
     #[test]
     fn exact_matches() {
         let query = PositionQuery::exact_from_fen(
@@ -1243,6 +1258,26 @@ mod tests {
         assert_partial_match(
             "8/8/8/8/8/8/8/6N1 w - - 0 1",
             "3k4/8/8/8/8/4P3/3PKP2/6N1 w - - 0 1",
+        );
+    }
+
+    #[test]
+    fn partial_match_requires_the_piece_colour_on_each_specified_square() {
+        assert_partial_no_match(
+            "8/8/8/8/8/8/8/6N1 w - - 0 1",
+            "3k4/8/8/8/8/4P3/3PKP2/6n1 w - - 0 1",
+        );
+        assert_partial_no_match(
+            "8/8/8/8/8/8/8/6n1 w - - 0 1",
+            "3k4/8/8/8/8/4p3/3PKP2/6N1 w - - 0 1",
+        );
+    }
+
+    #[test]
+    fn partial_match_accepts_extra_unspecified_pieces_of_either_colour() {
+        assert_partial_match(
+            "8/8/8/8/8/8/8/6N1 w - - 0 1",
+            "3k4/8/8/8/8/4p3/3PKP2/6N1 w - - 0 1",
         );
     }
 
