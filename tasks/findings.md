@@ -7194,3 +7194,17 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Design to settle:** Split opening the first game from saving a retained source file; choose a native streaming copy/publication operation that preserves existing destination metadata, authority and error semantics. Merely paging and joining on the renderer keeps the memory defect.
 * **Related:** f-20260831-06 handled native scanner/index/export materialization, not this renderer whole-file import. No shared Root assigned: this is a different producer and requires its own native copy boundary.
 * **Found by:** Codex PGN/index plan lens for f-20260904-05, confidence 99, confirmed by root source trace on 2026-09-08. Deferred as a separate import/copy design outside the cancellation mandate. Plan authorship and arbitration share the root context; detection ran on the family of the existing code.
+
+---
+
+## 2026-09-09 — filed through the inbox spool
+
+### Engine archive publication passes a system-temp child to an installer requiring a target-parent sibling
+
+* **ID:** f-20260909-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs` — `download_engine_archive`, `private_tempdir`; `src-tauri/src/infra/path_authority.rs` — `ResolvedPath::atomic_install_download_dir`; `src-tauri/src/infra/fs.rs` — `unix::install_dir`.
+* **Defect:** the command extracts into `private_tempdir()?.path().join("extracted")`, whose parent is a fresh system temporary directory, then passes that child to `ResolvedPath::atomic_install_download_dir`. The resolved destination is below the engine workspace. `unix::install_dir` opens both parent directories and rejects unless device AND inode match, returning `directory staging source must be in the target's real parent directory`. The final command publication therefore cannot succeed for an ordinary engine workspace, even after valid download and extraction. The internal zip/tar temp-to-temp installs use same-parent staging and do not prove the final command route.
+* **Evidence:** source trace on HEAD `db8a07c5` plus current native-cancellation phase diff; `git blame` attributes the final system-temp command route to `016ec27a7` and same-parent installer check to `97c29addc`. This mismatch predates the current cancellation work; it is not a newly introduced cancellation failure. No real engine download was performed in this trace.
+* **Required proof:** drive the real final archive command/core with a valid mocked archive and authority-resolved engine workspace, assert installed contents, then exercise prepublication failure/cancellation and exact staging cleanup without weakening parent/inode checks.
+* **Design boundary:** choose an authority-preserving, lifetime-owned sibling staging representation; do not merely remove the same-parent guard or reopen an unchecked parent pathname. The separate staging-authority questions in `f-20260905-06` and `f-20260905-08` already need a design run. This functional failure is distinct from their allowlist/token questions and from `f-20260906-08` (installed executable mode).
+* **Found by:** Codex root source tracing during the resumed native-blocking-cancellation build, 2026-09-09. Plan authorship and arbitration share root context; Codex detection shares family with phases 1/2/4, Gemini authored phase 3.
