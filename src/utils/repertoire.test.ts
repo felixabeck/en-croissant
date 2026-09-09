@@ -33,7 +33,8 @@ test("renderer cancellation never becomes empty repertoire success", async () =>
     await expect(fetchPositionMoves(database, "fen", controller.signal)).rejects.toBe(failure);
 });
 
-test("ordinary missing coverage retains the established empty-result behavior", async () => {
-    mocks.searchPosition.mockRejectedValue(new Error("database unavailable"));
-    await expect(fetchPositionMoves(database, "fen")).resolves.toEqual({ moves: [], total: 0 });
+test("ordinary search failure rejects instead of publishing empty full coverage", async () => {
+    const failure = new Error("database unavailable");
+    mocks.searchPosition.mockRejectedValue(failure);
+    await expect(fetchPositionMoves(database, "fen")).rejects.toBe(failure);
 });

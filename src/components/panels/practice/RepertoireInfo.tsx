@@ -27,6 +27,7 @@ import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "r
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { coverageMinGamesAtom, currentTabAtom, referenceDbAtom } from "@/state/atoms";
 import { roundKeepSum } from "@/utils/format";
 import { isPrefix } from "@/utils/misc";
@@ -49,6 +50,8 @@ function formatMoveNotation(halfMoves: number, san: string): string {
 
 function RepertoireInfo() {
   const { t } = useTranslation();
+  const commonErrorRef = useRef(t("Common.Error"));
+  commonErrorRef.current = t("Common.Error");
   const store = useContext(TreeStateContext)!;
   const dirty = useStore(store, (s) => s.dirty);
   const root = useStore(store, (s) => s.root);
@@ -143,8 +146,10 @@ function RepertoireInfo() {
         });
         setCurrentPosLoading(false);
       })
-      .catch(() => {
-        if (!controller.signal.aborted) setCurrentPosLoading(false);
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setCurrentPosLoading(false);
+        notifyUnlessCancelled(commonErrorRef.current, error);
       });
     return () => controller.abort();
   }, [currentNode.fen, referenceDb, dbMovesMap]);
@@ -190,9 +195,10 @@ function RepertoireInfo() {
           store.getState().save(); // sets dirty to false
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (!controller.signal.aborted && version === coverageVersionRef.current) {
           setCoverageLoading(false);
+          notifyUnlessCancelled(commonErrorRef.current, error);
         }
       });
     return () => controller.abort();

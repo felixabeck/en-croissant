@@ -4,7 +4,6 @@ import { searchPosition } from "./db";
 import { getNodeAtPath, type TreeNode, treeIterator, getBoardState } from "./treeReducer";
 import { TreeStoreState } from "@/state/store/tree";
 import { memoize } from "proxy-memoize";
-import { normalizeError } from "@/platform/errors";
 
 export type PositionMove = {
     san: string;
@@ -27,37 +26,30 @@ export async function fetchPositionMoves(
     moves: { move: string; white: number; draw: number; black: number }[];
     total: number;
 }> {
-    try {
-        const [openings] = await searchPosition(
-            {
-                path: dbPath,
-                type: "exact",
-                fen,
-                color: "white",
-                player: null,
-                result: "any",
-            } as LocalOptions,
-            "coverage-calc",
-            signal,
-        );
-        const summary = openings.find((op) => op.move === "*");
-        const moves = openings
-            .filter((op) => op.move !== "*")
-            .map((op) => ({
-                move: op.move,
-                white: op.white,
-                draw: op.draw,
-                black: op.black,
-            }));
-        const gamesEndingHere = summary ? summary.white + summary.draw + summary.black : 0;
-        const gamesContinuing = moves.reduce((acc, m) => acc + m.white + m.draw + m.black, 0);
-        return { moves, total: gamesEndingHere + gamesContinuing };
-    } catch (error) {
-        if (signal?.aborted || normalizeError(error).category === "cancelled") {
-            throw error;
-        }
-        return { moves: [], total: 0 };
-    }
+    const [openings] = await searchPosition(
+        {
+            path: dbPath,
+            type: "exact",
+            fen,
+            color: "white",
+            player: null,
+            result: "any",
+        } as LocalOptions,
+        "coverage-calc",
+        signal,
+    );
+    const summary = openings.find((op) => op.move === "*");
+    const moves = openings
+        .filter((op) => op.move !== "*")
+        .map((op) => ({
+            move: op.move,
+            white: op.white,
+            draw: op.draw,
+            black: op.black,
+        }));
+    const gamesEndingHere = summary ? summary.white + summary.draw + summary.black : 0;
+    const gamesContinuing = moves.reduce((acc, m) => acc + m.white + m.draw + m.black, 0);
+    return { moves, total: gamesEndingHere + gamesContinuing };
 }
 
 type DbCache = Map<
