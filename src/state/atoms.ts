@@ -39,7 +39,12 @@ import {
 } from "../utils/pathCapabilities";
 import { sessionsSchema, type Session } from "../utils/session";
 import { createPreferenceStorage, createZodStorage } from "./utils";
-import { createWorkspaceStorage, defaultWorkspace, type Workspace } from "./workspace";
+import {
+    admitWorkspaceTabs,
+    createWorkspaceStorage,
+    defaultWorkspace,
+    type Workspace,
+} from "./workspace";
 import { tabStorage } from "./store/tabStorage";
 import { originalPathOwnersSnapshot } from "./pathOwners";
 import { createEngineOwnerStorage, type EngineOwnerSaveReceipt } from "./engineOwnerStorage";
@@ -77,7 +82,9 @@ export const tabsAtom = atom(
         const activeTab = tabs.some((tab) => tab.value === workspace.activeTab)
             ? workspace.activeTab
             : (tabs[0]?.value ?? null);
+        if (!admitWorkspaceTabs(tabs)) return false;
         set(workspaceAtom, { ...workspace, tabs, activeTab });
+        return true;
     },
 );
 

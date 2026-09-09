@@ -2,6 +2,7 @@ import { tauri } from "@/platform/tauri";
 import type { StoreApi } from "zustand";
 import type { FileMetadata } from "@/components/files/file";
 import { tabStorage } from "@/state/store/tabStorage";
+import { admitWorkspaceTabs } from "@/state/workspace";
 import { newWorkspaceId, tabSchema, type GameOrigin, type Tab } from "@/state/workspaceTypes";
 import type { TreeStoreState } from "@/state/store/tree";
 import { getPGN, parsePGN } from "./chess";
@@ -50,8 +51,9 @@ export async function createTab({
     gameOrigin?: GameOrigin;
     position?: number[];
     existingTabIds?: Iterable<string>;
-}) {
+}): Promise<string | null> {
     const id = genID(existingTabIds);
+    let treeToSeed: Awaited<ReturnType<typeof parsePGN>> | undefined;
 
     if (pgn !== undefined) {
         const tree = await parsePGN(pgn, headers?.fen);
@@ -61,23 +63,26 @@ export async function createTab({
                 tree.position = position;
             }
         }
-        tabStorage.seed(id, tree);
+        treeToSeed = tree;
     }
 
+    let admitted = false;
     setTabs((prev) => {
         const nextTab = {
             ...tab,
             value: id,
             gameOrigin: gameOrigin ?? { kind: "none" },
         };
-        if (
-            prev.length === 0 ||
-            (prev.length === 1 && prev[0].type === "new" && tab.type !== "new")
-        ) {
-            return [nextTab];
-        }
-        return [...prev, nextTab];
+        const nextTabs =
+            prev.length === 0 || (prev.length === 1 && prev[0].type === "new" && tab.type !== "new")
+                ? [nextTab]
+                : [...prev, nextTab];
+        if (!admitWorkspaceTabs(nextTabs)) return prev;
+        if (treeToSeed) tabStorage.seed(id, treeToSeed);
+        admitted = true;
+        return nextTabs;
     });
+    if (!admitted) return null;
     setActiveTab(id);
     return id;
 }

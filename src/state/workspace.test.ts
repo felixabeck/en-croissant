@@ -452,15 +452,40 @@ test("setItem reports storage write failures", () => {
     setItem.mockRestore();
 });
 
-test("setItem repairs an invalid workspace value to the default shape", () => {
+test("setItem refuses invalid and 101-tab live writes while preserving 100 durable tabs", () => {
     sessionStorage.clear();
+    const tabs = Array.from({ length: 100 }, (_, index) => ({
+        ...legacyTab,
+        name: `Tab ${index}`,
+        value: crypto.randomUUID(),
+    }));
+    const durable = { version: 1 as const, tabs, activeTab: tabs[99]!.value };
+    const firstTree = serializeStorageValue({ version: 0, state: defaultTree() });
+    const lastTree = serializeStorageValue({ version: 0, state: defaultTree() });
+    sessionStorage.setItem(tabs[0]!.value, firstTree);
+    sessionStorage.setItem(tabs[99]!.value, lastTree);
+    const storage = workspaceStorage();
+    storage.setItem(WORKSPACE_STORAGE_KEY, durable);
+    const storedAtBoundary = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
 
-    workspaceStorage().setItem(WORKSPACE_STORAGE_KEY, "invalid" as never);
+    storage.setItem(WORKSPACE_STORAGE_KEY, {
+        ...durable,
+        tabs: [...tabs, { ...legacyTab, value: crypto.randomUUID() }],
+    });
+    storage.setItem(WORKSPACE_STORAGE_KEY, "invalid" as never);
+    storage.setItem(WORKSPACE_STORAGE_KEY, {
+        ...durable,
+        tabs: [...tabs.slice(0, 99), { ...legacyTab, name: 42 } as never],
+    });
 
-    const stored = readStoredWorkspace() as ReturnType<typeof defaultWorkspace>;
-    expect(stored.tabs).toHaveLength(1);
-    expect(stored.tabs[0]).toMatchObject({ name: "Tab.NewTab", type: "new" });
-    expect(stored.activeTab).toBe(stored.tabs[0].value);
+    expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(storedAtBoundary);
+    expect(readStoredWorkspace()).toEqual(durable);
+    expect(persistError.reportPersistError).toHaveBeenCalledTimes(3);
+
+    const reloaded = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    expect(reloaded).toEqual(durable);
+    expect(sessionStorage.getItem(tabs[0]!.value)).toBe(firstTree);
+    expect(sessionStorage.getItem(tabs[99]!.value)).toBe(lastTree);
 });
 
 test("setItem repairs an empty workspace with one generated active tab", () => {

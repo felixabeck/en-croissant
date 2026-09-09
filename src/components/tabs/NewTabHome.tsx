@@ -177,6 +177,7 @@ export default function NewTabHome({ id }: { id: string }) {
             },
           },
         });
+        if (tabId === null) return;
         if (file.type === "repertoire") {
           store.set(tabFamily(tabId), "practice");
         }

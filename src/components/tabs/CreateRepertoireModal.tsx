@@ -77,6 +77,7 @@ export default function CreateRepertoireModal({
           gameNumber: 0,
         },
       });
+      if (id === null) return;
 
       store.set(tabFamily(id), "practice");
       store.set(addRecentFileAtom, {

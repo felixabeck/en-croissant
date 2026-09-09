@@ -272,6 +272,31 @@ test("opens a recent repertoire into the practice panel", async () => {
   });
 });
 
+test("does not acknowledge recent or practice metadata when tab admission is refused", async () => {
+  fixtures.recentFiles = [
+    {
+      name: "white.pgn",
+      handle: { id: { id: "white" }, kind: "fileWorkspace" },
+      type: "repertoire",
+      lastOpened: 3,
+    },
+  ];
+  fixtures.createTab.mockResolvedValueOnce(null);
+
+  await act(async () => {
+    root.render(<NewTabHome id="new-tab" />);
+  });
+  const recentFile = [...container.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("white"),
+  )!;
+  await act(async () => {
+    recentFile.click();
+  });
+
+  await vi.waitFor(() => expect(fixtures.createTab).toHaveBeenCalledOnce());
+  expect(fixtures.storeSet).not.toHaveBeenCalled();
+});
+
 test("shows due practice counts on recent repertoire files", async () => {
   fixtures.dueStats = { due: 2, unseen: 1 };
   fixtures.recentFiles = [

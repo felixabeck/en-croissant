@@ -6,7 +6,7 @@ import { IconCopy, IconDots, IconEdit, IconPlus, IconX } from "@tabler/icons-rea
 import { getDefaultStore, useAtom, useAtomValue, useSetAtom } from "jotai";
 import { type ReactNode, startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Mosaic, type MosaicNode } from "react-mosaic-component";
+import { Mosaic } from "react-mosaic-component";
 import { match } from "ts-pattern";
 import {
   activeTabAtom,
@@ -44,6 +44,7 @@ import "react-mosaic-component/react-mosaic-component.css";
 import "@/styles/react-mosaic.css";
 import { platform } from "@/platform/native";
 import { atomWithStorage } from "jotai/utils";
+import { createWindowsStateStorage, defaultWindowsState, type ViewId } from "@/state/layoutStorage";
 import classes from "./BoardsPage.module.css";
 import { notifyUnlessCancelled } from "../files/notifyError";
 
@@ -401,29 +402,18 @@ export default function BoardsPage() {
   );
 }
 
-type ViewId = "left" | "topRight" | "bottomRight";
-
-const fullLayout: { [viewId: string]: ReactNode } = {
+const fullLayout: Record<ViewId, ReactNode> = {
   left: <div id="left" />,
   topRight: <div id="topRight" />,
   bottomRight: <div id="bottomRight" />,
 };
 
-interface WindowsState {
-  currentNode: MosaicNode<ViewId> | null;
-}
-
-const windowsStateAtom = atomWithStorage<WindowsState>("windowsState", {
-  currentNode: {
-    direction: "row",
-    first: "left",
-    second: {
-      direction: "column",
-      first: "topRight",
-      second: "bottomRight",
-    },
-  },
-});
+const windowsStateAtom = atomWithStorage(
+  "windowsState",
+  defaultWindowsState(),
+  createWindowsStateStorage(localStorage),
+  { getOnInit: true },
+);
 
 function TabSwitch({ tab }: { tab: Tab }) {
   const [windowsState, setWindowsState] = useAtom(windowsStateAtom);

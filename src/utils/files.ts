@@ -90,6 +90,7 @@ export async function openFile(
             gameNumber,
         },
     });
+    if (id === null) return null;
 
     if (fileInfo.metadata.type === "repertoire") {
         store.set(tabFamily(id), "practice");

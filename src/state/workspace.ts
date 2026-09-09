@@ -15,7 +15,7 @@ export type Workspace = {
     activeTab: string | null;
 };
 
-const MAX_WORKSPACE_TABS = 100;
+export const MAX_WORKSPACE_TABS = 100;
 const workspaceInputSchema = z.object({
     version: z.number().int().nonnegative().optional().catch(undefined),
     // Scrub individual legacy/corrupt tabs while keeping every independently
@@ -25,6 +25,12 @@ const workspaceInputSchema = z.object({
         .max(MAX_WORKSPACE_TABS)
         .transform((tabs) => tabs.filter((tab): tab is Tab => tab !== null)),
     activeTab: z.string().max(128).nullable().catch(null),
+});
+const liveTabsSchema = z.array(tabSchema).max(MAX_WORKSPACE_TABS);
+const workspaceLiveSchema = z.object({
+    version: z.literal(WORKSPACE_VERSION),
+    tabs: liveTabsSchema,
+    activeTab: z.string().max(128).nullable(),
 });
 
 function newTab(used: Iterable<string>): Tab {
@@ -106,9 +112,9 @@ export function readStoredWorkspaceValue(storage: SyncStringStorage, key: string
     return decodeCompressedOrJson(storage.getItem(key));
 }
 
-function workspaceFromValue(value: unknown): Workspace {
-    const parsed = workspaceInputSchema.safeParse(value);
-    if (!parsed.success) return defaultWorkspace();
+function workspaceFromValue(value: unknown): Workspace | null {
+    const parsed = workspaceLiveSchema.safeParse(value);
+    if (!parsed.success) return null;
     const tabs = parsed.data.tabs;
     if (tabs.length === 0) {
         const first = newTab(new Set());
@@ -117,6 +123,14 @@ function workspaceFromValue(value: unknown): Workspace {
     const legacyActive = parsed.data.activeTab;
     const activeTab = resolveActiveTab(tabs, legacyActive);
     return { version: WORKSPACE_VERSION, tabs, activeTab };
+}
+
+/** Live writes are refused instead of applying the more permissive legacy hydration repair. */
+export function admitWorkspaceTabs(tabs: unknown): tabs is Tab[] {
+    const parsed = liveTabsSchema.safeParse(tabs);
+    if (parsed.success) return true;
+    reportPersistError(persistStorageWriteError({}));
+    return false;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -167,8 +181,13 @@ export function createWorkspaceStorage(storage: SyncStringStorage): SyncStorage<
             return plan.workspace;
         },
         setItem(key, value) {
+            const workspace = workspaceFromValue(value);
+            if (!workspace) {
+                reportPersistError(persistStorageWriteError({}));
+                return;
+            }
             try {
-                storage.setItem(key, serializeStorageValue(workspaceFromValue(value)));
+                storage.setItem(key, serializeStorageValue(workspace));
             } catch (error) {
                 reportPersistError(persistStorageWriteError(error));
             }

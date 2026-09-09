@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     createWorkspaceFile: vi.fn(),
+    createTab: vi.fn(),
     listFileWorkspace: vi.fn(),
     issuePgnWorkspace: vi.fn(),
     countPgnGames: vi.fn(),
@@ -26,12 +27,43 @@ vi.mock("jotai", async (importOriginal) => {
     };
 });
 
+vi.mock("./tabs", () => ({ createTab: mocks.createTab }));
+
 import { TauriCommandError } from "@/platform/tauri";
 import { fileWorkspaceAtom, fileWorkspaceDisplayNameAtom } from "@/state/atoms";
-import { createFile, ensureFileWorkspace, pickPgnFile } from "./files";
+import { createFile, ensureFileWorkspace, openFile, pickPgnFile } from "./files";
 
 afterEach(() => {
     vi.clearAllMocks();
+});
+
+describe("openFile tab admission", () => {
+    const file = {
+        type: "file" as const,
+        name: "white.pgn",
+        handle: { id: { id: "white" }, kind: "fileWorkspace" as const },
+        numGames: 1,
+        metadata: { type: "repertoire" as const, tags: [] },
+        lastModified: 1,
+    };
+    const setTabs = vi.fn();
+    const setActiveTab = vi.fn();
+
+    test("does not acknowledge practice or recent metadata when admission is refused", async () => {
+        mocks.createTab.mockResolvedValueOnce(null);
+
+        await expect(openFile(file, setTabs, setActiveTab, { pgn: "" })).resolves.toBeNull();
+
+        expect(mocks.storeSet).not.toHaveBeenCalled();
+    });
+
+    test("returns the admitted id and preserves practice and recent metadata updates", async () => {
+        mocks.createTab.mockResolvedValueOnce("tab-id");
+
+        await expect(openFile(file, setTabs, setActiveTab, { pgn: "" })).resolves.toBe("tab-id");
+
+        expect(mocks.storeSet).toHaveBeenCalledTimes(2);
+    });
 });
 
 test.each([
