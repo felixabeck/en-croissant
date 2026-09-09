@@ -121,11 +121,8 @@ export function rootHalfMoves(fen: string): number {
 
 export function normalizeTreeHalfMoves(root: TreeNode): void {
     const initial = rootHalfMoves(root.fen);
-    const stack = [{ node: root, halfMoves: initial }];
-    while (stack.length > 0) {
-        const { node, halfMoves } = stack.pop()!;
-        node.halfMoves = halfMoves;
-        for (const child of node.children) stack.push({ node: child, halfMoves: halfMoves + 1 });
+    for (const { node, position } of treeIterator(root)) {
+        node.halfMoves = initial + position.length;
     }
 }
 

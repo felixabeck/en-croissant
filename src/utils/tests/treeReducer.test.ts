@@ -9,6 +9,7 @@ import {
     getBoardState,
     getGameName,
     getNodeAtPath,
+    normalizeTreeHalfMoves,
     rootHalfMoves,
     treeIterator,
     treeIteratorMainLine,
@@ -115,6 +116,25 @@ test("root move numbering derives from the FEN fullmove and side to move", () =>
     expect(rootHalfMoves(black)).toBe(45);
     expect(defaultTree(white).root.halfMoves).toBe(44);
     expect(defaultTree(black).root.halfMoves).toBe(45);
+});
+
+test("root move numbering has a deterministic fallback for a malformed FEN", () => {
+    expect(rootHalfMoves("not a FEN")).toBe(0);
+    expect(defaultTree("not a FEN").root.halfMoves).toBe(0);
+});
+
+test("normalizing a branched tree completes and derives every ply from its depth", () => {
+    const root = defaultTree("8/8/8/8/8/8/8/K6k b - - 0 23").root;
+    const first = child("first", 1);
+    const reply = child("reply", 2);
+    const sibling = child("sibling", 99);
+    first.children.push(reply);
+    root.children.push(first, sibling);
+
+    expect(() => normalizeTreeHalfMoves(root)).not.toThrow();
+    expect([root.halfMoves, first.halfMoves, reply.halfMoves, sibling.halfMoves]).toEqual([
+        45, 46, 47, 46,
+    ]);
 });
 
 describe("game display name", () => {
