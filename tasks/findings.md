@@ -7299,3 +7299,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Evidence:** Cumulative chess-semantics lens confidence97; root confirmed full-FEN comparison violates the existing getBoardState identity rule. Originb279d5bf predates reviewed range.
 * **Repair:** Use the existing canonical position identity and test clock-different transpositions plus genuinely distinct positions. Adopted for active review repair.
 * **Provenance:** Plan authorship/arbitration share root context; Codex detection shares family with phase1/2/4 code, Gemini authored phase3.
+
+---
+
+## 2026-09-09 — filed through the inbox spool
+
+### Valid saved trees are rejected because the Zustand persistence version differs from the storage adapter
+* **ID:** f-20260909-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** inline · **Blocked:** none
+
+* **Evidence:** `src/state/store/tabStorage.ts` validates and returns persisted tree envelopes with `TREE_STORAGE_VERSION = 1`, while `src/state/store/tree.ts` configured Zustand persist without a version (default 0). A focused production-store hydration regression reported `State loaded from storage couldn't be migrated since no migrate function was provided` and returned default root ply 0 instead of the saved custom root ply 45. Setting the matching version makes that regression pass.
+* **Impact:** A valid saved game tree can reopen as the default tree instead of restoring its saved moves and metadata.
+* **Repair:** Share the adapter's version with the Zustand store and prove valid stored trees hydrate, including legacy envelopes repaired by the adapter. This is being repaired in the resumed native cancellation build after its stale-report hydration regression exposed the defect.
+* **Related:** f-20260904-09 concerns live report completion ownership; f-20260901-05 concerns durable tab creation. Neither is this version mismatch. f-20260831-21 shares the store file but concerns a separate analysis-array guard.
+* **Provenance:** Root inspected both production boundaries; the Codex tree repair worker ran the failing/passing hydration regression. Plan authorship and arbitration share root context; detection and repair use the Codex model family, while original phase 3 used Gemini.
