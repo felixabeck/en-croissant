@@ -759,6 +759,30 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
 
   const THROTTLE_MS = 150;
 
+  const scheduleDeferredPremove = useCallback(
+    (targetGameId: string, targetSession: bigint, targetGeneration: number) => {
+      if (premoveTimerRef.current) {
+        clearTimeout(premoveTimerRef.current);
+        premoveTimerRef.current = null;
+      }
+      premoveTimerRef.current = setTimeout(() => {
+        if (
+          isCurrentQueuedGameUpdate(
+            targetGeneration,
+            sessionGenerationRef.current,
+            targetSession,
+            backendSessionRef.current,
+          ) &&
+          ownsUiSession(targetGameId, targetSession, targetGeneration)
+        ) {
+          cgRef.current?.playPremove();
+        }
+        premoveTimerRef.current = null;
+      }, 0);
+    },
+    [ownsUiSession],
+  );
+
   const applyPendingUpdates = useCallback(() => {
     const queuedGeneration = queuedUpdateGenerationRef.current;
     const queuedGameId = queuedUpdateGameIdRef.current;
@@ -792,25 +816,10 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
     queuedUpdateGameIdRef.current = null;
     queuedUpdateSessionRef.current = null;
 
-    // Defer premove execution to the next task so the just-applied board update settles first.
-    premoveTimerRef.current = setTimeout(() => {
-      if (
-        isCurrentQueuedGameUpdate(
-          queuedGeneration,
-          sessionGenerationRef.current,
-          queuedSession,
-          backendSessionRef.current,
-        ) &&
-        queuedGeneration !== null &&
-        queuedGameId !== null &&
-        queuedSession !== null &&
-        ownsUiSession(queuedGameId, queuedSession, queuedGeneration)
-      ) {
-        cgRef.current?.playPremove();
-      }
-      premoveTimerRef.current = null;
-    }, 0);
-  }, [clearQueuedGameUpdates, ownsUiSession]);
+    if (queuedGeneration !== null && queuedGameId !== null && queuedSession !== null) {
+      scheduleDeferredPremove(queuedGameId, queuedSession, queuedGeneration);
+    }
+  }, [clearQueuedGameUpdates, ownsUiSession, scheduleDeferredPremove]);
 
   const scheduleUpdate = useCallback(() => {
     if (!throttleTimerRef.current) {
@@ -935,24 +944,130 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
   }, [clearQueuedGameUpdates]);
 
   useEffect(() => {
-    if (gameState === "playing" && gameId) {
-      const polledGameId = gameId;
-      const expectedSession = backendSessionRef.current;
-      if (expectedSession === null) return;
-      const generation = sessionGenerationRef.current;
-      if (!ownsUiSession(polledGameId, expectedSession, generation)) return;
-      void tauri
-        .getGameState(gameId, expectedSession)
-        .then((state) => {
-          applyAuthoritativeState(state, polledGameId, expectedSession, generation);
-        })
-        .catch((error) => {
-          if (ownsUiSession(polledGameId, expectedSession, generation)) {
-            notifyUnlessCancelled(tRef.current("Common.Error"), error);
-          }
-        });
+    if (gameState !== "playing" || !gameId) {
+      return;
     }
-  }, [gameId, gameState, applyAuthoritativeState, backendSession, ownsUiSession]);
+    const polledGameId = gameId;
+    const expectedSession = backendSessionRef.current;
+    if (expectedSession === null) return;
+    const generation = sessionGenerationRef.current;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let backoffMs = 1000;
+    let outageNotified = false;
+    let inFlight = false;
+
+    const isCurrent = () =>
+      !cancelled &&
+      ownsMountedOwner() &&
+      !atomStore.get(closingTabsAtom).has(ownerTabId) &&
+      ownsUiSession(polledGameId, expectedSession, generation) &&
+      atomStore.get(ownerGameStateAtom) === "playing";
+
+    if (!isCurrent()) return;
+
+    const scheduleNext = (delayMs: number) => {
+      if (!isCurrent()) return;
+      timer = setTimeout(() => {
+        timer = null;
+        void poll();
+      }, delayMs);
+    };
+
+    const poll = async () => {
+      if (!isCurrent() || inFlight) return;
+      inFlight = true;
+
+      try {
+        const state = await tauri.getGameState(polledGameId, expectedSession);
+        if (!isCurrent()) return;
+
+        backoffMs = 1000;
+        outageNotified = false;
+
+        let eligibleForPremove = false;
+        if (state.status === "playing" && isPlayerVsEngine) {
+          const nextTurnIsHuman =
+            state.turn === "white"
+              ? players.white.type === "human"
+              : players.black.type === "human";
+          if (nextTurnIsHuman) {
+            const currentLiveMoves: string[] = [];
+            let node = store.getState().root;
+            while (node.children.length > 0) {
+              node = node.children[0];
+              if (node.move) {
+                currentLiveMoves.push(makeUci(node.move));
+              }
+            }
+            if (state.moves.length > currentLiveMoves.length) {
+              let isPrefix = true;
+              for (let i = 0; i < currentLiveMoves.length; i++) {
+                if (state.moves[i].uci !== currentLiveMoves[i]) {
+                  isPrefix = false;
+                  break;
+                }
+              }
+              if (isPrefix) {
+                eligibleForPremove = true;
+              }
+            }
+          }
+        }
+
+        const applied = applyAuthoritativeState(state, polledGameId, expectedSession, generation);
+
+        if (applied && eligibleForPremove) {
+          scheduleDeferredPremove(polledGameId, expectedSession, generation);
+        }
+
+        if (isCurrent()) {
+          scheduleNext(1000);
+        }
+      } catch (error) {
+        if (!isCurrent()) return;
+
+        if (!outageNotified) {
+          outageNotified = true;
+          notifyUnlessCancelled(tRef.current("Common.Error"), error);
+        }
+
+        const nextDelay = backoffMs;
+        backoffMs = Math.min(backoffMs * 2, 8000);
+
+        if (isCurrent()) {
+          scheduleNext(nextDelay);
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void poll();
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+  }, [
+    gameId,
+    gameState,
+    applyAuthoritativeState,
+    backendSession,
+    ownsMountedOwner,
+    ownsUiSession,
+    atomStore,
+    ownerGameStateAtom,
+    ownerTabId,
+    players,
+    isPlayerVsEngine,
+    scheduleDeferredPremove,
+    store,
+  ]);
 
   const movable = useMemo(() => {
     if (players.white.type === "human" && players.black.type === "human") {

@@ -9,7 +9,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use log::{error, info};
+use log::{error, info, warn};
 use pgn_reader::{BufferedReader, RawHeader, Skip, Visitor};
 use polyglot_book_rs::polyglot_hash_from_fen;
 use rand::Rng;
@@ -251,7 +251,8 @@ struct GameController {
     position: Chess,
     position_history: HashMap<String, u32>,
     status: GameStatus,
-    terminal_event_emitted: bool,
+    terminal_attempt_claimed: bool,
+    emission_diagnostics: EmissionDiagnosticLatch,
     clock: Option<ClockState>,
     white_engine: Option<RegisteredGameEngine>,
     black_engine: Option<RegisteredGameEngine>,
@@ -323,7 +324,8 @@ impl GameController {
             position,
             position_history,
             status: GameStatus::Playing,
-            terminal_event_emitted: false,
+            terminal_attempt_claimed: false,
+            emission_diagnostics: EmissionDiagnosticLatch::default(),
             clock,
             white_engine: None,
             black_engine: None,
@@ -738,7 +740,7 @@ impl GameController {
         }
         self.status = GameStatus::Finished { result };
         self.advance_position_generation();
-        self.terminal_event_emitted = false;
+        self.terminal_attempt_claimed = false;
         self.bump_revision();
         true
     }
@@ -760,28 +762,120 @@ impl GameController {
             self.revision
         }
     }
+
+    fn attempt_event_emission<F>(
+        &mut self,
+        kind: GameEventKind,
+        revision: u64,
+        emitter: F,
+    ) -> Option<&'static str>
+    where
+        F: FnOnce() -> Result<(), tauri::Error>,
+    {
+        let latch = match kind {
+            GameEventKind::Move => &mut self.emission_diagnostics.move_failed,
+            GameEventKind::Clock => &mut self.emission_diagnostics.clock_failed,
+            GameEventKind::GameOver => &mut self.emission_diagnostics.terminal_failed,
+        };
+        attempt_game_event_emission(&self.game_id, self.session, revision, kind, latch, emitter)
+    }
 }
 
-/// Publishes a terminal result exactly once for the state transition that
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GameEventKind {
+    Move,
+    Clock,
+    GameOver,
+}
+
+impl GameEventKind {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Move => "move",
+            Self::Clock => "clock",
+            Self::GameOver => "game-over",
+        }
+    }
+}
+
+fn safe_tauri_error_label(error: &tauri::Error) -> &'static str {
+    match error {
+        tauri::Error::Json(_) => "serialization",
+        tauri::Error::Runtime(_) => "runtime",
+        tauri::Error::Io(_) => "io",
+        tauri::Error::FailedToReceiveMessage => "message-receive",
+        _ => "other-tauri",
+    }
+}
+
+#[derive(Default, Clone, Copy, Debug)]
+pub(crate) struct EmissionDiagnosticLatch {
+    pub(crate) move_failed: bool,
+    pub(crate) clock_failed: bool,
+    pub(crate) terminal_failed: bool,
+}
+
+fn attempt_game_event_emission<F>(
+    game_id: &str,
+    session: u64,
+    revision: u64,
+    kind: GameEventKind,
+    latch: &mut bool,
+    emitter: F,
+) -> Option<&'static str>
+where
+    F: FnOnce() -> Result<(), tauri::Error>,
+{
+    match emitter() {
+        Ok(()) => None,
+        Err(err) => {
+            if !*latch {
+                *latch = true;
+                let cause = safe_tauri_error_label(&err);
+                warn!(
+                    "Game event emission failed: kind={}, game_id={}, session={}, revision={}, cause={}",
+                    kind.as_str(),
+                    game_id,
+                    session,
+                    revision,
+                    cause,
+                );
+                Some(cause)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Attempts terminal event emission exactly once for the state transition that
 /// produced it. Transport remains best effort, but competing timeout,
-/// resignation and engine-error paths cannot publish conflicting results.
-fn emit_terminal_event(controller: &mut GameController, app: &AppHandle) -> bool {
+/// resignation and engine-error paths cannot claim or attempt conflicting transitions.
+fn attempt_terminal_event_emission_with<F>(controller: &mut GameController, emitter: F) -> bool
+where
+    F: FnOnce(&GameOverEvent) -> Result<(), tauri::Error>,
+{
     let GameStatus::Finished { result } = &controller.status else {
         return false;
     };
-    if controller.terminal_event_emitted {
+    if controller.terminal_attempt_claimed {
         return false;
     }
-    controller.terminal_event_emitted = true;
-    let _ = GameOverEvent {
+    controller.terminal_attempt_claimed = true;
+    let event = GameOverEvent {
         game_id: controller.game_id.clone(),
         session: controller.session,
         revision: controller.revision,
         result: result.clone(),
         moves: controller.moves.clone(),
-    }
-    .emit(app);
+    };
+    let revision = controller.revision;
+    controller.attempt_event_emission(GameEventKind::GameOver, revision, || emitter(&event));
     true
+}
+
+fn attempt_terminal_event_emission(controller: &mut GameController, app: &AppHandle) -> bool {
+    attempt_terminal_event_emission_with(controller, |event| event.emit(app))
 }
 
 const COMPLETED_GAME_SNAPSHOTS: usize = 128;
@@ -1362,11 +1456,11 @@ impl GameManager {
         // A FEN (or a validated initial move sequence) may already be
         // terminal. Register the LiveSession first, then publish exactly once
         // through the same terminal-event guard used by live play.
-        let initially_finished = {
+        let terminal_attempt_claimed = {
             let mut controller = controller.write().await;
-            emit_terminal_event(&mut controller, &app)
+            attempt_terminal_event_emission(&mut controller, &app)
         };
-        if initially_finished {
+        if terminal_attempt_claimed {
             let _ = live.shutdown.send(true);
         }
         let _ = start_loop.send(());
@@ -1454,10 +1548,11 @@ impl GameManager {
         let game_move = match controller.apply_move(uci) {
             Ok(move_) => move_,
             Err(_) if matches!(controller.status, GameStatus::Finished { .. }) => {
-                let finished = emit_terminal_event(&mut controller, app);
+                let terminal_attempt_claimed =
+                    attempt_terminal_event_emission(&mut controller, app);
                 let state = controller.get_state();
                 drop(controller);
-                if finished {
+                if terminal_attempt_claimed {
                     let _ = game.shutdown.send(true);
                 }
                 return Ok(state);
@@ -1466,23 +1561,24 @@ impl GameManager {
         };
         let (white_time, black_time) = controller.get_current_times();
 
-        GameMoveEvent {
+        let move_revision = controller.move_event_revision();
+        let move_event = GameMoveEvent {
             game_id: game_id.to_string(),
             session: controller.session,
             // A terminal move is followed by a distinct GameOver event. The move
             // itself owns the revision assigned by `apply_move`; `end_game`
             // advances it once more for the terminal state/event.
-            revision: controller.move_event_revision(),
+            revision: move_revision,
             moves: controller.moves.clone(),
             fen: game_move.fen_after,
             white_time,
             black_time,
-        }
-        .emit(app)
-        .unwrap_or(());
+        };
+        controller
+            .attempt_event_emission(GameEventKind::Move, move_revision, || move_event.emit(app));
 
-        let finished = emit_terminal_event(&mut controller, app);
-        if !finished {
+        let terminal_attempt_claimed = attempt_terminal_event_emission(&mut controller, app);
+        if !terminal_attempt_claimed {
             if let Some(tx) = &controller.move_notify_tx {
                 let _ = tx.try_send(());
             }
@@ -1490,7 +1586,7 @@ impl GameManager {
 
         let state = controller.get_state();
         drop(controller);
-        if finished {
+        if terminal_attempt_claimed {
             let _ = game.shutdown.send(true);
         }
         Ok(state)
@@ -1536,20 +1632,21 @@ impl GameManager {
         let (white_time, black_time) = controller.get_current_times();
         let fen = Fen::from_position(controller.position.clone(), EnPassantMode::Legal).to_string();
 
-        GameMoveEvent {
+        let move_revision = controller.move_event_revision();
+        let move_event = GameMoveEvent {
             game_id: game_id.to_string(),
             session: controller.session,
-            revision: controller.move_event_revision(),
+            revision: move_revision,
             moves: controller.moves.clone(),
             fen,
             white_time,
             black_time,
-        }
-        .emit(app)
-        .unwrap_or(());
+        };
+        controller
+            .attempt_event_emission(GameEventKind::Move, move_revision, || move_event.emit(app));
 
-        let finished = emit_terminal_event(&mut controller, app);
-        if !finished && controller.is_engine_turn() {
+        let terminal_attempt_claimed = attempt_terminal_event_emission(&mut controller, app);
+        if !terminal_attempt_claimed && controller.is_engine_turn() {
             if let Some(tx) = &controller.move_notify_tx {
                 let _ = tx.try_send(());
             }
@@ -1557,7 +1654,7 @@ impl GameManager {
 
         let state = controller.get_state();
         drop(controller);
-        if finished {
+        if terminal_attempt_claimed {
             let _ = game.shutdown.send(true);
         }
         Ok(state)
@@ -1597,7 +1694,7 @@ impl GameManager {
         };
 
         let finished = controller.end_game(result);
-        emit_terminal_event(&mut controller, app);
+        attempt_terminal_event_emission(&mut controller, app);
 
         let state = controller.get_state();
         drop(controller);
@@ -2590,7 +2687,7 @@ async fn game_loop(
                             };
                             ctrl.end_game(result);
                         }
-                        emit_terminal_event(&mut ctrl, &app);
+                        attempt_terminal_event_emission(&mut ctrl, &app);
                         break;
                     }
                     Some(Err(join_error)) => {
@@ -2605,7 +2702,7 @@ async fn game_loop(
                             };
                             ctrl.end_game(result);
                         }
-                        emit_terminal_event(&mut ctrl, &app);
+                        attempt_terminal_event_emission(&mut ctrl, &app);
                         break;
                     }
                     None => {
@@ -2639,19 +2736,23 @@ async fn game_loop(
 
                     if let Some(result) = ctrl.settle_active_clock() {
                         ctrl.end_game(result);
-                        emit_terminal_event(&mut ctrl, &app);
+                        attempt_terminal_event_emission(&mut ctrl, &app);
                         break;
                     }
 
                     let (white_time, black_time) = ctrl.get_current_times();
                     ctrl.bump_revision();
-                    let _ = ClockUpdateEvent {
+                    let clock_event = ClockUpdateEvent {
                         game_id: game_id.clone(),
                         session: ctrl.session,
                         revision: ctrl.revision,
                         white_time,
                         black_time,
-                    }.emit(&app);
+                    };
+                    let clock_revision = ctrl.revision;
+                    ctrl.attempt_event_emission(GameEventKind::Clock, clock_revision, || {
+                        clock_event.emit(&app)
+                    });
 
                     is_finished = ctrl.status != GameStatus::Playing;
                 }
@@ -2752,26 +2853,28 @@ async fn request_engine_move(
             let game_move = match ctrl.apply_move(&book_uci) {
                 Ok(move_) => move_,
                 Err(_) if matches!(ctrl.status, GameStatus::Finished { .. }) => {
-                    emit_terminal_event(&mut ctrl, app);
+                    attempt_terminal_event_emission(&mut ctrl, app);
                     return Ok(());
                 }
                 Err(error) => return Err(error),
             };
             let (white_time, black_time) = ctrl.get_current_times();
 
-            GameMoveEvent {
+            let move_revision = ctrl.move_event_revision();
+            let move_event = GameMoveEvent {
                 game_id: game_id.to_string(),
                 session: ctrl.session,
-                revision: ctrl.move_event_revision(),
+                revision: move_revision,
                 moves: ctrl.moves.clone(),
                 fen: game_move.fen_after,
                 white_time,
                 black_time,
-            }
-            .emit(app)
-            .unwrap_or(());
+            };
+            ctrl.attempt_event_emission(GameEventKind::Move, move_revision, || {
+                move_event.emit(app)
+            });
 
-            emit_terminal_event(&mut ctrl, app);
+            attempt_terminal_event_emission(&mut ctrl, app);
 
             return Ok(());
         }
@@ -2888,26 +2991,26 @@ async fn request_engine_move(
     let game_move = match ctrl.apply_move(&best_move) {
         Ok(move_) => move_,
         Err(_) if matches!(ctrl.status, GameStatus::Finished { .. }) => {
-            emit_terminal_event(&mut ctrl, app);
+            attempt_terminal_event_emission(&mut ctrl, app);
             return Ok(());
         }
         Err(error) => return Err(error),
     };
     let (white_time, black_time) = ctrl.get_current_times();
 
-    GameMoveEvent {
+    let move_revision = ctrl.move_event_revision();
+    let move_event = GameMoveEvent {
         game_id: game_id.to_string(),
         session: ctrl.session,
-        revision: ctrl.move_event_revision(),
+        revision: move_revision,
         moves: ctrl.moves.clone(),
         fen: game_move.fen_after,
         white_time,
         black_time,
-    }
-    .emit(app)
-    .unwrap_or(());
+    };
+    ctrl.attempt_event_emission(GameEventKind::Move, move_revision, || move_event.emit(app));
 
-    emit_terminal_event(&mut ctrl, app);
+    attempt_terminal_event_emission(&mut ctrl, app);
 
     Ok(())
 }
@@ -4371,5 +4474,294 @@ mod tests {
     #[test]
     fn epd_reader_errors_are_not_silently_treated_as_end_of_book() {
         assert!(select_random_epd_entry(BufReader::new(Cursor::new(vec![0xff]))).is_err());
+    }
+
+    #[test]
+    fn emission_diagnostics_and_safe_label_mapping_are_session_isolated() {
+        let mut ctrl1 = GameController::new("session-1".into(), 1, human_config()).unwrap();
+
+        // Safe label mapping:
+        assert_eq!(
+            safe_tauri_error_label(&tauri::Error::Json(
+                serde_json::from_str::<i32>("bad").unwrap_err()
+            )),
+            "serialization"
+        );
+        assert_eq!(
+            safe_tauri_error_label(&tauri::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "broken"
+            ))),
+            "io"
+        );
+        assert_eq!(
+            safe_tauri_error_label(&tauri::Error::FailedToReceiveMessage),
+            "message-receive"
+        );
+        assert_eq!(
+            safe_tauri_error_label(&tauri::Error::NoParent),
+            "other-tauri"
+        );
+
+        // Session 1: Move failure sets latch and returns safe label.
+        let res1 = ctrl1.attempt_event_emission(GameEventKind::Move, 1, || {
+            Err(tauri::Error::Json(
+                serde_json::from_str::<i32>("bad").unwrap_err(),
+            ))
+        });
+        assert_eq!(res1, Some("serialization"));
+        assert!(ctrl1.emission_diagnostics.move_failed);
+
+        // Second Move failure in same session is suppressed.
+        let res2 = ctrl1.attempt_event_emission(GameEventKind::Move, 2, || {
+            Err(tauri::Error::Io(std::io::Error::other("err")))
+        });
+        assert_eq!(res2, None);
+
+        // Subsequent successful Move emission still happens even after latch is set.
+        let mut move_emitted = false;
+        let res_ok = ctrl1.attempt_event_emission(GameEventKind::Move, 3, || {
+            move_emitted = true;
+            Ok(())
+        });
+        assert!(move_emitted);
+        assert_eq!(res_ok, None);
+
+        // Session 1: Clock failure sets latch and returns safe label.
+        let res_clock1 = ctrl1.attempt_event_emission(GameEventKind::Clock, 1, || {
+            Err(tauri::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "broken",
+            )))
+        });
+        assert_eq!(res_clock1, Some("io"));
+        assert!(ctrl1.emission_diagnostics.clock_failed);
+
+        // Second Clock failure suppressed.
+        let res_clock2 =
+            ctrl1.attempt_event_emission(GameEventKind::Clock, 2, || Err(tauri::Error::NoParent));
+        assert_eq!(res_clock2, None);
+
+        // Subsequent successful Clock emission still happens.
+        let mut clock_emitted = false;
+        let res_clock_ok = ctrl1.attempt_event_emission(GameEventKind::Clock, 3, || {
+            clock_emitted = true;
+            Ok(())
+        });
+        assert!(clock_emitted);
+        assert_eq!(res_clock_ok, None);
+
+        // Session 1: Terminal failure sets latch and returns safe label.
+        let res_term1 = ctrl1.attempt_event_emission(GameEventKind::GameOver, 1, || {
+            Err(tauri::Error::FailedToReceiveMessage)
+        });
+        assert_eq!(res_term1, Some("message-receive"));
+        assert!(ctrl1.emission_diagnostics.terminal_failed);
+
+        // Second Terminal failure suppressed.
+        let res_term2 = ctrl1
+            .attempt_event_emission(GameEventKind::GameOver, 2, || Err(tauri::Error::NoParent));
+        assert_eq!(res_term2, None);
+
+        // Subsequent successful GameOver emission still happens.
+        let mut term_emitted = false;
+        let res_term_ok = ctrl1.attempt_event_emission(GameEventKind::GameOver, 3, || {
+            term_emitted = true;
+            Ok(())
+        });
+        assert!(term_emitted);
+        assert_eq!(res_term_ok, None);
+
+        // Session 2 isolation: A fresh session must report all 3 kinds of first failures again.
+        let mut ctrl2 = GameController::new("session-2".into(), 2, human_config()).unwrap();
+        assert!(!ctrl2.emission_diagnostics.move_failed);
+        assert!(!ctrl2.emission_diagnostics.clock_failed);
+        assert!(!ctrl2.emission_diagnostics.terminal_failed);
+
+        let s2_move = ctrl2.attempt_event_emission(GameEventKind::Move, 1, || {
+            Err(tauri::Error::Json(
+                serde_json::from_str::<i32>("bad").unwrap_err(),
+            ))
+        });
+        assert_eq!(s2_move, Some("serialization"));
+
+        let s2_clock = ctrl2.attempt_event_emission(GameEventKind::Clock, 1, || {
+            Err(tauri::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "broken",
+            )))
+        });
+        assert_eq!(s2_clock, Some("io"));
+
+        let s2_term = ctrl2.attempt_event_emission(GameEventKind::GameOver, 1, || {
+            Err(tauri::Error::FailedToReceiveMessage)
+        });
+        assert_eq!(s2_term, Some("message-receive"));
+    }
+
+    #[tokio::test]
+    async fn failed_terminal_emission_attempt_still_permits_completion_and_exact_query() {
+        let manager = Arc::new(GameManager::new());
+        let game_id = "test-terminal-fail";
+        let session = 1u64;
+        let (live, controller) = test_live_session(game_id, session);
+        manager
+            .publish_live(game_id.into(), session, live, || {})
+            .await
+            .unwrap();
+
+        let mut ctrl = controller.write().await;
+        let end_res = ctrl.end_game(GameResult::WhiteWins {
+            reason: GameEndReason::Checkmate,
+        });
+        assert!(end_res);
+        assert!(!ctrl.terminal_attempt_claimed);
+
+        // Injected terminal failure
+        let claimed = attempt_terminal_event_emission_with(&mut ctrl, |_| {
+            Err(tauri::Error::FailedToReceiveMessage)
+        });
+        assert!(
+            claimed,
+            "terminal attempt must be claimed even if emission fails"
+        );
+        assert!(ctrl.terminal_attempt_claimed);
+        assert!(ctrl.emission_diagnostics.terminal_failed);
+
+        // Second call must return false (once-only claim)
+        let second_claim = attempt_terminal_event_emission_with(&mut ctrl, |_| Ok(()));
+        assert!(!second_claim, "competing terminal attempt must be rejected");
+
+        // Authoritative state remains completely intact
+        assert_eq!(
+            ctrl.status,
+            GameStatus::Finished {
+                result: GameResult::WhiteWins {
+                    reason: GameEndReason::Checkmate,
+                },
+            }
+        );
+        drop(ctrl);
+
+        // Completion proceeds normally, retaining exact completed snapshot
+        manager.complete_exact(game_id, session, &controller).await;
+
+        // Exact retained query succeeds
+        let snapshot = manager.get_game_state(game_id, session).await.unwrap();
+        assert_eq!(snapshot.game_id, game_id);
+        assert_eq!(snapshot.session, session);
+        assert_eq!(
+            snapshot.status,
+            GameStatus::Finished {
+                result: GameResult::WhiteWins {
+                    reason: GameEndReason::Checkmate,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn every_production_game_publisher_routes_through_emission_helper() {
+        let source = include_str!("game.rs");
+        let prod_source = source
+            .split_once("mod tests {")
+            .map(|(prod, _)| prod)
+            .unwrap_or(source);
+
+        // The production source must never discard emits via unwrap_or(())
+        assert!(
+            !prod_source.contains(".emit(app).unwrap_or(())"),
+            "production publishers must not use bare discarded unwrap_or(()) emits"
+        );
+        assert!(
+            !prod_source.contains("emit_terminal_event"),
+            "emit_terminal_event must be fully replaced by attempt_terminal_event_emission"
+        );
+
+        // Human move routing anchor
+        let make_move_chunk = prod_source
+            .split_once("pub async fn make_move(")
+            .map(|(_, suffix)| suffix)
+            .expect("make_move must exist");
+        let make_move_body = make_move_chunk
+            .split_once("pub async fn take_back_move(")
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(make_move_chunk);
+        assert!(
+            make_move_body.contains(".attempt_event_emission(GameEventKind::Move"),
+            "make_move must route GameMoveEvent through attempt_event_emission"
+        );
+        assert!(
+            make_move_body.contains("attempt_terminal_event_emission(&mut controller, app)"),
+            "make_move must route terminal emission through attempt_terminal_event_emission"
+        );
+
+        // Takeback routing anchor
+        let take_back_chunk = source
+            .split_once("pub async fn take_back_move(")
+            .map(|(_, suffix)| suffix)
+            .expect("take_back_move must exist");
+        let take_back_body = take_back_chunk
+            .split_once("pub async fn resign_game(")
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(take_back_chunk);
+        assert!(
+            take_back_body.contains(".attempt_event_emission(GameEventKind::Move"),
+            "take_back_move must route GameMoveEvent through attempt_event_emission"
+        );
+        assert!(
+            take_back_body.contains("attempt_terminal_event_emission(&mut controller, app)"),
+            "take_back_move must route terminal emission through attempt_terminal_event_emission"
+        );
+
+        // Book move routing anchor
+        let book_chunk = prod_source
+            .split_once("let game_move = match ctrl.apply_move(&book_uci)")
+            .map(|(_, suffix)| suffix)
+            .expect("book move application must exist");
+        let book_body = book_chunk
+            .split_once("let (engine_arc, go_mode")
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(book_chunk);
+        assert!(
+            book_body.contains("ctrl.attempt_event_emission(GameEventKind::Move"),
+            "book move must route GameMoveEvent through attempt_event_emission"
+        );
+        assert!(
+            book_body.contains("attempt_terminal_event_emission(&mut ctrl, app)"),
+            "book move must route terminal emission through attempt_terminal_event_emission"
+        );
+
+        // Engine move routing anchor
+        let engine_move_chunk = prod_source
+            .split_once("let game_move = match ctrl.apply_move(&best_move)")
+            .map(|(_, suffix)| suffix)
+            .expect("engine move application must exist");
+        let engine_move_body = engine_move_chunk
+            .split_once("pub async fn start_game(")
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(engine_move_chunk);
+        assert!(
+            engine_move_body.contains("ctrl.attempt_event_emission(GameEventKind::Move"),
+            "engine move must route GameMoveEvent through attempt_event_emission"
+        );
+        assert!(
+            engine_move_body.contains("attempt_terminal_event_emission(&mut ctrl, app)"),
+            "engine move must route terminal emission through attempt_terminal_event_emission"
+        );
+
+        // Clock tick routing anchor
+        let clock_tick_chunk = source
+            .split_once("_ = clock_interval.tick() => {")
+            .map(|(_, suffix)| suffix)
+            .expect("clock tick interval branch must exist");
+        let clock_tick_body = clock_tick_chunk
+            .split_once("is_finished = ctrl.status != GameStatus::Playing;")
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(clock_tick_chunk);
+        assert!(
+            clock_tick_body.contains("ctrl.attempt_event_emission(GameEventKind::Clock"),
+            "clock tick must route ClockUpdateEvent through attempt_event_emission"
+        );
     }
 }

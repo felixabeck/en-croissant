@@ -16,6 +16,7 @@ const fixtures = vi.hoisted(() => ({
   logColorChange: null as null | ((value: string) => void),
   onMove: null as null | ((uci: string) => Promise<boolean>),
   onTakeBack: null as null | (() => Promise<void>),
+  positionTurn: "white" as "white" | "black",
   boardProps: null as any,
   playPremove: vi.fn(),
   queuePremove: vi.fn(),
@@ -70,7 +71,9 @@ vi.mock("@/state/atoms", async () => {
 vi.mock("zustand", () => ({
   useStore: (_store: unknown, selector: (state: unknown) => unknown) => selector(fixtures.tree),
 }));
-vi.mock("@/utils/chessops", () => ({ positionFromFen: () => [{ turn: "white" }, null] }));
+vi.mock("@/utils/chessops", () => ({
+  positionFromFen: () => [{ turn: fixtures.positionTurn ?? "white" }, null],
+}));
 vi.mock("@/platform/tauri", async () => {
   const subscribe = (name: string) =>
     vi.fn(async (listener, onError) => {
@@ -293,6 +296,7 @@ beforeEach(() => {
   fixtures.logRefresh = null;
   fixtures.logColorChange = null;
   fixtures.boardProps = null;
+  fixtures.positionTurn = "white";
   fixtures.queuePremove.mockReturnValue(true);
   fixtures.setEngineLogs = [];
   const rootNode = () => ({ fen: INITIAL_FEN, children: [] as any[] });
@@ -1754,5 +1758,724 @@ describe("cleanup ownership", () => {
     expect(store.get(gameStateFamily("tab-a"))).toBe("gameOver");
     expect(fixtures.notify).not.toHaveBeenCalled();
     root = createRoot(host);
+  });
+});
+describe("native game delivery reconciliation", () => {
+  test("dropped renderer events are recovered through periodic authoritative snapshots, including terminal completion after query failure", async () => {
+    vi.useFakeTimers();
+    const gameMoves: any[] = [];
+    fixtures.getGameState.mockImplementation(async (gameId, session) =>
+      state({
+        gameId,
+        session,
+        revision: BigInt(gameMoves.length),
+        moves: [...gameMoves],
+        whiteTime: gameMoves.length > 0 ? 299000n : 300000n,
+        blackTime: 300000n,
+        status:
+          gameMoves.length >= 2
+            ? { finished: { result: { type: "whiteWins", reason: "checkmate" } } }
+            : "playing",
+      }),
+    );
+
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+    const session = store.get(gameSessionFamily("tab-a"));
+    expect(gameId).not.toBeNull();
+    expect(session).toBe(1n);
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+
+    // Engine plays e2e4 on backend, but all renderer events are dropped
+    gameMoves.push({ uci: "e2e4", clock: 299000 });
+
+    // Periodic query at 1000ms cadence recovers move and clocks
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(treeMoves()).toEqual([expect.objectContaining({ from: 12, to: 28 })]);
+    expect(fixtures.boardProps.whiteTime).toBe(299000);
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(2);
+
+    // Next query encounters a transient transport failure
+    fixtures.getGameState.mockRejectedValueOnce(new Error("transport failure"));
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(3);
+    expect(fixtures.notify).toHaveBeenCalledWith("Common.Error", expect.any(Error));
+
+    // Game reaches checkmate on backend; still no events emitted
+    gameMoves.push({ uci: "e7e5", clock: 298000 });
+
+    // Backoff retry after 1 failure is 1000ms
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(4);
+
+    // Terminal state applied: final moves present, result set, exact ownership cleared
+    expect(treeMoves()).toEqual([
+      expect.objectContaining({ from: 12, to: 28 }),
+      expect.objectContaining({ from: 52, to: 36 }),
+    ]);
+    expect(fixtures.tree.headers.result).toBe("1-0");
+    expect(store.get(gameStateFamily("tab-a"))).toBe("gameOver");
+    expect(store.get(gameIdFamily("tab-a"))).toBeNull();
+    expect(store.get(gameSessionFamily("tab-a"))).toBeNull();
+
+    // Polling is stopped once game is over
+    fixtures.getGameState.mockClear();
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(fixtures.getGameState).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  test("pending reconciliation query prevents overlapping requests across multiple timer windows", async () => {
+    vi.useFakeTimers();
+    await render();
+    await start();
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+
+    // At 1000ms, the next poll starts and remains pending
+    const pending = Promise.withResolvers<any>();
+    fixtures.getGameState.mockReturnValueOnce(pending.promise);
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(2);
+
+    // Advance multiple timer windows while the query is in flight
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(2);
+
+    // Resolve pending query
+    const gameId = store.get(gameIdFamily("tab-a"));
+    await act(async () => pending.resolve(state({ gameId, session: 1n })));
+
+    // Next query is only scheduled 1000ms after settlement
+    await act(async () => vi.advanceTimersByTimeAsync(999));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(3);
+
+    vi.useRealTimers();
+  });
+
+  test("reconciliation retries with capped exponential backoff and bounded outage notifications, resetting upon recovery", async () => {
+    vi.useFakeTimers();
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+    fixtures.notify.mockClear();
+
+    // 1st periodic poll at +1000ms fails
+    fixtures.getGameState.mockRejectedValueOnce(new Error("err 1"));
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(2);
+    expect(fixtures.notify).toHaveBeenCalledTimes(1);
+    expect(fixtures.notify).toHaveBeenCalledWith("Common.Error", expect.any(Error));
+
+    // Next retry in 1000ms
+    await act(async () => vi.advanceTimersByTimeAsync(999));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(2);
+    fixtures.getGameState.mockRejectedValueOnce(new Error("err 2"));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(3);
+    expect(fixtures.notify).toHaveBeenCalledTimes(1); // Latched, no duplicate notification
+
+    // Next retry in 2000ms
+    await act(async () => vi.advanceTimersByTimeAsync(1999));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(3);
+    fixtures.getGameState.mockRejectedValueOnce(new Error("err 3"));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(4);
+    expect(fixtures.notify).toHaveBeenCalledTimes(1);
+
+    // Next retry in 4000ms
+    await act(async () => vi.advanceTimersByTimeAsync(3999));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(4);
+    fixtures.getGameState.mockRejectedValueOnce(new Error("err 4"));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(5);
+    expect(fixtures.notify).toHaveBeenCalledTimes(1);
+
+    // Next retry in 8000ms (capped)
+    await act(async () => vi.advanceTimersByTimeAsync(7999));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(5);
+    fixtures.getGameState.mockRejectedValueOnce(new Error("err 5"));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(6);
+    expect(fixtures.notify).toHaveBeenCalledTimes(1);
+
+    // Stays capped at 8000ms
+    await act(async () => vi.advanceTimersByTimeAsync(7999));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(6);
+    // Success on 6th poll resets backoff and notification latch
+    fixtures.getGameState.mockResolvedValueOnce(state({ gameId, session: 1n, revision: 1n }));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(7);
+    expect(fixtures.notify).toHaveBeenCalledTimes(1);
+
+    // After recovery, cadence is reset to 1000ms
+    // Next poll at +1000ms encounters a second outage
+    fixtures.getGameState.mockRejectedValueOnce(new Error("err 6"));
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(8);
+    // Second outage notifies again
+    expect(fixtures.notify).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+  });
+
+  test("reconciliation stops and silences on unmount, close intent, reset, replacement, or terminal completion", async () => {
+    vi.useFakeTimers();
+
+    const resetTabA = () => {
+      store.set(gameIdFamily("tab-a"), null);
+      store.set(gameSessionFamily("tab-a"), null);
+      store.set(gameStateFamily("tab-a"), "settingUp");
+      store.set(pendingGameStartFamily("tab-a"), null);
+    };
+
+    // 1. Unmount
+    await render();
+    await start();
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+    fixtures.getGameState.mockClear();
+    await act(async () => root.unmount());
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(fixtures.getGameState).not.toHaveBeenCalled();
+    root = createRoot(host);
+
+    // 2. Close intent
+    resetTabA();
+    await render();
+    await start();
+    fixtures.getGameState.mockClear();
+    store.set(closingTabsAtom, new Set(["tab-a"]));
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(fixtures.getGameState).not.toHaveBeenCalled();
+    store.set(closingTabsAtom, new Set());
+    await act(async () => root.unmount());
+    root = createRoot(host);
+
+    // 3. Reset
+    resetTabA();
+    fixtures.resignGame.mockImplementationOnce(async (gameId, session) =>
+      state({
+        gameId,
+        session,
+        revision: 1n,
+        status: { finished: { result: { type: "blackWins", reason: "resignation" } } },
+      }),
+    );
+    await render();
+    await start();
+    fixtures.getGameState.mockClear();
+    await act(async () => button("Board.Opponent.Resign").click());
+    expect(store.get(gameStateFamily("tab-a"))).toBe("gameOver");
+    await act(async () => button("Home.NewGame").click());
+    expect(store.get(gameStateFamily("tab-a"))).toBe("settingUp");
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(fixtures.getGameState).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    root = createRoot(host);
+
+    // 4. Replacement
+    resetTabA();
+    await render();
+    await start();
+    const gameA = store.get(gameIdFamily("tab-a"));
+    expect(gameA).not.toBeNull();
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await render("tab-b");
+    await start();
+    const gameB = store.get(gameIdFamily("tab-b"));
+    fixtures.getGameState.mockClear();
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledWith(gameB, 1n);
+    await act(async () => root.unmount());
+    root = createRoot(host);
+
+    // 5. Current-session GameOver event receipt
+    resetTabA();
+    await render();
+    await start();
+    const activeGame = store.get(gameIdFamily("tab-a"));
+    const activeSession = store.get(gameSessionFamily("tab-a"))!;
+    fixtures.getGameState.mockClear();
+    await act(async () =>
+      fixtures.listeners.get("gameOver")?.({
+        payload: {
+          gameId: activeGame,
+          session: activeSession,
+          revision: 1n,
+          result: { type: "draw", reason: "stalemate" },
+          moves: [],
+        },
+      }),
+    );
+    expect(store.get(gameStateFamily("tab-a"))).toBe("gameOver");
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(fixtures.getGameState).not.toHaveBeenCalled();
+
+    // 6. Native emit return alone cannot stop reconciliation
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    resetTabA();
+    await render();
+    await start();
+    const liveGame = store.get(gameIdFamily("tab-a"));
+    const liveSession = store.get(gameSessionFamily("tab-a"))!;
+    fixtures.getGameState.mockClear();
+    act(() =>
+      fixtures.listeners.get("gameMove")?.({
+        payload: {
+          gameId: liveGame,
+          session: liveSession,
+          revision: 1n,
+          moves: [{ uci: "e2e4", clock: null }],
+          whiteTime: 300n,
+          blackTime: 300n,
+        },
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledWith(liveGame, liveSession);
+
+    vi.useRealTimers();
+  });
+
+  test("reconciliation under StrictMode replay maintains single active polling loop", async () => {
+    vi.useFakeTimers();
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <TreeStateContext.Provider value={fixtures.treeStore}>
+            <BoardGame tabId="tab-a" />
+          </TreeStateContext.Provider>
+        </StrictMode>,
+      ),
+    );
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+    fixtures.getGameState.mockClear();
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(1);
+    expect(fixtures.getGameState).toHaveBeenCalledWith(gameId, 1n);
+
+    vi.useRealTimers();
+  });
+
+  test("stale-session and stale-revision snapshots cannot mutate current game state", async () => {
+    vi.useFakeTimers();
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+    expect(gameId).not.toBeNull();
+
+    // Wrong session (0n instead of 1n)
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 0n,
+        revision: 5n,
+        moves: [{ uci: "e2e4", clock: null }],
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(treeMoves()).toEqual([]);
+
+    // Wrong gameId
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId: "other-game",
+        session: 1n,
+        revision: 5n,
+        moves: [{ uci: "e2e4", clock: null }],
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(treeMoves()).toEqual([]);
+
+    // Advance live revision to 5n
+    act(() =>
+      fixtures.listeners.get("gameMove")?.({
+        payload: {
+          gameId,
+          session: 1n,
+          revision: 5n,
+          moves: [{ uci: "d2d4", clock: null }],
+          whiteTime: null,
+          blackTime: null,
+        },
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(200));
+    expect(treeMoves()).toEqual([expect.objectContaining({ from: 11, to: 27 })]);
+
+    // Snapshot with older revision (3n < 5n)
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 3n,
+        moves: [{ uci: "e2e4", clock: null }],
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    // Live tree remains d2d4
+    expect(treeMoves()).toEqual([expect.objectContaining({ from: 11, to: 27 })]);
+
+    vi.useRealTimers();
+  });
+
+  test("newer clock with older move snapshot restores missing move without clock regression", async () => {
+    vi.useFakeTimers();
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+
+    // Clock update arrives at revision 5n with whiteTime 290000
+    act(() =>
+      fixtures.listeners.get("clockUpdate")?.({
+        payload: {
+          gameId,
+          session: 1n,
+          revision: 5n,
+          whiteTime: 290000n,
+          blackTime: 300000n,
+        },
+      }),
+    );
+    expect(fixtures.boardProps.whiteTime).toBe(290000);
+
+    // Authoritative snapshot arrives at revision 4n (older than clock 5n, newer than move 0n)
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 4n,
+        moves: [{ uci: "e2e4", clock: 295000 }],
+        whiteTime: 295000n,
+        blackTime: 300000n,
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+
+    // The missing move is restored
+    expect(treeMoves()).toEqual([expect.objectContaining({ from: 12, to: 28 })]);
+    // The clock does not regress to 295000
+    expect(fixtures.boardProps.whiteTime).toBe(290000);
+
+    vi.useRealTimers();
+  });
+
+  test("queued old moves cannot overwrite newer polled authoritative state", async () => {
+    vi.useFakeTimers();
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+
+    // Polled state arrives at revision 10n with two moves
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 10n,
+        moves: [
+          { uci: "e2e4", clock: null },
+          { uci: "e7e5", clock: null },
+        ],
+        whiteTime: 295000n,
+        blackTime: 295000n,
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(treeMoves()).toHaveLength(2);
+
+    // Delayed gameMove event from revision 8n arrives with only 1 move
+    act(() =>
+      fixtures.listeners.get("gameMove")?.({
+        payload: {
+          gameId,
+          session: 1n,
+          revision: 8n,
+          moves: [{ uci: "e2e4", clock: null }],
+          whiteTime: 298000n,
+          blackTime: 300000n,
+        },
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(200));
+
+    // Polled state is preserved
+    expect(treeMoves()).toHaveLength(2);
+    expect(fixtures.boardProps.whiteTime).toBe(295000);
+
+    vi.useRealTimers();
+  });
+
+  test("missing or expired authoritative query is surfaced and does not fabricate result or adopt another session", async () => {
+    vi.useFakeTimers();
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+    expect(gameId).not.toBeNull();
+    fixtures.notify.mockClear();
+
+    fixtures.getGameState.mockRejectedValueOnce(new Error("Game session expired"));
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+
+    expect(fixtures.notify).toHaveBeenCalledWith(
+      "Common.Error",
+      expect.objectContaining({ message: "Game session expired" }),
+    );
+    expect(store.get(gameStateFamily("tab-a"))).toBe("playing");
+    expect(store.get(gameIdFamily("tab-a"))).toBe(gameId);
+    expect(store.get(gameSessionFamily("tab-a"))).toBe(1n);
+
+    vi.useRealTimers();
+  });
+
+  test("recovered engine move executes queued premove once, while clock-only or terminal snapshots do not, and stale callbacks are cancelled", async () => {
+    vi.useFakeTimers();
+    store.set(gamePlayer1SettingsAtom, { type: "human", name: "Alice" });
+    store.set(gamePlayer2SettingsAtom, {
+      type: "engine",
+      engine: engine("engine-black"),
+      go: { t: "Infinite" },
+    });
+
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+
+    // White human queues a premove
+    expect(fixtures.boardProps.onKeyboardPremove("g1", "f3")).toBe(true);
+
+    // 1. Clock-only snapshot (moves unchanged): does not trigger premove
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 1n,
+        moves: [],
+        whiteTime: 299000n,
+        blackTime: 300000n,
+        turn: "white",
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    expect(fixtures.playPremove).not.toHaveBeenCalled();
+
+    // 2. Recovered engine move (e7e5): next turn is human -> executes premove
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 2n,
+        moves: [{ uci: "e7e5", clock: null }],
+        turn: "white",
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    await act(async () => vi.advanceTimersByTimeAsync(10));
+    expect(fixtures.playPremove).toHaveBeenCalledTimes(1);
+
+    // 3. Stale deferred callbacks are cancelled upon terminal snapshot
+    fixtures.playPremove.mockClear();
+    expect(fixtures.boardProps.onKeyboardPremove("d2", "d4")).toBe(true);
+
+    const pendingPoll = Promise.withResolvers<any>();
+    fixtures.getGameState.mockReturnValueOnce(pendingPoll.promise);
+
+    // Advance 1000ms to trigger the poll query
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(fixtures.getGameState).toHaveBeenCalledTimes(4);
+
+    // Resolve poll with an engine move to schedule deferred premove callback
+    await act(async () => {
+      pendingPoll.resolve(
+        state({
+          gameId,
+          session: 1n,
+          revision: 3n,
+          moves: [
+            { uci: "e7e5", clock: null },
+            { uci: "f7f5", clock: null },
+          ],
+          turn: "white",
+        }),
+      );
+    });
+
+    // BEFORE timer 0ms fires, gameOver event arrives to end game
+    await act(async () =>
+      fixtures.listeners.get("gameOver")?.({
+        payload: {
+          gameId,
+          session: 1n,
+          revision: 4n,
+          result: { type: "draw", reason: "stalemate" },
+          moves: [
+            { uci: "e7e5", clock: null },
+            { uci: "f7f5", clock: null },
+          ],
+        },
+      }),
+    );
+
+    // Advance time past deferred timer
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    // Premove was cancelled by terminal transition!
+    expect(fixtures.playPremove).not.toHaveBeenCalled();
+
+    vi.useRealTimers();
+  });
+
+  test("premove execution with Black-to-move initial FEN respects authoritative state turn over stale renderer position turn", async () => {
+    vi.useFakeTimers();
+    const blackToMoveFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1";
+    store.set(gamePlayer1SettingsAtom, { type: "human", name: "Alice" });
+    store.set(gamePlayer2SettingsAtom, {
+      type: "engine",
+      engine: engine("engine-black"),
+      go: { t: "Infinite" },
+    });
+
+    // Deliberately stale renderer position turn: "black"
+    // If the component used pos.turn instead of state.turn, it would see "black"
+    // (the engine), and would refuse to execute White human's premove.
+    fixtures.positionTurn = "black";
+
+    fixtures.startGame.mockImplementationOnce(async (gameId) =>
+      state({
+        gameId,
+        initialFen: blackToMoveFen,
+        currentFen: blackToMoveFen,
+        turn: "black",
+      }),
+    );
+
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+
+    // White human queues a premove
+    expect(fixtures.boardProps.onKeyboardPremove("e2", "e4")).toBe(true);
+
+    // Engine plays e7e5; snapshot turn is "white" (human's turn next)
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 1n,
+        initialFen: blackToMoveFen,
+        currentFen: "rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        moves: [{ uci: "e7e5", clock: null }],
+        turn: "white",
+      }),
+    );
+
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    await act(async () => vi.advanceTimersByTimeAsync(10));
+
+    // Premove executed because authoritative state.turn === "white", not pos.turn === "black"!
+    expect(fixtures.playPremove).toHaveBeenCalledOnce();
+
+    vi.useRealTimers();
+  });
+
+  test("recovered takeback to empty moves and rewritten non-prefix line do not execute premove", async () => {
+    vi.useFakeTimers();
+    store.set(gamePlayer1SettingsAtom, { type: "human", name: "Alice" });
+    store.set(gamePlayer2SettingsAtom, {
+      type: "engine",
+      engine: engine("engine-black"),
+      go: { t: "Infinite" },
+    });
+
+    await render();
+    await start();
+    const gameId = store.get(gameIdFamily("tab-a"));
+
+    // Live tree has e2e4 and e7e5
+    act(() =>
+      fixtures.listeners.get("gameMove")?.({
+        payload: {
+          gameId,
+          session: 1n,
+          revision: 2n,
+          moves: [
+            { uci: "e2e4", clock: null },
+            { uci: "e7e5", clock: null },
+          ],
+          whiteTime: 300n,
+          blackTime: 300n,
+        },
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(200));
+    expect(treeMoves()).toHaveLength(2);
+
+    fixtures.playPremove.mockClear();
+
+    // Human queues a premove
+    expect(fixtures.boardProps.onKeyboardPremove("g1", "f3")).toBe(true);
+
+    // Case 1: Recovered takeback from [e2e4, e7e5] to [] with turn: "white" (human)
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 3n,
+        moves: [],
+        turn: "white",
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    expect(fixtures.playPremove).not.toHaveBeenCalled();
+    expect(treeMoves()).toHaveLength(0);
+
+    // Populate live tree with d2d4
+    act(() =>
+      fixtures.listeners.get("gameMove")?.({
+        payload: {
+          gameId,
+          session: 1n,
+          revision: 4n,
+          moves: [{ uci: "d2d4", clock: null }],
+          whiteTime: 300n,
+          blackTime: 300n,
+        },
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(200));
+    expect(treeMoves()).toHaveLength(1);
+
+    fixtures.playPremove.mockClear();
+
+    // Case 2: Rewritten non-prefix line [c2c4, c7c5] with turn: "white" (human)
+    fixtures.getGameState.mockResolvedValueOnce(
+      state({
+        gameId,
+        session: 1n,
+        revision: 5n,
+        moves: [
+          { uci: "c2c4", clock: null },
+          { uci: "c7c5", clock: null },
+        ],
+        turn: "white",
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+
+    // Premove was not executed because [c2c4, c7c5] does not extend [d2d4] as prefix
+    expect(fixtures.playPremove).not.toHaveBeenCalled();
+    // But the authoritative state was still applied to the tree
+    expect(treeMoves()).toHaveLength(2);
+
+    vi.useRealTimers();
   });
 });
