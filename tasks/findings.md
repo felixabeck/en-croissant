@@ -7255,6 +7255,10 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Repair:** Use the existing validated, canonical persistence adapter with a bounded layout schema and safe fallback/error reporting. Prove corrupt pane hydration and storage failure. Adopted for the active cancellation build's review repair.
 * **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
 
+* **Handled, 2026-09-09:** Implemented in cc5b2c6e: board layout uses a shared bounded Mosaic schema and canonical storage adapter with corrupt-value fallback and write-failure handling. Layout tests cover invalid pane IDs and quota failure; the 61-test persistence/caller run and nine pinned container checks passed.
+* **Review provenance:** Plan authorship and arbitration shared root context. Codex detection used the same model family as phases 1, 2, 4 and the repairs; Gemini authored original phase 3. Final delivery gates follow these verified implementation records.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"116fd783e67a4bc5e28ce9f97b5120a726b1f0ec7a66d61b50f19ca49a79bab8","input_sha256":"3a0b373556fa026ab54f691d93c2a37087d6951186073b2c9c1c946a229b3605","kind":"mutation-receipt","operation":"3c8514b36e2c05f91577641a508513e944d47e9db0f2a71a8690ccad20638760","options":{"section":null},"request_id_sha256":null,"results":["f-20260909-03"],"target":"f-20260909-03","v":1} -->
+
 ---
 
 ## 2026-09-09 — filed through the inbox spool
