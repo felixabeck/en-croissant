@@ -7234,3 +7234,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Evidence:** Cumulative persisted-state lens, confidence 98; root confirmed the raw adapter and unrestricted hydration. Origin 089e8ffd predates the reviewed range.
 * **Repair:** Use the existing validated, canonical persistence adapter with a bounded layout schema and safe fallback/error reporting. Prove corrupt pane hydration and storage failure. Adopted for the active cancellation build's review repair.
 * **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
+
+---
+
+## 2026-09-09 — filed through the inbox spool
+
+### Puzzle and theme reads silently discard ordinary backend failures
+
+* **ID:** f-20260909-04 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/components/puzzles/Puzzles.tsx:214 and :292, theme and puzzle request catch paths.
+* **Defect:** A failed getPuzzle returns silently; getPuzzleThemes converts ordinary database or I/O failure into an empty list. Users receive neither a puzzle nor a useful failure notification, or see failure represented as no themes.
+* **Evidence:** Cumulative error-handling lens confidence 99/97; root traced both catch paths. Origin 3afed031 predates the reviewed range; phase2 cancellation changes retained the behavior.
+* **Repair:** Report current ordinary failures through existing error UI while preserving quiet cancellation, stale-request guards, and the established outdated-schema state. Add current-error and obsolete-error tests. Adopted for the active cancellation build's review repair.
+* **Provenance:** Plan authorship/arbitration share root context. Codex detection shares family with phase 1/2/4 code; Gemini authored phase 3.
