@@ -372,6 +372,19 @@ En Croissant's own.
 * **Related:** the `convert_progress` incident in `.claude/rules/ipc-events.md` was a listener
   removed from exactly this file, unnoticed because nothing tested it.
 
+* **Entry revalidated 2026-09-10: `build` → `lens`.** The finding's premise ("0 of 75 lines
+  covered", "no regression cover at all") no longer holds. `src/App.test.tsx` exists with four
+  `useAppStartup` cases, and the measured state on this checkout is 34/64 lines, 6/9 functions and
+  10/36 branches (`pnpm test:coverage`, `coverage/lcov.info`, 2026-09-10). What is left is a set of
+  named uncovered paths inside one file plus its one test file — the `preloadReferenceDb` body and
+  its abort/error branches, the two post-`attachConsole` abort returns, the telemetry-enabled
+  branch, the CLI `occurrences > 0` branch, and the `App` component render itself. No design
+  question remains: the test harness shape is already established in the file, and the proof is a
+  deterministic oracle (`pnpm test`, then `pnpm test:coverage` plus
+  `pnpm coverage:frontend:check`). One cohesive file set, no cross-area phases, so `lens`
+  (`review-tests`) rather than `build`.
+<!-- ledger-meta {"command":"annotate","effect_lines":11,"effect_sha256":"2c32684504a0b289bed93b82bb8aba36cb1bd1a4b81c0ec6c2fc563cc054d7f5","input_sha256":"079ebf5f490f948d70ff26de95987c05ce36116cbcf26bacb152cc311039c8ae","kind":"mutation-receipt","operation":"995b466260c0409ea63ea6048ffc9d4e7114a851a9b59f5efa25bfa96e1d8865","options":{"section":null},"request_id_sha256":null,"results":["f-20260829-03"],"target":"f-20260829-03","v":1} -->
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
