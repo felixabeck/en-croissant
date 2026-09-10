@@ -1872,6 +1872,9 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
 * **Found by:** the `review-tests` lens (94 confidence) over the cumulative diff of the
   `remove-tree-unhardened` cluster, 2026-08-30.
 
+* **Entry revalidation (2026-09-10):** build -> lens, with review-tests. The original uncertainty was a missing workspace fixture and browser modal route. Current e2e/async-errors.spec.ts already grants a workspace, reaches a real Files confirmation dialog and asserts its accessibility and geometry at 320px / 200% German fonts; e2e/fixtures.ts supports sequential refresh results. d-20260829-01 settles container rasterization. Extend that existing journey with trash followed by permanent-delete partial-removal and durability error payloads, asserting the visible warning, refreshed state, and dialog screenshot. No new application architecture or product choice remains. Proof: pnpm test:e2e:container --project=async-errors, followed by the full container suite and push contract gates.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"2e10eae082abef6ca5dc202372ef315ac74a019a4981c64ad614e0c0787bb3d0","input_sha256":"4d573962301dac81388cd044f12dbc00d9e9fab45ed0f50a14b085622a6954da","kind":"mutation-receipt","operation":"b16e799c3ef6a245369867f3c4b019b6e8599432a98e3f6af9d2505dfcca5304","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-13"],"target":"f-20260830-13","v":1} -->
+
 ---
 
 ## 2026-08-30 — filed through the inbox spool
