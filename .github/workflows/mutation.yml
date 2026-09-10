@@ -78,7 +78,8 @@ jobs:
             patchelf
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        shell: bash
+        run: bash scripts/setup-rust.sh
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
