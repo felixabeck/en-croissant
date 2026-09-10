@@ -7453,7 +7453,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### `app_started` telemetry was emitted after startup had been cancelled
 
-* **ID:** f-20260910-02 · **Status:** open · **Area:** app-startup · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260910-02 · **Status:** handled · **Area:** app-startup · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/App.tsx` (`useAppStartup`, the `telemetryEnabled` block).
 * **Defect:** the startup sequence read `analytics.capture("app_started", { version: await
   getVersion() })` and only then checked `signal.aborted`. The cancellation check therefore sat
