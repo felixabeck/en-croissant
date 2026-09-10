@@ -1851,7 +1851,7 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
 
 ### The permanent-delete confirmation flow has no e2e coverage, only jsdom with the modal mocked
 
-* **ID:** f-20260830-13 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-13 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/files/FilesPage.test.tsx` (`trash confirmations`) is the only coverage;
   nothing under `e2e/` reaches the Files purge flow.
 * **Defect:** the tests that prove a destructive delete warns the user run in jsdom with the Tauri
