@@ -7545,6 +7545,12 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Proof:** extraction followed by assertions covering every current theme colour in all shipped locales, with no raw key or English fallback; settings-responsive container scenario and affected frontend push gates.
 * **Deferred from:** the confirmation-localization plan inventory; settings colour controls are a distinct file set from confirmation handling.
 
+* **Handled:** implemented in 9b6b0eb0 under d-20260910-05. Fourteen literal colour-name calls survive extraction; all 16 shipped catalogues contain translated values. Existing selection and light/dark shades remain intact. The separate board slice f-20260910-04 stays open at lens tier.
+* **Proof:** `pnpm i18n:extract`, `pnpm exec vitest run src/components/settings/ColorControl.test.tsx`, and `pnpm i18n:check` passed. Baseline catalogue test failed on the absent be-BY dark key. The strengthened test fails when every click is mutated to select red, then passes after restoration; it covers all 14 colours, 16 locales without fallback, both schemes and every colour selection. `pnpm test:e2e:container --project=settings-responsive` passed both scenarios; existing snapshot unchanged, new wide-view swatch capture retained in `artifacts/frontend-audit/test-results/`.
+* **Review:** correctness, root-cause, tests, code-quality and minimalism lenses completed. One test-coverage finding was Fix: every colour now gets click-and-rerender selected-state assertions. No unresolved findings; inherited ledger commit 310f595b was included and had no findings. Plan authorship and arbitration shared one context; detection ran on the same model family as implementation.
+* **Rejected alternative:** extractor prefix preservation or English fallback, as recorded in d-20260910-05. Final affected push gates and installed SHA are reported by the completing root session.
+<!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"32068294f19bf3aea1223340c7dd53e46e587c387bbc6a9dc64ca66530e50d2e","input_sha256":"d29088fdc5345dc9dfa262185b8ba5944b0939e70b73b1233873f405ee24c53e","kind":"mutation-receipt","operation":"e09967488d58876d056bbdcc9e7d11ce675d15a75c42fd2f759511438c0bfd2e","options":{"section":null},"request_id_sha256":null,"results":["f-20260910-03"],"target":"f-20260910-03","v":1} -->
+
 ### Board square labels use untranslated piece and colour names
 
 * **ID:** f-20260910-04 · **Status:** open · **Area:** i18n · **Root:** dynamic-translation-extraction · **Entry:** lens · **Blocked:** none
