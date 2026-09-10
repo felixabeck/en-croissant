@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 50598e21899f3f24adec1fd73902fada76a75d961a8032e8fb16c6e51f981486
+# agent-kit-sha256: df59402fa452c5febdf796df68bf834d697a813e64ff9cf2e143e9e1956f4eb5
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -2166,13 +2166,13 @@ def rank(findings: list[Finding]) -> list[tuple[tuple[str, str], list[Finding]]]
     return sorted(clusters, key=sort_key)
 
 
-def _warn_problems(problems: list[str], command: str) -> None:
-    for problem in problems:
-        print(f"WARN {problem}", file=sys.stderr)
-    if problems:
+def _warn_problems(issues: list[str], command: str) -> None:
+    for issue in issues:
+        print(f"WARN {issue}", file=sys.stderr)
+    if issues:
         print(
-            f"WARN {command} ran against a ledger with {len(problems)} malformed "
-            "entr(y/ies); they are missing from this answer. Run `check`.",
+            f"WARN {command} ran against a ledger with {len(issues)} validation "
+            "problem(s). Run `check`.",
             file=sys.stderr,
         )
 
@@ -5580,8 +5580,11 @@ def cmd_decisions(args: argparse.Namespace) -> int:
     _warn_problems(issues, "decisions")
     if issues:
         entry_word = "entry" if len(problems) == 1 else "entries"
+        parse_detail = (
+            f"could not read {len(problems)} ledger {entry_word}; " if problems else ""
+        )
         print(
-            f"WARNING decisions could not read {len(problems)} ledger {entry_word}; "
+            f"WARNING decisions {parse_detail}"
             f"{len(issues)} validation problem(s) were found. Run `findings.py check`."
         )
     all_waiting = _felix_waiting(findings)
