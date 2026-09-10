@@ -1,17 +1,48 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test as base } from "@playwright/test";
+import type { ErrorPayload } from "../src/bindings/generated";
 
 type MockCommand = {
     delay?: number;
-    error?: string;
+    error?: string | ErrorPayload;
     result?: unknown;
     /** Sequential command results model polling and post-mutation refreshes. */
     results?: unknown[];
 };
 
-type MockScenario = {
+export type MockScenario = {
     commands?: Record<string, MockCommand>;
 };
+
+export const filesWorkspaceFixture = {
+    workspace: { id: { id: "files-workspace" }, kind: "fileWorkspace" },
+    openingDirectory: {
+        handle: { id: { id: "opening-directory" }, kind: "fileWorkspace" },
+        kind: "directory",
+        name: "Openings",
+        children: [],
+        metadata: null,
+        gameCount: null,
+        lastModified: 0,
+    },
+} as const;
+
+export function filesWorkspaceCommands(
+    listResults: unknown[],
+    overrides: NonNullable<MockScenario["commands"]> = {},
+): NonNullable<MockScenario["commands"]> {
+    return {
+        issue_file_workspace: {
+            result: {
+                handle: filesWorkspaceFixture.workspace,
+                displayName: "E2E collection",
+                availability: "available",
+            },
+        },
+        list_file_workspace: { results: listResults },
+        ...overrides,
+    };
+}
 
 type TauriEvent = { event: string; payload: unknown };
 
@@ -30,7 +61,7 @@ const localeByProject: Record<string, string> = {
 };
 
 const tauriBootstrap = () => {
-    type Response = { delay?: number; error?: string; result?: unknown; results?: unknown[] };
+    type Response = MockCommand;
     type Listener = { event: string; callback: number };
     const callbacks = new Map<number, (payload: unknown) => void>();
     const listeners: Listener[] = [];
@@ -94,13 +125,16 @@ const tauriBootstrap = () => {
         }
         if (response.delay)
             await new Promise((resolve) => window.setTimeout(resolve, response.delay));
-        if (response.error) throw new Error(response.error);
+        if ("error" in response) {
+            if (typeof response.error === "string") throw new Error(response.error);
+            throw response.error;
+        }
         return response.results?.length ? response.results.shift() : response.result;
     };
 
     Object.assign(window, {
         __E2E_TAURI__: {
-            configure(scenario: { commands?: Record<string, Response> }) {
+            configure(scenario: MockScenario) {
                 state.commands = scenario.commands ?? {};
             },
             emit,

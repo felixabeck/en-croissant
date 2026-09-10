@@ -1,35 +1,110 @@
-import { expect, test } from "./fixtures";
+import type { Locator, Page } from "@playwright/test";
+import type { ErrorPayload } from "../src/bindings/generated";
+import {
+    expect,
+    filesWorkspaceCommands,
+    filesWorkspaceFixture,
+    test,
+    type MockScenario,
+} from "./fixtures";
+
+const { workspace, openingDirectory } = filesWorkspaceFixture;
+const refreshedDirectory = {
+    ...openingDirectory,
+    handle: { id: { id: "refreshed-directory" }, kind: "fileWorkspace" },
+    name: "Refreshed",
+};
+
+async function assertDialogWithinViewport(dialog: Locator) {
+    const dimensions = await dialog.evaluate((element) => ({
+        content: element.scrollWidth,
+        width: element.clientWidth,
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        viewport: window.innerWidth,
+    }));
+    expect(dimensions.content).toBeLessThanOrEqual(dimensions.width);
+    expect(dimensions.left).toBeGreaterThanOrEqual(0);
+    expect(dimensions.right).toBeLessThanOrEqual(dimensions.viewport);
+}
+
+async function submitPurgeAndOpenFailureDialog(
+    page: Page,
+    mockScenario: (scenario: MockScenario) => Promise<void>,
+    purgeError: string | ErrorPayload,
+) {
+    await mockScenario({
+        commands: filesWorkspaceCommands([[openingDirectory], [], [refreshedDirectory]], {
+            trash_workspace_entry: { result: null },
+            permanently_delete_workspace_entry: { error: purgeError },
+        }),
+    });
+    await page.goto("/files");
+    await page.getByRole("button", { name: "Sammlung auswählen" }).click();
+    const deleteEntry = page
+        .getByRole("treeitem", { name: "Openings", exact: true })
+        .getByRole("button", { name: "Löschen" });
+    await deleteEntry.click();
+
+    const trashDialog = page.getByRole("dialog", {
+        name: "In den Papierkorb verschieben",
+        exact: true,
+    });
+    await trashDialog.getByRole("button", { name: "Löschen", exact: true }).click();
+    await expect(page.getByText("Openings wurde in den Papierkorb verschoben.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Rückgängig", exact: true })).toBeVisible();
+    await expect(
+        page.getByRole("treeitem", { name: refreshedDirectory.name, exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "Dauerhaft löschen", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Dauerhaft löschen", exact: true });
+    await dialog.getByRole("button", { name: "Löschen", exact: true }).click();
+    return dialog;
+}
+
+async function assertPurgeInvocationAndRefresh(page: Page) {
+    const fileInvocations = await page.evaluate(() =>
+        window.__E2E_TAURI__
+            .invocations()
+            .filter(({ command }) =>
+                [
+                    "issue_file_workspace",
+                    "list_file_workspace",
+                    "trash_workspace_entry",
+                    "permanently_delete_workspace_entry",
+                ].includes(command),
+            ),
+    );
+    expect(fileInvocations.map(({ command }) => command)).toEqual([
+        "issue_file_workspace",
+        "list_file_workspace",
+        "trash_workspace_entry",
+        "list_file_workspace",
+        "permanently_delete_workspace_entry",
+        "list_file_workspace",
+    ]);
+    expect(fileInvocations[2]).toEqual({
+        command: "trash_workspace_entry",
+        args: { workspace, entry: openingDirectory.handle },
+    });
+    expect(fileInvocations[4]).toEqual({
+        command: "permanently_delete_workspace_entry",
+        args: { workspace, entry: openingDirectory.handle },
+    });
+    expect(fileInvocations.filter(({ command }) => command === "list_file_workspace")).toHaveLength(
+        3,
+    );
+}
 
 test("async-errors: localizes directory-trash failures in the confirmation dialog", async ({
     page,
     mockScenario,
     assertAccessible,
 }) => {
-    const workspace = { id: { id: "files-workspace" }, kind: "fileWorkspace" };
     await mockScenario({
-        commands: {
-            issue_file_workspace: {
-                result: {
-                    handle: workspace,
-                    displayName: "E2E collection",
-                    availability: "available",
-                },
-            },
-            list_file_workspace: {
-                result: [
-                    {
-                        handle: { id: { id: "opening-directory" }, kind: "fileWorkspace" },
-                        kind: "directory",
-                        name: "Openings",
-                        children: [],
-                        metadata: null,
-                        gameCount: null,
-                        lastModified: 0,
-                    },
-                ],
-            },
+        commands: filesWorkspaceCommands([[openingDirectory]], {
             trash_workspace_entry: { error: "private native diagnostic at /private/file.pgn" },
-        },
+        }),
     });
     await page.goto("/files");
     await page.getByRole("button", { name: "Sammlung auswählen" }).click();
@@ -47,19 +122,109 @@ test("async-errors: localizes directory-trash failures in the confirmation dialo
     await expect(page.locator("body")).not.toContainText("/private/file.pgn");
     // The Files page behind this modal has a separately filed narrow-layout defect.
     // Check the changed dialog itself without claiming that background layout is fixed.
-    const dimensions = await dialog.evaluate((element) => ({
-        content: element.scrollWidth,
-        width: element.clientWidth,
-        left: element.getBoundingClientRect().left,
-        right: element.getBoundingClientRect().right,
-        viewport: window.innerWidth,
-    }));
-    expect(dimensions.content).toBeLessThanOrEqual(dimensions.width);
-    expect(dimensions.left).toBeGreaterThanOrEqual(0);
-    expect(dimensions.right).toBeLessThanOrEqual(dimensions.viewport);
+    await assertDialogWithinViewport(dialog);
     await assertAccessible();
     await dialog.getByRole("button", { name: "Löschen", exact: true }).scrollIntoViewIfNeeded();
     await expect(page).toHaveScreenshot("confirmation-error.png", { fullPage: true });
+});
+
+const partialRemovalPayload = {
+    tag: "backend-error",
+    category: "partial-removal",
+    message: "typed native diagnostic at /private/purge-secret.pgn",
+} as const satisfies ErrorPayload;
+
+const durabilityUncertainPayload = {
+    tag: "backend-error",
+    category: "durability",
+    message: "typed durability diagnostic at /private/durability-secret.pgn",
+} as const satisfies ErrorPayload;
+
+async function assertPurgeWarning(
+    page: Page,
+    dialog: Locator,
+    diagnostic: string,
+    assertAccessible: () => Promise<void>,
+) {
+    const warning =
+        "Ein Teil des Vorgangs wurde abgeschlossen. Die Anzeige entspricht möglicherweise nicht mehr dem aktuellen Stand.";
+    await expect(dialog).toBeVisible();
+    const alert = dialog.getByRole("alert");
+    await expect(alert).toBeVisible();
+    await expect(alert).toHaveText(warning);
+    await expect(alert).not.toHaveText(
+        "Die Aktion konnte nicht abgeschlossen werden. Bitte versuche es erneut.",
+    );
+    await alert.scrollIntoViewIfNeeded();
+    const alertBounds = await alert.evaluate((element) => {
+        const dialog = element.closest('[role="dialog"]');
+        if (!(dialog instanceof HTMLElement)) return null;
+        let viewport = dialog;
+        for (
+            let candidate = element.parentElement;
+            candidate && candidate !== dialog;
+            candidate = candidate.parentElement
+        ) {
+            const style = window.getComputedStyle(candidate);
+            if (
+                candidate.scrollHeight > candidate.clientHeight &&
+                (style.overflowY === "auto" || style.overflowY === "scroll")
+            ) {
+                viewport = candidate;
+                break;
+            }
+        }
+        const alertRect = element.getBoundingClientRect();
+        const viewportRect = viewport.getBoundingClientRect();
+        return {
+            alertTop: alertRect.top,
+            alertBottom: alertRect.bottom,
+            viewportTop: viewportRect.top,
+            viewportBottom: viewportRect.bottom,
+        };
+    });
+    if (!alertBounds) throw new Error("Permanent-delete warning is outside its modal dialog");
+    expect(alertBounds.alertTop).toBeGreaterThanOrEqual(alertBounds.viewportTop);
+    expect(alertBounds.alertBottom).toBeLessThanOrEqual(alertBounds.viewportBottom);
+    await expect(page.locator("body")).not.toContainText(diagnostic);
+    await expect(page.getByText("Openings wurde in den Papierkorb verschoben.")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Rückgängig", exact: true })).toHaveCount(0);
+    await expect(
+        page.getByRole("treeitem", {
+            name: refreshedDirectory.name,
+            exact: true,
+            includeHidden: true,
+        }),
+    ).toHaveCount(1);
+    await expect(dialog.getByRole("button", { name: "Löschen", exact: true })).toBeEnabled();
+    await assertDialogWithinViewport(dialog);
+    await assertAccessible();
+}
+
+test("async-errors: keeps the partial-removal warning after permanent delete", async ({
+    page,
+    mockScenario,
+    assertAccessible,
+}) => {
+    const dialog = await submitPurgeAndOpenFailureDialog(page, mockScenario, partialRemovalPayload);
+    await assertPurgeWarning(page, dialog, "typed native diagnostic", assertAccessible);
+    await assertPurgeInvocationAndRefresh(page);
+    await expect(page).toHaveScreenshot("purge-partial-removal.png", { fullPage: true });
+});
+
+test("async-errors: keeps the durability warning after permanent delete", async ({
+    page,
+    mockScenario,
+    assertAccessible,
+}) => {
+    const dialog = await submitPurgeAndOpenFailureDialog(
+        page,
+        mockScenario,
+        durabilityUncertainPayload,
+    );
+    await assertPurgeWarning(page, dialog, "typed durability diagnostic", assertAccessible);
+    await assertPurgeInvocationAndRefresh(page);
+    await expect(page).toHaveScreenshot("purge-durability-uncertain.png", { fullPage: true });
 });
 
 test("async-errors: verifies German navigation and a delayed native rejection at 200% font scale", async ({

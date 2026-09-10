@@ -1,15 +1,6 @@
-import { expect, test } from "./fixtures";
+import { expect, filesWorkspaceCommands, filesWorkspaceFixture, test } from "./fixtures";
 
-const workspace = { id: { id: "files-workspace" }, kind: "fileWorkspace" };
-const openingDirectory = {
-    handle: workspace,
-    kind: "directory",
-    name: "Openings",
-    children: [],
-    metadata: null,
-    gameCount: null,
-    lastModified: 0,
-};
+const { openingDirectory } = filesWorkspaceFixture;
 
 test("database-files: grants a workspace and creates a folder through typed IPC", async ({
     page,
@@ -19,17 +10,9 @@ test("database-files: grants a workspace and creates a folder through typed IPC"
     capture,
 }) => {
     await mockScenario({
-        commands: {
-            issue_file_workspace: {
-                result: {
-                    handle: workspace,
-                    displayName: "E2E collection",
-                    availability: "available",
-                },
-            },
-            list_file_workspace: { results: [[], [openingDirectory]] },
+        commands: filesWorkspaceCommands([[], [openingDirectory]], {
             create_workspace_directory: { result: openingDirectory },
-        },
+        }),
     });
     await page.goto("/files");
 
