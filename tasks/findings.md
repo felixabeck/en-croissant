@@ -2206,7 +2206,7 @@ Suite: `scripts/check-tauri-command-boundary.test.mjs` (47 cases), including ski
 
 ### `ConfirmModal` builds a dynamic i18n key whose catalogue entries do not exist
 
-* **ID:** f-20260830-19 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260830-19 · **Status:** handled · **Area:** i18n · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/components/common/ConfirmModal.tsx:16`, all 16 catalogues under
   `src/translation/`.
 * **Defect:** the component builds `Common.ConfirmationError.${category}` from the facade's
