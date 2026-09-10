@@ -7537,7 +7537,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Accent colour radio labels expose raw translation keys
 
-* **ID:** f-20260910-03 · **Status:** open · **Area:** i18n · **Root:** dynamic-translation-extraction · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260910-03 · **Status:** handled · **Area:** i18n · **Root:** dynamic-translation-extraction · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/settings/ColorControl.tsx:29`, `i18next.config.ts`, all `src/translation/*.json`.
 * **Defect:** the accent-colour radio label interpolates `t(`Settings.Appearance.AccentColor.${color}`)`. The Value template is translated, but no colour-name keys exist, so its accessible label includes the raw translation key even in English.
 * **Evidence:** `Object.keys(theme.colors)` drives the dynamic lookup; the only matching catalogue keys are the group title, Desc and Value. The prefix is not preserved by extraction. Same causal chain as f-20260830-11 and the board-label finding: dynamically constructed keys are invisible to extraction, with consistently absent keys invisible to completeness. That evidenced mechanism is the shared Root.
