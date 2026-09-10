@@ -929,6 +929,10 @@ En Croissant's own.
 * **Found by:** `review-chess-semantics` (confidence 97) during the `$push` review of the
   2026-08-29 setup work; call site verified by hand.
 
+* **Entry revalidation (2026-09-10):** `build` → `lens`, with `review-chess-semantics`. The original uncertainty is resolved by reading polyglot-book-rs 0.1.0 `src/fen.rs` and `src/hash.rs`: the parser stores the supplied ep file and the hasher XORs it without checking pawn attacks or king safety. Shakmaty 0.27.1 `Position::pseudo_legal_ep_square` supplies exactly the pawn-attack condition. `try_polyglot_book_move` constructs a local FEN consumed only by `get_all_moves_from_fen`; repository search finds no other caller. State reporting and repetition use separate `Legal` expressions. No governing Polyglot decision was found in `tasks/decisions.md` or surfaced by `next`.
+* **Bounded change and proof:** Change only the book-lookup FEN to `PseudoLegal`, retain legal-move filtering, and exercise the actual binary-book loader and `try_polyglot_book_move` against fixed independently checked keys for pinned, legal, and absent ep captures (both colours). `cargo test --manifest-path src-tauri/Cargo.toml --locked polyglot` must pass; reverting the production change must fail the pinned-pawn regression. Full Rust push gates follow review.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"5932efa40ca55eb99d1a8db9e9aae40d673c58c4575861d8844b4cdab9b0bc0a","input_sha256":"e59c725cf9451341db44024e1accc014a8a18c00b79ae4603bc992ba3ceae529","kind":"mutation-receipt","operation":"b17b64bbc94f80057ff091a44759de1dedd06e010c19223a92d4f053767801c3","options":{"section":null},"request_id_sha256":null,"results":["f-20260829-10"],"target":"f-20260829-10","v":1} -->
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
