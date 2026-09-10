@@ -17,6 +17,8 @@ import { formatNumber } from "@/utils/format";
 import { getGameName } from "@/utils/treeReducer";
 import classes from "./GameSelector.module.css";
 
+type DeleteGame = (index: number) => void | Promise<void>;
+
 export default function GameSelector({
   games,
   setGames,
@@ -32,7 +34,7 @@ export default function GameSelector({
   total: number;
   path: FileWorkspaceHandle;
   activePage: number;
-  deleteGame?: (index: number) => void;
+  deleteGame?: DeleteGame;
 }) {
   const loadPage = useCallback(
     async (startIndex: number, stopIndex: number, options?: { signal?: AbortSignal }) => {
@@ -135,7 +137,7 @@ function GameRow({
   path: FileWorkspaceHandle;
   total: number;
   activePage: number;
-  deleteGame?: (indxe: number) => void;
+  deleteGame?: DeleteGame;
 }) {
   const { t } = useTranslation();
   const [deleteModal, toggleDelete] = useToggle();
@@ -147,11 +149,8 @@ function GameRow({
           title={t("Files.RemoveGame")}
           description={t("Files.RemoveGameConfirm")}
           opened={deleteModal}
-          onClose={toggleDelete}
-          onConfirm={() => {
-            deleteGame(index);
-            toggleDelete();
-          }}
+          onClose={() => toggleDelete(false)}
+          onConfirm={() => deleteGame(index)}
         />
       )}
       <Group
