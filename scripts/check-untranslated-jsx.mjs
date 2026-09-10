@@ -1,10 +1,11 @@
 import { parseSync } from "@babel/core";
-import { readdir, readFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isEntrypoint } from "./entrypoint.mjs";
+import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const sourceRoot = join(root, "src");
 const userFacingAttributes = new Set([
   "aria-label",
   "aria-description",
@@ -65,18 +66,16 @@ function isStructuredTechnicalLiteral(value, filename) {
   );
 }
 
-async function files(directory) {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const nested = await Promise.all(
-    entries.map(async (entry) => {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) return files(path);
-      return entry.isFile() && /\.tsx$/u.test(entry.name) && !/\.test\.tsx$/u.test(entry.name)
-        ? [path]
-        : [];
-    }),
-  );
-  return nested.flat();
+/**
+ * Enumerate through the shared working-tree walker rather than recursing here,
+ * so ignore, symlink and untracked handling cannot drift away from the other
+ * gate checkers (`f-20260901-16`). An untracked or symlinked component is
+ * scanned rather than silently skipped.
+ */
+export function sourceFiles(workspaceRoot = root) {
+  return listWorkingTreeFiles({ workspaceRoot, pathspec: "src" })
+    .filter((path) => /\.tsx$/u.test(path) && !/\.test\.tsx$/u.test(path))
+    .sort();
 }
 
 function isTranslationCall(node) {
@@ -192,17 +191,28 @@ export function findLiterals(source, filename = "source.tsx") {
   return literals;
 }
 
-const violations = [];
-for (const file of await files(sourceRoot)) {
-  const source = await readFile(file, "utf8");
-  for (const literal of findLiterals(source, file))
-    violations.push(`${relative(root, file)}: ${JSON.stringify(literal)}`);
+export async function findViolations(workspaceRoot = root) {
+  const violations = [];
+  for (const file of sourceFiles(workspaceRoot)) {
+    const source = await readFile(resolve(workspaceRoot, file), "utf8");
+    for (const literal of findLiterals(source, file))
+      violations.push(`${file}: ${JSON.stringify(literal)}`);
+  }
+  return violations;
 }
 
-if (violations.length) {
-  console.error(
-    "Untranslated UI literals found. Use t()/Trans; allowed technical exceptions are documented in this script.",
-  );
-  console.error(violations.join("\n"));
-  process.exitCode = 1;
+if (isEntrypoint(import.meta.url)) {
+  try {
+    const violations = await findViolations();
+    if (violations.length) {
+      console.error(
+        "Untranslated UI literals found. Use t()/Trans; allowed technical exceptions are documented in this script.",
+      );
+      console.error(violations.join("\n"));
+      process.exitCode = 1;
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 2;
+  }
 }

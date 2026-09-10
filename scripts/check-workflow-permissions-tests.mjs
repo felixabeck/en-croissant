@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,6 +47,9 @@ async function fixture() {
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "test.yml"), workflow());
   await writeFile(join(directory, "release.yml"), release());
+  // Discovery goes through `git ls-files`, so the fixture is a repository.
+  const init = spawnSync("git", ["init", "--quiet", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(init.status, 0, init.stderr);
   return root;
 }
 
@@ -156,6 +159,28 @@ test("discovers both yml and yaml workflow files", async () => {
     (await workflowPaths(root)).map((path) => path.slice(path.lastIndexOf("/") + 1)),
     ["extra.yaml", "release.yml", "test.yml"],
   );
+});
+
+test("discovers a symlinked workflow and ignores nested directories", async () => {
+  const root = await fixture();
+  const directory = join(root, ".github", "workflows");
+  await writeFile(join(root, "linked.yml"), workflow({ permissions: "" }));
+  await symlink(join(root, "linked.yml"), join(directory, "linked.yml"));
+  await mkdir(join(directory, "nested"), { recursive: true });
+  await writeFile(join(directory, "nested", "ignored.yml"), workflow({ permissions: "" }));
+
+  const discovered = (await workflowPaths(root)).map((path) =>
+    path.slice(path.lastIndexOf("/") + 1),
+  );
+  assert.deepEqual(discovered, ["linked.yml", "release.yml", "test.yml"]);
+  assert.match((await checkWorkflowPermissions(root)).join("\n"), /top-level permissions/u);
+});
+
+test("discovery fails loudly outside a git repository", async () => {
+  const root = await mkdtemp(join(tmpdir(), "workflow-permissions-nogit-"));
+  await mkdir(join(root, ".github", "workflows"), { recursive: true });
+  await writeFile(join(root, ".github", "workflows", "test.yml"), workflow());
+  await assert.rejects(() => workflowPaths(root), /Cannot enumerate working-tree files/u);
 });
 
 test("repository check and CLI fail when any discovered workflow regresses", async () => {

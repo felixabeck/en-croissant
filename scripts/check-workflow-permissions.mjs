@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
+import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 export const CONTENTS_WRITE_WORKFLOWS = new Set(["release.yml"]);
 export const WRITE_JOB_ALLOWED_ACTIONS = new Set([
@@ -284,14 +285,22 @@ export function checkWorkflowText(text, path) {
   return findings;
 }
 
+const WORKFLOW_DIRECTORY = ".github/workflows";
+
+/**
+ * Enumerate through the shared working-tree walker rather than recursing here,
+ * so ignore, symlink and untracked handling cannot drift away from the other
+ * gate checkers (`f-20260901-16`). An untracked or symlinked workflow is
+ * checked rather than silently skipped; nested directories are not workflow
+ * files to GitHub and stay out.
+ */
 export async function workflowPaths(repoRoot) {
-  const directory = resolve(repoRoot, ".github", "workflows");
-  const entries = await readdir(directory, { withFileTypes: true });
-  return entries
+  return listWorkingTreeFiles({ workspaceRoot: repoRoot, pathspec: WORKFLOW_DIRECTORY })
     .filter(
-      (entry) => entry.isFile() && (entry.name.endsWith(".yml") || entry.name.endsWith(".yaml")),
+      (path) =>
+        dirname(path) === WORKFLOW_DIRECTORY && (path.endsWith(".yml") || path.endsWith(".yaml")),
     )
-    .map((entry) => resolve(directory, entry.name))
+    .map((path) => resolve(repoRoot, path))
     .sort();
 }
 
