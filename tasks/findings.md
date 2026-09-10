@@ -5754,6 +5754,9 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
 * **Found by:** the `review-pgn-index` lens during the `$push` review of the
   `blocking-work-not-offloaded` range, 2026-09-03 (confidence 90).
 
+* **Test review, 2026-09-10:** `review-tests` found the compressed-reader regression can hang indefinitely when the original flatten chain returns (confidence 100). Fix: run that production-path regression in a bounded child process, reusing an extracted test-only subprocess runner from the existing bounded SQLite factory probes; kill and reap on timeout. Root measured the original implementation continuing past 60 seconds and the fixed suite passing 189 tests. The new bounded regression must fail by itself on the original reader loop and pass after restoration. Plan authorship and arbitration share root context; detection and code use the Codex family.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"6319f2dcc945d84bc0ece1ac823c9be69bc25b3eeaff02918ce4107db4e247e5","input_sha256":"11a8d04460e64a3824f237f4d46bd7585e81ab37811084f151c47a4c2e2948b4","kind":"mutation-receipt","operation":"43cee49f6cbb97447352c8942fe84316f287ebe1a4c896a48ee5225c1e0bd44a","options":{"section":null},"request_id_sha256":null,"results":["f-20260903-04"],"target":"f-20260903-04","v":1} -->
+
 ---
 
 ## 2026-09-03 — filed through the inbox spool
