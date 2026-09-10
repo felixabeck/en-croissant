@@ -1782,7 +1782,7 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
 
 ### Every confirmation-error message is English in all 16 locales, because its key is built dynamically
 
-* **ID:** f-20260830-11 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260830-11 · **Status:** handled · **Area:** i18n · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/components/common/ConfirmModal.tsx:7-18` (`confirmationErrorMessage`), which calls
   `t(\`Common.ConfirmationError.${category}\`, { defaultValue: ... })` with the category computed at
   runtime by `normalizeError` (`src/platform/errors.ts:37`).
