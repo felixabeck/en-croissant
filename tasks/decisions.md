@@ -2589,3 +2589,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** If chess roles or orientation semantics change, update the literal calls and real-catalogue matrix together, preserving the post-extraction regression proof.
 * **Decided by:** Codex next-finding drain, 2026-09-10; plan authorship and arbitration share one context · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"d5aba0636f99e2b9a984efec322f6ef927acd3b9c03556fdc2926a89b2a3f285","input_sha256":"5cea216f3cebd872d9ed7b70693b718d107e4f26c329778f231197f29c952170","kind":"mutation-receipt","operation":"5f10c17a8e6c982ea933e8e7887d3ea77a41128954402778711560eea4fdce9e","options":{"section":null},"request_id_sha256":null,"results":["d-20260910-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20260910-07 — How should permanent-delete warning coverage reach the real modal?
+
+* **Governs:** f-20260830-13
+* **Question:** How should permanent-delete warning coverage reach the real modal?
+* **Chosen:** Extend the existing German async-errors Playwright journey and native-command fixture to cover structured partial-removal and durability failures after trashing an entry. Keep the real FilesPage, command facade and Mantine modal in the browser; record new warning screenshots in the pinned container under d-20260829-01.
+* **Rejected:** A new workspace harness or product refactor, because the current suite already reaches Files confirmations with sequential workspace responses; more jsdom-only tests, because they cannot prove the modal warning is rendered and accessible.
+* **Reason:** The finding's original missing infrastructure now exists. A bounded lens-tier test extension can pin the warning and refreshed trash state at 320px / 200% fonts without changing product behavior. Reversal path: move this coverage only to a harness that proves the same real modal, structured-error routing, accessibility and container-rendered pixels.
+* **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"6d4c401776a75f1465d9e0029b1bc7bc54aa71297aff8e481d0dddebc8590194","input_sha256":"95be926bbc5032eb1e7b03039cd0e92f23f64232e6c15182db21008877f438bb","kind":"mutation-receipt","operation":"10137e8c95e91d993aaf3b7f038314e9624bd60c1ff8a7bd0166e76730611aa9","options":{"section":null},"request_id_sha256":null,"results":["d-20260910-07"],"target":"decisions-ledger","v":1} -->
