@@ -5940,7 +5940,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### A partly-failed multi-file import leaves the search index describing the database as it was before
 
-* **ID:** f-20260904-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260904-03 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs` — `convert_pgn_blocking`, which opens one Diesel transaction
   per input file and calls `data_changed` / `search_cache.invalidate_database` only after the last
   file has succeeded. Connections run `PRAGMA journal_mode = WAL`. Index freshness is decided by
