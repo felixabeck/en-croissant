@@ -448,10 +448,39 @@ test("cloneDurable copies pending edits immediately without flushing unrelated t
 });
 
 test("cloneDurable treats a legitimate tab without tree storage as an empty clone", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
     storage.cloneDurable("blank-tab", "blank-copy");
-    expect(storage.read("blank-copy")).toBeNull();
+    expect(setItem).not.toHaveBeenCalledWith("blank-copy", expect.any(String));
     expect(sessionStorage.getItem("blank-copy")).toBeNull();
+    expect(storage.read("blank-copy")).toBeNull();
     expect(storage.pendingCount()).toBe(0);
+    setItem.mockRestore();
+});
+
+test("cloneDurable propagates a normalized target write failure without changing its source", () => {
+    const source = treeWith((state) => {
+        state.dirty = true;
+        state.headers.event = "Latest pending source";
+    });
+    storage.write("source", { version: 0, state: source });
+    const originalSetItem = Storage.prototype.setItem;
+    const setItem = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+            if (key === "target") throw new DOMException("quota", "QuotaExceededError");
+            return originalSetItem.call(this, key, value);
+        });
+
+    expect(() => storage.cloneDurable("source", "target")).toThrow(
+        "Could not open the game: the browser's session storage is full.",
+    );
+    expect(sessionStorage.getItem("target")).toBeNull();
+    expect(storage.read<ReturnType<typeof defaultTree>>("source")?.state).toMatchObject({
+        dirty: true,
+        headers: { event: "Latest pending source" },
+    });
+    expect(storage.pendingCount()).toBe(1);
+    setItem.mockRestore();
 });
 
 test("clone of a pending write carrying store actions succeeds without inheriting the report lease", () => {

@@ -41,3 +41,7 @@ Root's remaining-consumer sweep added one Fix: FileInfo now preserves its game c
 - Inspected screenshots: `/tmp/build-workspace-20260910/workspace-write-refusal.png` and `/tmp/build-workspace-20260910/app.png`. No native GTK acceptance is needed for this change.
 
 This protocol handles synchronous storage refusal and exception compensation. It does not promise crash atomicity across storage keys or native files. Final gate and delivery outcomes belong to the build ledger row, which is written after delivery.
+
+## Mutation gate repair
+
+The first final-gate run passed contract, kit and coverage but refused workspace-storage at 99.52% against its unchanged 100% threshold. Two additional Fix findings were test gaps: a missing-source clone test erased an invalid write through its validating read before checking raw storage, and clone-write error propagation was uncovered. The tests now assert absence of the target write before decoding and normalized quota propagation while preserving the pending source. Both reported production mutations fail the strengthened tests; source was restored byte-identically. Root verified 37 focused tests, TypeScript, formatting and diff checks before the final-gate rerun. No production behavior or threshold changed in this repair.
