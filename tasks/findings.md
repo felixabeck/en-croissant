@@ -4939,6 +4939,27 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
   shape — null scores and empty `prevMoves` — preserves it.
 <!-- ledger-meta {"command":"annotate","effect_lines":13,"effect_sha256":"38b6e83b604e452285c493b0db9f750558106a77616d25dff08e44aa0eea4e11","input_sha256":"681526b66e28b11646a3b2f4afdc6f12a88b006f68cd3f47f15ce4e6146a4bc1","kind":"mutation-receipt","operation":"ffe24e70ccaa32b950e503434a72f5147fae1b9815e31b6194052c566173b561","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-21"],"target":"f-20260831-21","v":1} -->
 
+* **Correction to the closing note above.** It was written before the push review and is
+  superseded in two respects: the commit hashes changed when the range was rewritten to carry
+  the acting agent as committer, and the claim that `src/utils/score.ts` needed no change was
+  wrong. The delivered commits are `d6e62077` (the two `addAnalysis` length guards),
+  `531829ee` (the `getAnnotation` repair) and `915b846d` (the round-2 test repairs).
+* **Guarding the crash was not sufficient.** `review-chess-semantics` found that
+  `getAnnotation` coerced a null previous score to an invented 0.00 evaluation, so the ply
+  after a lineless predecessor was measured against a baseline that does not exist — from a
+  won position that reads as a blunder and the ply received a `??` it had not earned. The same
+  coercion let a null previous-previous score manufacture the improvement `!` asserts.
+  `getAnnotation` now derives no mistake annotation without the previous evaluation and no `!`
+  without the previous-previous one; `!!` and `!?` depend on neither and are unchanged
+  (`d-20260910-01`).
+* **Proof, measured on the final tree:** reverting either length guard reproduces
+  `TypeError: Cannot read properties of undefined (reading 'score')`; restoring the 0.00
+  coercion fails with `expected '??' to be ''` and `expected [ '??' ] to strictly equal []`;
+  nesting the `is_sacrifice` branch back under the prevprev guard fails with
+  `expected '' to be '!!'`. All three branches are individually pinned. 43/43 in
+  `src/utils/tests/score.test.ts` and `src/utils/tests/store.test.ts`.
+<!-- ledger-meta {"command":"annotate","effect_lines":19,"effect_sha256":"acb7ca3c20c621f69a0a5a4e7ae7d86aa023fca3ebb3a59bf5dc45305a9d4fa7","input_sha256":"3c1a4264276437c0b468e0150d302948d741f24c45c49e6e5ef8960de4c0ca57","kind":"mutation-receipt","operation":"a20700af016b02eb4035024cb46b5523bf8a87c75cffab6074aeea080665342f","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-21"],"target":"f-20260831-21","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
