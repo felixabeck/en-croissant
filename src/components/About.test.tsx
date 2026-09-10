@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { shippedCatalogues } from "@/tests/catalogues";
 
 const native = vi.hoisted(() => ({
   arch: vi.fn(),
@@ -229,15 +230,8 @@ test("the shipped en-US notice carries every element section 5(a) requires", () 
 });
 
 test("every shipped catalogue preserves the modification notice", () => {
-  const catalogues = import.meta.glob<{ translation?: Record<string, unknown> }>(
-    "../translation/*.json",
-    { eager: true, import: "default" },
-  );
-
-  expect(Object.entries(catalogues)).toHaveLength(16);
-
-  for (const catalogue of Object.values(catalogues)) {
-    const notice = catalogue.translation?.["About.ModificationNotice"];
+  for (const { translation } of shippedCatalogues()) {
+    const notice = translation["About.ModificationNotice"];
 
     expect(notice).toBeTypeOf("string");
     if (typeof notice !== "string") continue;

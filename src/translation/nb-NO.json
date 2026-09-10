@@ -248,6 +248,8 @@
     "Common.Chessboard": "Sjakkbrett",
     "Common.Close": "Lukk dialog",
     "Common.Confirm": "Bekreft",
+    "Common.ConfirmationError.applied-despite-error": "En del av operasjonen ble fullført, og visningen stemmer kanskje ikke lenger med gjeldende tilstand.",
+    "Common.ConfirmationError.unexpected": "Handlingen kunne ikke fullføres. Prøv igjen.",
     "Common.Copied": "Kopiert",
     "Common.Create": "Legg til",
     "Common.Data": "Data",

@@ -248,6 +248,8 @@
     "Common.Chessboard": "Schachbrett",
     "Common.Close": "Dialog schließen",
     "Common.Confirm": "Bestätigen",
+    "Common.ConfirmationError.applied-despite-error": "Ein Teil des Vorgangs wurde abgeschlossen. Die Anzeige entspricht möglicherweise nicht mehr dem aktuellen Stand.",
+    "Common.ConfirmationError.unexpected": "Die Aktion konnte nicht abgeschlossen werden. Bitte versuche es erneut.",
     "Common.Copied": "Kopiert",
     "Common.Create": "Erstellen",
     "Common.Data": "Daten",

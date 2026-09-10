@@ -248,6 +248,8 @@
     "Common.Chessboard": "Satranç tahtası",
     "Common.Close": "İletişim kutusunu kapat",
     "Common.Confirm": "Onayla",
+    "Common.ConfirmationError.applied-despite-error": "İşlemin bir kısmı tamamlandı ve görüntülenen bilgiler artık güncel durumla eşleşmeyebilir.",
+    "Common.ConfirmationError.unexpected": "Eylem tamamlanamadı. Lütfen tekrar deneyin.",
     "Common.Copied": "Kopyalandı",
     "Common.Create": "Oluştur",
     "Common.Data": "Veri",

@@ -254,6 +254,8 @@
     "Common.Chessboard": "Szachownica",
     "Common.Close": "Zamknij okno dialogowe",
     "Common.Confirm": "Potwierdź",
+    "Common.ConfirmationError.applied-despite-error": "Część operacji została ukończona, a wyświetlane informacje mogą już nie odpowiadać aktualnemu stanowi.",
+    "Common.ConfirmationError.unexpected": "Nie udało się ukończyć działania. Spróbuj ponownie.",
     "Common.Copied": "Skopiowano",
     "Common.Create": "Utwórz",
     "Common.Data": "Dane",

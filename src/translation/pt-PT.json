@@ -251,6 +251,8 @@
     "Common.Chessboard": "Tabuleiro de xadrez",
     "Common.Close": "Fechar diálogo",
     "Common.Confirm": "Confirmar",
+    "Common.ConfirmationError.applied-despite-error": "Parte da operação foi concluída e o conteúdo apresentado pode já não corresponder ao estado atual.",
+    "Common.ConfirmationError.unexpected": "Não foi possível concluir a ação. Tenta novamente.",
     "Common.Copied": "Copiado",
     "Common.Create": "Criar",
     "Common.Data": "Dados",

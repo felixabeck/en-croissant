@@ -9,12 +9,13 @@ export function confirmationErrorMessage(
   t: (key: string, options?: { defaultValue: string }) => string,
 ) {
   const { category } = normalizeError(cause);
-  const defaultValue =
-    category === "applied-despite-error"
-      ? "Part of the operation was completed, and what is shown may no longer match."
-      : "The action could not be completed. Please try again.";
-  return t(`Common.ConfirmationError.${category}`, {
-    defaultValue,
+  if (category === "applied-despite-error") {
+    return t("Common.ConfirmationError.applied-despite-error", {
+      defaultValue: "Part of the operation was completed, and what is shown may no longer match.",
+    });
+  }
+  return t("Common.ConfirmationError.unexpected", {
+    defaultValue: "The action could not be completed. Please try again.",
   });
 }
 

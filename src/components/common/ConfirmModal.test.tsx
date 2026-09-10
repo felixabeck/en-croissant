@@ -1,9 +1,15 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { catalogueI18n } from "@/tests/catalogues";
 import ConfirmModal from "./ConfirmModal";
 
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (value: string) => value }) }));
+const translation = vi.hoisted(() => ({ t: (value: string) => value }));
+vi.mock("react-i18next", () => ({ useTranslation: () => translation }));
+beforeEach(async () => {
+  const instance = await catalogueI18n("de-DE");
+  translation.t = instance.t.bind(instance);
+});
 vi.mock("@mantine/core", () => ({
   Button: ({ children, loading, ...props }: any) => (
     <button {...props} disabled={loading || props.disabled}>
@@ -50,7 +56,7 @@ test("reject keeps confirmation open and locks duplicate submits", async () => {
     ),
   );
   const button = [...host.querySelectorAll("button")].find(
-    (item) => item.textContent === "Common.Delete",
+    (item) => item.textContent === "Löschen",
   )!;
   act(() => {
     button.click();
@@ -59,7 +65,7 @@ test("reject keeps confirmation open and locks duplicate submits", async () => {
   expect(onConfirm).toHaveBeenCalledTimes(1);
   await act(async () => reject(new Error("native rejected at /private/file.pgn")));
   expect(host.querySelector('[role="dialog"]')?.textContent).toContain(
-    "Common.ConfirmationError.unexpected",
+    "Die Aktion konnte nicht abgeschlossen werden. Bitte versuche es erneut.",
   );
   expect(host.textContent).not.toContain("native rejected");
   expect(host.textContent).not.toContain("/private/file.pgn");
@@ -84,10 +90,36 @@ test("successful confirmation closes once after the native action resolves", asy
     ),
   );
   await act(async () =>
-    [...host.querySelectorAll("button")]
-      .find((item) => item.textContent === "Common.Delete")!
-      .click(),
+    [...host.querySelectorAll("button")].find((item) => item.textContent === "Löschen")!.click(),
   );
   expect(onConfirm).toHaveBeenCalledTimes(1);
   expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+test("partially applied failures retain a distinct translated warning", async () => {
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  const onClose = vi.fn();
+  await act(async () =>
+    root.render(
+      <ConfirmModal
+        title="Delete"
+        description="x"
+        opened
+        onClose={onClose}
+        onConfirm={async () => {
+          throw { category: "applied-despite-error", message: "private native diagnostic" };
+        }}
+      />,
+    ),
+  );
+  await act(async () =>
+    [...host.querySelectorAll("button")].find((item) => item.textContent === "Löschen")!.click(),
+  );
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+    "Ein Teil des Vorgangs wurde abgeschlossen. Die Anzeige entspricht möglicherweise nicht mehr dem aktuellen Stand.",
+  );
+  expect(host.textContent).not.toContain("private native diagnostic");
+  expect(onClose).not.toHaveBeenCalled();
 });

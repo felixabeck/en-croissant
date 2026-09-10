@@ -251,6 +251,8 @@
     "Common.Chessboard": "Scacchiera",
     "Common.Close": "Chiudi finestra di dialogo",
     "Common.Confirm": "Conferma",
+    "Common.ConfirmationError.applied-despite-error": "Una parte dell’operazione è stata completata e quanto visualizzato potrebbe non corrispondere più allo stato attuale.",
+    "Common.ConfirmationError.unexpected": "Non è stato possibile completare l’azione. Riprova.",
     "Common.Copied": "Copiato",
     "Common.Create": "Crea",
     "Common.Data": "Dati",

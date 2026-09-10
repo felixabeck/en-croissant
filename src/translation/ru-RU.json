@@ -254,6 +254,8 @@
     "Common.Chessboard": "Шахматная доска",
     "Common.Close": "Закрыть диалог",
     "Common.Confirm": "Подтвердить",
+    "Common.ConfirmationError.applied-despite-error": "Часть операции выполнена, и отображаемые данные могут больше не соответствовать текущему состоянию.",
+    "Common.ConfirmationError.unexpected": "Не удалось завершить действие. Попробуйте ещё раз.",
     "Common.Copied": "Скопировано",
     "Common.Create": "Создать",
     "Common.Data": "Данные",

@@ -245,6 +245,8 @@
     "Common.Chessboard": "棋盘",
     "Common.Close": "关闭对话框",
     "Common.Confirm": "确认",
+    "Common.ConfirmationError.applied-despite-error": "部分操作已完成，显示的内容可能与当前状态不再一致。",
+    "Common.ConfirmationError.unexpected": "无法完成操作。请重试。",
     "Common.Copied": "已复制",
     "Common.Create": "创建",
     "Common.Data": "数据",

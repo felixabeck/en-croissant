@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { shippedCatalogues } from "@/tests/catalogues";
 import { PRODUCT_NAME, REPOSITORY_URL } from "./product.json";
 import config from "../../src-tauri/tauri.conf.json";
 import cargoManifest from "../../src-tauri/Cargo.toml?raw";
@@ -24,11 +25,6 @@ describe("product identity", () => {
     });
 
     test("brands changed catalogue keys while preserving attribution and chess-joke keys", () => {
-        const catalogues = import.meta.glob<{ translation: Record<string, string> }>(
-            "../translation/*.json",
-            { eager: true, import: "default" },
-        );
-        expect(Object.values(catalogues)).toHaveLength(16);
         const brandedKeys = [
             "Engines.Remove.Message",
             "Menu.Application.About",
@@ -37,7 +33,7 @@ describe("product identity", () => {
             "Settings.Privacy.Telemetry.Desc",
             "Settings.Version",
         ];
-        for (const { translation } of Object.values(catalogues)) {
+        for (const { translation } of shippedCatalogues()) {
             const brandedValues = brandedKeys.map((key) => translation[key]).join("\n");
             expect(brandedValues).not.toContain("En Croissant");
             expect(brandedValues).not.toContain("En-Croissant");

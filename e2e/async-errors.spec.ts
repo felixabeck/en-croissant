@@ -1,5 +1,67 @@
 import { expect, test } from "./fixtures";
 
+test("async-errors: localizes directory-trash failures in the confirmation dialog", async ({
+    page,
+    mockScenario,
+    assertAccessible,
+}) => {
+    const workspace = { id: { id: "files-workspace" }, kind: "fileWorkspace" };
+    await mockScenario({
+        commands: {
+            issue_file_workspace: {
+                result: {
+                    handle: workspace,
+                    displayName: "E2E collection",
+                    availability: "available",
+                },
+            },
+            list_file_workspace: {
+                result: [
+                    {
+                        handle: { id: { id: "opening-directory" }, kind: "fileWorkspace" },
+                        kind: "directory",
+                        name: "Openings",
+                        children: [],
+                        metadata: null,
+                        gameCount: null,
+                        lastModified: 0,
+                    },
+                ],
+            },
+            trash_workspace_entry: { error: "private native diagnostic at /private/file.pgn" },
+        },
+    });
+    await page.goto("/files");
+    await page.getByRole("button", { name: "Sammlung auswählen" }).click();
+    await page
+        .getByRole("treeitem", { name: "Openings", exact: true })
+        .getByRole("button", { name: "Löschen" })
+        .click();
+    const dialog = page.getByRole("dialog", { name: "In den Papierkorb verschieben", exact: true });
+    await dialog.getByRole("button", { name: "Löschen", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toHaveText(
+        "Die Aktion konnte nicht abgeschlossen werden. Bitte versuche es erneut.",
+    );
+    await expect(dialog.getByRole("button", { name: "Löschen", exact: true })).toBeEnabled();
+    await expect(page.locator("body")).not.toContainText("private native diagnostic");
+    await expect(page.locator("body")).not.toContainText("/private/file.pgn");
+    // The Files page behind this modal has a separately filed narrow-layout defect.
+    // Check the changed dialog itself without claiming that background layout is fixed.
+    const dimensions = await dialog.evaluate((element) => ({
+        content: element.scrollWidth,
+        width: element.clientWidth,
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        viewport: window.innerWidth,
+    }));
+    expect(dimensions.content).toBeLessThanOrEqual(dimensions.width);
+    expect(dimensions.left).toBeGreaterThanOrEqual(0);
+    expect(dimensions.right).toBeLessThanOrEqual(dimensions.viewport);
+    await assertAccessible();
+    await dialog.getByRole("button", { name: "Löschen", exact: true }).scrollIntoViewIfNeeded();
+    await expect(page).toHaveScreenshot("confirmation-error.png", { fullPage: true });
+});
+
 test("async-errors: verifies German navigation and a delayed native rejection at 200% font scale", async ({
     page,
     mockScenario,
