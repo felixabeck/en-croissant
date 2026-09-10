@@ -7467,3 +7467,14 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
   catching it.
 * **Related:** `f-20260829-03`, whose coverage work surfaced this. Filed separately so the incident
   class is findable under its own mechanism rather than inside a coverage-gap closure.
+
+* **Handled 2026-09-10, in the same session that filed it.** `src/App.tsx` now reads the version,
+  checks `signal.aborted`, and only then emits: `analytics.enable()` still runs, because it is a
+  configuration toggle rather than a report, but a cancelled startup no longer captures
+  `app_started`. The standalone cancellation check that followed the telemetry block was removed
+  with it — measured as dead for the `telemetryEnabled === false` branch, where no `await` sits
+  between the post-`attachConsole` check and `getMatches()`.
+* **Proof:** `src/App.test.tsx`'s "does not report a start when cancellation lands while the version
+  is read" asserts `enable` fired and `capture` did not. Restoring the old order (capture before the
+  check) turns exactly that test red; measured by hand.
+<!-- ledger-meta {"command":"annotate","effect_lines":9,"effect_sha256":"508eeebe8129afe6752191af35beadeda7f01e2f4ad6f831682fee3710ead688","input_sha256":"7852420b66efbde66be18ef3a8e4e646ffa729a30de7020736e5fac1b8ad8d9f","kind":"mutation-receipt","operation":"4de5d9329097b81e8a492e5de0b03214b130f6ecbe982214d41dbdea8464d321","options":{"section":null},"request_id_sha256":null,"results":["f-20260910-02"],"target":"f-20260910-02","v":1} -->
