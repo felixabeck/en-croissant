@@ -7530,3 +7530,57 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
   is read" asserts `enable` fired and `capture` did not. Restoring the old order (capture before the
   check) turns exactly that test red; measured by hand.
 <!-- ledger-meta {"command":"annotate","effect_lines":9,"effect_sha256":"508eeebe8129afe6752191af35beadeda7f01e2f4ad6f831682fee3710ead688","input_sha256":"7852420b66efbde66be18ef3a8e4e646ffa729a30de7020736e5fac1b8ad8d9f","kind":"mutation-receipt","operation":"4de5d9329097b81e8a492e5de0b03214b130f6ecbe982214d41dbdea8464d321","options":{"section":null},"request_id_sha256":null,"results":["f-20260910-02"],"target":"f-20260910-02","v":1} -->
+
+---
+
+## 2026-09-10 — filed through the inbox spool
+
+### Accent colour radio labels expose raw translation keys
+
+* **ID:** f-20260910-03 · **Status:** open · **Area:** i18n · **Root:** dynamic-translation-extraction · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/settings/ColorControl.tsx:29`, `i18next.config.ts`, all `src/translation/*.json`.
+* **Defect:** the accent-colour radio label interpolates `t(`Settings.Appearance.AccentColor.${color}`)`. The Value template is translated, but no colour-name keys exist, so its accessible label includes the raw translation key even in English.
+* **Evidence:** `Object.keys(theme.colors)` drives the dynamic lookup; the only matching catalogue keys are the group title, Desc and Value. The prefix is not preserved by extraction. Same causal chain as f-20260830-11 and the board-label finding: dynamically constructed keys are invisible to extraction, with consistently absent keys invisible to completeness. That evidenced mechanism is the shared Root.
+* **Fix:** make the current theme's colour names extractable and translated in every locale; retain existing colour selection and light/dark behaviour. Run review-tests over real-catalogue accessibility assertions.
+* **Proof:** extraction followed by assertions covering every current theme colour in all shipped locales, with no raw key or English fallback; settings-responsive container scenario and affected frontend push gates.
+* **Deferred from:** the confirmation-localization plan inventory; settings colour controls are a distinct file set from confirmation handling.
+
+### Board square labels use untranslated piece and colour names
+
+* **ID:** f-20260910-04 · **Status:** open · **Area:** i18n · **Root:** dynamic-translation-extraction · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/boards/Board.tsx:354-355`, `i18next.config.ts`, all `src/translation/*.json`.
+* **Defect:** `accessibleSquareLabel` constructs `Board.Aria.Color.${piece.color}` and `Board.Aria.PieceType.${piece.role}`. Neither family has catalogue entries or a preservation pattern, so square labels use English chessops colour/role names in every locale.
+* **Evidence:** the production calls supply `piece.color` and `piece.role` as default values; inspection of all catalogues found no family entries. Same causal chain as f-20260830-11: dynamic keys are invisible to extraction and the completeness comparison cannot detect consistently absent keys. The shared Root with the accent-colour finding denotes this exact extraction mechanism.
+* **Fix:** use extractable finite colour/role translation calls and translate every shipped locale. Preserve the board keyboard and chess semantics. Run review-chess-semantics over the repair.
+* **Proof:** run extraction before real-catalogue assertions for both colours and all six roles in every locale; prove those assertions fail on the old calls after extraction. Run the board-keyboard container scenario and affected frontend push gates.
+* **Deferred from:** the confirmation-localization plan inventory; board accessibility is a distinct file set from the two confirmation findings.
+
+### Invalid halfmove errors reference a misspelled catalogue key
+
+* **ID:** f-20260910-05 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/utils/chessops.ts:90`, consumed by `src/components/boards/Board.tsx`, all `src/translation/*.json`.
+* **Defect:** `chessopsError` maps `InvalidFen.Halfmoves` to `Errors.InvalidHalfmoves`, but all 16 catalogues contain only `Errors.InvalidHaldmoves`. A malformed FEN halfmove field therefore displays the untranslated key.
+* **Evidence:** the producer spelling differs from the retained catalogue spelling in every locale. Unlike f-20260830-11, extraction already preserves `Errors.*`; this is a producer/catalogue typo, so it does not share the dynamic-extraction root.
+* **Fix:** align the catalogue name with the existing producer without discarding the existing translations; assert real localized output from an invalid-halfmove error. Run review-chess-semantics over the repair.
+* **Proof:** extraction then real-catalogue error-message assertions for all locales, relevant chessops/board tests, and affected frontend gates.
+* **Deferred from:** the confirmation-localization inventory; the FEN validation producer is outside that phase's confirmation component file set.
+
+### Files workspace controls overflow a narrow viewport at 200% font scale
+
+* **ID:** f-20260910-06 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/files/FilesPage.tsx:130-153`, workspace controls and surrounding layout.
+* **Defect:** after choosing a workspace at 320px and 200% font scale in German, document scrollWidth is 448px. The page behind a confirmation dialog visibly clips its heading and controls. The dialog itself is bounded to 288px. This is additional Files-page evidence related to f-20260829-02; it is separate from confirmation message extraction.
+* **Evidence:** the new directory-trash scenario in `e2e/async-errors.spec.ts` reached its translated alert, then the existing full-document overflow assertion failed with 448 > 320. The screenshot and trace are in `/tmp/build-confirmation-704e13a8/snapshot-1/log` and `artifacts/frontend-audit/test-results/async-errors-async-errors--6a375--in-the-confirmation-dialog-async-errors/` for this run.
+* **Fix:** make Files workspace controls and content fit the existing narrow/large-font matrix; use review-correctness and the container visual harness. Do not hide overflow to pass the assertion.
+* **Proof:** a Files workspace scenario at 320px and 200% German passes the existing document-width assertion, with a reviewed screenshot and affected frontend gates.
+* **Deferred from:** f-20260830-11; Files layout is outside its confirmed message-localization scope.
+
+### Documented container e2e argument separator silently defeats project selection
+
+* **ID:** f-20260910-07 · **Status:** open · **Area:** e2e-gate · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `.claude/skills/verify-ui/SKILL.md:91`, `scripts/run-e2e-container.mjs:91` argument forwarding.
+* **Defect:** the documented pnpm invocation includes `-- --project=...`. pnpm retains that separator, and the wrapper forwards it to Playwright, where following options become test-file filters. A supposedly scoped snapshot-update run executes the complete suite instead, risking unrelated snapshot updates.
+* **Evidence:** `pnpm test:e2e:update -- --project=async-errors --grep="localizes directory-trash"` ran all ten tests, including workspace-tabs, board-keyboard and security-consent. Log: `/tmp/build-confirmation-704e13a8/snapshot-1/log`. No existing snapshots changed in that run. The wrapper forwards `process.argv.slice(2)` unchanged.
+* **Fix:** reconcile the documented command and wrapper argument contract; choose one canonical pnpm usage and cover forwarded project/grep options. Run review-correctness.
+* **Proof:** project and grep selection reach Playwright as options, selecting only the named test; the snapshot command cannot silently select unrelated projects.
+* **Deferred from:** the f-20260830-11 build, which uses pnpm arguments without the extra separator as the immediate command-level workaround.
