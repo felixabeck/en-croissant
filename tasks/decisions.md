@@ -2567,3 +2567,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** if confirmation outcomes change, revise their literal calls and catalogue matrix together, preserving post-extraction regression proof. No backend or renderer error taxonomy change is needed for this decision.
 * **Decided by:** Codex, autonomously under full auto on 2026-09-10 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"89a0ddbc56a00e66d968b956fedcb02670c2421713fe5870533cf49261e47a0b","input_sha256":"3d019c5da8096d5c11de30ea0fd78a422cab0a63b31c3b3139b4d62b72d72305","kind":"mutation-receipt","operation":"f1bf6c6abd0abc6b8097cdb7452dfebae7b130e8cb4fc3f14c225af8e546ae7f","options":{"section":null},"request_id_sha256":null,"results":["d-20260910-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20260910-05 — How are accent colour names retained by translation extraction?
+
+* **Question:** How are accent colour names retained by translation extraction?
+* **Governs:** f-20260910-03
+* **Chosen:** literal translation calls for the current theme's finite colour set in `src/components/settings/ColorControl.tsx`, with translated values in every shipped catalogue and real-catalogue accessible-label tests after extraction. Execute this settings slice at lens tier; f-20260910-04 remains open at lens tier in the separate board file set.
+* **Rejected:** adding an extractor preservation prefix or relying on English fallback; both leave the producer and extraction inventory disconnected. Rejected widening this slice to board accessibility solely because both findings share a ledger root.
+* **Reason:** `docs/localization.md` already settles finite message extraction; the same approach was recorded for confirmation messages in d-20260910-04. The surfaced d-20260901-36 governs BoardGame test loading, not this colour control.
+* **Reversal path:** if the theme introduces runtime-defined colours, revise the name contract and catalogue tests alongside that feature.
+* **Decided by:** Codex next-finding run 2026-09-10 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"e0b4f832e13e33b107de1b44ecfa5ff06c6efeb6043a5a1da8f68fe01a2cf94f","input_sha256":"29fce901c97aead99bd09905baa512a1743c8bc5bf02324d2b33c877db57f857","kind":"mutation-receipt","operation":"fc51e1f010fe3218b8c39464e9bebe018575559df608bc14ce1351ad83b9fec0","options":{"section":null},"request_id_sha256":null,"results":["d-20260910-05"],"target":"decisions-ledger","v":1} -->
