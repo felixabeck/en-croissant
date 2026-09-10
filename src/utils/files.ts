@@ -14,7 +14,7 @@ import {
     tabFamily,
 } from "@/state/atoms";
 import { parsePGN } from "./chess";
-import { createTab, type Tab } from "./tabs";
+import { createTab, type SetTabs } from "./tabs";
 import { getGameName } from "./treeReducer";
 
 export function usePlatform() {
@@ -60,8 +60,7 @@ export async function ensureFileWorkspace(): Promise<FileWorkspaceHandle | null>
 
 export async function openFile(
     file: FileMetadata,
-    setTabs: React.Dispatch<React.SetStateAction<Tab[]>>,
-    setActiveTab: React.Dispatch<React.SetStateAction<string | null>>,
+    setTabs: SetTabs,
     options?: {
         gameNumber?: number;
         pgn?: string;
@@ -82,7 +81,6 @@ export async function openFile(
             type: "analysis",
         },
         setTabs,
-        setActiveTab,
         pgn: pgn || "",
         gameOrigin: {
             kind: "file",

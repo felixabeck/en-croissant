@@ -116,13 +116,30 @@ function workspaceFromValue(value: unknown): Workspace | null {
     const parsed = workspaceLiveSchema.safeParse(value);
     if (!parsed.success) return null;
     const tabs = parsed.data.tabs;
-    if (tabs.length === 0) {
-        const first = newTab(new Set());
-        return { version: WORKSPACE_VERSION, tabs: [first], activeTab: first.value };
-    }
+    if (tabs.length === 0) return { version: WORKSPACE_VERSION, tabs: [], activeTab: null };
     const legacyActive = parsed.data.activeTab;
     const activeTab = resolveActiveTab(tabs, legacyActive);
     return { version: WORKSPACE_VERSION, tabs, activeTab };
+}
+
+/** Saves and returns the exact canonical workspace acknowledged by synchronous storage. */
+export function saveWorkspace(
+    storage: SyncStringStorage,
+    key: string,
+    value: unknown,
+): Workspace | null {
+    const workspace = workspaceFromValue(value);
+    if (!workspace) {
+        reportPersistError(persistStorageWriteError({}));
+        return null;
+    }
+    try {
+        storage.setItem(key, serializeStorageValue(workspace));
+        return workspace;
+    } catch (error) {
+        reportPersistError(persistStorageWriteError(error));
+        return null;
+    }
 }
 
 /** Live writes are refused instead of applying the more permissive legacy hydration repair. */
@@ -181,16 +198,7 @@ export function createWorkspaceStorage(storage: SyncStringStorage): SyncStorage<
             return plan.workspace;
         },
         setItem(key, value) {
-            const workspace = workspaceFromValue(value);
-            if (!workspace) {
-                reportPersistError(persistStorageWriteError({}));
-                return;
-            }
-            try {
-                storage.setItem(key, serializeStorageValue(workspace));
-            } catch (error) {
-                reportPersistError(persistStorageWriteError(error));
-            }
+            saveWorkspace(storage, key, value);
         },
         removeItem(key) {
             storage.removeItem(key);

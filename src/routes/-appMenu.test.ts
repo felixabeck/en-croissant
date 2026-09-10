@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import {
     assembleNativeMenuResources,
     buildAppMenuTree,
@@ -149,8 +149,8 @@ test("changing t changes labels", () => {
     expect(option(groups, "Menu.File.fr", "exit").label).toBe("Menu.File.Exit.fr");
 });
 
-test("openPgnFromMenu stays pending until openFile settles and skips navigate on cancel", async () => {
-    const opened = deferred<void>();
+test("openPgnFromMenu waits for committed admission before navigating", async () => {
+    const opened = deferred<string | null>();
     let navigated = false;
     const pending = openPgnFromMenu({
         pickPgnFile: async () => ({ name: "a.pgn" }),
@@ -160,16 +160,17 @@ test("openPgnFromMenu stays pending until openFile settles and skips navigate on
         openFile: () => opened.promise,
     });
     await Promise.resolve();
-    expect(navigated).toBe(true);
+    expect(navigated).toBe(false);
     let settled = false;
     void pending.then(() => {
         settled = true;
     });
     await Promise.resolve();
     expect(settled).toBe(false);
-    opened.resolve();
+    opened.resolve("tab-id");
     await pending;
     expect(settled).toBe(true);
+    expect(navigated).toBe(true);
 
     let navigatedAfterCancel = false;
     await openPgnFromMenu({
@@ -182,6 +183,16 @@ test("openPgnFromMenu stays pending until openFile settles and skips navigate on
         },
     });
     expect(navigatedAfterCancel).toBe(false);
+
+    let navigatedAfterRefusal = false;
+    await openPgnFromMenu({
+        pickPgnFile: async () => ({ name: "a.pgn" }),
+        navigate: async () => {
+            navigatedAfterRefusal = true;
+        },
+        openFile: async () => null,
+    });
+    expect(navigatedAfterRefusal).toBe(false);
 });
 
 test("openPgnFromMenu rejects when openFile rejects", async () => {
@@ -196,8 +207,8 @@ test("openPgnFromMenu rejects when openFile rejects", async () => {
     ).rejects.toThrow("read failed");
 });
 
-test("createNewTabFromMenu awaits createTab after navigate", async () => {
-    const created = deferred<void>();
+test("createNewTabFromMenu waits for committed admission before navigating", async () => {
+    const created = deferred<string | null>();
     let navigated = false;
     const pending = createNewTabFromMenu({
         navigate: async () => {
@@ -206,15 +217,32 @@ test("createNewTabFromMenu awaits createTab after navigate", async () => {
         createTab: () => created.promise,
     });
     await Promise.resolve();
-    expect(navigated).toBe(true);
+    expect(navigated).toBe(false);
     let settled = false;
     void pending.then(() => {
         settled = true;
     });
     await Promise.resolve();
     expect(settled).toBe(false);
-    created.resolve();
+    created.resolve("tab-id");
     await pending;
+    expect(navigated).toBe(true);
+});
+
+test("createNewTabFromMenu preserves null and rejected creation outcomes", async () => {
+    const navigate = vi.fn();
+    await createNewTabFromMenu({ navigate, createTab: async () => null });
+    expect(navigate).not.toHaveBeenCalled();
+
+    await expect(
+        createNewTabFromMenu({
+            navigate,
+            createTab: async () => {
+                throw new Error("create failed");
+            },
+        }),
+    ).rejects.toThrow("create failed");
+    expect(navigate).not.toHaveBeenCalled();
 });
 
 test("openSettingsFromMenu awaits navigate", async () => {

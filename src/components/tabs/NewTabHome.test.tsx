@@ -336,19 +336,23 @@ test("home cards start play, analysis, puzzles, import, and repertoire", async (
   const playUpdate = fixtures.setTabs.mock.calls[0][0] as (
     prev: Array<{ value: string; name: string; type: string }>,
   ) => Array<{ value: string; name: string; type: string }>;
-  expect(playUpdate([{ value: "new-tab", name: "Home", type: "new" }])[0].type).toBe("play");
+  const playInput = [{ value: "new-tab", name: "Home", type: "new" }];
+  expect(playUpdate(playInput)[0].type).toBe("play");
+  expect(playInput).toEqual([{ value: "new-tab", name: "Home", type: "new" }]);
   expect(playUpdate([])).toEqual([]);
   const analysisUpdate = fixtures.setTabs.mock.calls[1][0] as (
     prev: Array<{ value: string; name: string; type: string }>,
   ) => Array<{ value: string; name: string; type: string }>;
-  expect(analysisUpdate([{ value: "new-tab", name: "Home", type: "new" }])[0].type).toBe(
-    "analysis",
-  );
+  const analysisInput = [{ value: "new-tab", name: "Home", type: "new" }];
+  expect(analysisUpdate(analysisInput)[0].type).toBe("analysis");
+  expect(analysisInput).toEqual([{ value: "new-tab", name: "Home", type: "new" }]);
   expect(analysisUpdate([])).toEqual([]);
   const puzzleUpdate = fixtures.setTabs.mock.calls[2][0] as (
     prev: Array<{ value: string; name: string; type: string }>,
   ) => Array<{ value: string; name: string; type: string }>;
-  expect(puzzleUpdate([{ value: "new-tab", name: "Home", type: "new" }])[0].type).toBe("puzzles");
+  const puzzleInput = [{ value: "new-tab", name: "Home", type: "new" }];
+  expect(puzzleUpdate(puzzleInput)[0].type).toBe("puzzles");
+  expect(puzzleInput).toEqual([{ value: "new-tab", name: "Home", type: "new" }]);
   expect(puzzleUpdate([])).toEqual([]);
 });
 

@@ -1,11 +1,11 @@
 import { Button, SegmentedControl, Stack, Text, TextInput } from "@mantine/core";
 import { useNavigate } from "@tanstack/react-router";
 import { INITIAL_FEN } from "chessops/fen";
-import { useAtom, useSetAtom, useStore } from "jotai";
+import { useAtom, useStore } from "jotai";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { normalizeError } from "@/platform/errors";
-import { activeTabAtom, addRecentFileAtom, tabFamily, tabsAtom } from "@/state/atoms";
+import { addRecentFileAtom, tabFamily, tabsAtom } from "@/state/atoms";
 import { headersToPGN } from "@/utils/chess";
 import { createFile, ensureFileWorkspace } from "@/utils/files";
 import { createTab } from "@/utils/tabs";
@@ -24,7 +24,6 @@ export default function CreateRepertoireModal({
   const [error, setError] = useState("");
 
   const [, setTabs] = useAtom(tabsAtom);
-  const setActiveTab = useSetAtom(activeTabAtom);
   const store = useStore();
   const navigate = useNavigate();
 
@@ -69,7 +68,6 @@ export default function CreateRepertoireModal({
           type: "analysis",
         },
         setTabs,
-        setActiveTab,
         pgn,
         gameOrigin: {
           kind: "file",

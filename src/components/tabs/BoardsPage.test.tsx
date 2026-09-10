@@ -20,9 +20,12 @@ const fixtures = vi.hoisted(() => ({
       setReportOperationId: fixtures.setReportOperationId,
     }),
   })),
+  createTab: vi.fn(),
+  createTabFromSeed: vi.fn(),
   dispose: vi.fn(),
   dirty: false,
   closeHandler: null as (() => unknown) | null,
+  closeReceipt: true,
   hotkeyBindings: null as Array<[string, () => void]> | null,
   killEngines: vi.fn(),
   invalidateReportOwner: vi.fn(),
@@ -58,10 +61,12 @@ vi.mock("@/state/atoms", async () => {
   return {
     activeTabAtom,
     closeWorkspaceTabAtom: atom(null, (get, set, tabId: string) => {
+      if (!fixtures.closeReceipt) return false;
       const tabs = get(tabsAtom).filter((tab) => tab.value !== tabId);
       set(tabsAtom, tabs);
       if (get(activeTabAtom) === tabId) set(activeTabAtom, tabs[0]?.value ?? null);
       fixtures.closeWorkspaceTab(tabId);
+      return true;
     }),
     closingTabsAtom: atom<Set<string>>(new Set<string>()),
     gameIdFamily: atomFamily(() => atom<string | null>(null)),
@@ -91,11 +96,22 @@ vi.mock("@/state/store/tree", () => ({
   invalidateReportOwner: fixtures.invalidateReportOwner,
   restoreReportOwner: fixtures.restoreReportOwner,
 }));
-vi.mock("@/state/store/tabStorage", () => ({ tabStorage: { clone: vi.fn() } }));
+vi.mock("@/state/store/tabStorage", () => ({ tabStorage: { cloneDurable: vi.fn() } }));
 vi.mock("@/utils/tabs", () => ({
-  createTab: vi.fn(),
-  genID: () => "duplicate",
+  createTab: fixtures.createTab,
+  createTabFromSeed: fixtures.createTabFromSeed,
   isPersistentGameOrigin: () => fixtures.persistent,
+  runTabCreation: async ({ create, onSuccess, onError }: any) => {
+    try {
+      const id = await create();
+      if (id === null) return null;
+      await onSuccess?.(id);
+      return id;
+    } catch (error) {
+      onError(error);
+      return null;
+    }
+  },
 }));
 vi.mock("../files/notifyError", () => ({ notifyUnlessCancelled: fixtures.notifyUnlessCancelled }));
 vi.mock("jotai/utils", async () => {
@@ -271,6 +287,8 @@ beforeEach(() => {
   fixtures.persistent = false;
   fixtures.nextReady = false;
   fixtures.closeHandler = null;
+  fixtures.closeReceipt = true;
+  fixtures.createTab.mockResolvedValue("created");
   fixtures.hotkeyBindings = null;
   fixtures.notifyUnlessCancelled.mockReset();
   fixtures.tabsOnChange = null;
@@ -328,6 +346,38 @@ test("keeps the current view while closing into a suspending next tab", async ()
     await Promise.resolve();
   });
   expect(container.querySelector('[data-testid="view-next"]')).not.toBeNull();
+});
+
+test("restores the report owner and tree store when durable close is refused", async () => {
+  await renderPage();
+  fixtures.closeReceipt = false;
+
+  await act(async () => {
+    await fixtures.closeHandler!();
+  });
+
+  expect(fixtures.restoreReportOwner).toHaveBeenCalledOnce();
+  expect(fixtures.closeTreeStore).not.toHaveBeenCalled();
+  expect(fixtures.dispose).not.toHaveBeenCalled();
+  expect(store.get(tabsAtom).some((tab) => tab.value === "current")).toBe(true);
+  expect(store.get(closingTabsAtom)).toEqual(new Set());
+});
+
+test("does not loop when replacement creation after the last close is refused", async () => {
+  const onlyTab = fixtures.tabs[0]!;
+  store.set(tabsAtom, [onlyTab]);
+  store.set(activeTabAtom, onlyTab.value);
+  fixtures.createTab.mockResolvedValue(null);
+  await renderPage();
+
+  await act(async () => {
+    await fixtures.closeHandler!();
+    await Promise.resolve();
+  });
+
+  expect(store.get(tabsAtom)).toEqual([]);
+  expect(fixtures.createTab).toHaveBeenCalledOnce();
+  expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
 });
 
 const suspendedNavigationCases = [

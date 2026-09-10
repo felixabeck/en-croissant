@@ -186,20 +186,20 @@ export function buildAppMenuTree(args: {
 export async function openPgnFromMenu<File>(deps: {
     pickPgnFile: () => Promise<File | null>;
     navigate: (opts: { to: string }) => void | Promise<unknown>;
-    openFile: (file: File) => void | Promise<unknown>;
+    openFile: (file: File) => string | null | Promise<string | null>;
 }): Promise<void> {
     const selected = await deps.pickPgnFile();
     if (!selected) return;
-    await deps.navigate({ to: "/" });
-    await deps.openFile(selected);
+    const id = await deps.openFile(selected);
+    if (id !== null) await deps.navigate({ to: "/" });
 }
 
 export async function createNewTabFromMenu(deps: {
     navigate: (opts: { to: string }) => void | Promise<unknown>;
-    createTab: () => void | Promise<unknown>;
+    createTab: () => string | null | Promise<string | null>;
 }): Promise<void> {
-    await deps.navigate({ to: "/" });
-    await deps.createTab();
+    const id = await deps.createTab();
+    if (id !== null) await deps.navigate({ to: "/" });
 }
 
 export async function openSettingsFromMenu(deps: {

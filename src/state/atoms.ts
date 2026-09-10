@@ -40,12 +40,14 @@ import {
 import { sessionsSchema, type Session } from "../utils/session";
 import { createPreferenceStorage, createZodStorage } from "./utils";
 import {
-    admitWorkspaceTabs,
+    WORKSPACE_STORAGE_KEY,
     createWorkspaceStorage,
     defaultWorkspace,
+    saveWorkspace,
     type Workspace,
 } from "./workspace";
-import { tabStorage } from "./store/tabStorage";
+import { persistStorageWriteError, tabStorage } from "./store/tabStorage";
+import { reportPersistError } from "./persistError";
 import { originalPathOwnersSnapshot } from "./pathOwners";
 import { createEngineOwnerStorage, type EngineOwnerSaveReceipt } from "./engineOwnerStorage";
 import { defaultPlayerSettings, opponentSettingsSchema } from "@/state/opponentSettings";
@@ -67,24 +69,27 @@ const zodArray = <Input, Output>(itemSchema: z.ZodType<Output, z.ZodTypeDef, Inp
 
 // Tabs
 
-const workspaceAtom = atomWithStorage<Workspace>(
-    "workspace",
-    defaultWorkspace(),
-    createWorkspaceStorage(sessionStorage),
-    { getOnInit: true },
+const workspaceStorage = createWorkspaceStorage(sessionStorage);
+const workspaceAtom = atom(
+    workspaceStorage.getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace()) ?? defaultWorkspace(),
 );
+const commitWorkspaceAtom = atom(null, (_get, set, workspace: Workspace) => {
+    const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, workspace);
+    if (!saved) return false;
+    set(workspaceAtom, saved);
+    return true;
+});
 
 export const tabsAtom = atom(
     (get) => get(workspaceAtom).tabs,
-    (get, set, update: Tab[] | ((tabs: Tab[]) => Tab[])) => {
+    (get, set, update: Tab[] | ((tabs: Tab[]) => Tab[]), requestedActiveTab?: string) => {
         const workspace = get(workspaceAtom);
         const tabs = typeof update === "function" ? update(workspace.tabs) : update;
-        const activeTab = tabs.some((tab) => tab.value === workspace.activeTab)
-            ? workspace.activeTab
+        const desiredActiveTab = requestedActiveTab ?? workspace.activeTab;
+        const activeTab = tabs.some((tab) => tab.value === desiredActiveTab)
+            ? desiredActiveTab
             : (tabs[0]?.value ?? null);
-        if (!admitWorkspaceTabs(tabs)) return false;
-        set(workspaceAtom, { ...workspace, tabs, activeTab });
-        return true;
+        return set(commitWorkspaceAtom, { ...workspace, tabs, activeTab });
     },
 );
 
@@ -93,7 +98,7 @@ export const activeTabAtom = atom(
     (get, set, update: string | null | ((activeTab: string | null) => string | null)) => {
         const workspace = get(workspaceAtom);
         const activeTab = typeof update === "function" ? update(workspace.activeTab) : update;
-        set(workspaceAtom, {
+        return set(commitWorkspaceAtom, {
             ...workspace,
             activeTab: workspace.tabs.some((tab) => tab.value === activeTab) ? activeTab : null,
         });
@@ -107,15 +112,28 @@ export const closingTabsAtom = atom<Set<string>>(new Set<string>());
 export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
     const workspace = get(workspaceAtom);
     const index = workspace.tabs.findIndex((tab) => tab.value === tabId);
-    if (index === -1) return;
+    if (index === -1) return false;
     const tabs = workspace.tabs.filter((tab) => tab.value !== tabId);
     const activeTab =
         workspace.activeTab !== tabId
             ? workspace.activeTab
             : (tabs[index]?.value ?? tabs[index - 1]?.value ?? null);
-    tabStorage.remove(tabId);
-    disposeTabAtoms(tabId);
-    set(workspaceAtom, { ...workspace, tabs, activeTab });
+    if (!set(commitWorkspaceAtom, { ...workspace, tabs, activeTab })) return false;
+    let cleanupError: unknown;
+    try {
+        tabStorage.remove(tabId);
+    } catch (error) {
+        cleanupError = error;
+    }
+    try {
+        disposeTabAtoms(tabId);
+    } catch (error) {
+        cleanupError ??= error;
+    }
+    if (cleanupError !== undefined) {
+        reportPersistError(persistStorageWriteError(cleanupError));
+    }
+    return true;
 });
 
 export const expandedDirectoriesAtom = atomWithStorage<string[]>(
@@ -133,15 +151,16 @@ export const currentTabAtom = atom(
     (get, set, newValue: Tab | ((currentTab: Tab) => Tab)) => {
         const tabs = get(tabsAtom);
         const activeTab = get(activeTabAtom);
-        const nextValue =
-            typeof newValue === "function" ? newValue(get(currentTabAtom)!) : newValue;
+        const currentTab = tabs.find((tab) => tab.value === activeTab);
+        if (!currentTab) return false;
+        const nextValue = typeof newValue === "function" ? newValue(currentTab) : newValue;
         const newTabs = tabs.map((tab) => {
             if (tab.value === activeTab) {
                 return nextValue;
             }
             return tab;
         });
-        set(tabsAtom, newTabs);
+        return set(tabsAtom, newTabs);
     },
 );
 

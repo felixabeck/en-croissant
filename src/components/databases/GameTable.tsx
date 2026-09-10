@@ -15,7 +15,7 @@ import { useHotkeys } from "@mantine/hooks";
 import { IconDotsVertical } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
 import dayjs from "dayjs";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom } from "jotai";
 import { DataTable } from "mantine-datatable";
 import { useContext } from "react";
 import { useTranslation } from "react-i18next";
@@ -23,10 +23,11 @@ import useSWR from "swr";
 import { useStore } from "zustand";
 import type { GameSort, NormalizedGame, Outcome } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
-import { activeTabAtom, tabsAtom } from "@/state/atoms";
+import { tabsAtom } from "@/state/atoms";
 import { query_games } from "@/utils/db";
-import { createTab } from "@/utils/tabs";
+import { createTab, runTabCreation } from "@/utils/tabs";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 import GameCard from "./GameCard";
 import GridLayout from "./GridLayout";
@@ -50,7 +51,6 @@ function GameTable() {
   const navigate = useNavigate();
 
   const [, setTabs] = useAtom(tabsAtom);
-  const setActiveTab = useSetAtom(activeTabAtom);
 
   const requestKey = ["games", file, query] as const;
   const requestOwner = useNativeRequestOwner(requestKey);
@@ -219,22 +219,18 @@ function GameTable() {
           records={games}
           fetching={isLoading}
           onRowDoubleClick={({ record }) => {
-            createTab({
-              tab: {
-                name: `${record.white} - ${record.black}`,
-                type: "analysis",
-              },
-              setTabs,
-              setActiveTab,
-              pgn: record.moves,
-              headers: record,
-              gameOrigin: {
-                kind: "database",
-                database: file,
-                gameId: record.id,
-              },
+            void runTabCreation({
+              create: () =>
+                createTab({
+                  tab: { name: `${record.white} - ${record.black}`, type: "analysis" },
+                  setTabs,
+                  pgn: record.moves,
+                  headers: record,
+                  gameOrigin: { kind: "database", database: file, gameId: record.id },
+                }),
+              onSuccess: () => navigate({ to: "/" }),
+              onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
             });
-            navigate({ to: "/" });
           }}
           columns={[
             {

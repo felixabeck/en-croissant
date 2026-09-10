@@ -1,11 +1,13 @@
 import { Text } from "@mantine/core";
 import { useNavigate } from "@tanstack/react-router";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom } from "jotai";
 import { DataTable } from "mantine-datatable";
 import { memo, useEffect, useState } from "react";
 import type { DatabaseHandle, NormalizedGame } from "@/bindings";
-import { activeTabAtom, tabsAtom } from "@/state/atoms";
-import { createTab } from "@/utils/tabs";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { tabsAtom } from "@/state/atoms";
+import { createTab, runTabCreation } from "@/utils/tabs";
+import { useTranslation } from "react-i18next";
 
 function GamesTable({
   games,
@@ -17,7 +19,7 @@ function GamesTable({
   databasePath?: DatabaseHandle | null;
 }) {
   const [, setTabs] = useAtom(tabsAtom);
-  const setActiveTab = useSetAtom(activeTabAtom);
+  const { t } = useTranslation();
   const [page, setPage] = useState(1);
   const filteredGames = games.slice((page - 1) * 20, page * 20);
 
@@ -38,24 +40,20 @@ function GamesTable({
       onPageChange={setPage}
       onRowClick={(e) => {
         const game = e.record;
-        createTab({
-          tab: {
-            name: `${game.white} - ${game.black}`,
-            type: "analysis",
-          },
-          setTabs,
-          setActiveTab,
-          pgn: game.moves,
-          headers: game,
-          gameOrigin: databasePath
-            ? {
-                kind: "database",
-                database: databasePath,
-                gameId: game.id,
-              }
-            : undefined,
+        void runTabCreation({
+          create: () =>
+            createTab({
+              tab: { name: `${game.white} - ${game.black}`, type: "analysis" },
+              setTabs,
+              pgn: game.moves,
+              headers: game,
+              gameOrigin: databasePath
+                ? { kind: "database", database: databasePath, gameId: game.id }
+                : undefined,
+            }),
+          onSuccess: () => navigate({ to: "/" }),
+          onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
         });
-        navigate({ to: "/" });
       }}
       columns={[
         {

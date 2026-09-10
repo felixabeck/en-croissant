@@ -2,13 +2,14 @@ import { tauri } from "@/platform/tauri";
 import { Divider, Group, Paper, ScrollArea, Stack } from "@mantine/core";
 import { IconTrash, IconZoomCheck } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom } from "jotai";
 import { useTranslation } from "react-i18next";
 import { useSWRConfig } from "swr";
 import { type DatabaseHandle, type NormalizedGame } from "@/bindings";
-import { activeTabAtom, tabsAtom } from "@/state/atoms";
+import { tabsAtom } from "@/state/atoms";
 import { IconAction } from "@/components/common/IconAction";
-import { createTab } from "@/utils/tabs";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { createTab, runTabCreation } from "@/utils/tabs";
 import GameInfo from "../common/GameInfo";
 import GamePreview from "./GamePreview";
 
@@ -26,7 +27,6 @@ function GameCard({
   const { mutate: globalMutate } = useSWRConfig();
 
   const [, setTabs] = useAtom(tabsAtom);
-  const setActiveTab = useSetAtom(activeTabAtom);
 
   return (
     <Paper shadow="sm" p="sm" withBorder h="100%">
@@ -39,22 +39,18 @@ function GameCard({
               label={t("Board.Action.AnalyzeGame")}
               variant="subtle"
               onClick={() => {
-                createTab({
-                  tab: {
-                    name: `${game.white} - ${game.black}`,
-                    type: "analysis",
-                  },
-                  setTabs,
-                  setActiveTab,
-                  pgn: game.moves,
-                  headers: game,
-                  gameOrigin: {
-                    kind: "database",
-                    database: file,
-                    gameId: game.id,
-                  },
+                void runTabCreation({
+                  create: () =>
+                    createTab({
+                      tab: { name: `${game.white} - ${game.black}`, type: "analysis" },
+                      setTabs,
+                      pgn: game.moves,
+                      headers: game,
+                      gameOrigin: { kind: "database", database: file, gameId: game.id },
+                    }),
+                  onSuccess: () => navigate({ to: "/" }),
+                  onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
                 });
-                navigate({ to: "/" });
               }}
             >
               <IconZoomCheck size="1.2rem" stroke={1.5} />

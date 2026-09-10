@@ -24,7 +24,7 @@ import { getChesscomGame } from "@/utils/chess.com/api";
 import { chessopsError } from "@/utils/chessops";
 import { createFile, ensureFileWorkspace, openFile, pickPgnFile } from "@/utils/files";
 import { getLichessGame } from "@/utils/lichess/api";
-import { type Tab } from "@/utils/tabs";
+import { type SetTabs } from "@/utils/tabs";
 import { defaultTree, getGameName } from "@/utils/treeReducer";
 import AppModal from "../common/AppModal";
 import GenericCard from "../common/GenericCard";
@@ -44,12 +44,10 @@ export default function ImportModal({
   openModal,
   setOpenModal,
   setTabs,
-  setActiveTab,
 }: {
   openModal: boolean;
   setOpenModal: React.Dispatch<React.SetStateAction<boolean>>;
-  setTabs: React.Dispatch<React.SetStateAction<Tab[]>>;
-  setActiveTab: React.Dispatch<React.SetStateAction<string | null>>;
+  setTabs: SetTabs;
 }) {
   const { t } = useTranslation();
   const [pgn, setPgn] = useState("");
@@ -144,7 +142,7 @@ export default function ImportModal({
               parent: workspace,
             });
             if (created.isErr) throw created.error;
-            await openFile(created.value, setTabs, setActiveTab);
+            await openFile(created.value, setTabs);
           }
         }
       } else if (importType === "Link") {

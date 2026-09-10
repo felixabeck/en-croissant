@@ -29,7 +29,7 @@ import {
 } from "@tabler/icons-react";
 import { isNormal, makeSquare, makeUci, parseUci } from "chessops";
 import { parseFen } from "chessops/fen";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom } from "jotai";
 import { useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "zustand";
@@ -37,7 +37,6 @@ import { type PathRef, type PuzzleDatabaseInfo } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import {
-  activeTabAtom,
   currentPuzzleAtom,
   currentPuzzleTimerAtom,
   hidePuzzleRatingAtom,
@@ -56,7 +55,7 @@ import { formatThemeLabel, formatTime } from "@/utils/format";
 import { capabilityKey } from "@/utils/pathCapabilities";
 import { normalizeError, runDestructiveWithRefresh } from "@/platform/errors";
 import { type Completion, getPuzzleDatabases, type Puzzle } from "@/utils/puzzles";
-import { createTab } from "@/utils/tabs";
+import { createTab, runTabCreation } from "@/utils/tabs";
 import { defaultTree } from "@/utils/treeReducer";
 import ChallengeHistory from "../common/ChallengeHistory";
 import ConfirmModal from "../common/ConfirmModal";
@@ -432,7 +431,6 @@ function Puzzles({ id }: { id: string }) {
   }, [trackTime, timerStart, currentPuzzle, isPuzzleIncomplete, setPuzzles]);
 
   const [, setTabs] = useAtom(tabsAtom);
-  const setActiveTab = useSetAtom(activeTabAtom);
 
   const turnToMove =
     puzzles[currentPuzzle] !== undefined
@@ -740,25 +738,25 @@ function Puzzles({ id }: { id: string }) {
               <IconAction
                 label={t("Puzzle.AnalyzePosition")}
                 disabled={!effectiveSelectedDb}
-                onClick={() =>
-                  createTab({
-                    tab: {
-                      name: t("Puzzle.AnalysisTitle"),
-                      type: "analysis",
-                    },
-                    setTabs,
-                    setActiveTab,
-                    pgn: puzzles[currentPuzzle]?.moves.join(" "),
-                    headers: {
-                      ...defaultTree().headers,
-                      fen: puzzles[currentPuzzle]?.fen,
-                      orientation:
-                        parseFen(puzzles[currentPuzzle].fen).unwrap().turn === "white"
-                          ? "black"
-                          : "white",
-                    },
-                  })
-                }
+                onClick={() => {
+                  void runTabCreation({
+                    create: () =>
+                      createTab({
+                        tab: { name: t("Puzzle.AnalysisTitle"), type: "analysis" },
+                        setTabs,
+                        pgn: puzzles[currentPuzzle]?.moves.join(" "),
+                        headers: {
+                          ...defaultTree().headers,
+                          fen: puzzles[currentPuzzle]?.fen,
+                          orientation:
+                            parseFen(puzzles[currentPuzzle].fen).unwrap().turn === "white"
+                              ? "black"
+                              : "white",
+                        },
+                      }),
+                    onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
+                  });
+                }}
               >
                 <IconZoomCheck />
               </IconAction>

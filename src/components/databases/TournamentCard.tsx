@@ -1,7 +1,7 @@
 import { Paper, Stack, Tabs, Text, useMantineTheme } from "@mantine/core";
 import { IconEye } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom } from "jotai";
 import { DataTable, type DataTableSortStatus } from "mantine-datatable";
 import { useContext, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -12,10 +12,10 @@ import type { DatabaseHandle, Event, NormalizedGame } from "@/bindings";
 import { IconAction } from "@/components/common/IconAction";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { useNativeRequestOwner } from "@/hooks/useNativeRequestOwner";
-import { activeTabAtom, tabsAtom } from "@/state/atoms";
+import { tabsAtom } from "@/state/atoms";
 import type { DatabaseViewStore } from "@/state/store/database";
 import { getTournamentGames } from "@/utils/db";
-import { createTab } from "@/utils/tabs";
+import { createTab, runTabCreation } from "@/utils/tabs";
 import { DatabaseViewStateContext } from "./DatabaseViewStateContext";
 
 const gamePoints = (game: NormalizedGame, player: string) => {
@@ -42,7 +42,6 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: Databas
   const theme = useMantineTheme();
   const navigate = useNavigate();
   const [, setTabs] = useAtom(tabsAtom);
-  const setActiveTab = useSetAtom(activeTabAtom);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const requestKey = ["tournament-games", file, tournament.id] as const;
@@ -153,22 +152,22 @@ function TournamentCard({ tournament, file }: { tournament: Event; file: Databas
                       variant="filled"
                       color={theme.primaryColor}
                       onClick={() => {
-                        createTab({
-                          tab: {
-                            name: `${game.white} - ${game.black}`,
-                            type: "analysis",
-                          },
-                          setTabs,
-                          setActiveTab,
-                          pgn: game.moves,
-                          headers: game,
-                          gameOrigin: {
-                            kind: "database",
-                            database: file,
-                            gameId: game.id,
-                          },
+                        void runTabCreation({
+                          create: () =>
+                            createTab({
+                              tab: { name: `${game.white} - ${game.black}`, type: "analysis" },
+                              setTabs,
+                              pgn: game.moves,
+                              headers: game,
+                              gameOrigin: {
+                                kind: "database",
+                                database: file,
+                                gameId: game.id,
+                              },
+                            }),
+                          onSuccess: () => navigate({ to: "/" }),
+                          onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
                         });
-                        navigate({ to: "/" });
                       }}
                     >
                       <IconEye size="1rem" stroke={1.5} />

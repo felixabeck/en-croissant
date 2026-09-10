@@ -14,10 +14,9 @@ import {
   Tooltip,
   UnstyledButton,
 } from "@mantine/core";
-import { useAtom, useSetAtom, useStore } from "jotai";
+import { useAtom, useStore } from "jotai";
 import { useCallback, useEffect, useState } from "react";
 import {
-  activeTabAtom,
   addRecentFileAtom,
   deckAtomFamily,
   type RecentFile,
@@ -117,7 +116,6 @@ export default function NewTabHome({ id }: { id: string }) {
   const [openModal, setOpenModal] = useState(false);
   const [openRepertoireModal, setOpenRepertoireModal] = useState(false);
   const [, setTabs] = useAtom(tabsAtom);
-  const setActiveTab = useSetAtom(activeTabAtom);
 
   const [recentFiles, setRecentFiles] = useAtom(recentFilesAtom);
   const store = useStore();
@@ -162,7 +160,6 @@ export default function NewTabHome({ id }: { id: string }) {
             type: "analysis",
           },
           setTabs,
-          setActiveTab,
           pgn: pgn[0] || "",
           gameOrigin: {
             kind: "file",
@@ -191,7 +188,7 @@ export default function NewTabHome({ id }: { id: string }) {
         notifyUnlessCancelled(t("Common.Error"), cause);
       }
     },
-    [setTabs, setActiveTab, store, navigate, t],
+    [setTabs, store, navigate, t],
   );
 
   const cards = [
@@ -201,13 +198,11 @@ export default function NewTabHome({ id }: { id: string }) {
       description: t("Home.Card.PlayChess.Desc"),
       label: t("Home.Card.PlayChess.Button"),
       onClick: () => {
-        setTabs((prev: Tab[]) => {
-          const tab = prev.find((t) => t.value === id);
-          if (!tab) return prev;
-          tab.name = t("Home.NewGame");
-          tab.type = "play";
-          return [...prev];
-        });
+        setTabs((prev: Tab[]) =>
+          prev.map((tab) =>
+            tab.value === id ? { ...tab, name: t("Home.NewGame"), type: "play" } : tab,
+          ),
+        );
       },
     },
     {
@@ -216,13 +211,13 @@ export default function NewTabHome({ id }: { id: string }) {
       description: t("Home.Card.AnalysisBoard.Desc"),
       label: t("Home.Card.AnalysisBoard.Button"),
       onClick: () => {
-        setTabs((prev: Tab[]) => {
-          const tab = prev.find((t) => t.value === id);
-          if (!tab) return prev;
-          tab.name = t("Home.Card.AnalysisBoard.Title");
-          tab.type = "analysis";
-          return [...prev];
-        });
+        setTabs((prev: Tab[]) =>
+          prev.map((tab) =>
+            tab.value === id
+              ? { ...tab, name: t("Home.Card.AnalysisBoard.Title"), type: "analysis" }
+              : tab,
+          ),
+        );
       },
     },
     {
@@ -249,25 +244,18 @@ export default function NewTabHome({ id }: { id: string }) {
       description: t("Home.Card.Puzzle.Desc"),
       label: t("Home.Card.Puzzle.Button"),
       onClick: () => {
-        setTabs((prev) => {
-          const tab = prev.find((t) => t.value === id);
-          if (!tab) return prev;
-          tab.name = t("Home.PuzzleTraining");
-          tab.type = "puzzles";
-          return [...prev];
-        });
+        setTabs((prev) =>
+          prev.map((tab) =>
+            tab.value === id ? { ...tab, name: t("Home.PuzzleTraining"), type: "puzzles" } : tab,
+          ),
+        );
       },
     },
   ];
 
   return (
     <>
-      <ImportModal
-        openModal={openModal}
-        setOpenModal={setOpenModal}
-        setTabs={setTabs}
-        setActiveTab={setActiveTab}
-      />
+      <ImportModal openModal={openModal} setOpenModal={setOpenModal} setTabs={setTabs} />
       <CreateRepertoireModal opened={openRepertoireModal} setOpened={setOpenRepertoireModal} />
       <Stack gap="lg" pt="sm">
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 5 }}>

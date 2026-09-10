@@ -21,7 +21,7 @@ function ConfirmChangesModal({
 }: {
   pendingClose?: { tabId: string; store: TreeStore } | null;
   tab?: Tab;
-  updateTab?: (tabId: string, update: SetStateAction<Tab>) => void;
+  updateTab?: (tabId: string, update: SetStateAction<Tab>) => boolean;
   onCancel?: () => void;
   onDiscard?: () => void;
   onSaved?: () => void;
@@ -57,10 +57,9 @@ function ConfirmChangesModal({
     const result = await saveToFile({
       setCurrentTab: (update) => {
         if (pendingClose && updateTab) {
-          updateTab(pendingClose.tabId, update);
-        } else {
-          setCurrentTab(update);
+          return updateTab(pendingClose.tabId, update);
         }
+        return setCurrentTab(update);
       },
       tab: targetTab,
       store: targetStore,

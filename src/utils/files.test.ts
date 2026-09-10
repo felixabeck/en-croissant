@@ -47,12 +47,11 @@ describe("openFile tab admission", () => {
         lastModified: 1,
     };
     const setTabs = vi.fn();
-    const setActiveTab = vi.fn();
 
     test("does not acknowledge practice or recent metadata when admission is refused", async () => {
         mocks.createTab.mockResolvedValueOnce(null);
 
-        await expect(openFile(file, setTabs, setActiveTab, { pgn: "" })).resolves.toBeNull();
+        await expect(openFile(file, setTabs, { pgn: "" })).resolves.toBeNull();
 
         expect(mocks.storeSet).not.toHaveBeenCalled();
     });
@@ -60,7 +59,7 @@ describe("openFile tab admission", () => {
     test("returns the admitted id and preserves practice and recent metadata updates", async () => {
         mocks.createTab.mockResolvedValueOnce("tab-id");
 
-        await expect(openFile(file, setTabs, setActiveTab, { pgn: "" })).resolves.toBe("tab-id");
+        await expect(openFile(file, setTabs, { pgn: "" })).resolves.toBe("tab-id");
 
         expect(mocks.storeSet).toHaveBeenCalledTimes(2);
     });

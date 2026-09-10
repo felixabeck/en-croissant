@@ -2,14 +2,15 @@ import { tauri } from "@/platform/tauri";
 import { Badge, Box, Divider, Group, Stack, Text } from "@mantine/core";
 import { IconEdit, IconZoomCheck } from "@tabler/icons-react";
 import { useNavigate } from "@tanstack/react-router";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom } from "jotai";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { errorUnlessCancelled } from "@/platform/errors";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
-import { activeTabAtom, tabsAtom } from "@/state/atoms";
+import { tabsAtom } from "@/state/atoms";
 import { IconAction } from "@/components/common/IconAction";
 import { openFile } from "@/utils/files";
+import { runTabCreation } from "@/utils/tabs";
 import { capitalize } from "@/utils/format";
 import GamePreview from "../databases/GamePreview";
 import GameSelector from "../panels/info/GameSelector";
@@ -29,7 +30,6 @@ function FileCard({
   const { t } = useTranslation();
 
   const [, setTabs] = useAtom(tabsAtom);
-  const setActiveTab = useSetAtom(activeTabAtom);
   const navigate = useNavigate();
 
   const [selectedGame, setSelectedGame] = useState<string | null>(null);
@@ -61,12 +61,16 @@ function FileCard({
     };
   }, [selected, page, t]);
 
-  async function openGame() {
-    await openFile(selected, setTabs, setActiveTab, {
-      gameNumber: page,
-      pgn: selectedGame || "",
+  function openGame() {
+    void runTabCreation({
+      create: () =>
+        openFile(selected, setTabs, {
+          gameNumber: page,
+          pgn: selectedGame || "",
+        }),
+      onSuccess: () => navigate({ to: "/" }),
+      onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
     });
-    navigate({ to: "/" });
   }
 
   return (

@@ -14,7 +14,7 @@ import AboutModal from "@/components/About";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 import { SideBar } from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
-import { activeTabAtom, nativeBarAtom, tabsAtom } from "@/state/atoms";
+import { nativeBarAtom, tabsAtom } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 import { openFile, pickPgnFile } from "@/utils/files";
 import { createTab } from "@/utils/tabs";
@@ -71,7 +71,6 @@ function RootLayout() {
   const navigate = useNavigate();
 
   const [, setTabs] = useAtom(tabsAtom);
-  const [, setActiveTab] = useAtom(activeTabAtom);
 
   const { t } = useTranslation();
   const windowPlatform = menuWindowPlatform(String(import.meta.env.VITE_PLATFORM));
@@ -99,9 +98,9 @@ function RootLayout() {
       openPgnFromMenu({
         pickPgnFile,
         navigate,
-        openFile: (file) => openFile(file, setTabs, setActiveTab),
+        openFile: (file) => openFile(file, setTabs),
       }),
-    [navigate, setActiveTab, setTabs],
+    [navigate, setTabs],
   );
 
   const createNewTab = useCallback(
@@ -112,10 +111,9 @@ function RootLayout() {
           createTab({
             tab: { name: t("Tab.NewTab"), type: "new" },
             setTabs,
-            setActiveTab,
           }),
       }),
-    [navigate, setActiveTab, setTabs, t],
+    [navigate, setTabs, t],
   );
 
   const openSettings = useCallback(() => openSettingsFromMenu({ navigate }), [navigate]);

@@ -488,7 +488,7 @@ test("setItem refuses invalid and 101-tab live writes while preserving 100 durab
     expect(sessionStorage.getItem(tabs[99]!.value)).toBe(lastTree);
 });
 
-test("setItem repairs an empty workspace with one generated active tab", () => {
+test("setItem preserves an empty live workspace for the replacement-tab effect", () => {
     sessionStorage.clear();
 
     workspaceStorage().setItem(WORKSPACE_STORAGE_KEY, {
@@ -498,9 +498,7 @@ test("setItem repairs an empty workspace with one generated active tab", () => {
     });
 
     const stored = readStoredWorkspace() as ReturnType<typeof defaultWorkspace>;
-    expect(stored.tabs).toHaveLength(1);
-    expect(stored.tabs[0].value).toMatch(/^[0-9a-f]{8}-/i);
-    expect(stored.activeTab).toBe(stored.tabs[0].value);
+    expect(stored).toEqual({ version: 1, tabs: [], activeTab: null });
 });
 
 test("setItem falls back from a mismatched active tab to the first tab", () => {

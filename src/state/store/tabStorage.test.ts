@@ -429,6 +429,30 @@ test("clone does not copy a live report operationId onto the duplicate tab", () 
     });
 });
 
+test("cloneDurable copies pending edits immediately without flushing unrelated trees", () => {
+    const source = treeWith((state) => {
+        state.dirty = true;
+        state.report = { inProgress: true, operationId: "live-report" };
+    });
+    storage.write("source", { version: 0, state: source });
+    storage.write("unrelated", { version: 0, state: defaultTree() });
+
+    expect(storage.cloneDurable("source", "target")).toBe(true);
+    expect(sessionStorage.getItem("target")).not.toBeNull();
+    expect(sessionStorage.getItem("unrelated")).toBeNull();
+    expect(storage.pendingCount()).toBe(2);
+    expect(storage.read("target")?.state).toMatchObject({
+        dirty: true,
+        report: { inProgress: false, operationId: null },
+    });
+});
+
+test("cloneDurable treats a legitimate tab without tree storage as an empty clone", () => {
+    expect(storage.cloneDurable("blank-tab", "blank-copy")).toBe(false);
+    expect(sessionStorage.getItem("blank-copy")).toBeNull();
+    expect(storage.pendingCount()).toBe(0);
+});
+
 test("clone of a pending write carrying store actions succeeds without inheriting the report lease", () => {
     const tree = treeWith((state) => {
         state.dirty = true;

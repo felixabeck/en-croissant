@@ -299,15 +299,21 @@ export class TabStorageRepository {
     }
 
     clone(sourceTabId: string, targetTabId: string) {
-        // Round-trip through serialize/parse so a pending partialized store
-        // (which still carries action functions) cannot reach structuredClone.
-        // A missing source serializes as null and is rejected by the same validation
-        // guard as any other invalid pending value.
-        const copy = decodeLegacyOrCompressed(serializeStorageValue(this.read(sourceTabId)));
+        const copy = this.validatedClone(sourceTabId);
         if (!copy) return;
-        // A duplicate tab must not share a live analysis lease.
-        copy.state.report = { ...copy.state.report, inProgress: false, operationId: null };
         this.write(targetTabId, copy);
+    }
+
+    /** Creates an immediately durable clone without flushing any unrelated pending tree. */
+    cloneDurable(sourceTabId: string, targetTabId: string) {
+        const copy = this.validatedClone(sourceTabId);
+        if (!copy) return false;
+        try {
+            sessionStorage.setItem(targetTabId, serializeStorageValue(copy));
+            return true;
+        } catch (error) {
+            throw persistStorageWriteError(error);
+        }
     }
 
     remove(tabId: string) {
@@ -349,6 +355,16 @@ export class TabStorageRepository {
             this.flushTimeout = null;
             this.flush({ notify: true });
         }, DEBOUNCE_MS);
+    }
+
+    private validatedClone(sourceTabId: string): ValidatedStoredTree | null {
+        // Round-trip through serialize/parse so a pending partialized store
+        // (which still carries action functions) cannot reach structuredClone.
+        const copy = decodeLegacyOrCompressed(serializeStorageValue(this.read(sourceTabId)));
+        if (!copy) return null;
+        // A duplicate tab must not share a live analysis lease.
+        copy.state.report = { ...copy.state.report, inProgress: false, operationId: null };
+        return copy;
     }
 
     private bindFlushHandlers() {

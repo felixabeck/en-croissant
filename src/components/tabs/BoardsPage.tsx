@@ -27,7 +27,13 @@ import {
   type TreeStore,
 } from "@/state/store/tree";
 import { tabStorage } from "@/state/store/tabStorage";
-import { createTab, genID, isPersistentGameOrigin, type Tab } from "@/utils/tabs";
+import {
+  createTab,
+  createTabFromSeed,
+  isPersistentGameOrigin,
+  runTabCreation,
+  type Tab,
+} from "@/utils/tabs";
 import BoardAnalysis from "../boards/BoardAnalysis";
 import BoardGame from "../boards/BoardGame";
 import { abortExactTabGame } from "../boards/gameSession";
@@ -63,20 +69,23 @@ export default function BoardsPage() {
 
   const handleSetActiveTab = useCallback(
     (value: string | null | ((previous: string | null) => string | null)) => {
-      startTransition(() => setActiveTab(value));
+      let saved = false;
+      startTransition(() => {
+        saved = setActiveTab(value);
+      });
+      return saved;
     },
     [setActiveTab],
   );
 
   useEffect(() => {
     if (tabs.length === 0) {
-      createTab({
-        tab: { name: t("Tab.NewTab"), type: "new" },
-        setTabs,
-        setActiveTab: handleSetActiveTab,
+      void runTabCreation({
+        create: () => createTab({ tab: { name: t("Tab.NewTab"), type: "new" }, setTabs }),
+        onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
       });
     }
-  }, [handleSetActiveTab, setTabs, tabs, t]);
+  }, [setTabs, tabs, t]);
 
   useEffect(() => {
     if (document.activeElement !== document.body || !activeTab) return;
@@ -99,7 +108,6 @@ export default function BoardsPage() {
         }
         jotaiStore.set(closingTabsAtom, (previous: Set<string>) => new Set(previous).add(value));
         const reportInvalidation = invalidateReportOwner(value);
-        store.dispose();
         const ownerGameIdAtom = gameIdFamily(value);
         const ownerSessionAtom = gameSessionFamily(value);
         const ownerStateAtom = gameStateFamily(value);
@@ -123,10 +131,16 @@ export default function BoardsPage() {
               }
             },
           );
+          let closed = false;
           startTransition(() => {
-            closeWorkspaceTab(value);
-            closeTreeStore(value);
+            closed = closeWorkspaceTab(value);
+            if (closed) closeTreeStore(value);
           });
+          if (!closed) {
+            restoreReportOwner(value, reportInvalidation);
+            return;
+          }
+          store.dispose();
         } catch (error) {
           restoreReportOwner(value, reportInvalidation);
           notifyUnlessCancelled(t("Common.Error"), error);
@@ -168,12 +182,18 @@ export default function BoardsPage() {
     (value: string) => {
       const tab = tabs.find((candidate) => candidate.value === value);
       if (!tab) return;
-      const id = genID(tabs.map((candidate) => candidate.value));
-      tabStorage.clone(value, id);
-      setTabs((previous) => [...previous, { ...tab, value: id }]);
-      handleSetActiveTab(id);
+      void runTabCreation({
+        create: () =>
+          createTabFromSeed({
+            tab: { ...tab },
+            setTabs,
+            seed: (id) => tabStorage.cloneDurable(value, id),
+            existingTabIds: tabs.map((candidate) => candidate.value),
+          }),
+        onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
+      });
     },
-    [handleSetActiveTab, setTabs, tabs],
+    [setTabs, t, tabs],
   );
 
   const openRename = () => {
@@ -324,10 +344,9 @@ export default function BoardsPage() {
           variant="default"
           radius={0}
           onClick={() =>
-            createTab({
-              tab: { name: t("Tab.NewTab"), type: "new" },
-              setTabs,
-              setActiveTab: handleSetActiveTab,
+            void runTabCreation({
+              create: () => createTab({ tab: { name: t("Tab.NewTab"), type: "new" }, setTabs }),
+              onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
             })
           }
           classNames={{ root: classes.newTab }}

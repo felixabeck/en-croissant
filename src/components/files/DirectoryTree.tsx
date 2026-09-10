@@ -1,12 +1,14 @@
 import { Badge, Box, Group, Text } from "@mantine/core";
 import { IconFileDescription, IconFolder, IconFolderOpen, IconTrash } from "@tabler/icons-react";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom } from "jotai";
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { IconAction } from "@/components/common/IconAction";
-import { activeTabAtom, expandedDirectoriesAtom, tabsAtom } from "@/state/atoms";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { expandedDirectoriesAtom, tabsAtom } from "@/state/atoms";
 import { openFile } from "@/utils/files";
+import { runTabCreation } from "@/utils/tabs";
 import { fileWorkspaceKey } from "@/utils/pathCapabilities";
 import type { Entry, FileMetadata } from "./file";
 
@@ -55,7 +57,6 @@ export default function DirectoryTree({
   const { t } = useTranslation();
   const [expanded, setExpanded] = useAtom(expandedDirectoriesAtom);
   const [, setTabs] = useAtom(tabsAtom);
-  const setActive = useSetAtom(activeTabAtom);
   const navigate = useNavigate();
   const refs = useRef(new Map<string, HTMLDivElement>());
   const [focusedHandle, setFocusedHandle] = useState<string | null>(null);
@@ -85,7 +86,11 @@ export default function DirectoryTree({
     refs.current.get(handle)?.focus();
   };
   const openEntry = (entry: FileMetadata) => {
-    void openFile(entry, setTabs, setActive).then(() => navigate({ to: "/" }));
+    void runTabCreation({
+      create: () => openFile(entry, setTabs),
+      onSuccess: () => navigate({ to: "/" }),
+      onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
+    });
   };
   const render = ({ entry: node, depth }: VisibleEntry): React.ReactNode => {
     const isDirectory = node.type === "directory";

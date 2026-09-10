@@ -1,8 +1,9 @@
 import { tauri } from "@/platform/tauri";
 import type { StoreApi } from "zustand";
+import { startTransition } from "react";
 import type { FileMetadata } from "@/components/files/file";
-import { tabStorage } from "@/state/store/tabStorage";
-import { admitWorkspaceTabs } from "@/state/workspace";
+import { persistStorageWriteError, tabStorage } from "@/state/store/tabStorage";
+import { reportPersistError } from "@/state/persistError";
 import { newWorkspaceId, tabSchema, type GameOrigin, type Tab } from "@/state/workspaceTypes";
 import type { TreeStoreState } from "@/state/store/tree";
 import { getPGN, parsePGN } from "./chess";
@@ -33,10 +34,83 @@ export function isPersistentGameOrigin(tab?: Tab | null): boolean {
 
 export const genID = newWorkspaceId;
 
+export type SetTabs = (update: Tab[] | ((tabs: Tab[]) => Tab[]), activeTab?: string) => boolean;
+export type SetCurrentTab = (update: React.SetStateAction<Tab>) => boolean;
+
+export function createTabFromSeed({
+    tab,
+    setTabs,
+    seed,
+    existingTabIds,
+}: {
+    tab: Omit<Tab, "value">;
+    setTabs: SetTabs;
+    seed?: (id: string) => void;
+    existingTabIds?: Iterable<string>;
+}): string | null {
+    const id = genID(existingTabIds);
+    if (seed) {
+        try {
+            seed(id);
+        } catch (error) {
+            reportPersistError(persistStorageWriteError(error));
+            return null;
+        }
+    }
+
+    let admitted = false;
+    try {
+        startTransition(() => {
+            admitted = setTabs((prev) => {
+                const nextTab = { ...tab, value: id };
+                return prev.length === 0 ||
+                    (prev.length === 1 && prev[0].type === "new" && tab.type !== "new")
+                    ? [nextTab]
+                    : [...prev, nextTab];
+            }, id);
+        });
+    } catch (error) {
+        if (seed) rollbackCreatedTree(id);
+        throw error;
+    }
+    if (!admitted) {
+        if (seed) rollbackCreatedTree(id);
+        return null;
+    }
+    return id;
+}
+
+function rollbackCreatedTree(id: string) {
+    try {
+        tabStorage.remove(id);
+    } catch (error) {
+        reportPersistError(persistStorageWriteError(error));
+    }
+}
+
+export async function runTabCreation({
+    create,
+    onSuccess,
+    onError,
+}: {
+    create: () => Promise<string | null> | string | null;
+    onSuccess?: (id: string) => void | Promise<void>;
+    onError: (error: unknown) => void;
+}): Promise<string | null> {
+    try {
+        const id = await create();
+        if (id === null) return null;
+        await onSuccess?.(id);
+        return id;
+    } catch (error) {
+        onError(error);
+        return null;
+    }
+}
+
 export async function createTab({
     tab,
     setTabs,
-    setActiveTab,
     pgn,
     headers,
     gameOrigin,
@@ -44,15 +118,13 @@ export async function createTab({
     existingTabIds,
 }: {
     tab: Omit<Tab, "value" | "gameOrigin">;
-    setTabs: React.Dispatch<React.SetStateAction<Tab[]>>;
-    setActiveTab: React.Dispatch<React.SetStateAction<string | null>>;
+    setTabs: SetTabs;
     pgn?: string;
     headers?: GameHeaders;
     gameOrigin?: GameOrigin;
     position?: number[];
     existingTabIds?: Iterable<string>;
 }): Promise<string | null> {
-    const id = genID(existingTabIds);
     let treeToSeed: Awaited<ReturnType<typeof parsePGN>> | undefined;
 
     if (pgn !== undefined) {
@@ -66,25 +138,15 @@ export async function createTab({
         treeToSeed = tree;
     }
 
-    let admitted = false;
-    setTabs((prev) => {
-        const nextTab = {
+    return createTabFromSeed({
+        tab: {
             ...tab,
-            value: id,
             gameOrigin: gameOrigin ?? { kind: "none" },
-        };
-        const nextTabs =
-            prev.length === 0 || (prev.length === 1 && prev[0].type === "new" && tab.type !== "new")
-                ? [nextTab]
-                : [...prev, nextTab];
-        if (!admitWorkspaceTabs(nextTabs)) return prev;
-        if (treeToSeed) tabStorage.seed(id, treeToSeed);
-        admitted = true;
-        return nextTabs;
+        },
+        setTabs,
+        seed: treeToSeed ? (id) => tabStorage.seed(id, treeToSeed) : undefined,
+        existingTabIds,
     });
-    if (!admitted) return null;
-    setActiveTab(id);
-    return id;
 }
 
 export type SaveResult = "saved" | "cancelled" | "failed";
@@ -96,7 +158,7 @@ export async function saveToFile({
     isUserSave,
 }: {
     tab: Tab | undefined;
-    setCurrentTab: React.Dispatch<React.SetStateAction<Tab>>;
+    setCurrentTab: SetCurrentTab;
     store: StoreApi<TreeStoreState>;
     isUserSave?: boolean;
 }): Promise<SaveResult> {
@@ -132,7 +194,7 @@ export async function saveToFile({
 
             const numGames = isTempFile && fileOrigin ? fileOrigin.file.numGames : 1;
             const gameNumber = fileOrigin?.gameNumber ?? 0;
-            setCurrentTab((prev) => {
+            const originSaved = setCurrentTab((prev) => {
                 return {
                     ...prev,
                     gameOrigin: {
@@ -152,6 +214,7 @@ export async function saveToFile({
                     },
                 };
             });
+            if (!originSaved) return "failed";
             await tauri.writeGame(selected.handle, fileOrigin?.gameNumber ?? 0, pgn);
             store.getState().save();
             return "saved";

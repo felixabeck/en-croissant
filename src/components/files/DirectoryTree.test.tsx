@@ -6,7 +6,7 @@ import { activeTabAtom, expandedDirectoriesAtom, tabsAtom } from "@/state/atoms"
 import type { Entry } from "./file";
 import DirectoryTree from "./DirectoryTree";
 
-const mocks = vi.hoisted(() => ({ navigate: vi.fn(), openFile: vi.fn() }));
+const mocks = vi.hoisted(() => ({ navigate: vi.fn(), notify: vi.fn(), openFile: vi.fn() }));
 
 vi.mock("@mantine/core", () => ({
   Badge: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
@@ -50,6 +50,7 @@ vi.mock("@/components/common/IconAction", () => ({
   ),
 }));
 vi.mock("@/utils/files", () => ({ openFile: mocks.openFile }));
+vi.mock("@/components/files/notifyError", () => ({ notifyUnlessCancelled: mocks.notify }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -219,26 +220,30 @@ test("filters the visible navigation model and opens a filtered file with Enter"
   ]);
   expect(document.activeElement).toBe(item("Child"));
 
+  mocks.openFile.mockResolvedValueOnce("tab-id");
   await key(item("Child"), "Enter");
   expect(mocks.openFile).toHaveBeenCalledTimes(1);
-  expect(mocks.openFile).toHaveBeenCalledWith(
-    directory.children[0],
-    expect.anything(),
-    expect.anything(),
-  );
+  expect(mocks.openFile).toHaveBeenCalledWith(directory.children[0], expect.anything());
   expect(mocks.navigate).toHaveBeenCalledWith({ to: "/" });
 
   mocks.openFile.mockClear();
   mocks.navigate.mockClear();
+  let resolveOpen: (value: string | null) => void = () => undefined;
+  mocks.openFile.mockReturnValueOnce(new Promise((resolve) => (resolveOpen = resolve)));
   await act(async () => {
     item("Child").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   });
-  expect(mocks.openFile).toHaveBeenCalledWith(
-    directory.children[0],
-    expect.anything(),
-    expect.anything(),
-  );
-  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/" });
+  expect(mocks.navigate).not.toHaveBeenCalled();
+  await act(async () => resolveOpen(null));
+  expect(mocks.navigate).not.toHaveBeenCalled();
+
+  mocks.openFile.mockRejectedValueOnce(new Error("parse failed"));
+  await act(async () => {
+    item("Child").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await Promise.resolve();
+  });
+  expect(mocks.navigate).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith("Common.Error", expect.any(Error));
 });
 
 test("routes context, M, and drag move intents with opaque entry handles", async () => {

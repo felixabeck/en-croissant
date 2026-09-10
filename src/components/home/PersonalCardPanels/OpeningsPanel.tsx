@@ -8,9 +8,10 @@ import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { PlayerGameInfo } from "@/bindings";
 import { type GameOutcome } from "@/bindings";
-import { activeTabAtom, fontSizeAtom, tabsAtom } from "@/state/atoms";
+import { notifyUnlessCancelled } from "@/components/files/notifyError";
+import { fontSizeAtom, tabsAtom } from "@/state/atoms";
 import { parsePGN } from "@/utils/chess";
-import { createTab } from "@/utils/tabs";
+import { createTab, runTabCreation } from "@/utils/tabs";
 import { getTimeControl } from "@/utils/timeControl";
 import { countMainPly, defaultTree } from "@/utils/treeReducer";
 import classes from "./OpeningsPanel.module.css";
@@ -189,8 +190,8 @@ function OpeningDetail({
   color: Color;
 }) {
   const [, setTabs] = useAtom(tabsAtom);
-  const [, setActiveTab] = useAtom(activeTabAtom);
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   const openingRate = opening.games / totalGames;
   return (
@@ -199,20 +200,24 @@ function OpeningDetail({
         <Text
           lineClamp={2}
           className={classes.link}
-          onClick={async () => {
-            const pgn = await tauri.getOpeningFromName(opening.name);
-            const headers = defaultTree().headers;
-            const tree = await parsePGN(pgn);
-            headers.orientation = color;
-            createTab({
-              tab: { name: opening.name, type: "analysis" },
-              pgn,
-              headers,
-              setTabs,
-              setActiveTab,
-              position: Array(countMainPly(tree.root)).fill(0),
+          onClick={() => {
+            void runTabCreation({
+              create: async () => {
+                const pgn = await tauri.getOpeningFromName(opening.name);
+                const headers = defaultTree().headers;
+                const tree = await parsePGN(pgn);
+                headers.orientation = color;
+                return createTab({
+                  tab: { name: opening.name, type: "analysis" },
+                  pgn,
+                  headers,
+                  setTabs,
+                  position: Array(countMainPly(tree.root)).fill(0),
+                });
+              },
+              onSuccess: () => navigate({ to: "/" }),
+              onError: (error) => notifyUnlessCancelled(t("Common.Error"), error),
             });
-            navigate({ to: "/" });
           }}
         >
           {opening.name}
