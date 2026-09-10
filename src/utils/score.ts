@@ -81,7 +81,13 @@ export function getAnnotation(
     is_sacrifice?: boolean,
     move?: string,
 ): Annotation {
-    const { prevCP, nextCP } = normalizeScores(prev || { type: "cp", value: 0 }, next, color);
+    // A null score means the evaluation is not available, not that it was 0.00.
+    // Coercing it to 0.00 invented a mistake annotation for a ply whose
+    // predecessor published no lines: from a won position, the next evaluation
+    // read as a huge loss against the invented baseline (f-20260831-21).
+    // With no predecessor evaluation the comparison is against `next` itself, so
+    // the difference is zero and no mistake annotation is derived.
+    const { prevCP, nextCP } = normalizeScores(prev ?? next, next, color);
     const winChanceDiff = getWinChance(prevCP) - getWinChance(nextCP);
 
     if (winChanceDiff > 20) {
@@ -100,16 +106,16 @@ export function getAnnotation(
             getWinChance(scores.prevCP) - getWinChance(scores.nextCP) > 10 &&
             move === prevMoves[0].sanMoves[0]
         ) {
-            const scores = normalizeScores(
-                prevprev || { type: "cp", value: 0 },
-                prevMoves[0].score.value,
-                color,
-            );
             if (is_sacrifice) {
                 return "!!";
             }
-            if (getWinChance(scores.nextCP) - getWinChance(scores.prevCP) > 5) {
-                return "!";
+            if (prevprev !== null) {
+                const scores = normalizeScores(prevprev, prevMoves[0].score.value, color);
+                // Without the previous-previous evaluation there is nothing to
+                // show the move improved on, so "!" is not derivable.
+                if (getWinChance(scores.nextCP) - getWinChance(scores.prevCP) > 5) {
+                    return "!";
+                }
             }
         } else if (is_sacrifice && nextCP > -200) {
             return "!?";
