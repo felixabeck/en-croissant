@@ -1,8 +1,7 @@
 # Backend mutation testing — a periodic deep check, not a per-commit gate.
 #
-# Only the BACKEND suite lives here. `mutation:frontend` takes ~21 seconds and stays in
-# `test.yml`, where it has run since 57b7ec27: moving a fast gate that is currently catching
-# a real defect out of per-push CI would make CI pass by dropping a red gate, not by fixing it.
+# Only the BACKEND suite lives here. `mutation:frontend` remains a per-push gate in
+# `test.yml`; backend mutation runs periodically because its full package suite is much longer.
 #
 # The backend suite is different in kind. Measured on tuxedo-atlas 2026-08-29, the eight
 # packages take ~55 minutes together (`database-encoding` alone is 96 mutants in 10 minutes),
