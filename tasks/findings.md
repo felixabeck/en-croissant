@@ -4924,6 +4924,21 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
   `8307bacc..HEAD`, 2026-08-31. Deferred: this run's loaded context is the UCI aggregation
   loops in `src-tauri/src/chess.rs`, not the renderer tree store.
 
+* **Handled:** 2026-09-10, commit `42d2fce3`. Both predecessor reads in `addAnalysis`
+  (`src/state/store/tree.ts`) now carry `analysis[i - 1].best.length > 0` /
+  `analysis[i - 2].best.length > 0`, matching the guard the variation branch already used.
+  A missing predecessor yields `prevScore = null` and `prevMoves = []`; `getAnnotation`
+  already handles both (`prev || { type: "cp", value: 0 }` and a `prevMoves.length > 1`
+  gate), so no change was needed in `src/utils/score.ts`.
+* **Proof:** `addAnalysis skips plies whose predecessor has no lines` in
+  `src/utils/tests/store.test.ts` drives a three-ply analysis with an empty middle entry.
+  Measured red without the guards (`TypeError: Cannot read properties of undefined
+  (reading 'score')`) and green with them; 30/30 in that file.
+* **Rejected:** skipping the whole ply when its predecessor has no lines. That would drop
+  the current ply's score as well, which is available and correct; the finding's stated fix
+  shape — null scores and empty `prevMoves` — preserves it.
+<!-- ledger-meta {"command":"annotate","effect_lines":13,"effect_sha256":"38b6e83b604e452285c493b0db9f750558106a77616d25dff08e44aa0eea4e11","input_sha256":"681526b66e28b11646a3b2f4afdc6f12a88b006f68cd3f47f15ce4e6146a4bc1","kind":"mutation-receipt","operation":"ffe24e70ccaa32b950e503434a72f5147fae1b9815e31b6194052c566173b561","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-21"],"target":"f-20260831-21","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
