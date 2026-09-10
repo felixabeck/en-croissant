@@ -5270,6 +5270,13 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 * **Fix shape:** enumerate through `listWorkingTreeFiles` with the pathspec each checker already walks (`src` and `.github/workflows`).
 * **Found by:** numbered-3 adjacent lens over the f-20260830-46/54/55 push range, 2026-09-01. Confidence 94.
 
+* **Handled:** Both checkers now enumerate through `listWorkingTreeFiles` with the pathspec they already walked. `sourceFiles` in `check-untranslated-jsx.mjs` uses pathspec `src` and filters `.tsx` minus `.test.tsx`; `workflowPaths` in `check-workflow-permissions.mjs` uses pathspec `.github/workflows` and keeps only that directory's own `.yml`/`.yaml` entries. Untracked and symlinked files are now scanned instead of skipped by the old `entry.isFile()` test, and a repository git cannot enumerate fails loudly instead of reporting a clean tree. The JSX checker also gained an `isEntrypoint` guard, because importing it for a test previously ran the whole scan at module load.
+* **Commits:** `63202564`
+* **Proof:** `pnpm workflows:permissions:test` (14/14, two new: symlinked workflow discovered and nested directory ignored; discovery outside a repository rejects) and `pnpm vitest run scripts/check-untranslated-jsx.test.mjs` (8/8, two new discovery tests). `pnpm i18n:jsx`, `pnpm workflows:check` and `pnpm gates:contract:check` green.
+* **Rejected:** injecting a `listFiles` seam into both checkers as `check-gate-routing.mjs` does — the fixtures are cheap to `git init`, and a real `git ls-files` in the test is what proves the shared semantics rather than a stub of them.
+* **Note:** a `.gitignore`d workflow or component is no longer scanned, which is the shared walker's semantics and matches every other checker; such a file reaches neither GitHub nor a build.
+<!-- ledger-meta {"command":"annotate","effect_lines":5,"effect_sha256":"33e01ccb2460c48bf918b99fc07e5514669981f51117a1ac660e90b44f38492e","input_sha256":"17e46886bac9f96af91091b112c43bf5945d7201c20afc7a2964b16ad87ccb37","kind":"mutation-receipt","operation":"51bd01f37f3037d131652092288fefe6b5540a915df0d65b37094b2771c60082","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-16"],"target":"f-20260901-16","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
