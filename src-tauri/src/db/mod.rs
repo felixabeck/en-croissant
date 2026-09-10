@@ -6,6 +6,8 @@ mod models;
 mod ops;
 mod repository;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 pub(crate) use repository::cancel_snapshot_copy_after_chunks;
 mod schema;
 mod search;
@@ -707,8 +709,8 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
 
             let mut importer = Importer::new(timestamp.map(|t| t as i64));
             let mut reader = BufferedReader::new(uncompressed);
-            while let Some(game) = reader.read_game(&mut importer)? {
-                let Some(game) = game else { continue };
+            while let Some(parsed_game) = reader.read_game(&mut importer)? {
+                let Some(game) = parsed_game else { continue };
                 if imported_games.is_multiple_of(1000) {
                     let _ = ConvertProgress {
                         id: progress_id.clone(),
@@ -4100,43 +4102,15 @@ mod tests {
         DatabaseHandle,
         PathBuf,
     ) {
-        use diesel::connection::SimpleConnection;
-
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join("games.db3");
+        let case = empty_database_case();
+        let database = &case.3;
         let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
         connection.batch_execute(CREATE_TABLES_SQL).unwrap();
         connection
             .batch_execute("INSERT INTO Info (Name, Value) VALUES ('Version', '2.0.0');")
             .unwrap();
         drop(connection);
-
-        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
-        let operations = vec![
-            PathOperation::DatabaseRead,
-            PathOperation::DatabaseMutate,
-            PathOperation::DatabaseCreate,
-            PathOperation::DatabaseExport,
-        ];
-        let grant = authority
-            .grant_dialog_operations(
-                &database,
-                "games",
-                PathClass::BoundedDialogGrant,
-                operations.clone(),
-                std::time::Duration::from_secs(30),
-                1,
-            )
-            .unwrap();
-        let commit = authority
-            .promote_dialog(&grant, PathClass::PersistentFile, "games", operations)
-            .unwrap();
-        let handle = DatabaseHandle::new(commit.id);
-        let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
-        let app = tauri::test::mock_app();
-        app.manage(state);
-        (dir, app.handle().clone(), handle, database)
+        case
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5300,18 +5274,26 @@ mod tests {
         )
     }
 
-    fn stored_counts(
+    #[derive(Debug, PartialEq, Eq)]
+    struct DatabaseRowCounts {
+        games: i64,
+        players: i64,
+        events: i64,
+        sites: i64,
+    }
+
+    fn database_row_counts(
         app: &tauri::AppHandle<tauri::test::MockRuntime>,
         database: &Path,
-    ) -> (i64, i64, i64, i64) {
+    ) -> DatabaseRowCounts {
         let state = app.state::<AppState>();
         let mut db = state.database_repository.connection(database).unwrap();
-        (
-            games::table.count().get_result(&mut *db).unwrap(),
-            players::table.count().get_result(&mut *db).unwrap(),
-            events::table.count().get_result(&mut *db).unwrap(),
-            sites::table.count().get_result(&mut *db).unwrap(),
-        )
+        DatabaseRowCounts {
+            games: games::table.count().get_result(&mut *db).unwrap(),
+            players: players::table.count().get_result(&mut *db).unwrap(),
+            events: events::table.count().get_result(&mut *db).unwrap(),
+            sites: sites::table.count().get_result(&mut *db).unwrap(),
+        }
     }
 
     fn empty_database_case() -> (
@@ -5321,18 +5303,19 @@ mod tests {
         PathBuf,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join("new.db3");
+        let database = dir.path().join("games.db3");
         File::create(&database).unwrap();
         let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
         let operations = vec![
             PathOperation::DatabaseRead,
             PathOperation::DatabaseMutate,
             PathOperation::DatabaseCreate,
+            PathOperation::DatabaseExport,
         ];
         let grant = authority
             .grant_dialog_operations(
                 &database,
-                "new",
+                "games",
                 PathClass::BoundedDialogGrant,
                 operations.clone(),
                 std::time::Duration::from_secs(30),
@@ -5340,7 +5323,7 @@ mod tests {
             )
             .unwrap();
         let commit = authority
-            .promote_dialog(&grant, PathClass::PersistentFile, "new", operations)
+            .promote_dialog(&grant, PathClass::PersistentFile, "games", operations)
             .unwrap();
         let state = AppState::default();
         *state.pgn_path_authority.lock().unwrap() = Some(authority);
@@ -5412,7 +5395,15 @@ mod tests {
         let frames = capture_events::<ConvertProgress>(&app);
 
         assert!(run_import(&app, handle, files, None).is_err());
-        assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
+        assert_eq!(
+            database_row_counts(&app, &database),
+            DatabaseRowCounts {
+                games: 0,
+                players: 1,
+                events: 1,
+                sites: 1,
+            }
+        );
         assert!(frames
             .lock()
             .unwrap()
@@ -5429,7 +5420,15 @@ mod tests {
         let _failure = repository::fail_next_data_changed();
 
         assert!(run_import(&app, handle, vec![grant_import_file(&app, &source)], None).is_err());
-        assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
+        assert_eq!(
+            database_row_counts(&app, &database),
+            DatabaseRowCounts {
+                games: 0,
+                players: 1,
+                events: 1,
+                sites: 1,
+            }
+        );
     }
 
     #[test]
@@ -5451,7 +5450,15 @@ mod tests {
         }
 
         assert!(run_import(&app, handle, vec![grant_import_file(&app, &source)], None).is_err());
-        assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
+        assert_eq!(
+            database_row_counts(&app, &database),
+            DatabaseRowCounts {
+                games: 0,
+                players: 1,
+                events: 1,
+                sites: 1,
+            }
+        );
         let state = app.state::<AppState>();
         let mut db = state.database_repository.connection(&database).unwrap();
         assert_eq!(
@@ -5527,7 +5534,15 @@ mod tests {
             None,
         )
         .is_err());
-        assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
+        assert_eq!(
+            database_row_counts(&app, &database),
+            DatabaseRowCounts {
+                games: 0,
+                players: 1,
+                events: 1,
+                sites: 1,
+            }
+        );
         assert!(!search::is_position_in_db(
             &state.pgn_path_authority,
             &state.database_repository,
@@ -5556,51 +5571,67 @@ mod tests {
 
     #[test]
     fn truncated_compressed_streams_roll_back_complete_games() {
-        let (dir, app, handle, database) = blocking_database_case();
-        mount_convert_progress_events(&app);
-        let frames = capture_events::<ConvertProgress>(&app);
-        let bz2 = dir.path().join("truncated.pgn.bz2");
-        let zst = dir.path().join("truncated.pgn.zst");
-        let compress_bz2 = |payload: &[u8]| {
-            let mut encoder = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::best());
-            encoder.write_all(payload).unwrap();
-            encoder.finish().unwrap()
-        };
-        let complete_prefix = REPLACEMENT_PGN.repeat(200);
-        let mut bz_bytes = compress_bz2(complete_prefix.as_bytes());
-        let mut truncated_bz_member = compress_bz2(REPLACEMENT_PGN.as_bytes());
-        truncated_bz_member.truncate(truncated_bz_member.len() - 8);
-        bz_bytes.extend(truncated_bz_member);
-        std::fs::write(&bz2, bz_bytes).unwrap();
-        let mut zst_bytes = zstd::stream::encode_all(complete_prefix.as_bytes(), 1).unwrap();
-        let mut truncated_zst_frame =
-            zstd::stream::encode_all(REPLACEMENT_PGN.as_bytes(), 1).unwrap();
-        truncated_zst_frame.truncate(truncated_zst_frame.len() - 4);
-        zst_bytes.extend(truncated_zst_frame);
-        std::fs::write(&zst, zst_bytes).unwrap();
+        test_support::run_isolated(
+            "db::tests::truncated_compressed_streams_roll_back_complete_games",
+            || {
+                let (dir, app, handle, database) = blocking_database_case();
+                mount_convert_progress_events(&app);
+                let frames = capture_events::<ConvertProgress>(&app);
+                let bz2 = dir.path().join("truncated.pgn.bz2");
+                let zst = dir.path().join("truncated.pgn.zst");
+                let compress_bz2 = |payload: &[u8]| {
+                    let mut encoder =
+                        bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::best());
+                    encoder.write_all(payload).unwrap();
+                    encoder.finish().unwrap()
+                };
+                let complete_prefix = REPLACEMENT_PGN.repeat(200);
+                let mut bz_bytes = compress_bz2(complete_prefix.as_bytes());
+                let mut truncated_bz_member = compress_bz2(REPLACEMENT_PGN.as_bytes());
+                truncated_bz_member.truncate(truncated_bz_member.len() - 8);
+                bz_bytes.extend(truncated_bz_member);
+                std::fs::write(&bz2, bz_bytes).unwrap();
+                let mut zst_bytes =
+                    zstd::stream::encode_all(complete_prefix.as_bytes(), 1).unwrap();
+                let mut truncated_zst_frame =
+                    zstd::stream::encode_all(REPLACEMENT_PGN.as_bytes(), 1).unwrap();
+                truncated_zst_frame.truncate(truncated_zst_frame.len() - 4);
+                zst_bytes.extend(truncated_zst_frame);
+                std::fs::write(&zst, zst_bytes).unwrap();
 
-        for source in [&bz2, &zst] {
-            let frames_before = frames.lock().unwrap().len();
-            assert!(run_import(
-                &app,
-                handle.clone(),
-                vec![grant_import_file(&app, source)],
-                None,
-            )
-            .is_err());
-            assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
-            let captured = frames.lock().unwrap();
-            assert!(
-                captured[frames_before..].iter().any(|frame| {
-                    frame.source_file_name.as_deref() == source.file_name().unwrap().to_str()
-                }),
-                "{} must yield a complete game before reporting its truncated tail",
-                source.display()
-            );
-            assert!(captured[frames_before..]
-                .iter()
-                .all(|frame| frame.source_file_name.is_some()));
-        }
+                for source in [&bz2, &zst] {
+                    let frames_before = frames.lock().unwrap().len();
+                    assert!(run_import(
+                        &app,
+                        handle.clone(),
+                        vec![grant_import_file(&app, source)],
+                        None,
+                    )
+                    .is_err());
+                    assert_eq!(
+                        database_row_counts(&app, &database),
+                        DatabaseRowCounts {
+                            games: 0,
+                            players: 1,
+                            events: 1,
+                            sites: 1,
+                        }
+                    );
+                    let captured = frames.lock().unwrap();
+                    assert!(
+                        captured[frames_before..].iter().any(|frame| {
+                            frame.source_file_name.as_deref()
+                                == source.file_name().unwrap().to_str()
+                        }),
+                        "{} must yield a complete game before reporting its truncated tail",
+                        source.display()
+                    );
+                    assert!(captured[frames_before..]
+                        .iter()
+                        .all(|frame| frame.source_file_name.is_some()));
+                }
+            },
+        );
     }
 
     #[test]
@@ -5666,7 +5697,15 @@ mod tests {
             state.database_repository.data_revision(&database).unwrap(),
             revision
         );
-        assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
+        assert_eq!(
+            database_row_counts(&app, &database),
+            DatabaseRowCounts {
+                games: 0,
+                players: 1,
+                events: 1,
+                sites: 1,
+            }
+        );
     }
 
     #[test]
@@ -5692,7 +5731,7 @@ mod tests {
             heap_peak < corpus_bytes / 2,
             "streaming heap peak {heap_peak} must stay below half of {corpus_bytes} bytes"
         );
-        assert!(stored_counts(&app, &database).0 > 10_000);
+        assert!(database_row_counts(&app, &database).games > 10_000);
     }
 
     #[test]
@@ -5720,7 +5759,7 @@ mod tests {
             Some(cutoff),
         )
         .unwrap();
-        assert_eq!(stored_counts(&app, &database).0, 1);
+        assert_eq!(database_row_counts(&app, &database).games, 1);
     }
 
     #[test]

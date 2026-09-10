@@ -247,53 +247,27 @@ mod tests {
         assert!(matches!(result, Err(Error::Cancellation)));
     }
 
-    fn isolated_factory_test(test_name: &str, mode: &str) {
-        const CHILD: &str = "CHESSFABLE_SQLITE_FACTORY_CHILD";
-        if std::env::var(CHILD).as_deref() == Ok(mode) {
-            exercise_factory(mode);
-            return;
-        }
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", test_name, "--nocapture"])
-            .env(CHILD, mode)
-            .spawn()
-            .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        let status = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break status;
-            }
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("isolated {mode} factory probe timed out");
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        };
-        assert!(status.success(), "isolated {mode} factory probe failed");
-    }
-
     #[test]
     fn pooled_repository_factory_installs_callback_in_isolated_process() {
-        isolated_factory_test(
+        crate::db::test_support::run_isolated(
             "db::sqlite_cancellation::tests::pooled_repository_factory_installs_callback_in_isolated_process",
-            "pool",
+            || exercise_factory("pool"),
         );
     }
 
     #[test]
     fn pinned_repository_factory_installs_callback_in_isolated_process() {
-        isolated_factory_test(
+        crate::db::test_support::run_isolated(
             "db::sqlite_cancellation::tests::pinned_repository_factory_installs_callback_in_isolated_process",
-            "pinned",
+            || exercise_factory("pinned"),
         );
     }
 
     #[test]
     fn identity_first_pool_factory_installs_callback_in_isolated_process() {
-        isolated_factory_test(
+        crate::db::test_support::run_isolated(
             "db::sqlite_cancellation::tests::identity_first_pool_factory_installs_callback_in_isolated_process",
-            "identity-first-pool",
+            || exercise_factory("identity-first-pool"),
         );
     }
 
