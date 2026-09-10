@@ -2609,3 +2609,25 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** The PGN rule already mandates one transaction per logical import. The existing function already holds its write lease across all files, and BufferedReader yields one game at a time. Diesel supports nested savepoints for schema/index helpers. Reader errors and post-commit revision errors currently misrepresent committed state to the renderer. The chosen placement gives rollback on failure without a new response shape, preserving d-20260830-05's scope. Reversal requires evidence that streamed transactional import is unsuitable plus a reviewed explicit partial-outcome/retry contract; do not restore silent partial commits.
 * **Decided by:** Codex, autonomously under full auto; plan authorship and arbitration shared one context, and detection ran on the same Codex family as the code. · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f5d2bcecc70fb247e1996dcfad6ccf0e4d6c355985a12cec91f53ed8ed11e162","input_sha256":"952a34c24dcb1d6b7bf8083a30feec975cd3838393ea3238b87ffbeb1e0e1aae","kind":"mutation-receipt","operation":"3ee0fa53c077ce3f0b9ce00210d739cf9f3688350ae3ed94554e58efa016d91e","options":{"section":null},"request_id_sha256":null,"results":["d-20260910-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20260910-09 — What should getAnnotation do when the previous evaluation is absent?
+
+* **Question:** what should `getAnnotation` do when the previous or previous-previous
+  evaluation is `null`, now that a ply can legitimately publish no lines at all?
+* **Governs:** f-20260831-21
+* **Chosen:** `null` means "not derivable". No mistake annotation (`??` / `?` / `?!`) is
+  produced without the previous evaluation, and no `!` without the previous-previous one.
+  `!!` and `!?` rest on `is_sacrifice` and the current evaluation and are unchanged.
+* **Rejected:** keeping the existing `prev || { type: "cp", value: 0 }` coercion and guarding
+  only the array reads in `addAnalysis` — the fix shape the finding itself named. It stops the
+  crash but leaves an invented 0.00 baseline, so after a lineless predecessor a strong move in
+  a won position is annotated `??`. Also rejected: skipping the whole ply, which discards the
+  ply's own evaluation although it is present and correct.
+* **Reason:** a wrong annotation shown to the user is worse than no annotation, and it is
+  silent where the crash was loud. Two consequences outside the empty-`best` case are accepted:
+  the root node no longer receives a mistake annotation, and the first move of a game no longer
+  receives `!` — both were derived against the invented 0.00 and were never meaningful.
+  Reversal: restore the two coercions in `src/utils/score.ts`; the three tests named in
+  f-20260831-21's closing note go red and say which behaviour was reverted.
+* **Decided by:** Claude Code, interactive next-finding run 2026-09-10 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":20,"effect_sha256":"e0b976ba470fa9d03eccf37301de78bc52a25a5fb780e7b738a9eec509463f70","input_sha256":"f9d2f355fb43f5d6b262009c0e5a8f53b6f0456717e5fd4d17adf272649c2a9b","kind":"mutation-receipt","operation":"a9b318be9482ed2333cb88bbbb0bfc7cd00885ef97004e2d4f5f7b35c5bb7557","options":{"section":null},"request_id_sha256":null,"results":["d-20260910-09"],"target":"decisions-ledger","v":1} -->
