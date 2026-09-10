@@ -2578,3 +2578,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** if the theme introduces runtime-defined colours, revise the name contract and catalogue tests alongside that feature.
 * **Decided by:** Codex next-finding run 2026-09-10 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"e0b4f832e13e33b107de1b44ecfa5ff06c6efeb6043a5a1da8f68fe01a2cf94f","input_sha256":"29fce901c97aead99bd09905baa512a1743c8bc5bf02324d2b33c877db57f857","kind":"mutation-receipt","operation":"fc51e1f010fe3218b8c39464e9bebe018575559df608bc14ce1351ad83b9fec0","options":{"section":null},"request_id_sha256":null,"results":["d-20260910-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20260910-06 — How are board piece and colour names retained by extraction?
+
+* **Question:** How should board accessibility retain and localize the finite chess colour and piece-role names?
+* **Governs:** f-20260910-04
+* **Chosen:** Literal translation calls for both colours and all six roles, translated across all shipped catalogues and tested after extraction with language fallback disabled. Reuse the colour translation for board orientation. Compose non-English labels with separate piece/side fields and a bottom-side orientation description so standalone side names do not need adjective agreement with every piece. Keep the existing board accessibility module as the production labelling seam and verify its wiring through the board-keyboard container scenario. Execute at lens tier.
+* **Rejected:** Dynamic-key preservation prefixes and English default values as the remedy; both retain an unnecessary disconnect between finite producers and extraction. No change to chess move or keyboard semantics.
+* **Reason:** docs/localization.md and d-20260910-04/05 already settle finite-message extraction. The surfaced d-20260901-36 governs BoardGame test loading, not this localization choice; its existing boardAccessibility extraction precedent supports a focused test without the full component graph.
+* **Reversal path:** If chess roles or orientation semantics change, update the literal calls and real-catalogue matrix together, preserving the post-extraction regression proof.
+* **Decided by:** Codex next-finding drain, 2026-09-10; plan authorship and arbitration share one context · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"d5aba0636f99e2b9a984efec322f6ef927acd3b9c03556fdc2926a89b2a3f285","input_sha256":"5cea216f3cebd872d9ed7b70693b718d107e4f26c329778f231197f29c952170","kind":"mutation-receipt","operation":"5f10c17a8e6c982ea933e8e7887d3ea77a41128954402778711560eea4fdce9e","options":{"section":null},"request_id_sha256":null,"results":["d-20260910-06"],"target":"decisions-ledger","v":1} -->
