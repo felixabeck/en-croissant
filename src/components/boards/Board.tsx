@@ -55,7 +55,7 @@ import FideInfo from "../databases/FideInfo";
 import { arrowColors } from "../panels/analysis/BestMoves";
 import AnnotationHint from "./AnnotationHint";
 import IconAction from "../common/IconAction";
-import { accessibleBoardGrid } from "./boardAccessibility";
+import { accessibleBoardGrid, accessibleSquareLabel, boardColorLabel } from "./boardAccessibility";
 import { BoardBar } from "./BoardBar";
 import Clock from "./Clock";
 import EvalBar from "./EvalBar";
@@ -346,26 +346,6 @@ function Board({
   const bottomPlayer = orientation === "white" ? headers.white : headers.black;
   const accessibleGrid = accessibleBoardGrid(orientation);
 
-  function accessibleSquareLabel(square: SquareName) {
-    const piece = pos?.board.get(parseSquare(square)!);
-    const pieceLabel = piece
-      ? t("Board.Aria.Piece", {
-          defaultValue: "{{color}} {{piece}}",
-          color: t(`Board.Aria.Color.${piece.color}`, { defaultValue: piece.color }),
-          piece: t(`Board.Aria.PieceType.${piece.role}`, { defaultValue: piece.role }),
-        })
-      : t("Board.Aria.EmptySquare", { defaultValue: "empty" });
-    return t("Board.Aria.Square", {
-      defaultValue: "{{square}}, {{piece}}{{selected}}",
-      square,
-      piece: pieceLabel,
-      selected:
-        keyboardSource === square
-          ? t("Board.Aria.MoveSourceSelected", { defaultValue: ", move source selected" })
-          : "",
-    });
-  }
-
   function keyboardMove(event: React.KeyboardEvent<HTMLDivElement>) {
     const [fileName, rankName] = keyboardSquare;
     const file = fileName.charCodeAt(0) - "a".charCodeAt(0);
@@ -541,7 +521,7 @@ function Board({
               tabIndex={0}
               aria-label={t("Board.AccessibleName", {
                 defaultValue: "Chessboard, {{orientation}} orientation",
-                orientation,
+                orientation: boardColorLabel(t, orientation),
               })}
               aria-activedescendant={`board-square-${keyboardSquare}`}
               onKeyDown={keyboardMove}
@@ -585,7 +565,12 @@ function Board({
                         id={`board-square-${square}`}
                         key={square}
                         role="gridcell"
-                        aria-label={accessibleSquareLabel(square)}
+                        aria-label={accessibleSquareLabel(
+                          t,
+                          square,
+                          pos?.board.get(parseSquare(square)!),
+                          keyboardSource === square,
+                        )}
                         aria-selected={keyboardSquare === square}
                       />
                     ))}
