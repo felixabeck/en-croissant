@@ -7553,7 +7553,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Board square labels use untranslated piece and colour names
 
-* **ID:** f-20260910-04 · **Status:** open · **Area:** i18n · **Root:** dynamic-translation-extraction · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260910-04 · **Status:** handled · **Area:** i18n · **Root:** dynamic-translation-extraction · **Entry:** lens · **Blocked:** none
 * **Where:** `src/components/boards/Board.tsx:354-355`, `i18next.config.ts`, all `src/translation/*.json`.
 * **Defect:** `accessibleSquareLabel` constructs `Board.Aria.Color.${piece.color}` and `Board.Aria.PieceType.${piece.role}`. Neither family has catalogue entries or a preservation pattern, so square labels use English chessops colour/role names in every locale.
 * **Evidence:** the production calls supply `piece.color` and `piece.role` as default values; inspection of all catalogues found no family entries. Same causal chain as f-20260830-11: dynamic keys are invisible to extraction and the completeness comparison cannot detect consistently absent keys. The shared Root with the accent-colour finding denotes this exact extraction mechanism.
