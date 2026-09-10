@@ -1809,6 +1809,9 @@ progress-broadcast discriminator, a disjoint file set with no shared `Root`, and
 * **Found by:** the `remove-tree-unhardened` `build` run, 2026-08-30, when `lint:ci` failed with
   "Some files were updated. This should not happen in CI mode." after the catalogues were edited.
 
+* **Cumulative review 2026-09-10, in-scope repairs pending:** error-handling lens found two confirmation-caller defects in the neighbourhood of this localization change. (1) `GameSelector.tsx:151` drops `InfoPanel.deleteGame`'s promise and toggles the modal independently, so rejection is unhandled and completion is reported too early (blocker, confidence 99). (2) `FilesPage.tsx:330` clears the trash banner after native restore but lets relist rejection become a generic restore failure (should-fix, confidence 94). Both are triaged Fix in this run; they are pre-existing caller defects, not introduced by `288a6d77`. The other five cumulative lenses approved without findings. Plan authorship and arbitration shared one context; detection ran on the same model family as implementation.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"198977ad6b4d7ced15f65c3bc1e61612f00d7fe544ea3838a8023cd73fe9d27b","input_sha256":"5b3d28b61aa42d9bfcda6fa9d186f755cb8e1ba7988d0b42bada0d20591c5699","kind":"mutation-receipt","operation":"97859a3ea064fcfff51c6ecfd2fa571a41cd29f6c9661787abe495cb14857acb","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-11"],"target":"f-20260830-11","v":1} -->
+
 ### A cancelled or failed workspace folder picker produces an unhandled rejection and no user feedback
 
 * **ID:** f-20260830-12 · **Status:** handled · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
