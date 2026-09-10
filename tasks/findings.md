@@ -5262,7 +5262,7 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 
 ### Two older checkers still walk the tree themselves
 
-* **ID:** f-20260901-16 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260901-16 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `scripts/check-untranslated-jsx.mjs:69`, `scripts/check-workflow-permissions.mjs:288`.
 * **Defect:** both still recurse with `readdir({ withFileTypes: true })` after f-20260830-54 routed skill-bridge, tool-parity, and gate-routing onto `listWorkingTreeFiles`. Skip, symlink, and untracked handling can drift again on these two checkers.
 * **Why it matters:** an ignored or untracked file that the shared walker would fail closed on is invisible to i18n JSX scanning and workflow-permission checks.
