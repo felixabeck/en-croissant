@@ -385,6 +385,31 @@ En Croissant's own.
   (`review-tests`) rather than `build`.
 <!-- ledger-meta {"command":"annotate","effect_lines":11,"effect_sha256":"2c32684504a0b289bed93b82bb8aba36cb1bd1a4b81c0ec6c2fc563cc054d7f5","input_sha256":"079ebf5f490f948d70ff26de95987c05ce36116cbcf26bacb152cc311039c8ae","kind":"mutation-receipt","operation":"995b466260c0409ea63ea6048ffc9d4e7114a851a9b59f5efa25bfa96e1d8865","options":{"section":null},"request_id_sha256":null,"results":["f-20260829-03"],"target":"f-20260829-03","v":1} -->
 
+* **Handled 2026-09-10.** `src/App.test.tsx` gained eleven cases covering the startup paths that had
+  no cover: the telemetry-enabled branch (`analytics.enable` plus an `app_started` capture carrying
+  the version), the CLI `occurrences > 0` branch, the `preloadReferenceDb` success, failure,
+  cancelled-failure and skipped-before-start paths, the three cancellation returns (after
+  `initializePathOwners`, after `attachConsole`, after the telemetry block), the outer
+  `startupSequence().catch` warn path reached when `closeSplashscreen` rejects, a negative case
+  proving both optional branches stay unentered when nothing is configured, and a render of the
+  `App` component itself pinning the font-size effect and the theme inputs. The jotai and theme
+  mocks are now parameterised per atom so the component can be rendered at all.
+* **Measured:** `src/App.tsx` went from 34/64 lines, 6/9 functions, 10/36 branches to **64/64 lines,
+  9/9 functions, 27/36 branches** (`pnpm test:coverage`, `coverage/lcov.info`). `pnpm test` is
+  green at 1065 tests and `pnpm coverage:frontend:check` passes without touching a baseline.
+* **Proven, not assumed.** Seven mutants of `src/App.tsx` were run by hand and each turned exactly
+  one test red: an always-true telemetry guard; the removed post-telemetry abort check; the removed
+  post-`attachConsole` abort handling; the removed abort check inside the preload `catch`; the
+  removed font-size effect; the CLI guard widened to `>= 0`; and the `referenceDb &&` conjunct
+  deleted. The last two exist because `review-tests` returned REVISE in round 1 on exactly those two
+  branches being proven in one direction only; both were adopted and round 2 returned APPROVED.
+* **Left uncovered, deliberately:** the `initialized.current` early return (`src/App.tsx:78`), which
+  is reachable only when the same hook instance remounts — React StrictMode or fast refresh. The
+  renderer does not mount under `StrictMode` (`src/index.tsx` renders `App` directly), so pinning
+  that branch would pin dev-only behaviour, and the nine residual branch records in the JSX body are
+  v8 range artefacts on lines that are fully executed.
+<!-- ledger-meta {"command":"annotate","effect_lines":23,"effect_sha256":"5f886c4c4aa75c81cae492b60b7c109e31f525a55dd5c1a341970fea7ab9a790","input_sha256":"aa73064ca549afddf7c05f326ffa39ef8faef6360ae4963bbf81a31f1e649d2a","kind":"mutation-receipt","operation":"8cc38df89b8529b7f86f74b2d580b6d7a440ced7b83c29a661997f96856bfd14","options":{"section":null},"request_id_sha256":null,"results":["f-20260829-03"],"target":"f-20260829-03","v":1} -->
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
