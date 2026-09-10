@@ -7681,3 +7681,19 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 * **Resolved, 2026-09-10:** 5bc64961 installs astral-sh/setup-uv v10.0.1 at verified commit 20cfd1bf945f4377ade1205e4dbc17946fc9a30d immediately after checkout, before the executable ledger gate. The script retains ownership of its Python requirement. `pnpm workflows:check`, `pnpm workflows:permissions:test` (12 passed), and `./scripts/findings.py check` passed locally. Cumulative correctness/root-cause review found no defect in the prerequisite repair; actual GitHub execution remains a required post-push verification, not something these local syntax checks prove. Plan authorship and arbitration shared root context; detection and code used the Codex family.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"3e506e4241f837ef093b100a83187fcf67d0b0b5561bda6c3bbb08621f1ef4dd","input_sha256":"11dcb532c7c617909b9abed08915b6b2b95da0acbacb256902dbbe14eb28408c","kind":"mutation-receipt","operation":"093903c0338dc880b8f3d5b757c482466af94730dcbce9ae4018d40863fe9363","options":{"section":null},"request_id_sha256":null,"results":["f-20260910-08"],"target":"f-20260910-08","v":1} -->
+
+---
+
+## 2026-09-10 — filed through the inbox spool
+
+### Existing-tab import overwrites its stored tree before metadata commit and bypasses the live tree owner
+
+* **ID:** f-20260910-09 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src/components/tabs/ImportModal.tsx handleSubmit file branch, tabStorage.seed inside setCurrentTab; src/state/store/tabStorage.ts seed/read; src/state/store/tree.ts createTreeStore cache.
+* **Defect:** importing a selected file into the current tab seeds the existing tab id before the workspace metadata is saved. A quota rejection of the workspace write leaves the prior durable origin/name referencing the replacement tree. A pending old tree also takes precedence over this seed in TabStorageRepository.read and can overwrite it on flush. The live cached store is not replaced by seed.
+* **Evidence:** ImportModal.tsx calls tabStorage.seed(prev.value, tree) inside the currentTabAtom updater; seed writes sessionStorage directly, while read checks pending first. The new-tab rollback protocol in f-20260901-05 cannot safely delete an existing id to undo this replacement.
+* **Open question:** What shared existing-tab replacement transaction updates live store, pending tree, durable tree and metadata together while retaining the original game on failed commit and handling async import ownership?
+* **Relation:** f-20260901-05 and f-20260906-22 cover new-id creation and close; f-20260831-17 covers startup migration. Their Root is '-', so no shared Root is invented. f-20260908-04 concerns whole-file IPC import materialization, a separate cause.
+* **Disposition:** Defer under the same-area separate-design exception: existing-owner replacement and recovery needs its own transaction design, beyond this run's new-id creation/close mandate. Current run only changes ImportModal's setter type plumbing.
+* **Proof required:** real-store tests with pending and cached old tree, successful replacement, quota failures on tree and workspace writes, stale async result, reload and retry; UI import journey through the container harness.
+* **Found by:** Codex root during f-20260901-05 caller trace, 2026-09-10.
