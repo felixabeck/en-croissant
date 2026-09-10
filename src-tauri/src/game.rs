@@ -2795,7 +2795,9 @@ fn try_polyglot_book_move(controller: &GameController) -> Option<String> {
         return None;
     }
 
-    let fen = Fen::from_position(controller.position.clone(), EnPassantMode::Legal).to_string();
+    // Polyglot hashes the en-passant file when an adjacent pawn can capture, even if it is pinned.
+    let fen =
+        Fen::from_position(controller.position.clone(), EnPassantMode::PseudoLegal).to_string();
     let entries = book.get_all_moves_from_fen(&fen);
 
     if entries.is_empty() {
@@ -3207,6 +3209,42 @@ mod tests {
         }
     }
 
+    fn polyglot_book_bytes(entries: &[(u64, &str, u16)]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(entries.len() * 16);
+        for &(key, uci, weight) in entries {
+            let uci = uci.as_bytes();
+            assert_eq!(uci.len(), 4);
+            let square = |file: u8, rank: u8| {
+                assert!((b'a'..=b'h').contains(&file));
+                assert!((b'1'..=b'8').contains(&rank));
+                (rank - b'1') as u16 * 8 + (file - b'a') as u16
+            };
+            let from = square(uci[0], uci[1]);
+            let to = square(uci[2], uci[3]);
+            let move_data = (from << 6) | to;
+
+            bytes.extend_from_slice(&key.to_be_bytes());
+            bytes.extend_from_slice(&move_data.to_be_bytes());
+            bytes.extend_from_slice(&weight.to_be_bytes());
+            bytes.extend_from_slice(&0_u32.to_be_bytes());
+        }
+        bytes
+    }
+
+    fn controller_with_polyglot_book(
+        initial_fen: &str,
+        move_uci: &str,
+        entries: &[(u64, &str, u16)],
+    ) -> GameController {
+        let mut config = human_config();
+        config.initial_fen = Some(initial_fen.into());
+        let mut controller = GameController::new("polyglot-test".into(), 1, config).unwrap();
+        controller.apply_move(move_uci).unwrap();
+        controller.polyglot_book = Some(load_polyglot_book(&polyglot_book_bytes(entries)).unwrap());
+        controller.polyglot_max_ply = 16;
+        controller
+    }
+
     fn mating_config(white: PlayerConfig) -> GameConfig {
         GameConfig {
             white,
@@ -3592,6 +3630,73 @@ mod tests {
             })
             .collect::<HashSet<_>>();
         assert_eq!(zero_weight_selections, HashSet::from([0, 1, 2]));
+    }
+
+    #[test]
+    fn polyglot_lookup_uses_pseudo_legal_en_passant_and_filters_illegal_moves() {
+        // Fixed reference keys from shakmaty 0.27.1's independent Zobrist64 implementation.
+        let cases = [
+            (
+                "white pinned en passant",
+                "4r2k/3p4/8/4P3/8/8/8/4K3 b - - 0 1",
+                "d7d5",
+                0xccc1_0c96_ec17_72c4,
+                "e5d6",
+                "e1d1",
+            ),
+            (
+                "black pinned en passant",
+                "4k3/8/8/8/4p3/8/3P4/4R2K w - - 0 1",
+                "d2d4",
+                0x35c2_0801_ff02_3f44,
+                "e4d3",
+                "e8d8",
+            ),
+            (
+                "legal en passant",
+                "7k/3p4/8/4P3/8/8/8/4K3 b - - 0 1",
+                "d7d5",
+                0xb3bd_cf02_ccb4_d781,
+                "e1e3",
+                "e5d6",
+            ),
+            (
+                "no adjacent capturing pawn",
+                "7k/3p4/8/8/8/8/8/4K3 b - - 0 1",
+                "d7d5",
+                0xb134_2340_efab_cea4,
+                "e5d6",
+                "e1d1",
+            ),
+        ];
+
+        for (name, initial_fen, played, key, illegal_move, book_move) in cases {
+            let controller = controller_with_polyglot_book(
+                initial_fen,
+                played,
+                &[(key, illegal_move, 100), (key, book_move, 1)],
+            );
+            assert_eq!(
+                try_polyglot_book_move(&controller).as_deref(),
+                Some(book_move),
+                "{name}"
+            );
+        }
+
+        let (_, initial_fen, played, key, illegal_move, _) = cases[0];
+        let controller =
+            controller_with_polyglot_book(initial_fen, played, &[(key, illegal_move, 1)]);
+        assert_eq!(try_polyglot_book_move(&controller), None);
+
+        let legal_fen = "4r2k/8/8/3pP3/8/8/8/4K3 w - - 0 2";
+        assert_eq!(controller.get_state().current_fen, legal_fen);
+        assert_eq!(controller.moves.last().unwrap().fen_after, legal_fen);
+        assert!(controller
+            .position_history
+            .contains_key("4r2k/8/8/3pP3/8/8/8/4K3 w - -"));
+        assert!(!controller
+            .position_history
+            .contains_key("4r2k/8/8/3pP3/8/8/8/4K3 w - d6"));
     }
 
     #[test]
