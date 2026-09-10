@@ -127,6 +127,12 @@ export default function FilesPage() {
       setActionError(operationFailed);
     }
   }
+  async function clearTrashAndRelist() {
+    setTrashed(null);
+    // SWR reports list failures separately; they must not replace the native mutation outcome
+    // with a false generic failure or hide its applied-despite-error warning.
+    await mutate().catch(() => {});
+  }
   return (
     <Stack h="100%" p="md">
       <Group justify="space-between">
@@ -329,10 +335,7 @@ export default function FilesPage() {
           onConfirm={async () => {
             await runDestructiveWithRefresh(
               () => tauri.restoreWorkspaceEntry(workspace!, restoreTarget.handle),
-              async () => {
-                setTrashed(null);
-                await mutate();
-              },
+              clearTrashAndRelist,
             );
           }}
         />
@@ -347,16 +350,9 @@ export default function FilesPage() {
           opened
           onClose={() => setPurgeTarget(null)}
           onConfirm={async () => {
-            // A relist failure must never become the reported outcome of a delete. Reporting a
-            // completed destructive delete as "could not be completed" is worse than a stale
-            // list, and after a partial delete it hides the one message the user needs.
-            const relist = async () => {
-              setTrashed(null);
-              await mutate().catch(() => {});
-            };
             await runDestructiveWithRefresh(
               () => tauri.permanentlyDeleteWorkspaceEntry(workspace!, purgeTarget.handle),
-              relist,
+              clearTrashAndRelist,
             );
           }}
         />

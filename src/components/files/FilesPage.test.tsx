@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   setWorkspaceDisplayName: vi.fn(),
   notify: vi.fn(),
   data: [] as Array<unknown>,
+  error: undefined as Error | undefined,
 }));
 const stateAtoms = vi.hoisted(() => ({ fileWorkspaceAtom: {}, fileWorkspaceDisplayNameAtom: {} }));
 
@@ -48,7 +49,7 @@ vi.mock("swr", async () => {
   const actual = await vi.importActual<typeof import("swr")>("swr");
   return {
     ...actual,
-    default: () => ({ data: mocks.data, mutate: mocks.mutate }),
+    default: () => ({ data: mocks.data, error: mocks.error, mutate: mocks.mutate }),
   };
 });
 vi.mock("react-i18next", () => ({
@@ -209,6 +210,7 @@ async function completeTrash() {
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.data = [entry, destination];
+  mocks.error = undefined;
   mocks.mutate.mockResolvedValue(undefined);
   mocks.trashWorkspaceEntry.mockResolvedValue(undefined);
   mocks.restoreWorkspaceEntry.mockResolvedValue(undefined);
@@ -322,6 +324,47 @@ describe("trash confirmations", () => {
       );
     },
   );
+
+  test("successful restore is not reported as failed when relisting fails", async () => {
+    await completeTrash();
+    mocks.mutate.mockClear();
+    mocks.mutate.mockImplementationOnce(async () => {
+      mocks.error = new Error("list unavailable");
+      throw mocks.error;
+    });
+    click("Undo");
+    await act(async () => button("Restore").click());
+
+    expect(mocks.restoreWorkspaceEntry).toHaveBeenCalledWith(workspace, entry.handle);
+    expect(mocks.mutate).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.textContent).not.toContain("The action could not be completed");
+    expect(container.textContent).not.toContain("Moved sample.pgn to trash.");
+    expect(container.textContent).toContain("Files could not be loaded. Please try again.");
+  });
+
+  test("applied restore keeps its warning when relisting fails", async () => {
+    await completeTrash();
+    mocks.mutate.mockClear();
+    mocks.restoreWorkspaceEntry.mockRejectedValueOnce(
+      commandError("durability", "Committed but durability uncertain: parent not found"),
+    );
+    mocks.mutate.mockImplementationOnce(async () => {
+      mocks.error = new Error("list unavailable");
+      throw mocks.error;
+    });
+    click("Undo");
+    await act(async () => button("Restore").click());
+
+    expect(mocks.mutate).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain("Moved sample.pgn to trash.");
+    expect(container.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain(
+      "Part of the operation was completed, and what is shown may no longer match.",
+    );
+    expect(container.textContent).toContain("Files could not be loaded. Please try again.");
+    expect(container.textContent).not.toContain("The action could not be completed");
+    expect(container.textContent).not.toContain("list unavailable");
+  });
 
   test.each([
     ["restore", "Undo", "Restore file", "Restore", "restoreWorkspaceEntry"],
