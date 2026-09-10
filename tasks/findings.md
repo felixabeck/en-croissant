@@ -907,7 +907,7 @@ En Croissant's own.
 
 ### Polyglot book lookups hash a FEN built with `EnPassantMode::Legal`, so legal-only ep positions miss
 
-* **ID:** f-20260829-10 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260829-10 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/game.rs:2397-2398` — the FEN is built with
   `Fen::from_position(controller.position.clone(), EnPassantMode::Legal)` and handed straight to
   `polyglot_hash_from_fen` in `CancellablePolyglotBook::get_all_moves_from_fen` (`game.rs:2058`).
