@@ -561,6 +561,43 @@ test("should handle addAnalysis", () => {
         boardStateMap: expectedMap(expectedRoot),
     });
 });
+test("addAnalysis skips plies whose predecessor has no lines", () => {
+    const line = (value: number, san: string, uci: string) => ({
+        best: [
+            {
+                depth: 1,
+                multipv: 1,
+                nodes: 1n,
+                score: { value: { type: "cp" as const, value }, wdl: null },
+                nps: 1000n,
+                sanMoves: [san],
+                uciMoves: [uci],
+            },
+        ],
+        novelty: false,
+        is_sacrifice: false,
+    });
+    // A ply whose UCI output was bound-only publishes no MultiPV set at all.
+    const noLines = { best: [], novelty: false, is_sacrifice: false };
+
+    store.getState().setState({ ...treeE4D5(), position: [0] });
+    store.getState().addAnalysis([line(10, "e4", "e2e4"), noLines, line(-900, "d5", "d7d5")]);
+
+    const state = getNewState();
+    expect(state.root.score).toStrictEqual({
+        value: { type: "cp", value: 10 },
+        wdl: null,
+    });
+    expect(state.root.children[0].score).toBeNull();
+    expect(state.root.children[0].children[0].score).toStrictEqual({
+        value: { type: "cp", value: -900 },
+        wdl: null,
+    });
+    // Without a previous score the annotation is computed against a neutral
+    // baseline, not against the missing ply.
+    expect(state.root.children[0].children[0].annotations).toStrictEqual([]);
+});
+
 test("should handle promoteVariation", () => {
     store.getState().setState(treeE4D5Nf3());
     store.getState().promoteVariation([1]);
