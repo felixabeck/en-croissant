@@ -7605,3 +7605,17 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Fix:** reconcile the documented command and wrapper argument contract; choose one canonical pnpm usage and cover forwarded project/grep options. Run review-correctness.
 * **Proof:** project and grep selection reach Playwright as options, selecting only the named test; the snapshot command cannot silently select unrelated projects.
 * **Deferred from:** the f-20260830-11 build, which uses pnpm arguments without the extra separator as the immediate command-level workaround.
+
+---
+
+## 2026-09-10 — filed through the inbox spool
+
+### CI contract gate cannot launch the ledger after its uv shebang migration
+
+* **ID:** f-20260910-08 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `.github/workflows/test.yml`, contract gate; `scripts/findings.py` executable shebang.
+* **Defect:** commit 20f3969641eccd59e30d4891540ecdfc9818cd2c changed the ledger invocation to its uv-managed executable but never installs uv on the GitHub runner. Run 34484554877 fails after the three findings atomic-write tests pass with `/usr/bin/env: ‘uv’: No such file or directory` and exit 1.
+* **Proof:** `gh run view 34484554877 -R felixabeck/en-croissant --log-failed`; final contract gate invocation at 2026-09-10T13:47:24Z. Install the declared interpreter prerequisite before the gate and verify workflow checks plus the actual runner.
+* **Review:** review-correctness over the workflow prerequisite/order change.
+* **Related:** f-20260829-07 is a handled different CI prerequisite-order defect; no common root mechanism is asserted.
+* **Origin:** Felix reported the failed run during the atomic PGN import build; Codex traced the failure directly. This CI repair is a separate task-owned commit.
