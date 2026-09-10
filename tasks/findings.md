@@ -1028,6 +1028,9 @@ everything else to its existing arm with "Zip must contain a .pgn, .epd, or .bin
 * **Found by:** `review-root-cause` (confidence 97) during the `$push` review of the 2026-08-29
   setup work.
 
+* **Integration review, 2026-09-10:** Root measured a bypass in the first implementation (2a0312a6): inserting a blank line followed by `if: false` after the test workflow's setup command left `checkRustToolchainContract` green (`[]`). The real checked-in workflow was copied to a temporary fixture; baseline was also `[]`. The setup step must be unconditional and must propagate failure, using the existing parsed step metadata and per-workflow regression cases. Fix before closing this finding. Plan authorship and arbitration share the root context; detection uses the same model family as code.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"d2ec798cbd28a46f3cd0576b88a4e66f7e30c4de331e04e3cd39f6f2eb26d171","input_sha256":"e658b731c194a72c89c7a6a24c70a34576648c7585709c7e2d5687e64a57558f","kind":"mutation-receipt","operation":"7d5eeecf4aabdd0ed10e82dc69028ae831b1a9d05cd2acff72a728f7c4133cb4","options":{"section":null},"request_id_sha256":null,"results":["f-20260829-13"],"target":"f-20260829-13","v":1} -->
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
