@@ -1,13 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { globToRegExp } from "./coverage-scope.mjs";
-import { workflowSteps } from "./check-gate-routing.mjs";
+import { workflowJobs, workflowSteps } from "./check-gate-routing.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
 const TEST_FILE_GLOBS = ["scripts/*-tests.mjs", "scripts/*.test.mjs"];
 const REQUIRED_RUST_COMPONENTS = ["rustfmt", "clippy", "llvm-tools"];
-const EXACT_STABLE_RUST_CHANNEL = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
+const COMPLETE_NUMERIC_RUST_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const RUST_WORKFLOW_JOBS = [
   [".github/workflows/test.yml", "test"],
   [".github/workflows/mutation.yml", "backend"],
@@ -78,9 +78,13 @@ function defaultListFiles(repoRoot) {
   return listWorkingTreeFiles({ workspaceRoot: repoRoot, pathspec: "." });
 }
 
-async function contractFile(repoRoot, path, findings) {
+async function contractFile(repoRoot, path, findings, contents) {
+  const absolute = resolve(repoRoot, path);
+  if (contents.has(absolute)) return contents.get(absolute);
   try {
-    return await readFile(resolve(repoRoot, path), "utf8");
+    const text = await readFile(absolute, "utf8");
+    contents.set(absolute, text);
+    return text;
   } catch (error) {
     if (error?.code === "ENOENT") {
       findings.push(`${path}: required Rust toolchain contract file is missing`);
@@ -90,24 +94,29 @@ async function contractFile(repoRoot, path, findings) {
   }
 }
 
-function workflowJob(text, path, jobName, findings) {
-  const lines = text.split(/\r?\n/u);
-  const start = lines.findIndex((line) => line === `  ${jobName}:`);
-  if (start < 0) {
-    findings.push(`${path}: required Rust job ${jobName} is missing`);
-    return undefined;
-  }
-  let end = start + 1;
-  while (end < lines.length && !/^  [\w.-]+:\s*$/u.test(lines[end])) end += 1;
-  return lines.slice(start, end).join("\n");
+function requiredWorkflowJob(jobs, path, jobName, findings) {
+  const job = jobs.find((candidate) => candidate.name === jobName);
+  if (job === undefined) findings.push(`${path}: required Rust job ${jobName} is missing`);
+  return job;
 }
 
-export async function checkRustToolchainContract(repoRoot) {
+function isFailureTolerant(value) {
+  return value !== undefined && value !== "false";
+}
+
+function declaresRustupToolchain(workflow) {
+  if (/^[^#\n]*["']?RUSTUP_TOOLCHAIN["']?\s*:/mu.test(workflow)) return true;
+  return workflowSteps(workflow).some((step) =>
+    /(?:^|\n|[;&|])\s*(?:(?:export|env)\s+)?RUSTUP_TOOLCHAIN\s*=/u.test(step.run),
+  );
+}
+
+export async function checkRustToolchainContract(repoRoot, { contents = new Map() } = {}) {
   const findings = [];
-  const toolchain = await contractFile(repoRoot, "rust-toolchain.toml", findings);
+  const toolchain = await contractFile(repoRoot, "rust-toolchain.toml", findings, contents);
   if (toolchain !== undefined) {
     const channel = /^channel\s*=\s*["']([^"']+)["']\s*$/mu.exec(toolchain)?.[1];
-    if (channel === undefined || !EXACT_STABLE_RUST_CHANNEL.test(channel)) {
+    if (channel === undefined || !COMPLETE_NUMERIC_RUST_VERSION.test(channel)) {
       findings.push(
         `rust-toolchain.toml: channel must be a complete stable numeric major.minor.patch pin; found ${JSON.stringify(channel ?? "missing")}`,
       );
@@ -126,7 +135,7 @@ export async function checkRustToolchainContract(repoRoot) {
     }
   }
 
-  const setup = await contractFile(repoRoot, "scripts/setup-rust.sh", findings);
+  const setup = await contractFile(repoRoot, "scripts/setup-rust.sh", findings, contents);
   if (setup !== undefined) {
     if (!setup.startsWith("#!/usr/bin/env bash\nset -euo pipefail\n")) {
       findings.push("scripts/setup-rust.sh: must start with the reviewed strict-bash preamble");
@@ -150,39 +159,69 @@ export async function checkRustToolchainContract(repoRoot) {
     }
   }
 
+  const workflows = new Map();
+  for (const [path] of RUST_WORKFLOW_JOBS) {
+    const workflow = await contractFile(repoRoot, path, findings, contents);
+    if (workflow !== undefined) workflows.set(path, { jobs: workflowJobs(workflow), workflow });
+  }
+
   for (const [path, jobName] of RUST_WORKFLOW_JOBS) {
-    const workflow = await contractFile(repoRoot, path, findings);
-    if (workflow === undefined) continue;
-    const job = workflowJob(workflow, path, jobName, findings);
-    if (job === undefined) continue;
-    const setupSteps = workflowSteps(job).filter(
-      (step) => step.name === "Install Rust toolchain" && step.run === "bash scripts/setup-rust.sh",
-    );
-    const exactSetupBlock =
-      /^      - name: Install Rust toolchain\n        shell: bash\n        run: bash scripts\/setup-rust\.sh(?=\n(?:\s*\n|      - )|$)/gmu;
-    if (setupSteps.length !== 1 || [...job.matchAll(exactSetupBlock)].length !== 1) {
+    const parsed = workflows.get(path);
+    if (parsed === undefined) continue;
+    const { jobs, workflow } = parsed;
+    if (declaresRustupToolchain(workflow)) {
       findings.push(
-        `${path}: job ${jobName} must contain exactly one explicit bash scripts/setup-rust.sh setup step`,
+        `${path}: must not declare RUSTUP_TOOLCHAIN in repository workflow configuration`,
       );
     }
-    if (/dtolnay\/rust-toolchain@/u.test(job)) {
+    const job = requiredWorkflowJob(jobs, path, jobName, findings);
+    if (job === undefined) continue;
+    const setupSteps = workflowSteps(job.body).filter(
+      (step) => step.run === "bash scripts/setup-rust.sh",
+    );
+    if (
+      setupSteps.length !== 1 ||
+      setupSteps[0].shell !== "bash" ||
+      setupSteps[0].hasIf ||
+      isFailureTolerant(setupSteps[0].continueOnError)
+    ) {
+      findings.push(
+        `${path}: job ${jobName} must contain exactly one unconditional, failure-propagating bash scripts/setup-rust.sh step with shell bash`,
+      );
+    }
+    if (/dtolnay\/rust-toolchain@/u.test(job.body)) {
       findings.push(`${path}: job ${jobName} must not use dtolnay/rust-toolchain`);
     }
   }
 
-  const release = await contractFile(repoRoot, ".github/workflows/release.yml", findings);
+  const release = workflows.get(".github/workflows/release.yml");
   if (release !== undefined) {
-    const releaseJob = workflowJob(release, ".github/workflows/release.yml", "release", findings);
-    const targetBlock =
-      /^      - name: Install macOS Rust targets\n        if: runner\.os == 'macOS'\n        shell: bash\n        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin(?=\n(?:\s*\n|      - )|$)/gmu;
-    if (releaseJob !== undefined && [...releaseJob.matchAll(targetBlock)].length !== 1) {
+    const releaseJob = release.jobs.find((job) => job.name === "release");
+    const targetSteps =
+      releaseJob === undefined
+        ? []
+        : workflowSteps(releaseJob.body).filter(
+            (step) => step.run === "rustup target add aarch64-apple-darwin x86_64-apple-darwin",
+          );
+    if (
+      releaseJob !== undefined &&
+      (targetSteps.length !== 1 ||
+        targetSteps[0].shell !== "bash" ||
+        targetSteps[0].ifValue !== "runner.os == 'macOS'" ||
+        isFailureTolerant(targetSteps[0].continueOnError))
+    ) {
       findings.push(
-        ".github/workflows/release.yml: release must add both existing macOS targets in the reviewed macOS-only bash step",
+        ".github/workflows/release.yml: release must add both existing macOS targets in exactly one macOS-only, failure-propagating step with shell bash",
       );
     }
   }
 
-  const pushSkill = await contractFile(repoRoot, ".claude/skills/push/SKILL.md", findings);
+  const pushSkill = await contractFile(
+    repoRoot,
+    ".claude/skills/push/SKILL.md",
+    findings,
+    contents,
+  );
   if (pushSkill !== undefined) {
     const rustSection = /### Rust\/Tauri backend\n([\s\S]*?)(?=\n### |\n## |$)/u.exec(
       pushSkill,
@@ -201,14 +240,13 @@ export async function checkRustToolchainContract(repoRoot) {
 export async function discoverToolVersions(
   repoRoot,
   families = PARITY_FAMILIES,
-  { listFiles = defaultListFiles } = {},
+  { contents = new Map(), listFiles = defaultListFiles } = {},
 ) {
   const root = resolve(repoRoot);
   const files = listFiles(root).map((relative) => ({
     absolute: resolve(root, relative),
     relative,
   }));
-  const contents = new Map();
   const results = [];
 
   for (const family of families) {
@@ -246,8 +284,9 @@ export async function discoverToolVersions(
 }
 
 export async function checkToolVersionParity(repoRoot, families = PARITY_FAMILIES, options = {}) {
-  const findings = await checkRustToolchainContract(repoRoot);
-  for (const family of await discoverToolVersions(repoRoot, families, options)) {
+  const contents = options.contents ?? new Map();
+  const findings = await checkRustToolchainContract(repoRoot, { contents });
+  for (const family of await discoverToolVersions(repoRoot, families, { ...options, contents })) {
     if (family.sites.length < family.minimumSites) {
       const globs = family.declarations.flatMap((declaration) => declaration.globs).join(", ");
       findings.push(

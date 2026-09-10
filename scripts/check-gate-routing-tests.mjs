@@ -8,6 +8,7 @@ import {
   checkGateRouting,
   fencedBlocks,
   pnpmReferences,
+  workflowJobs,
   workflowSteps,
 } from "./check-gate-routing.mjs";
 import { gitInit } from "./test-git-init.mjs";
@@ -708,6 +709,25 @@ test("accepts every YAML block scalar spelling and preserves folding semantics",
       marker.startsWith("|") ? "pnpm alpha\npnpm beta" : "pnpm alpha pnpm beta",
     );
   }
+});
+
+test("parses job bodies and step shell metadata without depending on field order", () => {
+  const [job] = workflowJobs(
+    "jobs:\n  rust:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bash scripts/setup-rust.sh\n        name: Setup\n        shell: bash\n",
+  );
+  assert.equal(job.name, "rust");
+  assert.match(job.body, /runs-on: ubuntu-latest/u);
+  assert.deepEqual(workflowSteps(job.body), [
+    {
+      name: "Setup",
+      run: "bash scripts/setup-rust.sh",
+      runError: undefined,
+      hasIf: false,
+      ifValue: undefined,
+      continueOnError: undefined,
+      shell: "bash",
+    },
+  ]);
 });
 
 test("unquotes YAML run scalars and their supported escapes", () => {

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { workflowSteps } from "./check-gate-routing.mjs";
 import { checkToolVersionParity, discoverToolVersions } from "./check-tool-version-parity.mjs";
 import { gitInit } from "./test-git-init.mjs";
 
@@ -256,6 +257,15 @@ const workflowSetups = [
 const sharedSetupBlock =
   "      - name: Install Rust toolchain\n        shell: bash\n        run: bash scripts/setup-rust.sh";
 
+function oldCheckerAcceptsSetup(workflow) {
+  const setupSteps = workflowSteps(workflow).filter(
+    (step) => step.name === "Install Rust toolchain" && step.run === "bash scripts/setup-rust.sh",
+  );
+  const exactSetupBlock =
+    /^      - name: Install Rust toolchain\n        shell: bash\n        run: bash scripts\/setup-rust\.sh(?=\n(?:\s*\n|      - )|$)/gmu;
+  return setupSteps.length === 1 && [...workflow.matchAll(exactSetupBlock)].length === 1;
+}
+
 test("rejects every workflow reverted to its original floating action", async (t) => {
   for (const { path, original } of workflowSetups) {
     await t.test(path, (subtest) =>
@@ -274,6 +284,107 @@ test("rejects deletion and no-op replacement of every workflow setup", async (t)
         text.replace("        run: bash scripts/setup-rust.sh", "        run: :"),
       ),
     );
+  }
+});
+
+test("rejects a setup without explicit bash shell in every workflow", async (t) => {
+  for (const { path } of workflowSetups) {
+    await t.test(path, (subtest) =>
+      mutateCheckedInFile(subtest, path, (text) => text.replace("        shell: bash\n", "")),
+    );
+  }
+});
+
+test("accepts harmless setup names, reordered fields, and explicit failure propagation", async (t) => {
+  for (const { path } of workflowSetups) {
+    await t.test(path, async (subtest) => {
+      const root = await checkedInRustFixture(subtest);
+      const workflowPath = join(root, path);
+      const workflow = await readFile(workflowPath, "utf8");
+      const reordered =
+        "      - run: bash scripts/setup-rust.sh\n        continue-on-error: false\n        name: Prepare pinned Rust\n        shell: bash";
+      assert.ok(workflow.includes(sharedSetupBlock));
+      await put(root, path, workflow.replace(sharedSetupBlock, reordered));
+      assert.deepEqual(await checkToolVersionParity(root), []);
+    });
+  }
+});
+
+test("rejects blank-line conditional and failure-tolerant setup bypasses in every workflow", async (t) => {
+  for (const { path } of workflowSetups) {
+    for (const declaration of ["if: false", "continue-on-error: true"]) {
+      await t.test(`${path} ${declaration}`, async (subtest) => {
+        const root = await checkedInRustFixture(subtest);
+        const workflowPath = join(root, path);
+        const workflow = await readFile(workflowPath, "utf8");
+        const bypass = workflow.replace(
+          "        run: bash scripts/setup-rust.sh",
+          `        run: bash scripts/setup-rust.sh\n\n        ${declaration}`,
+        );
+        assert.notEqual(bypass, workflow);
+        assert.equal(oldCheckerAcceptsSetup(bypass), true);
+        await put(root, path, bypass);
+        assert.match(
+          (await checkToolVersionParity(root)).join("\n"),
+          /must contain exactly one unconditional, failure-propagating/u,
+        );
+      });
+    }
+  }
+});
+
+test("rejects repository RUSTUP_TOOLCHAIN declarations in all three workflows", async (t) => {
+  for (const { path } of workflowSetups) {
+    await t.test(path, async (subtest) => {
+      const root = await checkedInRustFixture(subtest);
+      const workflowPath = join(root, path);
+      const workflow = await readFile(workflowPath, "utf8");
+      await put(root, path, `env:\n  RUSTUP_TOOLCHAIN: stable\n${workflow}`);
+      assert.match(
+        (await checkToolVersionParity(root)).join("\n"),
+        /must not declare RUSTUP_TOOLCHAIN/u,
+      );
+    });
+  }
+});
+
+test("rejects RUSTUP_TOOLCHAIN declarations at workflow, job, step, and shell scope", async (t) => {
+  const cases = [
+    ["workflow env", (text) => `env:\n  RUSTUP_TOOLCHAIN: stable\n${text}`],
+    [
+      "job env",
+      (text) => text.replace("  test:\n", "  test:\n    env:\n      RUSTUP_TOOLCHAIN: stable\n"),
+    ],
+    [
+      "step env",
+      (text) =>
+        text.replace(
+          "      - name: Install Rust toolchain\n",
+          "      - name: Install Rust toolchain\n        env:\n          'RUSTUP_TOOLCHAIN': stable\n",
+        ),
+    ],
+    [
+      "shell assignment",
+      (text) =>
+        text.replace(
+          "        run: bash scripts/setup-rust.sh",
+          "        run: RUSTUP_TOOLCHAIN=stable bash scripts/setup-rust.sh",
+        ),
+    ],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, async (subtest) => {
+      const root = await checkedInRustFixture(subtest);
+      const path = ".github/workflows/test.yml";
+      const workflow = await readFile(join(root, path), "utf8");
+      const changed = mutate(workflow);
+      assert.notEqual(changed, workflow);
+      await put(root, path, changed);
+      assert.match(
+        (await checkToolVersionParity(root)).join("\n"),
+        /must not declare RUSTUP_TOOLCHAIN/u,
+      );
+    });
   }
 });
 
@@ -307,6 +418,45 @@ test("rejects an unconditional macOS target step", async (t) => {
   await mutateCheckedInFile(t, ".github/workflows/release.yml", (text) =>
     text.replace("        if: runner.os == 'macOS'\n", ""),
   );
+});
+
+test("accepts a harmless macOS target name, reordered fields, and explicit failure propagation", async (t) => {
+  const root = await checkedInRustFixture(t);
+  const path = ".github/workflows/release.yml";
+  const workflow = await readFile(join(root, path), "utf8");
+  const original =
+    "      - name: Install macOS Rust targets\n        if: runner.os == 'macOS'\n        shell: bash\n        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin";
+  const reordered =
+    "      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin\n        continue-on-error: false\n        shell: bash\n        name: Prepare Apple targets\n        if: runner.os == 'macOS'";
+  assert.ok(workflow.includes(original));
+  await put(root, path, workflow.replace(original, reordered));
+  assert.deepEqual(await checkToolVersionParity(root), []);
+});
+
+test("rejects disabled and failure-tolerant macOS target setup", async (t) => {
+  for (const [name, mutate] of [
+    ["disabled", (text) => text.replace("        if: runner.os == 'macOS'", "        if: false")],
+    [
+      "failure tolerant",
+      (text) =>
+        text.replace(
+          "        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin",
+          "        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin\n        continue-on-error: true",
+        ),
+    ],
+    [
+      "implicit shell",
+      (text) =>
+        text.replace(
+          "      - name: Install macOS Rust targets\n        if: runner.os == 'macOS'\n        shell: bash\n",
+          "      - name: Install macOS Rust targets\n        if: runner.os == 'macOS'\n",
+        ),
+    ],
+  ]) {
+    await t.test(name, (subtest) =>
+      mutateCheckedInFile(subtest, ".github/workflows/release.yml", mutate),
+    );
+  }
 });
 
 function isolatedRustupEnvironment(root, rustupHome) {

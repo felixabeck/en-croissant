@@ -180,6 +180,10 @@ export function workflowSteps(workflow) {
       .find(({ line }) => /^continue-on-error:\s*/u.test(line))
       ?.line.replace(/^continue-on-error:\s*/u, "")
       .trim();
+    const shell = block
+      .find(({ line }) => /^shell:\s*/u.test(line))
+      ?.line.replace(/^shell:\s*/u, "")
+      .trim();
     steps.push({
       name: name ?? "",
       run,
@@ -187,12 +191,13 @@ export function workflowSteps(workflow) {
       hasIf: ifValue !== undefined,
       ifValue,
       continueOnError,
+      shell,
     });
   }
   return steps;
 }
 
-function workflowJobs(workflow) {
+export function workflowJobs(workflow) {
   const jobs = [];
   const lines = workflow.split(/\r?\n/u);
   const jobsIndex = lines.findIndex((line) => /^\s*jobs:\s*$/u.test(line));
@@ -222,6 +227,7 @@ function workflowJobs(workflow) {
         .trim();
     jobs.push({
       name: job[1],
+      body: lines.slice(index + 1, end).join("\n"),
       ifValue: valueFor("if"),
       continueOnError: valueFor("continue-on-error"),
     });
