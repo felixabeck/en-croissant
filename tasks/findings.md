@@ -4904,7 +4904,7 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
 
 ### addAnalysis reads previous ply best[0] without a length guard
 
-* **ID:** f-20260831-21 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260831-21 · **Status:** handled · **Area:** chess-tree · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src/state/store/tree.ts:765-769`, inside `addAnalysis`. The same function already
   guards `analysis[i - 1].best.length > 0` at `:790` before using that ply's PV for variations.
 * **Defect:** the current-ply branch requires `analysis[i].best.length > 0`, then immediately
