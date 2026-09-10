@@ -5,8 +5,11 @@
 #   bash scripts/install-local.sh --no-build install the build already in target/release
 #   bash scripts/install-local.sh --force    permit a dirty tree or unpushed HEAD and record it
 #
-# The stable launcher remains current/bin/en-croissant for rollback compatibility. The real
-# executable is bin/chessfable, and Tauri resolves resources from lib/ChessFable.
+# The desktop entry launches current/bin/chessfable directly, because a GTK window takes its
+# Wayland app id from argv[0] and Plasma matches a window to a launcher by that id. The entry is
+# therefore named after the binary, not after productName. current/bin/en-croissant remains as a
+# compatibility launcher for older references and rollback. Tauri resolves resources from
+# lib/ChessFable.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,7 +38,7 @@ mapfile -t identity < <(node -e '
 [ "${#identity[@]}" -eq 2 ] || { echo "invalid product identity in tauri.conf.json" >&2; exit 1; }
 binary="${identity[0]}"
 product_name="${identity[1]}"
-DESKTOP="$APPLICATIONS_DIR/$product_name.desktop"
+DESKTOP="$APPLICATIONS_DIR/$binary.desktop"
 
 head="$(git -C "$REPO" rev-parse HEAD)"
 short="$(git -C "$REPO" rev-parse --short "$head")"
@@ -166,7 +169,7 @@ staging="$(mktemp -d "$ROOT/releases/.staging-XXXXXXXX")"
 invocation_id="${staging##*/}"
 current_tmp="$(mktemp "$ROOT/.current-new-XXXXXXXX")"
 previous_tmp="$(mktemp "$ROOT/.previous-new-XXXXXXXX")"
-desktop_tmp="$(mktemp "$APPLICATIONS_DIR/.$product_name.desktop.XXXXXXXX")"
+desktop_tmp="$(mktemp "$APPLICATIONS_DIR/.$binary.desktop.XXXXXXXX")"
 rm "$current_tmp" "$previous_tmp"
 
 mkdir -p "$staging/bin" "$staging/lib/$product_name"
@@ -190,11 +193,16 @@ cat > "$desktop_tmp" <<EOF
 [Desktop Entry]
 Type=Application
 Name=$product_name
-Exec="$desktop_root/current/bin/en-croissant"
+GenericName=Chess analysis and database
+GenericName[de]=Schachanalyse und Datenbank
+Comment=Analyse games, search databases, play against engines
+Comment[de]=Partien analysieren, Datenbanken durchsuchen, gegen Engines spielen
+Exec="$desktop_root/current/bin/$binary"
 Icon=$desktop_icon_root/current/icon.png
 Terminal=false
-StartupWMClass=$product_name
-Categories=Game;
+StartupNotify=true
+StartupWMClass=$binary
+Categories=Game;BoardGame;
 EOF
 chmod 644 "$desktop_tmp"
 
@@ -214,6 +222,24 @@ if ! mv -T "$desktop_tmp" "$DESKTOP"; then
   exit 1
 fi
 desktop_tmp=""
+
+# Retire desktop entries a previous version of this installer published under a different
+# basename. Without this, every rename of the binary leaves the old entry behind and the
+# application menu lists the app twice, which is what productName-derived naming did on
+# 2026-09-09. Only regular files whose Exec points into this install root are removed; a symlink
+# is somebody else's file and is left alone.
+for stale in "$APPLICATIONS_DIR"/*.desktop; do
+  [ -f "$stale" ] && [ ! -L "$stale" ] || continue
+  [ "$stale" != "$DESKTOP" ] || continue
+  grep -E '^Exec=' "$stale" | grep -qF "$ROOT/current/bin/" || continue
+  # Best-effort: current and the entry are already published, so a failed unlink must report
+  # itself rather than abort a completed install through set -e.
+  if rm -f "$stale"; then
+    echo "retired superseded desktop entry $stale"
+  else
+    echo "could not retire superseded desktop entry $stale; the application menu may list $product_name twice" >&2
+  fi
+done
 
 is_legacy_managed_release() {
   local candidate="$1" name commit_line short_line subject_line installed_line provenance_line extra
@@ -275,4 +301,4 @@ for candidate in "$ROOT/releases"/*; do
   fi
 done
 
-echo "installed $short → $ROOT/current/bin/$binary (compatibility launcher: $ROOT/current/bin/en-croissant; $provenance)"
+echo "installed $short → $ROOT/current/bin/$binary (desktop entry: $DESKTOP; compatibility launcher: $ROOT/current/bin/en-croissant; $provenance)"

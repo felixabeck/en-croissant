@@ -189,13 +189,25 @@ in the actual product: it drives the real window off-screen through `kwin_waylan
 `webkit2gtk-driver` (apt) and `tauri-driver` (cargo), plus a `pnpm build`, and is not a push gate.
 
 The daily desktop app is **not** `src-tauri/target/release/chessfable`: the application-menu
-entry runs `~/.local/opt/chessfable/current/bin/en-croissant`, a versioned copy written only by
+entry runs `~/.local/opt/chessfable/current/bin/chessfable`, a versioned copy written only by
 `scripts/install-local.sh` from a clean tree whose HEAD is on the pushed upstream (`VERSION`
 beside it names the commit; `$push` runs the install as its last step on master). So `pnpm build`,
 `verify:app` and a drain may overwrite `target/release` freely without changing what Felix is
 using, and an install while the app is running takes effect only at the next launch. The
 `bin/chessfable` (plus the `bin/en-croissant` compatibility link) + `lib/ChessFable/` layout is what Tauri's `resource_dir()` requires outside a cargo
 output directory; resources beside the binary are not found (measured 2026-09-05).
+
+The installer owns exactly one desktop entry, `~/.local/share/applications/chessfable.desktop`,
+and its basename is `mainBinaryName`, not `productName`. A GTK window takes its Wayland app id
+from `argv[0]`, and Plasma matches a window to its pinned launcher by that id, so the entry, the
+`StartupWMClass` and the launched binary must all carry the same string. Naming the entry after
+`productName` between 2026-09-07 and 2026-09-10 published a second entry beside the older one and
+split the taskbar icon (`f-20260910-01`). The installer now deletes any other desktop entry whose
+`Exec` points into the install root, so a future rename cannot leave a duplicate behind. That
+retirement covers only regular files it could have written itself: a **symlinked** entry belongs to
+whoever installed it and is left alone, and the installer never touches Plasma's pinned-launcher
+list. A rename therefore still leaves a pin naming the old id, which has to be repointed by hand or
+through `panel-launcher-sync` in `~/Projekte/tuxedo-config`.
 
 What remains Felix's is now only **native GTK chrome** — menus, file dialogs, window decorations.
 WebDriver sees the page, not the GTK widgets around it, and `issue_engine_binary` always opens a

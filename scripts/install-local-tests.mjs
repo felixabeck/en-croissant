@@ -26,7 +26,7 @@ function git(root, ...args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 }
 
-async function fixture(t, { productName = "ChessFable" } = {}) {
+async function fixture(t, { productName = "ChessFable", binaryName = "chessfable" } = {}) {
   const base = await mkdtemp(join(tmpdir(), "chessfable-install-"));
   const childRuns = [];
   t.after(async () => {
@@ -53,10 +53,10 @@ async function fixture(t, { productName = "ChessFable" } = {}) {
   await chmod(join(repo, "scripts/install-local.sh"), 0o755);
   await writeFile(
     join(repo, "src-tauri/tauri.conf.json"),
-    JSON.stringify({ mainBinaryName: "chessfable", productName }),
+    JSON.stringify({ mainBinaryName: binaryName, productName }),
   );
-  await writeFile(join(repo, "src-tauri/target/release/chessfable"), "#!/bin/sh\nexit 0\n");
-  await chmod(join(repo, "src-tauri/target/release/chessfable"), 0o755);
+  await writeFile(join(repo, "src-tauri/target/release", binaryName), "#!/bin/sh\nexit 0\n");
+  await chmod(join(repo, "src-tauri/target/release", binaryName), 0o755);
   await writeFile(join(repo, "src-tauri/target/release/sound/move.mp3"), "sound");
   await writeFile(join(repo, "src-tauri/icons/icon.png"), "icon");
   git(repo, "init", "-b", "master");
@@ -100,7 +100,7 @@ case "$INSTALL_FAILURE:$src:$target" in
     if [ ! -e "$marker" ]; then /usr/bin/touch "$marker"; echo "forced current mv failure" >&2; exit 72; fi ;;
   restore-previous:*.previous-new-*:*/previous)
     if [ -e "$marker" ]; then echo "forced previous restoration failure" >&2; exit 73; fi ;;
-  desktop:*:*/ChessFable.desktop) echo "forced desktop mv failure" >&2; exit 74 ;;
+  desktop:*:*/${binaryName}.desktop) echo "forced desktop mv failure" >&2; exit 74 ;;
 esac
 /usr/bin/mv "$@"
 mv_status="$?"
@@ -114,13 +114,23 @@ fi
 `,
   );
   await writeFile(
+    join(bin, "rm"),
+    `#!/bin/sh
+case "$INSTALL_FAILURE:$*" in
+  retire-stale:*ChessFable.desktop*) echo "forced rm failure" >&2; exit 75 ;;
+esac
+exec /usr/bin/rm "$@"
+`,
+  );
+  await writeFile(
     join(bin, "flock"),
     '#!/bin/sh\nif [ -n "$INSTALL_FLOCK_SEEN" ]; then /usr/bin/touch "$INSTALL_FLOCK_SEEN"; fi\nexec /usr/bin/flock "$@"\n',
   );
   await chmod(join(bin, "cp"), 0o755);
   await chmod(join(bin, "mv"), 0o755);
+  await chmod(join(bin, "rm"), 0o755);
   await chmod(join(bin, "flock"), 0o755);
-  return { base, repo, install, data, bin, productName, childRuns };
+  return { base, repo, install, data, bin, productName, binaryName, childRuns };
 }
 
 async function seedPointers(install) {
@@ -202,14 +212,14 @@ async function releaseNames(install) {
   return (await readdir(join(install, "releases"))).sort();
 }
 
-async function installerTemps({ install, data, productName }) {
+async function installerTemps({ install, data, binaryName }) {
   const rootEntries = await readdir(install);
   const releaseEntries = await readdir(join(install, "releases"));
   const applicationEntries = await readdir(join(data, "applications"));
   return [
     ...rootEntries.filter((name) => /^\.(current|previous)-new-/u.test(name)),
     ...releaseEntries.filter((name) => name.startsWith(".staging-")),
-    ...applicationEntries.filter((name) => name.startsWith(`.${productName}.desktop.`)),
+    ...applicationEntries.filter((name) => name.startsWith(`.${binaryName}.desktop.`)),
   ];
 }
 
@@ -241,11 +251,20 @@ test("installs the derived binary, resources, compatibility link, desktop entry 
   assert.equal(await readlink(join(current, "bin/en-croissant")), "chessfable");
   assert.equal((await lstat(join(current, "bin/chessfable"))).isFile(), true);
   assert.equal((await lstat(join(current, "lib/ChessFable/sound/move.mp3"))).isFile(), true);
-  const desktop = await readFile(join(f.data, "applications/ChessFable.desktop"), "utf8");
-  assert.match(desktop, /Exec=".*install with spaces\/current\/bin\/en-croissant"/u);
+  const desktop = await readFile(join(f.data, "applications/chessfable.desktop"), "utf8");
+  assert.match(desktop, /Exec=".*install with spaces\/current\/bin\/chessfable"/u);
   assert.match(desktop, /Icon=.*install\\swith\\sspaces\/current\/icon\.png/u);
-  assert.match(desktop, /StartupWMClass=ChessFable/u);
+  assert.match(desktop, /^StartupWMClass=chessfable$/mu);
   assert.match(desktop, /^Name=ChessFable$/mu);
+  assert.match(desktop, /^Categories=Game;BoardGame;$/mu);
+  assert.match(desktop, /^StartupNotify=true$/mu);
+  assert.match(desktop, /^GenericName=Chess analysis and database$/mu);
+  assert.match(desktop, /^Comment=Analyse games, search databases, play against engines$/mu);
+  assert.match(desktop, /^GenericName\[de\]=Schachanalyse und Datenbank$/mu);
+  assert.match(
+    desktop,
+    /^Comment\[de\]=Partien analysieren, Datenbanken durchsuchen, gegen Engines spielen$/mu,
+  );
   assert.match(
     await readFile(join(current, ".chessfable-managed-release"), "utf8"),
     /^ChessFable local installer release v1\ninvocation \.staging-[A-Za-z0-9]{8}\n$/u,
@@ -255,15 +274,63 @@ test("installs the derived binary, resources, compatibility link, desktop entry 
   assert.deepEqual(await installerTemps(f), []);
 });
 
-test("derives the desktop and resource identity from productName", async (t) => {
-  const f = await fixture(t, { productName: "KnightDesk" });
+test("names resources after productName and the launcher after the binary", async (t) => {
+  const f = await fixture(t, { productName: "KnightDesk", binaryName: "knightdesk" });
   const result = run(f);
   assert.equal(result.status, 0, result.stderr);
   const current = await readlink(join(f.install, "current"));
   assert.equal((await lstat(join(current, "lib/KnightDesk/sound/move.mp3"))).isFile(), true);
-  const desktop = await readFile(join(f.data, "applications/KnightDesk.desktop"), "utf8");
+  await assert.rejects(lstat(join(f.data, "applications/KnightDesk.desktop")), { code: "ENOENT" });
+  const desktop = await readFile(join(f.data, "applications/knightdesk.desktop"), "utf8");
   assert.match(desktop, /^Name=KnightDesk$/mu);
-  assert.match(desktop, /^StartupWMClass=KnightDesk$/mu);
+  assert.match(desktop, /^StartupWMClass=knightdesk$/mu);
+  assert.match(desktop, /Exec=".*\/current\/bin\/knightdesk"/u);
+  assert.deepEqual(await installerTemps(f), []);
+});
+
+test("retires superseded desktop entries and preserves foreign ones", async (t) => {
+  const f = await fixture(t);
+  const applications = join(f.data, "applications");
+  await mkdir(applications, { recursive: true });
+  const superseded = join(applications, "ChessFable.desktop");
+  const foreign = join(applications, "unrelated.desktop");
+  const linked = join(applications, "linked.desktop");
+  const target = join(f.base, "linked-source.desktop");
+  await writeFile(
+    superseded,
+    `[Desktop Entry]\nType=Application\nName=ChessFable\nExec="${f.install}/current/bin/en-croissant"\n`,
+  );
+  await writeFile(foreign, "[Desktop Entry]\nType=Application\nName=Other\nExec=/usr/bin/other\n");
+  await writeFile(
+    target,
+    `[Desktop Entry]\nType=Application\nName=Linked\nExec="${f.install}/current/bin/en-croissant"\n`,
+  );
+  await symlink(target, linked);
+  const result = run(f);
+  assert.equal(result.status, 0, result.stderr);
+  await assert.rejects(lstat(superseded), { code: "ENOENT" });
+  assert.equal((await lstat(foreign)).isFile(), true);
+  assert.equal((await lstat(linked)).isSymbolicLink(), true);
+  assert.match(result.stdout, /retired superseded desktop entry .*ChessFable\.desktop/u);
+  assert.equal((await lstat(join(applications, "chessfable.desktop"))).isFile(), true);
+  assert.deepEqual(await installerTemps(f), []);
+});
+
+test("a failed retirement is reported without failing the completed install", async (t) => {
+  const f = await fixture(t);
+  const applications = join(f.data, "applications");
+  await mkdir(applications, { recursive: true });
+  const superseded = join(applications, "ChessFable.desktop");
+  await writeFile(
+    superseded,
+    `[Desktop Entry]\nType=Application\nName=ChessFable\nExec="${f.install}/current/bin/en-croissant"\n`,
+  );
+  const result = run(f, "retire-stale");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /could not retire superseded desktop entry .*ChessFable\.desktop/u);
+  assert.equal((await lstat(superseded)).isFile(), true);
+  assert.equal((await lstat(join(applications, "chessfable.desktop"))).isFile(), true);
+  assert.equal((await lstat(await readlink(join(f.install, "current")))).isDirectory(), true);
   assert.deepEqual(await installerTemps(f), []);
 });
 
