@@ -362,7 +362,7 @@ En Croissant's own.
 
 ### 3. `src/App.tsx` has no test coverage for its startup sequence
 
-* **ID:** f-20260829-03 · **Status:** open · **Area:** app-startup · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260829-03 · **Status:** open · **Area:** app-startup · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src/App.tsx`.
 * **Defect:** 0 of 75 lines covered. `useDocumentLanguage` was extracted to `src/hooks/` to unblock
   the frontend ratchet, but `useAppStartup`, `preloadReferenceDb`, the update check, the telemetry
