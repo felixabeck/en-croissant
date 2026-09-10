@@ -7149,6 +7149,9 @@ Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary 
 * **Disposition:** Defer to its own lifecycle transaction design run; changing the workspace API/receipt contract is a separate open design, not required by attachment ownership. React transition repair is separate and being fixed now.
 * **Found by:** Luna Extra High persisted-state final lens, confidence 96, 2026-09-06; root verified.
 
+* **Resolved, 2026-09-10:** 813563b7 and 2a6f66df persist workspace removal before reclaiming a tab's tree and atom families. Refusal keeps the acknowledged metadata, pending edits, durable tree and live tree store; BoardsPage restores report ownership and permits retry. Post-commit cleanup failure is reported while remaining cleanup categories are attempted. Related receipt consumers in file/game actions and save-before-close now stop side effects on refusal. Root proof: `pnpm test` 128 files/1114 tests, tsgo and scoped oxfmt green; moving removal before the receipt makes the preservation regression fail. `pnpm test:e2e:container` passed 14 tests, including refused close and successful retry/reload, with unchanged snapshots. Decisions d-20260910-10 and d-20260910-11 record ordering, limits and reversal paths. Plan authorship and arbitration shared root context; detection and code used the Codex family.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"38752408e7d2c4b335c0b91290e974df7ed62e18a33179e6dbcdbf7c69aeb78f","input_sha256":"29339d3f1c3c71bf4cd0a5f112dbcca2b40b9cb9a9b5ee5e020e6fe6f3f507ee","kind":"mutation-receipt","operation":"e55bf7c5f9354bd13dd64267d40170db4622de87372b203cc7dcdc9be6b37f27","options":{"section":null},"request_id_sha256":null,"results":["f-20260906-22"],"target":"f-20260906-22","v":1} -->
+
 ---
 
 ## 2026-09-06 — filed through the inbox spool
