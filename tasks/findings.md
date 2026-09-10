@@ -5970,6 +5970,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Found by:** the `review-pgn-index` lens (confidence 90) over the cumulative diff of the
   `blocking-work-not-offloaded` range, 2026-09-04.
 
+* **Resolved, 2026-09-10:** 5e32f572 implements d-20260910-08: one streaming transaction covers schema preparation, every source, indexes, row counts and revision/cache publication; terminal progress follows commit. Reader/decompression errors propagate, and replacement reads only the first physical game. Production regressions cover later-file and metadata/revision rollback, failed-new-database retry, preserved optional-index policy, real WAL index/query-cache consistency, skip semantics and streaming memory. Root's original-code comparison produced six explicit failures and reproduced the compressed-reader loop; restored code passed 189 database tests plus formatting. The cumulative review accepted four test-maintainability/proof corrections before final gates. Plan authorship and arbitration shared root context; detection and implementation used the same Codex family. No partial-outcome IPC or renderer redesign was introduced.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"65cf6eb7af2bd4ba464408d000ce1d217a7117073a2086c0287543333558c885","input_sha256":"bbb0cfa261d8f817b05fe970f8697d9cf742db32744612bd8525aa01b35519ec","kind":"mutation-receipt","operation":"3d05821f52e5f8c463ce83a120f333c1df1e834ee0e1af30b9e89e3bb6d629d0","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-03"],"target":"f-20260904-03","v":1} -->
+
 ### Exporting a database silently omits every game whose row fails to decode
 
 * **ID:** f-20260904-04 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
