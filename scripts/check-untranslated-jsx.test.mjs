@@ -1,17 +1,29 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { findLiterals, findViolations, sourceFiles } from "./check-untranslated-jsx.mjs";
+import { checkUntranslatedJsx, findLiterals, listSourceFiles } from "./check-untranslated-jsx.mjs";
+import { gitInit, gitTrack } from "./test-git-init.mjs";
+
+// Vitest serves this module from a non-file URL, so `import.meta.dirname` is
+// the only stable way to name the checker for a subprocess run.
+const checkerPath = join(import.meta.dirname, "check-untranslated-jsx.mjs");
+
+function assertCli(result, status, stderr) {
+  expect(result.error).toBeUndefined();
+  expect(result.status).toBe(status);
+  expect(result.stderr.trim()).toMatch(stderr);
+}
 
 function workspace() {
   const root = mkdtempSync(join(tmpdir(), "untranslated-jsx-"));
   mkdirSync(join(root, "src", "components"), { recursive: true });
   writeFileSync(join(root, "src", "components", "Tracked.tsx"), "<Text>Tracked copy</Text>;\n");
   writeFileSync(join(root, "src", "components", "Tracked.test.tsx"), "<Text>Test copy</Text>;\n");
-  const init = spawnSync("git", ["init", "--quiet", "."], { cwd: root, encoding: "utf8" });
-  expect(init.status).toBe(0);
+  writeFileSync(join(root, "src", "components", "Untracked.tsx"), '<Text>{t("a")}</Text>;\n');
+  gitInit(root);
+  gitTrack(root, "src/components/Tracked.tsx", "src/components/Tracked.test.tsx");
   return root;
 }
 
@@ -65,22 +77,36 @@ describe("untranslated UI literal gate", () => {
 });
 
 describe("untranslated UI literal file discovery", () => {
-  test("scans untracked and symlinked components and skips test files", async () => {
+  test("scans tracked, untracked and symlinked components and skips test files", async () => {
     const root = workspace();
     writeFileSync(join(root, "Linked.tsx"), "<Text>Linked copy</Text>;\n");
     symlinkSync(join(root, "Linked.tsx"), join(root, "src", "components", "Linked.tsx"));
 
-    expect(sourceFiles(root)).toEqual(["src/components/Linked.tsx", "src/components/Tracked.tsx"]);
-    expect(await findViolations(root)).toEqual([
+    expect(listSourceFiles(root)).toEqual([
+      "src/components/Linked.tsx",
+      "src/components/Tracked.tsx",
+      "src/components/Untracked.tsx",
+    ]);
+    expect(await checkUntranslatedJsx(root)).toEqual([
       'src/components/Linked.tsx: "Linked copy"',
       'src/components/Tracked.tsx: "Tracked copy"',
     ]);
   });
 
-  test("fails loudly outside a git repository rather than reporting a clean tree", () => {
-    const root = mkdtempSync(join(tmpdir(), "untranslated-jsx-nogit-"));
-    mkdirSync(join(root, "src"), { recursive: true });
-    writeFileSync(join(root, "src", "Loose.tsx"), "<Text>Loose copy</Text>;\n");
-    expect(() => sourceFiles(root)).toThrow(/Cannot enumerate working-tree files/u);
+  test("the CLI reports violations as exit 1 and an enumeration failure as exit 2", () => {
+    const clean = workspace();
+    writeFileSync(join(clean, "src", "components", "Tracked.tsx"), '<Text>{t("a")}</Text>;\n');
+    const green = spawnSync(process.execPath, [checkerPath], { cwd: clean, encoding: "utf8" });
+    assertCli(green, 0, /^$/u);
+
+    const root = workspace();
+    writeFileSync(join(root, "src", "components", "Loud.tsx"), "<Text>Loud copy</Text>;\n");
+    const red = spawnSync(process.execPath, [checkerPath], { cwd: root, encoding: "utf8" });
+    assertCli(red, 1, /Loud\.tsx: "Loud copy"/u);
+
+    const outside = mkdtempSync(join(tmpdir(), "untranslated-jsx-nogit-"));
+    mkdirSync(join(outside, "src"), { recursive: true });
+    const broken = spawnSync(process.execPath, [checkerPath], { cwd: outside, encoding: "utf8" });
+    assertCli(broken, 2, /Cannot enumerate working-tree files/u);
   });
 });

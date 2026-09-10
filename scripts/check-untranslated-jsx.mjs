@@ -1,11 +1,8 @@
 import { parseSync } from "@babel/core";
 import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
-
-const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const userFacingAttributes = new Set([
   "aria-label",
   "aria-description",
@@ -72,7 +69,7 @@ function isStructuredTechnicalLiteral(value, filename) {
  * gate checkers (`f-20260901-16`). An untracked or symlinked component is
  * scanned rather than silently skipped.
  */
-export function sourceFiles(workspaceRoot = root) {
+export function listSourceFiles(workspaceRoot = process.cwd()) {
   return listWorkingTreeFiles({ workspaceRoot, pathspec: "src" })
     .filter((path) => /\.tsx$/u.test(path) && !/\.test\.tsx$/u.test(path))
     .sort();
@@ -191,9 +188,9 @@ export function findLiterals(source, filename = "source.tsx") {
   return literals;
 }
 
-export async function findViolations(workspaceRoot = root) {
+export async function checkUntranslatedJsx(workspaceRoot = process.cwd()) {
   const violations = [];
-  for (const file of sourceFiles(workspaceRoot)) {
+  for (const file of listSourceFiles(workspaceRoot)) {
     const source = await readFile(resolve(workspaceRoot, file), "utf8");
     for (const literal of findLiterals(source, file))
       violations.push(`${file}: ${JSON.stringify(literal)}`);
@@ -201,18 +198,23 @@ export async function findViolations(workspaceRoot = root) {
   return violations;
 }
 
+async function main() {
+  const violations = await checkUntranslatedJsx();
+  if (violations.length === 0) return 0;
+  console.error(
+    "Untranslated UI literals found. Use t()/Trans; allowed technical exceptions are documented in this script.",
+  );
+  for (const violation of violations) console.error(violation);
+  return 1;
+}
+
 if (isEntrypoint(import.meta.url)) {
-  try {
-    const violations = await findViolations();
-    if (violations.length) {
-      console.error(
-        "Untranslated UI literals found. Use t()/Trans; allowed technical exceptions are documented in this script.",
-      );
-      console.error(violations.join("\n"));
-      process.exitCode = 1;
-    }
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 2;
-  }
+  main()
+    .then((status) => {
+      process.exitCode = status;
+    })
+    .catch((error) => {
+      console.error(error instanceof Error ? error.message : error);
+      process.exitCode = 2;
+    });
 }

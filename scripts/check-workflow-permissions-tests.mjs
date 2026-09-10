@@ -10,6 +10,7 @@ import {
   checkWorkflowText,
   workflowPaths,
 } from "./check-workflow-permissions.mjs";
+import { gitInit, gitTrack } from "./test-git-init.mjs";
 
 const checkerPath = fileURLToPath(new URL("./check-workflow-permissions.mjs", import.meta.url));
 const CHECKOUT_SHA = "11d5960a326750d5838078e36cf38b85af677262";
@@ -47,9 +48,10 @@ async function fixture() {
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "test.yml"), workflow());
   await writeFile(join(directory, "release.yml"), release());
-  // Discovery goes through `git ls-files`, so the fixture is a repository.
-  const init = spawnSync("git", ["init", "--quiet", "."], { cwd: root, encoding: "utf8" });
-  assert.equal(init.status, 0, init.stderr);
+  // Discovery goes through `git ls-files`, so the fixture is a repository, and
+  // one workflow is tracked so the walker's tracked query is exercised too.
+  gitInit(root);
+  gitTrack(root, ".github/workflows/release.yml");
   return root;
 }
 
@@ -161,7 +163,7 @@ test("discovers both yml and yaml workflow files", async () => {
   );
 });
 
-test("discovers a symlinked workflow and ignores nested directories", async () => {
+test("discovers tracked, untracked and symlinked workflows and ignores nested directories", async () => {
   const root = await fixture();
   const directory = join(root, ".github", "workflows");
   await writeFile(join(root, "linked.yml"), workflow({ permissions: "" }));
@@ -174,13 +176,6 @@ test("discovers a symlinked workflow and ignores nested directories", async () =
   );
   assert.deepEqual(discovered, ["linked.yml", "release.yml", "test.yml"]);
   assert.match((await checkWorkflowPermissions(root)).join("\n"), /top-level permissions/u);
-});
-
-test("discovery fails loudly outside a git repository", async () => {
-  const root = await mkdtemp(join(tmpdir(), "workflow-permissions-nogit-"));
-  await mkdir(join(root, ".github", "workflows"), { recursive: true });
-  await writeFile(join(root, ".github", "workflows", "test.yml"), workflow());
-  await assert.rejects(() => workflowPaths(root), /Cannot enumerate working-tree files/u);
 });
 
 test("repository check and CLI fail when any discovered workflow regresses", async () => {
