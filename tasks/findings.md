@@ -4577,7 +4577,7 @@ allocated the id.
 
 ### A multi-file PGN import commits each file in its own transaction, so a mid-import failure leaves games behind
 
-* **ID:** f-20260831-07 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260831-07 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs`, the import path that iterates source files and opens a
   transaction per file.
 * **Defect:** importing three PGNs and failing on the third leaves the games from the first two
