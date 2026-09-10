@@ -18,15 +18,31 @@ export default function ColorControl() {
   // prefers-color-scheme and ignores the in-app Theme setting, so a dark app on a light
   // desktop resolved to "light" here.
   const colorScheme = useComputedColorScheme("dark");
+  const colorLabels = {
+    dark: t("Settings.Appearance.AccentColor.dark"),
+    gray: t("Settings.Appearance.AccentColor.gray"),
+    red: t("Settings.Appearance.AccentColor.red"),
+    pink: t("Settings.Appearance.AccentColor.pink"),
+    grape: t("Settings.Appearance.AccentColor.grape"),
+    violet: t("Settings.Appearance.AccentColor.violet"),
+    indigo: t("Settings.Appearance.AccentColor.indigo"),
+    blue: t("Settings.Appearance.AccentColor.blue"),
+    cyan: t("Settings.Appearance.AccentColor.cyan"),
+    teal: t("Settings.Appearance.AccentColor.teal"),
+    green: t("Settings.Appearance.AccentColor.green"),
+    lime: t("Settings.Appearance.AccentColor.lime"),
+    yellow: t("Settings.Appearance.AccentColor.yellow"),
+    orange: t("Settings.Appearance.AccentColor.orange"),
+  };
 
-  const colors = Object.keys(theme.colors).map((color) => (
+  const colorSwatches = Object.entries(colorLabels).map(([color, colorLabel]) => (
     <ColorSwatch
       color={colorScheme === "dark" ? theme.colors[color][7] : theme.colors[color][5]}
       component="button"
       key={color}
       role="radio"
       aria-label={t("Settings.Appearance.AccentColor.Value", {
-        color: t(`Settings.Appearance.AccentColor.${color}`),
+        color: colorLabel,
       })}
       aria-checked={primaryColor === color}
       onClick={() => setPrimaryColor(color)}
@@ -47,7 +63,7 @@ export default function ColorControl() {
   return (
     <Input.Wrapper label={t("Settings.Appearance.AccentColor")}>
       <Group gap={2} role="radiogroup" aria-label={t("Settings.Appearance.AccentColor")}>
-        {colors}
+        {colorSwatches}
       </Group>
     </Input.Wrapper>
   );
