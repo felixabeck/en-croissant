@@ -29,7 +29,7 @@ import {
 import { tabStorage } from "@/state/store/tabStorage";
 import {
   createTab,
-  createTabFromSeed,
+  commitNewTab,
   isPersistentGameOrigin,
   runTabCreation,
   type Tab,
@@ -184,7 +184,7 @@ export default function BoardsPage() {
       if (!tab) return;
       void runTabCreation({
         create: () =>
-          createTabFromSeed({
+          commitNewTab({
             tab: { ...tab },
             setTabs,
             seed: (id) => tabStorage.cloneDurable(value, id),

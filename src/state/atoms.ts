@@ -39,13 +39,7 @@ import {
 } from "../utils/pathCapabilities";
 import { sessionsSchema, type Session } from "../utils/session";
 import { createPreferenceStorage, createZodStorage } from "./utils";
-import {
-    WORKSPACE_STORAGE_KEY,
-    createWorkspaceStorage,
-    defaultWorkspace,
-    saveWorkspace,
-    type Workspace,
-} from "./workspace";
+import { WORKSPACE_STORAGE_KEY, loadWorkspace, saveWorkspace, type Workspace } from "./workspace";
 import { persistStorageWriteError, tabStorage } from "./store/tabStorage";
 import { reportPersistError } from "./persistError";
 import { originalPathOwnersSnapshot } from "./pathOwners";
@@ -69,10 +63,7 @@ const zodArray = <Input, Output>(itemSchema: z.ZodType<Output, z.ZodTypeDef, Inp
 
 // Tabs
 
-const workspaceStorage = createWorkspaceStorage(sessionStorage);
-const workspaceAtom = atom(
-    workspaceStorage.getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace()) ?? defaultWorkspace(),
-);
+const workspaceAtom = atom(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY));
 const commitWorkspaceAtom = atom(null, (_get, set, workspace: Workspace) => {
     const saved = saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, workspace);
     if (!saved) return false;
@@ -108,7 +99,7 @@ export const activeTabAtom = atom(
 /** Transient close intent shared with async listeners; never persisted. */
 export const closingTabsAtom = atom<Set<string>>(new Set<string>());
 
-/** Removes tab metadata and all tab-local persistence as one synchronous lifecycle operation. */
+/** Commits tab metadata, then attempts every tab-local cleanup category. */
 export const closeWorkspaceTabAtom = atom(null, (get, set, tabId: string) => {
     const workspace = get(workspaceAtom);
     const index = workspace.tabs.findIndex((tab) => tab.value === tabId);

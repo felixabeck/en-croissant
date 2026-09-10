@@ -12,6 +12,8 @@ import { defaultTree } from "@/utils/treeReducer";
 import InfoPanel from "./InfoPanel";
 
 const mocks = vi.hoisted(() => ({
+  deleteGame: vi.fn(),
+  deleteRejected: vi.fn(),
   readGames: vi.fn(),
   parsePGN: vi.fn(),
   notify: vi.fn(),
@@ -45,6 +47,7 @@ vi.mock("@/platform/tauri", async () => {
     ...actual,
     tauri: {
       ...actual.tauri,
+      deleteGame: mocks.deleteGame,
       readGames: mocks.readGames,
     },
   };
@@ -59,10 +62,37 @@ vi.mock("@/utils/chess", async () => {
 });
 
 vi.mock("./GameSelector", () => ({
-  default: ({ setPage }: { setPage: (page: number) => Promise<void> }) => (
-    <button type="button" data-testid="set-page" onClick={() => void setPage(1)}>
-      Set Page
-    </button>
+  default: ({
+    games,
+    setGames,
+    setPage,
+    deleteGame,
+  }: {
+    games: Map<number, string>;
+    setGames: (games: Map<number, string>) => void;
+    setPage: (page: number) => Promise<void>;
+    deleteGame: (index: number) => Promise<void>;
+  }) => (
+    <>
+      <span data-testid="game-cache-size">{games.size}</span>
+      <button type="button" data-testid="set-page" onClick={() => void setPage(1)}>
+        Set Page
+      </button>
+      <button
+        type="button"
+        data-testid="prime-games"
+        onClick={() => setGames(new Map([[0, "Cached"]]))}
+      >
+        Prime games
+      </button>
+      <button
+        type="button"
+        data-testid="delete-game"
+        onClick={() => void deleteGame(1).catch(mocks.deleteRejected)}
+      >
+        Delete game
+      </button>
+    </>
   ),
 }));
 
@@ -166,6 +196,8 @@ describe("InfoPanel game loading and cancellation", () => {
     jotaiStore.set(activeTabAtom, tabAId);
 
     mocks.readGames.mockReset();
+    mocks.deleteGame.mockReset();
+    mocks.deleteRejected.mockReset();
     mocks.parsePGN.mockReset();
     mocks.notify.mockReset();
     mocks.logError.mockReset().mockResolvedValue(undefined);
@@ -178,7 +210,29 @@ describe("InfoPanel game loading and cancellation", () => {
     container?.remove();
     closeTreeStore(tabAId);
     closeTreeStore(tabBId);
+    vi.restoreAllMocks();
   });
+
+  function refuseWorkspaceWrites() {
+    const originalSetItem = Storage.prototype.setItem;
+    return vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(function (this: Storage, key, value) {
+        if (key === "workspace") throw new DOMException("quota", "QuotaExceededError");
+        return originalSetItem.call(this, key, value);
+      });
+  }
+
+  async function primeAndDelete() {
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="prime-games"]')!.click();
+    });
+    expect(container.querySelector('[data-testid="game-cache-size"]')?.textContent).toBe("1");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-game"]')!.click();
+      await Promise.resolve();
+    });
+  }
 
   function renderPanel(store: TreeStore = treeStore) {
     return (
@@ -222,6 +276,130 @@ describe("InfoPanel game loading and cancellation", () => {
     const updatedTab = jotaiStore.get(currentTabAtom);
     expect(updatedTab?.gameOrigin).toMatchObject({ kind: "file", gameNumber: 1 });
     expect(mocks.notify).not.toHaveBeenCalled();
+  });
+
+  test("setPage leaves metadata and tree unchanged when the workspace write is refused", async () => {
+    const setState = vi.spyOn(treeStore.getState(), "setState");
+    const nextTree = defaultTree();
+    nextTree.headers.event = "Next tree";
+    mocks.readGames.mockResolvedValueOnce(["1. e4 e5 *"]);
+    mocks.parsePGN.mockResolvedValueOnce(nextTree);
+    refuseWorkspaceWrites();
+    await act(async () => root.render(renderPanel()));
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="set-page"]')!.click();
+    });
+
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({ gameNumber: 0 });
+    expect(setState).not.toHaveBeenCalled();
+  });
+
+  test("delete refuses native mutation and cache clearing when metadata cannot be saved", async () => {
+    mocks.deleteGame.mockResolvedValue(undefined);
+    await act(async () => root.render(renderPanel()));
+    refuseWorkspaceWrites();
+
+    await primeAndDelete();
+
+    expect(mocks.deleteGame).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="game-cache-size"]')?.textContent).toBe("1");
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
+      file: { numGames: 5 },
+    });
+  });
+
+  test("delete restores the captured count and retains cache when native deletion rejects", async () => {
+    const failure = new Error("delete failed");
+    let rejectDelete!: (error: unknown) => void;
+    mocks.deleteGame.mockReturnValueOnce(
+      new Promise((_, reject) => {
+        rejectDelete = reject;
+      }),
+    );
+    await act(async () => root.render(renderPanel()));
+
+    await primeAndDelete();
+    await act(async () => {
+      jotaiStore.set(tabsAtom, (tabs) =>
+        tabs.map((tab) =>
+          tab.value === tabAId && tab.gameOrigin.kind === "file"
+            ? { ...tab, name: "Concurrent title", gameOrigin: { ...tab.gameOrigin, gameNumber: 2 } }
+            : tab,
+        ),
+      );
+      rejectDelete(failure);
+      await Promise.resolve();
+    });
+
+    expect(mocks.deleteGame).toHaveBeenCalledOnce();
+    expect(jotaiStore.get(currentTabAtom)).toMatchObject({
+      name: "Concurrent title",
+      gameOrigin: { gameNumber: 2, file: { numGames: 5 } },
+    });
+    expect(container.querySelector('[data-testid="game-cache-size"]')?.textContent).toBe("1");
+    expect(mocks.deleteRejected).toHaveBeenCalledWith(failure);
+  });
+
+  test("delete does not resurrect a captured owner closed before native rejection", async () => {
+    let rejectDelete!: (error: unknown) => void;
+    mocks.deleteGame.mockReturnValueOnce(
+      new Promise((_, reject) => {
+        rejectDelete = reject;
+      }),
+    );
+    await act(async () => root.render(renderPanel()));
+    await primeAndDelete();
+
+    await act(async () => {
+      jotaiStore.set(tabsAtom, [tabB], tabBId);
+      root.render(renderPanel(createTreeStore(tabBId)));
+      rejectDelete(new Error("delete failed"));
+      await Promise.resolve();
+    });
+
+    expect(jotaiStore.get(tabsAtom)).toEqual([tabB]);
+    expect(jotaiStore.get(activeTabAtom)).toBe(tabBId);
+    expect(mocks.deleteRejected).toHaveBeenCalledOnce();
+  });
+
+  test("successful delete keeps the decremented count and clears its cache", async () => {
+    mocks.deleteGame.mockResolvedValueOnce(undefined);
+    await act(async () => root.render(renderPanel()));
+
+    await primeAndDelete();
+
+    expect(jotaiStore.get(currentTabAtom)?.gameOrigin).toMatchObject({
+      file: { numGames: 4 },
+    });
+    expect(container.querySelector('[data-testid="game-cache-size"]')?.textContent).toBe("0");
+    expect(mocks.deleteRejected).not.toHaveBeenCalled();
+  });
+
+  test("successful delete does not clear the cache after the active owner changes", async () => {
+    let resolveDelete!: () => void;
+    mocks.deleteGame.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+    await act(async () => root.render(renderPanel()));
+    await primeAndDelete();
+
+    const treeStoreB = createTreeStore(tabBId);
+    await act(async () => {
+      jotaiStore.set(activeTabAtom, tabBId);
+      root.render(renderPanel(treeStoreB));
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="prime-games"]')!.click();
+    });
+    await act(async () => {
+      resolveDelete();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="game-cache-size"]')?.textContent).toBe("1");
   });
 
   test("rapid tab replacement while readGames is pending aborts signal and ignores stale resolve", async () => {

@@ -3,7 +3,7 @@ import { Accordion, Box, Divider, Group, ScrollArea, Stack, Text } from "@mantin
 import { useToggle } from "@mantine/hooks";
 import { IconPlus } from "@tabler/icons-react";
 import { errorUnlessCancelled } from "@/platform/errors";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom, useStore as useJotaiStore } from "jotai";
 import { use, useEffect, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
@@ -13,7 +13,7 @@ import GameInfo from "@/components/common/GameInfo";
 import { IconAction } from "@/components/common/IconAction";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import ConfirmChangesModal from "@/components/tabs/ConfirmChangesModal";
-import { currentTabAtom } from "@/state/atoms";
+import { currentTabAtom, tabsAtom } from "@/state/atoms";
 import { keyMapAtom } from "@/state/keybinds";
 import { parsePGN } from "@/utils/chess";
 import { formatNumber } from "@/utils/format";
@@ -139,6 +139,8 @@ function GameSelectorAccordion({
   const dirty = useStore(store, (s) => s.dirty);
   const setState = useStore(store, (s) => s.setState);
   const [currentTab, setCurrentTab] = useAtom(currentTabAtom);
+  const setTabs = useSetAtom(tabsAtom);
+  const jotaiStore = useJotaiStore();
 
   const [confirmChanges, toggleConfirmChanges] = useToggle();
   const [tempPage, setTempPage] = useState(0);
@@ -213,9 +215,7 @@ function GameSelectorAccordion({
       if (isObsolete()) {
         return;
       }
-      setState(tree);
-
-      setCurrentTab((prev) => {
+      const saved = setCurrentTab((prev) => {
         if (prev.value !== activeTabId) return prev;
         if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
           return prev;
@@ -231,6 +231,8 @@ function GameSelectorAccordion({
           },
         };
       });
+      if (!saved) return;
+      setState(tree);
     } catch (error) {
       if (isObsolete()) {
         return;
@@ -241,25 +243,67 @@ function GameSelectorAccordion({
   }
 
   async function deleteGame(index: number) {
-    if (!tabFile) return;
+    if (!tabFile || !currentTab) return;
+    const ownerId = currentTab.value;
     const filePath = tabFile.handle;
-    await tauri.deleteGame(filePath, index);
-    setCurrentTab((prev) => {
-      if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
-        return prev;
-      }
-      return {
-        ...prev,
-        gameOrigin: {
-          ...prev.gameOrigin,
-          file: {
-            ...prev.gameOrigin.file,
-            numGames: prev.gameOrigin.file.numGames - 1,
+    const fileKey = fileWorkspaceKey(filePath);
+    const originalCount = tabFile.numGames;
+    const predictedCount = originalCount - 1;
+    const workspaceTabs = jotaiStore.get(tabsAtom);
+    const owner = workspaceTabs.find((tab) => tab.value === ownerId);
+    if (!owner) return;
+    if (owner.gameOrigin.kind !== "file" && owner.gameOrigin.kind !== "temp_file") return;
+    const ownerOrigin = owner.gameOrigin;
+    if (
+      fileWorkspaceKey(ownerOrigin.file.handle) !== fileKey ||
+      ownerOrigin.file.numGames !== originalCount
+    ) {
+      return;
+    }
+    const saved = setTabs(
+      workspaceTabs.map((tab) => {
+        if (tab.value !== ownerId) return tab;
+        return {
+          ...owner,
+          gameOrigin: {
+            ...ownerOrigin,
+            file: { ...ownerOrigin.file, numGames: predictedCount },
           },
-        },
-      };
-    });
-    setGames(new Map());
+        };
+      }),
+    );
+    if (!saved) return;
+    try {
+      await tauri.deleteGame(filePath, index);
+      if (
+        currentIdentityRef.current.tabId === ownerId &&
+        currentIdentityRef.current.fileKey === fileKey &&
+        currentIdentityRef.current.store === store
+      ) {
+        setGames(new Map());
+      }
+    } catch (error) {
+      setTabs((tabs) =>
+        tabs.map((tab) => {
+          if (tab.value !== ownerId) return tab;
+          if (tab.gameOrigin.kind !== "file" && tab.gameOrigin.kind !== "temp_file") return tab;
+          if (
+            fileWorkspaceKey(tab.gameOrigin.file.handle) !== fileKey ||
+            tab.gameOrigin.file.numGames !== predictedCount
+          ) {
+            return tab;
+          }
+          return {
+            ...tab,
+            gameOrigin: {
+              ...tab.gameOrigin,
+              file: { ...tab.gameOrigin.file, numGames: originalCount },
+            },
+          };
+        }),
+      );
+      throw error;
+    }
   }
 
   if (!tabFile) return null;

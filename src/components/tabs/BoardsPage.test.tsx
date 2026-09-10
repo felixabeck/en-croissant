@@ -21,11 +21,12 @@ const fixtures = vi.hoisted(() => ({
     }),
   })),
   createTab: vi.fn(),
-  createTabFromSeed: vi.fn(),
+  cloneDurable: vi.fn(),
   dispose: vi.fn(),
   dirty: false,
   closeHandler: null as (() => unknown) | null,
   closeReceipt: true,
+  commitReceipt: true,
   hotkeyBindings: null as Array<[string, () => void]> | null,
   killEngines: vi.fn(),
   invalidateReportOwner: vi.fn(),
@@ -56,8 +57,18 @@ const TabsContext = createContext<string | null>(null);
 vi.mock("@/state/atoms", async () => {
   const { atom } = await vi.importActual<typeof import("jotai")>("jotai");
   const { atomFamily } = await vi.importActual<typeof import("jotai/utils")>("jotai/utils");
-  const tabsAtom = atom<TabFixture[]>(fixtures.tabs);
   const activeTabAtom = atom<string | null>("current");
+  const tabsStateAtom = atom<TabFixture[]>(fixtures.tabs);
+  const tabsAtom = atom(
+    (get) => get(tabsStateAtom),
+    (get, set, update: TabFixture[] | ((tabs: TabFixture[]) => TabFixture[]), active?: string) => {
+      if (!fixtures.commitReceipt) return false;
+      const tabs = typeof update === "function" ? update(get(tabsStateAtom)) : update;
+      set(tabsStateAtom, tabs);
+      if (active !== undefined) set(activeTabAtom, active);
+      return true;
+    },
+  );
   return {
     activeTabAtom,
     closeWorkspaceTabAtom: atom(null, (get, set, tabId: string) => {
@@ -96,22 +107,13 @@ vi.mock("@/state/store/tree", () => ({
   invalidateReportOwner: fixtures.invalidateReportOwner,
   restoreReportOwner: fixtures.restoreReportOwner,
 }));
-vi.mock("@/state/store/tabStorage", () => ({ tabStorage: { cloneDurable: vi.fn() } }));
-vi.mock("@/utils/tabs", () => ({
+vi.mock("@/state/store/tabStorage", () => ({
+  tabStorage: { cloneDurable: fixtures.cloneDurable },
+}));
+vi.mock("@/utils/tabs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/utils/tabs")>()),
   createTab: fixtures.createTab,
-  createTabFromSeed: fixtures.createTabFromSeed,
   isPersistentGameOrigin: () => fixtures.persistent,
-  runTabCreation: async ({ create, onSuccess, onError }: any) => {
-    try {
-      const id = await create();
-      if (id === null) return null;
-      await onSuccess?.(id);
-      return id;
-    } catch (error) {
-      onError(error);
-      return null;
-    }
-  },
 }));
 vi.mock("../files/notifyError", () => ({ notifyUnlessCancelled: fixtures.notifyUnlessCancelled }));
 vi.mock("jotai/utils", async () => {
@@ -288,7 +290,9 @@ beforeEach(() => {
   fixtures.nextReady = false;
   fixtures.closeHandler = null;
   fixtures.closeReceipt = true;
+  fixtures.commitReceipt = true;
   fixtures.createTab.mockResolvedValue("created");
+  fixtures.cloneDurable.mockReset();
   fixtures.hotkeyBindings = null;
   fixtures.notifyUnlessCancelled.mockReset();
   fixtures.tabsOnChange = null;
@@ -378,6 +382,26 @@ test("does not loop when replacement creation after the last close is refused", 
   expect(store.get(tabsAtom)).toEqual([]);
   expect(fixtures.createTab).toHaveBeenCalledOnce();
   expect(fixtures.notifyUnlessCancelled).not.toHaveBeenCalled();
+});
+
+test("duplicate clones the requested tab and preserves metadata and selection on refusal", async () => {
+  fixtures.commitReceipt = false;
+  await renderPage();
+  const before = store.get(tabsAtom);
+  const duplicate = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent === "Tab.Duplicate",
+  )!;
+
+  await act(async () => {
+    duplicate.click();
+    await Promise.resolve();
+  });
+
+  expect(fixtures.cloneDurable).toHaveBeenCalledOnce();
+  expect(fixtures.cloneDurable.mock.calls[0]![0]).toBe("current");
+  expect(fixtures.cloneDurable.mock.calls[0]![1]).not.toBe("current");
+  expect(store.get(tabsAtom)).toEqual(before);
+  expect(store.get(activeTabAtom)).toBe("current");
 });
 
 const suspendedNavigationCases = [

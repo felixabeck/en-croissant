@@ -1,4 +1,4 @@
-import type { SyncStorage, SyncStringStorage } from "jotai/vanilla/utils/atomWithStorage";
+import type { SyncStringStorage } from "jotai/vanilla/utils/atomWithStorage";
 import { z } from "zod";
 import { decodeCompressedOrJson, serializeStorageValue } from "./store/debouncedStorage";
 import { persistStorageWriteError, tabStorage } from "./store/tabStorage";
@@ -142,66 +142,48 @@ export function saveWorkspace(
     }
 }
 
-/** Live writes are refused instead of applying the more permissive legacy hydration repair. */
-export function admitWorkspaceTabs(tabs: unknown): tabs is Tab[] {
-    const parsed = liveTabsSchema.safeParse(tabs);
-    if (parsed.success) return true;
-    reportPersistError(persistStorageWriteError({}));
-    return false;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Migrates separate legacy tabs/activeTab keys into one repairable envelope. */
-export function createWorkspaceStorage(storage: SyncStringStorage): SyncStorage<Workspace> {
-    return {
-        getItem(key, _initialValue) {
-            const storedWorkspace = storage.getItem(key);
-            const current = readStoredWorkspaceValue(storage, key);
-            const legacy =
-                current ??
-                ({
-                    tabs: readStoredWorkspaceValue(storage, "tabs"),
-                    activeTab: readStoredWorkspaceValue(storage, "activeTab"),
-                } as const);
-            const plan = planWorkspaceRepair(legacy);
-            const stagedCloneIds = plan.cloneTargets.map(({ targetId }) => targetId);
-            for (const { sourceId, targetId } of plan.cloneTargets) {
-                tabStorage.clone(sourceId, targetId);
-            }
-            if (stagedCloneIds.length > 0) {
-                const failedIds = new Set(tabStorage.flush({ notify: true }));
-                if (stagedCloneIds.some((id) => failedIds.has(id))) {
-                    for (const id of stagedCloneIds) tabStorage.remove(id);
-                    return plan.unrepairedWorkspace;
-                }
-            }
+export function loadWorkspace(storage: SyncStringStorage, key: string): Workspace {
+    const storedWorkspace = storage.getItem(key);
+    const current = readStoredWorkspaceValue(storage, key);
+    const legacy =
+        current ??
+        ({
+            tabs: readStoredWorkspaceValue(storage, "tabs"),
+            activeTab: readStoredWorkspaceValue(storage, "activeTab"),
+        } as const);
+    const plan = planWorkspaceRepair(legacy);
+    const stagedCloneIds = plan.cloneTargets.map(({ targetId }) => targetId);
+    for (const { sourceId, targetId } of plan.cloneTargets) {
+        tabStorage.clone(sourceId, targetId);
+    }
+    if (stagedCloneIds.length > 0) {
+        const failedIds = new Set(tabStorage.flush({ notify: true }));
+        if (stagedCloneIds.some((id) => failedIds.has(id))) {
+            for (const id of stagedCloneIds) tabStorage.remove(id);
+            return plan.unrepairedWorkspace;
+        }
+    }
 
-            const payload = serializeStorageValue(plan.workspace);
-            const cleanupPending =
-                storage.getItem("tabs") !== null || storage.getItem("activeTab") !== null;
-            if (storedWorkspace !== payload || cleanupPending) {
-                try {
-                    storage.setItem(key, payload);
-                } catch (error) {
-                    for (const id of stagedCloneIds) tabStorage.remove(id);
-                    reportPersistError(persistStorageWriteError(error));
-                    return plan.unrepairedWorkspace;
-                }
-            }
+    const payload = serializeStorageValue(plan.workspace);
+    const cleanupPending =
+        storage.getItem("tabs") !== null || storage.getItem("activeTab") !== null;
+    if (storedWorkspace !== payload || cleanupPending) {
+        try {
+            storage.setItem(key, payload);
+        } catch (error) {
+            for (const id of stagedCloneIds) tabStorage.remove(id);
+            reportPersistError(persistStorageWriteError(error));
+            return plan.unrepairedWorkspace;
+        }
+    }
 
-            scrubInvalidLegacyTreeKeys(legacy, plan.workspace.tabs);
-            storage.removeItem("tabs");
-            storage.removeItem("activeTab");
-            return plan.workspace;
-        },
-        setItem(key, value) {
-            saveWorkspace(storage, key, value);
-        },
-        removeItem(key) {
-            storage.removeItem(key);
-        },
-    };
+    scrubInvalidLegacyTreeKeys(legacy, plan.workspace.tabs);
+    storage.removeItem("tabs");
+    storage.removeItem("activeTab");
+    return plan.workspace;
 }

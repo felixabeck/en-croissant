@@ -19,7 +19,7 @@ import {
     getTabFile,
     getTabGameNumber,
     isPersistentGameOrigin,
-    createTabFromSeed,
+    commitNewTab,
     createTab,
     runTabCreation,
     saveToFile,
@@ -91,7 +91,7 @@ test("runTabCreation waits, ignores refusal, reports rejection, and completes ad
     expect(onError).toHaveBeenCalledWith(failure);
 });
 
-test("createTabFromSeed commits tab and selection together", () => {
+test("commitNewTab commits tab and selection together", () => {
     const previous: Tab[] = [];
     const setTabs = vi.fn((update, activeTab) => {
         expect(typeof update === "function" ? update(previous) : update).toEqual([
@@ -101,7 +101,7 @@ test("createTabFromSeed commits tab and selection together", () => {
         return true;
     });
 
-    const id = createTabFromSeed({
+    const id = commitNewTab({
         tab: { name: "Created", type: "analysis", gameOrigin: { kind: "none" } },
         setTabs,
     });
@@ -109,11 +109,11 @@ test("createTabFromSeed commits tab and selection together", () => {
     expect(setTabs).toHaveBeenCalledOnce();
 });
 
-test("createTabFromSeed reports a seed failure once without attempting admission", () => {
+test("commitNewTab reports a seed failure once without attempting admission", () => {
     const setTabs = vi.fn(() => true);
     const failure = new Error("seed failed");
 
-    const result = createTabFromSeed({
+    const result = commitNewTab({
         tab: { name: "Failed", type: "analysis", gameOrigin: { kind: "none" } },
         seed: () => {
             throw failure;
@@ -127,10 +127,10 @@ test("createTabFromSeed reports a seed failure once without attempting admission
     expect(mocks.reportPersistError).toHaveBeenCalledWith(failure);
 });
 
-test("createTabFromSeed rolls back only its staged tree on refused admission", () => {
+test("commitNewTab rolls back only its staged tree on refused admission", () => {
     sessionStorage.setItem("existing", "keep");
     let stagedId = "";
-    const result = createTabFromSeed({
+    const result = commitNewTab({
         tab: { name: "Refused", type: "analysis", gameOrigin: { kind: "none" } },
         seed: (id) => {
             stagedId = id;
@@ -144,12 +144,12 @@ test("createTabFromSeed rolls back only its staged tree on refused admission", (
     expect(sessionStorage.getItem("existing")).toBe("keep");
 });
 
-test("createTabFromSeed admits a duplicate whose blank source has no stored tree", () => {
+test("commitNewTab admits a duplicate whose blank source has no stored tree", () => {
     const setTabs = vi.fn(() => true);
-    const result = createTabFromSeed({
+    const result = commitNewTab({
         tab: { name: "Blank copy", type: "new", gameOrigin: { kind: "none" } },
         seed: (id) => {
-            expect(tabStorage.cloneDurable("blank-source", id)).toBe(false);
+            tabStorage.cloneDurable("blank-source", id);
         },
         setTabs,
     });
@@ -164,7 +164,7 @@ test("refused duplicate preserves its pending source and removes the durable tar
     tabStorage.write("source", { version: 0, state: source });
     let target = "";
 
-    const result = createTabFromSeed({
+    const result = commitNewTab({
         tab: { name: "Copy", type: "analysis", gameOrigin: { kind: "none" } },
         seed: (id) => {
             target = id;
@@ -191,7 +191,7 @@ test("keeps a refused creation unacknowledged when rollback removal is rejected"
             return originalRemoveItem.call(this, key);
         });
 
-    const result = createTabFromSeed({
+    const result = commitNewTab({
         tab: { name: "Refused", type: "analysis", gameOrigin: { kind: "none" } },
         seed: (id) => {
             stagedId = id;

@@ -307,10 +307,9 @@ export class TabStorageRepository {
     /** Creates an immediately durable clone without flushing any unrelated pending tree. */
     cloneDurable(sourceTabId: string, targetTabId: string) {
         const copy = this.validatedClone(sourceTabId);
-        if (!copy) return false;
+        if (!copy) return;
         try {
             sessionStorage.setItem(targetTabId, serializeStorageValue(copy));
-            return true;
         } catch (error) {
             throw persistStorageWriteError(error);
         }

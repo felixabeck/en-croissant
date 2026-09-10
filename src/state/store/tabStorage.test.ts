@@ -437,7 +437,7 @@ test("cloneDurable copies pending edits immediately without flushing unrelated t
     storage.write("source", { version: 0, state: source });
     storage.write("unrelated", { version: 0, state: defaultTree() });
 
-    expect(storage.cloneDurable("source", "target")).toBe(true);
+    storage.cloneDurable("source", "target");
     expect(sessionStorage.getItem("target")).not.toBeNull();
     expect(sessionStorage.getItem("unrelated")).toBeNull();
     expect(storage.pendingCount()).toBe(2);
@@ -448,7 +448,8 @@ test("cloneDurable copies pending edits immediately without flushing unrelated t
 });
 
 test("cloneDurable treats a legitimate tab without tree storage as an empty clone", () => {
-    expect(storage.cloneDurable("blank-tab", "blank-copy")).toBe(false);
+    storage.cloneDurable("blank-tab", "blank-copy");
+    expect(storage.read("blank-copy")).toBeNull();
     expect(sessionStorage.getItem("blank-copy")).toBeNull();
     expect(storage.pendingCount()).toBe(0);
 });

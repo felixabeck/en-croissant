@@ -49,7 +49,7 @@ function FileInfo({
     try {
       const numGames = await tauri.countPgnGames(handle, { signal: controller.signal });
       if (identityRef.current !== activeIdentity || controller.signal.aborted) return;
-      setCurrentTab((prev) => {
+      const saved = setCurrentTab((prev) => {
         if (prev.value !== currentTabId) return prev;
         if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
           return prev;
@@ -66,6 +66,7 @@ function FileInfo({
           },
         };
       });
+      if (!saved) return;
       setGames(new Map());
     } catch (cause) {
       if (identityRef.current !== activeIdentity || controller.signal.aborted) return;

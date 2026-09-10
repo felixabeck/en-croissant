@@ -15,11 +15,23 @@ import {
     tabFamily,
 } from "./atoms";
 import { tabStorage } from "./store/tabStorage";
-import { createTab, createTabFromSeed } from "@/utils/tabs";
-import { createWorkspaceStorage, defaultWorkspace, WORKSPACE_STORAGE_KEY } from "./workspace";
+import { commitNewTab, createTab } from "@/utils/tabs";
+import { loadWorkspace, WORKSPACE_STORAGE_KEY } from "./workspace";
 
 const persistError = vi.hoisted(() => ({ reportPersistError: vi.fn() }));
 vi.mock("./persistError", () => persistError);
+
+function refuseWorkspaceWrites() {
+    const originalSetItem = Storage.prototype.setItem;
+    return vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(function (this: Storage, key, value) {
+            if (key === WORKSPACE_STORAGE_KEY) {
+                throw new DOMException("quota", "QuotaExceededError");
+            }
+            return originalSetItem.call(this, key, value);
+        });
+}
 
 afterEach(() => {
     persistError.reportPersistError.mockClear();
@@ -137,16 +149,10 @@ test("rolls back a seeded tree when the workspace envelope write is refused", as
     tabStorage.seed(originalTabs[0]!.value, defaultTree());
     expect(store.set(tabsAtom, originalTabs, originalActive ?? undefined)).toBe(true);
     const durableEnvelope = sessionStorage.getItem("workspace");
-    const originalSetItem = Storage.prototype.setItem;
-    const setItem = vi
-        .spyOn(Storage.prototype, "setItem")
-        .mockImplementation(function (this: Storage, key, value) {
-            if (key === "workspace") throw new DOMException("quota", "QuotaExceededError");
-            return originalSetItem.call(this, key, value);
-        });
+    const setItem = refuseWorkspaceWrites();
 
     let stagedId = "";
-    const result = createTabFromSeed({
+    const result = commitNewTab({
         tab: { name: "Seeded", type: "analysis", gameOrigin: { kind: "none" } },
         seed: (id) => {
             stagedId = id;
@@ -163,12 +169,14 @@ test("rolls back a seeded tree when the workspace envelope write is refused", as
     expect(tabStorage.read(originalTabs[0]!.value)).not.toBeNull();
     expect(tabStorage.pendingCount()).toBe(0);
     expect(persistError.reportPersistError).toHaveBeenCalledOnce();
-    expect(
-        createWorkspaceStorage(sessionStorage).getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace()),
-    ).toEqual({ version: 1, tabs: originalTabs, activeTab: originalActive });
+    expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY)).toEqual({
+        version: 1,
+        tabs: originalTabs,
+        activeTab: originalActive,
+    });
 
     setItem.mockRestore();
-    const retry = createTabFromSeed({
+    const retry = commitNewTab({
         tab: { name: "Seeded", type: "analysis", gameOrigin: { kind: "none" } },
         seed: (id) => tabStorage.seed(id, defaultTree()),
         setTabs: (update, activeTab) => store.set(tabsAtom, update, activeTab),
@@ -190,15 +198,7 @@ test.each(["play", "analysis", "puzzles"] as const)(
         };
         expect(store.set(tabsAtom, [originalTab], originalTab.value)).toBe(true);
         const durable = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
-        const originalSetItem = Storage.prototype.setItem;
-        vi.spyOn(Storage.prototype, "setItem").mockImplementation(
-            function (this: Storage, key, value) {
-                if (key === WORKSPACE_STORAGE_KEY) {
-                    throw new DOMException("quota", "QuotaExceededError");
-                }
-                return originalSetItem.call(this, key, value);
-            },
-        );
+        refuseWorkspaceWrites();
 
         const receipt = store.set(tabsAtom, (tabs) =>
             tabs.map((tab) =>
@@ -221,13 +221,7 @@ test("refuses an existing-tab selection durably and succeeds after retry", () =>
     const second = { ...first, name: "Second", value: crypto.randomUUID() };
     expect(store.set(tabsAtom, [first, second], first.value)).toBe(true);
     const durable = sessionStorage.getItem("workspace");
-    const originalSetItem = Storage.prototype.setItem;
-    const setItem = vi
-        .spyOn(Storage.prototype, "setItem")
-        .mockImplementation(function (this: Storage, key, value) {
-            if (key === "workspace") throw new DOMException("quota", "QuotaExceededError");
-            return originalSetItem.call(this, key, value);
-        });
+    const setItem = refuseWorkspaceWrites();
 
     expect(store.set(activeTabAtom, second.value)).toBe(false);
     expect(store.get(activeTabAtom)).toBe(first.value);
@@ -243,26 +237,29 @@ test("preserves close resources on envelope failure and reclaims them on retry",
     const store = createStore();
     const tabId = crypto.randomUUID();
     const tab = { ...store.get(tabsAtom)[0], value: tabId, type: "analysis" as const };
-    tabStorage.seed(tabId, defaultTree());
+    const durableTree = defaultTree();
+    tabStorage.seed(tabId, durableTree);
+    const pendingTree = structuredClone(durableTree);
+    pendingTree.headers.event = "Latest pending edit";
+    tabStorage.write(tabId, { version: 1, state: pendingTree });
     store.set(tabFamily(tabId), "practice");
     expect(store.set(tabsAtom, [tab], tabId)).toBe(true);
-    const originalSetItem = Storage.prototype.setItem;
-    const setItem = vi
-        .spyOn(Storage.prototype, "setItem")
-        .mockImplementation(function (this: Storage, key, value) {
-            if (key === "workspace") throw new DOMException("quota", "QuotaExceededError");
-            return originalSetItem.call(this, key, value);
-        });
+    const setItem = refuseWorkspaceWrites();
 
     expect(store.set(closeWorkspaceTabAtom, tabId)).toBe(false);
     expect(store.get(tabsAtom)).toEqual([tab]);
-    expect(tabStorage.read(tabId)).not.toBeNull();
+    expect(tabStorage.read<ReturnType<typeof defaultTree>>(tabId)?.state.headers.event).toBe(
+        "Latest pending edit",
+    );
+    expect(tabStorage.pendingCount()).toBe(1);
     expect([...tabFamily.getParams()]).toContain(tabId);
 
     setItem.mockRestore();
     expect(store.set(closeWorkspaceTabAtom, tabId)).toBe(true);
     expect(store.get(tabsAtom)).toEqual([]);
     expect(tabStorage.read(tabId)).toBeNull();
+    expect(tabStorage.pendingCount()).toBe(0);
+    expect(sessionStorage.getItem(tabId)).toBeNull();
     expect([...tabFamily.getParams()]).not.toContain(tabId);
 });
 
@@ -312,9 +309,11 @@ test("closes inactive, active, and last tabs and ignores a stale close id", () =
     expect(store.set(closeWorkspaceTabAtom, tabs[0]!.value)).toBe(true);
     expect(store.get(tabsAtom)).toEqual([tabs[1]]);
     expect(store.get(activeTabAtom)).toBe(tabs[1]!.value);
-    expect(
-        createWorkspaceStorage(sessionStorage).getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace()),
-    ).toEqual({ version: 1, tabs: [tabs[1]], activeTab: tabs[1]!.value });
+    expect(loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY)).toEqual({
+        version: 1,
+        tabs: [tabs[1]],
+        activeTab: tabs[1]!.value,
+    });
 
     const durable = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
     expect(store.set(closeWorkspaceTabAtom, "stale-id")).toBe(false);

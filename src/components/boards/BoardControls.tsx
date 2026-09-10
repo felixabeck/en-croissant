@@ -71,15 +71,14 @@ function BoardControls({
     });
 
   function changeTabType() {
-    setCurrentTab((t) => {
-      if (t.type === "analysis") {
-        setGameState("settingUp");
-      }
+    const startsGame = currentTab?.type === "analysis";
+    const saved = setCurrentTab((t) => {
       return {
         ...t,
         type: t.type === "analysis" ? "play" : "analysis",
       };
     });
+    if (saved && startsGame) setGameState("settingUp");
   }
 
   const takeSnapshot = async () => {

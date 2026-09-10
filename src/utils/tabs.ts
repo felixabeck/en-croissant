@@ -37,7 +37,7 @@ export const genID = newWorkspaceId;
 export type SetTabs = (update: Tab[] | ((tabs: Tab[]) => Tab[]), activeTab?: string) => boolean;
 export type SetCurrentTab = (update: React.SetStateAction<Tab>) => boolean;
 
-export function createTabFromSeed({
+export function commitNewTab({
     tab,
     setTabs,
     seed,
@@ -138,7 +138,7 @@ export async function createTab({
         treeToSeed = tree;
     }
 
-    return createTabFromSeed({
+    return commitNewTab({
         tab: {
             ...tab,
             gameOrigin: gameOrigin ?? { kind: "none" },

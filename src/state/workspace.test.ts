@@ -3,9 +3,10 @@ import { defaultTree } from "@/utils/treeReducer";
 import { deserializeStorageValue, serializeStorageValue } from "./store/debouncedStorage";
 import { tabStorage } from "./store/tabStorage";
 import {
-    createWorkspaceStorage,
     defaultWorkspace,
+    loadWorkspace,
     readStoredWorkspaceValue,
+    saveWorkspace,
     scrubInvalidLegacyTreeKeys,
     WORKSPACE_STORAGE_KEY,
 } from "./workspace";
@@ -22,8 +23,8 @@ const legacyTab = {
     gameOrigin: { kind: "none" },
 } as const;
 
-function workspaceStorage() {
-    return createWorkspaceStorage(sessionStorage);
+function loadStoredWorkspace() {
+    return loadWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY);
 }
 
 function readStoredWorkspace() {
@@ -59,11 +60,11 @@ test("evaluates the complete static workspace schema on a fresh ESM module insta
         JSON.stringify({ version: 1, tabs: [valid], activeTab: valid.value }),
     );
 
-    expect(
-        fresh
-            .createWorkspaceStorage(sessionStorage)
-            .getItem(fresh.WORKSPACE_STORAGE_KEY, fresh.defaultWorkspace()),
-    ).toEqual({ version: 1, tabs: [valid], activeTab: valid.value });
+    expect(fresh.loadWorkspace(sessionStorage, fresh.WORKSPACE_STORAGE_KEY)).toEqual({
+        version: 1,
+        tabs: [valid],
+        activeTab: valid.value,
+    });
     expect(sessionStorage.getItem("workspace")).not.toBeNull();
 
     const second = { ...valid, name: "Second", value: crypto.randomUUID() };
@@ -71,19 +72,15 @@ test("evaluates the complete static workspace schema on a fresh ESM module insta
         "workspace",
         JSON.stringify({ version: 1, tabs: [valid, second], activeTab: second.value }),
     );
-    expect(
-        fresh
-            .createWorkspaceStorage(sessionStorage)
-            .getItem(fresh.WORKSPACE_STORAGE_KEY, fresh.defaultWorkspace()).activeTab,
-    ).toBe(second.value);
+    expect(fresh.loadWorkspace(sessionStorage, fresh.WORKSPACE_STORAGE_KEY).activeTab).toBe(
+        second.value,
+    );
 
     sessionStorage.setItem(
         "workspace",
         JSON.stringify({ tabs: Array(101).fill(valid), activeTab: "x".repeat(129) }),
     );
-    const repaired = fresh
-        .createWorkspaceStorage(sessionStorage)
-        .getItem(fresh.WORKSPACE_STORAGE_KEY, fresh.defaultWorkspace());
+    const repaired = fresh.loadWorkspace(sessionStorage, fresh.WORKSPACE_STORAGE_KEY);
     expect(repaired.tabs).toHaveLength(1);
     expect(repaired.activeTab).toBe(repaired.tabs[0].value);
 });
@@ -93,9 +90,7 @@ test("migrates separate legacy keys, repairs IDs, and keeps tree state", () => {
     sessionStorage.setItem("tabs", JSON.stringify([legacyTab, legacyTab]));
     sessionStorage.setItem("activeTab", JSON.stringify("42"));
     sessionStorage.setItem("42", serializeStorageValue({ version: 0, state: defaultTree() }));
-    const storage = workspaceStorage();
-
-    const workspace = storage.getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    const workspace = loadStoredWorkspace();
 
     expect(workspace.tabs).toHaveLength(2);
     expect(new Set(workspace.tabs.map((tab) => tab.value)).size).toBe(2);
@@ -128,7 +123,7 @@ test("rolls back staged clones and preserves legacy storage when the envelope wr
         });
 
     try {
-        const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+        const workspace = loadStoredWorkspace();
 
         expect(workspace.tabs).toEqual([legacyTab]);
         expect(workspace.activeTab).toBe(legacyTab.value);
@@ -161,10 +156,10 @@ test("successfully retries migration after a failed envelope write", () => {
             }
             return originalSetItem.call(this, key, value);
         });
-    workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    loadStoredWorkspace();
     failedWrite.mockRestore();
 
-    const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    const workspace = loadStoredWorkspace();
 
     expect(workspace.tabs[0].value).not.toBe(legacyTab.value);
     expect(tabStorage.read(workspace.tabs[0].value)).not.toBeNull();
@@ -182,7 +177,7 @@ test("rewrites a pretty-printed JSON envelope in compressed form", () => {
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, prettyJson);
     const setItem = vi.spyOn(Storage.prototype, "setItem");
 
-    const result = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    const result = loadStoredWorkspace();
 
     expect(result).toEqual(workspace);
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(serializeStorageValue(result));
@@ -198,9 +193,7 @@ test("does not rewrite an already matching compressed envelope", () => {
     sessionStorage.setItem(WORKSPACE_STORAGE_KEY, serializeStorageValue(workspace));
     const setItem = vi.spyOn(Storage.prototype, "setItem");
 
-    expect(workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace())).toEqual(
-        workspace,
-    );
+    expect(loadStoredWorkspace()).toEqual(workspace);
     expect(setItem).not.toHaveBeenCalled();
     setItem.mockRestore();
 });
@@ -223,9 +216,7 @@ test.each(["tabs", "activeTab"] as const)(
                 return originalSetItem.call(this, key, value);
             });
 
-        expect(workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace())).toEqual(
-            workspace,
-        );
+        expect(loadStoredWorkspace()).toEqual(workspace);
         expect(sessionStorage.getItem(leftoverKey)).not.toBeNull();
         expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(payload);
         expect(persistError.reportPersistError).toHaveBeenCalledWith(writeError);
@@ -242,9 +233,7 @@ test("cleans leftover legacy keys while leaving a matching envelope unchanged", 
     sessionStorage.setItem("tabs", JSON.stringify([valid]));
     sessionStorage.setItem("activeTab", JSON.stringify(valid.value));
 
-    expect(workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace())).toEqual(
-        workspace,
-    );
+    expect(loadStoredWorkspace()).toEqual(workspace);
     expect(sessionStorage.getItem("tabs")).toBeNull();
     expect(sessionStorage.getItem("activeTab")).toBeNull();
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe(payload);
@@ -254,7 +243,7 @@ test("corrupt workspace storage recovers to a valid single-tab envelope", () => 
     sessionStorage.clear();
     sessionStorage.setItem("workspace", "{broken");
     const clone = vi.spyOn(tabStorage, "clone");
-    const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    const workspace = loadStoredWorkspace();
 
     expect(workspace.tabs).toHaveLength(1);
     expect(workspace.activeTab).toBe(workspace.tabs[0].value);
@@ -280,7 +269,7 @@ test("scrubs corrupt legacy tab entries without discarding valid neighbouring ta
         serializeStorageValue({ version: 0, state: defaultTree() }),
     );
 
-    const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    const workspace = loadStoredWorkspace();
 
     expect(workspace.tabs).toEqual([validTab]);
     expect(workspace.activeTab).toBe(validTab.value);
@@ -305,7 +294,7 @@ test("keeps a valid current active ID, repairs stale IDs, and never scrubs retai
         JSON.stringify({ version: 1, tabs: [first, second], activeTab: second.value }),
     );
 
-    const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    const workspace = loadStoredWorkspace();
     expect(workspace.activeTab).toBe(second.value);
     expect(sessionStorage.getItem(first.value)).not.toBeNull();
 
@@ -313,9 +302,7 @@ test("keeps a valid current active ID, repairs stale IDs, and never scrubs retai
         WORKSPACE_STORAGE_KEY,
         JSON.stringify({ version: 1, tabs: [first, second], activeTab: "missing" }),
     );
-    expect(workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace()).activeTab).toBe(
-        first.value,
-    );
+    expect(loadStoredWorkspace().activeTab).toBe(first.value);
 });
 
 test("duplicate UUID migration retains the original tree and creates a copied tree", () => {
@@ -330,7 +317,7 @@ test("duplicate UUID migration retains the original tree and creates a copied tr
         JSON.stringify({ version: 1, tabs: [duplicate, duplicate], activeTab: duplicate.value }),
     );
 
-    const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    const workspace = loadStoredWorkspace();
     expect(workspace.tabs).toHaveLength(2);
     expect(workspace.tabs[0].value).toBe(duplicate.value);
     expect(sessionStorage.getItem(duplicate.value)).not.toBeNull();
@@ -350,7 +337,7 @@ test("bounds and scrubs malformed workspace shapes without throwing", () => {
         { tabs: [], activeTab: "x".repeat(129) },
     ]) {
         sessionStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(raw));
-        const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+        const workspace = loadStoredWorkspace();
         expect(workspace.tabs).toHaveLength(1);
         expect(workspace.activeTab).toBe(workspace.tabs[0].value);
     }
@@ -364,7 +351,7 @@ test("bounds and scrubs malformed workspace shapes without throwing", () => {
             activeTab: valid.value,
         }),
     );
-    const bounded = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    const bounded = loadStoredWorkspace();
     expect(bounded.tabs).toHaveLength(1);
     expect(bounded.activeTab).toBe(bounded.tabs[0].value);
     expect(clone).not.toHaveBeenCalled();
@@ -379,7 +366,7 @@ test("does not flush a workspace that needs no tab-ID migration", () => {
         JSON.stringify({ version: 1, tabs: [valid], activeTab: valid.value }),
     );
 
-    workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    loadStoredWorkspace();
     expect(flush).not.toHaveBeenCalled();
     flush.mockRestore();
 });
@@ -423,10 +410,9 @@ test("workspace JSON parsing and legacy-tree scrubbing distinguish malformed val
     expect(() => scrubInvalidLegacyTreeKeys(nonRecordWithThrowingTabs, [retained])).not.toThrow();
 });
 
-test("setItem preserves tab IDs so a failed getItem migration can retry", () => {
+test("saveWorkspace preserves tab IDs so a failed load migration can retry", () => {
     sessionStorage.clear();
-    const storage = workspaceStorage();
-    storage.setItem(WORKSPACE_STORAGE_KEY, {
+    saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
         version: 1,
         tabs: [legacyTab],
         activeTab: legacyTab.value,
@@ -435,24 +421,24 @@ test("setItem preserves tab IDs so a failed getItem migration can retry", () => 
     expect(stored.tabs[0].value).toBe(legacyTab.value);
     expect(stored.activeTab).toBe(legacyTab.value);
 
-    storage.removeItem(WORKSPACE_STORAGE_KEY);
+    sessionStorage.removeItem(WORKSPACE_STORAGE_KEY);
     expect(sessionStorage.getItem(WORKSPACE_STORAGE_KEY)).toBeNull();
 });
 
-test("setItem reports storage write failures", () => {
+test("saveWorkspace reports storage write failures", () => {
     sessionStorage.clear();
     const writeError = new DOMException("denied", "SecurityError");
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
         throw writeError;
     });
 
-    workspaceStorage().setItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, defaultWorkspace());
 
     expect(persistError.reportPersistError).toHaveBeenCalledWith(writeError);
     setItem.mockRestore();
 });
 
-test("setItem refuses invalid and 101-tab live writes while preserving 100 durable tabs", () => {
+test("saveWorkspace refuses invalid and 101-tab live writes while preserving durable tabs", () => {
     sessionStorage.clear();
     const tabs = Array.from({ length: 100 }, (_, index) => ({
         ...legacyTab,
@@ -464,16 +450,15 @@ test("setItem refuses invalid and 101-tab live writes while preserving 100 durab
     const lastTree = serializeStorageValue({ version: 0, state: defaultTree() });
     sessionStorage.setItem(tabs[0]!.value, firstTree);
     sessionStorage.setItem(tabs[99]!.value, lastTree);
-    const storage = workspaceStorage();
-    storage.setItem(WORKSPACE_STORAGE_KEY, durable);
+    saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, durable);
     const storedAtBoundary = sessionStorage.getItem(WORKSPACE_STORAGE_KEY);
 
-    storage.setItem(WORKSPACE_STORAGE_KEY, {
+    saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
         ...durable,
         tabs: [...tabs, { ...legacyTab, value: crypto.randomUUID() }],
     });
-    storage.setItem(WORKSPACE_STORAGE_KEY, "invalid" as never);
-    storage.setItem(WORKSPACE_STORAGE_KEY, {
+    saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, "invalid" as never);
+    saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
         ...durable,
         tabs: [...tabs.slice(0, 99), { ...legacyTab, name: 42 } as never],
     });
@@ -482,16 +467,16 @@ test("setItem refuses invalid and 101-tab live writes while preserving 100 durab
     expect(readStoredWorkspace()).toEqual(durable);
     expect(persistError.reportPersistError).toHaveBeenCalledTimes(3);
 
-    const reloaded = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+    const reloaded = loadStoredWorkspace();
     expect(reloaded).toEqual(durable);
     expect(sessionStorage.getItem(tabs[0]!.value)).toBe(firstTree);
     expect(sessionStorage.getItem(tabs[99]!.value)).toBe(lastTree);
 });
 
-test("setItem preserves an empty live workspace for the replacement-tab effect", () => {
+test("saveWorkspace preserves an empty live workspace for the replacement-tab effect", () => {
     sessionStorage.clear();
 
-    workspaceStorage().setItem(WORKSPACE_STORAGE_KEY, {
+    saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
         version: 1,
         tabs: [],
         activeTab: null,
@@ -501,12 +486,12 @@ test("setItem preserves an empty live workspace for the replacement-tab effect",
     expect(stored).toEqual({ version: 1, tabs: [], activeTab: null });
 });
 
-test("setItem falls back from a mismatched active tab to the first tab", () => {
+test("saveWorkspace falls back from a mismatched active tab to the first tab", () => {
     sessionStorage.clear();
     const first = { ...legacyTab, value: crypto.randomUUID() };
     const second = { ...legacyTab, name: "Second", value: crypto.randomUUID() };
 
-    workspaceStorage().setItem(WORKSPACE_STORAGE_KEY, {
+    saveWorkspace(sessionStorage, WORKSPACE_STORAGE_KEY, {
         version: 1,
         tabs: [first, second],
         activeTab: crypto.randomUUID(),
@@ -550,7 +535,7 @@ test("rolls back staged clones when clone flush fails and leaves legacy trees", 
         });
 
     try {
-        const workspace = workspaceStorage().getItem(WORKSPACE_STORAGE_KEY, defaultWorkspace());
+        const workspace = loadStoredWorkspace();
         expect(workspace.tabs).toEqual([legacyTab, secondLegacyTab]);
         expect(workspace.activeTab).toBe(secondLegacyTab.value);
         expect(tabStorage.read(legacyTab.value)).not.toBeNull();

@@ -82,6 +82,7 @@ let root: Root;
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.countPgnGames.mockRejectedValue(new Error("permission denied"));
+  mocks.setCurrentTab.mockReturnValue(true);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -122,6 +123,17 @@ test("reloads the game count after a successful native count", async () => {
   expect(mocks.setGames).toHaveBeenCalledWith(new Map());
   expect(mocks.setCurrentTab).toHaveBeenCalledOnce();
   expect(mocks.notify).not.toHaveBeenCalled();
+});
+
+test("keeps cached games when count metadata is refused and clears them after retry", async () => {
+  mocks.countPgnGames.mockResolvedValue(7);
+  mocks.setCurrentTab.mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+  await clickReload();
+  expect(mocks.setGames).not.toHaveBeenCalled();
+
+  await clickReload();
+  expect(mocks.setGames).toHaveBeenCalledWith(new Map());
 });
 
 test("keeps a cancelled reload silent", async () => {

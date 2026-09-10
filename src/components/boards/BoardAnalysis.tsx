@@ -84,7 +84,7 @@ function BoardAnalysis() {
 
   const addGame = useCallback(() => {
     if (!tabFile) return;
-    setCurrentTab((prev) => {
+    const saved = setCurrentTab((prev) => {
       if (prev.gameOrigin.kind !== "file" && prev.gameOrigin.kind !== "temp_file") {
         return prev;
       }
@@ -100,6 +100,7 @@ function BoardAnalysis() {
         },
       };
     });
+    if (!saved) return;
     reset();
     void tauri.writeGame(tabFile.handle, tabFile.numGames, defaultPGN());
   }, [setCurrentTab, reset, tabFile]);
