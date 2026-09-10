@@ -7630,7 +7630,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### CI contract gate cannot launch the ledger after its uv shebang migration
 
-* **ID:** f-20260910-08 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260910-08 · **Status:** handled · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `.github/workflows/test.yml`, contract gate; `scripts/findings.py` executable shebang.
 * **Defect:** commit 20f3969641eccd59e30d4891540ecdfc9818cd2c changed the ledger invocation to its uv-managed executable but never installs uv on the GitHub runner. Run 34484554877 fails after the three findings atomic-write tests pass with `/usr/bin/env: ‘uv’: No such file or directory` and exit 1.
 * **Proof:** `gh run view 34484554877 -R felixabeck/en-croissant --log-failed`; final contract gate invocation at 2026-09-10T13:47:24Z. Install the declared interpreter prerequisite before the gate and verify workflow checks plus the actual runner.
