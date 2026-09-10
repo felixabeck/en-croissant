@@ -1009,7 +1009,7 @@ everything else to its existing arm with "Zip must contain a .pgn, .epd, or .bin
 
 ### The Rust channel floats, so a promoted clippy lint can redden an unchanged tree
 
-* **ID:** f-20260829-13 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260829-13 · **Status:** handled · **Area:** ci-workflows · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `rust-toolchain.toml` (`channel = "stable"`) and `.github/workflows/test.yml`
   (`dtolnay/rust-toolchain@stable`).
 * **Defect, as raised:** `cargo clippy -D warnings` went red on 2026-08-29 on a tree nobody had
