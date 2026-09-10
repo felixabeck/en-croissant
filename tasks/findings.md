@@ -7390,3 +7390,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Handled, 2026-09-09:** Commit 23ad1ce2 makes temporary-name overrides thread-local and scope-owned, with restoration on return and unwinding. The deterministic two-thread isolation regression failed against the former global queue and passed after restoration; collision, cleanup and isolation focused tests passed. Root instrumented suite passed 902 tests (one ignored), all backend coverage floors/ratchets, and all-target Clippy. No production filesystem semantics changed.
 * **Provenance:** Plan authorship and arbitration shared root context. Codex detection and repair used the same model family as the surrounding code.
 <!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"4584e9f1c53da125b1cd87ef131ebba815536b65881fea4f38a8fd7b97366fd5","input_sha256":"2c73e44092938c1a422b2caf92b5e036f3adcd55faed6292f95403b61495aae2","kind":"mutation-receipt","operation":"9ca3d7f5e4bc9268e6152e8111a7c51e2d757f3b213b817db5827c464e18d8b0","options":{"section":null},"request_id_sha256":null,"results":["f-20260909-10"],"target":"f-20260909-10","v":1} -->
+
+---
+
+## 2026-09-10 — filed through the inbox spool
+
+### The local installer publishes a second desktop entry and splits the taskbar icon
+
+* **ID:** f-20260910-01 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** scripts/install-local.sh, the DESKTOP path and the desktop-entry heredoc.
+* **Defect:** The desktop entry's basename and StartupWMClass were derived from productName. The 2026-09-07 rename to ChessFable therefore published ~/.local/share/applications/ChessFable.desktop beside the older hand-maintained en-croissant.desktop instead of replacing it, and wrote StartupWMClass=ChessFable, which no window ever reports. The application menu lists ChessFable twice and the running window no longer groups under its pinned taskbar launcher.
+* **Evidence:** A KWin script over workspace.windowList() on 2026-09-10 reported resourceClass en-croissant, resourceName chessfable, desktopFileName en-croissant for the live window: the Wayland app id follows argv[0], which is the bin/en-croissant compatibility link named by Exec, not productName and not the real binary. Both desktop files existed, with identical Name and Exec; the ChessFable.desktop mtime matches the 2026-09-09 install.
+* **Repair:** Derive the entry basename and StartupWMClass from mainBinaryName, launch bin/chessfable directly so app id, entry name and WMClass are one string, and retire any other desktop entry whose Exec points into the install root so a later rename cannot leave a duplicate. Retire the tuxedo-config en-croissant module, which owned the older entry, and repoint the Plasma launcher.
+* **Related:** No sibling finding covers the installer's desktop publication.
