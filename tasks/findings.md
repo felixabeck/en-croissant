@@ -5729,7 +5729,7 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
 
 ### A failed or truncated PGN import commits its games and reports success, and never invalidates the search cache
 
-* **ID:** f-20260903-04 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260903-04 · **Status:** handled · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/mod.rs` — the import loop around `convert_pgn` (the
   `BufferedReader::into_iter` consumption), and `write_db_game`.
 * **Defect:** two layers of `Result` are `.flatten()`ed away. `BufferedReader::into_iter` yields
