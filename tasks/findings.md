@@ -7397,7 +7397,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### The local installer publishes a second desktop entry and splits the taskbar icon
 
-* **ID:** f-20260910-01 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260910-01 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** scripts/install-local.sh, the DESKTOP path and the desktop-entry heredoc.
 * **Defect:** The desktop entry's basename and StartupWMClass were derived from productName. The 2026-09-07 rename to ChessFable therefore published ~/.local/share/applications/ChessFable.desktop beside the older hand-maintained en-croissant.desktop instead of replacing it, and wrote StartupWMClass=ChessFable, which no window ever reports. The application menu lists ChessFable twice and the running window no longer groups under its pinned taskbar launcher.
 * **Evidence:** A KWin script over workspace.windowList() on 2026-09-10 reported resourceClass en-croissant, resourceName chessfable, desktopFileName en-croissant for the live window: the Wayland app id follows argv[0], which is the bin/en-croissant compatibility link named by Exec, not productName and not the real binary. Both desktop files existed, with identical Name and Exec; the ChessFable.desktop mtime matches the 2026-09-09 install.
