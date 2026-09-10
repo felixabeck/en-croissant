@@ -7,6 +7,27 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+std::thread_local! {
+    static FAIL_NEXT_DATA_CHANGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) struct DataChangedFailureGuard;
+
+#[cfg(test)]
+impl Drop for DataChangedFailureGuard {
+    fn drop(&mut self) {
+        FAIL_NEXT_DATA_CHANGED.with(|fail| fail.set(false));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_data_changed() -> DataChangedFailureGuard {
+    FAIL_NEXT_DATA_CHANGED.with(|fail| fail.set(true));
+    DataChangedFailureGuard
+}
+
 use diesel::{
     r2d2::{ConnectionManager, Pool, PooledConnection},
     Connection, SqliteConnection,
@@ -340,12 +361,17 @@ impl DatabaseRepository {
         Ok(identity)
     }
 
+    #[cfg(test)]
     pub fn mark_schema_validated(&self, path: &Path) -> Result<(), Error> {
         let (canonical, entry) = self.entry(path)?;
         self.mark_schema_validated_entry(&entry, &canonical)
     }
 
     pub fn data_changed(&self, path: &Path) -> Result<u64, Error> {
+        #[cfg(test)]
+        if FAIL_NEXT_DATA_CHANGED.with(|fail| fail.replace(false)) {
+            return Err(Error::Conflict("injected data revision failure".into()));
+        }
         let (_, entry) = self.entry(path)?;
         let mut state = entry
             .state

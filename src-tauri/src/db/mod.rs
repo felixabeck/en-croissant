@@ -41,7 +41,6 @@ use crate::{
 use chrono::{NaiveDate, NaiveTime};
 use diesel::{
     connection::{DefaultLoadingMode, SimpleConnection},
-    insert_into,
     prelude::*,
     sql_query,
     sql_types::Text,
@@ -675,96 +674,66 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
 
     let mut database_connection = repository.initialization_connection(&db_path)?;
     let db = &mut *database_connection;
-    let database_was_created = migrations::prepare_database(db, &title, &description)?;
-    repository.mark_schema_validated(&db_path)?;
-
-    // start counting time
     let start = Instant::now();
-
     let mut imported_games = 0usize;
+    db.transaction::<_, Error, _>(|db| {
+        let database_was_created = migrations::prepare_database(db, &title, &description)?;
 
-    for file_handle in files {
-        let (file, current_file_name) = {
-            let mut authority = authority
-                .lock()
-                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-            let authority = authority
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-            let display_name = authority.display_name(file_handle.path_ref())?;
-            let resolved =
-                authority.resolve(file_handle.path_ref(), PathOperation::ReadPgn, &[])?;
-            (resolved.into_read_file()?, Some(display_name))
-        };
-        let extension = current_file_name
-            .as_deref()
-            .and_then(|name| std::path::Path::new(name).extension())
-            .map(std::ffi::OsStr::to_os_string);
-
-        let uncompressed: Box<dyn std::io::Read + Send> =
-            if extension.as_deref() == Some("bz2".as_ref()) {
-                Box::new(bzip2::read::MultiBzDecoder::new(file))
-            } else if extension.as_deref() == Some("zst".as_ref()) {
-                Box::new(zstd::Decoder::new(file)?)
-            } else {
-                Box::new(file)
+        for file_handle in files {
+            let (file, current_file_name) = {
+                let mut authority = authority
+                    .lock()
+                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+                let authority = authority
+                    .as_mut()
+                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+                let display_name = authority.display_name(file_handle.path_ref())?;
+                let resolved =
+                    authority.resolve(file_handle.path_ref(), PathOperation::ReadPgn, &[])?;
+                (resolved.into_read_file()?, Some(display_name))
             };
+            let extension = current_file_name
+                .as_deref()
+                .and_then(|name| std::path::Path::new(name).extension())
+                .map(std::ffi::OsStr::to_os_string);
+            let uncompressed: Box<dyn std::io::Read + Send> =
+                if extension.as_deref() == Some("bz2".as_ref()) {
+                    Box::new(bzip2::read::MultiBzDecoder::new(file))
+                } else if extension.as_deref() == Some("zst".as_ref()) {
+                    Box::new(zstd::Decoder::new(file)?)
+                } else {
+                    Box::new(file)
+                };
 
-        let mut importer = Importer::new(timestamp.map(|t| t as i64));
-        let mut file_imported_games = 0usize;
-
-        db.transaction::<_, diesel::result::Error, _>(|db| {
-            for game in BufferedReader::new(uncompressed)
-                .into_iter(&mut importer)
-                .flatten()
-                .flatten()
-            {
-                if (imported_games + file_imported_games).is_multiple_of(1000) {
-                    let elapsed = start.elapsed().as_millis() as u32;
-                    // Best effort: a dropped progress frame must never abort an
-                    // import, and this runs on renderer-driven input.
+            let mut importer = Importer::new(timestamp.map(|t| t as i64));
+            let mut reader = BufferedReader::new(uncompressed);
+            while let Some(game) = reader.read_game(&mut importer)? {
+                let Some(game) = game else { continue };
+                if imported_games.is_multiple_of(1000) {
                     let _ = ConvertProgress {
                         id: progress_id.clone(),
-                        imported_games: (imported_games + file_imported_games) as u32,
-                        elapsed_ms: elapsed,
+                        imported_games: imported_games as u32,
+                        elapsed_ms: start.elapsed().as_millis() as u32,
                         source_file_name: current_file_name.clone(),
                     }
                     .emit(&app);
                 }
                 game.insert_to_db(db)?;
-                file_imported_games += 1;
+                imported_games += 1;
             }
-            Ok(())
-        })?;
+        }
 
-        imported_games += file_imported_games;
-    }
+        if database_was_created {
+            create_required_indexes(db)?;
+        }
+        update_database_counts(db)?;
+        // This tail remains under the write lock and inside the transaction: a revision failure
+        // rolls back the games, while a later commit failure only invalidates caches conservatively.
+        repository.data_changed(&db_path)?;
+        search_cache.invalidate_database(&db_path);
+        Ok(())
+    })?;
 
-    if database_was_created {
-        create_required_indexes(db)?;
-    }
-
-    // get game, player, event and site counts and to the info table
-    let game_count: i64 = games::table.count().get_result(db)?;
-    let player_count: i64 = players::table.count().get_result(db)?;
-    let event_count: i64 = events::table.count().get_result(db)?;
-    let site_count: i64 = sites::table.count().get_result(db)?;
-
-    let counts = [
-        ("GameCount", game_count),
-        ("PlayerCount", player_count),
-        ("EventCount", event_count),
-        ("SiteCount", site_count),
-    ];
-
-    for c in counts.iter() {
-        insert_into(info::table)
-            .values((info::name.eq(c.0), info::value.eq(c.1.to_string())))
-            .on_conflict(info::name)
-            .do_update()
-            .set(info::value.eq(c.1.to_string()))
-            .execute(db)?;
-    }
     let _ = ConvertProgress {
         id: progress_id,
         imported_games: imported_games as u32,
@@ -772,9 +741,6 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
         source_file_name: None,
     }
     .emit(&app);
-    repository.data_changed(&db_path)?;
-    search_cache.invalidate_database(&db_path);
-
     Ok(())
 }
 
@@ -2362,9 +2328,7 @@ fn delete_orphaned_data(db: &mut SqliteConnection) -> Result<(), Error> {
     Ok(())
 }
 
-fn maintain_database_metadata(db: &mut SqliteConnection) -> Result<(), Error> {
-    delete_orphaned_data(db)?;
-
+fn update_database_counts(db: &mut SqliteConnection) -> Result<(), Error> {
     let game_count: i64 = games::table.count().get_result(db)?;
     update_info_count(db, "GameCount", game_count)?;
 
@@ -2378,6 +2342,11 @@ fn maintain_database_metadata(db: &mut SqliteConnection) -> Result<(), Error> {
     update_info_count(db, "SiteCount", site_count)?;
 
     Ok(())
+}
+
+fn remove_orphans_and_update_counts(db: &mut SqliteConnection) -> Result<(), Error> {
+    delete_orphaned_data(db)?;
+    update_database_counts(db)
 }
 
 #[tauri::command]
@@ -2441,7 +2410,7 @@ fn delete_duplicated_games_transaction(db: &mut SqliteConnection) -> Result<(), 
         ",
     )?;
 
-    maintain_database_metadata(db)?;
+    remove_orphans_and_update_counts(db)?;
 
     Ok(())
 }
@@ -2490,7 +2459,7 @@ fn delete_empty_games_blocking(
 fn delete_empty_games_transaction(db: &mut SqliteConnection) -> Result<(), Error> {
     diesel::delete(games::table.filter(games::ply_count.eq(0))).execute(db)?;
 
-    maintain_database_metadata(db)?;
+    remove_orphans_and_update_counts(db)?;
 
     Ok(())
 }
@@ -2767,7 +2736,7 @@ fn delete_db_game_blocking(
 fn delete_db_game_transaction(db: &mut SqliteConnection, game_id: i32) -> Result<(), Error> {
     diesel::delete(games::table.filter(games::id.eq(game_id))).execute(db)?;
 
-    maintain_database_metadata(db)?;
+    remove_orphans_and_update_counts(db)?;
 
     Ok(())
 }
@@ -2808,16 +2777,15 @@ fn write_db_game_blocking(
     let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
     let mut importer = Importer::new(None);
-    let mut parsed = BufferedReader::new(pgn.as_bytes())
-        .into_iter(&mut importer)
+    let temp_game = BufferedReader::new(pgn.as_bytes())
+        .read_game(&mut importer)?
         .flatten()
-        .flatten();
-    let temp_game = parsed.next().ok_or(Error::NoMovesFound)?;
+        .ok_or(Error::NoMovesFound)?;
     repository.with_write_lock(&file, || {
         let mut database_connection = get_db_or_create(repository, &file)?;
         let db = &mut *database_connection;
         db.transaction(|db| {
-            write_parsed_db_game(db, game_id, &temp_game, maintain_database_metadata)
+            write_parsed_db_game(db, game_id, &temp_game, remove_orphans_and_update_counts)
         })
     })?;
     repository.data_changed(&file)?;
@@ -3025,7 +2993,7 @@ fn merge_players_transaction(
         )));
     }
 
-    maintain_database_metadata(db)?;
+    remove_orphans_and_update_counts(db)?;
 
     Ok(())
 }
@@ -3640,7 +3608,7 @@ mod tests {
             .unwrap();
 
         // Before fix: orphans would remain. Call our cleanup function.
-        maintain_database_metadata(db).unwrap();
+        remove_orphans_and_update_counts(db).unwrap();
 
         // Players: only the sentinel "Unknown" (ID=0) should remain
         let player_count: i64 = players::table.count().get_result(db).unwrap();
@@ -3712,7 +3680,7 @@ mod tests {
         diesel::delete(games::table.filter(games::id.eq(game1.id)))
             .execute(db)
             .unwrap();
-        maintain_database_metadata(db).unwrap();
+        remove_orphans_and_update_counts(db).unwrap();
 
         // Magnus should be gone (only in game 1), but Hikaru and Fabiano should remain
         let player_count: i64 = players::table.count().get_result(db).unwrap();
@@ -3737,7 +3705,7 @@ mod tests {
         diesel::delete(games::table.filter(games::id.eq(game2.id)))
             .execute(db)
             .unwrap();
-        maintain_database_metadata(db).unwrap();
+        remove_orphans_and_update_counts(db).unwrap();
 
         let player_count: i64 = players::table.count().get_result(db).unwrap();
         assert_eq!(player_count, 1, "Only Unknown should remain");
@@ -3909,7 +3877,7 @@ mod tests {
             .set(games::ply_count.eq(0))
             .execute(db)
             .unwrap();
-        maintain_database_metadata(db).unwrap();
+        remove_orphans_and_update_counts(db).unwrap();
         let before = database_state(db);
 
         let result: Result<(), Error> = db.transaction(|db| {
@@ -3926,7 +3894,7 @@ mod tests {
     #[test]
     fn writing_nonexistent_game_leaves_database_unchanged() {
         let db = &mut setup_test_db();
-        maintain_database_metadata(db).unwrap();
+        remove_orphans_and_update_counts(db).unwrap();
         let before = database_state(db);
         let replacement = parsed_game(&test_game_pgn(
             "New White",
@@ -3936,7 +3904,7 @@ mod tests {
         ));
 
         let result = db.transaction(|db| {
-            write_parsed_db_game(db, 404, &replacement, maintain_database_metadata)
+            write_parsed_db_game(db, 404, &replacement, remove_orphans_and_update_counts)
         });
 
         assert!(matches!(result, Err(Error::GameNotFound(id)) if id == "404"));
@@ -3959,7 +3927,7 @@ mod tests {
         ));
 
         db.transaction(|db| {
-            write_parsed_db_game(db, game.id, &replacement, maintain_database_metadata)
+            write_parsed_db_game(db, game.id, &replacement, remove_orphans_and_update_counts)
         })
         .unwrap();
 
@@ -4008,7 +3976,7 @@ mod tests {
         let old_event = create_event(db, "Old Event").unwrap();
         let old_site = create_site(db, "Old Site").unwrap();
         let game = insert_test_game(db, old_white.id, old_black.id, old_event.id, old_site.id);
-        maintain_database_metadata(db).unwrap();
+        remove_orphans_and_update_counts(db).unwrap();
         let before = database_state(db);
         let replacement = parsed_game(&test_game_pgn(
             "New White",
@@ -4036,7 +4004,7 @@ mod tests {
         let site = create_site(db, "Site").unwrap();
         insert_test_game(db, source.id, opponent.id, event.id, site.id);
         insert_test_game(db, target.id, opponent.id, event.id, site.id);
-        maintain_database_metadata(db).unwrap();
+        remove_orphans_and_update_counts(db).unwrap();
         let before = database_state(db);
 
         for (source_id, target_id, expected_message) in [
@@ -4074,7 +4042,7 @@ mod tests {
             };
             assert_ne!(white_is_source, black_is_source);
             insert_test_game(db, white_id, black_id, event.id, site.id);
-            maintain_database_metadata(db).unwrap();
+            remove_orphans_and_update_counts(db).unwrap();
             let before = database_state(db);
 
             let result = db.transaction(|db| merge_players_transaction(db, source.id, target.id));
@@ -5298,6 +5266,499 @@ mod tests {
 
 1. e4 e5 1-0
 "#;
+
+    fn grant_import_file(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        path: &Path,
+    ) -> FileWorkspaceHandle {
+        grant_pgn_file(
+            app,
+            path,
+            path.file_name().unwrap().to_str().unwrap(),
+            vec![PathOperation::ReadPgn],
+        )
+    }
+
+    fn run_import(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        database: DatabaseHandle,
+        files: Vec<FileWorkspaceHandle>,
+        timestamp: Option<i32>,
+    ) -> Result<(), Error> {
+        let state = app.state::<AppState>();
+        convert_pgn_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            files,
+            database,
+            timestamp,
+            app.clone(),
+            "Test".into(),
+            None,
+            "import-test".into(),
+        )
+    }
+
+    fn stored_counts(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        database: &Path,
+    ) -> (i64, i64, i64, i64) {
+        let state = app.state::<AppState>();
+        let mut db = state.database_repository.connection(database).unwrap();
+        (
+            games::table.count().get_result(&mut *db).unwrap(),
+            players::table.count().get_result(&mut *db).unwrap(),
+            events::table.count().get_result(&mut *db).unwrap(),
+            sites::table.count().get_result(&mut *db).unwrap(),
+        )
+    }
+
+    fn empty_database_case() -> (
+        tempfile::TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        DatabaseHandle,
+        PathBuf,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("new.db3");
+        File::create(&database).unwrap();
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let operations = vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseCreate,
+        ];
+        let grant = authority
+            .grant_dialog_operations(
+                &database,
+                "new",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                std::time::Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let commit = authority
+            .promote_dialog(&grant, PathClass::PersistentFile, "new", operations)
+            .unwrap();
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        (
+            dir,
+            app.handle().clone(),
+            DatabaseHandle::new(commit.id),
+            database,
+        )
+    }
+
+    #[test]
+    fn import_two_files_is_atomic_and_updates_metadata() {
+        let (dir, app, handle, database) = blocking_database_case();
+        mount_convert_progress_events(&app);
+        let first = dir.path().join("first.pgn");
+        let second = dir.path().join("second.pgn");
+        std::fs::write(&first, REPLACEMENT_PGN).unwrap();
+        std::fs::write(&second, REPLACEMENT_PGN.replace("Carlsen", "Gukesh")).unwrap();
+        run_import(
+            &app,
+            handle,
+            vec![
+                grant_import_file(&app, &first),
+                grant_import_file(&app, &second),
+            ],
+            None,
+        )
+        .unwrap();
+
+        let state = app.state::<AppState>();
+        let mut db = state.database_repository.connection(&database).unwrap();
+        assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 2);
+        for (name, expected) in [
+            ("GameCount", 2_i64),
+            ("PlayerCount", 4),
+            ("EventCount", 2),
+            ("SiteCount", 2),
+        ] {
+            assert_eq!(
+                info::table
+                    .find(name)
+                    .select(info::value)
+                    .first::<Option<String>>(&mut *db)
+                    .unwrap()
+                    .unwrap()
+                    .parse::<i64>()
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn unreadable_second_file_rolls_back_first_file_and_has_no_terminal_progress() {
+        let (dir, app, handle, database) = blocking_database_case();
+        let first = dir.path().join("first.pgn");
+        let missing = dir.path().join("missing.pgn");
+        std::fs::write(&first, REPLACEMENT_PGN).unwrap();
+        std::fs::write(&missing, REPLACEMENT_PGN).unwrap();
+        let files = vec![
+            grant_import_file(&app, &first),
+            grant_import_file(&app, &missing),
+        ];
+        std::fs::remove_file(&missing).unwrap();
+        mount_convert_progress_events(&app);
+        let frames = capture_events::<ConvertProgress>(&app);
+
+        assert!(run_import(&app, handle, files, None).is_err());
+        assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
+        assert!(frames
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|frame| frame.source_file_name.is_some()));
+    }
+
+    #[test]
+    fn data_revision_failure_rolls_back_inserted_games_and_counts() {
+        let (dir, app, handle, database) = blocking_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("revision.pgn");
+        std::fs::write(&source, REPLACEMENT_PGN).unwrap();
+        let _failure = repository::fail_next_data_changed();
+
+        assert!(run_import(&app, handle, vec![grant_import_file(&app, &source)], None).is_err());
+        assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
+    }
+
+    #[test]
+    fn metadata_failure_after_inserts_rolls_back_the_import() {
+        let (dir, app, handle, database) = blocking_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("metadata.pgn");
+        std::fs::write(&source, REPLACEMENT_PGN).unwrap();
+        {
+            let state = app.state::<AppState>();
+            let mut db = state.database_repository.connection(&database).unwrap();
+            update_database_counts(&mut db).unwrap();
+            db.batch_execute(
+                "CREATE TRIGGER fail_count_update BEFORE UPDATE ON Info
+                 WHEN NEW.Name = 'GameCount'
+                 BEGIN SELECT RAISE(ABORT, 'injected count failure'); END;",
+            )
+            .unwrap();
+        }
+
+        assert!(run_import(&app, handle, vec![grant_import_file(&app, &source)], None).is_err());
+        assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
+        let state = app.state::<AppState>();
+        let mut db = state.database_repository.connection(&database).unwrap();
+        assert_eq!(
+            info::table
+                .find("GameCount")
+                .select(info::value)
+                .first::<Option<String>>(&mut *db)
+                .unwrap()
+                .as_deref(),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn failed_import_preserves_cached_index_query_and_success_refreshes_it() {
+        let (dir, app, handle, database) = blocking_database_case();
+        mount_convert_progress_events(&app);
+        let query = GameQuery::new().position(PositionQueryJs {
+            fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
+            type_: "exact".into(),
+        });
+        let state = app.state::<AppState>();
+        generate_search_index(
+            &handle,
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(get_index_path(&database).exists());
+        assert!(!search::is_position_in_db(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &query,
+        )
+        .unwrap());
+        let source_identity = MmapSearchIndex::open(get_index_path(&database))
+            .unwrap()
+            .source()
+            .clone();
+        let index_identity =
+            crate::SearchIndexIdentity::for_database(&database, source_identity).unwrap();
+        assert!(state.search_cache.get_index(&index_identity).is_some());
+        assert!(state
+            .search_cache
+            .get_result(&crate::SearchResultKey::new(query.clone(), index_identity,))
+            .is_some());
+        #[derive(QueryableByName)]
+        struct JournalMode {
+            #[diesel(sql_type = Text)]
+            journal_mode: String,
+        }
+        let mut db = state.database_repository.connection(&database).unwrap();
+        assert_eq!(
+            sql_query("PRAGMA journal_mode")
+                .get_result::<JournalMode>(&mut *db)
+                .unwrap()
+                .journal_mode,
+            "wal"
+        );
+        drop(db);
+
+        let failed = dir.path().join("failed.pgn");
+        std::fs::write(&failed, REPLACEMENT_PGN).unwrap();
+        let _failure = repository::fail_next_data_changed();
+        assert!(run_import(
+            &app,
+            handle.clone(),
+            vec![grant_import_file(&app, &failed)],
+            None,
+        )
+        .is_err());
+        assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
+        assert!(!search::is_position_in_db(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &query,
+        )
+        .unwrap());
+
+        run_import(
+            &app,
+            handle.clone(),
+            vec![grant_import_file(&app, &failed)],
+            None,
+        )
+        .unwrap();
+        assert!(search::is_position_in_db(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &query,
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn truncated_compressed_streams_roll_back_complete_games() {
+        let (dir, app, handle, database) = blocking_database_case();
+        mount_convert_progress_events(&app);
+        let frames = capture_events::<ConvertProgress>(&app);
+        let bz2 = dir.path().join("truncated.pgn.bz2");
+        let zst = dir.path().join("truncated.pgn.zst");
+        let compress_bz2 = |payload: &[u8]| {
+            let mut encoder = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::best());
+            encoder.write_all(payload).unwrap();
+            encoder.finish().unwrap()
+        };
+        let complete_prefix = REPLACEMENT_PGN.repeat(200);
+        let mut bz_bytes = compress_bz2(complete_prefix.as_bytes());
+        let mut truncated_bz_member = compress_bz2(REPLACEMENT_PGN.as_bytes());
+        truncated_bz_member.truncate(truncated_bz_member.len() - 8);
+        bz_bytes.extend(truncated_bz_member);
+        std::fs::write(&bz2, bz_bytes).unwrap();
+        let mut zst_bytes = zstd::stream::encode_all(complete_prefix.as_bytes(), 1).unwrap();
+        let mut truncated_zst_frame =
+            zstd::stream::encode_all(REPLACEMENT_PGN.as_bytes(), 1).unwrap();
+        truncated_zst_frame.truncate(truncated_zst_frame.len() - 4);
+        zst_bytes.extend(truncated_zst_frame);
+        std::fs::write(&zst, zst_bytes).unwrap();
+
+        for source in [&bz2, &zst] {
+            let frames_before = frames.lock().unwrap().len();
+            assert!(run_import(
+                &app,
+                handle.clone(),
+                vec![grant_import_file(&app, source)],
+                None,
+            )
+            .is_err());
+            assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
+            let captured = frames.lock().unwrap();
+            assert!(
+                captured[frames_before..].iter().any(|frame| {
+                    frame.source_file_name.as_deref() == source.file_name().unwrap().to_str()
+                }),
+                "{} must yield a complete game before reporting its truncated tail",
+                source.display()
+            );
+            assert!(captured[frames_before..]
+                .iter()
+                .all(|frame| frame.source_file_name.is_some()));
+        }
+    }
+
+    #[test]
+    fn existing_database_without_optional_indexes_stays_unindexed() {
+        let (dir, app, handle, database) = blocking_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("plain.pgn");
+        std::fs::write(&source, REPLACEMENT_PGN).unwrap();
+        run_import(&app, handle, vec![grant_import_file(&app, &source)], None).unwrap();
+        let state = app.state::<AppState>();
+        let mut db = state.database_repository.connection(&database).unwrap();
+        let indexes: Vec<IndexInfo> = sql_query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'games_%_idx'",
+        )
+        .load(&mut *db)
+        .unwrap();
+        assert!(indexes.is_empty());
+    }
+
+    #[test]
+    fn failed_new_database_import_can_retry_with_schema_validation_and_required_indexes() {
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("new.pgn");
+        std::fs::write(&source, REPLACEMENT_PGN).unwrap();
+        let _failure = repository::fail_next_data_changed();
+        assert!(run_import(
+            &app,
+            handle.clone(),
+            vec![grant_import_file(&app, &source)],
+            None,
+        )
+        .is_err());
+
+        let mut raw = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        let tables: Vec<IndexInfo> = sql_query(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .load(&mut raw)
+        .unwrap();
+        assert!(tables.is_empty());
+        drop(raw);
+
+        run_import(&app, handle, vec![grant_import_file(&app, &source)], None).unwrap();
+        let state = app.state::<AppState>();
+        let mut db = state.database_repository.connection(&database).unwrap();
+        assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 1);
+        let indexes: Vec<IndexInfo> = sql_query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'games_%_idx'",
+        )
+        .load(&mut *db)
+        .unwrap();
+        assert_eq!(indexes.len(), REQUIRED_GAME_INDEXES.len());
+    }
+
+    #[test]
+    fn empty_import_is_a_no_op() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let revision = state.database_repository.data_revision(&database).unwrap();
+        run_import(&app, handle, Vec::new(), None).unwrap();
+        assert_eq!(
+            state.database_repository.data_revision(&database).unwrap(),
+            revision
+        );
+        assert_eq!(stored_counts(&app, &database), (0, 1, 1, 1));
+    }
+
+    #[test]
+    fn multi_megabyte_import_keeps_rust_heap_below_half_the_corpus() {
+        let (dir, app, handle, database) = blocking_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("large.pgn");
+        let mut writer = BufWriter::new(File::create(&source).unwrap());
+        let target = 4 * 1024 * 1024;
+        let mut written = 0;
+        while written < target {
+            writer.write_all(REPLACEMENT_PGN.as_bytes()).unwrap();
+            written += REPLACEMENT_PGN.len();
+        }
+        writer.flush().unwrap();
+        let corpus_bytes = source.metadata().unwrap().len() as usize;
+        let source_handle = grant_import_file(&app, &source);
+        let (result, heap_peak) =
+            allocation_probe::measure(|| run_import(&app, handle, vec![source_handle], None));
+        result.unwrap();
+        eprintln!("streamed import corpus_bytes={corpus_bytes} rust_heap_peak={heap_peak}");
+        assert!(
+            heap_peak < corpus_bytes / 2,
+            "streaming heap peak {heap_peak} must stay below half of {corpus_bytes} bytes"
+        );
+        assert!(stored_counts(&app, &database).0 > 10_000);
+    }
+
+    #[test]
+    fn timestamp_and_invalid_game_skip_policy_is_preserved() {
+        let (dir, app, handle, database) = blocking_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("skips.pgn");
+        let invalid = REPLACEMENT_PGN.replace(
+            "[White \"Carlsen\"]",
+            "[White \"Skipped\"]\n[FEN \"invalid\"]",
+        );
+        let pre_cutoff = REPLACEMENT_PGN.replace("Carlsen", "Too Old");
+        let valid = REPLACEMENT_PGN.replace("2026.08.09", "2026.08.10");
+        std::fs::write(&source, format!("{pre_cutoff}\n{invalid}\n{valid}")).unwrap();
+        let cutoff = NaiveDate::from_ymd_opt(2026, 8, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp() as i32;
+        run_import(
+            &app,
+            handle,
+            vec![grant_import_file(&app, &source)],
+            Some(cutoff),
+        )
+        .unwrap();
+        assert_eq!(stored_counts(&app, &database).0, 1);
+    }
+
+    #[test]
+    fn replacement_does_not_advance_past_a_skipped_first_game() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(&app, &database, "Old", "Black", "Event", "Site");
+        let skipped = REPLACEMENT_PGN.replace(
+            "[White \"Carlsen\"]",
+            "[White \"Skipped\"]\n[FEN \"invalid\"]",
+        );
+        let state = app.state::<AppState>();
+        assert!(matches!(
+            write_db_game_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                handle,
+                game_id,
+                format!("{skipped}\n{REPLACEMENT_PGN}"),
+            ),
+            Err(Error::NoMovesFound)
+        ));
+        let mut db = state.database_repository.connection(&database).unwrap();
+        let white_id = games::table
+            .find(game_id)
+            .select(games::white_id)
+            .first::<i32>(&mut *db)
+            .unwrap();
+        assert_eq!(
+            players::table
+                .find(white_id)
+                .select(players::name)
+                .first::<Option<String>>(&mut *db)
+                .unwrap()
+                .unwrap(),
+            "Old"
+        );
+    }
 
     #[test]
     fn write_db_game_then_read_it_back_returns_the_same_moves() {
