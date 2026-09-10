@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
@@ -24,24 +24,44 @@ function canonicalPath(skillName) {
   return [".claude", "skills", skillName, "SKILL.md"].join("/");
 }
 
-async function directorySkillNames(root) {
+/**
+ * Skill names below `<side>/skills`, or `undefined` when that directory is
+ * absent.
+ *
+ * Enumeration goes through the shared working-tree walker, so a skill that is
+ * untracked or shipped as a symlink is still discovered (`f-20260901-16`). A
+ * `readdir` walk missed both: `Dirent.isDirectory()` reflects `lstat`, so a
+ * symlinked skill directory was silently excluded from the pairing and
+ * line-cap checks. Git lists such a link as one entry rather than descending
+ * into it, which is why a single path segment is a candidate name here and the
+ * `SKILL.md` probe below decides whether it really is a skill.
+ */
+async function directorySkillNames(repoRoot, skillsRoot) {
+  const absoluteRoot = resolve(repoRoot, skillsRoot);
   try {
-    const entries = await readdir(root, { withFileTypes: true });
-    const names = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      try {
-        await readFile(resolve(root, entry.name, "SKILL.md"), "utf8");
-        names.push(entry.name);
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
-    }
-    return names;
+    await stat(absoluteRoot);
   } catch (error) {
     if (error?.code === "ENOENT") return undefined;
     throw error;
   }
+  const candidates = new Set();
+  for (const path of listWorkingTreeFiles({ workspaceRoot: repoRoot, pathspec: skillsRoot })) {
+    const segments = path.slice(skillsRoot.length + 1).split("/");
+    if (segments.length === 1 || (segments.length === 2 && segments[1] === "SKILL.md"))
+      candidates.add(segments[0]);
+  }
+  const names = [];
+  for (const name of [...candidates].sort()) {
+    try {
+      await readFile(resolve(absoluteRoot, name, "SKILL.md"), "utf8");
+      names.push(name);
+    } catch (error) {
+      // A loose file beside the skill directories is not a skill: reading
+      // through it reports ENOTDIR rather than ENOENT.
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+    }
+  }
+  return names;
 }
 
 function lineCount(text) {
@@ -101,7 +121,9 @@ async function findGateSourceClaims(repoRoot, pairedSkills, relativePaths) {
     try {
       contents = await readFile(path);
     } catch (error) {
-      if (error?.code === "ENOENT") continue;
+      // A symlinked directory is listed by git as a single entry; it carries no
+      // text to scan, and the skills below it are enumerated separately.
+      if (error?.code === "ENOENT" || error?.code === "EISDIR") continue;
       findings.push(`${relativePath} could not be read: ${error.message}`);
       continue;
     }
@@ -120,11 +142,9 @@ async function findGateSourceClaims(repoRoot, pairedSkills, relativePaths) {
 
 export async function checkSkillBridges(repoRoot, { listFiles = listRepositoryFiles } = {}) {
   const findings = [];
-  const agentsRoot = resolve(repoRoot, ".agents", "skills");
-  const claudeRoot = resolve(repoRoot, ".claude", "skills");
   const [agentNames, claudeNames] = await Promise.all([
-    directorySkillNames(agentsRoot),
-    directorySkillNames(claudeRoot),
+    directorySkillNames(repoRoot, ".agents/skills"),
+    directorySkillNames(repoRoot, ".claude/skills"),
   ]);
   if (!agentNames) findings.push(".agents/skills directory is missing");
   if (!claudeNames) findings.push(".claude/skills directory is missing");
@@ -149,8 +169,8 @@ export async function checkSkillBridges(repoRoot, { listFiles = listRepositoryFi
     pairedSkills.push(skillName);
 
     const [agentText, claudeText] = await Promise.all([
-      readFile(resolve(agentsRoot, skillName, "SKILL.md"), "utf8"),
-      readFile(resolve(claudeRoot, skillName, "SKILL.md"), "utf8"),
+      readFile(resolve(repoRoot, bridgePath(skillName)), "utf8"),
+      readFile(resolve(repoRoot, canonicalPath(skillName)), "utf8"),
     ]);
     const pointer = canonicalPath(skillName);
     if (!pointsAtCanonical(agentText, pointer)) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +43,22 @@ async function fixture() {
 test("accepts paired canonical skills and capped Codex bridges", async () => {
   const root = await fixture();
   assert.deepEqual(await checkSkillBridges(root), []);
+});
+
+test("discovers a skill shipped as a symlinked directory", async () => {
+  const root = await fixture();
+  // Git lists such a link as one entry instead of descending into it, and a
+  // readdir walk skipped it entirely because Dirent.isDirectory() reflects
+  // lstat. Either way the skill used to be invisible to the pairing check.
+  await write(root, join("shared", "run", "SKILL.md"), canonical("run"));
+  await write(root, skillPath(".agents", "run"), bridge("run"));
+  await mkdir(join(root, ".claude", "skills"), { recursive: true });
+  await symlink(join(root, "shared", "run"), join(root, ".claude", "skills", "run"));
+
+  assert.deepEqual(await checkSkillBridges(root), []);
+
+  await write(root, skillPath(".agents", "run"), canonical("run"));
+  assert.match((await checkSkillBridges(root)).join("\n"), /does not point at/u);
 });
 
 test("requires every skill to have a counterpart", async () => {
