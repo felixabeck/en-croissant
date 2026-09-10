@@ -7446,3 +7446,24 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Verified on tuxedo-atlas, 2026-09-10:** After `bash scripts/install-local.sh` at dab5a60e the installer printed "retired superseded desktop entry .../ChessFable.desktop" and published chessfable.desktop, which passes desktop-file-validate. Exactly one file across every XDG applications directory now declares Name=ChessFable. A KWin script over workspace.windowList() reports the relaunched window as resourceClass chessfable, resourceName chessfable, desktopFileName chessfable, against en-croissant/chessfable/en-croissant before the change. The dangling ~/.local/share/applications/en-croissant.desktop symlink was removed by hand, and all three Icons-Only Task Managers were repointed from applications:en-croissant.desktop to applications:chessfable.desktop through org.kde.PlasmaShell.evaluateScript; panel-launcher-sync --status reports the three lists identical. A full-screen capture shows a single ChessFable icon in the taskbar, with the running window grouped into its pin.
 * **Out of repository:** tuxedo-config commit 497733d retires the en-croissant module that owned the older entry and moves the launcher-matching knowledge into panel-launcher. The installer cannot retire a symlinked entry or a Plasma pin by design; CLAUDE.md now states that limit.
 <!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"ad95c79a0687660de81eefddebc5d6e62e621252dd2b207e98e45555e979ee8e","input_sha256":"8ee9bfd118792443381e924255c944df1373ff6412b0b3cf16b23271d490e182","kind":"mutation-receipt","operation":"24c1535124b452f66249887b620e29d94bbbbafaeaf3474e3c1c5a3c92287d11","options":{"section":null},"request_id_sha256":null,"results":["f-20260910-01"],"target":"f-20260910-01","v":1} -->
+
+---
+
+## 2026-09-10 — filed through the inbox spool
+
+### `app_started` telemetry was emitted after startup had been cancelled
+
+* **ID:** f-20260910-02 · **Status:** open · **Area:** app-startup · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src/App.tsx` (`useAppStartup`, the `telemetryEnabled` block).
+* **Defect:** the startup sequence read `analytics.capture("app_started", { version: await
+  getVersion() })` and only then checked `signal.aborted`. The cancellation check therefore sat
+  *after* the emit, so a startup torn down while the version was being read still reported the
+  application as started. This is the class `.claude/rules/async-resource-invariants.md` names by
+  its own incident (`06c23b6a`, search cancellation checked after the progress emit): a cancel flag
+  checked after the emit is not cancellation.
+* **Found by:** the `review-error-handling` lens (confidence 88) during the `$push` review of
+  `f-20260829-03`, which had just added the first tests over this file. The test written for the
+  cancellation path had asserted the capture *did* fire — it pinned the defect rather than
+  catching it.
+* **Related:** `f-20260829-03`, whose coverage work surfaced this. Filed separately so the incident
+  class is findable under its own mechanism rather than inside a coverage-gap closure.
