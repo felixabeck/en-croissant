@@ -4960,6 +4960,11 @@ Handled in `b9250a36`. `terminate_child` over `ChildControl` bounds the quit wri
   `src/utils/tests/score.test.ts` and `src/utils/tests/store.test.ts`.
 <!-- ledger-meta {"command":"annotate","effect_lines":19,"effect_sha256":"acb7ca3c20c621f69a0a5a4e7ae7d86aa023fca3ebb3a59bf5dc45305a9d4fa7","input_sha256":"3c1a4264276437c0b468e0150d302948d741f24c45c49e6e5ef8960de4c0ca57","kind":"mutation-receipt","operation":"a20700af016b02eb4035024cb46b5523bf8a87c75cffab6074aeea080665342f","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-21"],"target":"f-20260831-21","v":1} -->
 
+* **Correction:** the decision reference in the note above is `d-20260910-09`, not
+  `d-20260910-01` — the id was written before `record-decision` allocated it, and
+  `d-20260910-01` is an unrelated entry about the desktop-entry basename.
+<!-- ledger-meta {"command":"annotate","effect_lines":3,"effect_sha256":"4d5153297eb13174bae9366a6cf9f77cd4470b421b6a0d79393a291d68dc53ba","input_sha256":"56b8a712936768f5cab817ad4e832b63d00ba83ded2c64d6eba7c250f448474a","kind":"mutation-receipt","operation":"5237b41b1969b610c4378d0fd0dd0779827282aefd1d23f6ee1769dda3e36c74","options":{"section":null},"request_id_sha256":null,"results":["f-20260831-21"],"target":"f-20260831-21","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
