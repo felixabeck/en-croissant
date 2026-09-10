@@ -67,7 +67,7 @@ const preloadReferenceDb = async (
       await tauri.preloadReferenceDb(referenceDb, { signal });
     } catch (e) {
       if (signal.aborted) return;
-      info(`Failed to preload reference database: ${e}`);
+      warn(`Failed to preload reference database: ${e}`);
     }
   }
 };
@@ -101,9 +101,12 @@ export function useAppStartup() {
 
         if (telemetryEnabled) {
           analytics.enable();
-          analytics.capture("app_started", { version: await getVersion() });
+          const version = await getVersion();
+          // Cancellation is checked before the emit, never after it: a startup that was torn
+          // down while the version was read must not report itself as started.
+          if (signal.aborted) return;
+          analytics.capture("app_started", { version });
         }
-        if (signal.aborted) return;
         try {
           const matches = await getMatches();
           if (matches.args.file.occurrences > 0) {
