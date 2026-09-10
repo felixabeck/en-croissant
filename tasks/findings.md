@@ -7141,7 +7141,7 @@ Final review repair completed in 88c1b7bb (tab transitions), 3de47fe2 (ordinary 
 
 ### Closing a tab removes its tree before the durable workspace stops referencing it
 
-* **ID:** f-20260906-22 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260906-22 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** src/state/atoms.ts:110, closeWorkspaceTabAtom; src/state/workspace.ts storage adapter.
 * **Defect:** tabStorage.remove and disposeTabAtoms precede set(workspaceAtom). If workspace envelope persistence fails, reload retains old metadata referencing a deleted tree and opens a blank game. Root confirmed current order.
 * **Design:** Establish a durable lifecycle commit receipt across workspace metadata and tab-tree creation/removal; the related creation path f-20260901-05 seeds before metadata durability. Choose consistent create/close rollback and failure presentation together, preserving original tree until metadata removal is known durable. No standalone reordering that treats a swallowed adapter failure as success.
