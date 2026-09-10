@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# agent-kit-sha256: 0afb880fbb2b0ce2dce934706162fde0d73ce21823a1a7dfaf23bc140e981451
+# agent-kit-sha256: 50598e21899f3f24adec1fd73902fada76a75d961a8032e8fb16c6e51f981486
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -528,6 +528,27 @@ SESSION_RE = re.compile(
 # choice between npx, a devDependency and a hand-written allowlist behind a
 # complete, well-argued brief; Felix: "This is purely technical stuff. I don't
 # understand what you're talking about. I just enter your recommendations."
+# `Entry: build` was 691 of 1137 filed findings on 2026-09-09, 60 % of the queue,
+# because the contract's "when uncertain, write `build`" costs nothing to assert
+# and needs evidence to undo. The counter-pressure is the same shape as the
+# product-impact gate below: a bullet the filing session has to write. Uncertainty
+# that cannot name its design question is not a design question, it is an unread
+# file, and the finding belongs at `inline` or `lens`.
+#
+# Filing-time only, deliberately. It is NOT part of `validate`, which
+# `findings.py check` runs over the whole ledger and every project gate calls:
+# 690 existing `build` entries across four repositories were filed before this
+# rule and would redden every gate at once. The rule is about what a filer was
+# asked, and no existing entry's filer was asked.
+OPEN_QUESTION_RE = re.compile(
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*Open question:\*\*[ \t]*(?P<question>\S.*)",
+    re.MULTILINE,
+)
+OPEN_QUESTION_REFUSAL = (
+    "{where}: `Entry: build` needs an '**Open question:**' bullet naming the design "
+    "question the plan has to answer. If the question cannot be written, file it as "
+    "`inline` or `lens`."
+)
 # Brief quality is not what makes a question his, so no amount of prose in the
 # contract catches this — only a bullet the parking session has to write and
 # cannot write honestly for a technical question.
@@ -3588,6 +3609,8 @@ def _read_and_validate_entry(
         )
     if len(findings) == 1:
         body = _unfenced_body(findings[0])
+        if findings[0].entry == "build" and not OPEN_QUESTION_RE.search(body):
+            issues.append(OPEN_QUESTION_REFUSAL.format(where=entry_path))
         marker = _answer_evidence_marker(
             body, sentry_origin=_body_is_sentry_origin(body)
         )
@@ -5745,6 +5768,26 @@ def _decision_clause_one_issues(entry: str) -> list[str]:
                 f"### {match.group('id')} — {match.group('question')} is missing "
                 "clause 1 field(s): " + ", ".join(missing)
             )
+        # The trailer is not decoration: `set-trailer` requires exactly one
+        # `Superseded-by` to match and replace, so a decision recorded without
+        # it can never be superseded — the reversal path the ledger promises is
+        # closed at the moment of writing, and nothing notices until someone
+        # tries. `check` does not read it either, so the writer is the only
+        # place this can be caught. Measured 2026-09-09: d-20260909-05 and -06
+        # were recorded without it and passed every gate.
+        if SUPERSEDED_BY_RE.search(body) is None:
+            issues.append(
+                f"### {match.group('id')} — {match.group('question')} is missing "
+                "the `* **Decided by:** <session/run> · **Superseded-by:** -` "
+                "trailer; without it `set-trailer` can never supersede this "
+                "decision"
+            )
+        if GOVERNS_RE.search(body) is None:
+            issues.append(
+                f"### {match.group('id')} — {match.group('question')} is missing "
+                "the `* **Governs:**` bullet; write the finding ids it governs, "
+                "or `-`"
+            )
     return issues
 
 
@@ -5799,6 +5842,32 @@ def _answerable_header_change_refusal(
     )
 
 
+def _raise_to_build_refusal(
+    findings: list[Finding], finding_id: str, *, entry: str | None
+) -> str | None:
+    """Refuse a pickup raise to `build` on an entry that names no open question.
+
+    The same gate as filing, at the other door. `set_header` rewrites header
+    fields and cannot write a body bullet, so the working order at pickup is
+    `annotate` with a note carrying the `**Open question:**` bullet, then
+    `set-header --entry build`. Lowering a tier is never gated by this.
+    """
+    if entry != "build":
+        return None
+    for finding in findings:
+        if finding.id != finding_id:
+            continue
+        if finding.entry == "build":
+            return None
+        if OPEN_QUESTION_RE.search(_unfenced_body(finding)):
+            return None
+        return (
+            OPEN_QUESTION_REFUSAL.format(where=finding_id)
+            + " Annotate the entry with that bullet first, then set the header."
+        )
+    return None
+
+
 def cmd_set_header(args: argparse.Namespace) -> int:
     """Update selected fields on one real finding header under the ledger lock."""
     findings, _problems, _vocabulary = parse(args.ledger)
@@ -5810,6 +5879,11 @@ def cmd_set_header(args: argparse.Namespace) -> int:
     )
     if refusal is not None:
         print(refusal, file=sys.stderr)
+        return 1
+
+    raise_refusal = _raise_to_build_refusal(findings, args.id, entry=args.entry)
+    if raise_refusal is not None:
+        print(raise_refusal, file=sys.stderr)
         return 1
 
     changes = {
@@ -5839,6 +5913,11 @@ def cmd_set_header(args: argparse.Namespace) -> int:
         )
         if current_refusal is not None:
             raise LedgerError(current_refusal)
+        current_raise_refusal = _raise_to_build_refusal(
+            current_findings, args.id, entry=args.entry
+        )
+        if current_raise_refusal is not None:
+            raise LedgerError(current_raise_refusal)
         lines, index = _locate_finding_header(text, args.id)
         line = lines[index]
         for header_field, value in changes.items():
