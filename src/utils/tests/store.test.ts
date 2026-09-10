@@ -579,7 +579,7 @@ const line = (value: number, san: string, uci: string) => ({
 // A ply whose UCI output was bound-only publishes no MultiPV set at all.
 const noLines = { best: [], novelty: false, is_sacrifice: false };
 
-test("addAnalysis skips plies whose predecessor has no lines", () => {
+test("addAnalysis annotates a ply whose predecessor has no lines without inventing a score", () => {
     store.getState().setState({ ...treeE4D5(), position: [0] });
     store.getState().addAnalysis([line(10, "e4", "e2e4"), noLines, line(900, "d5", "d7d5")]);
 

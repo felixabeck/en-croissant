@@ -86,4 +86,8 @@ test("derives no ! without the previous-previous evaluation", () => {
     expect(
         getAnnotation(null, ZERO, { type: "cp", value: 300 }, "white", prevMoves, false, "e4"),
     ).toBe("");
+    // "!!" rests on the sacrifice alone and survives the missing evaluation.
+    expect(
+        getAnnotation(null, ZERO, { type: "cp", value: 300 }, "white", prevMoves, true, "e4"),
+    ).toBe("!!");
 });
