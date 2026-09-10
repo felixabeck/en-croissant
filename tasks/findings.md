@@ -410,6 +410,28 @@ En Croissant's own.
   v8 range artefacts on lines that are fully executed.
 <!-- ledger-meta {"command":"annotate","effect_lines":23,"effect_sha256":"5f886c4c4aa75c81cae492b60b7c109e31f525a55dd5c1a341970fea7ab9a790","input_sha256":"aa73064ca549afddf7c05f326ffa39ef8faef6360ae4963bbf81a31f1e649d2a","kind":"mutation-receipt","operation":"8cc38df89b8529b7f86f74b2d580b6d7a440ced7b83c29a661997f96856bfd14","options":{"section":null},"request_id_sha256":null,"results":["f-20260829-03"],"target":"f-20260829-03","v":1} -->
 
+* **Correction 2026-09-10, from the `$push` review of this very change.** The "Proven, not assumed"
+  list above is accurate but was not complete, and the gap it left was the one this finding names.
+  The `review-root-cause` lens deleted `useConversionProgress();` from `src/App.tsx` — the exact
+  edit shape of the `convert_progress` incident this entry cites — and all fifteen tests stayed
+  green. Coverage cannot see that class at all: a deleted hook call leaves no uncovered line behind,
+  and the mocked hook was a no-op nobody asserted on. `src/App.test.tsx` now tracks both
+  `useConversionProgress` and `useDocumentLanguage` as mocks, and "keeps the renderer-side
+  subscriptions wired" asserts each was called during an `App` render. Verified by hand: deleting
+  either call turns exactly one test red.
+* **Two further review findings were repaired in the same commit, and one of them is a real defect
+  rather than test work.** The stale `app_started` emit past cancellation is filed on its own as
+  `f-20260910-02`, so the incident class stays findable under its own mechanism. The second is a
+  severity relabel: a failed reference-database preload logged through `info` and now logs through
+  `warn`, so a genuine failure is no longer indistinguishable from startup chatter at a warn-level
+  filter. A rejecting `getMatches()` also gained the test it never had.
+* **Review record:** seven lens rounds on Claude Code — `review-tests` twice (REVISE, then
+  APPROVED), then `review-correctness`, `review-root-cause`, `review-code-quality` and
+  `review-error-handling`, with a scoped second round on the last three. Eight findings at
+  confidence 80 or above were adopted; twelve repair mutants were run by hand and each killed
+  exactly one test.
+<!-- ledger-meta {"command":"annotate","effect_lines":20,"effect_sha256":"6d07dad9c4afb8d85d6ad1a9d91d4be3dd9ce3c91879992dadba5464af1e1dd5","input_sha256":"c64c3ff60f053cbada5e91c009fab0db85118738e8b669dc1a4ade19c24254c1","kind":"mutation-receipt","operation":"13bbbb8e7a23dd3d04f8838b611b2e88fd3a4b5da16fa47438d98ac93b61bdcd","options":{"section":null},"request_id_sha256":null,"results":["f-20260829-03"],"target":"f-20260829-03","v":1} -->
+
 ---
 
 ## 2026-08-29 — filed through the inbox spool
