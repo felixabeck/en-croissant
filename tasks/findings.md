@@ -17,7 +17,7 @@ Every `###` entry carries exactly one header line, immediately after its heading
 * **ID:** f-YYYYMMDD-nn · **Status:** open · **Area:** e2e-gate · **Root:** some-shared-cause · **Entry:** build · **Blocked:** none
 ```
 
-`python3 scripts/findings.py check` enforces it. This repository has no Python test suite to gate
+`./scripts/findings.py check` enforces it. This repository has no Python test suite to gate
 that check from, so it is run directly — by `$push` on any diff touching `tasks/`, and by any run
 that files an entry. The universal contract — field meanings, ranking rules, why grouping is
 derived — is `~/.claude/references/findings-ledger-contract.md`. Only the vocabulary below is
@@ -61,9 +61,9 @@ En Croissant's own.
   id so its transcript can be mined.
   Felix answers through `/decide`, which publishes to `tasks/findings-answers/` and is applied
   by `findings.py apply-answers` — the drain runs it between clusters, so an answer given
-  mid-run rejoins that run. `python3 scripts/findings.py decisions` lists what is waiting.
+  mid-run rejoins that run. `./scripts/findings.py decisions` lists what is waiting.
 * **Tooling areas** — the subset of the area vocabulary that is not product work. Membership
-  means `python3 scripts/findings.py list --json` reports `tooling: true` for findings in
+  means `./scripts/findings.py list --json` reports `tooling: true` for findings in
   those areas, and the drain's closed-by-tooling summary counts them. The set must stay
   non-product; adding one is a deliberate edit to the labelled token list below.
 

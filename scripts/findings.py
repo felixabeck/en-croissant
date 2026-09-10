@@ -1,5 +1,10 @@
-#!/usr/bin/env python3
-# agent-kit-sha256: df59402fa452c5febdf796df68bf834d697a813e64ff9cf2e143e9e1956f4eb5
+#!/usr/bin/env -S uv run --script
+# agent-kit-sha256: b0d69a6c4375b4f07d7c771dcce56a5dc74f90f5ad2c00e24874c4f3db1be9bb
+# /// script
+# requires-python = ">=3.14"
+# ///
+# The interpreter is declared here, not chosen by the caller.
+# ~/.claude/references/python-interpreter-contract.md is the rule and the reasoning.
 """Query and validate the findings ledger (``tasks/findings.md``).
 
 The ledger is an **append-only log**; the work queue is derived from it here. A
@@ -48,7 +53,6 @@ import itertools
 import json
 import os
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -64,10 +68,9 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 # Named so the formatter cannot rewrite them. `ruff format` at target-version py314
-# strips redundant parentheses from an explicit `except (A, B):` tuple literal, which
-# is what made the parenthesized form unkeepable here (`d-20260830-26`). A name is a
-# single expression with nothing to strip, so it survives the formatter AND parses on
-# pre-3.14 interpreters -- both halves are required for the version guard below.
+# strips redundant parentheses from an explicit `except (A, B):` tuple literal, and
+# the parenthesized form is what a pre-3.14 interpreter needs to parse this file
+# (`d-20260830-26`). A name is a single expression with nothing to strip.
 _READ_ERRORS = (OSError, UnicodeError)
 
 # Keep one failed breadcrumb report, including its final newline, within this
@@ -102,117 +105,6 @@ def _probe_git_toplevel() -> tuple[Path | None, str]:
     if not text:
         return None, err or "git rev-parse --show-toplevel returned empty"
     return Path(text), ""
-
-
-def _discover_ledger_header() -> tuple[str | None, Path | None, Path | None]:
-    """Locate a findings ledger header without using it for ledger paths.
-
-    Cwd git toplevel first (read-only); else this script's ``parents[1]`` for
-    HEADER LOOKUP ONLY, so ``--help`` preflights still fail closed on a too-old
-    interpreter inside a checkout whose header names a floor.
-
-    An absent file is not a header. A file that exists but cannot be read is
-    a malformed header and fails closed (exit 2); it must not fall through to
-    a later candidate.
-    """
-    candidates: list[tuple[Path, Path]] = []
-    cwd_root, _err = _probe_git_toplevel()
-    if cwd_root is not None:
-        candidates.append((cwd_root / "tasks" / "findings.md", cwd_root))
-    script_root = Path(__file__).resolve().parents[1]
-    script_header = script_root / "tasks" / "findings.md"
-    if all(path != script_header for path, _root in candidates):
-        candidates.append((script_header, script_root))
-    for path, root in candidates:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            continue
-        except _READ_ERRORS as exc:
-            sys.stderr.write(
-                f"findings.py cannot read the ledger header at {path}: {exc}\n"
-            )
-            raise SystemExit(2) from exc
-        if "**Area vocabulary:**" in text or "**Python floor:**" in text:
-            return text, root, path
-    return None, None, None
-
-
-_PYTHON_FLOOR_RE = re.compile(r"\*\*Python floor:\*\*\s*(?P<version>\S+)")
-_PYTHON_INTERPRETER_RE = re.compile(r"\*\*Python interpreter:\*\*\s*(?P<path>\S+)")
-
-
-def _enforce_python_floor() -> None:
-    """Exit 2 on a too-old interpreter when a ledger header names a floor.
-
-    Prints Korrigio's exact remedy strings. Never writes. Repos without the
-    header lines run on any python3. A header that exists but cannot be read,
-    or a ``**Python floor:**`` value that is not MAJOR.MINOR, fails closed
-    (exit 2) — including for ``--help``. Runs at startup, before argparse.
-    """
-    header, header_root, header_path = _discover_ledger_header()
-    if header is None:
-        return
-    header_region = header.split("### ", 1)[0]
-    floor_match = _PYTHON_FLOOR_RE.search(header_region)
-    if floor_match is None:
-        return
-    version_text = floor_match.group("version")
-    parts = version_text.split(".")
-    try:
-        floor = tuple(int(part) for part in parts[:2])
-    except ValueError:
-        floor = ()
-    if len(floor) < 2:
-        sys.stderr.write(
-            f"findings.py cannot parse **Python floor:** {version_text} in "
-            f"{header_path}\n"
-        )
-        raise SystemExit(2)
-    if sys.version_info[:2] >= floor:
-        return
-    _script = Path(__file__).resolve()
-    interpreter_match = _PYTHON_INTERPRETER_RE.search(header_region)
-    # The interpreter comes from the header only; nothing project-specific
-    # (no `backend/.venv` default) is compiled in here.
-    _venv_python: Path | None = None
-    if interpreter_match is not None:
-        named = Path(interpreter_match.group("path"))
-        _venv_python = named if named.is_absolute() else (header_root or Path()) / named
-    rerun_any = shlex.join([str(_script), *sys.argv[1:]])
-    if _venv_python is not None and _venv_python.exists():
-        _remedy = "Re-run it with the repository interpreter:\n  " + shlex.join(
-            [str(_venv_python), str(_script), *sys.argv[1:]]
-        )
-    elif _venv_python is not None:
-        _remedy = (
-            "No interpreter was found at %s.\n"
-            "Build it as the repository documents, "
-            "or re-run the command below with any Python %s+:\n"
-            "  %s" % (_venv_python, version_text, rerun_any)
-        )
-    else:
-        _remedy = "Re-run the command below with any Python %s+:\n  %s" % (
-            version_text,
-            rerun_any,
-        )
-    sys.stderr.write(
-        "findings.py requires Python %s+ and is running on Python %d.%d (%s).\n"
-        "This is this repository's requires-python floor, not a broken file.\n"
-        "%s\n"
-        % (
-            version_text,
-            sys.version_info[0],
-            sys.version_info[1],
-            sys.executable,
-            _remedy,
-        )
-    )
-    raise SystemExit(2)
-
-
-_enforce_python_floor()
-
 
 # Length is part of the cross-language protocol: `drain-findings.sh` truncates to
 # the same width. Changing it here alone renames the lock for one side only.

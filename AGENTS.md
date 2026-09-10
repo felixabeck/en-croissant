@@ -78,7 +78,7 @@ chrome (menus, dialogs, decorations) is outside both and stays Felix's.
 
 A defect you find outside your assignment is not a question for Felix and not a chat note — it goes
 on disk immediately. Write the complete `###` entry to a file with `**ID:** f-PENDING`, then run
-`python3 scripts/findings.py file <path-to-entry-file>`. Never pick an id yourself, never edit
-`tasks/findings.md` by hand. `python3 scripts/findings.py related --area <a> --file <p>` first, so
+`./scripts/findings.py file <path-to-entry-file>`. Never pick an id yourself, never edit
+`tasks/findings.md` by hand. `./scripts/findings.py related --area <a> --file <p>` first, so
 you extend an existing finding instead of filing a duplicate. The area vocabulary is a closed set in
 the ledger header. Full contract: the "Findings ledger" section of `CLAUDE.md`.

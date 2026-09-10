@@ -153,7 +153,7 @@ this line fails if those bytes have drifted from `~/Projekte/agent-kit`.
 env -u KIT_ROOT pnpm findings:kit:check
 ```
 
-`python3 scripts/findings.py check` and `pnpm findings:test` are members of the unconditional
+`./scripts/findings.py check` and `pnpm findings:test` are members of the unconditional
 contract gate. `check` validates the ledger: a malformed header or an area outside the closed
 vocabulary silently drops a finding out of the derived queue, which is exactly the loss the ledger
 exists to prevent. `tasks/findings.md` names this gate as `$push`'s job, so it runs here.

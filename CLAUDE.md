@@ -126,15 +126,15 @@ Deferred findings go on disk the moment they are found, per universal rule 4b �
 session's context, and never only into a handoff message.
 
 - The ledger is `tasks/findings.md`, an **append-only log**; the work queue is derived from it by
-  `python3 scripts/findings.py`, grouped by `Root` only; findings without a root are singletons,
+  `./scripts/findings.py`, grouped by `Root` only; findings without a root are singletons,
   ranked by relation then age. Position in the file carries no meaning.
 - **File every new finding with one command**, whether or not a drain is running. Write the complete
   `###` entry to a file with `**ID:** f-PENDING`, then run
-  `python3 scripts/findings.py file <path-to-entry-file>`. It validates, publishes atomically
+  `./scripts/findings.py file <path-to-entry-file>`. It validates, publishes atomically
   through the inbox spool `tasks/findings-inbox/`, and reports the allocated id — or, if a drain
   holds the lock, that the drain will merge it. **Never pick an id yourself and never edit
   `tasks/findings.md` by hand while a drain is running.**
-- `python3 scripts/findings.py next` picks the next cluster, `related` finds siblings before you
+- `./scripts/findings.py next` picks the next cluster, `related` finds siblings before you
   file, `decisions` lists what is parked on Felix, `drain-status` answers whether a drain is
   running (exit 0 = yes). `check` validates every header and the area vocabulary.
 - `tasks/decisions.md` records the technical calls made while working findings, so a later session
@@ -148,7 +148,7 @@ session's context, and never only into a handoff message.
   after the shebang (since 2026-09-02; the former parity-test mesh is gone); nothing
   project-specific may be added to it — project specifics live in the ledger header.
 
-CI runs `python3 scripts/findings.py check` in `.github/workflows/test.yml`. Run it directly whenever
+CI runs `./scripts/findings.py check` in `.github/workflows/test.yml`. Run it directly whenever
 a diff touches `tasks/`.
 
 ## Multi-agent coordination
