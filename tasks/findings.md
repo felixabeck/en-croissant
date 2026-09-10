@@ -5075,7 +5075,7 @@ Rejected: giving `DatabaseProgress` a better id; folding the conversion counters
 
 ### createTab seeds the tree before the workspace envelope is durable
 
-* **ID:** f-20260901-05 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260901-05 · **Status:** handled · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src/utils/tabs.ts:64-81` (`tabStorage.seed` then `setTabs` / `setActiveTab`); `src/state/workspace.ts` `createWorkspaceStorage.setItem`.
 * **Defect:** an import can persist the game tree and then fail to persist the workspace envelope (quota). The next reload reconstructs tabs from the last durable envelope, so the new game is missing and the seeded tree key is an orphan. `setItem` now catches and notifies, but the two writes are still not one commit. Related: f-20260831-17 (startup migration order; Root `-`).
 * **Why it matters:** quitting or reloading after a large import is the same quota case as d250925f; the user thinks the game opened.
