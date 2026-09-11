@@ -5674,6 +5674,13 @@ Filed rather than fixed during `d-20260901-36` because two of the three sites ar
 rule 4b routes a finding outside the loaded file set to its own run, so it gets its own cut instead
 of an appended one. `review-engine-protocol` owns both of those paths and should run over the repair.
 
+* **Handled:** 6a3a1a04 extracts `normalizeEngineOptions` to the pure `src/utils/engineOptions.ts` module and routes player configuration, interactive evaluation and report generation through it. Resource options and scalar stringification are preserved; the game-only MultiPV filter remains at its caller.
+* **Entry revalidation:** retained inline tier for the bounded extraction with the named engine-protocol lens included in push review. d-20260901-36 governs the lightweight module boundary; d-20260911-04 records the helper placement and rejected runtime-heavy import.
+* **Proof:** root and implementation leaf both ran `pnpm exec vitest run src/components/boards/playerConfig.test.ts src/components/boards/EvalListener.test.tsx src/components/panels/analysis/ReportModal.test.tsx`: 36/36 tests passed. `pnpm lint:ci` and `git diff --check` passed. The tests prove preserved behavior, not a failure on reverting equivalent duplicated code.
+* **Browser proof:** `pnpm test:e2e:container --project=board-keyboard` passed 2/2 tests; root inspected the unchanged board screenshot. No UI, IPC, native process lifecycle or GTK behavior changed.
+* **Review:** correctness, root-cause, tests, minimalism, code-quality and engine-protocol lenses all approved without findings. Plan authorship and arbitration shared one context; detection ran on the same model family as the code, in separate read-only Luna sessions. No findings were parked or newly filed. Final affected gates and ordinary push follow these pre-gate records.
+<!-- ledger-meta {"command":"annotate","effect_lines":5,"effect_sha256":"df70be24f0ed08ce04d8559cda6ff7b94b229af8239daa2c7f88145335aacc49","input_sha256":"414a122aa38bdceeba6180946a23970e9ccc25db4fa25c928eec49f208751451","kind":"mutation-receipt","operation":"f60051bf01795d639ccd52bd6ec58b19d8844fb84e81c1f056af4625f6ad3c27","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-24"],"target":"f-20260901-24","v":1} -->
+
 ---
 
 ## 2026-09-02 — filed through the inbox spool
