@@ -52,18 +52,17 @@ test("an engine player without a usable local engine is rejected, not sent to th
         engineOpponent({ engine: null }),
         engineOpponent({ engine: { type: "chessdb" } as unknown as LocalEngine }),
     ]) {
-        expect(() => toPlayerConfig(settings)).toThrow(MissingLocalEngineError);
+        let thrown: unknown;
         try {
             toPlayerConfig(settings);
         } catch (error) {
-            expect(error).toMatchObject({
-                code: "missing-local-engine",
-            });
-            expect(error).toBeInstanceOf(MissingLocalEngineError);
-            expect((error as Error).message).toBe(
-                "A local engine must be selected for an engine player",
-            );
+            thrown = error;
         }
+        expect(thrown).toBeInstanceOf(MissingLocalEngineError);
+        expect(thrown).toMatchObject({ code: "missing-local-engine" });
+        expect((thrown as Error).message).toBe(
+            "A local engine must be selected for an engine player",
+        );
     }
 });
 
