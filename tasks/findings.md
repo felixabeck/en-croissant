@@ -6199,7 +6199,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### Inside `path_authority.rs` a `VerifiedFile` can still be built from a pathname-opened descriptor
 
-* **ID:** f-20260904-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260904-06 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority.rs` — the private `mod verified`, its
   `VerifiedFile::from_resolved` constructor, `ResolvedPath`'s module-private `file` field,
   `open_engine_image` and `engine_image_reader_for`.
