@@ -5401,7 +5401,7 @@ to cross 5000 ms on a slow runner.
 
 ### The frontend coverage baselines have drifted far enough to stop constraining most areas
 
-* **ID:** f-20260901-20 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260901-20 · **Status:** handled · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
 
 `coverage-baselines.json` records what the frontend measured when it was last written; the ratchet
 in `scripts/coverage-report.mjs` then rejects any lower covered count or ratio. Tests added since
