@@ -5795,6 +5795,12 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
   out of; the design and the eight rejected scans are `d-20260903-08`.
 * **Found by:** Claude Code plan review, rounds 6-13, 2026-09-03.
 
+* **Handled:** 2026-09-11, commit `0fd2dbed`.
+  `ResolvedPath` now lives in `src-tauri/src/infra/path_authority/resolved.rs` with a private `file` field. `VerifiedFile` is minted only in nested `mint` via `from_resolved` → `take_file()`. `open_engine_image` and `prepare_download_artifact` live in `verified.rs`. Parent code cannot assign `resolved.file`; `resolved.rs` cannot call `from_resolved`.
+* **Rejected:** keeping both types in one file with a token scan (`d-20260903-08`); `pub(crate) fn from_resolved`; lifting `ResolvedPath` to `infra::resolved_path`.
+* **Proof:** `cargo test --manifest-path src-tauri/Cargo.toml --locked path_authority::` (174 passed) and `s5_staged_and_published_hash_leaves_the_guard_and_the_tokio_worker`.
+<!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"da56ce229a1f495ea29e7a87309a2e225b5350eaf02a2c9807a6c8fa8e745348","input_sha256":"db758b6e5bb464df803964e1f2ff60007409c9947386281b195d272faa7cdfd3","kind":"mutation-receipt","operation":"130a38db8eef5813873c52579fb223b6436aee2c31e4284baec21a1da4e0f85e","options":{"section":null},"request_id_sha256":null,"results":["f-20260903-02"],"target":"f-20260903-02","v":1} -->
+
 ### `issue_puzzle_download_destination_blocking` is untested, and the puzzle path cannot be unit-tested without a `Runtime` generic
 
 * **ID:** f-20260903-03 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
