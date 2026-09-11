@@ -5500,6 +5500,9 @@ has to cover the backend messages too, or it fixes one string and leaves the sur
 Run `review-error-handling` over the diff — the risk is losing the underlying cause while making the
 message presentable.
 
+* **Review repair:** review-minimalism found the new sanitized diagnostic/native logging wrapper duplicated the existing safeFailureContext and logger-rejection handling in src/utils/collectSequential.ts (confidence 95). Verdict Fix: share that implementation with gameCommandError while preserving collection cancellation and await behavior, command ownership guards, and both original and logger diagnostics. The root confirmed the two implementations before delegating repair.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8bd5b8c477949d2545ee39b73783bfd7d0d19a9421dd6a6a7d98f7db2dd527ef","input_sha256":"b450e18b11c77e5f582dcff28cbbe29a35a8d8329ee23572b4d8e81252f5867b","kind":"mutation-receipt","operation":"293916ee206e9ae6c0f91436e4e4a55d165cabcb21d810977298b15b1b5a89f9","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-21"],"target":"f-20260901-21","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
