@@ -665,10 +665,9 @@ impl PreparedArtifactActivation {
     /// any authority reference or mutex lock, and verifies descriptor identity and change stamp after reading.
     fn verify(mut self) -> Result<ContentVerifiedArtifactActivation, Error> {
         #[cfg(test)]
-        let (size, digest) =
-            sha256_open_file(self.descriptor.as_file_mut(), self.observer.as_ref())?;
+        let (size, digest) = self.descriptor.sha256(self.observer.as_ref())?;
         #[cfg(not(test))]
-        let (size, digest) = sha256_open_file(self.descriptor.as_file_mut())?;
+        let (size, digest) = self.descriptor.sha256()?;
 
         if size != self.pending.payload_size || digest != self.pending.payload_sha256 {
             return Err(Error::Conflict(
@@ -10263,7 +10262,7 @@ mod tests {
             "from_resolved",
             "into_inner",
             "as_file",
-            "as_file_mut",
+            "sha256",
             "try_clone_inner",
         ];
         assert_eq!(mint.matches("fn ").count(), mint_functions.len(), "{mint}");
@@ -10278,6 +10277,7 @@ mod tests {
         let compact_from_resolved: String = from_resolved.split_whitespace().collect();
         assert!(compact_from_resolved.contains("resolved.take_file().map(Self)"));
         assert!(!from_resolved.contains("pub(crate) fn from_resolved"));
+        assert!(!from_resolved.contains("File::open"));
 
         let take_file = body_at_indent(resolved, "fn take_file(");
         let compact_take_file: String = take_file.split_whitespace().collect();

@@ -16,8 +16,17 @@ mod mint {
             &self.0
         }
 
-        pub(in crate::infra::path_authority) fn as_file_mut(&mut self) -> &mut std::fs::File {
-            &mut self.0
+        pub(in crate::infra::path_authority) fn sha256(
+            &mut self,
+            #[cfg(test)] observer: Option<
+                &std::sync::Arc<dyn super::super::ActivationObserver + Send + Sync>,
+            >,
+        ) -> Result<(u64, String), super::super::Error> {
+            super::super::sha256_open_file(
+                &mut self.0,
+                #[cfg(test)]
+                observer,
+            )
         }
 
         #[cfg(test)]
