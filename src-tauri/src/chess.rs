@@ -519,13 +519,32 @@ fn classify_interactive_search_result(
     }
 }
 
+fn interactive_best_moves_payload(
+    process: &EngineProcess,
+    engine: &str,
+    tab: &str,
+    generation: u64,
+    best_lines: Vec<BestMoves>,
+    progress: f64,
+) -> BestMovesPayload {
+    BestMovesPayload {
+        best_lines,
+        engine: engine.to_owned(),
+        tab: tab.to_owned(),
+        fen: process.options.fen.clone(),
+        moves: process.options.moves.clone(),
+        progress,
+        generation: generation.to_string(),
+    }
+}
+
 fn emit_live_interactive_best_moves<R: tauri::Runtime>(
     supervised: &SupervisedEngine,
     app: &tauri::AppHandle<R>,
     payload: BestMovesPayload,
 ) -> Result<bool, Error> {
-    // Lock with `mark_cancelled` so stop/kill cannot return and still leave a
-    // dequeued line free to emit the cancelled generation.
+    // Publication barrier: the same lock `mark_cancelled` takes. Stop/kill
+    // cannot return while a dequeued line is still free to emit.
     supervised.try_publish(|| {
         payload.emit(app)?;
         Ok(())
@@ -576,15 +595,14 @@ async fn process_interactive_search_output<R: tauri::Runtime>(
                                 let published = emit_live_interactive_best_moves(
                                     supervised,
                                     app,
-                                    BestMovesPayload {
-                                        best_lines: set.lines.clone(),
-                                        engine: engine.to_owned(),
-                                        tab: tab.to_owned(),
-                                        fen: process.options.fen.clone(),
-                                        moves: process.options.moves.clone(),
+                                    interactive_best_moves_payload(
+                                        process,
+                                        engine,
+                                        tab,
+                                        supervised.generation,
+                                        set.lines.clone(),
                                         progress,
-                                        generation: supervised.generation.to_string(),
-                                    },
+                                    ),
                                 )?;
                                 if published {
                                     process.last_depth = set.depth;
@@ -604,15 +622,14 @@ async fn process_interactive_search_output<R: tauri::Runtime>(
                 let published = emit_live_interactive_best_moves(
                     supervised,
                     app,
-                    BestMovesPayload {
-                        best_lines: process.last_best_moves.clone(),
-                        engine: engine.to_owned(),
-                        tab: tab.to_owned(),
-                        fen: process.options.fen.clone(),
-                        moves: process.options.moves.clone(),
-                        progress: 100.0,
-                        generation: supervised.generation.to_string(),
-                    },
+                    interactive_best_moves_payload(
+                        process,
+                        engine,
+                        tab,
+                        supervised.generation,
+                        process.last_best_moves.clone(),
+                        100.0,
+                    ),
                 )?;
                 if published {
                     process.last_progress = 100.0;
@@ -2809,7 +2826,7 @@ done
     }
 
     #[test]
-    fn production_uci_paths_share_ingest_info_line() {
+    fn production_uci_paths_share_ingest_and_live_publish() {
         let source = include_str!("chess.rs");
         let production = source
             .split_once("mod tests {")
@@ -2824,6 +2841,10 @@ done
             (
                 "async fn process_interactive_search_output",
                 "emit_live_interactive_best_moves(",
+            ),
+            (
+                "async fn process_interactive_search_output",
+                "interactive_best_moves_payload(",
             ),
             ("pub async fn get_best_moves", "get_best_moves_core("),
             (

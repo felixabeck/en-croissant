@@ -2179,7 +2179,8 @@ async fn engine_actor_loop(
                 let _ = reply.send(runtime.ensure_ready().await);
             }
             EngineCommand::StartSearch { mode, reply } => {
-                let result = start_search_at_protocol_boundary(&mut runtime, &mode).await;
+                let started = runtime.start_search(&mode).await;
+                let result = recover_failed_protocol(&mut runtime, started).await;
                 let failed = result.is_err();
                 let _ = reply.send(result);
                 if failed {
@@ -2220,9 +2221,9 @@ async fn engine_actor_loop(
     }
 }
 
-/// A failed UCI stop means stdout can no longer be correlated with a request.
-/// The only safe recovery is to reap the process and permanently close this
-/// actor, never to accept another `position`/`go` on the same stream.
+/// A failed UCI stop or `go` means stdout can no longer be correlated with a
+/// request. The only safe recovery is to reap the process and permanently close
+/// this actor, never to accept another `position`/`go` on the same stream.
 async fn recover_failed_protocol<T>(
     runtime: &mut EngineRuntime,
     result: Result<T, Error>,
@@ -2241,14 +2242,6 @@ async fn recover_failed_protocol<T>(
 
 async fn stop_at_protocol_boundary(runtime: &mut EngineRuntime) -> Result<(), Error> {
     let result = runtime.stop_current().await;
-    recover_failed_protocol(runtime, result).await
-}
-
-async fn start_search_at_protocol_boundary(
-    runtime: &mut EngineRuntime,
-    mode: &GoMode,
-) -> Result<EngineRequestId, Error> {
-    let result = runtime.start_search(mode).await;
     recover_failed_protocol(runtime, result).await
 }
 
@@ -3948,6 +3941,22 @@ mod tests {
             .terminate_exact(&key, second.generation)
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn cancel_and_publish_share_the_publication_lock() {
+        let source = include_str!("process.rs");
+        let production = source
+            .split_once("mod tests {")
+            .map(|(prefix, _)| prefix)
+            .expect("test module should exist");
+        for function in ["pub fn mark_cancelled(", "pub fn try_publish<E>("] {
+            let body = crate::infra::blocking::source_scan::body_at_indent(production, function);
+            assert!(
+                body.contains(".publish"),
+                "{function} must take the publication lock"
+            );
+        }
     }
 
     #[tokio::test]
