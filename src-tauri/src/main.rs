@@ -3757,10 +3757,10 @@ mod blocking_offload_scans {
         );
         assert!(command.contains("run_native_operation("), "{command}");
         assert!(!command.contains("novelty_lookup_blocking("), "{command}");
-        let body = body_at_indent(chess, "async fn analyze_game_core(");
+        let body = body_at_indent(chess, "async fn analyze_game_core<");
         assert_offloads(
             chess,
-            "async fn analyze_game_core(",
+            "async fn analyze_game_core<",
             "novelty_lookup_blocking",
         );
         let position_loop = body_at_indent(chess, "async fn analyze_position_with_owner(");
