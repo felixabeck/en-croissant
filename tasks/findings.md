@@ -5327,6 +5327,9 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 * **Review triage (2026-09-11, error handling):** Fix — initial report resource resolution currently follows begin_progress, so a failed resolution leaves a Running progress entry. This pre-existing enclosing-path defect will be fixed by completing fallible resource preparation before creating progress, with an invalid-resource regression. No engine has spawned at this boundary.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"1f155025222f2c605a60700d7f561937e70af07532ca3e02c0f06b9ad820f1b1","input_sha256":"a987bae52fb525061fc50b8a06a1925dcb7a3b3605347c9711e56f64c25cb093","kind":"mutation-receipt","operation":"8f6757c5e289da1234320f9d7c1bb5c0a669fda38c1a51befa338024d228e680","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-18"],"target":"f-20260901-18","v":1} -->
 
+* **Review triage (2026-09-11, repaired tests):** Fix — the real-child fixtures must assert that the value actually sent by each production caller resolves to the inherited resource bytes, rather than accepting canned analysis output. Also pin multi-resource option resolution to individual provenance values, so an engine echo of one component cannot evade masking after a resolver regression. Both are proof gaps within this finding.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"2463877df6b5429a052f86bed2f6e8b505bda32dcad2585b3d4ad4d8f10506d6","input_sha256":"f0ca8583163d65bbbc76516cd7f38dc07dc8cee04b1e43a855bea5d22ec41760","kind":"mutation-receipt","operation":"73696671213d9530e3b62e54fbecd14f29dfcc7e56f09410990e320cdde105ab","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-18"],"target":"f-20260901-18","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
