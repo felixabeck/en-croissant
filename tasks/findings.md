@@ -7865,3 +7865,18 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Fix shape (candidates):** prefer the live actor when no generation is supplied; or cancel the matching admission *and* stop the actor; or require callers to pass a generation so the unscoped fallback cannot choose. Each changes which in-flight replacement survives a Stop.
 * **Related:** `f-20260904-11` (handled) is report `cancel_analysis` / exact-key cancel, not this unscoped interactive Stop. `f-20260831-19` (handled) discarded renderer stop errors; this is native generation selection. Inbox sibling: interactive `BestMovesPayload` emit after cancel.
 * **Found by:** `review-engine-protocol` lens (confidence 89) during `$push` of f-20260904-11, 2026-09-11. Pre-existing; the report-cancel diff did not change `stop_generation`.
+
+---
+
+## 2026-09-11 — filed through the inbox spool
+
+### Stop deadline resets on every UCI info line
+
+* **ID:** f-20260911-03 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs` `EngineRuntime::stop_current` — `timeout(self.deadlines.stop, self.read_line())` inside the bestmove-drain loop. Same per-line reset in `wait_for`.
+* **Defect:** an engine that keeps emitting `info` after `stop` never trips the 5s deadline, because each successful read restarts it. `stop_current` never poisons; `terminate_all` can then hit the shutdown budget and leave the child unreaped.
+* **Why it matters:** `.claude/rules/engine-lifecycle.md` — every spawn has a kill on every exit path. A Stop that cannot finish because the child talks forever is not a kill.
+* **Open question:** Is `deadlines.stop` a wall-clock budget from sending `stop`, or a per-line stall detector that may run indefinitely while `info` keeps arriving?
+* **Fix shape (candidates):** one timeout covering the whole drain; or keep per-line stall detection and add a separate wall-clock cap; or after N info lines without `bestmove`, poison. Each changes whether a slow-but-alive engine is force-killed.
+* **Related:** `f-20260911-01` (handled) closed emit-after-cancel and implicit-stop poisoning when the deadline *does* fire. This is the case where the deadline never fires. `f-20260831-20` (handled) is unbounded `child.wait()` after force-kill, a later step. `f-20260911-02` (open) is unscoped generation selection, not this timer.
+* **Found by:** `review-engine-protocol` lens during `$push` of f-20260911-01, 2026-09-11. Pre-existing; the cancel-emit diff did not change the per-line timeout.
