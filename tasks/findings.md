@@ -5767,7 +5767,7 @@ of an appended one. `review-engine-protocol` owns both of those paths and should
 
 ### Engine-image provenance is unforgeable outside `path_authority.rs` and still forgeable inside it
 
-* **ID:** f-20260903-02 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260903-02 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority.rs` — `mod verified` / `VerifiedFile`,
   `open_engine_image`, `engine_image_reader_for`, and `ResolvedPath` (fields at `:1041-1052`).
 * **Defect:** `b345ea01` split `read_engine_image` so the authority guard is no longer held across
