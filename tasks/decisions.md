@@ -2686,3 +2686,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** retain the old baseline through a reviewed revert of the refresh if this measurement is disproven; investigate any red gate rather than lowering the new baseline.
 * **Decided by:** Codex, autonomously in drain session 43916f56-0a80-46c1-8a59-e33fe7588681 under the pinned full-auto request · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"5ae1f47c5afe9e3e3990ec41bed678463fb5e60bf0d74e12a875474e33514b90","input_sha256":"c5c1be701a1a9cfe5634bd9a53419b2817df01b91bc0392c992acc522742d35a","kind":"mutation-receipt","operation":"a59e7071afb08867be7001d95f8d83b05853dabeebd77140d8c3cccecad20dd4","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20260911-03 — How are game-command failures localized without losing diagnostics?
+
+* **Governs:** f-20260901-21
+* **Question:** How should BoardGame present local validation and native command failures in the selected locale?
+* **Chosen:** A typed missing-local-engine error and a finite operation/error identity mapped through literal translation calls at render time. Both start and the adjacent move/takeback/abort/resign command catches use that shared contract. Sanitized causes go to the existing native logger, with a handled logging-failure path.
+* **Rejected:** Parsing English error messages to choose translations; rendering backend diagnostic text; translating only the local engine guard; leaving the adjacent command catch with the identical raw-message mechanism.
+* **Reason:** docs/localization.md requires literal extracted keys in every shipped locale. The native facade already normalizes errors, but its message is diagnostic text rather than localized copy. d-20260901-36 settled playerConfig extraction and pending-start cleanup, which remain intact. The finding retains Entry lens with review-error-handling; no unresolved architecture question requires build.
+* **Proof:** Focused BoardGame/playerConfig/error-mapping tests, fallback-disabled catalogue checks after extraction, and a German game-start rejection journey in the pinned Playwright container, followed by affected push gates.
+* **Reversal path:** Change the finite mapping if a future typed native contract provides actionable game-specific identities; preserve sanitized logging and current-language rendering.
+* **Decided by:** Codex drain session 43916f56-0a80-46c1-8a59-e33fe7588681 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"a71ee66660c2a14908c6a6eede210773d1c3aebc6d8081c739f938cc8ec88791","input_sha256":"3b86cb50c32e0007eca254f7647371355a46cf6130b02d8381c2fe567f5480f3","kind":"mutation-receipt","operation":"7571308a33b430169440ad8d03df0c76925f016e95cd87379d6b9f6db91d39eb","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-03"],"target":"decisions-ledger","v":1} -->
