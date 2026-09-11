@@ -525,14 +525,20 @@ impl Default for AppState {
     }
 }
 
+fn show_labeled_main_window<R: tauri::Runtime>(
+    manager: &impl tauri::Manager<R>,
+) -> Result<(), Error> {
+    manager
+        .get_webview_window("main")
+        .ok_or_else(|| Error::InvalidInput("no window labeled 'main' found".into()))?
+        .show()?;
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn close_splashscreen(window: Window) -> Result<(), Error> {
-    let main_win = window
-        .get_webview_window("main")
-        .ok_or_else(|| Error::InvalidInput("no window labeled 'main' found".into()))?;
-    main_win.show()?;
-    Ok(())
+    show_labeled_main_window(&window)
 }
 
 #[tauri::command]
@@ -4325,5 +4331,53 @@ mod blocking_offload_scans {
                 "{file}::{name} must pass the descriptor identity third: {body}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod close_splashscreen_tests {
+    use super::{show_labeled_main_window, Error};
+    use crate::error::ErrorCategory;
+
+    #[test]
+    fn missing_main_window_is_typed_invalid_input() {
+        let app = tauri::test::mock_app();
+        let error =
+            show_labeled_main_window(app.handle()).expect_err("mock app has no main window");
+        assert_eq!(error.category(), ErrorCategory::InvalidInput);
+        let payload = serde_json::to_value(&error).expect("serialize missing-window error");
+        assert_eq!(payload["tag"], "backend-error");
+        assert_eq!(payload["category"], "invalid-input");
+        assert_eq!(
+            payload["message"],
+            "Invalid input: no window labeled 'main' found"
+        );
+    }
+
+    #[test]
+    fn existing_main_window_is_shown() {
+        let app = tauri::test::mock_app();
+        tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("create labeled main window");
+        show_labeled_main_window(app.handle()).expect("show existing main window");
+    }
+
+    #[test]
+    fn show_failure_stays_an_opaque_platform_payload() {
+        let error = Error::from(tauri::Error::AssetNotFound(
+            "/private/secret-tauri-asset".into(),
+        ));
+        assert_eq!(error.category(), ErrorCategory::Platform);
+        let serialized = serde_json::to_string(&error).expect("serialize show failure");
+        assert!(
+            !serialized.contains("/private/secret-tauri-asset"),
+            "tauri Display leaked in {serialized}"
+        );
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("show failure is JSON");
+        assert_eq!(payload["tag"], "backend-error");
+        assert_eq!(payload["category"], "platform");
+        assert_eq!(payload["message"], "platform failure");
     }
 }

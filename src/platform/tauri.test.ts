@@ -381,7 +381,7 @@ describe("tauri command facade", () => {
         });
     });
 
-    test("redacts a non-command string rejection through unwrapCommand", () => {
+    test("redacts an untyped command string error through unwrapCommand", () => {
         let caught: unknown;
         try {
             unwrapCommand({
