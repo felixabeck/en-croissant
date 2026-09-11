@@ -2707,8 +2707,8 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Rejected:** Importing the runtime-heavy `src/utils/engines.ts` into player configuration, or retaining duplicate maps. No new normalization policy or optional filtering API is introduced.
 * **Reason:** The three mappings have the same contract; d-20260901-36 already establishes that the pure player configuration should not load the UI/native module graph for its tests.
 * **Reversal path:** Revisit the helper's input contract if the generated EngineOption representation changes; preserve all three caller behaviors together.
-* **Decided by:** Codex next-finding run 2026-09-11 · **Superseded-by:** -
-<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"075cba9d51d43ebf23524d1bece89f25414b9b4c351f065e4cebadf966295751","input_sha256":"4ea7011615b4398fa6f5ab0054744792d41b13efaafbb9ad2baa8f4828bc5361","kind":"mutation-receipt","operation":"04ab1f1f7236d70f5cc47e4df7015369045d5441644152b425a6326d11ec87cb","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-04"],"target":"decisions-ledger","v":1} -->
+* **Decided by:** Codex next-finding run 2026-09-11 · **Superseded-by:** d-20260911-05
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"d9c9be8ce0b6b06f324ff1f5a6d4b478ecc001b5cdfe4be39aea67804e21ddc5","input_sha256":"4ea7011615b4398fa6f5ab0054744792d41b13efaafbb9ad2baa8f4828bc5361","kind":"mutation-receipt","operation":"04ab1f1f7236d70f5cc47e4df7015369045d5441644152b425a6326d11ec87cb","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-04"],"target":"decisions-ledger","v":1} -->
 
 ### d-20260911-05 — Which engine-module location preserves the coverage contract?
 
