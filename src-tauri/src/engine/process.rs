@@ -564,6 +564,46 @@ pub struct SupervisedEngine {
     pub executable: PathRef,
     pub actor: Arc<EngineActor>,
     pub cancelled: Arc<std::sync::atomic::AtomicBool>,
+    publish: Arc<StdMutex<()>>,
+}
+
+impl SupervisedEngine {
+    pub fn new(
+        generation: u64,
+        engine_id: String,
+        executable: PathRef,
+        actor: Arc<EngineActor>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            generation,
+            engine_id,
+            executable,
+            actor,
+            cancelled,
+            publish: Arc::new(StdMutex::new(())),
+        }
+    }
+
+    pub fn mark_cancelled(&self) {
+        let _publish = self
+            .publish
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn try_publish<E>(&self, emit: impl FnOnce() -> Result<(), E>) -> Result<bool, E> {
+        let _publish = self
+            .publish
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        emit()?;
+        Ok(true)
+    }
 }
 
 #[derive(Default)]
@@ -981,6 +1021,7 @@ impl EngineSupervisor {
             return Err(reject_actor(&actor, error).await);
         }
         if let Some(previous) = self.actors.get(&key).map(|entry| entry.clone()) {
+            previous.mark_cancelled();
             let previous_actor = previous.actor.clone();
             let stop = previous_actor.stop_current().await;
             let terminate = previous_actor.terminate().await;
@@ -1010,13 +1051,13 @@ impl EngineSupervisor {
                 None
             } else {
                 let generation = admission.generation();
-                let entry = SupervisedEngine {
+                let entry = SupervisedEngine::new(
                     generation,
-                    engine_id: admission.admission.engine_id.clone(),
-                    executable: admission.admission.executable.clone(),
-                    actor: actor.clone(),
-                    cancelled: admission.admission.cancelled.clone(),
-                };
+                    admission.admission.engine_id.clone(),
+                    admission.admission.executable.clone(),
+                    actor.clone(),
+                    admission.admission.cancelled.clone(),
+                );
                 self.actors.insert(key, entry.clone());
                 self.admissions.remove_if(&admission.key, |_, current| {
                     current.generation == generation
@@ -1041,6 +1082,7 @@ impl EngineSupervisor {
         if current.generation != generation {
             return Ok(());
         }
+        current.mark_cancelled();
         let result = current.actor.terminate().await;
         self.actors.remove(key);
         result
@@ -1083,7 +1125,7 @@ impl EngineSupervisor {
         if current.generation != generation {
             return Ok(());
         }
-        current.cancelled.store(true, Ordering::SeqCst);
+        current.mark_cancelled();
         let stop = current.actor.stop_current().await;
         let terminate = current.actor.terminate().await;
         self.actors.remove(key);
@@ -1101,7 +1143,7 @@ impl EngineSupervisor {
         if current.generation != generation {
             return false;
         }
-        current.cancelled.store(true, Ordering::SeqCst);
+        current.mark_cancelled();
         true
     }
 
@@ -2137,7 +2179,13 @@ async fn engine_actor_loop(
                 let _ = reply.send(runtime.ensure_ready().await);
             }
             EngineCommand::StartSearch { mode, reply } => {
-                let _ = reply.send(runtime.start_search(&mode).await);
+                let result = start_search_at_protocol_boundary(&mut runtime, &mode).await;
+                let failed = result.is_err();
+                let _ = reply.send(result);
+                if failed {
+                    terminated = true;
+                    break;
+                }
             }
             EngineCommand::NextSearch { id, reply } => {
                 if !service_search_read(&mut runtime, id, reply, &mut rx, &mut control_rx).await {
@@ -2175,9 +2223,12 @@ async fn engine_actor_loop(
 /// A failed UCI stop means stdout can no longer be correlated with a request.
 /// The only safe recovery is to reap the process and permanently close this
 /// actor, never to accept another `position`/`go` on the same stream.
-async fn stop_at_protocol_boundary(runtime: &mut EngineRuntime) -> Result<(), Error> {
-    match runtime.stop_current().await {
-        Ok(()) => Ok(()),
+async fn recover_failed_protocol<T>(
+    runtime: &mut EngineRuntime,
+    result: Result<T, Error>,
+) -> Result<T, Error> {
+    match result {
+        Ok(value) => Ok(value),
         Err(primary) => match runtime.terminate().await {
             Ok(()) => Err(primary),
             Err(cleanup) => Err(Error::OperationAndCleanup {
@@ -2186,6 +2237,19 @@ async fn stop_at_protocol_boundary(runtime: &mut EngineRuntime) -> Result<(), Er
             }),
         },
     }
+}
+
+async fn stop_at_protocol_boundary(runtime: &mut EngineRuntime) -> Result<(), Error> {
+    let result = runtime.stop_current().await;
+    recover_failed_protocol(runtime, result).await
+}
+
+async fn start_search_at_protocol_boundary(
+    runtime: &mut EngineRuntime,
+    mode: &GoMode,
+) -> Result<EngineRequestId, Error> {
+    let result = runtime.start_search(mode).await;
+    recover_failed_protocol(runtime, result).await
 }
 
 async fn service_search_read(
@@ -2837,6 +2901,29 @@ mod tests {
         .expect("pending actor cleanup failure must carry its ownership identity");
     }
     #[tokio::test]
+    async fn start_search_stop_timeout_reaps_the_actor_instead_of_accepting_another_go() {
+        let ((actor, writes), terminated) =
+            actor_with(&[], false, Some(Duration::from_millis(200)));
+        actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        let error = actor.start_search(&GoMode::Depth(2)).await.unwrap_err();
+        assert!(matches!(
+            error,
+            Error::EngineTimeout(message) if message == "waiting for bestmove after stop"
+        ));
+        assert!(matches!(
+            actor.start_search(&GoMode::Depth(3)).await,
+            Err(Error::EngineDisconnected)
+        ));
+        let writes = writes.lock().await;
+        assert_eq!(
+            writes.iter().filter(|line| line.starts_with("go ")).count(),
+            1
+        );
+        drop(writes);
+        assert!(terminated.load(AtomicOrdering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
     async fn replacement_waits_for_old_bestmove_before_go() {
         let (actor, writes) = actor(&["bestmove e2e4"]);
         let first = actor.start_search(&GoMode::Depth(1)).await.unwrap();
@@ -3341,13 +3428,13 @@ mod tests {
         let replacement_generation = supervisor.allocate_generation().unwrap();
         supervisor.actors.insert(
             key.clone(),
-            SupervisedEngine {
-                generation: replacement_generation,
-                engine_id: "engine".into(),
-                executable: path_ref("replacement-path"),
-                actor: Arc::new(replacement_actor),
-                cancelled: Arc::new(AtomicBool::new(false)),
-            },
+            SupervisedEngine::new(
+                replacement_generation,
+                "engine".into(),
+                path_ref("replacement-path"),
+                Arc::new(replacement_actor),
+                Arc::new(AtomicBool::new(false)),
+            ),
         );
         drop(registration);
         drop(transition);
@@ -3385,13 +3472,13 @@ mod tests {
         let replacement_generation = supervisor.allocate_generation().unwrap();
         supervisor.actors.insert(
             key.clone(),
-            SupervisedEngine {
-                generation: replacement_generation,
-                engine_id: "engine".into(),
-                executable: path_ref("replacement-path"),
-                actor: Arc::new(replacement_actor),
-                cancelled: Arc::new(AtomicBool::new(false)),
-            },
+            SupervisedEngine::new(
+                replacement_generation,
+                "engine".into(),
+                path_ref("replacement-path"),
+                Arc::new(replacement_actor),
+                Arc::new(AtomicBool::new(false)),
+            ),
         );
         drop(registration);
         drop(transition);
@@ -3840,6 +3927,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replacing_a_live_actor_cancels_the_previous_generation() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let (old, _) = actor(&[]);
+        let first = supervisor.replace(key.clone(), old).await.unwrap();
+        let (replacement, _) = actor(&[]);
+        let second = supervisor.replace(key.clone(), replacement).await.unwrap();
+
+        assert_ne!(first.generation, second.generation);
+        assert!(first.cancelled.load(Ordering::SeqCst));
+        let published = first
+            .try_publish(|| -> Result<(), Error> {
+                panic!("replaced generation must not publish");
+            })
+            .unwrap();
+        assert!(!published);
+        assert!(!second.cancelled.load(Ordering::SeqCst));
+        supervisor
+            .terminate_exact(&key, second.generation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn terminate_exact_marks_the_generation_cancelled_before_reaping() {
+        let supervisor = EngineSupervisor::default();
+        let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
+        let (actor, _) = actor(&[]);
+        let supervised = supervisor.replace(key.clone(), actor).await.unwrap();
+
+        supervisor
+            .terminate_exact(&key, supervised.generation)
+            .await
+            .unwrap();
+
+        assert!(supervised.cancelled.load(Ordering::SeqCst));
+        assert!(supervisor.get_exact(&key).is_none());
+        let published = supervised
+            .try_publish(|| -> Result<(), Error> {
+                panic!("cancelled generation must not publish");
+            })
+            .unwrap();
+        assert!(!published);
+    }
+
+    #[tokio::test]
+    async fn try_publish_skips_after_mark_cancelled_without_emitting() {
+        let (actor, _) = actor(&[]);
+        let actor = Arc::new(actor);
+        let supervised = SupervisedEngine::new(
+            7,
+            "engine".into(),
+            path_ref("engine-path"),
+            actor.clone(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        supervised.mark_cancelled();
+        let published = supervised
+            .try_publish(|| -> Result<(), Error> {
+                panic!("cancelled generation must not publish");
+            })
+            .unwrap();
+        assert!(!published);
+        assert!(supervised.cancelled.load(Ordering::SeqCst));
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn terminate_exact_removes_entry_when_termination_reports_an_error() {
         let supervisor = EngineSupervisor::default();
         let key = EngineKey::new("tab".into(), "engine".into()).unwrap();
@@ -4265,15 +4420,15 @@ mod tests {
         let ((slipped, _), terminated) = actor_with(&[], false, None);
         supervisor.actors.insert(
             slipped_key.clone(),
-            SupervisedEngine {
-                generation: 99,
-                engine_id: "slipped".into(),
-                executable: PathRef {
+            SupervisedEngine::new(
+                99,
+                "slipped".into(),
+                PathRef {
                     id: "slipped-path".into(),
                 },
-                actor: Arc::new(slipped),
-                cancelled: Arc::new(AtomicBool::new(false)),
-            },
+                Arc::new(slipped),
+                Arc::new(AtomicBool::new(false)),
+            ),
         );
 
         shutdown.await.unwrap().unwrap();

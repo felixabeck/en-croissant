@@ -519,6 +519,19 @@ fn classify_interactive_search_result(
     }
 }
 
+fn emit_live_interactive_best_moves<R: tauri::Runtime>(
+    supervised: &SupervisedEngine,
+    app: &tauri::AppHandle<R>,
+    payload: BestMovesPayload,
+) -> Result<bool, Error> {
+    // Lock with `mark_cancelled` so stop/kill cannot return and still leave a
+    // dequeued line free to emit the cancelled generation.
+    supervised.try_publish(|| {
+        payload.emit(app)?;
+        Ok(())
+    })
+}
+
 async fn process_interactive_search_output<R: tauri::Runtime>(
     process: &mut EngineProcess,
     engine: &str,
@@ -531,6 +544,8 @@ async fn process_interactive_search_output<R: tauri::Runtime>(
         let Some(line) = process.next_line().await? else {
             break;
         };
+        #[cfg(test)]
+        observe_dequeued_search_line(&line);
         match parse_one(&line) {
             UciMessage::Info(attrs) => {
                 match parse_uci_attrs(attrs, &process.options.fen.parse()?, &process.options.moves)
@@ -558,19 +573,24 @@ async fn process_interactive_search_output<R: tauri::Runtime>(
                                     GoMode::Infinite => 99.99,
                                 })
                                 .clamp(0.0, 100.0);
-                                BestMovesPayload {
-                                    best_lines: set.lines.clone(),
-                                    engine: engine.to_owned(),
-                                    tab: tab.to_owned(),
-                                    fen: process.options.fen.clone(),
-                                    moves: process.options.moves.clone(),
-                                    progress,
-                                    generation: supervised.generation.to_string(),
+                                let published = emit_live_interactive_best_moves(
+                                    supervised,
+                                    app,
+                                    BestMovesPayload {
+                                        best_lines: set.lines.clone(),
+                                        engine: engine.to_owned(),
+                                        tab: tab.to_owned(),
+                                        fen: process.options.fen.clone(),
+                                        moves: process.options.moves.clone(),
+                                        progress,
+                                        generation: supervised.generation.to_string(),
+                                    },
+                                )?;
+                                if published {
+                                    process.last_depth = set.depth;
+                                    process.last_best_moves = set.lines;
+                                    process.last_progress = progress as f32;
                                 }
-                                .emit(app)?;
-                                process.last_depth = set.depth;
-                                process.last_best_moves = set.lines;
-                                process.last_progress = progress as f32;
                             }
                         }
                     }
@@ -581,17 +601,22 @@ async fn process_interactive_search_output<R: tauri::Runtime>(
                 }
             }
             UciMessage::BestMove { .. } => {
-                BestMovesPayload {
-                    best_lines: process.last_best_moves.clone(),
-                    engine: engine.to_owned(),
-                    tab: tab.to_owned(),
-                    fen: process.options.fen.clone(),
-                    moves: process.options.moves.clone(),
-                    progress: 100.0,
-                    generation: supervised.generation.to_string(),
+                let published = emit_live_interactive_best_moves(
+                    supervised,
+                    app,
+                    BestMovesPayload {
+                        best_lines: process.last_best_moves.clone(),
+                        engine: engine.to_owned(),
+                        tab: tab.to_owned(),
+                        fen: process.options.fen.clone(),
+                        moves: process.options.moves.clone(),
+                        progress: 100.0,
+                        generation: supervised.generation.to_string(),
+                    },
+                )?;
+                if published {
+                    process.last_progress = 100.0;
                 }
-                .emit(app)?;
-                process.last_progress = 100.0;
             }
             _ => {}
         }
@@ -893,7 +918,7 @@ fn ensure_analysis_owner_active(
 }
 
 #[cfg(test)]
-type AnalysisLineHook = Box<dyn FnOnce(&str)>;
+type AnalysisLineHook = Box<dyn FnMut(&str)>;
 
 #[cfg(test)]
 type AnalysisReplayPlyHook = Box<dyn FnMut(usize)>;
@@ -904,6 +929,15 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
     static ANALYSIS_REPLAY_PLY_HOOK: std::cell::RefCell<Option<AnalysisReplayPlyHook>> =
         const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn observe_dequeued_search_line(line: &str) {
+    ANALYSIS_LINE_DEQUEUED_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook(line);
+        }
+    });
 }
 
 fn collect_report_positions(
@@ -966,11 +1000,7 @@ async fn analyze_position_with_owner(
             return Err(Error::EngineDisconnected);
         };
         #[cfg(test)]
-        ANALYSIS_LINE_DEQUEUED_HOOK.with(|slot| {
-            if let Some(hook) = slot.borrow_mut().take() {
-                hook(&line);
-            }
-        });
+        observe_dequeued_search_line(&line);
         match parse_one(&line) {
             UciMessage::Info(attrs) => {
                 match parse_uci_attrs(attrs, &proc.options.fen.parse()?, moves) {
@@ -1603,15 +1633,15 @@ mod tests {
     #[tokio::test]
     async fn analysis_rechecks_owner_after_readyok_and_bestmove_dequeue() {
         let (actor, writes) = EngineActor::recording_test_actor(&["readyok"]);
-        let supervised = SupervisedEngine {
-            generation: 41,
-            engine_id: "engine".into(),
-            executable: crate::infra::path_authority::PathRef {
+        let supervised = SupervisedEngine::new(
+            41,
+            "engine".into(),
+            crate::infra::path_authority::PathRef {
                 id: "engine-path".into(),
             },
-            actor: actor.clone(),
-            cancelled: Arc::new(AtomicBool::new(false)),
-        };
+            actor.clone(),
+            Arc::new(AtomicBool::new(false)),
+        );
         let mut process = EngineProcess {
             base: actor.clone(),
             last_depth: 0,
@@ -2023,8 +2053,16 @@ done
         assert!(state.engine_supervisor.get_exact(&key).is_none());
     }
 
-    #[tokio::test]
-    async fn interactive_producer_emits_supervised_generation_for_info_and_terminal_payloads() {
+    struct InteractiveSearchProbe {
+        app: tauri::AppHandle<tauri::test::MockRuntime>,
+        emitted: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        actor: Arc<EngineActor>,
+        supervised: SupervisedEngine,
+        process: EngineProcess,
+        generation: u64,
+    }
+
+    async fn interactive_search_probe(lines: &[&str], cancelled: bool) -> InteractiveSearchProbe {
         let app = engine_test_app();
         let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
         let observed = emitted.clone();
@@ -2035,53 +2073,160 @@ done
                 .push(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap());
         });
 
-        let (actor, _) = EngineActor::recording_test_actor(&[
-            "info depth 8 multipv 1 score cp 34 nodes 100 pv e2e4",
-            "bestmove e2e4",
-        ]);
-        let request_id = actor.start_search(&GoMode::Depth(8)).await.unwrap();
+        let (actor, _) = EngineActor::recording_test_actor(lines);
+        let request_id = actor.start_search(&GoMode::Depth(16)).await.unwrap();
         let generation = 9_007_199_254_740_993;
-        let supervised = SupervisedEngine {
-            generation,
-            engine_id: "engine".into(),
-            executable: crate::infra::path_authority::PathRef {
-                id: "engine-path".into(),
-            },
+        InteractiveSearchProbe {
+            app,
+            emitted,
             actor: actor.clone(),
-            cancelled: Arc::new(AtomicBool::new(false)),
-        };
-        let mut process = EngineProcess {
-            base: actor.clone(),
-            last_depth: 0,
-            best_moves: Vec::new(),
-            last_best_moves: Vec::new(),
-            last_progress: 0.0,
-            options: EngineOptions {
-                fen: start_fen().to_string(),
-                moves: Vec::new(),
-                extra_options: Vec::new(),
+            supervised: SupervisedEngine::new(
+                generation,
+                "engine".into(),
+                crate::infra::path_authority::PathRef {
+                    id: "engine-path".into(),
+                },
+                actor.clone(),
+                Arc::new(AtomicBool::new(cancelled)),
+            ),
+            process: EngineProcess {
+                base: actor,
+                last_depth: 0,
+                best_moves: Vec::new(),
+                last_best_moves: Vec::new(),
+                last_progress: 0.0,
+                options: EngineOptions {
+                    fen: start_fen().to_string(),
+                    moves: Vec::new(),
+                    extra_options: Vec::new(),
+                },
+                resource_leases: Vec::new(),
+                go_mode: GoMode::Depth(16),
+                running: true,
+                request_id: Some(request_id),
+                real_multipv: 1,
+                start: Instant::now(),
             },
-            resource_leases: Vec::new(),
-            go_mode: GoMode::Depth(8),
-            running: true,
-            request_id: Some(request_id),
-            real_multipv: 1,
-            start: Instant::now(),
-        };
+            generation,
+        }
+    }
 
-        process_interactive_search_output(&mut process, "engine", "tab", &supervised, &app)
-            .await
-            .unwrap();
+    const INTERACTIVE_SEARCH_LINES: [&str; 2] = [
+        "info depth 8 multipv 1 score cp 34 nodes 100 pv e2e4",
+        "bestmove e2e4",
+    ];
+
+    #[tokio::test]
+    async fn interactive_producer_emits_supervised_generation_for_info_and_terminal_payloads() {
+        let mut probe = interactive_search_probe(&INTERACTIVE_SEARCH_LINES, false).await;
+
+        process_interactive_search_output(
+            &mut probe.process,
+            "engine",
+            "tab",
+            &probe.supervised,
+            &probe.app,
+        )
+        .await
+        .unwrap();
 
         {
-            let payloads = emitted.lock().unwrap();
+            let payloads = probe.emitted.lock().unwrap();
             assert_eq!(payloads.len(), 2);
-            assert_eq!(payloads[0]["progress"], 100.0);
-            assert_eq!(payloads[0]["generation"], generation.to_string());
+            assert_eq!(payloads[0]["progress"], 50.0);
+            assert_eq!(payloads[0]["generation"], probe.generation.to_string());
             assert_eq!(payloads[1]["progress"], 100.0);
-            assert_eq!(payloads[1]["generation"], generation.to_string());
+            assert_eq!(payloads[1]["generation"], probe.generation.to_string());
         }
-        actor.terminate().await.unwrap();
+        probe.actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn interactive_producer_skips_payloads_when_search_already_cancelled() {
+        let mut probe = interactive_search_probe(&INTERACTIVE_SEARCH_LINES, true).await;
+
+        process_interactive_search_output(
+            &mut probe.process,
+            "engine",
+            "tab",
+            &probe.supervised,
+            &probe.app,
+        )
+        .await
+        .unwrap();
+
+        assert!(probe.emitted.lock().unwrap().is_empty());
+        assert_eq!(probe.process.last_progress, 0.0);
+        probe.actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn interactive_producer_skips_payloads_when_cancelled_after_dequeued_info() {
+        let mut probe = interactive_search_probe(&INTERACTIVE_SEARCH_LINES, false).await;
+        let cancelled = probe.supervised.cancelled.clone();
+        ANALYSIS_LINE_DEQUEUED_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move |line| {
+                    if line.starts_with("info ") {
+                        cancelled.store(true, Ordering::SeqCst);
+                    }
+                })))
+                .is_none());
+        });
+
+        process_interactive_search_output(
+            &mut probe.process,
+            "engine",
+            "tab",
+            &probe.supervised,
+            &probe.app,
+        )
+        .await
+        .unwrap();
+
+        assert!(probe.emitted.lock().unwrap().is_empty());
+        assert_eq!(probe.process.last_progress, 0.0);
+        ANALYSIS_LINE_DEQUEUED_HOOK.with(|slot| {
+            slot.replace(None);
+        });
+        probe.actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn interactive_producer_skips_terminal_payload_when_cancelled_after_dequeued_bestmove() {
+        let mut probe = interactive_search_probe(&INTERACTIVE_SEARCH_LINES, false).await;
+        let cancelled = probe.supervised.cancelled.clone();
+        ANALYSIS_LINE_DEQUEUED_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move |line| {
+                    if matches!(parse_one(line), UciMessage::BestMove { .. }) {
+                        cancelled.store(true, Ordering::SeqCst);
+                    }
+                })))
+                .is_none());
+        });
+
+        process_interactive_search_output(
+            &mut probe.process,
+            "engine",
+            "tab",
+            &probe.supervised,
+            &probe.app,
+        )
+        .await
+        .unwrap();
+
+        {
+            let payloads = probe.emitted.lock().unwrap();
+            assert_eq!(payloads.len(), 1);
+            assert_eq!(payloads[0]["progress"], 50.0);
+            assert_eq!(payloads[0]["generation"], probe.generation.to_string());
+        }
+        assert_eq!(probe.process.last_progress, 50.0);
+        ANALYSIS_LINE_DEQUEUED_HOOK.with(|slot| {
+            slot.replace(None);
+        });
+        probe.actor.terminate().await.unwrap();
     }
 
     #[test]
@@ -2675,6 +2820,10 @@ done
             (
                 "async fn process_interactive_search_output",
                 "ingest_info_line(",
+            ),
+            (
+                "async fn process_interactive_search_output",
+                "emit_live_interactive_best_moves(",
             ),
             ("pub async fn get_best_moves", "get_best_moves_core("),
             (
