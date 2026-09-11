@@ -6292,7 +6292,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### `close_splashscreen` is the one command whose IPC error stays an untyped string
 
-* **ID:** f-20260904-08 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260904-08 · **Status:** handled · **Area:** bindings-ipc · **Root:** - · **Entry:** inline · **Blocked:** none
 * **Where:** `src-tauri/src/main.rs:410-414` — `close_splashscreen` returns `Result<(), String>` and
   builds its two failures with `ok_or_else(|| "no window labeled 'main' found".to_string())` and
   `main_win.show().map_err(|e| e.to_string())`. Renderer side: `src/bindings/generated.ts:8`
