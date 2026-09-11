@@ -5655,7 +5655,7 @@ Decisions d-20260908-06 through 09 remain the documented contracts and carry the
 
 ### The EngineOption value normalisation is written out three times
 
-* **ID:** f-20260901-24 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
+* **ID:** f-20260901-24 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** inline · **Blocked:** none
 
 The same mapping — pass a `resource` option through untouched, stringify the value of every other
 option — appears in three places:
