@@ -154,7 +154,7 @@ impl EngineProcess {
             last_index.insert(name, index);
         }
         let mut resolved_by_index: Vec<_> = resolved.into_iter().map(Some).collect();
-        let mut to_send: Vec<(String, String)> = Vec::with_capacity(first_seen.len());
+        let mut to_send = Vec::with_capacity(first_seen.len());
         let mut next_resource_leases = Vec::new();
         for name in first_seen {
             let Some(index) = last_index.get(&name).copied() else {
@@ -165,15 +165,16 @@ impl EngineProcess {
                     "resolved engine option was consumed more than once".into(),
                 ));
             };
-            to_send.push((resolved.name, resolved.value));
             next_resource_leases.append(&mut resolved.resources);
+            to_send.push(resolved);
         }
 
         let multipv = to_send
             .iter()
-            .find(|(name, _)| name == "MultiPV")
-            .map(|(_, value)| {
-                value
+            .find(|option| option.name == "MultiPV")
+            .map(|option| {
+                option
+                    .value
                     .parse::<u16>()
                     .map_err(|_| Error::InvalidInput("MultiPV must be a positive integer".into()))
             })
@@ -185,20 +186,22 @@ impl EngineProcess {
 
         self.real_multipv = multipv.min(pos.legal_moves().len() as u16);
 
-        for (name, value) in &to_send {
+        for option in &to_send {
             let current = options
                 .extra_options
                 .iter()
                 .rev()
-                .find(|option| option.name() == name);
+                .find(|configured| configured.name() == option.name);
             let previous = self
                 .options
                 .extra_options
                 .iter()
                 .rev()
-                .find(|option| option.name() == name);
-            if current != previous && name != "UCI_Chess960" {
-                self.set_option(name, value).await?;
+                .find(|configured| configured.name() == option.name);
+            if current != previous && option.name != "UCI_Chess960" {
+                self.base
+                    .set_option_with_resources(&option.name, &option.value, &option.resource_values)
+                    .await?;
             }
         }
 
@@ -633,6 +636,32 @@ pub async fn get_best_moves(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<(f32, Vec<BestMoves>)>, Error> {
+    get_best_moves_core(
+        id,
+        engine,
+        tab,
+        go_mode,
+        options,
+        generation,
+        app,
+        state.inner().clone(),
+    )
+    .await
+}
+
+// Keep the command's independently validated engine, tab and generation fields visible at this
+// internal boundary; grouping them would hide which values participate in stale-result checks.
+#[allow(clippy::too_many_arguments)]
+async fn get_best_moves_core<R: tauri::Runtime>(
+    id: String,
+    engine: EngineHandle,
+    tab: String,
+    go_mode: GoMode,
+    options: EngineOptions,
+    generation: String,
+    app: tauri::AppHandle<R>,
+    state: AppState,
+) -> Result<Option<(f32, Vec<BestMoves>)>, Error> {
     let executable_ref = engine.id.clone();
     let key = EngineKey::new(tab.clone(), id.clone())?;
     let admission = state
@@ -712,6 +741,24 @@ pub struct AnalysisOptions {
 }
 
 const REPORT_MULTIPV: u16 = 2;
+
+fn restore_inherited_resource_provenance(
+    option: &mut ResolvedEngineOption,
+    inherited_values: &HashMap<String, String>,
+    inherited_resource_values: &HashMap<String, Vec<String>>,
+) {
+    let Some(value) = inherited_values.get(&option.name) else {
+        return;
+    };
+    option.value = value.clone();
+    // The initial lease owns the child access, but the individual values remain
+    // provenance for delayed transcript echoes. Freshly resolving the same
+    // handle may produce different descriptor numbers.
+    if let Some(resource_values) = inherited_resource_values.get(&option.name) {
+        option.resource_values = resource_values.clone();
+    }
+    option.resources.clear();
+}
 
 fn prepare_report_options(
     uci_options: &[EngineOption],
@@ -934,7 +981,7 @@ async fn finish_analysis_failure<R: tauri::Runtime>(
 // Keep the command's independently validated engine, report and native-owner fields visible at
 // this internal boundary; grouping them would hide which values participate in stale-result checks.
 #[allow(clippy::too_many_arguments)]
-async fn analyze_game_core(
+async fn analyze_game_core<R: tauri::Runtime>(
     id: String,
     engine: EngineHandle,
     engine_id: String,
@@ -942,7 +989,7 @@ async fn analyze_game_core(
     options: AnalysisOptions,
     uci_options: Vec<EngineOption>,
     state: AppState,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     cancellation: CancellationToken,
 ) -> Result<Vec<MoveAnalysis>, Error> {
     if cancellation.is_cancelled() {
@@ -1002,6 +1049,10 @@ async fn analyze_game_core(
     let inherited_values: HashMap<String, String> = initial_resolved
         .iter()
         .map(|option| (option.name.clone(), option.value.clone()))
+        .collect();
+    let inherited_resource_values: HashMap<String, Vec<String>> = initial_resolved
+        .iter()
+        .map(|option| (option.name.clone(), option.resource_values.clone()))
         .collect();
     let (report_options, inherited_values) =
         prepare_report_options(&uci_options, &inherited_values);
@@ -1112,10 +1163,11 @@ async fn analyze_game_core(
             }
         };
         for option in &mut resolved {
-            if let Some(value) = inherited_values.get(&option.name) {
-                option.value = value.clone();
-                option.resources.clear();
-            }
+            restore_inherited_resource_provenance(
+                option,
+                &inherited_values,
+                &inherited_resource_values,
+            );
         }
         if let Err(error) = proc.set_options(configured_options, resolved).await {
             fail_analysis_progress!(error);
@@ -1342,7 +1394,9 @@ fn naive_eval(pos: &Chess) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use crate::engine::EngineSupervisor;
     use shakmaty::FromSetup;
+    use std::time::Duration;
     use tauri::{Listener, Manager};
 
     use super::*;
@@ -1521,6 +1575,7 @@ mod tests {
             name: name.into(),
             value: value.into(),
             resources: Vec::new(),
+            resource_values: Vec::new(),
         }
     }
 
@@ -1534,6 +1589,178 @@ mod tests {
             .mount_events(&app);
         app.manage(AppState::default());
         app.handle().clone()
+    }
+
+    #[cfg(unix)]
+    fn resource_engine_fixture() -> (
+        tempfile::TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        EngineHandle,
+        crate::infra::path_authority::EngineResourceHandle,
+    ) {
+        use crate::infra::path_authority::{EngineResourceHandleKind, PathClass};
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("resource-flow-engine.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+capture="$PWD/capture.log"
+while IFS= read -r line; do
+    case "$line" in
+        uci)
+            echo uciok
+            ;;
+        isready)
+            echo readyok
+            ;;
+        setoption\ name\ EvalFile\ value\ *)
+            value=${line#*value }
+            printf 'eval=%s\n' "$value" >> "$capture"
+            if [ "$(cat "$value" 2>/dev/null)" = "resource-bytes" ]; then
+                printf 'read=resource-bytes\n' >> "$capture"
+            else
+                printf 'read=unreadable\n' >> "$capture"
+            fi
+            child=
+            for fd in /proc/$$/fd/[0-9]*; do
+                if [ -f "$fd" ] && [ "$(cat "$fd" 2>/dev/null)" = "resource-bytes" ]; then
+                    child="/proc/self/fd/${fd##*/}"
+                    break
+                fi
+            done
+            printf 'child=%s\n' "$child" >> "$capture"
+            echo "$line"
+            ;;
+        setoption*)
+            echo "$line"
+            ;;
+        go*)
+            echo "info depth 1 multipv 1 score cp 12 nodes 1 pv e2e4"
+            echo "info depth 1 multipv 2 score cp 8 nodes 1 pv d2d4"
+            printf 'go-ready\n' >> "$capture"
+            while [ ! -f "$PWD/release" ]; do
+                sleep 0.01
+            done
+            echo "bestmove e2e4"
+            ;;
+        quit)
+            exit 0
+            ;;
+    esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let resource_path = directory.path().join("weights.nnue");
+        std::fs::write(&resource_path, b"resource-bytes").unwrap();
+
+        let mut authority =
+            PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap();
+        let engine = authority
+            .register_engine_file(&script, "resource-flow-engine")
+            .unwrap();
+        let grant = authority
+            .grant_dialog(
+                &resource_path,
+                "weights",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                std::time::Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let resource = authority
+            .promote_engine_resource(&grant, EngineResourceHandleKind::File, "weights")
+            .unwrap();
+
+        let app = engine_test_app();
+        *app.state::<AppState>().pgn_path_authority.lock().unwrap() = Some(authority);
+        (directory, app, engine, resource)
+    }
+
+    fn assert_safe_resource_logs(logs: &[EngineLog]) {
+        assert!(logs.iter().any(|entry| matches!(
+            entry,
+            EngineLog::Gui(line) if line == "setoption name EvalFile value [redacted]\n"
+        )));
+        assert!(logs.iter().any(|entry| matches!(
+            entry,
+            EngineLog::Engine(line) if line == "setoption name EvalFile value [redacted]"
+        )));
+        assert!(logs.iter().all(|entry| match entry {
+            EngineLog::Gui(line) | EngineLog::Engine(line) => {
+                !line.contains("/proc/self/fd/") && !line.contains("resource-bytes")
+            }
+            EngineLog::Truncated { .. } => true,
+        }));
+    }
+
+    fn assert_resource_wire_capture(directory: &tempfile::TempDir, expected: &str) {
+        let capture = std::fs::read_to_string(directory.path().join("capture.log")).unwrap();
+        let eval = capture
+            .lines()
+            .find_map(|line| line.strip_prefix("eval="))
+            .expect("resource engine must capture the EvalFile wire value");
+        let child = capture
+            .lines()
+            .find_map(|line| line.strip_prefix("child="))
+            .expect("resource engine must capture its inherited resource descriptor");
+        let read = capture
+            .lines()
+            .find_map(|line| line.strip_prefix("read="))
+            .expect("resource engine must capture the EvalFile read result");
+        for value in [eval, child] {
+            let descriptor = value
+                .strip_prefix("/proc/self/fd/")
+                .expect("resource option must use a procfs descriptor");
+            assert!(!descriptor.is_empty() && descriptor.bytes().all(|byte| byte.is_ascii_digit()));
+        }
+        assert_eq!(eval, child, "the wire value must be the inherited resource");
+        assert_eq!(
+            read, expected,
+            "the child must read bytes through the wire value"
+        );
+    }
+
+    async fn collect_barriered_resource_logs<T: Send>(
+        directory: &tempfile::TempDir,
+        supervisor: &Arc<EngineSupervisor>,
+        key: &EngineKey,
+        core: tokio::task::JoinHandle<T>,
+    ) -> (Vec<EngineLog>, T) {
+        let mut core = core;
+        let ready = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let capture = std::fs::read_to_string(directory.path().join("capture.log"))
+                    .unwrap_or_default();
+                if capture.lines().any(|line| line == "go-ready")
+                    && supervisor.get_exact(key).is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        if ready.is_err() {
+            let _ = std::fs::write(directory.path().join("release"), b"");
+            let _ = tokio::time::timeout(Duration::from_secs(10), &mut core).await;
+            panic!("resource engine did not reach its log barrier");
+        }
+
+        let logs_result = get_engine_logs_from_supervisor(supervisor, key).await;
+        std::fs::write(directory.path().join("release"), b"").unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(10), core)
+            .await
+            .expect("resource core cleanup must finish")
+            .expect("resource core task must finish");
+        (
+            logs_result.expect("active resource log query must succeed"),
+            result,
+        )
     }
 
     #[tokio::test]
@@ -1746,6 +1973,58 @@ mod tests {
         process.base.terminate().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn set_options_passes_resource_provenance_to_actor_logs() {
+        let resource = "/proc/self/fd/77".to_string();
+        let (actor, writes) = EngineActor::recording_test_actor(&["readyok", &resource]);
+        let mut process = EngineProcess {
+            base: actor.clone(),
+            last_depth: 0,
+            best_moves: Vec::new(),
+            last_best_moves: Vec::new(),
+            last_progress: 0.0,
+            options: EngineOptions::default(),
+            resource_leases: Vec::new(),
+            go_mode: GoMode::Infinite,
+            running: false,
+            request_id: None,
+            real_multipv: 0,
+            start: Instant::now(),
+        };
+
+        process
+            .set_options(
+                EngineOptions {
+                    fen: start_fen().to_string(),
+                    moves: Vec::new(),
+                    extra_options: vec![string_option("EvalFile", &resource)],
+                },
+                vec![ResolvedEngineOption {
+                    name: "EvalFile".into(),
+                    value: resource.clone(),
+                    resources: Vec::new(),
+                    resource_values: vec![resource.clone()],
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            actor.next_configuration_line().await.unwrap(),
+            Some(resource.clone())
+        );
+        assert!(writes
+            .lock()
+            .await
+            .iter()
+            .any(|line| line == &format!("setoption name EvalFile value {resource}")));
+        let logs = actor.logs().await.unwrap();
+        assert!(logs.iter().all(|entry| match entry {
+            EngineLog::Gui(line) | EngineLog::Engine(line) => !line.contains(&resource),
+            EngineLog::Truncated { .. } => true,
+        }));
+        actor.terminate().await.unwrap();
+    }
+
     #[test]
     fn report_option_prep_collapses_and_forces_multipv_on_both_sides() {
         let originals = vec![string_option("MultiPV", "2"), string_option("MultiPV", "4")];
@@ -1758,6 +2037,122 @@ mod tests {
             vec![string_option("MultiPV", &REPORT_MULTIPV.to_string())]
         );
         assert_eq!(inherited.get("MultiPV"), Some(&REPORT_MULTIPV.to_string()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn report_core_restores_child_resource_provenance_after_fresh_resolution() {
+        let (_directory, app, engine, resource) = resource_engine_fixture();
+        let option = EngineOption::Resource {
+            name: "EvalFile".into(),
+            resources: vec![resource.clone()],
+        };
+
+        // Each resolution owns a new descriptor. The report path must keep the
+        // descriptor inherited by the already-running child when it re-resolves
+        // the same opaque handle for a report position.
+        let (initial, refreshed) = {
+            let state = app.state::<AppState>();
+            let mut authority = state.pgn_path_authority.lock().unwrap();
+            let authority = authority.as_mut().unwrap();
+            let initial_option = resolve_engine_options(authority, std::slice::from_ref(&option))
+                .unwrap()
+                .pop()
+                .unwrap();
+            let initial = initial_option.resource_values[0].clone();
+            let refreshed_option = resolve_engine_options(authority, std::slice::from_ref(&option))
+                .unwrap()
+                .pop()
+                .unwrap();
+            let refreshed = refreshed_option.resource_values[0].clone();
+            (initial, refreshed)
+        };
+        assert_ne!(initial, refreshed);
+
+        let state = app.state::<AppState>().inner().clone();
+        let supervisor = state.engine_supervisor.clone();
+        let app_for_core = app.clone();
+        let core = tokio::spawn(async move {
+            analyze_game_core(
+                "report-resource".into(),
+                engine,
+                "report-resource-engine".into(),
+                GoMode::Depth(1),
+                AnalysisOptions {
+                    fen: start_fen().to_string(),
+                    moves: Vec::new(),
+                    annotate_novelties: false,
+                    reference_db: None,
+                    reversed: false,
+                },
+                vec![option],
+                state,
+                app_for_core,
+                CancellationToken::new(),
+            )
+            .await
+        });
+        let key = EngineKey::new("analysis".into(), "report-resource".into()).unwrap();
+        let (logs, result) =
+            collect_barriered_resource_logs(&_directory, &supervisor, &key, core).await;
+        let result = result.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].best.len(), 2);
+        assert_safe_resource_logs(&logs);
+        assert!(supervisor.get_exact(&key).is_none());
+        assert_resource_wire_capture(&_directory, "resource-bytes");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn get_best_moves_core_wires_resource_options_through_production_flow() {
+        let (_directory, app, engine, resource) = resource_engine_fixture();
+        let state = app.state::<AppState>();
+        let key = EngineKey::new(
+            "interactive-resource".into(),
+            "interactive-resource-engine".into(),
+        )
+        .unwrap();
+        let generation = state
+            .engine_supervisor
+            .prepare_engine_search(key, "interactive-resource-engine".into(), engine.id.clone())
+            .await
+            .unwrap();
+        let supervisor = state.engine_supervisor.clone();
+        let app_for_core = app.clone();
+        let state_for_core = state.inner().clone();
+        let core = tokio::spawn(async move {
+            get_best_moves_core(
+                "interactive-resource-engine".into(),
+                engine,
+                "interactive-resource".into(),
+                GoMode::Depth(1),
+                EngineOptions {
+                    fen: start_fen().to_string(),
+                    moves: Vec::new(),
+                    extra_options: vec![EngineOption::Resource {
+                        name: "EvalFile".into(),
+                        resources: vec![resource],
+                    }],
+                },
+                generation,
+                app_for_core,
+                state_for_core,
+            )
+            .await
+        });
+        let key = EngineKey::new(
+            "interactive-resource".into(),
+            "interactive-resource-engine".into(),
+        )
+        .unwrap();
+        let (logs, result) =
+            collect_barriered_resource_logs(&_directory, &supervisor, &key, core).await;
+        let result = result.unwrap();
+        assert!(result.is_none());
+        assert_safe_resource_logs(&logs);
+        assert!(supervisor.get_exact(&key).is_none());
+        assert_resource_wire_capture(&_directory, "resource-bytes");
     }
 
     #[tokio::test]
@@ -1860,9 +2255,11 @@ mod tests {
             .min()
             .unwrap_or(suffix.len());
             let body = &suffix[..end];
-            assert!(body.contains("EngineProcess::new("));
-            assert!(!body.contains("spawn_initialized"));
-            assert!(!body.contains(".replace_handle("));
+            if function == "pub async fn get_best_moves" {
+                assert!(body.contains("get_best_moves_core("));
+            } else {
+                assert!(body.contains("analyze_game_core("));
+            }
         }
     }
 
@@ -2054,13 +2451,14 @@ mod tests {
                 "async fn process_interactive_search_output",
                 "ingest_info_line(",
             ),
+            ("pub async fn get_best_moves", "get_best_moves_core("),
             (
-                "pub async fn get_best_moves",
+                "async fn get_best_moves_core<",
                 "process_interactive_search_output(",
             ),
             ("pub async fn analyze_game(", "analyze_game_core("),
             (
-                "async fn analyze_game_core(",
+                "async fn analyze_game_core<",
                 "analyze_position_with_owner(",
             ),
             ("async fn analyze_position_with_owner(", "ingest_info_line("),

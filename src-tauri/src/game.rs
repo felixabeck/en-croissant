@@ -1043,7 +1043,13 @@ async fn spawn_configured_game_engine(
             engine.init_uci().await?;
             for option in resolved {
                 if option.name != "UCI_Chess960" {
-                    engine.set_option(&option.name, &option.value).await?;
+                    engine
+                        .set_option_with_resources(
+                            &option.name,
+                            &option.value,
+                            &option.resource_values,
+                        )
+                        .await?;
                 }
             }
             engine
@@ -3337,6 +3343,164 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn game_engine_initialization_passes_resource_provenance_to_actor_logs() {
+        use crate::infra::path_authority::{EngineResourceHandleKind, PathClass};
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("resource-logging-engine.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+capture="$PWD/capture.log"
+while IFS= read -r line; do
+    case "$line" in
+        uci)
+            echo uciok
+            ;;
+        isready)
+            echo readyok
+            ;;
+        setoption\ name\ EvalFile\ value\ *)
+            value=${line#*value }
+            printf 'eval=%s\n' "$value" >> "$capture"
+            if [ "$(cat "$value" 2>/dev/null)" = "weights" ]; then
+                printf 'read=weights\n' >> "$capture"
+            else
+                printf 'read=unreadable\n' >> "$capture"
+            fi
+            child=
+            for fd in /proc/$$/fd/[0-9]*; do
+                if [ -f "$fd" ] && [ "$(cat "$fd" 2>/dev/null)" = "weights" ]; then
+                    child="/proc/self/fd/${fd##*/}"
+                    break
+                fi
+            done
+            printf 'child=%s\n' "$child" >> "$capture"
+            echo "$line"
+            ;;
+        setoption*)
+            echo "$line"
+            ;;
+        quit)
+            exit 0
+            ;;
+    esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let resource_path = directory.path().join("weights.nnue");
+        std::fs::write(&resource_path, b"weights").unwrap();
+        let authority = std::sync::Mutex::new(Some(
+            PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap(),
+        ));
+        let resource_handle = {
+            let mut authority = authority.lock().unwrap();
+            let authority = authority.as_mut().unwrap();
+            let grant = authority
+                .grant_dialog(
+                    &resource_path,
+                    "weights",
+                    PathClass::SingleDialogGrant,
+                    PathOperation::EngineResourceRead,
+                    Duration::from_secs(30),
+                    1,
+                )
+                .unwrap();
+            authority
+                .promote_engine_resource(&grant, EngineResourceHandleKind::File, "weights")
+                .unwrap()
+        };
+        let executable = EngineExecutable::test_fixture(
+            std::fs::File::open(&script).unwrap(),
+            directory.path().to_path_buf(),
+            Vec::new(),
+        );
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = game_side_engine_key("resource-game", 1, "white", "resource-engine").unwrap();
+        let registered = spawn_configured_game_engine(
+            GameEngineRegistration {
+                supervisor: supervisor.clone(),
+                key: key.clone(),
+                engine_id: "resource-engine".into(),
+                executable_ref: crate::infra::path_authority::PathRef {
+                    id: "resource-executable".into(),
+                },
+            },
+            executable,
+            &[EngineOption::Resource {
+                name: "EvalFile".into(),
+                resources: vec![resource_handle],
+            }],
+            &authority,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let manager = GameManager::new();
+        let mut controller =
+            GameController::new("resource-game".into(), 1, human_config()).unwrap();
+        controller.white_engine = Some(registered.clone());
+        let controller = Arc::new(RwLock::new(controller));
+        let (shutdown, _) = watch::channel(false);
+        manager.games.insert(
+            "resource-game".into(),
+            Arc::new(LiveSession {
+                session: 1,
+                controller,
+                shutdown,
+                join: std::sync::Mutex::new(None),
+                engine_supervisor: supervisor.clone(),
+            }),
+        );
+        let logs = manager
+            .get_engine_logs("resource-game", 1, "white")
+            .await
+            .unwrap();
+        assert!(logs.iter().any(|entry| matches!(
+            entry,
+            EngineLog::Engine(line) if line == "setoption name EvalFile value [redacted]"
+        )));
+        assert!(logs.iter().all(|entry| match entry {
+            EngineLog::Gui(line) | EngineLog::Engine(line) => !line.contains("/proc/self/fd/"),
+            EngineLog::Truncated { .. } => true,
+        }));
+        let capture = std::fs::read_to_string(directory.path().join("capture.log")).unwrap();
+        let eval = capture
+            .lines()
+            .find_map(|line| line.strip_prefix("eval="))
+            .expect("resource engine must capture the EvalFile wire value");
+        let child = capture
+            .lines()
+            .find_map(|line| line.strip_prefix("child="))
+            .expect("resource engine must capture its inherited resource descriptor");
+        let read = capture
+            .lines()
+            .find_map(|line| line.strip_prefix("read="))
+            .expect("resource engine must capture the EvalFile read result");
+        for value in [eval, child] {
+            let descriptor = value
+                .strip_prefix("/proc/self/fd/")
+                .expect("resource option must use a procfs descriptor");
+            assert!(!descriptor.is_empty() && descriptor.bytes().all(|byte| byte.is_ascii_digit()));
+        }
+        assert_eq!(eval, child, "the wire value must be the inherited resource");
+        assert_eq!(
+            read, "weights",
+            "the child must read bytes through the wire value"
+        );
+        registered.actor.terminate().await.unwrap();
+        supervisor
+            .terminate_exact(&key, registered.generation)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

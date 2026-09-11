@@ -177,6 +177,7 @@ pub(crate) fn resolve_engine_options(
                     name: name.clone(),
                     value: value.clone(),
                     resources: Vec::new(),
+                    resource_values: Vec::new(),
                 })
             }
             EngineOption::Resource { name, resources } => {
@@ -186,15 +187,19 @@ pub(crate) fn resolve_engine_options(
                     .map(|resource| authority.engine_resource(resource))
                     .collect::<Result<Vec<_>, _>>()?;
                 let separator = if cfg!(windows) { ";" } else { ":" };
-                let value = leases
+                // Keep the individual values alongside the joined UCI value. The
+                // runtime must know their provenance explicitly so transcript
+                // redaction never has to infer whether a string is a path.
+                let resource_values = leases
                     .iter()
                     .map(crate::infra::path_authority::EngineResourceLease::uci_value)
-                    .collect::<Vec<_>>()
-                    .join(separator);
+                    .collect::<Vec<_>>();
+                let value = resource_values.join(separator);
                 Ok(ResolvedEngineOption {
                     name: name.clone(),
                     value,
                     resources: leases,
+                    resource_values,
                 })
             }
         })
@@ -207,6 +212,10 @@ pub(crate) struct ResolvedEngineOption {
     pub(crate) name: String,
     pub(crate) value: String,
     pub(crate) resources: Vec<crate::infra::path_authority::EngineResourceLease>,
+    /// The individual native values that make up `value`. These are retained
+    /// as provenance for transcript redaction even after leases move to the
+    /// child executable.
+    pub(crate) resource_values: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Type, PartialEq, Eq)]
@@ -399,6 +408,61 @@ mod tests {
             resources: vec![resource; MAX_ENGINE_OPTION_RESOURCES + 1],
         })
         .is_err());
+    }
+
+    #[test]
+    fn resolves_resource_options_with_individual_native_values() {
+        use std::path::Path;
+
+        let directory = tempfile::tempdir().unwrap();
+        let first_path = directory.path().join("first.nnue");
+        let second_path = directory.path().join("second.nnue");
+        std::fs::write(&first_path, b"first").unwrap();
+        std::fs::write(&second_path, b"second").unwrap();
+        let mut authority = crate::infra::path_authority::PathAuthority::open(
+            directory.path().join("registry.json"),
+            vec![],
+        )
+        .unwrap();
+
+        let promote = |authority: &mut crate::infra::path_authority::PathAuthority,
+                       path: &Path,
+                       display_name: &str| {
+            let grant = authority
+                .grant_dialog(
+                    path,
+                    display_name,
+                    crate::infra::path_authority::PathClass::SingleDialogGrant,
+                    crate::infra::path_authority::PathOperation::EngineResourceRead,
+                    Duration::from_secs(30),
+                    1,
+                )
+                .unwrap();
+            authority
+                .promote_engine_resource(&grant, EngineResourceHandleKind::File, display_name)
+                .unwrap()
+        };
+        let first = promote(&mut authority, &first_path, "first");
+        let second = promote(&mut authority, &second_path, "second");
+        let options = [EngineOption::Resource {
+            name: "EvalFile".into(),
+            resources: vec![first, second],
+        }];
+
+        let resolved = resolve_engine_options(&mut authority, &options).unwrap();
+        assert_eq!(resolved.len(), 1);
+        let resolved = &resolved[0];
+        assert_eq!(resolved.resources.len(), 2);
+        assert_eq!(resolved.resource_values.len(), 2);
+        let first_value = resolved.resources[0].uci_value();
+        let second_value = resolved.resources[1].uci_value();
+        assert_eq!(
+            resolved.resource_values,
+            vec![first_value.clone(), second_value.clone()]
+        );
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        assert_eq!(resolved.value, [first_value, second_value].join(separator));
+        assert_ne!(resolved.resource_values[0], resolved.value);
     }
 
     /// Path syntax must be refused for *any* option name, including proprietary

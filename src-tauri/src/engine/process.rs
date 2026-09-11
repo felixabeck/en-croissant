@@ -38,6 +38,8 @@ pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const MAX_LOG_LINES: usize = 2_000;
 const MAX_LOG_BYTES: usize = 512 * 1024;
+const MAX_RESOURCE_REDACTIONS: usize = 256;
+const MAX_RESOURCE_REDACTION_BYTES: usize = 64 * 1024;
 const MAX_ENGINE_LINE_BYTES: usize = 64 * 1024;
 const MAX_ENGINE_STDERR_BYTES: usize = 512 * 1024;
 const MAX_RETIRED_ENGINE_IDS: usize = 4096;
@@ -82,31 +84,9 @@ impl BoundedLogs {
         // A pathological single UCI line must not turn the bounded log into an
         // unbounded allocation. It is retained with a visible suffix before
         // accounting, so it does not unnecessarily evict the whole transcript.
-        let entry = match entry {
-            EngineLog::Gui(mut line) if line.len() > MAX_LOG_BYTES => {
-                truncate_utf8(&mut line, MAX_LOG_BYTES.saturating_sub(16));
-                line.push_str("… [truncated]");
-                self.truncated = true;
-                EngineLog::Gui(line)
-            }
-            EngineLog::Engine(mut line) if line.len() > MAX_LOG_BYTES => {
-                truncate_utf8(&mut line, MAX_LOG_BYTES.saturating_sub(16));
-                line.push_str("… [truncated]");
-                self.truncated = true;
-                EngineLog::Engine(line)
-            }
-            entry => entry,
-        };
-        let entry_bytes = entry.byte_len();
-        while !self.entries.is_empty()
-            && (self.entries.len() >= MAX_LOG_LINES || self.bytes + entry_bytes > MAX_LOG_BYTES)
-        {
-            if let Some(removed) = self.entries.pop_front() {
-                self.bytes = self.bytes.saturating_sub(removed.byte_len());
-                self.truncated = true;
-                self.dropped_entries = self.dropped_entries.saturating_add(1);
-            }
-        }
+        let (entry, was_truncated) = normalize_log_entry(entry);
+        self.truncated |= was_truncated;
+        self.evict_for(entry.byte_len(), true);
         self.bytes += entry.byte_len();
         self.entries.push_back(entry);
     }
@@ -121,6 +101,108 @@ impl BoundedLogs {
         }
         entries.extend(self.entries.iter().cloned());
         entries
+    }
+
+    fn redact(&mut self, values: &[String]) {
+        if values.is_empty() {
+            return;
+        }
+
+        let previous = std::mem::take(&mut self.entries);
+        let mut entries = VecDeque::with_capacity(previous.len());
+        for entry in previous {
+            let entry = match entry {
+                EngineLog::Gui(line) => EngineLog::Gui(redact_line(line, values)),
+                EngineLog::Engine(line) => EngineLog::Engine(redact_line(line, values)),
+                entry @ EngineLog::Truncated { .. } => entry,
+            };
+            let (entry, was_truncated) = normalize_log_entry(entry);
+            self.truncated |= was_truncated;
+            entries.push_back(entry);
+        }
+        self.entries = entries;
+        self.bytes = self.entries.iter().map(EngineLog::byte_len).sum();
+        self.evict_for(0, false);
+    }
+
+    fn evict_for(&mut self, incoming_bytes: usize, reserve_slot: bool) {
+        let max_entries = MAX_LOG_LINES.saturating_sub(usize::from(reserve_slot));
+        while !self.entries.is_empty()
+            && (self.entries.len() > max_entries
+                || self.bytes.saturating_add(incoming_bytes) > MAX_LOG_BYTES)
+        {
+            let Some(removed) = self.entries.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(removed.byte_len());
+            self.truncated = true;
+            self.dropped_entries = self.dropped_entries.saturating_add(1);
+        }
+    }
+}
+
+fn normalize_log_entry(entry: EngineLog) -> (EngineLog, bool) {
+    match entry {
+        EngineLog::Gui(mut line) if line.len() > MAX_LOG_BYTES => {
+            truncate_utf8(&mut line, MAX_LOG_BYTES.saturating_sub(16));
+            line.push_str("… [truncated]");
+            (EngineLog::Gui(line), true)
+        }
+        EngineLog::Engine(mut line) if line.len() > MAX_LOG_BYTES => {
+            truncate_utf8(&mut line, MAX_LOG_BYTES.saturating_sub(16));
+            line.push_str("… [truncated]");
+            (EngineLog::Engine(line), true)
+        }
+        entry => (entry, false),
+    }
+}
+
+fn redact_line(mut line: String, values: &[String]) -> String {
+    for value in values {
+        line = line.replace(value, "[redacted]");
+    }
+    line
+}
+
+#[derive(Debug, Default)]
+struct ResourceRedactions {
+    values: Vec<String>,
+    bytes: usize,
+}
+
+impl ResourceRedactions {
+    fn register(&mut self, values: &[String], logs: &mut BoundedLogs) -> Result<(), Error> {
+        let mut additions = Vec::new();
+        for value in values {
+            if !value.is_empty()
+                && !self.values.iter().any(|known| known == value)
+                && !additions.iter().any(|known| known == value)
+            {
+                additions.push(value.clone());
+            }
+        }
+        let added_bytes = additions.iter().map(String::len).sum::<usize>();
+        if self.values.len().saturating_add(additions.len()) > MAX_RESOURCE_REDACTIONS
+            || self.bytes.saturating_add(added_bytes) > MAX_RESOURCE_REDACTION_BYTES
+        {
+            return Err(Error::ResourceLimit(
+                "engine resource redaction budget exhausted".into(),
+            ));
+        }
+        if additions.is_empty() {
+            return Ok(());
+        }
+
+        self.values.extend(additions);
+        self.bytes = self.bytes.saturating_add(added_bytes);
+        self.values
+            .sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+        logs.redact(&self.values);
+        Ok(())
+    }
+
+    fn redact(&self, line: String) -> String {
+        redact_line(line, &self.values)
     }
 }
 
@@ -426,6 +508,7 @@ struct EngineRuntime {
     next_request: u64,
     deadlines: EngineDeadlines,
     logs: BoundedLogs,
+    resource_redactions: ResourceRedactions,
     /// Drain task for this runtime's child stderr. Taken and joined in
     /// `terminate`; aborted in `Drop` if the runtime is discarded first.
     stderr_drain_task: Option<tokio::task::JoinHandle<()>>,
@@ -452,6 +535,7 @@ enum EngineCommand {
     SetOption {
         name: String,
         value: String,
+        resource_values: Vec<String>,
         reply: oneshot::Sender<Result<(), Error>>,
     },
     SetPosition {
@@ -1458,6 +1542,7 @@ impl EngineRuntime {
             next_request: 0,
             deadlines,
             logs: BoundedLogs::default(),
+            resource_redactions: ResourceRedactions::default(),
             stderr_drain_task: None,
         }
     }
@@ -1558,9 +1643,16 @@ impl EngineRuntime {
         }
     }
 
-    pub async fn set_option(&mut self, name: &str, value: &str) -> Result<(), Error> {
+    async fn set_option_with_resources(
+        &mut self,
+        name: &str,
+        value: &str,
+        resource_values: &[String],
+    ) -> Result<(), Error> {
         validate_uci_text("option name", name)?;
         validate_uci_text("option value", value)?;
+        self.resource_redactions
+            .register(resource_values, &mut self.logs)?;
         self.send(&format!("setoption name {name} value {value}"))
             .await
     }
@@ -1680,7 +1772,9 @@ impl EngineRuntime {
 
     async fn send(&mut self, command: &str) -> Result<(), Error> {
         validate_uci_text("UCI command", command)?;
-        self.logs.push(EngineLog::Gui(format!("{command}\n")));
+        self.logs.push(EngineLog::Gui(
+            self.resource_redactions.redact(format!("{command}\n")),
+        ));
         timeout(self.deadlines.readyok, self.io.write_line(command))
             .await
             .map_err(|_| Error::EngineTimeout("writing engine command".into()))?
@@ -1694,7 +1788,9 @@ impl EngineRuntime {
                     "engine emitted a line larger than {MAX_ENGINE_LINE_BYTES} bytes"
                 )));
             }
-            self.logs.push(EngineLog::Engine(line.clone()));
+            self.logs.push(EngineLog::Engine(
+                self.resource_redactions.redact(line.clone()),
+            ));
         }
         Ok(line)
     }
@@ -1853,11 +1949,20 @@ impl EngineActor {
             .await?
     }
     pub async fn set_option(&self, name: &str, value: &str) -> Result<(), Error> {
+        self.set_option_with_resources(name, value, &[]).await
+    }
+    pub(crate) async fn set_option_with_resources(
+        &self,
+        name: &str,
+        value: &str,
+        resource_values: &[String],
+    ) -> Result<(), Error> {
         let (reply_tx, reply) = oneshot::channel();
         self.request(
             EngineCommand::SetOption {
                 name: name.into(),
                 value: value.into(),
+                resource_values: resource_values.to_vec(),
                 reply: reply_tx,
             },
             reply,
@@ -2013,8 +2118,17 @@ async fn engine_actor_loop(
                         .await,
                 );
             }
-            EngineCommand::SetOption { name, value, reply } => {
-                let _ = reply.send(runtime.set_option(&name, &value).await);
+            EngineCommand::SetOption {
+                name,
+                value,
+                resource_values,
+                reply,
+            } => {
+                let _ = reply.send(
+                    runtime
+                        .set_option_with_resources(&name, &value, &resource_values)
+                        .await,
+                );
             }
             EngineCommand::SetPosition { fen, moves, reply } => {
                 let _ = reply.send(runtime.set_position(&fen, &moves).await);
@@ -2255,7 +2369,10 @@ mod tests {
             "the visible path must really have been replaced for this test to mean anything",
         );
 
-        actor.set_option("Book", &uci_value).await.unwrap();
+        actor
+            .set_option_with_resources("Book", &uci_value, std::slice::from_ref(&uci_value))
+            .await
+            .unwrap();
         actor.ensure_ready().await.unwrap();
         let engine_lines: Vec<String> = actor
             .logs()
@@ -2275,6 +2392,10 @@ mod tests {
             !engine_lines.iter().any(|line| line == "replacement-bytes"),
             "child followed the replaced path; engine output was {engine_lines:?}",
         );
+        assert!(actor.logs().await.unwrap().iter().all(|entry| match entry {
+            EngineLog::Gui(line) | EngineLog::Engine(line) => !line.contains(&uci_value),
+            EngineLog::Truncated { .. } => true,
+        }));
         actor.terminate().await.unwrap();
     }
 
@@ -2962,6 +3083,208 @@ mod tests {
             logs.entries().first(),
             Some(EngineLog::Truncated { dropped_entries: 1 })
         ));
+    }
+
+    #[test]
+    fn resource_redactions_sanitize_retained_lines_and_platform_path_shapes() {
+        let unix = "/proc/self/fd/17".to_string();
+        let windows = r"C:\tablebases\new".to_string();
+        let multi = format!("{unix}:{windows}");
+        let mut logs = BoundedLogs::default();
+        logs.push(EngineLog::Gui(format!(
+            "setoption name Book value {multi}\n"
+        )));
+        logs.push(EngineLog::Engine(format!("echo {multi}")));
+
+        let mut redactions = ResourceRedactions::default();
+        redactions
+            .register(&[unix.clone(), windows.clone()], &mut logs)
+            .unwrap();
+
+        let entries = logs.entries();
+        assert!(entries.iter().all(|entry| match entry {
+            EngineLog::Gui(line) | EngineLog::Engine(line) => {
+                !line.contains(&unix) && !line.contains(&windows)
+            }
+            EngineLog::Truncated { .. } => true,
+        }));
+        assert_eq!(redactions.redact(multi), "[redacted]:[redacted]");
+    }
+
+    #[tokio::test]
+    async fn resource_option_redacts_both_transcript_directions_after_a_swap() {
+        let old_unix = "/proc/self/fd/17".to_string();
+        let old_unix_other = "/proc/self/fd/18".to_string();
+        let old_value = format!("{old_unix}:{old_unix_other}");
+        let new_windows = r"C:\tablebases\new".to_string();
+        let (actor, writes) = EngineActor::recording_test_actor(&[&old_value, &new_windows]);
+
+        actor
+            .set_option_with_resources("Book", &old_value, &[old_unix, old_unix_other])
+            .await
+            .unwrap();
+        actor
+            .set_option_with_resources("Book", &new_windows, std::slice::from_ref(&new_windows))
+            .await
+            .unwrap();
+        actor.set_option("Threads", "4").await.unwrap();
+
+        // The parser receives raw child lines even though the actor log is
+        // sanitized, and the wire command remains byte-for-byte unchanged.
+        assert_eq!(
+            actor.next_configuration_line().await.unwrap(),
+            Some(old_value.clone())
+        );
+        assert_eq!(
+            actor.next_configuration_line().await.unwrap(),
+            Some(new_windows.clone())
+        );
+        assert_eq!(
+            *writes.lock().await,
+            vec![
+                format!("setoption name Book value {old_value}"),
+                format!("setoption name Book value {new_windows}"),
+                "setoption name Threads value 4".into(),
+            ]
+        );
+
+        let logs = actor.logs().await.unwrap();
+        assert!(logs.iter().all(|entry| match entry {
+            EngineLog::Gui(line) | EngineLog::Engine(line) => {
+                !line.contains("/proc/self/fd/") && !line.contains(r"C:\tablebases\new")
+            }
+            EngineLog::Truncated { .. } => true,
+        }));
+        assert!(logs.iter().any(|entry| matches!(
+            entry,
+            EngineLog::Gui(line) if line == "setoption name Threads value 4\n"
+        )));
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resource_redaction_budget_fails_before_sending_a_new_value() {
+        let mut redactions = ResourceRedactions::default();
+        let mut logs = BoundedLogs::default();
+        let oversized = "x".repeat(MAX_RESOURCE_REDACTION_BYTES + 1);
+        assert!(matches!(
+            redactions.register(std::slice::from_ref(&oversized), &mut logs),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert!(logs.entries.is_empty());
+
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let io = RecordingUciIo {
+            writes: writes.clone(),
+            lines: VecDeque::new(),
+        };
+        let mut runtime = EngineRuntime::new(Box::new(io), EngineDeadlines::default());
+        for index in 0..MAX_RESOURCE_REDACTIONS {
+            let value = format!("/resource/{index}");
+            runtime
+                .set_option_with_resources("Book", &value, std::slice::from_ref(&value))
+                .await
+                .unwrap();
+        }
+        let overflow = "/resource/overflow".to_string();
+        assert!(matches!(
+            runtime
+                .set_option_with_resources("Book", &overflow, std::slice::from_ref(&overflow))
+                .await,
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_eq!(writes.lock().await.len(), MAX_RESOURCE_REDACTIONS);
+        assert!(!runtime
+            .logs
+            .entries()
+            .iter()
+            .any(|entry| matches!(entry, EngineLog::Gui(line) if line.contains(&overflow))));
+    }
+
+    #[tokio::test]
+    async fn resource_redaction_byte_budget_is_cumulative_and_deduplicated() {
+        let first = "a".repeat(30_000);
+        let second = "b".repeat(35_000);
+        let overflow = "c".repeat(1_000);
+        assert!(first.len() <= MAX_RESOURCE_REDACTION_BYTES);
+        assert!(second.len() <= MAX_RESOURCE_REDACTION_BYTES);
+        assert!(overflow.len() <= MAX_RESOURCE_REDACTION_BYTES);
+        assert!(first.len() + second.len() <= MAX_RESOURCE_REDACTION_BYTES);
+        assert!(first.len() + second.len() + overflow.len() > MAX_RESOURCE_REDACTION_BYTES);
+        let echoed = format!("echo {first}");
+        let (actor, writes) = EngineActor::recording_test_actor(&[&echoed]);
+
+        actor
+            .set_option_with_resources("Book", &first, std::slice::from_ref(&first))
+            .await
+            .unwrap();
+        // A duplicate registration must not consume another 30,000 bytes;
+        // otherwise the individually valid second value would be rejected.
+        actor
+            .set_option_with_resources("Book", &first, std::slice::from_ref(&first))
+            .await
+            .unwrap();
+        actor
+            .set_option_with_resources("Book", &second, std::slice::from_ref(&second))
+            .await
+            .unwrap();
+
+        let result = actor
+            .set_option_with_resources("Book", &overflow, std::slice::from_ref(&overflow))
+            .await;
+        assert!(matches!(result, Err(Error::ResourceLimit(_))));
+        assert_eq!(writes.lock().await.len(), 3);
+
+        // Both prior values remain known after the rejected registration, so
+        // retained commands and a delayed engine echo stay masked.
+        assert_eq!(actor.next_configuration_line().await.unwrap(), Some(echoed));
+        let logs = actor.logs().await.unwrap();
+        assert!(logs.iter().all(|entry| match entry {
+            EngineLog::Gui(line) | EngineLog::Engine(line) => {
+                !line.contains(&first) && !line.contains(&second) && !line.contains(&overflow)
+            }
+            EngineLog::Truncated { .. } => true,
+        }));
+        assert!(logs.iter().any(|entry| matches!(
+            entry,
+            EngineLog::Engine(line) if line == "echo [redacted]"
+        )));
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn overlapping_resource_redactions_are_longest_first_in_retained_and_echoed_logs() {
+        let short = "/proc/self/fd/1".to_string();
+        let long = "/proc/self/fd/10".to_string();
+        let echoed = format!("echo {long}");
+        let (actor, _) = EngineActor::recording_test_actor(&[&echoed]);
+
+        actor
+            .set_option_with_resources("Book", &short, std::slice::from_ref(&short))
+            .await
+            .unwrap();
+        actor
+            .set_option_with_resources("Book", &long, std::slice::from_ref(&long))
+            .await
+            .unwrap();
+        assert_eq!(actor.next_configuration_line().await.unwrap(), Some(echoed));
+
+        let logs = actor.logs().await.unwrap();
+        assert!(logs.iter().any(|entry| matches!(
+            entry,
+            EngineLog::Gui(line) if line == "setoption name Book value [redacted]\n"
+        )));
+        assert!(logs.iter().any(|entry| matches!(
+            entry,
+            EngineLog::Engine(line) if line == "echo [redacted]"
+        )));
+        assert!(logs.iter().all(|entry| match entry {
+            EngineLog::Gui(line) | EngineLog::Engine(line) => {
+                !line.contains(&short) && !line.contains(&long)
+            }
+            EngineLog::Truncated { .. } => true,
+        }));
+        actor.terminate().await.unwrap();
     }
 
     #[tokio::test]
