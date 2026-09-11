@@ -1,15 +1,8 @@
-import { error as logError } from "@/platform/native";
-import { normalizeError } from "@/platform/errors";
+import { safeFailureContext, logFailureSafely } from "./failureDiagnostic";
 
 function cancellation(signal?: AbortSignal): never | void {
     if (!signal?.aborted) return;
     throw new DOMException("Cancellation", "AbortError");
-}
-
-function safeFailureContext(cause: unknown) {
-    const normalized = normalizeError(cause);
-    const redactedMessage = normalizeError(new Error(normalized.message)).message;
-    return { category: normalized.category, message: redactedMessage };
 }
 
 /** Maps sequentially, retaining successful siblings while propagating owner cancellation. */
@@ -30,17 +23,11 @@ export async function collectSequential<T, R>(
             const primaryFailure = safeFailureContext(cause);
             if (primaryFailure.category === "cancelled") throw cause;
             const message = `${options.operation} item ${index} failed: ${primaryFailure.message}`;
-            await Promise.resolve()
-                .then(() => logError(message))
-                .catch((loggingCause) => {
-                    const loggerFailure = safeFailureContext(loggingCause);
-                    console.error("Sequential collection logging failed", {
-                        operation: options.operation,
-                        itemIndex: index,
-                        primaryFailure,
-                        loggerFailure,
-                    });
-                });
+            await logFailureSafely(
+                message,
+                { operation: options.operation, itemIndex: index, primaryFailure },
+                "Sequential collection logging failed",
+            );
         }
     }
     cancellation(options.signal);
