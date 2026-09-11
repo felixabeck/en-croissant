@@ -5315,6 +5315,9 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 * **Integration observation:** Report analysis re-resolves options, then replaces each UCI value with the initial child-inherited value. Redaction provenance must be replaced alongside that value, otherwise it names fresh parent descriptors and the sent child descriptor path survives masking. This is part of the same resource-transcript fix and requires a regression with differing initial/refreshed values.
 <!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"b5d85e224a93df65f73ce759fb38c40b9e344050b13cc28fe47172fc6b89db58","input_sha256":"71c368f96a4bda682206a40cda286ef3dcfb04969bb0ccfd686b7759427d7041","kind":"mutation-receipt","operation":"40b2b49590e517049654f51e83d0b9aa463375a6013854c03172048758213512","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-18"],"target":"f-20260901-18","v":1} -->
 
+* **Review triage (2026-09-11):** Fix — review-minimalism identified the one-caller EngineProcess::set_resolved_option pass-through at src-tauri/src/chess.rs:123 (confidence 93). Remove that wrapper and call the existing shared actor API directly. No contract change is required.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"483b1fd262c32c49f18e4dbf8a7eddb5de95c0c4d3297baf5d458b2ded842d63","input_sha256":"f1bd875377904d37597636d22dfd6fe940b1255ee64ea7fcbd4614ef354d4ac9","kind":"mutation-receipt","operation":"7f45381806f3e0ca7c9d7fdbfd7a5ffd663a0fbb4c991076c5329ec017edc34d","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-18"],"target":"f-20260901-18","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
