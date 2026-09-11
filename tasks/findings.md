@@ -5515,6 +5515,9 @@ message presentable.
 * **Scope:** The pinned singleton is complete. The separate i18n finding f-20260910-05 remains open at lens tier.
 <!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"face378cd7cffe197de5359f31b12d89c07f2718e28922dca395f79d85ad8969","input_sha256":"de5f1e3c00a56bedd452cd65aeb4fec6337e794f0522a432fbaf30668440902a","kind":"mutation-receipt","operation":"9a0e8f3f6d9e710242f08031d5714ed270d6a943e16a7b3a169f2c1683764f08","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-21"],"target":"f-20260901-21","v":1} -->
 
+* **Gate repair:** The full coverage gate rejects an unmapped new production helper, and adding its path would change the pinned scope. The shared failure-context and handled logging functions belong with the existing normalization/recovery functions in src/platform/errors.ts; both consumers will import them there. The temporary src/utils/failureDiagnostic.ts module is removed. Coverage configuration, floors and baselines remain unchanged. This is consolidation of error-handling ownership, not revival of the unused useOperation hook removed by d-20260831-25.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"9de4aa97e89706fe903e62a76413bb1835f07416ae652cb259ac43dacd120b8b","input_sha256":"855d8179087667db701d5ca08faa7d6962c212e03df647aaf16eed4b8f0d71f6","kind":"mutation-receipt","operation":"eb05e0fecae6f1261fcfab02225a6706f151c71f3fc16665e63bd0df54bc6b5c","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-21"],"target":"f-20260901-21","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
