@@ -5303,7 +5303,7 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 
 ### UCI resource option values put native paths into renderer logs
 
-* **ID:** f-20260901-18 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260901-18 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/engine/process.rs` log capture of `setoption` lines; `get_engine_logs` / `get_game_engine_logs`.
 * **Defect:** A renderer-supplied `EngineOption::Resource` is resolved to a backend-only path and then written as a raw UCI `setoption ... value <path>` line. On Windows that is the full native resource path. `get_engine_logs` returns it to the renderer.
 * **Why it matters:** `.claude/rules/async-resource-invariants.md` forbids moving raw backend diagnostics into the renderer. Native paths are the same class as capability contents.
