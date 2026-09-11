@@ -919,12 +919,6 @@ fn collect_report_positions(
     let mut fens: Vec<(Fen, Vec<String>, bool)> = vec![(fen, vec![], false)];
 
     for (i, m) in moves.iter().enumerate() {
-        #[cfg(test)]
-        ANALYSIS_REPLAY_PLY_HOOK.with(|slot| {
-            if let Some(hook) = slot.borrow_mut().as_mut() {
-                hook(i);
-            }
-        });
         ensure_analysis_not_cancelled(cancellation)?;
         let uci = UciMove::from_ascii(m.as_bytes())?;
         let played = uci.to_move(&chess)?;
@@ -934,6 +928,12 @@ fn collect_report_positions(
         if !chess.is_game_over() {
             let prev_eval = naive_eval(&previous_pos);
             let cur_eval = -naive_eval(&current_pos);
+            #[cfg(test)]
+            ANALYSIS_REPLAY_PLY_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().as_mut() {
+                    hook(i);
+                }
+            });
             ensure_analysis_not_cancelled(cancellation)?;
             fens.push((
                 Fen::from_position(current_pos, EnPassantMode::Legal),
@@ -1000,6 +1000,28 @@ async fn analyze_position_with_owner(
     }
     ensure_analysis_owner_active(supervised, cancellation)?;
     Ok(current_analysis)
+}
+
+async fn fail_analysis_progress_before_child<R: tauri::Runtime>(
+    progress_state: &crate::progress::ProgressStore,
+    app: &tauri::AppHandle<R>,
+    progress: &crate::progress::ProgressLease,
+    error: Error,
+) -> Error {
+    if let Err(terminal) = update_progress_with_state(
+        progress_state,
+        app,
+        progress,
+        0.0,
+        analysis_terminal_state(&error),
+    ) {
+        log::warn!(
+            "analysis terminal progress generation {} failed: {}",
+            progress.generation,
+            terminal.category()
+        );
+    }
+    error
 }
 
 async fn finish_analysis_failure<R: tauri::Runtime>(
@@ -1087,18 +1109,16 @@ async fn analyze_game_core<R: tauri::Runtime>(
         .flat_map(|option| std::mem::take(&mut option.resources))
         .collect();
 
-    // Validate all position input and acquire the progress lease before a
-    // child exists. Every path after this registration goes through the
-    // cleanup-aware failure macro below.
+    // Progress exists before a child. Failures here mark that lease cancelled or
+    // failed; the cleanup-aware macro below is only valid once an actor exists.
     if let Err(error) = ensure_analysis_not_cancelled(&cancellation) {
-        let _ = update_progress_with_state(
+        return Err(fail_analysis_progress_before_child(
             &state.progress_state,
             &app,
             &progress_lease,
-            0.0,
-            analysis_terminal_state(&error),
-        );
-        return Err(error);
+            error,
+        )
+        .await);
     }
     let admission = match state
         .engine_supervisor
@@ -1112,14 +1132,13 @@ async fn analyze_game_core<R: tauri::Runtime>(
     {
         Ok(admission) => admission,
         Err(error) => {
-            let _ = update_progress_with_state(
+            return Err(fail_analysis_progress_before_child(
                 &state.progress_state,
                 &app,
                 &progress_lease,
-                0.0,
-                analysis_terminal_state(&error),
-            );
-            return Err(error);
+                error,
+            )
+            .await);
         }
     };
     let (mut proc, supervised) = match EngineProcess::new(
@@ -1134,14 +1153,13 @@ async fn analyze_game_core<R: tauri::Runtime>(
     {
         Ok(process) => process,
         Err(error) => {
-            let _ = update_progress_with_state(
+            return Err(fail_analysis_progress_before_child(
                 &state.progress_state,
                 &app,
                 &progress_lease,
-                0.0,
-                analysis_terminal_state(&error),
-            );
-            return Err(error);
+                error,
+            )
+            .await);
         }
     };
     macro_rules! fail_analysis_progress {
@@ -1474,14 +1492,14 @@ mod tests {
         ));
 
         let during = CancellationToken::new();
-        let cancel_at_second_ply = during.clone();
-        // Cancel on the last ply so a check that only runs at the *next*
-        // iteration cannot save the test.
+        let cancel_at_last_ply = during.clone();
+        // Cancel after the last ply's naive_eval so a check that only runs at
+        // the next iteration cannot save the test.
         ANALYSIS_REPLAY_PLY_HOOK.with(|slot| {
             assert!(slot
                 .replace(Some(Box::new(move |ply| {
                     if ply == 2 {
-                        cancel_at_second_ply.cancel();
+                        cancel_at_last_ply.cancel();
                     }
                 })))
                 .is_none());
@@ -1524,6 +1542,56 @@ mod tests {
         )
         .await
         .unwrap_err();
+        assert!(matches!(error, Error::AnalysisCancelled));
+        assert!(state.progress_state.get(id).unwrap().is_none());
+        assert!(state
+            .engine_supervisor
+            .get_exact(&EngineKey::new("analysis".into(), id.into()).unwrap())
+            .is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn analyze_game_core_stops_during_replay_before_progress_or_spawn() {
+        let (_directory, app, engine, _resource) = resource_engine_fixture();
+        let state = app.state::<AppState>().inner().clone();
+        let id = "cancel-during-replay";
+        let cancellation = CancellationToken::new();
+        let cancel_at_last_ply = cancellation.clone();
+        ANALYSIS_REPLAY_PLY_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move |ply| {
+                    if ply == 2 {
+                        cancel_at_last_ply.cancel();
+                    }
+                })))
+                .is_none());
+        });
+        let error = analyze_game_core(
+            id.into(),
+            engine,
+            "cancel-during-replay-engine".into(),
+            GoMode::Depth(1),
+            AnalysisOptions {
+                fen: start_fen().to_string(),
+                moves: ["e2e4", "e7e5", "g1f3"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                annotate_novelties: false,
+                reference_db: None,
+                reversed: false,
+            },
+            Vec::new(),
+            state.clone(),
+            app.clone(),
+            cancellation,
+        )
+        .await
+        .unwrap_err();
+        ANALYSIS_REPLAY_PLY_HOOK.with(|slot| {
+            slot.replace(None);
+        });
         assert!(matches!(error, Error::AnalysisCancelled));
         assert!(state.progress_state.get(id).unwrap().is_none());
         assert!(state
