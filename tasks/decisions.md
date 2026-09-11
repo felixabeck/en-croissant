@@ -2730,3 +2730,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Rust has no parent-only-not-sibling visibility. Sibling child modules plus a nested mint module are the compiler proof that the module that can mutate `file` cannot construct `VerifiedFile`, and the module that can construct it cannot assign `file`.
 * **Decided by:** Grok, autonomously under `full auto`, drain session 67283a2f-9560-485d-9821-e4df18ffb96b · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"006a6228cf682e0f0874c303a9b224190e62bd0604a43a2ba5c25a0635f8ff9d","input_sha256":"55d465aaef9363ca704430e48724c374751ca471d48347eafcc86be8e4b9e868","kind":"mutation-receipt","operation":"70119a837e37d04d731635ee8f4a69189ea1c0a4f07ab97e7bbbbebe3d7333c1","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20260911-07 — Is the debug webview log target kept with a filter, or removed?
+
+* **Question:** Should debug builds keep `TargetKind::Webview` with a `WEBVIEW_TARGET` filter, or drop the webview sink and `attachConsole` entirely?
+* **Governs:** f-20260904-07
+* **Chosen:** drop the webview sink and `attachConsole`. Native logs go to stdout (debug) and stdout plus the log directory (release). Renderer `info`/`warn` still reach native stdout through the plugin-log command.
+* **Rejected:** keep `TargetKind::Webview` filtered to `WEBVIEW_TARGET` so JS logs echo back to DevTools. Also rejected: raise the webview level to Error — `log::error!` still carries paths (credential init).
+* **Reason:** `.claude/rules/async-resource-invariants.md` forbids moving a raw backend diagnostic into the renderer. A filter leaves the channel in place for the next author to omit. Error-only still leaks. `d-20260904-08` rejected logging native causes because this exact channel would re-open them.
+* **Decided by:** Grok, autonomously under `full auto`, drain session 8964a886-093f-4b1d-a4ba-f1a7a40ff3ce · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ddbfac5ba135261345b739c7a299549022aec4ccc16c84a47c448482cb1712de","input_sha256":"0bbc694eb0f2bc5eaa3228a151a3be6a42765e60a97e6e18988517fcb7994511","kind":"mutation-receipt","operation":"9505861de23ee90e2256b5a6e278c88539399b292a904266b446a1ca9a1d6bfb","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-07"],"target":"decisions-ledger","v":1} -->
