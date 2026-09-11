@@ -6439,6 +6439,10 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Found by:** the `review-engine-protocol` lens (confidence 88) over the cumulative diff of the
   progress-discriminator range, 2026-09-04. Pre-existing; the range did not touch `chess.rs`.
 
+* **Handled, 2026-09-11:** `73e9fc0f` observes the existing analysis `CancellationToken` through the pre-admit window. `collect_report_positions` checks before each ply and after `naive_eval`, so a last-ply cancel cannot fall out of the loop into `begin_progress`. `analyze_game_core` refuses admit after a cancelled token (progress marked Cancelled, no actor published) and refuses `Succeeded` after a late cancel. `cancel_analysis` still returns `Ok(())` for an unknown ticket (`d-20260911-08`): that is late-cancel-safe now that the reservation records intent. Rejected a second cancelled-ids set and an error on unknown tickets.
+* **Proof:** `cargo test --manifest-path src-tauri/Cargo.toml report_replay_stops` and `analyze_game_core_does_not_start_progress` passed. `review-engine-protocol` on the uncommitted diff: same-ply-inside-qsearch skipped (not the filed defect); post-progress and post-terminate observation adopted; interactive `BestMovesPayload` emit after `stop_engine` deferred to a new finding (inbox while drain holds the ledger).
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"e705e54800641db48a0bec1727c97a236e3647a6d805e87e754c8617f8b6c41c","input_sha256":"43aa29dd4374c7bebba0251a1d6c086af5391d4cf03087348b606fa72b17414e","kind":"mutation-receipt","operation":"71e2c880b397341508378570141107dcf85eedc535619492f016876815f8cefc","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-11"],"target":"f-20260904-11","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
