@@ -1,7 +1,7 @@
 import { localStorageColorSchemeManager, MantineProvider } from "@mantine/core";
 import { Notifications } from "@mantine/notifications";
 import { createRouter, RouterProvider } from "@tanstack/react-router";
-import { attachConsole, getMatches, getVersion, info, warn } from "@/platform/native";
+import { getMatches, getVersion, info, warn } from "@/platform/native";
 import { getDefaultStore, useAtomValue } from "jotai";
 import { ContextMenuProvider } from "mantine-contextmenu";
 import { useEffect, useMemo, useRef } from "react";
@@ -80,7 +80,6 @@ export function useAppStartup() {
 
     const controller = new AbortController();
     const { signal } = controller;
-    let detachFn: (() => void) | undefined;
     const startupSequence = async () => {
       try {
         await initializePathOwners().catch((error) =>
@@ -88,12 +87,6 @@ export function useAppStartup() {
         );
         if (signal.aborted) return;
 
-        detachFn = await attachConsole();
-        if (signal.aborted) {
-          detachFn();
-          detachFn = undefined;
-          return;
-        }
         info("React app started successfully");
 
         const store = getDefaultStore();
@@ -130,9 +123,6 @@ export function useAppStartup() {
 
     return () => {
       controller.abort();
-      const detach = detachFn;
-      detachFn = undefined;
-      detach?.();
     };
   }, []);
 }

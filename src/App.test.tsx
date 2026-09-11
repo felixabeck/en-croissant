@@ -110,9 +110,8 @@ function Probe() {
 /** The CLI match shape for a launch without a file argument, which is every case but one. */
 const noCliFileArgs = { args: { file: { occurrences: 0, value: "" } } };
 
-/** Wires the two native calls a startup must get past before the branch under test. */
+/** Wires the native call a startup must get past before the branch under test. */
 function mockLaunchWithoutCliFile() {
-  mocks.attachConsole.mockResolvedValue(vi.fn());
   mocks.getMatches.mockResolvedValue(noCliFileArgs);
 }
 
@@ -219,7 +218,6 @@ describe("useAppStartup", () => {
 
   test("captures the version through telemetry and logs the CLI file argument", async () => {
     storeValues.telemetryEnabled = true;
-    mocks.attachConsole.mockResolvedValue(vi.fn());
     mocks.getVersion.mockResolvedValue("1.2.3");
     mocks.getMatches.mockResolvedValue({
       args: { file: { occurrences: 1, value: "/games/opening.pgn" } },
@@ -306,7 +304,6 @@ describe("useAppStartup", () => {
 
   test("skips the reference preload when startup was cancelled before it began", async () => {
     storeValues.referenceDb = "reference.db3";
-    mocks.attachConsole.mockResolvedValue(vi.fn());
 
     let resolveMatches: (matches: {
       args: { file: { occurrences: number; value: string } };
@@ -328,28 +325,6 @@ describe("useAppStartup", () => {
     expect(mocks.closeSplashscreen).not.toHaveBeenCalled();
   });
 
-  test("detaches a console listener that arrives after cancellation", async () => {
-    const detach = vi.fn();
-    let resolveAttach: (detachFn: () => void) => void = () => undefined;
-    mocks.attachConsole.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveAttach = resolve;
-        }),
-    );
-    mocks.getMatches.mockResolvedValue(noCliFileArgs);
-
-    await act(async () => root.render(<Probe />));
-    await act(async () => root.unmount());
-    await act(async () => {
-      resolveAttach(detach);
-    });
-
-    expect(detach).toHaveBeenCalledOnce();
-    expect(mocks.getMatches).not.toHaveBeenCalled();
-    expect(mocks.closeSplashscreen).not.toHaveBeenCalled();
-  });
-
   test("stops before telemetry when startup is cancelled during reconciliation", async () => {
     let resolveOwners: () => void = () => {};
     mocks.reconcileStartupPathOwners.mockImplementation(
@@ -363,13 +338,12 @@ describe("useAppStartup", () => {
     await act(async () => root.unmount());
     await act(async () => resolveOwners());
 
-    expect(mocks.attachConsole).not.toHaveBeenCalled();
+    expect(mocks.getMatches).not.toHaveBeenCalled();
     expect(mocks.closeSplashscreen).not.toHaveBeenCalled();
   });
 
   test("does not report a start when cancellation lands while the version is read", async () => {
     storeValues.telemetryEnabled = true;
-    mocks.attachConsole.mockResolvedValue(vi.fn());
     let resolveVersion: (version: string) => void = () => undefined;
     mocks.getVersion.mockImplementation(
       () =>
@@ -391,7 +365,6 @@ describe("useAppStartup", () => {
   });
 
   test("reports unreadable CLI arguments and still finishes startup", async () => {
-    mocks.attachConsole.mockResolvedValue(vi.fn());
     mocks.getMatches.mockRejectedValue(new Error("argv unavailable"));
 
     await act(async () => root.render(<Probe />));
@@ -413,30 +386,13 @@ describe("useAppStartup", () => {
     );
   });
 
-  test("detaches the console listener when unmounted during startup", async () => {
-    const detach = vi.fn();
-    let resolveMatches: (matches: {
-      args: { file: { occurrences: number; value: string } };
-    }) => void = () => undefined;
-
-    mocks.attachConsole.mockResolvedValue(detach);
-    mocks.getMatches.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveMatches = resolve;
-        }),
-    );
+  test("does not subscribe the renderer to native log records", async () => {
+    mockLaunchWithoutCliFile();
 
     await act(async () => root.render(<Probe />));
-    expect(mocks.getMatches).toHaveBeenCalledOnce();
 
-    await act(async () => root.unmount());
-
-    expect(detach).toHaveBeenCalledOnce();
-
-    await act(async () => {
-      resolveMatches(noCliFileArgs);
-    });
+    expect(mocks.attachConsole).not.toHaveBeenCalled();
+    expect(mocks.closeSplashscreen).toHaveBeenCalledOnce();
   });
 });
 

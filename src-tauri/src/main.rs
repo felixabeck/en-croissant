@@ -1822,6 +1822,25 @@ async fn seal_and_drain_engine_image_issuances(
     Ok(())
 }
 
+/// Native log sinks. The webview is absent on purpose: a diagnostic that names a
+/// path, SQL fragment or keyring error stays on stdout (and, in release, the log
+/// directory) and is never emitted on `log://log`.
+fn native_log_targets() -> Vec<Target> {
+    #[cfg(debug_assertions)]
+    {
+        vec![Target::new(TargetKind::Stdout)]
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        vec![
+            Target::new(TargetKind::Stdout),
+            Target::new(TargetKind::LogDir {
+                file_name: Some(String::from("en-croissant.log")),
+            }),
+        ]
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let specta_builder = tauri_specta::Builder::new()
         .commands(tauri_specta::collect_commands!(
@@ -1967,17 +1986,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    #[cfg(debug_assertions)]
-    let log_targets = [TargetKind::Stdout, TargetKind::Webview];
-
-    #[cfg(not(debug_assertions))]
-    let log_targets = [
-        TargetKind::Stdout,
-        TargetKind::LogDir {
-            file_name: Some(String::from("en-croissant.log")),
-        },
-    ];
-
     // Hoisted so the credential store can be constructed with the bundle identifier below; the
     // `--config` merge that `pnpm dev` applies is already resolved in here.
     let context = tauri::generate_context!();
@@ -1987,7 +1995,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_log::Builder::default()
-                .targets(log_targets.map(Target::new))
+                .targets(native_log_targets())
                 .level(LevelFilter::Info)
                 .build(),
         )
@@ -2390,6 +2398,33 @@ mod native_window_operation_wiring_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_log_targets_never_include_the_webview() {
+        use crate::infra::blocking::source_scan::body_at_indent;
+
+        let source = include_str!("main.rs");
+        let targets = body_at_indent(source, "fn native_log_targets()");
+        assert!(
+            !targets.contains("Webview"),
+            "a path-bearing native log must not have a webview sink: {targets}"
+        );
+        assert!(targets.contains("Stdout"), "{targets}");
+        assert!(
+            targets.contains("LogDir"),
+            "release still writes the log directory: {targets}"
+        );
+
+        let main = body_at_indent(source, "fn main()");
+        assert!(
+            main.contains("native_log_targets()"),
+            "the plugin must take sinks only from native_log_targets: {main}"
+        );
+        assert!(
+            !main.contains("TargetKind::Webview"),
+            "main must not reintroduce the webview log target: {main}"
+        );
+    }
 
     #[test]
     fn documentation_url_targets_the_fork_repository() {

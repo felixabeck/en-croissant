@@ -6,7 +6,7 @@ export { getCurrentWebviewWindow, type WebviewWindow } from "@tauri-apps/api/web
 export { getCurrentWindow } from "@tauri-apps/api/window";
 export { getMatches } from "@tauri-apps/plugin-cli";
 export { ask, message } from "@tauri-apps/plugin-dialog";
-export { attachConsole, error, info, warn } from "@tauri-apps/plugin-log";
+export { error, info, warn } from "@tauri-apps/plugin-log";
 export {
     arch,
     platform,
