@@ -5311,6 +5311,10 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 * **Found by:** `review-tauri-security` over the f-20260901-06 cumulative diff, 2026-09-01. Confidence 98. Pre-existing.
 * **Lens:** `review-tauri-security`
 
+* **Entry revalidation (2026-09-11):** Retained lens. The existing shared actor transcript is the bounded repair site; d-20260911-01 settles provenance and retention. Both log command signatures remain unchanged, preserving d-20260901-32.
+* **Integration observation:** Report analysis re-resolves options, then replaces each UCI value with the initial child-inherited value. Redaction provenance must be replaced alongside that value, otherwise it names fresh parent descriptors and the sent child descriptor path survives masking. This is part of the same resource-transcript fix and requires a regression with differing initial/refreshed values.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"b5d85e224a93df65f73ce759fb38c40b9e344050b13cc28fe47172fc6b89db58","input_sha256":"71c368f96a4bda682206a40cda286ef3dcfb04969bb0ccfd686b7759427d7041","kind":"mutation-receipt","operation":"40b2b49590e517049654f51e83d0b9aa463375a6013854c03172048758213512","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-18"],"target":"f-20260901-18","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
