@@ -7835,3 +7835,28 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 * **Additional caller trace, 2026-09-10:** the Link and FEN branches in ImportModal.tsx also seed the existing tab ID inside currentTabAtom updater callbacks (around lines 174 and 194), so the same existing-owner replacement design must cover all three import forms. This is the same defect and transaction question, not a new finding. The live creation/close run leaves these branches under this entry.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"4a9e3a2a5dbcf5c0486a7372ac5113955770754b78eb089e66b5f5dffcc25b8a","input_sha256":"784c5707cd72d88a964c8b529b098b374022cd7da3430ce55b0164fd051398e0","kind":"mutation-receipt","operation":"be6cc65ee0c4407ab7d28b669d800626c3ead94a57922aa0fd8b6ea100cf9965","options":{"section":null},"request_id_sha256":null,"results":["f-20260910-09"],"target":"f-20260910-09","v":1} -->
+
+---
+
+## 2026-09-11 — filed through the inbox spool
+
+### Interactive search still emits BestMovesPayload after the search is cancelled
+
+* **ID:** f-20260911-01 · **Status:** open · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/chess.rs` `process_interactive_search_output` — the `Info` emit around the publishable-line branch and the `BestMove` emit. `classify_interactive_search_result` only rewrites the command result after the loop.
+* **Defect:** a UCI line already dequeued when `stop_engine` sets `supervised.cancelled` is still parsed and emitted as `BestMovesPayload` with the unchanged generation. `EvalListener` accepts that generation, so an in-flight `info` or `bestmove` from a search the user already stopped can land as live analysis.
+* **Why it matters:** `.claude/rules/engine-lifecycle.md` — a payload is used only when its generation still matches *and* the engine is the live search. `f-20260903-01` (handled) put generation on the payload; this is the remaining producer-side hole where a cancelled generation is still published.
+* **Fix shape:** skip emit when `supervised.cancelled` is set (and/or the operation token is cancelled), then let `classify_interactive_search_result` keep converting the command result to `Cancellation`.
+* **Related:** `f-20260903-01` and `f-20260831-09` (handled) under the same `Root`. Named here because those closures bound identity onto the payload; they did not stop a cancelled producer from emitting that identity. Sibling of `f-20260904-11` only by file; the mechanism is interactive `stop_engine`, not report `cancel_analysis`.
+* **Found by:** `review-engine-protocol` lens (confidence 93) during the f-20260904-11 lens pass, 2026-09-11. Pre-existing; the report-cancel diff did not change this loop.
+
+### Unscoped stop prefers a pending admission and leaves the live search running
+
+* **ID:** f-20260911-02 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs` `stop_generation` (`:1054-1084`) — generation is taken from `admissions` first, then `actors`.
+* **Defect:** a Stop without an explicit generation, while actor generation G1 is searching and admission G2 is pending, binds to G2, cancels only that admission, then returns `Ok(())` because `current.generation != G2`. G1 keeps searching.
+* **Why it matters:** `.claude/rules/engine-lifecycle.md` — every spawn has a kill on every exit path, and a stop of one identity must not miss the live child. The user pressed Stop on the engine that is outputting lines.
+* **Open question:** When `stop_generation` is called without an explicit generation and both a pending admission and an active actor exist for the key, which generation is stopped — the actor, the admission, or both?
+* **Fix shape (candidates):** prefer the live actor when no generation is supplied; or cancel the matching admission *and* stop the actor; or require callers to pass a generation so the unscoped fallback cannot choose. Each changes which in-flight replacement survives a Stop.
+* **Related:** `f-20260904-11` (handled) is report `cancel_analysis` / exact-key cancel, not this unscoped interactive Stop. `f-20260831-19` (handled) discarded renderer stop errors; this is native generation selection. Inbox sibling: interactive `BestMovesPayload` emit after cancel.
+* **Found by:** `review-engine-protocol` lens (confidence 89) during `$push` of f-20260904-11, 2026-09-11. Pre-existing; the report-cancel diff did not change `stop_generation`.
