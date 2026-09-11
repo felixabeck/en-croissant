@@ -5506,6 +5506,9 @@ message presentable.
 * **Review repair:** review-error-handling found command logs lacked owner/attempt identity (confidence 92). Verdict Fix: include tab and generation for starts, plus captured game/session identity for admitted commands, in sanitized native and fallback diagnostics. This makes failures from concurrent tabs and retries distinguishable without changing displayed messages or session ownership.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"cb0a37b5e27bc9eb52b7926a196ae829db8dd27294521be759487f14d2cd05f6","input_sha256":"4ee0f7577302dc61118c5c658d984e996ba8a8946ad95151fcbf20195365ba90","kind":"mutation-receipt","operation":"eda214eff097dfb3e5163257aa0dd5fc813fd992877301e6c49dbcc226550d36","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-21"],"target":"f-20260901-21","v":1} -->
 
+* **Review repair:** review-persisted-state found the new browser test's separate locale initialization could race the shared fixture's storage reset (confidence 97). Verdict Fix: pass the German locale through a fixture option and initialize storage once, preserving existing project defaults. Application persistence is unchanged.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"9e7b2a8d9ad889168a7e4eabd8c6a35afee6f1ca00c490a3257768e261f335a3","input_sha256":"df1c453cea1eda47ce785b93637ab353729c593fc04431bcd8b1252d2dcc5922","kind":"mutation-receipt","operation":"9aa3af8b43ed9929522b197efd77c8a0e04764a7ae3817e6dc72abf5061e7ce4","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-21"],"target":"f-20260901-21","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
