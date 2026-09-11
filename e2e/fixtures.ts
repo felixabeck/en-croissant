@@ -182,20 +182,22 @@ const tauriBootstrap = () => {
 };
 
 export const test = base.extend<{
+    appLocale: string | undefined;
     assertNoHorizontalOverflow: () => Promise<void>;
     assertAccessible: () => Promise<void>;
     capture: (name: string) => Promise<void>;
     emitTauriEvent: (event: TauriEvent) => Promise<void>;
     mockScenario: (scenario: MockScenario) => Promise<void>;
 }>({
-    page: async ({ page }, use, testInfo) => {
+    appLocale: [undefined, { option: true }],
+    page: async ({ page, appLocale }, use, testInfo) => {
         const failures: string[] = [];
         const allowedOrigin = new URL(
             (testInfo.project.use.baseURL as string | undefined) ?? "http://127.0.0.1:4173",
         ).origin;
         const fontScale = fontScaleByProject[testInfo.project.name] ?? 100;
         const colorScheme = testInfo.project.use.colorScheme ?? "light";
-        const locale = localeByProject[testInfo.project.name] ?? "en-US";
+        const locale = appLocale ?? localeByProject[testInfo.project.name] ?? "en-US";
 
         await page.addInitScript(tauriBootstrap);
         await page.addInitScript(

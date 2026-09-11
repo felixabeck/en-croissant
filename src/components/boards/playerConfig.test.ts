@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import type { EngineOption, GoMode } from "@/bindings";
 import type { LocalEngine } from "@/utils/engines";
 import type { OpponentSettings } from "./OpponentForm";
-import { toPlayerConfig } from "./playerConfig";
+import { MissingLocalEngineError, toPlayerConfig } from "./playerConfig";
 
 const handle = { id: { id: "engine-path-ref" }, kind: "engine" } as LocalEngine["handle"];
 
@@ -48,11 +48,23 @@ test("a human player needs no engine and keeps an explicit name", () => {
 });
 
 test("an engine player without a usable local engine is rejected, not sent to the backend", () => {
-    const message = "A local engine must be selected for an engine player";
-    expect(() => toPlayerConfig(engineOpponent({ engine: null }))).toThrow(message);
-    expect(() =>
-        toPlayerConfig(engineOpponent({ engine: { type: "chessdb" } as unknown as LocalEngine })),
-    ).toThrow(message);
+    for (const settings of [
+        engineOpponent({ engine: null }),
+        engineOpponent({ engine: { type: "chessdb" } as unknown as LocalEngine }),
+    ]) {
+        expect(() => toPlayerConfig(settings)).toThrow(MissingLocalEngineError);
+        try {
+            toPlayerConfig(settings);
+        } catch (error) {
+            expect(error).toMatchObject({
+                code: "missing-local-engine",
+            });
+            expect(error).toBeInstanceOf(MissingLocalEngineError);
+            expect((error as Error).message).toBe(
+                "A local engine must be selected for an engine player",
+            );
+        }
+    }
 });
 
 test("an engine without a name falls back to a default name", () => {

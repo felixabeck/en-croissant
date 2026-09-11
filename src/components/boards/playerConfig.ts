@@ -1,6 +1,16 @@
 import type { PlayerConfig } from "@/bindings";
 import type { OpponentSettings } from "./OpponentForm";
 
+/** A player configuration was incomplete before it could be sent to the backend. */
+export class MissingLocalEngineError extends Error {
+    readonly code = "missing-local-engine" as const;
+
+    constructor(diagnostic = "A local engine must be selected for an engine player") {
+        super(diagnostic);
+        this.name = "MissingLocalEngineError";
+    }
+}
+
 /**
  * Maps the form's opponent settings onto the backend's player contract.
  *
@@ -16,7 +26,7 @@ export function toPlayerConfig(settings: OpponentSettings): PlayerConfig {
         };
     }
     if (!settings.engine || settings.engine.type !== "local") {
-        throw new Error("A local engine must be selected for an engine player");
+        throw new MissingLocalEngineError();
     }
     return {
         type: "engine",

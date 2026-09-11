@@ -8,6 +8,7 @@ const fixtures = vi.hoisted(() => ({
   appendMove: vi.fn(),
   getGameEngineLogs: vi.fn(),
   getGameState: vi.fn(),
+  logError: vi.fn(),
   listeners: new Map<string, (event: any) => void>(),
   listenerErrors: new Map<string, (error: unknown, event: any) => void>(),
   makeGameMove: vi.fn(),
@@ -117,6 +118,7 @@ vi.mock("@/platform/tauri", async () => {
     },
   };
 });
+vi.mock("@/platform/native", () => ({ error: fixtures.logError }));
 vi.mock("@/components/files/notifyError", () => ({
   notifyListenerError: fixtures.notify,
   notifyUnlessCancelled: fixtures.notify,
@@ -397,6 +399,7 @@ beforeEach(() => {
   store.set(gamePlayer2SettingsAtom, { type: "human", name: "Bob" });
   fixtures.abortGame.mockResolvedValue(undefined);
   fixtures.getGameEngineLogs.mockResolvedValue([]);
+  fixtures.logError.mockResolvedValue(undefined);
   fixtures.getGameState.mockImplementation(async (gameId, session) => state({ gameId, session }));
   fixtures.startGame.mockImplementation(async (gameId) => state({ gameId }));
   host = document.createElement("div");
@@ -1309,21 +1312,34 @@ test.each(["takeback", "abort", "resign"] as const)(
       fixtures.resignGame.mockRejectedValueOnce(failure);
       await act(async () => button("Board.Opponent.Resign").click());
     }
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(`${command} rejected`);
+    const expectedKeys = {
+      takeback: "Board.Opponent.Error.Takeback",
+      abort: "Board.Opponent.Error.Abort",
+      resign: "Board.Opponent.Error.Resign",
+    } as const;
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(expectedKeys[command]);
+    expect(host.querySelector('[role="alert"]')?.textContent).not.toContain(`${command} rejected`);
     expect(store.get(gameIdFamily("tab-a"))).toBe(gameId);
     expect(store.get(gameSessionFamily("tab-a"))).toBe(1n);
   },
 );
 
 test("current move and recovery rejections are visible and fully handled", async () => {
-  fixtures.makeGameMove.mockRejectedValueOnce(new Error("move rejected"));
+  fixtures.makeGameMove.mockRejectedValueOnce(new Error("move rejected at /private/game.pgn"));
   fixtures.getGameState
     .mockResolvedValueOnce(state())
     .mockRejectedValueOnce(new Error("poll failed"));
   await render();
   await start();
+  const gameId = store.get(gameIdFamily("tab-a"))!;
   await act(async () => fixtures.onMove!("e2e4"));
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("move rejected");
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe("Board.Opponent.Error.Move");
+  expect(host.querySelector('[role="alert"]')?.textContent).not.toContain("move rejected");
+  expect(fixtures.logError).toHaveBeenCalledWith(
+    expect.stringContaining(
+      `game command move failed [tab=tab-a generation=1 game=${gameId} session=1]:`,
+    ),
+  );
   expect(fixtures.notify).toHaveBeenCalledWith("Common.Error", expect.any(Error));
 });
 
@@ -1724,7 +1740,7 @@ test("retained ownership blocks replacement after teardown failure and permits r
   await start();
   expect(fixtures.startGame).not.toHaveBeenCalled();
   expect(store.get(gameIdFamily("tab-a"))).toBe("retained");
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain("cleanup failed");
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe("Board.Opponent.Error.Start");
   await start();
   expect(fixtures.abortGame).toHaveBeenCalledWith("retained", 7n);
   expect(fixtures.startGame).toHaveBeenCalledOnce();
@@ -1891,7 +1907,15 @@ test("synchronous player conversion failure clears pending start and permits ret
   await start();
   expect(fixtures.startGame).not.toHaveBeenCalled();
   expect(store.get(pendingGameStartFamily("tab-a"))).toBeNull();
-  expect(host.querySelector('[role="alert"]')).not.toBeNull();
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+    "Board.Opponent.Error.MissingEngine",
+  );
+  expect(host.querySelector('[role="alert"]')?.textContent).not.toContain(
+    "A local engine must be selected",
+  );
+  expect(fixtures.logError).toHaveBeenCalledWith(
+    "game command start failed [tab=tab-a generation=1]: A local engine must be selected for an engine player",
+  );
   store.set(gamePlayer1SettingsAtom, { type: "human", name: "Alice" });
   await act(async () => Promise.resolve());
   await start();

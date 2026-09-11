@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures";
+import type { ErrorPayload } from "../src/bindings/generated";
 
 test("board-keyboard: opens analysis and exposes a keyboard-operable board", async ({
     page,
@@ -73,4 +74,55 @@ test("board-keyboard: opens analysis and exposes a keyboard-operable board", asy
     ).toHaveAttribute("aria-selected", "true");
     await page.keyboard.press("f");
     await expect(whiteBoard).toBeVisible();
+});
+
+test.describe("board-keyboard: German game command errors", () => {
+    test.use({ appLocale: "de-DE" });
+
+    test("localizes a rejected game start and keeps retry enabled", async ({
+        page,
+        mockScenario,
+        capture,
+    }) => {
+        const diagnostic = "private native game-start diagnostic at /private/engine.bin";
+        const rejection = {
+            tag: "backend-error",
+            category: "engine-timeout",
+            message: diagnostic,
+        } as const satisfies ErrorPayload;
+
+        await mockScenario({ commands: { start_game: { error: rejection } } });
+        await page.goto("/");
+
+        await page.getByRole("button", { name: "Spielen", exact: true }).click();
+        const startButton = page.getByRole("button", { name: "Beginne Partie", exact: true });
+        await expect(startButton).toBeVisible();
+
+        const alert = page.getByRole("alert");
+        await startButton.click();
+        await expect(alert).toContainText(/Partie konnte nicht gestartet werden/);
+        await expect(alert).not.toContainText(diagnostic);
+        await expect(page.locator("body")).not.toContainText("/private/engine.bin");
+        await expect(page.locator("body")).not.toContainText("Unable to start the game.");
+        await expect(startButton).toBeEnabled();
+
+        await startButton.click();
+        await expect(alert).toContainText(/Partie konnte nicht gestartet werden/);
+        await expect(startButton).toBeEnabled();
+
+        const startInvocations = await page.evaluate(() =>
+            window.__E2E_TAURI__.invocations().filter(({ command }) => command === "start_game"),
+        );
+        expect(startInvocations).toHaveLength(2);
+
+        const logs = await page.evaluate(() =>
+            window.__E2E_TAURI__
+                .invocations()
+                .filter(({ command }) => command === "plugin:log|log"),
+        );
+        expect(JSON.stringify(logs)).toContain("private native game-start diagnostic at [path]");
+        expect(JSON.stringify(logs)).not.toContain("/private/engine.bin");
+
+        await capture("board-game-command-error");
+    });
 });

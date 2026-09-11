@@ -75,6 +75,12 @@ import IconAction from "../common/IconAction";
 import BoardControls from "./BoardControls";
 import EditingCard from "./EditingCard";
 import { isCurrentQueuedGameUpdate, abortExactGame } from "./gameSession";
+import {
+  recordGameCommandError,
+  translateGameCommandError,
+  type GameCommand,
+  type GameCommandError,
+} from "./gameCommandError";
 import { OpponentForm, type OpponentSettings } from "./OpponentForm";
 import { toPlayerConfig } from "./playerConfig";
 import { PRODUCT_NAME } from "@/utils/product.json";
@@ -104,8 +110,6 @@ function getMainlineUcis(root: TreeNode): string[] {
 
 type BackendMove = { uci: string; clock: number | null };
 
-type GameCommand = "move" | "takeback" | "abort" | "resign";
-
 type GameCommandContext = {
   gameId: string;
   session: bigint;
@@ -117,7 +121,6 @@ type GameCommandOptions<TResult, TReturn> = {
   unavailable: TReturn;
   action: (context: GameCommandContext) => Promise<TResult>;
   onSuccess: (result: TResult, context: GameCommandContext) => TReturn | Promise<TReturn>;
-  errorMessage: string;
   recover?: (context: GameCommandContext) => Promise<NativeGameState>;
   canApplySuccess?: (result: TResult, context: GameCommandContext) => boolean;
 };
@@ -238,7 +241,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
   const [pendingCommand, setPendingCommand] = useState<
     "start" | "move" | "takeback" | "abort" | "resign" | null
   >(null);
-  const [commandError, setCommandError] = useState<string | null>(null);
+  const [commandError, setCommandError] = useState<GameCommandError | null>(null);
   const clearQueuedGameUpdates = useCallback(() => {
     if (throttleTimerRef.current) clearTimeout(throttleTimerRef.current);
     if (premoveTimerRef.current) clearTimeout(premoveTimerRef.current);
@@ -675,7 +678,12 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         );
       } catch (err) {
         if (ownsMountedOwner() && commandTokenRef.current === startToken) {
-          setCommandError(err instanceof Error ? err.message : "Unable to start the game.");
+          setCommandError(
+            recordGameCommandError("start", err, {
+              tabId: ownerTabId,
+              generation,
+            }),
+          );
         }
       } finally {
         if (atomStore.get(ownerPendingStartAtom) === admission.promise) {
@@ -698,7 +706,6 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       unavailable,
       action,
       onSuccess,
-      errorMessage,
       recover,
       canApplySuccess,
     }: GameCommandOptions<TResult, TReturn>): Promise<TReturn> => {
@@ -724,7 +731,14 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         return await onSuccess(result, context);
       } catch (error) {
         if (ownsCommandSession()) {
-          setCommandError(error instanceof Error ? error.message : errorMessage);
+          setCommandError(
+            recordGameCommandError(command, error, {
+              tabId: ownerTabId,
+              generation,
+              gameId,
+              session,
+            }),
+          );
           if (recover) {
             try {
               const recovered = await recover(context);
@@ -746,7 +760,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         }
       }
     },
-    [applyAuthoritativeState, gameId, gameState, ownsMountedOwner, ownsUiSession],
+    [applyAuthoritativeState, gameId, gameState, ownerTabId, ownsMountedOwner, ownsUiSession],
   );
 
   const handleHumanMove = useCallback(
@@ -761,7 +775,6 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
           if (!isPlayerVsEngine && autoFlipBoard) toggleOrientation();
           return true;
         },
-        errorMessage: "Move rejected. Please try again.",
         recover: ({ gameId, session }) => tauri.getGameState(gameId, session),
       }),
     [applyAuthoritativeState, autoFlipBoard, isPlayerVsEngine, runGameCommand, toggleOrientation],
@@ -862,7 +875,6 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         onSuccess: (state, { gameId, session, generation }) => {
           applyAuthoritativeState(state, gameId, session, generation);
         },
-        errorMessage: "Unable to take back the move.",
       }),
     [applyAuthoritativeState, runGameCommand],
   );
@@ -1130,7 +1142,6 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
         invalidateUiSession();
         store.getState().setResult("*");
       },
-      errorMessage: "Unable to abort the game.",
     });
   }
 
@@ -1143,7 +1154,6 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
       onSuccess: (state, { gameId, session, generation }) => {
         applyAuthoritativeState(state, gameId, session, generation);
       },
-      errorMessage: "Unable to resign the game.",
     });
   }
 
@@ -1245,7 +1255,7 @@ function BoardGame({ tabId: ownerTabId }: { tabId: string }) {
             <>
               {commandError && (
                 <Text c="red" role="alert">
-                  {commandError}
+                  {translateGameCommandError(t, commandError)}
                 </Text>
               )}
               {gameState === "settingUp" && (
