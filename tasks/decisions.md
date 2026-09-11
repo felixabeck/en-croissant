@@ -2698,3 +2698,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** Change the finite mapping if a future typed native contract provides actionable game-specific identities; preserve sanitized logging and current-language rendering.
 * **Decided by:** Codex drain session 43916f56-0a80-46c1-8a59-e33fe7588681 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":10,"effect_sha256":"a71ee66660c2a14908c6a6eede210773d1c3aebc6d8081c739f938cc8ec88791","input_sha256":"3b86cb50c32e0007eca254f7647371355a46cf6130b02d8381c2fe567f5480f3","kind":"mutation-receipt","operation":"7571308a33b430169440ad8d03df0c76925f016e95cd87379d6b9f6db91d39eb","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20260911-04 — Where does shared engine-option normalization live?
+
+* **Governs:** f-20260901-24
+* **Question:** How should the three engine-option mappings share their implementation while preserving lightweight player-configuration tests?
+* **Chosen:** A pure `src/utils/engineOptions.ts` helper with a type-only bindings import, used by player configuration, interactive evaluation and report generation. Keep fallback selection and the game-only MultiPV filter at the callers. Retain inline tier with the finding's named engine-protocol lens included in push review.
+* **Rejected:** Importing the runtime-heavy `src/utils/engines.ts` into player configuration, or retaining duplicate maps. No new normalization policy or optional filtering API is introduced.
+* **Reason:** The three mappings have the same contract; d-20260901-36 already establishes that the pure player configuration should not load the UI/native module graph for its tests.
+* **Reversal path:** Revisit the helper's input contract if the generated EngineOption representation changes; preserve all three caller behaviors together.
+* **Decided by:** Codex next-finding run 2026-09-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"075cba9d51d43ebf23524d1bece89f25414b9b4c351f065e4cebadf966295751","input_sha256":"4ea7011615b4398fa6f5ab0054744792d41b13efaafbb9ad2baa8f4828bc5361","kind":"mutation-receipt","operation":"04ab1f1f7236d70f5cc47e4df7015369045d5441644152b425a6326d11ec87cb","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-04"],"target":"decisions-ledger","v":1} -->
