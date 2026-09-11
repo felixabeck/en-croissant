@@ -6322,6 +6322,10 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Entry revalidation:** stayed `inline`. `d-20260904-22` left this member at its filed tier; the change is the specified signature conversion plus generated bindings and tests.
 <!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"ad7c0da2d83758d721e793476687bc9396c67094129d036c6dcfbccdb6833cd7","input_sha256":"56009992870c18828e12e63b90a6c9fb3b7e5d5d54b4fb13dc810fc8443520e1","kind":"mutation-receipt","operation":"5f29905797cbdb4dee0aba6d6912fbbf76ce9e23d16dd0a463c89c2570e52c5d","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-08"],"target":"f-20260904-08","v":1} -->
 
+* **Review:** `review-tests` blocker (confidence 99) and `review-root-cause` should-fix (95): extracted `show_labeled_main_window` and drive missing-main plus show-success through `tauri::test::mock_app`. `review-code-quality` nit: renamed the unwrapCommand string-error test. Other lenses APPROVED.
+* **Commits:** `4179f6ec` (review-fix tests).
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"a281087a75799235e688d361b153a9aade57017fd2896ffb922359688aa5bb92","input_sha256":"ba0f8a0ff4b7c7276d5ea45de69824175a87ace5f00b0e5f1941eb09c3345d64","kind":"mutation-receipt","operation":"f90773a129addedd565f7cd6f119db3551ac638035d357fcd2645340a049f8f9","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-08"],"target":"f-20260904-08","v":1} -->
+
 ---
 
 ## 2026-09-04 — filed through the inbox spool
