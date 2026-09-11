@@ -5461,6 +5461,10 @@ actively misleads anyone reasoning about coverage impact without running the sui
   | tauri-ipc-platform | 156/218 → 335/350 | 40/60 → 88/95 | 93/145 → 201/228 |
 <!-- ledger-meta {"command":"annotate","effect_lines":17,"effect_sha256":"2fee0d7fe5ad777258d43b4aec137185a8f9b1225325089a307daa9ee250e438","input_sha256":"91747cf3cc2abb10256f13f4325c493f480481369a228267f6c7c3829cce0c4d","kind":"mutation-receipt","operation":"ac9d321898454b0d86a683cd3e2a6ce8684ad106ad0981af36cdede45496c875","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-20"],"target":"f-20260901-20","v":1} -->
 
+* **Handled (2026-09-11):** bf0d9b78 refreshes every frontend area metric from CI and documents deliberate upward refreshes. Decision d-20260911-02 (5166f685) and the metric/probe evidence (86602075) record why this strengthens the gate rather than accepting a regression. Rejected leaving accumulated gains unprotected or automatically rewriting baselines during tests.
+* **Review:** correctness, root-cause, tests and minimalism all approved with no findings, using fresh read-only Codex Luna/xhigh contexts. Plan authorship and arbitration shared the root context; detection ran on the same model family as the code, so separation was session-level only. No browser verification applies to this data/documentation change. The same-session push skill owns the remaining final gates and upstream verification.
+<!-- ledger-meta {"command":"annotate","effect_lines":2,"effect_sha256":"2e3bd981b01c61d4645fbef8442d5978467e77c33954e29a20b8eba75ace2d6d","input_sha256":"c3e42db0afee0d21a00241683253a6424901692abda3ea13317752abd7069522","kind":"mutation-receipt","operation":"2a3569326a3283f3ce828b8c4fa27988f845d0830860f3212799179e35522ee5","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-20"],"target":"f-20260901-20","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
