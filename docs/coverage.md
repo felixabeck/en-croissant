@@ -40,3 +40,20 @@ boundaries 50/38/36%, OAuth and credentials 68/61/53%, database and search 65/54
 game, and chess 48/54/55%, and auxiliary domain services 55/41/79% (lines/functions/branches).
 The exact-count baseline catches changes above those floors; new security or IPC surfaces require
 focused tests before the baseline is refreshed.
+
+After adding coverage, deliberately refresh the frontend baseline so the new gains become
+binding. First require a green full coverage run against the existing baseline. Obtain the
+`frontend-coverage` LCOV artifact from a successful `Test` run in `felixabeck/en-croissant`,
+verify that its frontend source, dependencies, test configuration and coverage scope match
+the candidate tree, and compare its area metrics with a fresh local `pnpm test:coverage`.
+Do not use an old artifact across changed measurement inputs. Require every covered count
+and ratio to stay level or rise without using a shrink allowance; otherwise investigate
+the difference separately rather than including it in an upward refresh.
+
+Record the CI run, commit, artifact, all metric deltas and the reasoned exception in the
+task records before committing the refresh. Use the existing `coverage-report.mjs`
+baseline writer with that CI LCOV, then run `pnpm coverage:frontend:check` against the
+fresh local LCOV and the normal push gates. Baseline commands remain denied by default;
+an actual runtime refusal is a blocker, never a reason to disguise the command. Never
+refresh automatically during tests or to clear a red gate. The 2026-09-11 refresh follows
+this procedure under `d-20260911-02` in `tasks/decisions.md`.
