@@ -5442,6 +5442,25 @@ recorded numbers describe the current tree. They do not, and the change passed w
 lines against a 249 baseline. A baseline that is 235 lines stale is not just a weak gate; it
 actively misleads anyone reasoning about coverage impact without running the suite.
 
+* **Entry revalidation (2026-09-11):** retain `lens`. The reporter already implements the required count, ratio, scope and floor checks; no open implementation design question remains. The bounded change is a CI-derived upward baseline refresh plus its maintenance procedure, governed by d-20260911-02. Review uses correctness, root-cause, tests and minimalism lenses.
+* **Evidence:** successful fork CI run 34514750394, commit a106d664d6db47c03028ea150e77207a08d274d7, frontend-coverage artifact 10167466769. Its frontend inputs match pickup HEAD 9f8a3946389da4f4530961dd52c4a74ba745c76e. Fresh `pnpm test:coverage` exits 0 and all 30 area metrics equal CI. Old and refreshed ratchets pass with no shrink allowances; all covered counts and ratios rise. Scope and floors are unchanged. `pnpm coverage:report:test`: 27/27 pass.
+* **Regression proof:** using the real CI aggregate report as input to `assertBaseline`, decrement each area's line/function/branch covered count by one independently, keeping totals fixed. All 30 losses pass the old baseline and fail the refreshed baseline with the expected area/metric error. Thus the refreshed numbers actually constrain the current measurement.
+* **Metric audit:** each cell is old covered/total → CI covered/total.
+
+  | Area | Lines | Functions | Branches |
+  | --- | --- | --- | --- |
+  | application-bootstrap | 39/130 → 104/128 | 10/37 → 19/36 | 12/62 → 39/58 |
+  | boards-game-analysis | 249/4057 → 1758/4359 | 58/732 → 304/804 | 180/5676 → 1592/5773 |
+  | databases-files | 211/1680 → 953/1804 | 64/342 → 194/409 | 235/2649 → 1141/2773 |
+  | accounts-remote | 185/1022 → 438/1056 | 36/224 → 94/236 | 148/1187 → 373/1210 |
+  | puzzles-engines | 60/1027 → 763/1181 | 18/251 → 169/307 | 23/1231 → 700/1266 |
+  | settings | 73/659 → 88/657 | 14/92 → 18/92 | 77/1048 → 95/1042 |
+  | shared-shell-ui | 36/327 → 158/317 | 5/65 → 26/68 | 35/460 → 166/432 |
+  | state-persistence | 689/956 → 1267/1493 | 174/281 → 322/396 | 303/533 → 681/916 |
+  | tabs-routing | 148/1240 → 687/1241 | 10/233 → 151/328 | 181/1731 → 543/1164 |
+  | tauri-ipc-platform | 156/218 → 335/350 | 40/60 → 88/95 | 93/145 → 201/228 |
+<!-- ledger-meta {"command":"annotate","effect_lines":17,"effect_sha256":"2fee0d7fe5ad777258d43b4aec137185a8f9b1225325089a307daa9ee250e438","input_sha256":"91747cf3cc2abb10256f13f4325c493f480481369a228267f6c7c3829cce0c4d","kind":"mutation-receipt","operation":"ac9d321898454b0d86a683cd3e2a6ce8684ad106ad0981af36cdede45496c875","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-20"],"target":"f-20260901-20","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
