@@ -5318,6 +5318,9 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 * **Review triage (2026-09-11):** Fix — review-minimalism identified the one-caller EngineProcess::set_resolved_option pass-through at src-tauri/src/chess.rs:123 (confidence 93). Remove that wrapper and call the existing shared actor API directly. No contract change is required.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"483b1fd262c32c49f18e4dbf8a7eddb5de95c0c4d3297baf5d458b2ded842d63","input_sha256":"f1bd875377904d37597636d22dfd6fe940b1255ee64ea7fcbd4614ef354d4ac9","kind":"mutation-receipt","operation":"7f45381806f3e0ca7c9d7fdbfd7a5ffd663a0fbb4c991076c5329ec017edc34d","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-18"],"target":"f-20260901-18","v":1} -->
 
+* **Review triage (2026-09-11, tests):** Fix — exercise the production analysis report provenance-restoration path rather than only its helper, add successful log-egress coverage, cover cumulative byte-budget exhaustion, and cover overlapping resource values. The review found that deleting report restoration or weakening those guards could leave current tests green. Preserve the public IPC signatures while adding the narrowest real-flow test seam.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"a83f83362440e8bc5a67060dd7e5a67727ae6923bf5d7e6006e803d4d992b308","input_sha256":"1ee8782f98df782d17e2461cf3b59124f57c97b5882eb793d58e8a7b1d9a9bc7","kind":"mutation-receipt","operation":"780e6d1ddc8b446e545ab78472d5f9664878bd74330503314ad310e63acc6230","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-18"],"target":"f-20260901-18","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
