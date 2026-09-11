@@ -2709,3 +2709,14 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** Revisit the helper's input contract if the generated EngineOption representation changes; preserve all three caller behaviors together.
 * **Decided by:** Codex next-finding run 2026-09-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"075cba9d51d43ebf23524d1bece89f25414b9b4c351f065e4cebadf966295751","input_sha256":"4ea7011615b4398fa6f5ab0054744792d41b13efaafbb9ad2baa8f4828bc5361","kind":"mutation-receipt","operation":"04ab1f1f7236d70f5cc47e4df7015369045d5441644152b425a6326d11ec87cb","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20260911-05 — Which engine-module location preserves the coverage contract?
+
+* **Governs:** f-20260901-24
+* **Question:** Where should the pure shared engine-option helper live within the existing measured engine area?
+* **Chosen:** `src/components/engines/engineOptions.ts`, alongside the existing pure `engineAttachments.ts` and `engineFormValidation.ts` helpers. Keep its type-only import and all three callers unchanged except their import paths.
+* **Rejected:** The `src/utils/engineOptions.ts` placement chosen in d-20260911-04, which is not mapped by the existing coverage configuration. Also rejected changing the coverage path map or refreshing its baseline as part of this refactor.
+* **Reason:** New evidence from the final gate: the helper measured 100% coverage but failed as an unmapped production file. A trial explicit mapping was refused because it changes the recorded scope signature. The engine module's existing glob already owns this domain and accommodates pure helpers, so this location preserves both the lightweight dependency boundary and the established measurement contract. The trial mapping was reverted without changing any baseline or floor.
+* **Reversal path:** Reconsider module placement as part of a deliberate engine-module or coverage-scope reorganization, preserving the type-only helper and its coverage.
+* **Decided by:** Codex next-finding run 2026-09-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"08a0dd7ff9efa5274129d928b0701fa8188ceff1a0cca86ccfd4faa6c9d57a80","input_sha256":"b86828018e99d57b934d5a88f3497bdd7d58c521388a5bccb57dbc6a06eda59f","kind":"mutation-receipt","operation":"1ae7bc60ee908e9dcbabb70a6eb304fbe1b32574c3c7693d64e1a95506cd4030","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-05"],"target":"decisions-ledger","v":1} -->
