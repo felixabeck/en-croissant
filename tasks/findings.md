@@ -6243,6 +6243,12 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   in `f-20260903-02` so whichever entry a future `next` surfaces first leads to the other.
 * Left open by `d-20260904-23`, which sliced this run to `f-20260901-01` + `f-20260903-03`.
 
+* **Handled:** 2026-09-11, commit `0fd2dbed`.
+  `ResolvedPath` now lives in `src-tauri/src/infra/path_authority/resolved.rs` with a private `file` field. `VerifiedFile` is minted only in nested `mint` via `from_resolved` → `take_file()`. `open_engine_image` and `prepare_download_artifact` live in `verified.rs`. Parent code cannot assign `resolved.file`; `resolved.rs` cannot call `from_resolved`.
+* **Rejected:** keeping both types in one file with a token scan (`d-20260903-08`); `pub(crate) fn from_resolved`; lifting `ResolvedPath` to `infra::resolved_path`.
+* **Proof:** `cargo test --manifest-path src-tauri/Cargo.toml --locked path_authority::` (174 passed) and `s5_staged_and_published_hash_leaves_the_guard_and_the_tokio_worker`.
+<!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"da56ce229a1f495ea29e7a87309a2e225b5350eaf02a2c9807a6c8fa8e745348","input_sha256":"db758b6e5bb464df803964e1f2ff60007409c9947386281b195d272faa7cdfd3","kind":"mutation-receipt","operation":"82b506535bbff36a342422acd1a79d44781f286c6841ced37388f0051e9a7972","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-06"],"target":"f-20260904-06","v":1} -->
+
 ---
 
 ## 2026-09-04 — filed through the inbox spool
