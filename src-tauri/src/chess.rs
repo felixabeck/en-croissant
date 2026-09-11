@@ -1033,7 +1033,6 @@ async fn analyze_game_core<R: tauri::Runtime>(
         fens.reverse();
     }
 
-    let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
     let mut initial_resolved = {
         let mut authority = state
             .pgn_path_authority
@@ -1046,6 +1045,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
             &uci_options,
         )?
     };
+    let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
     let inherited_values: HashMap<String, String> = initial_resolved
         .iter()
         .map(|option| (option.name.clone(), option.value.clone()))
@@ -2101,6 +2101,48 @@ done
         assert_safe_resource_logs(&logs);
         assert!(supervisor.get_exact(&key).is_none());
         assert_resource_wire_capture(&_directory, "resource-bytes");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn invalid_initial_resource_does_not_leave_report_progress_running() {
+        use crate::infra::path_authority::{
+            EngineResourceHandle, EngineResourceHandleKind, PathRef,
+        };
+
+        let (_directory, app, engine, _) = resource_engine_fixture();
+        let id = "invalid-initial-resource";
+        let state = app.state::<AppState>().inner().clone();
+        let invalid_resource = EngineResourceHandle::new(
+            PathRef {
+                id: "missing-resource".into(),
+            },
+            EngineResourceHandleKind::File,
+            "missing-resource".into(),
+        );
+        let result = analyze_game_core(
+            id.into(),
+            engine,
+            "invalid-resource-engine".into(),
+            GoMode::Depth(1),
+            AnalysisOptions {
+                fen: start_fen().to_string(),
+                moves: Vec::new(),
+                annotate_novelties: false,
+                reference_db: None,
+                reversed: false,
+            },
+            vec![EngineOption::Resource {
+                name: "EvalFile".into(),
+                resources: vec![invalid_resource],
+            }],
+            state.clone(),
+            app.clone(),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(state.progress_state.get(id).unwrap().is_none());
     }
 
     #[cfg(unix)]
