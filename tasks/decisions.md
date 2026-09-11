@@ -2750,3 +2750,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** f-20260904-10 already made the reservation the intent record, so unknown-ticket `Ok` now means the work is gone, not that cancel was forgotten. The remaining gap was observation during the named pre-spawn replay. Reversal path: a typed unknown-ticket error must keep late-cancel and double-cancel silent at the ReportPanel button, and any second cancel registry must prove it cannot disagree with the reservation token.
 * **Decided by:** Grok, drain session d2b69c67-1aae-4e59-848e-d5b3040917dc, full auto, 2026-09-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"8a86e56f9ad7e2a2183c814021ee63904fb0e5885e056cfecf477c9705eccf33","input_sha256":"6e34f62ff6f388130f5a9334b4647fc53b0c6eb4def6d122e23feb5154821df5","kind":"mutation-receipt","operation":"ed391b88ad3ba97527af791ccc82c7799917ba9bc3285aac3a2996fe39cd8ea6","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20260911-09 — Slice f-20260911-01 from f-20260911-02?
+
+* **Question:** Work f-20260911-01 together with f-20260911-02, or slice to the emit-after-cancel path only?
+* **Governs:** f-20260911-01
+* **Chosen:** work only f-20260911-01 at `lens`. Leave f-20260911-02 open at `build`.
+* **Rejected:** taking both because they were filed together from the same engine-protocol pass. Rejected: lowering 02 to lens and fixing unscoped stop generation selection in this slice.
+* **Reason:** they do not share a cohesive file set for one interview. 01 is interactive emit-after-cancel in `chess.rs` `process_interactive_search_output`. 02 is unscoped `stop_generation` preferring a pending admission, with an open question: which generation to stop. A ledger area is a vocabulary bucket, not a cohesive file set (`d-20260901-21`, `d-20260831-33`). Lens r4 restated 02 as should-fix; it is already filed.
+* **Decided by:** Grok, autonomously under `full auto`, drain session 833400da-2c52-444a-8880-2c4cbe8b0353 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"86ce857208bd8793a6c11fc4aa0f62012995edb674bfa01420a13a23da00e484","input_sha256":"1ee1e13011371393bf03bec0c2ec36176290109690ba1cc8e55c225114cd10b4","kind":"mutation-receipt","operation":"219842b65fb553fd502b6b28b97862b1c3dd116b6879fae06ce2244136e78f58","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-09"],"target":"decisions-ledger","v":1} -->
