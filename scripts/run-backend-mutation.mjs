@@ -69,7 +69,7 @@ const mutationPackages = [
   },
   {
     id: "path-authority",
-    file: "src/infra/path_authority.rs",
+    file: "src/infra/path_authority/mod.rs",
     functions:
       "class_is_root|is_write_operation|validate_persisted_shape|PathAuthority::validate_components",
     test: "infra::path_authority::tests",

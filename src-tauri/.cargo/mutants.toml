@@ -4,7 +4,7 @@ examine_globs = [
   "src/engine/types.rs",
   "src/fs.rs",
   "src/game.rs",
-  "src/infra/path_authority.rs",
+  "src/infra/path_authority/mod.rs",
   "src/lexer.rs",
   "src/pgn.rs",
 ]

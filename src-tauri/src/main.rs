@@ -3654,7 +3654,10 @@ mod blocking_offload_scans {
 
     #[test]
     fn s5_staged_and_published_hash_leaves_the_guard_and_the_tokio_worker() {
-        let path_authority = include_str!("infra/path_authority.rs");
+        let path_authority = concat!(
+            include_str!("infra/path_authority/mod.rs"),
+            include_str!("infra/path_authority/verified.rs"),
+        );
         let reserve = body_at_indent(path_authority, "fn reserve_download_artifact");
         assert!(
             !reserve.contains("sha256_file"),

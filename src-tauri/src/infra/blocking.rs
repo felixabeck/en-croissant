@@ -68,6 +68,7 @@ pub(crate) mod source_scan {
         trimmed.starts_with("fn ")
             || trimmed.starts_with("pub fn ")
             || trimmed.starts_with("pub(crate) fn ")
+            || trimmed.starts_with("pub(in ")
             || trimmed.starts_with("async fn ")
             || trimmed.starts_with("pub async fn ")
             || trimmed.starts_with("pub(crate) async fn ")
