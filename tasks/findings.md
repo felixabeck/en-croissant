@@ -5503,6 +5503,9 @@ message presentable.
 * **Review repair:** review-minimalism found the new sanitized diagnostic/native logging wrapper duplicated the existing safeFailureContext and logger-rejection handling in src/utils/collectSequential.ts (confidence 95). Verdict Fix: share that implementation with gameCommandError while preserving collection cancellation and await behavior, command ownership guards, and both original and logger diagnostics. The root confirmed the two implementations before delegating repair.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8bd5b8c477949d2545ee39b73783bfd7d0d19a9421dd6a6a7d98f7db2dd527ef","input_sha256":"b450e18b11c77e5f582dcff28cbbe29a35a8d8329ee23572b4d8e81252f5867b","kind":"mutation-receipt","operation":"293916ee206e9ae6c0f91436e4e4a55d165cabcb21d810977298b15b1b5a89f9","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-21"],"target":"f-20260901-21","v":1} -->
 
+* **Review repair:** review-error-handling found command logs lacked owner/attempt identity (confidence 92). Verdict Fix: include tab and generation for starts, plus captured game/session identity for admitted commands, in sanitized native and fallback diagnostics. This makes failures from concurrent tabs and retries distinguishable without changing displayed messages or session ownership.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"cb0a37b5e27bc9eb52b7926a196ae829db8dd27294521be759487f14d2cd05f6","input_sha256":"4ee0f7577302dc61118c5c658d984e996ba8a8946ad95151fcbf20195365ba90","kind":"mutation-receipt","operation":"eda214eff097dfb3e5163257aa0dd5fc813fd992877301e6c49dbcc226550d36","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-21"],"target":"f-20260901-21","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
