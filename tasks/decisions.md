@@ -2720,3 +2720,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reversal path:** Reconsider module placement as part of a deliberate engine-module or coverage-scope reorganization, preserving the type-only helper and its coverage.
 * **Decided by:** Codex next-finding run 2026-09-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"08a0dd7ff9efa5274129d928b0701fa8188ceff1a0cca86ccfd4faa6c9d57a80","input_sha256":"b86828018e99d57b934d5a88f3497bdd7d58c521388a5bccb57dbc6a06eda59f","kind":"mutation-receipt","operation":"1ae7bc60ee908e9dcbabb70a6eb304fbe1b32574c3c7693d64e1a95506cd4030","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20260911-06 — How is engine-image VerifiedFile provenance sealed inside path_authority?
+
+* **Question:** After `d-20260903-08` left `ResolvedPath.file` module-private in the same file as `VerifiedFile::from_resolved`, how is a pathname-opened descriptor prevented from being minted as `VerifiedFile` by code inside path-authority?
+* **Governs:** f-20260903-02, f-20260904-06
+* **Chosen:** directory module `path_authority/{mod,resolved,verified}.rs`. `ResolvedPath` owns the no-follow `file` field. Nested `mint` is the only `VerifiedFile` constructor (`from_resolved` → `take_file()`), visible only inside `verified.rs`. Mint call sites `open_engine_image` and `prepare_download_artifact` are `pub(super)` methods there.
+* **Rejected:** token scans of read primitives (`d-20260903-08`); `pub(crate) fn from_resolved` (crate-wide mint from any `&mut ResolvedPath`); lifting `ResolvedPath` to `infra::resolved_path` (no extra privacy over child-module fields); `from_resolved` as `pub(super)` on a `VerifiedFile` defined in `verified.rs` itself (`resolved.rs` could then assign `file` and mint).
+* **Reason:** Rust has no parent-only-not-sibling visibility. Sibling child modules plus a nested mint module are the compiler proof that the module that can mutate `file` cannot construct `VerifiedFile`, and the module that can construct it cannot assign `file`.
+* **Decided by:** Grok, autonomously under `full auto`, drain session 67283a2f-9560-485d-9821-e4df18ffb96b · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"006a6228cf682e0f0874c303a9b224190e62bd0604a43a2ba5c25a0635f8ff9d","input_sha256":"55d465aaef9363ca704430e48724c374751ca471d48347eafcc86be8e4b9e868","kind":"mutation-receipt","operation":"70119a837e37d04d731635ee8f4a69189ea1c0a4f07ab97e7bbbbebe3d7333c1","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-06"],"target":"decisions-ledger","v":1} -->
