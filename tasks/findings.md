@@ -6284,6 +6284,12 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Related:** `f-20260830-08` (open) is the command-surface half of the same boundary; `Root` is
   `-` because the mechanism is a log target, not the error contract.
 
+* **Closed:** dropped `TargetKind::Webview` from native log sinks (`native_log_targets()`) and removed `attachConsole` from App startup and `src/platform/native.ts`. Debug native logs stay on stdout; release still writes the log directory. `review-tauri-security` on the uncommitted diff: APPROVED, no findings. Proof: `cargo test native_log_targets_never_include_the_webview` (ok) and `vitest src/App.test.tsx` (16 passed), plus `pnpm tauri:boundary:check`.
+* **Commits:** `100464fc` (fix), `84ae8853` (`d-20260911-07`).
+* **Rejected:** keep a webview sink filtered to `WEBVIEW_TARGET`, or raise it to Error. A filter leaves the channel for the next author to omit; Error still leaks paths.
+* **Decision:** d-20260911-07
+<!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"e441255087a89f128ef8c20c9bf588957d28fb94111f802c61f0b4b3b7479773","input_sha256":"af204796f8cda36a4b486ae916825590d94fd7924c80a7104b3e8e73ffb78c0c","kind":"mutation-receipt","operation":"576e129eaba4fc9693eb97fc769a014547d7e3f11dae6f9f5a8413d8ab2e6852","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-07"],"target":"f-20260904-07","v":1} -->
+
 ### `close_splashscreen` is the one command whose IPC error stays an untyped string
 
 * **ID:** f-20260904-08 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** inline · **Blocked:** none
