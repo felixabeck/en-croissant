@@ -5336,6 +5336,9 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 * **Decision:** d-20260911-01 records provenance-based shared-runtime masking and rejects guessing paths, outgoing-only masking, renderer filtering, and forgetting old values. Reversal requires equivalent proof of both directions/callers, delayed echoes, unchanged wire bytes, and bounded retention. No product decision was parked and no new finding was filed.
 <!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"90e189d166162bb1c32d57aa29a417de44b75612a78001507849fe34c2cd0545","input_sha256":"b3a7f6bee6427c061b85d4d8d2b4b375acb9e5d1b4b852b6854431c7d9b0bb53","kind":"mutation-receipt","operation":"d7f303a03803e45763d1efcf833cf6e20181c90885a2a1523158290878606658","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-18"],"target":"f-20260901-18","v":1} -->
 
+* **Final-gate repair (2026-09-11):** Fix — the full backend suite found the blocking-offload scanner still searched for the non-generic analyze_game_core signature. Updated only its two signature anchors in src-tauri/src/main.rs; offload and engine-termination ordering assertions remain intact. The failing scanner now passes, as do formatting and diff checks. Root inspected this test-only repair; runtime behavior and the verified app remain unchanged. Final gates restart on the new committed tree.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5b0cdbe05023c05bf2e2bf8e0640172e4ca33c38dae3504aa210ae0db5ccaf82","input_sha256":"4cc4d6da30c7f711793f4cfa459a49765a470cba1a82e5fa5220fa50fef82994","kind":"mutation-receipt","operation":"c58920b2aeec43ae67b6e81dc647ce840ffc81cdfb4071dd766ac7e1179aa78a","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-18"],"target":"f-20260901-18","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
