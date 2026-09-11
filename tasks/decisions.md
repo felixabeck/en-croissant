@@ -2663,3 +2663,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Measured, not assumed: `git ls-files` does not descend a symlinked directory. In a probe repository containing `.claude/skills/real/SKILL.md` and `.claude/skills/linked -> ../../shared/linked`, both the untracked query and the tracked query print `.claude/skills/linked` and `.claude/skills/real/SKILL.md`, never `.claude/skills/linked/SKILL.md`. Routing the checker onto the shared walker therefore does not by itself make a symlinked skill visible. Reversal path: revert `directorySkillNames`; the covering test is "discovers a skill shipped as a symlinked directory" in `scripts/check-skill-bridges-tests.mjs`.
 * **Decided by:** next-finding f-20260901-16, 2026-09-10 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"d48569196f744035447769d6d080ee5731d4a4198e515631c1e4662c136ae55d","input_sha256":"b31a3f9edc2994bd585585371f5c8c5635854572746da7da1fed6cb0e505baa1","kind":"mutation-receipt","operation":"8eb61ac17f1e232b836bfb006a63dbdab3235b13ab673186615d8a63a984c2b2","options":{"section":null},"request_id_sha256":null,"results":["d-20260910-12"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-11 — recorded through the decisions lock
+
+### d-20260911-01 — How are native UCI resource values kept out of engine transcripts?
+
+* **Question:** How can shared engine transcripts hide resolved resource values without changing the UCI protocol or ordinary option diagnostics?
+* **Governs:** f-20260901-18
+* **Chosen:** Carry explicit resource provenance from option resolution into the shared engine runtime. Redact individual resolved values in both transcript directions before retention; preserve raw UCI transport and parsing. Retain bounded redaction knowledge for the runtime lifetime and refuse a new resource command before sending it if that bound is exhausted.
+* **Rejected:** Path-shaped string guessing, outgoing-only masking, renderer-side filtering, or forgetting old values when options change.
+* **Reason:** Analysis and game engines share the actor log API, and delayed engine echoes can contain an earlier resource value. Provenance avoids changing ordinary option diagnostics. This preserves the log-query failure behavior of d-20260901-32. Reversal requires equivalent proof for both callers, delayed echoes, unchanged wire bytes, and bounded retention.
+* **Decided by:** Codex, autonomously under full auto · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e8942c41078930452d02eaf3c48d947bfb59ff9dfa18e83741230483e45cee4e","input_sha256":"5e79a9d7f56e93fa03a5e48638634a31ea42747a46b6721b6431ec15577bc693","kind":"mutation-receipt","operation":"d6b6c3d60e5fd92b77a97f6cafe7a04ac963000ad9211d519e294722541ea625","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-01"],"target":"decisions-ledger","v":1} -->
