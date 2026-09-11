@@ -119,9 +119,9 @@ function safelyStringify(value: unknown): string {
 function classify(source: string): AppErrorCategory {
     const lower = source.toLowerCase();
     // Fallback for non-command errors (D-E): a thrown JS Error from the renderer itself,
-    // useTauriListener callback failures, close_splashscreen's genuine Result<(), String>,
-    // and any other non-command rejection. Backend command errors carry ErrorPayload and
-    // are mapped through BACKEND_CATEGORY, not this table.
+    // useTauriListener callback failures, and any other non-command rejection. Backend
+    // command errors carry ErrorPayload and are mapped through BACKEND_CATEGORY, not this
+    // table.
     //
     // `applied-despite-error` means: the destructive change reached the filesystem even though
     // this is an error. It covers both a partial removal and a complete one whose durability

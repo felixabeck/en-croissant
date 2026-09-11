@@ -527,11 +527,11 @@ impl Default for AppState {
 
 #[tauri::command]
 #[specta::specta]
-async fn close_splashscreen(window: Window) -> Result<(), String> {
+async fn close_splashscreen(window: Window) -> Result<(), Error> {
     let main_win = window
         .get_webview_window("main")
-        .ok_or_else(|| "no window labeled 'main' found".to_string())?;
-    main_win.show().map_err(|e| e.to_string())?;
+        .ok_or_else(|| Error::InvalidInput("no window labeled 'main' found".into()))?;
+    main_win.show()?;
     Ok(())
 }
 

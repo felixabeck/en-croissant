@@ -5,7 +5,7 @@
 
 
 export const commands = {
-async closeSplashscreen() : Promise<Result<null, string>> {
+async closeSplashscreen() : Promise<Result<null, ErrorPayload>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("close_splashscreen") };
 } catch (e) {

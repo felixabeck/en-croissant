@@ -735,6 +735,20 @@ mod tests {
     }
 
     #[test]
+    fn invalid_input_serializes_the_owned_message() {
+        let serialized = serde_json::to_string(&Error::InvalidInput(
+            "no window labeled 'main' found".into(),
+        ))
+        .unwrap();
+        let payload = parsed_payload(&serialized);
+        assert_eq!(payload["category"], "invalid-input");
+        assert_eq!(
+            payload["message"],
+            "Invalid input: no window labeled 'main' found"
+        );
+    }
+
+    #[test]
     fn opaque_foreign_variants_omit_the_cause_from_the_payload_and_keep_it_on_source() {
         let r2d2_error = r2d2_timeout_error();
         assert!(r2d2_error

@@ -337,7 +337,11 @@ describe("tauri command facade", () => {
     test("normalizes and redacts generated errors", async () => {
         mocks.closeSplashscreen.mockResolvedValue({
             status: "error",
-            error: "Bearer secret-value at /home/user/private.pgn",
+            error: {
+                tag: "backend-error",
+                category: "invalid-input",
+                message: "Bearer secret-value at /home/user/private.pgn",
+            },
         });
         let caught: unknown;
         try {
@@ -350,7 +354,48 @@ describe("tauri command facade", () => {
         expect(error.message).not.toContain("secret-value");
         expect(error.message).not.toContain("/home/user");
         expect(error.message).not.toContain("$1");
+        expect(error.details).toEqual({
+            category: "validation",
+            backendCategory: "invalid-input",
+            message: "Bearer [redacted] at [path]",
+        });
         expect(error.details).toBe(normalizeError(error));
+    });
+
+    test("maps a closeSplashscreen platform failure through the typed payload", async () => {
+        mocks.closeSplashscreen.mockResolvedValue({
+            status: "error",
+            error: {
+                tag: "backend-error",
+                category: "platform",
+                message: "platform failure",
+            },
+        });
+        await expect(tauri.closeSplashscreen()).rejects.toMatchObject({
+            message: "platform failure",
+            details: {
+                category: "unexpected",
+                backendCategory: "platform",
+                message: "platform failure",
+            },
+        });
+    });
+
+    test("redacts a non-command string rejection through unwrapCommand", () => {
+        let caught: unknown;
+        try {
+            unwrapCommand({
+                status: "error",
+                error: "Bearer secret-value at /home/user/private.pgn",
+            });
+        } catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(TauriCommandError);
+        const error = caught as TauriCommandError;
+        expect(error.message).not.toContain("secret-value");
+        expect(error.message).not.toContain("/home/user");
+        expect(error.message).not.toContain("$1");
     });
 
     test("maps a generated ErrorPayload through unwrapCommand", () => {
