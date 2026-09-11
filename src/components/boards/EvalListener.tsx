@@ -32,7 +32,7 @@ import {
 import { getVariationLine } from "@/utils/chess";
 import { getBestMoves as chessdbGetBestMoves } from "@/utils/chessdb/api";
 import { positionFromFen, swapMove } from "@/utils/chessops";
-import { normalizeEngineOptions } from "@/utils/engineOptions";
+import { normalizeEngineOptions } from "@/components/engines/engineOptions";
 import {
   type Engine,
   type LocalEngine,

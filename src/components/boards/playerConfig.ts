@@ -1,5 +1,5 @@
 import type { PlayerConfig } from "@/bindings";
-import { normalizeEngineOptions } from "@/utils/engineOptions";
+import { normalizeEngineOptions } from "@/components/engines/engineOptions";
 import type { OpponentSettings } from "./OpponentForm";
 
 /** A player configuration was incomplete before it could be sent to the backend. */

@@ -13,7 +13,7 @@ import { enginesAtom, referenceDbAtom } from "@/state/atoms";
 import { createZodStorage } from "@/state/utils";
 import { captureReportOwner, isReportOwnerCurrent, waitForReportOwner } from "@/state/store/tree";
 import { goModeSchema, type LocalEngine } from "@/utils/engines";
-import { normalizeEngineOptions } from "@/utils/engineOptions";
+import { normalizeEngineOptions } from "@/components/engines/engineOptions";
 import { z } from "zod";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 
