@@ -7842,7 +7842,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### Interactive search still emits BestMovesPayload after the search is cancelled
 
-* **ID:** f-20260911-01 · **Status:** open · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260911-01 · **Status:** handled · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/chess.rs` `process_interactive_search_output` — the `Info` emit around the publishable-line branch and the `BestMove` emit. `classify_interactive_search_result` only rewrites the command result after the loop.
 * **Defect:** a UCI line already dequeued when `stop_engine` sets `supervised.cancelled` is still parsed and emitted as `BestMovesPayload` with the unchanged generation. `EvalListener` accepts that generation, so an in-flight `info` or `bestmove` from a search the user already stopped can land as live analysis.
 * **Why it matters:** `.claude/rules/engine-lifecycle.md` — a payload is used only when its generation still matches *and* the engine is the live search. `f-20260903-01` (handled) put generation on the payload; this is the remaining producer-side hole where a cancelled generation is still published.
