@@ -796,6 +796,7 @@ async fn save_engine_logs(app: tauri::AppHandle, text: String) -> Result<(), Err
 }
 
 const DOCUMENTATION_URL: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/tree/master/docs");
+const APP_LOG_FILE_NAME: &str = "en-croissant.log";
 
 /// Opens the fixed project documentation URL without granting arbitrary URL authority to the
 /// renderer.
@@ -821,7 +822,7 @@ async fn open_app_log(app: tauri::AppHandle) -> Result<(), Error> {
 
 fn open_app_log_blocking(app: tauri::AppHandle) -> Result<(), Error> {
     use tauri_plugin_opener::OpenerExt;
-    let path = app.path().app_log_dir()?.join("en-croissant.log");
+    let path = app.path().app_log_dir()?.join(APP_LOG_FILE_NAME);
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(Error::from)
@@ -1824,21 +1825,42 @@ async fn seal_and_drain_engine_image_issuances(
 
 /// Native log sinks. The webview is absent on purpose: a diagnostic that names a
 /// path, SQL fragment or keyring error stays on stdout (and, in release, the log
-/// directory) and is never emitted on `log://log`.
-fn native_log_targets() -> Vec<Target> {
+/// directory) and is never emitted on `log://log`. `TargetKind::Webview` is not a
+/// variant, so it cannot be configured without a compile error here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeLogSink {
+    Stdout,
+    LogDir,
+}
+
+const NATIVE_LOG_SINKS: &[NativeLogSink] = &[NativeLogSink::Stdout, NativeLogSink::LogDir];
+
+fn native_log_sinks() -> &'static [NativeLogSink] {
     #[cfg(debug_assertions)]
     {
-        vec![Target::new(TargetKind::Stdout)]
+        &NATIVE_LOG_SINKS[..1]
     }
     #[cfg(not(debug_assertions))]
     {
-        vec![
-            Target::new(TargetKind::Stdout),
-            Target::new(TargetKind::LogDir {
-                file_name: Some(String::from("en-croissant.log")),
-            }),
-        ]
+        NATIVE_LOG_SINKS
     }
+}
+
+fn target_for_sink(sink: NativeLogSink) -> Target {
+    match sink {
+        NativeLogSink::Stdout => Target::new(TargetKind::Stdout),
+        NativeLogSink::LogDir => Target::new(TargetKind::LogDir {
+            file_name: Some(String::from(APP_LOG_FILE_NAME)),
+        }),
+    }
+}
+
+fn native_log_targets() -> Vec<Target> {
+    native_log_sinks()
+        .iter()
+        .copied()
+        .map(target_for_sink)
+        .collect()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -2403,16 +2425,31 @@ mod tests {
     fn native_log_targets_never_include_the_webview() {
         use crate::infra::blocking::source_scan::body_at_indent;
 
-        let source = include_str!("main.rs");
-        let targets = body_at_indent(source, "fn native_log_targets()");
-        assert!(
-            !targets.contains("Webview"),
-            "a path-bearing native log must not have a webview sink: {targets}"
+        assert_eq!(
+            NATIVE_LOG_SINKS,
+            &[NativeLogSink::Stdout, NativeLogSink::LogDir]
         );
-        assert!(targets.contains("Stdout"), "{targets}");
+        assert_eq!(native_log_sinks(), &[NativeLogSink::Stdout]);
+        assert_eq!(native_log_targets().len(), native_log_sinks().len());
+        let _ = target_for_sink(NativeLogSink::LogDir);
+        assert_eq!(APP_LOG_FILE_NAME, "en-croissant.log");
+
+        let source = include_str!("main.rs");
+        let sinks = body_at_indent(source, "fn native_log_sinks()");
+        let map = body_at_indent(source, "fn target_for_sink(");
+        let targets = body_at_indent(source, "fn native_log_targets()");
+        let opener = body_at_indent(source, "fn open_app_log_blocking(");
         assert!(
-            targets.contains("LogDir"),
-            "release still writes the log directory: {targets}"
+            !sinks.contains("Webview") && !map.contains("Webview") && !targets.contains("Webview"),
+            "a path-bearing native log must not have a webview sink"
+        );
+        assert!(
+            targets.contains("native_log_sinks()") && targets.contains("target_for_sink"),
+            "plugin sinks must be exactly NativeLogSink, which has no webview: {targets}"
+        );
+        assert!(
+            map.contains("APP_LOG_FILE_NAME") && opener.contains("APP_LOG_FILE_NAME"),
+            "log-dir creation and open_app_log must share APP_LOG_FILE_NAME"
         );
 
         let main = body_at_indent(source, "fn main()");
