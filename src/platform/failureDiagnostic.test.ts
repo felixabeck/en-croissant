@@ -3,7 +3,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ logError: vi.fn() }));
 vi.mock("@/platform/native", () => ({ error: mocks.logError }));
 
-import { logFailureSafely, safeFailureContext } from "./failureDiagnostic";
+import { logFailureSafely, safeFailureContext } from "./errors";
 
 beforeEach(() => {
     mocks.logError.mockReset().mockResolvedValue(undefined);

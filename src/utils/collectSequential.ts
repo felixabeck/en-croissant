@@ -1,4 +1,4 @@
-import { safeFailureContext, logFailureSafely } from "./failureDiagnostic";
+import { logFailureSafely, safeFailureContext } from "@/platform/errors";
 
 function cancellation(signal?: AbortSignal): never | void {
     if (!signal?.aborted) return;

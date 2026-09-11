@@ -1,9 +1,5 @@
 import type { TFunction } from "i18next";
-import {
-    logFailureSafely,
-    safeFailureContext,
-    type GameFailureContext,
-} from "@/utils/failureDiagnostic";
+import { logFailureSafely, safeFailureContext, type GameFailureContext } from "@/platform/errors";
 import { MissingLocalEngineError } from "./playerConfig";
 
 export type GameCommand = "start" | "move" | "takeback" | "abort" | "resign";
