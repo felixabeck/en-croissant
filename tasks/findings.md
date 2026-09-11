@@ -6407,7 +6407,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### Cancelling an analysis report before its engine is published is a silent no-op
 
-* **ID:** f-20260904-11 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260904-11 · **Status:** handled · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/chess.rs:656-665` (`cancel_analysis`), `:684-721` (everything
   `analyze_game` does before the lease), `:748` (`EngineProcess::new`, where the actor is first
   published to the supervisor); renderer side `src/components/panels/analysis/ReportPanel.tsx`
