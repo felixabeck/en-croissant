@@ -873,14 +873,22 @@ fn analysis_terminal_state(error: &Error) -> ProgressState {
     }
 }
 
+fn ensure_analysis_not_cancelled(cancellation: &CancellationToken) -> Result<(), Error> {
+    if cancellation.is_cancelled() {
+        Err(Error::AnalysisCancelled)
+    } else {
+        Ok(())
+    }
+}
+
 fn ensure_analysis_owner_active(
     supervised: &crate::engine::SupervisedEngine,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
-    if supervised.cancelled.load(Ordering::SeqCst) || cancellation.is_cancelled() {
+    if supervised.cancelled.load(Ordering::SeqCst) {
         Err(Error::AnalysisCancelled)
     } else {
-        Ok(())
+        ensure_analysis_not_cancelled(cancellation)
     }
 }
 
@@ -888,9 +896,57 @@ fn ensure_analysis_owner_active(
 type AnalysisLineHook = Box<dyn FnOnce(&str)>;
 
 #[cfg(test)]
+type AnalysisReplayPlyHook = Box<dyn FnMut(usize)>;
+
+#[cfg(test)]
 std::thread_local! {
     static ANALYSIS_LINE_DEQUEUED_HOOK: std::cell::RefCell<Option<AnalysisLineHook>> =
         const { std::cell::RefCell::new(None) };
+    static ANALYSIS_REPLAY_PLY_HOOK: std::cell::RefCell<Option<AnalysisReplayPlyHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn collect_report_positions(
+    fen: Fen,
+    moves: &[String],
+    reversed: bool,
+    cancellation: &CancellationToken,
+) -> Result<Vec<(Fen, Vec<String>, bool)>, Error> {
+    ensure_analysis_not_cancelled(cancellation)?;
+    let setup = fen.as_setup().clone();
+    let castling_mode = CastlingMode::detect(&setup);
+    let mut chess: Chess = setup.position(castling_mode)?;
+    let mut fens: Vec<(Fen, Vec<String>, bool)> = vec![(fen, vec![], false)];
+
+    for (i, m) in moves.iter().enumerate() {
+        #[cfg(test)]
+        ANALYSIS_REPLAY_PLY_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().as_mut() {
+                hook(i);
+            }
+        });
+        ensure_analysis_not_cancelled(cancellation)?;
+        let uci = UciMove::from_ascii(m.as_bytes())?;
+        let played = uci.to_move(&chess)?;
+        let previous_pos = chess.clone();
+        chess.play_unchecked(&played);
+        let current_pos = chess.clone();
+        if !chess.is_game_over() {
+            let prev_eval = naive_eval(&previous_pos);
+            let cur_eval = -naive_eval(&current_pos);
+            ensure_analysis_not_cancelled(cancellation)?;
+            fens.push((
+                Fen::from_position(current_pos, EnPassantMode::Legal),
+                moves.iter().take(i + 1).cloned().collect(),
+                prev_eval > cur_eval + 100,
+            ));
+        }
+    }
+
+    if reversed {
+        fens.reverse();
+    }
+    Ok(fens)
 }
 
 async fn analyze_position_with_owner(
@@ -992,46 +1048,15 @@ async fn analyze_game_core<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     cancellation: CancellationToken,
 ) -> Result<Vec<MoveAnalysis>, Error> {
-    if cancellation.is_cancelled() {
-        return Err(Error::AnalysisCancelled);
-    }
+    ensure_analysis_not_cancelled(&cancellation)?;
     let executable_ref = engine.id.clone();
     let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineExecute)?;
+    ensure_analysis_not_cancelled(&cancellation)?;
     let analysis_key = EngineKey::new("analysis".into(), id.clone())?;
     let mut analysis: Vec<MoveAnalysis> = Vec::new();
 
     let fen = Fen::from_ascii(options.fen.as_bytes())?;
-    let setup = fen.as_setup().clone();
-    let castling_mode = CastlingMode::detect(&setup);
-
-    let mut chess: Chess = setup.position(castling_mode)?;
-    let mut fens: Vec<(Fen, Vec<String>, bool)> = vec![(fen, vec![], false)];
-
-    options
-        .moves
-        .iter()
-        .enumerate()
-        .try_for_each(|(i, m)| -> Result<(), Error> {
-            let uci = UciMove::from_ascii(m.as_bytes())?;
-            let m = uci.to_move(&chess)?;
-            let previous_pos = chess.clone();
-            chess.play_unchecked(&m);
-            let current_pos = chess.clone();
-            if !chess.is_game_over() {
-                let prev_eval = naive_eval(&previous_pos);
-                let cur_eval = -naive_eval(&current_pos);
-                fens.push((
-                    Fen::from_position(current_pos, EnPassantMode::Legal),
-                    options.moves.clone().into_iter().take(i + 1).collect(),
-                    prev_eval > cur_eval + 100,
-                ));
-            }
-            Ok(())
-        })?;
-
-    if options.reversed {
-        fens.reverse();
-    }
+    let mut fens = collect_report_positions(fen, &options.moves, options.reversed, &cancellation)?;
 
     let mut initial_resolved = {
         let mut authority = state
@@ -1045,6 +1070,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
             &uci_options,
         )?
     };
+    ensure_analysis_not_cancelled(&cancellation)?;
     let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
     let inherited_values: HashMap<String, String> = initial_resolved
         .iter()
@@ -1064,6 +1090,16 @@ async fn analyze_game_core<R: tauri::Runtime>(
     // Validate all position input and acquire the progress lease before a
     // child exists. Every path after this registration goes through the
     // cleanup-aware failure macro below.
+    if let Err(error) = ensure_analysis_not_cancelled(&cancellation) {
+        let _ = update_progress_with_state(
+            &state.progress_state,
+            &app,
+            &progress_lease,
+            0.0,
+            analysis_terminal_state(&error),
+        );
+        return Err(error);
+    }
     let admission = match state
         .engine_supervisor
         .admit_for_operation(
@@ -1250,6 +1286,9 @@ async fn analyze_game_core<R: tauri::Runtime>(
             }
         }
     }
+    if let Err(cancelled) = ensure_analysis_not_cancelled(&cancellation) {
+        fail_analysis_progress!(cancelled);
+    }
     update_progress_with_state(
         &state.progress_state,
         &app,
@@ -1415,6 +1454,82 @@ mod tests {
             analysis_terminal_state(&Error::EngineDisconnected),
             ProgressState::Failed
         );
+    }
+
+    #[test]
+    fn report_replay_stops_at_the_ply_where_cancellation_arrives() {
+        let moves = ["e2e4", "e7e5", "g1f3"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let live = collect_report_positions(start_fen(), &moves, false, &CancellationToken::new())
+            .unwrap();
+        assert_eq!(live.len(), 4);
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(matches!(
+            collect_report_positions(start_fen(), &moves, false, &cancelled),
+            Err(Error::AnalysisCancelled)
+        ));
+
+        let during = CancellationToken::new();
+        let cancel_at_second_ply = during.clone();
+        // Cancel on the last ply so a check that only runs at the *next*
+        // iteration cannot save the test.
+        ANALYSIS_REPLAY_PLY_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move |ply| {
+                    if ply == 2 {
+                        cancel_at_second_ply.cancel();
+                    }
+                })))
+                .is_none());
+        });
+        let error = collect_report_positions(start_fen(), &moves, false, &during).unwrap_err();
+        ANALYSIS_REPLAY_PLY_HOOK.with(|slot| {
+            slot.replace(None);
+        });
+        assert!(matches!(error, Error::AnalysisCancelled));
+    }
+
+    #[tokio::test]
+    async fn analyze_game_core_does_not_start_progress_when_already_cancelled() {
+        let app = engine_test_app();
+        let state = app.state::<AppState>().inner().clone();
+        let id = "cancelled-before-admit";
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let error = analyze_game_core(
+            id.into(),
+            EngineHandle {
+                id: crate::infra::path_authority::PathRef {
+                    id: "missing-engine".into(),
+                },
+                kind: crate::infra::path_authority::EngineHandleKind::Engine,
+            },
+            "missing-engine".into(),
+            GoMode::Depth(1),
+            AnalysisOptions {
+                fen: start_fen().to_string(),
+                moves: vec!["e2e4".into(), "e7e5".into()],
+                annotate_novelties: false,
+                reference_db: None,
+                reversed: false,
+            },
+            Vec::new(),
+            state.clone(),
+            app.clone(),
+            cancellation,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, Error::AnalysisCancelled));
+        assert!(state.progress_state.get(id).unwrap().is_none());
+        assert!(state
+            .engine_supervisor
+            .get_exact(&EngineKey::new("analysis".into(), id.into()).unwrap())
+            .is_none());
     }
 
     #[tokio::test]
