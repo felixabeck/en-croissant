@@ -5471,7 +5471,7 @@ actively misleads anyone reasoning about coverage impact without running the sui
 
 ### Game-start failures are shown to the user as raw untranslated error messages
 
-* **ID:** f-20260901-21 · **Status:** open · **Area:** i18n · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260901-21 · **Status:** handled · **Area:** i18n · **Root:** - · **Entry:** lens · **Blocked:** none
 
 `BoardGame.tsx`'s `startGame` catch does `setCommandError(err instanceof Error ? err.message : "Unable
 to start the game.")`, and that string is rendered verbatim in a `role="alert"` block further down the
