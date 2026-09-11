@@ -5321,6 +5321,9 @@ Handled 2026-09-01. `get_engine_config` and interactive/analysis `EngineProcess`
 * **Review triage (2026-09-11, tests):** Fix — exercise the production analysis report provenance-restoration path rather than only its helper, add successful log-egress coverage, cover cumulative byte-budget exhaustion, and cover overlapping resource values. The review found that deleting report restoration or weakening those guards could leave current tests green. Preserve the public IPC signatures while adding the narrowest real-flow test seam.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"a83f83362440e8bc5a67060dd7e5a67727ae6923bf5d7e6006e803d4d992b308","input_sha256":"1ee8782f98df782d17e2461cf3b59124f57c97b5882eb793d58e8a7b1d9a9bc7","kind":"mutation-receipt","operation":"780e6d1ddc8b446e545ab78472d5f9664878bd74330503314ad310e63acc6230","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-18"],"target":"f-20260901-18","v":1} -->
 
+* **Review triage (2026-09-11, code quality):** Skip — src-tauri/src/engine/process.rs:117 explicitly preserves the Truncated variant in an exhaustive EngineLog match. Although current push callers supply Gui/Engine, removing the arm does not compile; replacing it with an unreachable panic or introducing a second log enum adds risk or churn without a behavioral benefit. No retained-marker production caller was added by this diff.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"e8e2ef413faf2e74c0dbe05a340fbdff9e0b523a11f40092eb29b17335062476","input_sha256":"aa329f08ec49348cbda4701ea346400436c54f72a6867244cbde2fe0961a849e","kind":"mutation-receipt","operation":"4525b13188f0e64540a3bb778ea3e5a6943cd9c4b18a6d49bbc2dd2be9a66519","options":{"section":null},"request_id_sha256":null,"results":["f-20260901-18"],"target":"f-20260901-18","v":1} -->
+
 ---
 
 ## 2026-09-01 — filed through the inbox spool
