@@ -3686,8 +3686,13 @@ mod blocking_offload_scans {
 
         let verify = body_at_indent(path_authority, "fn verify(");
         assert!(
-            verify.contains("sha256_open_file"),
-            "verify must delegate hashing to sha256_open_file: {verify}"
+            verify.contains(".sha256("),
+            "verify must hash through VerifiedFile::sha256: {verify}"
+        );
+        let mint_hash = body_at_indent(path_authority, "fn sha256(");
+        assert!(
+            mint_hash.contains("sha256_open_file"),
+            "VerifiedFile::sha256 must call sha256_open_file: {mint_hash}"
         );
 
         let hash_open = body_at_indent(path_authority, "fn sha256_open_file(");
