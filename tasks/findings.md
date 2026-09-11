@@ -6255,7 +6255,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### Debug builds send every log record to the renderer, so any logged native cause is renderer-visible
 
-* **ID:** f-20260904-07 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260904-07 · **Status:** handled · **Area:** bindings-ipc · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/main.rs:1615` (`let log_targets = [TargetKind::Stdout, TargetKind::Webview];`
   under `#[cfg(debug_assertions)]`), `src-tauri/src/main.rs:1635` (`.level(LevelFilter::Info)`),
   and `src/App.tsx:89` (`attachConsole()`).
