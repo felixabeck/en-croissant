@@ -6316,6 +6316,12 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Found by:** the locate probe and three lenses during plan review of the `f-20260830-08` typed-error
   plan, 2026-09-04.
 
+* **Closed:** `close_splashscreen` now returns `Result<(), Error>`. A missing `main` window is `Error::InvalidInput`; `show()` failures map through `From<tauri::Error>` and stay the opaque `platform failure` payload. Bindings regenerated so `closeSplashscreen` is `Result<null, ErrorPayload>`. The renderer substring fallback comment no longer names this command. Proof: `cargo test --bin chessfable invalid_input_serializes_the_owned_message` (ok); `vitest run src/platform/tauri.test.ts src/App.test.tsx src/platform/errors.test.ts` (106 passed); `generated.ts` has no remaining `Result<null, string>`.
+* **Commits:** `61943b3b` (fix).
+* **Rejected:** a dedicated `MissingResource` arm. The finding named `InvalidInput` first; a new variant would be a taxonomy change for one command with no renderer arguments.
+* **Entry revalidation:** stayed `inline`. `d-20260904-22` left this member at its filed tier; the change is the specified signature conversion plus generated bindings and tests.
+<!-- ledger-meta {"command":"annotate","effect_lines":4,"effect_sha256":"ad7c0da2d83758d721e793476687bc9396c67094129d036c6dcfbccdb6833cd7","input_sha256":"56009992870c18828e12e63b90a6c9fb3b7e5d5d54b4fb13dc810fc8443520e1","kind":"mutation-receipt","operation":"5f29905797cbdb4dee0aba6d6912fbbf76ce9e23d16dd0a463c89c2570e52c5d","options":{"section":null},"request_id_sha256":null,"results":["f-20260904-08"],"target":"f-20260904-08","v":1} -->
+
 ---
 
 ## 2026-09-04 — filed through the inbox spool
