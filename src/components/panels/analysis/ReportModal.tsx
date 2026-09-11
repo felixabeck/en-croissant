@@ -13,6 +13,7 @@ import { enginesAtom, referenceDbAtom } from "@/state/atoms";
 import { createZodStorage } from "@/state/utils";
 import { captureReportOwner, isReportOwnerCurrent, waitForReportOwner } from "@/state/store/tree";
 import { goModeSchema, type LocalEngine } from "@/utils/engines";
+import { normalizeEngineOptions } from "@/utils/engineOptions";
 import { z } from "zod";
 import { notifyUnlessCancelled } from "@/components/files/notifyError";
 
@@ -155,9 +156,7 @@ function ReportModal({
     registerOperation(operationId);
     setInProgress(true);
     closeReportingMode();
-    const engineSettings = (engine?.settings ?? []).map((s) =>
-      s.type === "resource" ? s : { ...s, value: s.value.toString() },
-    );
+    const engineSettings = normalizeEngineOptions(engine?.settings ?? []);
 
     tauri
       .analyzeGame(

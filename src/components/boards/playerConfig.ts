@@ -1,4 +1,5 @@
 import type { PlayerConfig } from "@/bindings";
+import { normalizeEngineOptions } from "@/utils/engineOptions";
 import type { OpponentSettings } from "./OpponentForm";
 
 /** A player configuration was incomplete before it could be sent to the backend. */
@@ -33,13 +34,9 @@ export function toPlayerConfig(settings: OpponentSettings): PlayerConfig {
         name: settings.engine.name ?? "Engine",
         engineId: settings.engine.id,
         handle: settings.engine.handle,
-        options: (settings.engineSettings ?? settings.engine.settings ?? [])
-            .filter((setting) => setting.name !== "MultiPV")
-            .map((setting) =>
-                setting.type === "resource"
-                    ? setting
-                    : { ...setting, value: setting.value.toString() },
-            ),
+        options: normalizeEngineOptions(
+            settings.engineSettings ?? settings.engine.settings ?? [],
+        ).filter((setting) => setting.name !== "MultiPV"),
         go: settings.timeControl ? null : settings.go,
     };
 }
