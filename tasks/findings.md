@@ -7887,3 +7887,50 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Fix shape (candidates):** one timeout covering the whole drain; or keep per-line stall detection and add a separate wall-clock cap; or after N info lines without `bestmove`, poison. Each changes whether a slow-but-alive engine is force-killed.
 * **Related:** `f-20260911-01` (handled) closed emit-after-cancel and implicit-stop poisoning when the deadline *does* fire. This is the case where the deadline never fires. `f-20260831-20` (handled) is unbounded `child.wait()` after force-kill, a later step. `f-20260911-02` (open) is unscoped generation selection, not this timer.
 * **Found by:** `review-engine-protocol` lens during `$push` of f-20260911-01, 2026-09-11. Pre-existing; the cancel-emit diff did not change the per-line timeout.
+
+---
+
+## 2026-09-12 — filed through the inbox spool
+
+### A credential directory replaced under a running app orphans the bearer token, and the identity comparison that would catch it has no API
+
+* **ID:** f-20260912-01 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/credentials.rs` — `persist_locked` (`:575-585`), the add transaction
+  (`:368-400`) and the re-authentication branch (`:346-362`); `src-tauri/src/infra/fs.rs`
+  `entry_identity_at` (`:1257-1272`); `src-tauri/src/infra/path_authority/mod.rs` `AuthorizedDir`
+  (`:302-307`) and `VerifiedIdentity` (`:142-157`).
+* **Defect:** once `CredentialManager` holds a retained `AuthorizedDir` for its lifetime, a
+  credential directory renamed and recreated while the application runs is no longer followed.
+  Adding an account then stores the secret in the OS keyring and journals its metadata into the
+  **detached** inode; the next startup opens the replacement directory, finds an empty registry,
+  and reconciles nothing. The keyring entry survives with no record referring to it — an orphaned
+  bearer credential that no code path can enumerate, because `reconcile` walks registry records
+  and the `keyring` crate offers no enumeration of a service namespace.
+* **Why the obvious guard cannot be written, measured during the plan review of
+  `f-20260905-02` (2026-09-12) and recorded so the next session does not re-derive it:** the
+  intended fix is to compare the retained directory's identity against the live pathname before
+  writing, and fail rather than write into a detached inode. Five review lenses independently
+  showed it does not compose with the current API.
+  * `infra::fs::entry_identity_at` takes a parent `&File` and returns `(u64, u64)`. `AuthorizedDir`
+    retains a descriptor for the credential directory itself but none for its **app-data parent**,
+    and exposes its identity only as the opaque `VerifiedIdentity`, which cannot be compared with
+    that pair from outside the module.
+  * `entry_identity_at` is `#[cfg(unix)]`. An unguarded call is a Windows compile failure, which is
+    a different and worse failure than the runtime one that platform already has
+    (`f-20260830-06`).
+  * The check is not atomic with the write it guards. A rename between the comparison and the
+    `renameat` still commits into the detached directory, so it narrows the window rather than
+    closing it.
+  * It would sit in `persist_locked` and therefore miss the re-authentication branch at `:346-362`,
+    which stores a token without reaching it.
+* **Open question:** does `AuthorizedDir` gain an app-data parent descriptor plus a public identity
+  comparison so the credential store can refuse a replaced directory — and if so, what does the
+  multi-step add transaction do when the refusal lands between the `PendingAdd` journal write and
+  the keyring store, where the existing comment at `:378-382` deliberately refuses to compensate?
+  Or is a replaced app-data directory declared unsupported, with the orphan accepted and
+  documented?
+* **Why it matters:** the object left behind is a live Lichess bearer token in the OS credential
+  manager that the application can no longer see, list, or revoke.
+* **Related:** `f-20260905-02`, whose plan surfaced it and whose D5 records the behaviour and the
+  reason; `f-20260830-06` for the platform half.
+* **Found by:** Claude Code, plan review of `tasks/plans/2026-09-12-credential-bootstrap-path-routing.md`, 2026-09-12.
