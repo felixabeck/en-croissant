@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: b2f5af1d32c439cbec1d5b602a0077ddea899ed42a09724d49e044659ab23a9a
+# agent-kit-sha256: 5e17754a55f8db6e59205ecd025ea048b906c5f0a456aeebb60e8eb5daa5b7c9
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -334,6 +334,7 @@ RECEIPT_PLACEHOLDER = "<!-- ledger-meta receipt-placeholder -->"
 MERGE_DRIVER_NAME = "ledger-append"
 MERGE_DRIVER_COMMAND = "./scripts/findings.py merge-driver %O %A %B %P"
 MERGE_DRIVER_DESCRIPTION = "append-only ledger merge (findings.py merge-driver)"
+MERGE_DRIVER_CONFIG_LOCK_NAME = "findings-merge-driver-config.lock"
 MERGE_DRIVER_LEDGERS = {
     "tasks/findings.md": "findings",
     "tasks/decisions.md": "decisions",
@@ -1428,21 +1429,88 @@ def merge_appended_blocks(base: str, ours: str, theirs: str) -> str | None:
 
 def ensure_merge_driver(root: Path) -> bool:
     """Install the ledger merge driver in this clone's config; True if written."""
-    key = f"merge.{MERGE_DRIVER_NAME}.driver"
-    current = _git_for_ledger(root, "config", "--get", key)
-    if current.returncode == 0 and current.stdout.strip() == MERGE_DRIVER_COMMAND:
-        return False
     settings = (
-        (key, MERGE_DRIVER_COMMAND),
+        (f"merge.{MERGE_DRIVER_NAME}.driver", MERGE_DRIVER_COMMAND),
         (f"merge.{MERGE_DRIVER_NAME}.name", MERGE_DRIVER_DESCRIPTION),
     )
-    for name, value in settings:
-        result = _git_for_ledger(root, "config", "--local", name, value)
-        if result.returncode != 0:
-            raise LedgerError(
-                f"could not install merge driver {name}: {_git_failure_detail(result)}"
+    missing_or_wrong = _merge_driver_settings_to_repair(root, settings)
+    if not missing_or_wrong:
+        return False
+
+    with _merge_driver_config_lock(root):
+        missing_or_wrong = _merge_driver_settings_to_repair(root, settings)
+        for name, value in missing_or_wrong:
+            result = _git_for_ledger(
+                root, "config", "--local", "--replace-all", name, value
             )
-    return True
+            if result.returncode != 0:
+                raise LedgerError(
+                    f"could not install merge driver {name}: {_git_failure_detail(result)}"
+                )
+        return bool(missing_or_wrong)
+
+
+def _merge_driver_settings_to_repair(
+    root: Path, settings: tuple[tuple[str, str], ...]
+) -> list[tuple[str, str]]:
+    """Return merge-driver settings that do not have exactly one expected value."""
+    missing_or_wrong: list[tuple[str, str]] = []
+    for name, value in settings:
+        result = _git_for_ledger(root, "config", "--local", "--get-all", name)
+        if result.returncode == 1 and not result.stdout and not result.stderr:
+            current_values: list[str] = []
+        elif result.returncode == 0:
+            current_values = result.stdout.splitlines()
+        else:
+            raise LedgerError(
+                f"could not inspect merge driver {name}: "
+                f"{_git_failure_detail(result)}"
+            )
+        if current_values != [value]:
+            missing_or_wrong.append((name, value))
+    return missing_or_wrong
+
+
+@contextmanager
+def _merge_driver_config_lock(root: Path) -> Iterator[None]:
+    """Serialize merge-driver config repair across worktrees and processes.
+
+    The lock lives in Git's common directory, which is shared by linked worktrees.
+    Like the ledger flock, its inode remains on disk so waiters always lock the
+    same file.
+    """
+    common = _git_for_ledger(root, "rev-parse", "--git-common-dir")
+    if common.returncode != 0:
+        raise LedgerError(
+            "could not locate the shared Git directory for merge-driver config: "
+            f"{_git_failure_detail(common)}"
+        )
+    common_text = common.stdout.strip()
+    if not common_text:
+        raise LedgerError(
+            "could not locate the shared Git directory for merge-driver config: "
+            "git rev-parse --git-common-dir returned an empty path"
+        )
+    common_dir = Path(common_text)
+    if not common_dir.is_absolute():
+        common_dir = root / common_dir
+    lock = common_dir.resolve() / MERGE_DRIVER_CONFIG_LOCK_NAME
+    try:
+        acquired, waited = acquire_ledger_lock(lock)
+    except LedgerError as exc:
+        raise LedgerError(
+            f"could not acquire merge-driver config lock {lock}: {exc}"
+        ) from exc
+    if not acquired:
+        raise LedgerError(
+            f"could not acquire merge-driver config lock {lock} "
+            f"(waited {waited:.2f}s)"
+        )
+
+    try:
+        yield
+    finally:
+        release_ledger_lock(lock)
 
 
 def cmd_merge_driver(args: argparse.Namespace) -> int:
@@ -1470,17 +1538,26 @@ def cmd_merge_driver(args: argparse.Namespace) -> int:
         else:
             reason = "a side changed existing lines instead of appending"
         if merged is not None:
-            candidate = args.ours.with_name(f"{args.ours.name}.ledger-merge")
+            candidate: Path | None = None
             try:
-                candidate.write_text(merged, encoding="utf-8")
-                valid = _ledger_snapshot_valid(candidate, ledger_kind)
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=args.ours.parent,
+                    prefix=f".{args.ours.name}.ledger-merge-",
+                    delete=False,
+                ) as scratch:
+                    candidate = Path(scratch.name)
+                    scratch.write(merged)
+                valid = _ledger_snapshot_valid(cast(Path, candidate), ledger_kind)
             except (LedgerError, OSError, UnicodeError) as exc:
                 valid = False
                 reason = f"the appended blocks could not be validated: {exc}"
             else:
                 reason = "the appended blocks do not validate together"
             finally:
-                candidate.unlink(missing_ok=True)
+                if candidate is not None:
+                    candidate.unlink(missing_ok=True)
             if valid:
                 args.ours.write_text(merged, encoding="utf-8")
                 return 0
@@ -1501,12 +1578,30 @@ def cmd_merge_driver(args: argparse.Namespace) -> int:
         if ledger_kind is not None:
             try:
                 valid = _ledger_snapshot_valid(args.ours, ledger_kind)
-            except (LedgerError, OSError, UnicodeError):
+                preserved = (
+                    _ledger_entry_ids_preserved(args.base, args.ours, ledger_kind)
+                    if valid
+                    else False
+                )
+            except (LedgerError, OSError, UnicodeError) as exc:
+                print(
+                    f"merge-driver: could not validate git merge-file result for "
+                    f"{args.path} ({args.ours}): {exc}",
+                    file=sys.stderr,
+                )
                 valid = False
+                preserved = False
             if not valid:
                 print(
                     f"merge-driver: git merge-file joined {args.path} cleanly but "
                     "the result does not validate; left conflicted for a hand",
+                    file=sys.stderr,
+                )
+                return 1
+            if not preserved:
+                print(
+                    f"merge-driver: git merge-file removed entries from the merge "
+                    f"base for {args.path}; left conflicted for a hand",
                     file=sys.stderr,
                 )
                 return 1
@@ -1541,6 +1636,25 @@ def _ledger_snapshot_preserved(before: Path, after: Path, ledger_kind: str) -> b
         )
     except (LedgerError, OSError, UnicodeError):
         return False
+
+
+def _ledger_entry_ids_preserved(
+    before: Path, after: Path, ledger_kind: str
+) -> bool:
+    """Whether all entry IDs in the merge base still exist in the result.
+
+    This intentionally permits in-place edits to existing entries, such as a
+    finding status change or a decision's supersession trailer update.
+    """
+    if ledger_kind not in {"findings", "decisions"}:
+        raise ValueError("ledger_kind must be exactly 'findings' or 'decisions'")
+    if ledger_kind == "findings":
+        before_ids = {finding.id for finding in parse(before)[0]}
+        after_ids = {finding.id for finding in parse(after)[0]}
+    else:
+        before_ids = {decision.id for decision in load_decisions(before)}
+        after_ids = {decision.id for decision in load_decisions(after)}
+    return before_ids <= after_ids
 
 
 def _finding_entries_postcondition(
