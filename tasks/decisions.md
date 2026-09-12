@@ -2824,3 +2824,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** outside `infra/path_authority` the type cannot be assembled. Negative tests mint a live target then replace the leaf. Parent plan D3/D4.
 * **Decided by:** Grok, autonomously under `full auto`, A1 of f-20260912-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"97e45710f97af7ed172903420e69a65aa4934b65acd04f8744eed7ba3a406820","input_sha256":"4370022eda246f734df391d58cf15acbe4d7ef5a8084be563669b5ee4bac80f3","kind":"mutation-receipt","operation":"dea2f0aea962c6abb6ba6f8c57fa54708b708d6046eb14b2a4851e2741c25e59","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20260912-07 — Does A1 change get_db_or_create or the repository Path API?
+
+* **Question:** Does A1 change `get_db_or_create`'s `&Path` parameter or the repository's pathname API?
+* **Governs:** f-20260912-11, f-20260905-03
+* **Chosen:** both stay. `get_db_or_create` receives `target.path()`. `canonical_database_path` stays until Mandate B, so A1 does not shrink the allowlist.
+* **Rejected:** inlining `get_db_or_create`; changing its signature; re-keying the repository in this run.
+* **Reason:** parent plan D5/D6. Re-keying is Mandate B (`f-20260905-03`).
+* **Decided by:** Grok, autonomously under `full auto`, A1 of f-20260912-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"242ecf58ca79134508bc23adb025ca65d9362a5ed83e774cb5fd975a23804280","input_sha256":"c0d51f368a606ac3458485cad7eb515e9e03697c2610072cd67fe695512fb6a3","kind":"mutation-receipt","operation":"d3c2cf038a035a1b95aff36cc7c50a406dd9e3624b4592d8817614e80bd98e78","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-07"],"target":"decisions-ledger","v":1} -->
