@@ -201,15 +201,14 @@ pub(crate) fn load_search_index_cancellable(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let database =
-        resolve_database(authority, handle, PathOperation::DatabaseRead)?.canonicalize()?;
     let read_target = database_file_target(authority, handle, PathOperation::DatabaseRead)?;
-    let db_identity = repository.database_identity_expected(&database, read_target.identity)?;
+    let db_identity =
+        repository.database_identity_expected(read_target.path(), read_target.identity())?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
     if let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? {
         return cache_loaded_index(
             search_cache,
-            &database,
+            read_target.path(),
             expected_source,
             index,
             cancellation,
@@ -220,19 +219,20 @@ pub(crate) fn load_search_index_cancellable(
     // per-index lock serializes only generation/loading for that archive.
     let generation_lock = GenerationLockCleanup {
         search_cache,
-        index: get_index_path(&database),
-        lock: search_cache.generation_lock(get_index_path(&database)),
+        index: get_index_path(read_target.path()),
+        lock: search_cache.generation_lock(get_index_path(read_target.path())),
     };
     let _generation_guard =
         crate::infra::cancellable_lock::lock_cancellable(&generation_lock.lock, cancellation)?;
 
     let read_target = database_file_target(authority, handle, PathOperation::DatabaseRead)?;
-    let db_identity = repository.database_identity_expected(&database, read_target.identity)?;
+    let db_identity =
+        repository.database_identity_expected(read_target.path(), read_target.identity())?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
     if let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? {
         return cache_loaded_index(
             search_cache,
-            &database,
+            read_target.path(),
             expected_source,
             index,
             cancellation,
@@ -240,10 +240,10 @@ pub(crate) fn load_search_index_cancellable(
     }
 
     let mutate_target = database_file_target(authority, handle, PathOperation::DatabaseMutate)?;
-    let preferred_leaf = preferred_sidecar_leaf(&mutate_target.leaf);
-    let legacy_leaf = legacy_sidecar_leaf(&mutate_target.leaf);
+    let preferred_leaf = preferred_sidecar_leaf(mutate_target.leaf());
+    let legacy_leaf = legacy_sidecar_leaf(mutate_target.leaf());
     promote_legacy_index_sidecar_at(
-        &mutate_target.parent,
+        mutate_target.parent(),
         &preferred_leaf,
         &legacy_leaf,
         &db_identity,
@@ -252,7 +252,7 @@ pub(crate) fn load_search_index_cancellable(
     if let Some(index) = open_valid_preferred(&mutate_target, &expected_source, cancellation)? {
         return cache_loaded_index(
             search_cache,
-            &database,
+            mutate_target.path(),
             expected_source,
             index,
             cancellation,
@@ -277,7 +277,8 @@ pub(crate) fn load_search_index_cancellable(
     };
 
     let read_target = database_file_target(authority, handle, PathOperation::DatabaseRead)?;
-    let db_identity = repository.database_identity_expected(&database, read_target.identity)?;
+    let db_identity =
+        repository.database_identity_expected(read_target.path(), read_target.identity())?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
     let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? else {
         return Err(generation_error
@@ -289,7 +290,7 @@ pub(crate) fn load_search_index_cancellable(
     // last durable (legacy) copy — d-20260831-23.
     cache_loaded_index(
         search_cache,
-        &database,
+        read_target.path(),
         expected_source,
         index,
         cancellation,
@@ -320,9 +321,9 @@ fn open_valid_preferred(
             fs::{self as rfs, Mode, OFlags},
             io::Errno,
         };
-        let leaf = preferred_sidecar_leaf(&target.leaf);
+        let leaf = preferred_sidecar_leaf(target.leaf());
         let file = match rfs::openat(
-            &target.parent,
+            target.parent(),
             &leaf,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
@@ -1135,6 +1136,19 @@ mod tests {
             .unwrap();
         assert!(loader.contains("database_file_target"));
         assert!(loader.contains("promote_legacy_index_sidecar_at"));
+        assert!(!loader.contains("canonicalize("));
+        assert!(!loader.contains("resolve_database("));
+        assert!(!loader.contains("database_path("));
+        assert!(!loader.contains("workspace_entry_path("));
+        assert!(!loader.contains("let database"));
+        assert!(loader.contains(
+            "cache_loaded_index(\n            search_cache,\n            read_target.path()"
+        ));
+        assert!(loader.contains("generation_lock(get_index_path(read_target.path()))"));
+        assert!(loader.contains("get_index_path(read_target.path())"));
+        assert!(loader.contains(
+            "cache_loaded_index(\n            search_cache,\n            mutate_target.path()"
+        ));
         assert!(!loader.contains("atomic_replace(&"));
         assert!(!loader.contains("std::fs::remove_file"));
     }

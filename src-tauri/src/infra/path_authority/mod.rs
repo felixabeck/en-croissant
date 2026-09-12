@@ -130,9 +130,57 @@ pub(crate) struct WorkspaceMutationTarget {
 /// reopen `leaf` by pathname for create, unlink, or mmap; use this parent with
 /// `openat` / `unlinkat` / `atomic_replace_at`.
 pub(crate) struct DatabaseFileTarget {
-    pub(crate) parent: fs::File,
-    pub(crate) leaf: OsString,
-    pub(crate) identity: (u64, u64),
+    parent: fs::File,
+    leaf: OsString,
+    identity: (u64, u64),
+    path: PathBuf,
+}
+
+impl DatabaseFileTarget {
+    fn assemble(parent: fs::File, leaf: OsString, identity: (u64, u64), path: PathBuf) -> Self {
+        Self {
+            parent,
+            leaf,
+            identity,
+            path,
+        }
+    }
+
+    pub(crate) fn parent(&self) -> &fs::File {
+        &self.parent
+    }
+
+    pub(crate) fn leaf(&self) -> &OsStr {
+        &self.leaf
+    }
+
+    pub(crate) fn identity(&self) -> (u64, u64) {
+        self.identity
+    }
+
+    /// Returns the canonical pathname the identity was validated against. SQLite's pathname-only
+    /// open, in-memory keys, and logging consume this value; create, unlink, and mmap use the
+    /// retained parent descriptor and leaf instead of reopening the pathname.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn for_test_path(path: &Path) -> Result<Self, Error> {
+        path.file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        let identity = opened_file_identity(&file)?;
+        let canonical = canonical_binding(path)?;
+        let (parent, leaf) = crate::infra::fs::open_verified_parent(&canonical, identity, false)?;
+        Ok(Self::assemble(parent, leaf, identity, canonical))
+    }
 }
 
 mod verified_identity {
@@ -260,6 +308,8 @@ type RefreshEntryHook = Box<dyn Fn(&str)>;
 #[cfg(test)]
 std::thread_local! {
     static DATABASE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static DATABASE_TARGET_POST_VALIDATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static PUZZLE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -917,6 +967,45 @@ pub enum PathOperation {
     SnapshotWrite,
     LogWrite,
     OpenShell,
+}
+
+fn is_database_file_operation(op: PathOperation) -> bool {
+    match op {
+        PathOperation::DatabaseRead
+        | PathOperation::DatabaseMutate
+        | PathOperation::DatabaseCreate
+        | PathOperation::DatabaseExport => true,
+        PathOperation::ReadPgn
+        | PathOperation::WritePgn
+        | PathOperation::PuzzleRead
+        | PathOperation::PuzzleDelete
+        | PathOperation::EngineExecute
+        | PathOperation::EngineConfigure
+        | PathOperation::EngineBinaryInspect
+        | PathOperation::EngineResourceRead
+        | PathOperation::OpeningBookRead
+        | PathOperation::ImageRead
+        | PathOperation::DownloadFile
+        | PathOperation::DownloadArchive
+        | PathOperation::EngineInstall
+        | PathOperation::SnapshotWrite
+        | PathOperation::LogWrite
+        | PathOperation::OpenShell => false,
+    }
+}
+
+fn canonical_binding(path: &Path) -> Result<PathBuf, Error> {
+    let file_name = path
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?;
+    Ok(fs::canonicalize(parent_of(path))?.join(file_name))
+}
+
+fn parent_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3607,13 +3696,7 @@ impl PathAuthority {
         handle: &DatabaseHandle,
         operation: PathOperation,
     ) -> Result<PathBuf, Error> {
-        if !matches!(
-            operation,
-            PathOperation::DatabaseRead
-                | PathOperation::DatabaseMutate
-                | PathOperation::DatabaseCreate
-                | PathOperation::DatabaseExport
-        ) {
+        if !is_database_file_operation(operation) {
             return Err(Error::InvalidInput("invalid database operation".into()));
         }
         self.workspace_entry_path(
@@ -3628,28 +3711,39 @@ impl PathAuthority {
         handle: &DatabaseHandle,
         operation: PathOperation,
     ) -> Result<DatabaseFileTarget, Error> {
-        if !matches!(
-            operation,
-            PathOperation::DatabaseRead | PathOperation::DatabaseMutate
-        ) {
+        if !is_database_file_operation(operation) {
             return Err(Error::InvalidInput(
                 "invalid database file operation".into(),
             ));
         }
-        let target = self.retained_workspace_target(
-            &FileWorkspaceHandle::new(handle.path_ref().clone()),
-            operation,
-        )?;
-        if target.target_is_dir {
+        let workspace_handle = FileWorkspaceHandle::new(handle.path_ref().clone());
+        let entry = self.persistent_entry_for(&workspace_handle, operation)?;
+        if entry.stored.target_is_dir {
             return Err(Error::InvalidInput(
                 "database handle must identify a regular file".into(),
             ));
         }
-        Ok(DatabaseFileTarget {
-            parent: target.parent,
-            leaf: target.leaf,
-            identity: target.identity,
-        })
+        let stored = entry.stored;
+        let path = stored.path.to_path()?;
+        let expected = (stored.identity.a, stored.identity.b);
+        if validate_target(&path, PathClass::PersistentFile)? != stored.identity {
+            return Err(Error::Conflict(
+                "workspace entry is unavailable because its object changed".into(),
+            ));
+        }
+        #[cfg(test)]
+        DATABASE_TARGET_POST_VALIDATE_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        let canonical = canonical_binding(&path)?;
+        let (parent, leaf) = crate::infra::fs::open_verified_parent(&canonical, expected, false)?;
+        self.session_protected_ids
+            .insert(handle.path_ref().id.clone());
+        Ok(DatabaseFileTarget::assemble(
+            parent, leaf, expected, canonical,
+        ))
     }
 
     pub(crate) fn remove_database(&mut self, handle: &DatabaseHandle) -> Result<(), Error> {
@@ -4782,11 +4876,11 @@ impl PathAuthority {
         Ok(())
     }
 
-    pub(crate) fn workspace_entry_path(
-        &mut self,
+    fn persistent_entry_for(
+        &self,
         handle: &FileWorkspaceHandle,
         operation: PathOperation,
-    ) -> Result<PathBuf, Error> {
+    ) -> Result<Entry, Error> {
         let entry = self
             .persistent
             .get(&handle.path_ref().id)
@@ -4797,6 +4891,15 @@ impl PathAuthority {
                 "workspace entry does not permit this operation".into(),
             ));
         }
+        Ok(entry)
+    }
+
+    pub(crate) fn workspace_entry_path(
+        &mut self,
+        handle: &FileWorkspaceHandle,
+        operation: PathOperation,
+    ) -> Result<PathBuf, Error> {
+        let entry = self.persistent_entry_for(handle, operation)?;
         let class = if entry.stored.target_is_dir {
             PathClass::PersistentCustomRoot
         } else {
@@ -4845,16 +4948,7 @@ impl PathAuthority {
         handle: &FileWorkspaceHandle,
         required_operation: PathOperation,
     ) -> Result<RetainedWorkspaceTarget, Error> {
-        let entry = self
-            .persistent
-            .get(&handle.path_ref().id)
-            .cloned()
-            .ok_or_else(|| Error::InvalidInput("workspace entry is not persistent".into()))?;
-        if !entry.stored.operations.contains(&required_operation) {
-            return Err(Error::InvalidInput(
-                "workspace entry does not permit this operation".into(),
-            ));
-        }
+        let entry = self.persistent_entry_for(handle, required_operation)?;
         let path = entry.stored.path.to_path()?;
         let expected = (entry.stored.identity.a, entry.stored.identity.b);
         let (parent, leaf) =
@@ -5625,6 +5719,8 @@ mod tests {
         },
         time::UNIX_EPOCH,
     };
+
+    static CURRENT_DIR_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     const _: fn(VerifiedFile, u64, usize) -> Result<Vec<u8>, Error> = read_engine_image_bytes;
 
@@ -6537,7 +6633,7 @@ mod tests {
         let target = authority
             .database_file_target(&handle, PathOperation::DatabaseRead)
             .unwrap();
-        assert_eq!(target.leaf, OsString::from("readonly.db3"));
+        assert_eq!(target.leaf(), OsStr::new("readonly.db3"));
         assert!(matches!(
             authority.database_file_target(&handle, PathOperation::DatabaseMutate),
             Err(Error::InvalidInput(_))
@@ -6546,6 +6642,344 @@ mod tests {
             authority.database_file_target(&handle, PathOperation::DatabaseExport),
             Err(Error::InvalidInput(_))
         ));
+        assert!(matches!(
+            authority.database_file_target(&handle, PathOperation::DatabaseCreate),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            authority.database_path(&handle, PathOperation::WritePgn),
+            Err(Error::InvalidInput(message)) if message == "invalid database operation"
+        ));
+        assert!(matches!(
+            authority.database_path(&handle, PathOperation::DownloadFile),
+            Err(Error::InvalidInput(message)) if message == "invalid database operation"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_database_file_operation_classifies_every_variant() {
+        fn oracle(operation: PathOperation) -> bool {
+            match operation {
+                PathOperation::DatabaseRead
+                | PathOperation::DatabaseMutate
+                | PathOperation::DatabaseCreate
+                | PathOperation::DatabaseExport => true,
+                PathOperation::ReadPgn
+                | PathOperation::WritePgn
+                | PathOperation::PuzzleRead
+                | PathOperation::PuzzleDelete
+                | PathOperation::EngineExecute
+                | PathOperation::EngineConfigure
+                | PathOperation::EngineBinaryInspect
+                | PathOperation::EngineResourceRead
+                | PathOperation::OpeningBookRead
+                | PathOperation::ImageRead
+                | PathOperation::DownloadFile
+                | PathOperation::DownloadArchive
+                | PathOperation::EngineInstall
+                | PathOperation::SnapshotWrite
+                | PathOperation::LogWrite
+                | PathOperation::OpenShell => false,
+            }
+        }
+
+        let operations = [
+            PathOperation::ReadPgn,
+            PathOperation::WritePgn,
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseExport,
+            PathOperation::PuzzleRead,
+            PathOperation::PuzzleDelete,
+            PathOperation::EngineExecute,
+            PathOperation::EngineConfigure,
+            PathOperation::EngineBinaryInspect,
+            PathOperation::EngineResourceRead,
+            PathOperation::OpeningBookRead,
+            PathOperation::ImageRead,
+            PathOperation::DownloadFile,
+            PathOperation::DownloadArchive,
+            PathOperation::EngineInstall,
+            PathOperation::SnapshotWrite,
+            PathOperation::LogWrite,
+            PathOperation::OpenShell,
+        ];
+        for operation in operations {
+            assert_eq!(is_database_file_operation(operation), oracle(operation));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_target_mints_all_database_operations_for_a_created_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_path = dir.path().join("databases");
+        fs::create_dir(&root_path).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(&root_path, "Databases", None)
+            .unwrap();
+        let handle = authority
+            .create_database_child(&root, OsStr::new("created.db3"))
+            .unwrap();
+        let expected_path = root_path.canonicalize().unwrap().join("created.db3");
+        let expected_identity =
+            opened_file_identity(&fs::File::open(&expected_path).unwrap()).unwrap();
+        authority.session_protected_ids.clear();
+
+        for operation in [
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseExport,
+        ] {
+            let target = authority.database_file_target(&handle, operation).unwrap();
+            assert_eq!(target.identity(), expected_identity);
+            assert_eq!(target.path(), expected_path);
+            assert_eq!(target.leaf(), OsStr::new("created.db3"));
+        }
+        assert!(authority
+            .session_protected_ids
+            .contains(&handle.path_ref().id));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_target_rejects_non_database_operations_before_path_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("pgn");
+        let path = parent.join("study.pgn");
+        fs::create_dir(&parent).unwrap();
+        fs::write(&path, b"*").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let grant = authority
+            .grant_dialog(
+                &path,
+                "study",
+                PathClass::SingleDialogGrant,
+                PathOperation::WritePgn,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let committed = authority
+            .promote_dialog(
+                &grant,
+                PathClass::PersistentFile,
+                "study",
+                vec![PathOperation::WritePgn],
+            )
+            .unwrap();
+        let handle = DatabaseHandle::new(committed.id);
+        fs::remove_dir_all(&parent).unwrap();
+
+        assert!(matches!(
+            authority.database_file_target(&handle, PathOperation::WritePgn),
+            Err(Error::InvalidInput(message)) if message == "invalid database file operation"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_target_rejects_directory_entries_before_path_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("directories");
+        let path = parent.join("database.db3");
+        fs::create_dir_all(&path).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let committed = authority
+            .migrate_legacy_os_path(
+                path.clone().into_os_string(),
+                "database",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::DatabaseRead],
+            )
+            .unwrap();
+        let handle = DatabaseHandle::new(committed.id);
+        fs::remove_dir_all(&parent).unwrap();
+
+        assert!(matches!(
+            authority.database_file_target(&handle, PathOperation::DatabaseRead),
+            Err(Error::InvalidInput(message))
+                if message == "database handle must identify a regular file"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_target_binds_a_symlinked_ancestor_to_its_canonical_parent() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        let path = link.join("x.db3");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("x.db3"), b"database").unwrap();
+        symlink(&real, &link).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let committed = authority
+            .migrate_legacy_os_path(
+                path.into_os_string(),
+                "x",
+                PathClass::PersistentFile,
+                vec![
+                    PathOperation::DatabaseRead,
+                    PathOperation::DatabaseMutate,
+                    PathOperation::DatabaseCreate,
+                    PathOperation::DatabaseExport,
+                ],
+            )
+            .unwrap();
+        let handle = DatabaseHandle::new(committed.id);
+        let target = authority
+            .database_file_target(&handle, PathOperation::DatabaseMutate)
+            .unwrap();
+        assert_eq!(target.path(), real.join("x.db3"));
+        assert_eq!(target.leaf(), OsStr::new("x.db3"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_target_rejects_a_replaced_leaf_before_minting() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("databases");
+        let path = parent.join("database.db3");
+        let moved = dir.path().join("moved.db3");
+        fs::create_dir(&parent).unwrap();
+        fs::write(&path, b"database").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let committed = authority
+            .migrate_legacy_os_path(
+                path.clone().into_os_string(),
+                "database",
+                PathClass::PersistentFile,
+                canonical_operations(EntryPurpose::DatabaseFile),
+            )
+            .unwrap();
+        let handle = DatabaseHandle::new(committed.id);
+        fs::rename(&path, &moved).unwrap();
+        symlink(&moved, &path).unwrap();
+
+        assert!(matches!(
+            authority.database_file_target(&handle, PathOperation::DatabaseRead),
+            Err(Error::InvalidInput(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_target_rejects_a_leaf_replaced_in_the_post_validate_hook() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("databases");
+        let path = parent.join("database.db3");
+        let moved = dir.path().join("moved.db3");
+        fs::create_dir(&parent).unwrap();
+        fs::write(&path, b"database").unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let committed = authority
+            .migrate_legacy_os_path(
+                path.clone().into_os_string(),
+                "database",
+                PathClass::PersistentFile,
+                canonical_operations(EntryPurpose::DatabaseFile),
+            )
+            .unwrap();
+        let handle = DatabaseHandle::new(committed.id);
+        fs::hard_link(&path, &moved).unwrap();
+        let hook_path = path.clone();
+        let hook_moved = moved.clone();
+        DATABASE_TARGET_POST_VALIDATE_HOOK.with(|slot| {
+            assert!(slot
+                .replace(Some(Box::new(move || {
+                    fs::remove_file(&hook_path).unwrap();
+                    symlink(&hook_moved, &hook_path).unwrap();
+                })))
+                .is_none());
+        });
+
+        assert!(matches!(
+            authority.database_file_target(&handle, PathOperation::DatabaseRead),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_file_target_test_door_binds_absent_relative_and_non_utf8_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("absent.db3");
+        let target = DatabaseFileTarget::for_test_path(&absent).unwrap();
+        assert_eq!(target.path(), absent.canonicalize().unwrap());
+        assert_eq!(fs::metadata(&absent).unwrap().len(), 0);
+
+        let _cwd_guard = CURRENT_DIR_TEST_LOCK.lock().unwrap();
+        let old_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let relative = DatabaseFileTarget::for_test_path(Path::new("database.db3")).unwrap();
+        std::env::set_current_dir(old_cwd).unwrap();
+        assert_eq!(
+            relative.path(),
+            dir.path().canonicalize().unwrap().join("database.db3")
+        );
+
+        assert!(matches!(
+            DatabaseFileTarget::for_test_path(Path::new(".")),
+            Err(Error::InvalidInput(message)) if message == "database path needs a leaf name"
+        ));
+
+        let non_utf8 = dir.path().join(OsString::from_vec(b"caf\xe9.db3".to_vec()));
+        let target = DatabaseFileTarget::for_test_path(&non_utf8).unwrap();
+        assert_eq!(target.leaf(), non_utf8.file_name().unwrap());
+    }
+
+    #[test]
+    fn database_file_target_production_surface_is_private_and_canonically_bound() {
+        let source = include_str!("mod.rs");
+        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let target = production
+            .split("pub(crate) struct DatabaseFileTarget {")
+            .nth(1)
+            .unwrap()
+            .split("}\n\nimpl DatabaseFileTarget")
+            .next()
+            .unwrap();
+        assert!(!target.contains("pub "));
+        assert!(production.contains("fn assemble("));
+        assert!(!production.contains("pub fn assemble("));
+
+        let predicate = production
+            .split("fn is_database_file_operation")
+            .nth(1)
+            .unwrap()
+            .split("\n}\n\nfn canonical_binding")
+            .next()
+            .unwrap();
+        assert!(!predicate.contains("_ =>"));
+        assert!(!predicate.contains(".."));
+        for function in ["database_path", "database_file_target"] {
+            let body = production.split(&format!("fn {function}(")).nth(1).unwrap();
+            let first_statement = body
+                .split_once("{")
+                .map(|(_, body)| body.trim_start())
+                .unwrap();
+            assert!(first_statement.starts_with("if !is_database_file_operation(operation)"));
+        }
+
+        for source in [
+            include_str!("../../db/mod.rs"),
+            include_str!("../../db/search.rs"),
+        ] {
+            let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+            assert!(!production.contains("DatabaseFileTarget {"));
+            assert!(!production.contains("assemble("));
+        }
     }
     #[test]
     fn dialog_grants_enforce_operation_expiry_and_uses() {

@@ -754,16 +754,15 @@ pub fn generate_search_index(
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     cancellation_check(cancellation)?;
-    let db_path = resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
     let target = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .database_file_target(handle, PathOperation::DatabaseMutate)?;
-    repository.with_write_lock_cancellable(&db_path, cancellation, || {
-        repository.with_index_lock_cancellable(&db_path, cancellation, || {
-            generate_search_index_locked(&db_path, &target, repository, search_cache, cancellation)
+    repository.with_write_lock_cancellable(target.path(), cancellation, || {
+        repository.with_index_lock_cancellable(target.path(), cancellation, || {
+            generate_search_index_locked(&target, repository, search_cache, cancellation)
         })
     })
 }
@@ -785,22 +784,22 @@ struct SearchIndexGameRecord {
 }
 
 fn generate_search_index_locked(
-    db_path: &Path,
     target: &DatabaseFileTarget,
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     cancellation_check(cancellation)?;
-    let mut database_connection = get_db_or_create(repository, db_path)?;
+    let db_path = target.path();
+    let mut database_connection = get_db_or_create(repository, target.path())?;
     let db = &mut *database_connection;
-    let index_leaf = search_index::preferred_sidecar_leaf(&target.leaf);
+    let index_leaf = search_index::preferred_sidecar_leaf(target.leaf());
 
     info!("Generating search index for {:?}", db_path);
     let start = Instant::now();
 
     let source = IndexSource::from_database_identity(
-        &repository.database_identity_expected(db_path, target.identity)?,
+        &repository.database_identity_expected(db_path, target.identity())?,
     )?;
     let outcome = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
         let rows = games::table
@@ -840,7 +839,7 @@ fn generate_search_index_locked(
                     cancellation,
                 )
             });
-        search_index::write_entries_to_at(&target.parent, &index_leaf, source, rows, cancellation)
+        search_index::write_entries_to_at(target.parent(), &index_leaf, source, rows, cancellation)
     })?;
     // Publication has committed once `write_entries_to_at` returns. From here on the durability
     // and cache-invalidation tail must finish even if cancellation arrives concurrently.
@@ -2193,7 +2192,6 @@ fn delete_database_blocking(
     #[cfg(test)]
     database_command_checkpoint("delete_database", &file);
     let handle = file.clone();
-    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
     let target = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
@@ -2201,20 +2199,21 @@ fn delete_database_blocking(
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .database_file_target(&handle, PathOperation::DatabaseMutate)?;
     let expected_source = IndexSource::from_database_identity(
-        &repository.database_identity_expected(&file, target.identity)?,
+        &repository.database_identity_expected(target.path(), target.identity())?,
     )?;
     let mut primary_gone = false;
     let mut unlinked = 0;
-    let unlink_result = repository.delete_exclusive_cancellable(&file, cancellation, || {
-        unlinked = unlink_database_files(&target, &expected_source)?;
-        primary_gone = true;
-        Ok(())
-    });
+    let unlink_result =
+        repository.delete_exclusive_cancellable(target.path(), cancellation, || {
+            unlinked = unlink_database_files(&target, &expected_source)?;
+            primary_gone = true;
+            Ok(())
+        });
     if let Err(error) = unlink_result {
         return finish_database_deletion(primary_gone, unlinked, Err(error));
     }
 
-    search_cache.invalidate_database(&file);
+    search_cache.invalidate_database(target.path());
     let registry_result = (|| {
         authority
             .lock()
@@ -2254,33 +2253,33 @@ fn unlink_database_files(
             .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile)
     }
 
-    let preferred_leaf = search_index::preferred_sidecar_leaf(&target.leaf);
-    let legacy_leaf = search_index::legacy_sidecar_leaf(&target.leaf);
+    let preferred_leaf = search_index::preferred_sidecar_leaf(target.leaf());
+    let legacy_leaf = search_index::legacy_sidecar_leaf(target.leaf());
     let mut unlinked = 0;
 
-    let preferred_existed = existed_as_regular(&target.parent, &preferred_leaf);
-    remove_optional_regular_at(&target.parent, &preferred_leaf)?;
+    let preferred_existed = existed_as_regular(target.parent(), &preferred_leaf);
+    remove_optional_regular_at(target.parent(), &preferred_leaf)?;
     unlinked += usize::from(preferred_existed);
 
     if legacy_leaf != preferred_leaf
-        && legacy_sidecar_matches(&target.parent, &legacy_leaf, expected_source)?
+        && legacy_sidecar_matches(target.parent(), &legacy_leaf, expected_source)?
     {
-        let legacy_existed = existed_as_regular(&target.parent, &legacy_leaf);
-        remove_optional_regular_at(&target.parent, &legacy_leaf)?;
+        let legacy_existed = existed_as_regular(target.parent(), &legacy_leaf);
+        remove_optional_regular_at(target.parent(), &legacy_leaf)?;
         unlinked += usize::from(legacy_existed);
     }
 
-    let stat = rfs::statat(&target.parent, &target.leaf, AtFlags::SYMLINK_NOFOLLOW)
+    let stat = rfs::statat(target.parent(), target.leaf(), AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|error| Error::Io(Box::new(error.into())))?;
     if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-        || (stat.st_dev, stat.st_ino) != target.identity
+        || (stat.st_dev, stat.st_ino) != target.identity()
     {
         return Err(Error::Conflict("database changed before deletion".into()));
     }
     // Same residual POSIX window as delete_puzzle_database: there is no
     // compare-and-unlink. The inode check is the last userspace observation
     // before unlinkat; remove_regular_at would re-stat without the identity.
-    rfs::unlinkat(&target.parent, &target.leaf, AtFlags::empty())
+    rfs::unlinkat(target.parent(), target.leaf(), AtFlags::empty())
         .map_err(|error| Error::Io(Box::new(error.into())))?;
     Ok(unlinked + 1)
 }
@@ -3104,14 +3103,7 @@ mod tests {
         std::fs::write(&database, b"database").unwrap();
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
         std::fs::create_dir(get_index_path(&database)).unwrap();
-        let (parent, leaf) =
-            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
-                .unwrap();
-        let target = DatabaseFileTarget {
-            parent,
-            leaf,
-            identity: expected_source.object,
-        };
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
 
         let error = unlink_database_files(&target, &expected_source).unwrap_err();
         assert!(matches!(error, Error::InvalidInput(_)));
@@ -3136,14 +3128,7 @@ mod tests {
             .unwrap()
             .expect_durable();
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        let (parent, leaf) =
-            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
-                .unwrap();
-        let target = DatabaseFileTarget {
-            parent,
-            leaf,
-            identity: expected_source.object,
-        };
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
 
         assert_eq!(unlink_database_files(&target, &expected_source).unwrap(), 1);
         assert!(!database.exists());
@@ -3163,14 +3148,7 @@ mod tests {
             .write_to_with_source(&preferred, expected_source.clone())
             .unwrap()
             .expect_durable();
-        let (parent, leaf) =
-            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
-                .unwrap();
-        let target = DatabaseFileTarget {
-            parent,
-            leaf,
-            identity: expected_source.object,
-        };
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
 
         assert_eq!(unlink_database_files(&target, &expected_source).unwrap(), 2);
         assert!(!database.exists());
@@ -3184,16 +3162,9 @@ mod tests {
         let database = dir.path().join("swap.db3");
         std::fs::write(&database, b"database").unwrap();
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        let (parent, leaf) =
-            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
-                .unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
         std::fs::remove_file(&database).unwrap();
         std::fs::create_dir(&database).unwrap();
-        let target = DatabaseFileTarget {
-            parent,
-            leaf,
-            identity: expected_source.object,
-        };
 
         let error = unlink_database_files(&target, &expected_source).unwrap_err();
         assert!(matches!(error, Error::Conflict(_)));
@@ -3205,16 +3176,12 @@ mod tests {
     fn unlink_database_files_rejects_an_identity_mismatch() {
         let dir = tempfile::tempdir().unwrap();
         let database = dir.path().join("mismatch.db3");
+        let replacement = dir.path().join("replacement.db3");
         std::fs::write(&database, b"database").unwrap();
+        std::fs::write(&replacement, b"replacement").unwrap();
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        let (parent, leaf) =
-            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
-                .unwrap();
-        let target = DatabaseFileTarget {
-            parent,
-            leaf,
-            identity: (0, 0),
-        };
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        std::fs::rename(&replacement, &database).unwrap();
 
         let error = unlink_database_files(&target, &expected_source).unwrap_err();
         assert!(matches!(error, Error::Conflict(_)));
@@ -3229,14 +3196,7 @@ mod tests {
         std::fs::write(&database, b"database").unwrap();
         std::fs::create_dir(legacy_index_path(&database)).unwrap();
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
-        let (parent, leaf) =
-            crate::infra::fs::open_verified_parent(&database, expected_source.object, false)
-                .unwrap();
-        let target = DatabaseFileTarget {
-            parent,
-            leaf,
-            identity: expected_source.object,
-        };
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
 
         assert_eq!(unlink_database_files(&target, &expected_source).unwrap(), 1);
         assert!(!database.exists());
@@ -3255,12 +3215,32 @@ mod tests {
             .unwrap();
         assert!(body.contains("finish_database_deletion"));
         assert!(body.contains("database_file_target"));
+        assert_eq!(body.matches("database_file_target(").count(), 1);
+        assert!(!body.contains("resolve_database("));
+        assert!(!body.contains("database_path("));
+        assert!(!body.contains("workspace_entry_path("));
+        assert!(!body.contains("canonicalize("));
+        assert!(body.contains("target.path()"));
         assert!(!body.contains("remove_file"));
     }
 
     #[test]
     fn search_index_generation_uses_fd_relative_atomic_writer() {
         let source = include_str!("mod.rs");
+        let command = source
+            .split("fn generate_search_index")
+            .nth(1)
+            .unwrap()
+            .split("#[derive(Queryable)]")
+            .next()
+            .unwrap();
+        assert_eq!(command.matches("database_file_target(").count(), 1);
+        assert!(!command.contains("resolve_database("));
+        assert!(!command.contains("database_path("));
+        assert!(!command.contains("workspace_entry_path("));
+        assert!(!command.contains("canonicalize("));
+        assert!(command.contains("target.path()"));
+
         let body = source
             .split("fn generate_search_index_locked")
             .nth(1)
@@ -3270,9 +3250,114 @@ mod tests {
             .unwrap();
         assert!(body.contains("write_entries_to_at"));
         assert!(body.contains("load_iter"));
+        assert!(!body.contains("resolve_database("));
+        assert!(!body.contains("database_path("));
+        assert!(!body.contains("workspace_entry_path("));
+        assert!(!body.contains("canonicalize("));
+        assert!(body.contains("target.path()"));
         assert!(!body.contains("let games: Vec"));
         assert!(!body.contains("atomic_replace(&"));
         assert!(!body.contains("std::fs::remove_file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_ancestor_database_indexes_and_deletes_through_its_real_directory() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_dir = dir.path().join("real");
+        let link_dir = dir.path().join("link");
+        let database = real_dir.join("games.db3");
+        let registered_path = link_dir.join("games.db3");
+        std::fs::create_dir(&real_dir).unwrap();
+        File::create(&database).unwrap();
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        connection.batch_execute(CREATE_TABLES_SQL).unwrap();
+        connection
+            .batch_execute("INSERT INTO Info (Name, Value) VALUES ('Version', '2.0.0');")
+            .unwrap();
+        drop(connection);
+        symlink(&real_dir, &link_dir).unwrap();
+
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let grant = authority
+            .grant_dialog_operations(
+                &registered_path,
+                "games",
+                PathClass::BoundedDialogGrant,
+                vec![
+                    PathOperation::DatabaseRead,
+                    PathOperation::DatabaseMutate,
+                    PathOperation::DatabaseCreate,
+                    PathOperation::DatabaseExport,
+                ],
+                std::time::Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let committed = authority
+            .promote_dialog(
+                &grant,
+                PathClass::PersistentFile,
+                "games",
+                vec![
+                    PathOperation::DatabaseRead,
+                    PathOperation::DatabaseMutate,
+                    PathOperation::DatabaseCreate,
+                    PathOperation::DatabaseExport,
+                ],
+            )
+            .unwrap();
+        let handle = DatabaseHandle::new(committed.id);
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let state = app.state::<AppState>();
+
+        generate_search_index(
+            &handle,
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let sidecar = database.with_file_name("games.db3.ecsi");
+        assert!(sidecar.exists());
+        let expected = state
+            .database_repository
+            .database_identity(&database)
+            .unwrap();
+        let source = IndexSource::from_database_identity(&expected).unwrap();
+        assert_eq!(
+            source.database,
+            IndexSource::from_database(&database, expected.data_revision)
+                .unwrap()
+                .database
+        );
+
+        let (_, index) = search::load_search_index_cancellable(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(index.source().database, source.database);
+
+        delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(!database.exists());
+        assert!(!sidecar.exists());
     }
 
     #[test]
