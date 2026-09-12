@@ -28,7 +28,7 @@ use crate::{
         encoding::{decode_move, try_iter_mainline_move_bytes_cancellable},
         get_db_or_create, get_material_count, get_pawn_home,
         models::*,
-        normalize_games, resolve_database,
+        normalize_games,
         schema::*,
         search_index::{
             get_index_path, legacy_sidecar_leaf, preferred_sidecar_leaf,
@@ -201,7 +201,7 @@ pub(crate) fn load_search_index_cancellable(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let read_target = database_file_target(authority, handle, PathOperation::DatabaseRead)?;
+    let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
     let db_identity =
         repository.database_identity_expected(read_target.path(), read_target.identity())?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
@@ -225,7 +225,7 @@ pub(crate) fn load_search_index_cancellable(
     let _generation_guard =
         crate::infra::cancellable_lock::lock_cancellable(&generation_lock.lock, cancellation)?;
 
-    let read_target = database_file_target(authority, handle, PathOperation::DatabaseRead)?;
+    let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
     let db_identity =
         repository.database_identity_expected(read_target.path(), read_target.identity())?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
@@ -239,7 +239,7 @@ pub(crate) fn load_search_index_cancellable(
         );
     }
 
-    let mutate_target = database_file_target(authority, handle, PathOperation::DatabaseMutate)?;
+    let mutate_target = super::resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
     let preferred_leaf = preferred_sidecar_leaf(mutate_target.leaf());
     let legacy_leaf = legacy_sidecar_leaf(mutate_target.leaf());
     promote_legacy_index_sidecar_at(
@@ -276,7 +276,7 @@ pub(crate) fn load_search_index_cancellable(
         Err(error) => return Err(error),
     };
 
-    let read_target = database_file_target(authority, handle, PathOperation::DatabaseRead)?;
+    let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
     let db_identity =
         repository.database_identity_expected(read_target.path(), read_target.identity())?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
@@ -295,19 +295,6 @@ pub(crate) fn load_search_index_cancellable(
         index,
         cancellation,
     )
-}
-
-fn database_file_target(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
-    handle: &DatabaseHandle,
-    operation: PathOperation,
-) -> Result<DatabaseFileTarget, Error> {
-    authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .database_file_target(handle, operation)
 }
 
 fn open_valid_preferred(
@@ -377,6 +364,19 @@ struct CollisionCleanup<'a> {
     query: GameQuery,
     database: PathBuf,
     lock: Arc<ParkingMutex<()>>,
+}
+
+impl<'a> CollisionCleanup<'a> {
+    fn for_query(search_cache: &'a SearchCache, query: GameQuery, database: &Path) -> Self {
+        let database = database.to_path_buf();
+        let lock = search_cache.collision_lock(query.clone(), database.clone());
+        Self {
+            search_cache,
+            query,
+            database,
+            lock,
+        }
+    }
 }
 
 struct GenerationLockCleanup<'a> {
@@ -612,20 +612,13 @@ fn search_position_blocking<R: tauri::Runtime>(
         return Err(Error::Cancellation);
     }
     let database_handle = file;
-    let file = resolve_database(authority, &database_handle, PathOperation::DatabaseRead)?;
-
-    let database = file.canonicalize()?;
-    let collision_lock = search_cache.collision_lock(query.clone(), database.clone());
-    let _collision_cleanup = CollisionCleanup {
-        search_cache,
-        query: query.clone(),
-        database,
-        lock: collision_lock,
-    };
+    let target = super::resolve_database(authority, &database_handle, PathOperation::DatabaseRead)?;
+    let _collision_cleanup =
+        CollisionCleanup::for_query(search_cache, query.clone(), target.path());
     let _guard =
         crate::infra::cancellable_lock::lock_cancellable(&_collision_cleanup.lock, cancellation)?;
 
-    let mut database_connection = get_db_or_create(repository, &file)?;
+    let mut database_connection = get_db_or_create(repository, target.path())?;
     let db = &mut *database_connection;
 
     let start = Instant::now();
@@ -838,15 +831,9 @@ pub(crate) fn is_position_in_db_cancellable(
         return Err(Error::Cancellation);
     }
     let database_handle = file;
-    let file = resolve_database(authority, database_handle, PathOperation::DatabaseRead)?;
-    let database = file.canonicalize()?;
-    let collision_lock = search_cache.collision_lock(query.clone(), database.clone());
-    let _collision_cleanup = CollisionCleanup {
-        search_cache,
-        query: query.clone(),
-        database,
-        lock: collision_lock,
-    };
+    let target = super::resolve_database(authority, database_handle, PathOperation::DatabaseRead)?;
+    let _collision_cleanup =
+        CollisionCleanup::for_query(search_cache, query.clone(), target.path());
     let _guard =
         crate::infra::cancellable_lock::lock_cancellable(&_collision_cleanup.lock, cancellation)?;
 
@@ -934,7 +921,7 @@ mod tests {
             ops::{create_event, create_game, create_player, create_site},
             SearchIndexChunk,
         },
-        infra::{fs::set_test_atomic_file_injector, path_authority::PathClass},
+        infra::fs::set_test_atomic_file_injector,
     };
     use diesel::Connection;
     use std::sync::Arc;
@@ -948,39 +935,107 @@ mod tests {
         DatabaseHandle,
         PathBuf,
     ) {
-        use diesel::connection::SimpleConnection;
+        super::super::schema_database_case("search", operations)
+    }
 
-        let dir = tempfile::tempdir().unwrap();
-        let database = dir.path().join("search.db3");
-        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
-        connection
-            .batch_execute(super::super::CREATE_TABLES_SQL)
-            .unwrap();
-        connection
-            .batch_execute("INSERT INTO Info (Name, Value) VALUES ('Version', '2.0.0');")
-            .unwrap();
-        drop(connection);
+    #[test]
+    fn search_commands_resolve_with_their_own_operation() {
+        let (_dir, app, handle, _database) = loader_test_case(vec![PathOperation::DatabaseRead]);
+        tauri_specta::Builder::<tauri::test::MockRuntime>::new()
+            .events(tauri_specta::collect_events!(
+                crate::progress::ProgressEvent
+            ))
+            .mount_events(&app);
+        let state = app.state::<AppState>();
+        let progress = JobProgress::new(app.clone(), "matrix-search".into()).unwrap();
+        let permit = state.new_request.clone().try_acquire_owned().unwrap();
+        let _ = super::super::take_resolve_database_operations();
+        let result = search_position_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            permit,
+            progress.lease(),
+            app.clone(),
+            handle,
+            GameQuery::new(),
+            &CancellationToken::new(),
+        );
+        let recorded = super::super::take_resolve_database_operations();
+        assert_eq!(recorded.first(), Some(&PathOperation::DatabaseRead));
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput(message))
+                if message == "workspace entry does not permit this operation"
+        ));
 
-        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
-        let grant = authority
-            .grant_dialog_operations(
-                &database,
-                "search",
-                PathClass::BoundedDialogGrant,
-                operations.clone(),
-                std::time::Duration::from_secs(30),
-                1,
-            )
-            .unwrap();
-        let commit = authority
-            .promote_dialog(&grant, PathClass::PersistentFile, "search", operations)
-            .unwrap();
-        let handle = DatabaseHandle::new(commit.id);
-        let state = AppState::default();
-        *state.pgn_path_authority.lock().unwrap() = Some(authority);
-        let app = tauri::test::mock_app();
-        app.manage(state);
-        (dir, app.handle().clone(), handle, database)
+        let (_dir, app, handle, _database) = loader_test_case(vec![PathOperation::DatabaseRead]);
+        let state = app.state::<AppState>();
+        let _ = super::super::take_resolve_database_operations();
+        let result = is_position_in_db_cancellable(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &GameQuery::new(),
+            &CancellationToken::new(),
+        );
+        let recorded = super::super::take_resolve_database_operations();
+        assert_eq!(recorded.first(), Some(&PathOperation::DatabaseRead));
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput(message))
+                if message == "workspace entry does not permit this operation"
+        ));
+
+        let (_dir, app, handle, _database) = loader_test_case(vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+        ]);
+        let state = app.state::<AppState>();
+        let _ = super::super::take_resolve_database_operations();
+        load_search_index_cancellable(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            super::super::take_resolve_database_operations(),
+            vec![
+                PathOperation::DatabaseRead,
+                PathOperation::DatabaseRead,
+                PathOperation::DatabaseMutate,
+                PathOperation::DatabaseMutate,
+                PathOperation::DatabaseRead,
+            ]
+        );
+
+        let (_dir, app, handle, _database) = loader_test_case(vec![PathOperation::DatabaseRead]);
+        let state = app.state::<AppState>();
+        let _ = super::super::take_resolve_database_operations();
+        let result = load_search_index_cancellable(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &CancellationToken::new(),
+        );
+        assert_eq!(
+            super::super::take_resolve_database_operations(),
+            vec![
+                PathOperation::DatabaseRead,
+                PathOperation::DatabaseRead,
+                PathOperation::DatabaseMutate,
+            ]
+        );
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput(message))
+                if message == "workspace entry does not permit this operation"
+        ));
     }
 
     fn loader_source(
@@ -1131,13 +1186,12 @@ mod tests {
             .split("fn load_search_index_cancellable")
             .nth(1)
             .unwrap()
-            .split("fn database_file_target")
+            .split("fn open_valid_preferred")
             .next()
             .unwrap();
-        assert!(loader.contains("database_file_target"));
+        assert!(loader.contains("resolve_database("));
         assert!(loader.contains("promote_legacy_index_sidecar_at"));
         assert!(!loader.contains("canonicalize("));
-        assert!(!loader.contains("resolve_database("));
         assert!(!loader.contains("database_path("));
         assert!(!loader.contains("workspace_entry_path("));
         assert!(!loader.contains("let database"));

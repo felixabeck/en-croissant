@@ -3690,23 +3690,6 @@ impl PathAuthority {
         }
     }
 
-    /// Resolved native path for an exact database capability.  This is only
-    /// callable by backend command code and performs identity/no-follow checks
-    /// on every operation.
-    pub(crate) fn database_path(
-        &mut self,
-        handle: &DatabaseHandle,
-        operation: PathOperation,
-    ) -> Result<PathBuf, Error> {
-        if !is_database_file_operation(operation) {
-            return Err(Error::InvalidInput("invalid database operation".into()));
-        }
-        self.workspace_entry_path(
-            &FileWorkspaceHandle::new(handle.path_ref().clone()),
-            operation,
-        )
-    }
-
     #[cfg(unix)]
     pub(crate) fn database_file_target(
         &mut self,
@@ -6648,14 +6631,6 @@ mod tests {
             authority.database_file_target(&handle, PathOperation::DatabaseCreate),
             Err(Error::InvalidInput(_))
         ));
-        assert!(matches!(
-            authority.database_path(&handle, PathOperation::WritePgn),
-            Err(Error::InvalidInput(message)) if message == "invalid database operation"
-        ));
-        assert!(matches!(
-            authority.database_path(&handle, PathOperation::DownloadFile),
-            Err(Error::InvalidInput(message)) if message == "invalid database operation"
-        ));
     }
 
     #[cfg(unix)]
@@ -6779,6 +6754,10 @@ mod tests {
 
         assert!(matches!(
             authority.database_file_target(&handle, PathOperation::WritePgn),
+            Err(Error::InvalidInput(message)) if message == "invalid database file operation"
+        ));
+        assert!(matches!(
+            authority.database_file_target(&handle, PathOperation::DownloadFile),
             Err(Error::InvalidInput(message)) if message == "invalid database file operation"
         ));
     }
@@ -6966,7 +6945,9 @@ mod tests {
             .unwrap();
         assert!(!predicate.contains("_ =>"));
         assert!(!predicate.contains(".."));
-        for function in ["database_path", "database_file_target"] {
+        assert!(!production.contains("fn database_path("));
+        #[allow(clippy::single_element_loop)]
+        for function in ["database_file_target"] {
             let body = production.split(&format!("fn {function}(")).nth(1).unwrap();
             let first_statement = body
                 .split_once("{")

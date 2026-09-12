@@ -200,13 +200,15 @@ pub(crate) fn resolve_database(
     authority: &std::sync::Mutex<Option<PathAuthority>>,
     handle: &DatabaseHandle,
     operation: PathOperation,
-) -> Result<std::path::PathBuf, Error> {
+) -> Result<DatabaseFileTarget, Error> {
+    #[cfg(test)]
+    RESOLVE_DATABASE_OPERATIONS.with(|operations| operations.borrow_mut().push(operation));
     authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .database_path(handle, operation)
+        .database_file_target(handle, operation)
 }
 
 fn update_info_count(
@@ -583,6 +585,70 @@ fn database_command_checkpoint(label: &'static str, handle: &DatabaseHandle) {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static RESOLVE_DATABASE_OPERATIONS: std::cell::RefCell<Vec<PathOperation>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn take_resolve_database_operations() -> Vec<PathOperation> {
+    RESOLVE_DATABASE_OPERATIONS.with(|operations| std::mem::take(&mut *operations.borrow_mut()))
+}
+
+#[cfg(test)]
+pub(crate) fn schema_database_case(
+    file_stem: &str,
+    operations: Vec<PathOperation>,
+) -> (
+    tempfile::TempDir,
+    tauri::AppHandle<tauri::test::MockRuntime>,
+    DatabaseHandle,
+    std::path::PathBuf,
+) {
+    use diesel::connection::SimpleConnection;
+
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join(format!("{file_stem}.db3"));
+    let mut connection = diesel::SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+    connection.batch_execute(CREATE_TABLES_SQL).unwrap();
+    connection
+        .batch_execute("INSERT INTO Info (Name, Value) VALUES ('Version', '2.0.0');")
+        .unwrap();
+    drop(connection);
+
+    let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+    let grant = authority
+        .grant_dialog_operations(
+            &database,
+            file_stem,
+            crate::infra::path_authority::PathClass::BoundedDialogGrant,
+            operations.clone(),
+            std::time::Duration::from_secs(30),
+            1,
+        )
+        .unwrap();
+    let commit = authority
+        .promote_dialog(
+            &grant,
+            crate::infra::path_authority::PathClass::PersistentFile,
+            file_stem,
+            operations,
+        )
+        .unwrap();
+    let state = AppState::default();
+    *state.pgn_path_authority.lock().unwrap() = Some(authority);
+    let app = tauri::test::mock_app();
+    app.manage(state);
+    (
+        dir,
+        app.handle().clone(),
+        DatabaseHandle::new(commit.id),
+        database,
+    )
+}
+
 #[tauri::command]
 #[specta::specta]
 #[allow(clippy::too_many_arguments)] // IPC contract is generated and intentionally stable.
@@ -664,17 +730,17 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("convert_pgn", &database);
-    let db_path = resolve_database(authority, &database, PathOperation::DatabaseCreate)?;
+    let target = resolve_database(authority, &database, PathOperation::DatabaseCreate)?;
 
     if files.is_empty() {
         return Ok(());
     }
 
     let description = description.unwrap_or_default();
-    let write_lease = repository.write_lease(&db_path)?;
+    let write_lease = repository.write_lease(target.path())?;
     let _write_guard = write_lease.lock()?;
 
-    let mut database_connection = repository.initialization_connection(&db_path)?;
+    let mut database_connection = repository.initialization_connection(target.path())?;
     let db = &mut *database_connection;
     let start = Instant::now();
     let mut imported_games = 0usize;
@@ -731,8 +797,8 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
         update_database_counts(db)?;
         // This tail remains under the write lock and inside the transaction: a revision failure
         // rolls back the games, while a later commit failure only invalidates caches conservatively.
-        repository.data_changed(&db_path)?;
-        search_cache.invalidate_database(&db_path);
+        repository.data_changed(target.path())?;
+        search_cache.invalidate_database(target.path());
         Ok(())
     })?;
 
@@ -754,12 +820,7 @@ pub fn generate_search_index(
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     cancellation_check(cancellation)?;
-    let target = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .database_file_target(handle, PathOperation::DatabaseMutate)?;
+    let target = resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
     repository.with_write_lock_cancellable(target.path(), cancellation, || {
         repository.with_index_lock_cancellable(target.path(), cancellation, || {
             generate_search_index_locked(&target, repository, search_cache, cancellation)
@@ -790,16 +851,15 @@ fn generate_search_index_locked(
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     cancellation_check(cancellation)?;
-    let db_path = target.path();
-    let mut database_connection = get_db_or_create(repository, db_path)?;
+    let mut database_connection = get_db_or_create(repository, target.path())?;
     let db = &mut *database_connection;
     let index_leaf = search_index::preferred_sidecar_leaf(target.leaf());
 
-    info!("Generating search index for {:?}", db_path);
+    info!("Generating search index for {:?}", target.path());
     let start = Instant::now();
 
     let source = IndexSource::from_database_identity(
-        &repository.database_identity_expected(db_path, target.identity())?,
+        &repository.database_identity_expected(target.path(), target.identity())?,
     )?;
     let outcome = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
         let rows = games::table
@@ -847,7 +907,7 @@ fn generate_search_index_locked(
         outcome,
         crate::error::DurabilityStage::SearchIndexReplacement,
     );
-    search_cache.invalidate_database(db_path);
+    search_cache.invalidate_database(target.path());
     durability?;
 
     info!("Search index generated in {:?}", start.elapsed());
@@ -987,13 +1047,11 @@ fn get_db_info_blocking(
     repository: &DatabaseRepository,
     file: DatabaseHandle,
 ) -> Result<DatabaseInfo, Error> {
-    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    info!("get_db_info {:?}", file);
+    info!("get_db_info {:?}", target.path());
 
-    let path = file;
-
-    let mut database_connection = get_db_or_create(repository, &path)?;
+    let mut database_connection = get_db_or_create(repository, target.path())?;
     let db = &mut *database_connection;
 
     let info_records: Vec<Info> = info::table.load(db)?;
@@ -1017,8 +1075,9 @@ fn get_db_info_blocking(
         .and_then(|v| v.parse::<i32>().ok())
         .unwrap_or(0);
 
-    let storage_size = path.metadata()?.len();
-    let filename = path
+    let storage_size = target.path().metadata()?.len();
+    let filename = target
+        .path()
         .file_name()
         .ok_or_else(|| Error::InvalidInput("Database path has no filename".into()))?
         .to_string_lossy();
@@ -1063,10 +1122,10 @@ fn create_indexes_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("create_indexes", &file);
-    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_index_lock(&file, || {
-        let mut database_connection = get_db_or_create(repository, &file)?;
+    repository.with_index_lock(target.path(), || {
+        let mut database_connection = get_db_or_create(repository, target.path())?;
         let db = &mut *database_connection;
         create_required_indexes(db)
     })
@@ -1099,9 +1158,9 @@ fn delete_indexes_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("delete_indexes", &file);
-    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
-    repository.with_index_lock(&file, || {
-        let mut database_connection = get_db_or_create(repository, &file)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    repository.with_index_lock(target.path(), || {
+        let mut database_connection = get_db_or_create(repository, target.path())?;
         let db = &mut *database_connection;
         drop_required_indexes(db)
     })
@@ -1147,10 +1206,10 @@ fn edit_db_info_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("edit_db_info", &file);
-    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(repository, &file)?;
+    repository.with_write_lock(target.path(), || {
+        let mut database_connection = get_db_or_create(repository, target.path())?;
         let db = &mut *database_connection;
         if let Some(title) = title {
             diesel::insert_into(info::table)
@@ -1174,8 +1233,8 @@ fn edit_db_info_blocking(
         }
         Ok(())
     })?;
-    repository.data_changed(&file)?;
-    search_cache.invalidate_database(&file);
+    repository.data_changed(target.path())?;
+    search_cache.invalidate_database(target.path());
     Ok(())
 }
 
@@ -1323,9 +1382,9 @@ fn get_games_blocking(
     cancellation: &CancellationToken,
 ) -> Result<QueryResponse<Vec<NormalizedGame>>, Error> {
     cancellation_check(cancellation)?;
-    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &file)?;
+    let mut database_connection = get_db_or_create(repository, target.path())?;
     let db = &mut *database_connection;
 
     let mut count: Option<i64> = None;
@@ -1561,9 +1620,9 @@ fn get_latest_game_timestamp_blocking(
     repository: &DatabaseRepository,
     file: DatabaseHandle,
 ) -> Result<Option<f64>, Error> {
-    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &file)?;
+    let mut database_connection = get_db_or_create(repository, target.path())?;
     let db = &mut *database_connection;
     Ok(get_latest_game_timestamp_in_db(db)?.map(|timestamp| timestamp as f64))
 }
@@ -1667,9 +1726,9 @@ fn get_player_blocking(
     file: DatabaseHandle,
     id: i32,
 ) -> Result<Option<Player>, Error> {
-    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &file)?;
+    let mut database_connection = get_db_or_create(repository, target.path())?;
     let db = &mut *database_connection;
     let player = players::table
         .filter(players::id.eq(id))
@@ -1709,9 +1768,9 @@ fn get_players_blocking(
     cancellation: &CancellationToken,
 ) -> Result<QueryResponse<Vec<Player>>, Error> {
     cancellation_check(cancellation)?;
-    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &file)?;
+    let mut database_connection = get_db_or_create(repository, target.path())?;
     let db = &mut *database_connection;
     let mut count: Option<i64> = None;
 
@@ -1817,9 +1876,9 @@ fn get_tournaments_blocking(
     cancellation: &CancellationToken,
 ) -> Result<QueryResponse<Vec<Event>>, Error> {
     cancellation_check(cancellation)?;
-    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &file)?;
+    let mut database_connection = get_db_or_create(repository, target.path())?;
     let db = &mut *database_connection;
     let mut count: Option<i64> = None;
 
@@ -1983,9 +2042,9 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
     cancellation: &CancellationToken,
 ) -> Result<PlayerGameInfo, Error> {
     cancellation_check(cancellation)?;
-    let file = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, &file)?;
+    let mut database_connection = get_db_or_create(repository, target.path())?;
     let db = &mut *database_connection;
     let timer = Instant::now();
 
@@ -2156,7 +2215,11 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
         .collect();
     cancellation_check(cancellation)?;
 
-    println!("get_players_game_info {:?}: {:?}", file, timer.elapsed());
+    println!(
+        "get_players_game_info {:?}: {:?}",
+        target.path(),
+        timer.elapsed()
+    );
 
     Ok(game_info)
 }
@@ -2191,12 +2254,7 @@ fn delete_database_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("delete_database", &file);
-    let target = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .database_file_target(&file, PathOperation::DatabaseMutate)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
     let expected_source = IndexSource::from_database_identity(
         &repository.database_identity_expected(target.path(), target.identity())?,
     )?;
@@ -2382,15 +2440,15 @@ fn delete_duplicated_games_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("delete_duplicated_games", &file);
-    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(repository, &file)?;
+    repository.with_write_lock(target.path(), || {
+        let mut database_connection = get_db_or_create(repository, target.path())?;
         let db = &mut *database_connection;
         db.transaction(delete_duplicated_games_transaction)
     })?;
-    repository.data_changed(&file)?;
-    search_cache.invalidate_database(&file);
+    repository.data_changed(target.path())?;
+    search_cache.invalidate_database(target.path());
     Ok(())
 }
 
@@ -2444,15 +2502,15 @@ fn delete_empty_games_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("delete_empty_games", &file);
-    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(repository, &file)?;
+    repository.with_write_lock(target.path(), || {
+        let mut database_connection = get_db_or_create(repository, target.path())?;
         let db = &mut *database_connection;
         db.transaction(delete_empty_games_transaction)
     })?;
-    repository.data_changed(&file)?;
-    search_cache.invalidate_database(&file);
+    repository.data_changed(target.path())?;
+    search_cache.invalidate_database(target.path());
     Ok(())
 }
 
@@ -2591,7 +2649,7 @@ fn export_to_pgn_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("export_to_pgn", &file);
-    let file = resolve_database(authority, &file, PathOperation::DatabaseExport)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseExport)?;
     let (resolved, snapshot) = {
         let mut authority = authority
             .lock()
@@ -2604,7 +2662,7 @@ fn export_to_pgn_blocking(
         (resolved, snapshot)
     };
 
-    let mut database_connection = get_db_or_create(repository, &file)?;
+    let mut database_connection = get_db_or_create(repository, target.path())?;
     let db = &mut *database_connection;
 
     let outcome = resolved.replace_pgn_atomic(&snapshot, |_, temporary| {
@@ -2721,15 +2779,15 @@ fn delete_db_game_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("delete_db_game", &file);
-    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(repository, &file)?;
+    repository.with_write_lock(target.path(), || {
+        let mut database_connection = get_db_or_create(repository, target.path())?;
         let db = &mut *database_connection;
         db.transaction(|db| delete_db_game_transaction(db, game_id))
     })?;
-    repository.data_changed(&file)?;
-    search_cache.invalidate_database(&file);
+    repository.data_changed(target.path())?;
+    search_cache.invalidate_database(target.path());
     Ok(())
 }
 
@@ -2774,22 +2832,22 @@ fn write_db_game_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("write_db_game", &file);
-    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
     let mut importer = Importer::new(None);
     let temp_game = BufferedReader::new(pgn.as_bytes())
         .read_game(&mut importer)?
         .flatten()
         .ok_or(Error::NoMovesFound)?;
-    repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(repository, &file)?;
+    repository.with_write_lock(target.path(), || {
+        let mut database_connection = get_db_or_create(repository, target.path())?;
         let db = &mut *database_connection;
         db.transaction(|db| {
             write_parsed_db_game(db, game_id, &temp_game, remove_orphans_and_update_counts)
         })
     })?;
-    repository.data_changed(&file)?;
-    search_cache.invalidate_database(&file);
+    repository.data_changed(target.path())?;
+    search_cache.invalidate_database(target.path());
     Ok(())
 }
 
@@ -2906,15 +2964,15 @@ fn merge_players_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("merge_players", &file);
-    let file = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
+    let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(&file, || {
-        let mut database_connection = get_db_or_create(repository, &file)?;
+    repository.with_write_lock(target.path(), || {
+        let mut database_connection = get_db_or_create(repository, target.path())?;
         let db = &mut *database_connection;
         db.transaction(|db| merge_players_transaction(db, player1, player2))
     })?;
-    repository.data_changed(&file)?;
-    search_cache.invalidate_database(&file);
+    repository.data_changed(target.path())?;
+    search_cache.invalidate_database(target.path());
     Ok(())
 }
 
@@ -3213,9 +3271,8 @@ mod tests {
             .next()
             .unwrap();
         assert!(body.contains("finish_database_deletion"));
-        assert!(body.contains("database_file_target"));
-        assert_eq!(body.matches("database_file_target(").count(), 1);
-        assert!(!body.contains("resolve_database("));
+        assert!(body.contains("resolve_database("));
+        assert!(!body.contains("database_file_target("));
         assert!(!body.contains("database_path("));
         assert!(!body.contains("workspace_entry_path("));
         assert!(!body.contains("canonicalize("));
@@ -3233,8 +3290,8 @@ mod tests {
             .split("#[derive(Queryable)]")
             .next()
             .unwrap();
-        assert_eq!(command.matches("database_file_target(").count(), 1);
-        assert!(!command.contains("resolve_database("));
+        assert!(command.contains("resolve_database("));
+        assert!(!command.contains("database_file_target("));
         assert!(!command.contains("database_path("));
         assert!(!command.contains("workspace_entry_path("));
         assert!(!command.contains("canonicalize("));
@@ -3257,6 +3314,32 @@ mod tests {
         assert!(!body.contains("let games: Vec"));
         assert!(!body.contains("atomic_replace(&"));
         assert!(!body.contains("std::fs::remove_file"));
+    }
+
+    #[test]
+    fn database_target_source_text_anchors() {
+        let source = include_str!("mod.rs");
+        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert_eq!(production.matches("resolve_database(").count(), 20);
+        let resolver = production
+            .split("pub(crate) fn resolve_database(")
+            .nth(1)
+            .unwrap()
+            .split("fn update_info_count")
+            .next()
+            .unwrap();
+        assert_eq!(resolver.matches("database_file_target(").count(), 1);
+        assert!(!production.contains("database_path("));
+        assert!(!production.contains("DatabaseFileTarget {"));
+        assert!(!production.contains("assemble("));
+
+        let source = include_str!("search.rs");
+        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert_eq!(production.matches("resolve_database(").count(), 6);
+        assert_eq!(production.matches("database_file_target(").count(), 0);
+        assert!(!production.contains("canonicalize("));
+        assert!(!production.contains("DatabaseFileTarget {"));
+        assert!(!production.contains("assemble("));
     }
 
     #[cfg(unix)]
@@ -3315,6 +3398,14 @@ mod tests {
         app.manage(state);
         let state = app.state::<AppState>();
 
+        let resolved = resolve_database(
+            &state.pgn_path_authority,
+            &handle,
+            PathOperation::DatabaseRead,
+        )
+        .unwrap();
+        assert_eq!(resolved.path(), database.canonicalize().unwrap());
+
         generate_search_index(
             &handle,
             &state.pgn_path_authority,
@@ -3357,6 +3448,41 @@ mod tests {
         .unwrap();
         assert!(!database.exists());
         assert!(!sidecar.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_database_rejects_directory_entries_before_path_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("directories");
+        let path = parent.join("database.db3");
+        std::fs::create_dir_all(&path).unwrap();
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let committed = authority
+            .migrate_legacy_os_path(
+                path.clone().into_os_string(),
+                "database",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::DatabaseRead],
+            )
+            .unwrap();
+        let handle = DatabaseHandle::new(committed.id);
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        std::fs::remove_dir_all(&parent).unwrap();
+
+        let result = resolve_database(
+            &app.state::<AppState>().pgn_path_authority,
+            &handle,
+            PathOperation::DatabaseRead,
+        );
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput(message))
+                if message == "database handle must identify a regular file"
+        ));
     }
 
     #[test]
@@ -4186,15 +4312,712 @@ mod tests {
         DatabaseHandle,
         PathBuf,
     ) {
-        let case = empty_database_case();
-        let database = &case.3;
-        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
-        connection.batch_execute(CREATE_TABLES_SQL).unwrap();
-        connection
-            .batch_execute("INSERT INTO Info (Name, Value) VALUES ('Version', '2.0.0');")
-            .unwrap();
-        drop(connection);
-        case
+        schema_database_case(
+            "games",
+            vec![
+                PathOperation::DatabaseRead,
+                PathOperation::DatabaseMutate,
+                PathOperation::DatabaseCreate,
+                PathOperation::DatabaseExport,
+            ],
+        )
+    }
+
+    #[cfg(unix)]
+    fn recorded_result<T>(
+        expected: PathOperation,
+        operation: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let _ = take_resolve_database_operations();
+        let result = operation();
+        let recorded = take_resolve_database_operations();
+        assert_eq!(recorded.first(), Some(&expected));
+        result
+    }
+
+    #[cfg(unix)]
+    fn assert_permit_error<T>(result: Result<T, Error>) {
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput(message))
+                if message == "workspace entry does not permit this operation"
+        ));
+    }
+
+    #[cfg(unix)]
+    fn assert_refused_operation<T>(
+        granted: PathOperation,
+        requested: PathOperation,
+        command: impl FnOnce(
+            &tempfile::TempDir,
+            &tauri::AppHandle<tauri::test::MockRuntime>,
+            DatabaseHandle,
+            &Path,
+        ) -> Result<T, Error>,
+    ) {
+        let (dir, app, handle, database) = schema_database_case("games", vec![granted]);
+        let result = recorded_result(requested, || command(&dir, &app, handle, &database));
+        assert_permit_error(result);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_resolve_with_their_own_operation() {
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseRead]);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseRead, || {
+            get_db_info_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle.clone(),
+            )
+        })
+        .is_ok());
+        assert!(recorded_result(PathOperation::DatabaseRead, || {
+            get_games_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle.clone(),
+                GameQuery::new(),
+                &CancellationToken::new(),
+            )
+        })
+        .is_ok());
+
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseRead]);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseRead, || {
+            get_latest_game_timestamp_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle.clone(),
+            )
+        })
+        .unwrap()
+        .is_none());
+        assert!(recorded_result(PathOperation::DatabaseRead, || {
+            get_player_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle.clone(),
+                1,
+            )
+        })
+        .unwrap()
+        .is_none());
+        let player_query = PlayerQuery {
+            options: QueryOptions {
+                sort: PlayerSort::Name,
+                direction: SortDirection::Asc,
+                skip_count: true,
+                page: None,
+                page_size: None,
+            },
+            name: None,
+            range: None,
+        };
+        assert!(recorded_result(PathOperation::DatabaseRead, || {
+            get_players_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle.clone(),
+                player_query,
+                &CancellationToken::new(),
+            )
+        })
+        .is_ok());
+        let tournament_query = TournamentQuery {
+            options: QueryOptions {
+                sort: TournamentSort::Name,
+                direction: SortDirection::Asc,
+                skip_count: true,
+                page: None,
+                page_size: None,
+            },
+            name: None,
+        };
+        assert!(recorded_result(PathOperation::DatabaseRead, || {
+            get_tournaments_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle.clone(),
+                tournament_query,
+                &CancellationToken::new(),
+            )
+        })
+        .is_ok());
+        assert!(recorded_result(PathOperation::DatabaseRead, || {
+            get_players_game_info_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                1,
+                app.clone(),
+                None,
+                &CancellationToken::new(),
+            )
+        })
+        .is_ok());
+
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseCreate]);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseCreate, || {
+            convert_pgn_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                vec![],
+                handle,
+                None,
+                app.clone(),
+                "Imported".into(),
+                None,
+                "matrix".into(),
+            )
+        })
+        .is_ok());
+
+        let (dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseExport]);
+        let destination_path = dir.path().join("export.pgn");
+        std::fs::write(&destination_path, b"").unwrap();
+        let destination = grant_pgn_destination(&app, &destination_path);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseExport, || {
+            export_to_pgn_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+                destination,
+            )
+        })
+        .is_ok());
+
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseMutate]);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseMutate, || {
+            create_indexes_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+            )
+        })
+        .is_ok());
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseMutate]);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseMutate, || {
+            delete_indexes_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+            )
+        })
+        .is_ok());
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseMutate]);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseMutate, || {
+            edit_db_info_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                handle,
+                Some("Matrix".into()),
+                Some("Operation".into()),
+            )
+        })
+        .is_ok());
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseMutate]);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseMutate, || {
+            delete_duplicated_games_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                handle,
+            )
+        })
+        .is_ok());
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseMutate]);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseMutate, || {
+            delete_empty_games_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                handle,
+            )
+        })
+        .is_ok());
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseMutate]);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseMutate, || {
+            delete_db_game_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                handle,
+                1,
+            )
+        })
+        .is_ok());
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseMutate]);
+        let state = app.state::<AppState>();
+        assert!(matches!(
+            recorded_result(PathOperation::DatabaseMutate, || {
+                write_db_game_blocking(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    &state.search_cache,
+                    handle,
+                    1,
+                    "".into(),
+                )
+            }),
+            Err(Error::NoMovesFound)
+        ));
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseMutate]);
+        let state = app.state::<AppState>();
+        assert!(matches!(
+            recorded_result(PathOperation::DatabaseMutate, || {
+                merge_players_blocking(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    &state.search_cache,
+                    handle,
+                    1,
+                    2,
+                )
+            }),
+            Err(Error::InvalidInput(message)) if message == "source player 1 does not exist"
+        ));
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseMutate]);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseMutate, || {
+            generate_search_index(
+                &handle,
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                &CancellationToken::new(),
+            )
+        })
+        .is_ok());
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseMutate]);
+        let state = app.state::<AppState>();
+        assert!(recorded_result(PathOperation::DatabaseMutate, || {
+            delete_database_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                handle,
+                &CancellationToken::new(),
+            )
+        })
+        .is_ok());
+
+        let (_dir, app, handle, _database) =
+            schema_database_case("games", vec![PathOperation::DatabaseRead]);
+        let state = app.state::<AppState>();
+        assert_permit_error(recorded_result(PathOperation::DatabaseMutate, || {
+            create_indexes_blocking(
+                &state.pgn_path_authority,
+                &state.database_repository,
+                handle,
+            )
+        }));
+
+        // The create-only handle rejects each read, export, and mutating database command.
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseRead,
+            |_, app, handle, _| {
+                get_db_info_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                )
+                .map(|_| ())
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseExport,
+            |dir, app, handle, _| {
+                let destination_path = dir.path().join("export.pgn");
+                std::fs::write(&destination_path, b"").unwrap();
+                let destination = grant_pgn_destination(app, &destination_path);
+                export_to_pgn_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                    destination,
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseMutate,
+            |_, app, handle, _| {
+                create_indexes_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseRead,
+            |_, app, handle, _| {
+                get_games_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                    GameQuery::new(),
+                    &CancellationToken::new(),
+                )
+                .map(|_| ())
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseRead,
+            |_, app, handle, _| {
+                get_latest_game_timestamp_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                )
+                .map(|_| ())
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseRead,
+            |_, app, handle, _| {
+                get_player_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                    1,
+                )
+                .map(|_| ())
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseRead,
+            |_, app, handle, _| {
+                get_players_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                    PlayerQuery {
+                        options: QueryOptions {
+                            sort: PlayerSort::Name,
+                            direction: SortDirection::Asc,
+                            skip_count: true,
+                            page: None,
+                            page_size: None,
+                        },
+                        name: None,
+                        range: None,
+                    },
+                    &CancellationToken::new(),
+                )
+                .map(|_| ())
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseRead,
+            |_, app, handle, _| {
+                get_tournaments_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                    TournamentQuery {
+                        options: QueryOptions {
+                            sort: TournamentSort::Name,
+                            direction: SortDirection::Asc,
+                            skip_count: true,
+                            page: None,
+                            page_size: None,
+                        },
+                        name: None,
+                    },
+                    &CancellationToken::new(),
+                )
+                .map(|_| ())
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseRead,
+            |_, app, handle, _| {
+                get_players_game_info_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                    1,
+                    app.clone(),
+                    None,
+                    &CancellationToken::new(),
+                )
+                .map(|_| ())
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseMutate,
+            |_, app, handle, _| {
+                delete_indexes_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseMutate,
+            |_, app, handle, _| {
+                edit_db_info_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    &app.state::<AppState>().search_cache,
+                    handle,
+                    Some("Matrix".into()),
+                    Some("Operation".into()),
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseMutate,
+            |_, app, handle, _| {
+                delete_duplicated_games_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    &app.state::<AppState>().search_cache,
+                    handle,
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseMutate,
+            |_, app, handle, _| {
+                delete_empty_games_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    &app.state::<AppState>().search_cache,
+                    handle,
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseMutate,
+            |_, app, handle, _| {
+                delete_db_game_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    &app.state::<AppState>().search_cache,
+                    handle,
+                    1,
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseMutate,
+            |_, app, handle, _| {
+                write_db_game_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    &app.state::<AppState>().search_cache,
+                    handle,
+                    1,
+                    "".into(),
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseMutate,
+            |_, app, handle, _| {
+                merge_players_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    &app.state::<AppState>().search_cache,
+                    handle,
+                    1,
+                    2,
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseMutate,
+            |_, app, handle, _| {
+                generate_search_index(
+                    &handle,
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    &app.state::<AppState>().search_cache,
+                    &CancellationToken::new(),
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseMutate,
+            |_, app, handle, _| {
+                delete_database_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    &app.state::<AppState>().search_cache,
+                    handle,
+                    &CancellationToken::new(),
+                )
+            },
+        );
+
+        assert_refused_operation(
+            PathOperation::DatabaseExport,
+            PathOperation::DatabaseCreate,
+            |_, app, handle, _| {
+                convert_pgn_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    &app.state::<AppState>().search_cache,
+                    vec![],
+                    handle,
+                    None,
+                    app.clone(),
+                    "Imported".into(),
+                    None,
+                    "matrix".into(),
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseExport,
+            PathOperation::DatabaseRead,
+            |_, app, handle, _| {
+                get_db_info_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                )
+                .map(|_| ())
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseExport,
+            PathOperation::DatabaseMutate,
+            |_, app, handle, _| {
+                create_indexes_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                )
+            },
+        );
+
+        assert_refused_operation(
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseCreate,
+            |_, app, handle, _| {
+                convert_pgn_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    &app.state::<AppState>().search_cache,
+                    vec![],
+                    handle,
+                    None,
+                    app.clone(),
+                    "Imported".into(),
+                    None,
+                    "matrix".into(),
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseRead,
+            |_, app, handle, _| {
+                get_db_info_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                )
+                .map(|_| ())
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseExport,
+            |dir, app, handle, _| {
+                let destination_path = dir.path().join("export.pgn");
+                std::fs::write(&destination_path, b"").unwrap();
+                let destination = grant_pgn_destination(app, &destination_path);
+                export_to_pgn_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                    destination,
+                )
+            },
+        );
+
+        assert_refused_operation(
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseCreate,
+            |_, app, handle, _| {
+                convert_pgn_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    &app.state::<AppState>().search_cache,
+                    vec![],
+                    handle,
+                    None,
+                    app.clone(),
+                    "Imported".into(),
+                    None,
+                    "matrix".into(),
+                )
+            },
+        );
+        assert_refused_operation(
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseExport,
+            |dir, app, handle, _| {
+                let destination_path = dir.path().join("export.pgn");
+                std::fs::write(&destination_path, b"").unwrap();
+                let destination = grant_pgn_destination(app, &destination_path);
+                export_to_pgn_blocking(
+                    &app.state::<AppState>().pgn_path_authority,
+                    &app.state::<AppState>().database_repository,
+                    handle,
+                    destination,
+                )
+            },
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
