@@ -6449,7 +6449,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### A deleted default root directory is a permanent dead end with no way back
 
-* **ID:** f-20260905-01 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-01 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/path_authority.rs` — `refresh_entry` (`:3948`), the reuse
   lookup inside `get_or_create_root` (the `self.persistent.values().find(...)` at `:2130`), and
   `validate_target`; reached from `get_database_workspace_blocking` (`main.rs`),
