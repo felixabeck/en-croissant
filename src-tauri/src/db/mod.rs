@@ -4352,11 +4352,10 @@ mod tests {
             &tempfile::TempDir,
             &tauri::AppHandle<tauri::test::MockRuntime>,
             DatabaseHandle,
-            &Path,
         ) -> Result<T, Error>,
     ) {
-        let (dir, app, handle, database) = schema_database_case("games", vec![granted]);
-        let result = recorded_result(requested, || command(&dir, &app, handle, &database));
+        let (dir, app, handle, _database) = schema_database_case("games", vec![granted]);
+        let result = recorded_result(requested, || command(&dir, &app, handle));
         assert_permit_error(result);
     }
 
@@ -4643,7 +4642,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 get_db_info_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4655,7 +4654,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseExport,
-            |dir, app, handle, _| {
+            |dir, app, handle| {
                 let destination_path = dir.path().join("export.pgn");
                 std::fs::write(&destination_path, b"").unwrap();
                 let destination = grant_pgn_destination(app, &destination_path);
@@ -4670,7 +4669,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 create_indexes_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4681,7 +4680,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 get_games_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4695,7 +4694,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 get_latest_game_timestamp_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4707,7 +4706,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 get_player_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4720,7 +4719,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 get_players_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4744,7 +4743,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 get_tournaments_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4767,7 +4766,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseRead,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 get_players_game_info_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4783,7 +4782,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 delete_indexes_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4794,7 +4793,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 edit_db_info_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4808,7 +4807,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 delete_duplicated_games_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4820,7 +4819,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 delete_empty_games_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4832,7 +4831,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 delete_db_game_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4845,7 +4844,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 write_db_game_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4859,7 +4858,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 merge_players_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4873,7 +4872,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 generate_search_index(
                     &handle,
                     &app.state::<AppState>().pgn_path_authority,
@@ -4886,7 +4885,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseCreate,
             PathOperation::DatabaseMutate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 delete_database_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4900,7 +4899,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseExport,
             PathOperation::DatabaseCreate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 convert_pgn_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4918,7 +4917,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseExport,
             PathOperation::DatabaseRead,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 get_db_info_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4930,7 +4929,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseExport,
             PathOperation::DatabaseMutate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 create_indexes_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4942,7 +4941,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseMutate,
             PathOperation::DatabaseCreate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 convert_pgn_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4960,7 +4959,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseMutate,
             PathOperation::DatabaseRead,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 get_db_info_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -4972,7 +4971,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseMutate,
             PathOperation::DatabaseExport,
-            |dir, app, handle, _| {
+            |dir, app, handle| {
                 let destination_path = dir.path().join("export.pgn");
                 std::fs::write(&destination_path, b"").unwrap();
                 let destination = grant_pgn_destination(app, &destination_path);
@@ -4988,7 +4987,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseRead,
             PathOperation::DatabaseCreate,
-            |_, app, handle, _| {
+            |_, app, handle| {
                 convert_pgn_blocking(
                     &app.state::<AppState>().pgn_path_authority,
                     &app.state::<AppState>().database_repository,
@@ -5006,7 +5005,7 @@ mod tests {
         assert_refused_operation(
             PathOperation::DatabaseRead,
             PathOperation::DatabaseExport,
-            |dir, app, handle, _| {
+            |dir, app, handle| {
                 let destination_path = dir.path().join("export.pgn");
                 std::fs::write(&destination_path, b"").unwrap();
                 let destination = grant_pgn_destination(app, &destination_path);

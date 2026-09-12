@@ -6946,15 +6946,12 @@ mod tests {
         assert!(!predicate.contains("_ =>"));
         assert!(!predicate.contains(".."));
         assert!(!production.contains("fn database_path("));
-        #[allow(clippy::single_element_loop)]
-        for function in ["database_file_target"] {
-            let body = production.split(&format!("fn {function}(")).nth(1).unwrap();
-            let first_statement = body
-                .split_once("{")
-                .map(|(_, body)| body.trim_start())
-                .unwrap();
-            assert!(first_statement.starts_with("if !is_database_file_operation(operation)"));
-        }
+        let body = production.split("fn database_file_target(").nth(1).unwrap();
+        let first_statement = body
+            .split_once("{")
+            .map(|(_, body)| body.trim_start())
+            .unwrap();
+        assert!(first_statement.starts_with("if !is_database_file_operation(operation)"));
 
         for source in [
             include_str!("../../db/mod.rs"),
