@@ -2844,3 +2844,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** parent plan D7. They belong to Mandate B.
 * **Decided by:** Grok, autonomously under `full auto`, A1 of f-20260912-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"5b6efcb235149145aa5e6dfde0f2124b573a079f438329130df38ff06b287aa7","input_sha256":"b2efd67f7aab9257100ba0a2960d02dd510080f1c8e4bdf0131834c856a03271","kind":"mutation-receipt","operation":"7d357955fd67e1c29cc385542d69867928c1c676fc0b24a3093d811984d1a45d","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20260912-09 — Which search-layer canonicalize calls become target.path() in A1?
+
+* **Question:** Parent D8 said all three search-layer `canonicalize()` sites become `target.path()`. Which of those does A1 actually change?
+* **Governs:** f-20260912-11, f-20260912-12
+* **Chosen:** only `load_search_index_cancellable`'s `resolve_database(...)?.canonicalize()`. `search.rs:614` and `:840` stay until A2, because those callers still go through unchanged `resolve_database` and still receive a `PathBuf`.
+* **Rejected:** implementing parent D8 over all three sites in A1, which pulls A2 into this cut.
+* **Reason:** the A1 scope amendment and round-1 plan/root-cause review. Parent D8 over the three sites remains A2's.
+* **Decided by:** Grok, autonomously under `full auto`, A1 of f-20260912-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"e44b84e57756e2457d2be845f8915e0a1ff1eb6cb12cca8da02bb140eef01ef2","input_sha256":"7f60205aef5afcacbbbede2318f9b39e5426213d545cb73765408b5e0b94a660","kind":"mutation-receipt","operation":"fcb76c01ab95aa68aec9ba7b7d9e74a38f67143216230f9cc61d56c9499b6418","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-09"],"target":"decisions-ledger","v":1} -->
