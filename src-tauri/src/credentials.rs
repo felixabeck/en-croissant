@@ -7,16 +7,22 @@
 use crate::{
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
-    infra::fs::{atomic_replace, AtomicFileOutcome},
+    infra::{
+        fs::AtomicFileOutcome,
+        path_authority::{
+            ensure_app_owned_default_dir, AppDataDir, AppOwnedDefaultRoot, AuthorizedDir,
+        },
+    },
 };
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
     fs,
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
 use tokio_util::sync::CancellationToken;
@@ -199,22 +205,22 @@ enum RegistryCommit {
 }
 
 trait RegistryPersistence: Send + Sync + 'static {
-    fn write(&self, path: &Path, bytes: &[u8]) -> Result<RegistryCommit, Error>;
+    fn write(&self, directory: &AuthorizedDir, bytes: &[u8]) -> Result<RegistryCommit, Error>;
 }
 
 #[derive(Default)]
 struct AtomicRegistryPersistence;
 
 impl RegistryPersistence for AtomicRegistryPersistence {
-    fn write(&self, path: &Path, bytes: &[u8]) -> Result<RegistryCommit, Error> {
-        match atomic_replace(path, |file| {
+    fn write(&self, directory: &AuthorizedDir, bytes: &[u8]) -> Result<RegistryCommit, Error> {
+        match directory.atomic_replace_leaf_identified(OsStr::new(REGISTRY_FILE), |file| {
             file.write_all(bytes)
                 .map_err(|source| Error::CredentialFailure(source.to_string()))
         })? {
-            AtomicFileOutcome::DurableCommit => Ok(RegistryCommit::Durable),
+            (AtomicFileOutcome::DurableCommit, _) => Ok(RegistryCommit::Durable),
             // The rename happened.  Keeping the new in-memory state is the only truthful action;
             // compensating can destroy the only committed copy after a parent-fsync failure.
-            AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
+            (AtomicFileOutcome::CommittedDurabilityUncertain(error), _) => {
                 log::warn!("credential registry replacement parent sync failed: {error}");
                 Ok(RegistryCommit::CommittedDurabilityUncertain)
             }
@@ -227,8 +233,8 @@ struct UncertainRegistryPersistence;
 
 #[cfg(test)]
 impl RegistryPersistence for UncertainRegistryPersistence {
-    fn write(&self, path: &Path, bytes: &[u8]) -> Result<RegistryCommit, Error> {
-        AtomicRegistryPersistence.write(path, bytes)?;
+    fn write(&self, directory: &AuthorizedDir, bytes: &[u8]) -> Result<RegistryCommit, Error> {
+        AtomicRegistryPersistence.write(directory, bytes)?;
         Ok(RegistryCommit::CommittedDurabilityUncertain)
     }
 }
@@ -239,7 +245,7 @@ pub struct CredentialManager {
     store: Arc<dyn CredentialStore>,
     persistence: Arc<dyn RegistryPersistence>,
     registry: Mutex<RegistryFile>,
-    registry_path: Mutex<Option<PathBuf>>,
+    registry_dir: Mutex<Option<Arc<AuthorizedDir>>>,
 }
 
 // Keep the credential manager's locks fail-closed after an unwind.
@@ -271,19 +277,18 @@ impl CredentialManager {
             store,
             persistence,
             registry: Mutex::new(RegistryFile::default()),
-            registry_path: Mutex::new(None),
+            registry_dir: Mutex::new(None),
         }
     }
 
-    pub fn initialize(&self, app_data: &Path) -> Result<(), Error> {
-        fs::create_dir_all(app_data)
-            .map_err(|source| Error::CredentialFailure(source.to_string()))?;
-        #[cfg(unix)]
-        secure_directory(app_data)?;
-        let path = app_data.join(REGISTRY_FILE);
-        let registry = self.load_registry(&path)?;
+    pub(crate) fn initialize(&self, app_data_dir: &AppDataDir) -> Result<(), Error> {
+        let directory = Arc::new(
+            ensure_app_owned_default_dir(app_data_dir, AppOwnedDefaultRoot::Credentials)
+                .map_err(credential_failure)?,
+        );
+        let registry = self.load_registry(&directory)?;
         *credential_lock(&self.registry)? = registry;
-        *credential_lock(&self.registry_path)? = Some(path.clone());
+        *credential_lock(&self.registry_dir)? = Some(Arc::clone(&directory));
         // Commit legacy metadata-only registries to the journalled format before reconciliation
         // is allowed to touch the native credential manager.
         let registry = credential_lock(&self.registry)?;
@@ -292,8 +297,14 @@ impl CredentialManager {
             "credential registry initialization",
         );
         drop(registry);
-        #[cfg(unix)]
-        secure_registry_file(&path)?;
+        let registry_file = open_private_registry(&directory)
+            .map_err(credential_failure)?
+            .ok_or_else(|| {
+                Error::CredentialFailure(
+                    "credential registry disappeared during initialization".into(),
+                )
+            })?;
+        drop(registry_file);
         self.reconcile()
     }
 
@@ -508,19 +519,13 @@ impl CredentialManager {
         Ok(())
     }
 
-    fn load_registry(&self, path: &Path) -> Result<RegistryFile, Error> {
-        let mut file = match open_registry_file(path) {
-            Ok(file) => file,
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(RegistryFile {
-                    version: REGISTRY_VERSION,
-                    accounts: BTreeMap::new(),
-                });
-            }
-            Err(source) => return Err(Error::CredentialFailure(source.to_string())),
+    fn load_registry(&self, directory: &AuthorizedDir) -> Result<RegistryFile, Error> {
+        let Some(mut file) = open_private_registry(directory).map_err(credential_failure)? else {
+            return Ok(RegistryFile {
+                version: REGISTRY_VERSION,
+                accounts: BTreeMap::new(),
+            });
         };
-        #[cfg(unix)]
-        chmod_registry_file(&file)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
             .map_err(|source| Error::CredentialFailure(source.to_string()))?;
@@ -573,14 +578,14 @@ impl CredentialManager {
     }
 
     fn persist_locked(&self, registry: &RegistryFile) -> Result<RegistryCommit, Error> {
-        let path = credential_lock(&self.registry_path)?.clone();
-        let Some(path) = path else {
+        let directory = credential_lock(&self.registry_dir)?.clone();
+        let Some(directory) = directory else {
             return Ok(RegistryCommit::Durable);
         };
         let bytes = serde_json::to_vec(registry)
             .map_err(|source| Error::CredentialFailure(source.to_string()))?;
         self.persistence
-            .write(&path, &bytes)
+            .write(&directory, &bytes)
             .map_err(|_| Error::CredentialFailure("credential registry update failed".into()))
     }
 }
@@ -591,29 +596,19 @@ fn log_uncertain_commit(commit: RegistryCommit, operation: &str) {
     }
 }
 
-#[cfg(unix)]
-fn secure_directory(path: &Path) -> Result<(), Error> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-    let directory = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|source| Error::CredentialFailure(source.to_string()))?;
-    directory
-        .set_permissions(PermissionsExt::from_mode(0o700))
-        .map_err(|source| Error::CredentialFailure(source.to_string()))
+fn credential_failure(error: Error) -> Error {
+    Error::CredentialFailure(error.to_string())
 }
 
-fn open_registry_file(path: &Path) -> std::io::Result<fs::File> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
+fn open_private_registry(dir: &AuthorizedDir) -> Result<Option<fs::File>, Error> {
+    let file = match dir.open_regular_relative(Path::new(REGISTRY_FILE)) {
+        Ok(file) => file,
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    options.open(path)
+    chmod_registry_file(&file)?;
+    Ok(Some(file))
 }
 
 #[cfg(unix)]
@@ -621,13 +616,6 @@ fn chmod_registry_file(file: &fs::File) -> Result<(), Error> {
     use std::os::unix::fs::PermissionsExt;
     file.set_permissions(PermissionsExt::from_mode(0o600))
         .map_err(|source| Error::CredentialFailure(source.to_string()))
-}
-
-#[cfg(unix)]
-fn secure_registry_file(path: &Path) -> Result<(), Error> {
-    let file =
-        open_registry_file(path).map_err(|source| Error::CredentialFailure(source.to_string()))?;
-    chmod_registry_file(&file)
 }
 
 #[cfg(test)]
@@ -747,13 +735,13 @@ mod tests {
         fail_on: usize,
     }
     impl RegistryPersistence for FailPersistence {
-        fn write(&self, path: &Path, bytes: &[u8]) -> Result<RegistryCommit, Error> {
+        fn write(&self, directory: &AuthorizedDir, bytes: &[u8]) -> Result<RegistryCommit, Error> {
             let mut writes = self.writes.lock().unwrap();
             *writes += 1;
             if *writes == self.fail_on {
                 return Err(Error::CredentialFailure("injected".into()));
             }
-            AtomicRegistryPersistence.write(path, bytes)
+            AtomicRegistryPersistence.write(directory, bytes)
         }
     }
 
@@ -762,10 +750,10 @@ mod tests {
         uncertain_on: usize,
     }
     impl RegistryPersistence for UncertainOnWrite {
-        fn write(&self, path: &Path, bytes: &[u8]) -> Result<RegistryCommit, Error> {
+        fn write(&self, directory: &AuthorizedDir, bytes: &[u8]) -> Result<RegistryCommit, Error> {
             let mut writes = self.writes.lock().unwrap();
             *writes += 1;
-            AtomicRegistryPersistence.write(path, bytes)?;
+            AtomicRegistryPersistence.write(directory, bytes)?;
             if *writes == self.uncertain_on {
                 Ok(RegistryCommit::CommittedDurabilityUncertain)
             } else {
@@ -774,20 +762,47 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    enum RegistryMutationAfterWrite {
+        Delete,
+        Symlink,
+    }
+
+    #[cfg(unix)]
+    impl RegistryPersistence for RegistryMutationAfterWrite {
+        fn write(&self, directory: &AuthorizedDir, bytes: &[u8]) -> Result<RegistryCommit, Error> {
+            AtomicRegistryPersistence.write(directory, bytes)?;
+            let registry_path = directory.path().join(REGISTRY_FILE);
+            fs::remove_file(&registry_path).unwrap();
+            if matches!(self, Self::Symlink) {
+                let target = directory.path().join("registry-target.json");
+                fs::write(&target, b"{}").unwrap();
+                std::os::unix::fs::symlink(&target, &registry_path).unwrap();
+            }
+            Ok(RegistryCommit::Durable)
+        }
+    }
+
     #[test]
     fn public_registry_survives_restart_without_secret() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
         let manager = CredentialManager::new(store.clone());
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
+        assert!(manager.list().unwrap().is_empty());
         let result = manager
             .store_lichess_token("Felix".into(), "not-in-registry".into())
             .unwrap();
         let account = result.account;
-        let content = fs::read_to_string(temp.path().join(REGISTRY_FILE)).unwrap();
+        let content =
+            fs::read_to_string(temp.path().join("credentials").join(REGISTRY_FILE)).unwrap();
         assert!(!content.contains("not-in-registry"));
         let after_restart = CredentialManager::new(store);
-        after_restart.initialize(temp.path()).unwrap();
+        after_restart
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         assert_eq!(after_restart.list().unwrap(), vec![account]);
     }
 
@@ -799,13 +814,17 @@ mod tests {
             ..Default::default()
         });
         let manager = CredentialManager::new(store.clone());
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         assert!(manager
             .store_lichess_token("a".into(), "secret".into())
             .is_err());
         assert!(manager.list().unwrap().is_empty());
         let after_restart = CredentialManager::new(store);
-        after_restart.initialize(temp.path()).unwrap();
+        after_restart
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         assert!(after_restart.list().unwrap().is_empty());
     }
 
@@ -814,17 +833,23 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(WriteThenErrorStore::default());
         let manager = CredentialManager::new(store.clone());
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         assert!(matches!(
             manager.store_lichess_token("a".into(), "secret".into()),
             Err(Error::CredentialRecoveryRequired)
         ));
         assert!(manager.list().unwrap().is_empty());
-        assert!(!fs::read_to_string(temp.path().join(REGISTRY_FILE))
-            .unwrap()
-            .contains("secret"));
+        assert!(
+            !fs::read_to_string(temp.path().join("credentials").join(REGISTRY_FILE))
+                .unwrap()
+                .contains("secret")
+        );
         let after_restart = CredentialManager::new(store);
-        after_restart.initialize(temp.path()).unwrap();
+        after_restart
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         assert_eq!(after_restart.list().unwrap().len(), 1);
     }
 
@@ -833,7 +858,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
         let manager = CredentialManager::new(store.clone());
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         let account = manager
             .store_lichess_token("a".into(), "secret".into())
             .unwrap()
@@ -847,7 +874,9 @@ mod tests {
             manager.persist_locked(&registry).unwrap();
         }
         let after_restart = CredentialManager::new(store.clone());
-        after_restart.initialize(temp.path()).unwrap();
+        after_restart
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         assert!(after_restart.list().unwrap().is_empty());
         assert_eq!(store.get(&account.handle.key()).unwrap(), None);
     }
@@ -863,13 +892,17 @@ mod tests {
                 fail_on: 3,
             }),
         );
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         assert!(manager
             .store_lichess_token("a".into(), "secret".into())
             .is_err());
         assert!(manager.list().unwrap().is_empty());
         let after_restart = CredentialManager::new(store);
-        after_restart.initialize(temp.path()).unwrap();
+        after_restart
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         assert_eq!(after_restart.list().unwrap().len(), 1);
     }
 
@@ -883,7 +916,9 @@ mod tests {
                 uncertain_on: 2,
             }),
         );
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         let result = manager
             .store_lichess_token("a".into(), "secret".into())
             .unwrap();
@@ -901,7 +936,9 @@ mod tests {
                 uncertain_on: 3,
             }),
         );
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         let result = manager
             .store_lichess_token("a".into(), "secret".into())
             .unwrap();
@@ -919,7 +956,9 @@ mod tests {
                 uncertain_on: 4,
             }),
         );
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         let account = manager
             .store_lichess_token("a".into(), "secret".into())
             .unwrap()
@@ -940,7 +979,9 @@ mod tests {
                 uncertain_on: 5,
             }),
         );
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         let account = manager
             .store_lichess_token("a".into(), "secret".into())
             .unwrap()
@@ -956,7 +997,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
         let manager = CredentialManager::new(store.clone());
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         let first = manager
             .store_lichess_token("Felix".into(), "first-token".into())
             .unwrap()
@@ -971,9 +1014,11 @@ mod tests {
             store.get(&first.handle.key()).unwrap().as_deref(),
             Some("replacement-token")
         );
-        assert!(!fs::read_to_string(temp.path().join(REGISTRY_FILE))
-            .unwrap()
-            .contains("replacement-token"));
+        assert!(
+            !fs::read_to_string(temp.path().join("credentials").join(REGISTRY_FILE))
+                .unwrap()
+                .contains("replacement-token")
+        );
     }
 
     #[cfg(unix)]
@@ -983,7 +1028,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().join("credentials");
         let manager = CredentialManager::new(Arc::new(MemoryCredentialStore::default()));
-        manager.initialize(&directory).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
         assert_eq!(
             fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
             0o700
@@ -1037,7 +1084,9 @@ mod tests {
         let store = Arc::new(ThreadRecordingStore::default());
         let manager = Arc::new(CredentialManager::new(store.clone()));
         let temp = tempfile::tempdir().unwrap();
-        manager.initialize(temp.path()).unwrap();
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
 
         let unknown = LichessAccountHandle::new();
         assert_eq!(manager.token_async(unknown).await.unwrap(), None);
@@ -1062,7 +1111,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn initialize_refuses_a_symlinked_app_data_directory() {
+    fn initialize_refuses_a_symlinked_credential_directory() {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
@@ -1072,7 +1121,10 @@ mod tests {
         symlink(&target, &link).unwrap();
         let manager = CredentialManager::new(Arc::new(MemoryCredentialStore::default()));
 
-        assert!(manager.initialize(&link).is_err());
+        assert!(matches!(
+            manager.initialize(&AppDataDir::for_test(temp.path())),
+            Err(Error::CredentialFailure(_))
+        ));
     }
 
     #[cfg(unix)]
@@ -1088,7 +1140,188 @@ mod tests {
         symlink(&target, directory.join(REGISTRY_FILE)).unwrap();
         let manager = CredentialManager::new(Arc::new(MemoryCredentialStore::default()));
 
-        assert!(manager.initialize(&directory).is_err());
+        assert!(matches!(
+            manager.initialize(&AppDataDir::for_test(temp.path())),
+            Err(Error::CredentialFailure(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_private_registry_refuses_a_symlinked_registry_file() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let directory = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(temp.path()),
+            AppOwnedDefaultRoot::Credentials,
+        )
+        .unwrap();
+        let target = temp.path().join("registry-target.json");
+        fs::write(&target, r#"{"version":2,"accounts":{}}"#).unwrap();
+        symlink(&target, directory.path().join(REGISTRY_FILE)).unwrap();
+
+        assert!(matches!(
+            open_private_registry(&directory),
+            Err(Error::Io(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_registry_enforces_private_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let directory = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(temp.path()),
+            AppOwnedDefaultRoot::Credentials,
+        )
+        .unwrap();
+        let registry_path = directory.path().join(REGISTRY_FILE);
+        fs::write(&registry_path, br#"{"version":2,"accounts":{}}"#).unwrap();
+        fs::set_permissions(&registry_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        CredentialManager::default()
+            .load_registry(&directory)
+            .unwrap();
+
+        assert_eq!(
+            fs::metadata(registry_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initialize_rejects_a_registry_deleted_during_enforcement() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CredentialManager::with_persistence(
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(RegistryMutationAfterWrite::Delete),
+        );
+
+        assert!(matches!(
+            manager.initialize(&AppDataDir::for_test(temp.path())),
+            Err(Error::CredentialFailure(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initialize_maps_a_registry_symlink_error_during_enforcement() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = CredentialManager::with_persistence(
+            Arc::new(MemoryCredentialStore::default()),
+            Arc::new(RegistryMutationAfterWrite::Symlink),
+        );
+
+        assert!(matches!(
+            manager.initialize(&AppDataDir::for_test(temp.path())),
+            Err(Error::CredentialFailure(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_private_registry_refuses_a_fifo_registry_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(temp.path()),
+            AppOwnedDefaultRoot::Credentials,
+        )
+        .unwrap();
+        let fifo = directory.path().join(REGISTRY_FILE);
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let _fifo_endpoint = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&fifo)
+            .unwrap();
+
+        assert!(matches!(
+            open_private_registry(&directory),
+            Err(Error::InvalidInput(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_credential_directory_descriptor_is_used_after_rename() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(MemoryCredentialStore::default());
+        let manager = CredentialManager::new(store);
+        manager
+            .initialize(&AppDataDir::for_test(temp.path()))
+            .unwrap();
+
+        let credentials = temp.path().join("credentials");
+        let renamed = temp.path().join("credentials-renamed");
+        fs::rename(&credentials, &renamed).unwrap();
+        fs::create_dir(&credentials).unwrap();
+
+        let account = manager
+            .store_lichess_token("user".into(), "secret".into())
+            .unwrap()
+            .account;
+        let renamed_registry: RegistryFile =
+            serde_json::from_slice(&fs::read(renamed.join(REGISTRY_FILE)).unwrap()).unwrap();
+
+        assert!(matches!(
+            renamed_registry.accounts.get(&account.handle.0),
+            Some(AccountRecord::Active(metadata)) if metadata == &account
+        ));
+        assert_eq!(fs::read_dir(credentials).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_add_reconciliation_reacquires_registry_directory_without_deadlock() {
+        let temp = tempfile::tempdir().unwrap();
+        let credentials = temp.path().join("credentials");
+        fs::create_dir(&credentials).unwrap();
+        let account = LichessAccountMetadata {
+            handle: LichessAccountHandle::new(),
+            username: "user".into(),
+        };
+        fs::write(
+            credentials.join(REGISTRY_FILE),
+            serde_json::to_vec(&RegistryFile {
+                version: REGISTRY_VERSION,
+                accounts: BTreeMap::from([(
+                    account.handle.0.clone(),
+                    AccountRecord::PendingAdd(account.clone()),
+                )]),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let manager = Arc::new(CredentialManager::new(Arc::new(
+            MemoryCredentialStore::default(),
+        )));
+        let app_data_dir = AppDataDir::for_test(temp.path());
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let worker = Arc::clone(&manager);
+        std::thread::spawn(move || {
+            result_tx.send(worker.initialize(&app_data_dir)).unwrap();
+        });
+
+        let result = result_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("credential initialization deadlocked during reconciliation");
+        assert!(
+            result.is_ok(),
+            "pending-add reconciliation failed: {result:?}"
+        );
+
+        let reloaded: RegistryFile =
+            serde_json::from_slice(&fs::read(credentials.join(REGISTRY_FILE)).unwrap()).unwrap();
+        assert!(!reloaded.accounts.contains_key(&account.handle.0));
     }
 
     /// Guessing a namespace would silently reach into the release's secrets, so the placeholder that
@@ -1130,7 +1363,7 @@ mod tests {
                     AccountRecord::Active(invalid.clone()),
                 )]),
             }),
-            registry_path: Mutex::new(None),
+            registry_dir: Mutex::new(None),
         };
         let absent = LichessAccountHandle("56d05779-a8d4-426b-97a6-a237a4b4d31d".into());
 
@@ -1185,7 +1418,7 @@ mod tests {
     }
 
     #[test]
-    fn poisoned_registry_path_rejects_mutations_without_reaching_the_credential_store() {
+    fn poisoned_registry_dir_rejects_mutations_without_reaching_the_credential_store() {
         let store = Arc::new(CountingStore::default());
         let manager = CredentialManager::new(store.clone());
         let account = LichessAccountMetadata {
@@ -1196,7 +1429,7 @@ mod tests {
             account.handle.0.clone(),
             AccountRecord::Active(account.clone()),
         );
-        poison(&manager.registry_path);
+        poison(&manager.registry_dir);
 
         assert!(matches!(
             manager.store_lichess_token("other".into(), "secret".into()),
@@ -1209,6 +1442,7 @@ mod tests {
         assert_eq!(store.calls.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn registry_version_migration_and_pathless_persistence_are_explicit() {
         let manager = CredentialManager::default();
@@ -1221,7 +1455,12 @@ mod tests {
             accounts: BTreeMap::new(),
         };
         let temp = tempfile::tempdir().unwrap();
-        let legacy_path = temp.path().join(REGISTRY_FILE);
+        let directory = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(temp.path()),
+            AppOwnedDefaultRoot::Credentials,
+        )
+        .unwrap();
+        let legacy_path = directory.path().join(REGISTRY_FILE);
         let legacy = LichessAccountMetadata {
             handle: LichessAccountHandle("56d05779-a8d4-426b-97a6-a237a4b4d31d".into()),
             username: "Felix".into(),
@@ -1230,7 +1469,7 @@ mod tests {
             &legacy_path,
             r#"{"version":1,"accounts":[{"handle":"56d05779-a8d4-426b-97a6-a237a4b4d31d","username":"Felix"}]}"#,
         );
-        let migrated = manager.load_registry(&legacy_path).ok().map(|registry| {
+        let migrated = manager.load_registry(&directory).ok().map(|registry| {
             (
                 registry.version,
                 registry

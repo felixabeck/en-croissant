@@ -382,8 +382,16 @@ mod tests {
     );
   });
 
+  test("filesystem-surface counts have no stale keys outside the allowlist", () => {
+    expect(
+      Object.keys(INITIAL_FS_SURFACE_COUNTS).filter(
+        (path) => !FS_SURFACE_ALLOWLIST.has(path),
+      ),
+    ).toEqual([]);
+  });
+
   test("an allowlisted file's production match count is pinned", () => {
-    const path = "src-tauri/src/credentials.rs";
+    const path = "src-tauri/src/fs.rs";
     const violations = checkFilesystemSurface(
       sources([
         path,
@@ -465,7 +473,7 @@ mod tests {
   });
 
   test("an allowlisted path with zero production matches must leave the allowlist", () => {
-    const path = "src-tauri/src/credentials.rs";
+    const path = "src-tauri/src/fs.rs";
     const violations = checkFilesystemSurface(
       sources([path, "pub struct Credentials;\n"]),
       new Set([path]),
@@ -500,7 +508,7 @@ mod tests {
   });
 
   test("an allowlisted path at its exact expected count raises neither stale-entry violation", () => {
-    const path = "src-tauri/src/credentials.rs";
+    const path = "src-tauri/src/fs.rs";
     const violations = checkFilesystemSurface(
       sources([path, 'fn f() { std::fs::write("x", b""); }\n']),
       new Set([path]),
@@ -516,7 +524,7 @@ mod tests {
   });
 
   test("an allowlisted file measuring fewer reaches than allowlisted fails", () => {
-    const path = "src-tauri/src/credentials.rs";
+    const path = "src-tauri/src/fs.rs";
     const violations = checkFilesystemSurface(
       sources([path, 'fn f() { std::fs::write("x", b""); }\n']),
       new Set([path]),

@@ -2044,10 +2044,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     app.config().identifier
                 );
             }
-            let credentials_dir = app.path().app_data_dir()?.join("credentials");
+            // The Unix-only descriptor path preserves the existing Windows CredentialFailure outcome; see f-20260830-06.
             app.state::<AppState>()
                 .credentials
-                .initialize(&credentials_dir)
+                .initialize(&crate::infra::path_authority::AppDataDir::for_app(
+                    app.handle(),
+                )?)
                 .map_err(|error| {
                     log::error!("native credential storage could not be initialized: {error}");
                     "native credential storage could not be initialized"
@@ -3269,6 +3271,19 @@ mod blocking_offload_scans {
         assert_eq!(linux.matches("log::info!(").count(), 1, "{linux}");
         assert_eq!(linux.matches("log::error!(").count(), 1, "{linux}");
         assert!(!linux.contains("BaseDirectory::Resource"), "{linux}");
+    }
+
+    #[test]
+    fn credential_initialization_precedes_path_authority_open() {
+        let main = include_str!("main.rs");
+        let setup = body_at_indent(main, ".setup(move |app| {");
+        let credential = setup
+            .find(".credentials\n                .initialize(")
+            .expect("credential initialization call");
+        let authority = setup
+            .find("PathAuthority::open")
+            .expect("path authority initialization call");
+        assert!(credential < authority, "{setup}");
     }
 
     #[test]

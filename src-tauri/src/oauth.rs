@@ -1209,7 +1209,11 @@ mod tests {
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
             crate::credentials::MemoryCredentialStore::default(),
         )));
-        credentials.initialize(temp.path()).unwrap();
+        credentials
+            .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                temp.path(),
+            ))
+            .unwrap();
         let result = migrate_legacy_token_internal(
             "user".into(),
             "legacy-token".into(),
@@ -1221,11 +1225,13 @@ mod tests {
         assert_eq!(result.account.username, "user");
         assert!(!result.durability_uncertain);
         assert_eq!(credentials.list().unwrap(), vec![result.account]);
-        assert!(
-            !std::fs::read_to_string(temp.path().join("lichess-accounts.json"))
-                .unwrap()
-                .contains("legacy-token")
-        );
+        assert!(!std::fs::read_to_string(
+            temp.path()
+                .join("credentials")
+                .join("lichess-accounts.json"),
+        )
+        .unwrap()
+        .contains("legacy-token"));
     }
 
     #[tokio::test]
@@ -1278,7 +1284,11 @@ mod tests {
                 crate::credentials::MemoryCredentialStore::default(),
             )),
         );
-        credentials.initialize(temp.path()).unwrap();
+        credentials
+            .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                temp.path(),
+            ))
+            .unwrap();
         let stash = Arc::new(std::sync::Mutex::new(Some("token".into())));
 
         let status = persist_stashed_lichess_token("user".into(), credentials.clone(), stash)
@@ -1316,7 +1326,11 @@ mod tests {
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
             crate::credentials::MemoryCredentialStore::default(),
         )));
-        credentials.initialize(temp.path()).unwrap();
+        credentials
+            .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                temp.path(),
+            ))
+            .unwrap();
         assert!(migrate_legacy_token_internal(
             "different".into(),
             "legacy-token".into(),
@@ -1334,7 +1348,11 @@ mod tests {
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
             crate::credentials::MemoryCredentialStore::default(),
         )));
-        credentials.initialize(temp.path()).unwrap();
+        credentials
+            .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                temp.path(),
+            ))
+            .unwrap();
         let account = credentials
             .store_lichess_token("user".into(), "token".into())
             .unwrap()
@@ -1361,7 +1379,11 @@ mod tests {
                 crate::credentials::MemoryCredentialStore::default(),
             )),
         );
-        credentials.initialize(temp.path()).unwrap();
+        credentials
+            .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                temp.path(),
+            ))
+            .unwrap();
         let account = credentials
             .store_lichess_token("user".into(), "token".into())
             .unwrap()
@@ -1387,7 +1409,11 @@ mod tests {
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
             crate::credentials::MemoryCredentialStore::default(),
         )));
-        credentials.initialize(temp.path()).unwrap();
+        credentials
+            .initialize(&crate::infra::path_authority::AppDataDir::for_test(
+                temp.path(),
+            ))
+            .unwrap();
         let services = MockServices::new();
 
         assert_eq!(
