@@ -2814,3 +2814,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** a leaf replaced by a symlink to the moved original is refused even though the symlink target has the stored identity. Parent plan D2.
 * **Decided by:** Grok, autonomously under `full auto`, A1 of f-20260912-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f548b11ec5693a63898ac835599f0b863b76960ef513f3ee2c45bce2de29e05e","input_sha256":"a916c117b99bb2805f5df9e82d56eb2de5b957a8b56aa049f4462b6fa6fd64d5","kind":"mutation-receipt","operation":"c99b63e69a7d6512bba5f1b52f1b888efb205b3088ef744b194b388be1847630","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-05"],"target":"decisions-ledger","v":1} -->
+
+### d-20260912-06 — How is DatabaseFileTarget assembled so a caller cannot forge one?
+
+* **Question:** How is `DatabaseFileTarget` assembled so crate code cannot pass off an arbitrary `(parent, leaf, identity, path)` as a minted target?
+* **Governs:** f-20260912-11
+* **Chosen:** private fields, `pub(crate)` accessors, one module-private `assemble`, one `#[cfg(test)] for_test_path` door.
+* **Rejected:** `pub(crate)` fields; three separate assemblies; a `for_test_parts` constructor from arbitrary parts. `d-20260905-07`'s refusal of a test constructor was about `AuthorizedDir` containment and does not apply.
+* **Reason:** outside `infra/path_authority` the type cannot be assembled. Negative tests mint a live target then replace the leaf. Parent plan D3/D4.
+* **Decided by:** Grok, autonomously under `full auto`, A1 of f-20260912-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"97e45710f97af7ed172903420e69a65aa4934b65acd04f8744eed7ba3a406820","input_sha256":"4370022eda246f734df391d58cf15acbe4d7ef5a8084be563669b5ee4bac80f3","kind":"mutation-receipt","operation":"dea2f0aea962c6abb6ba6f8c57fa54708b708d6046eb14b2a4851e2741c25e59","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-06"],"target":"decisions-ledger","v":1} -->
