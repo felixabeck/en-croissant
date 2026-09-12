@@ -6519,6 +6519,36 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   `PathRef` cannot represent a backend-chosen destination.
 * **Found by:** Claude Code, locate stage of `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
 
+* **Handled 2026-09-12** — `2de8ce2c` (phase 1: the `Credentials` variant and its declared private
+  mode in `infra/path_authority/mod.rs`) and `aba6ab7f` (phase 2: `credentials.rs`, `main.rs`,
+  `oauth.rs` tests, and the allowlist shrink in the two checker scripts).
+  **The filed dichotomy was false and neither option was built.** `ensure_app_owned_default_dir`
+  accepts no `PathAuthority` and its whole call path consults none, so being materialised before
+  the authority was no obstacle. All five counted sites route through the descriptor family
+  already in `infra/`: `create_dir_all` plus `secure_directory` become one
+  `ensure_app_owned_default_dir` call against a fifth `AppOwnedDefaultRoot` variant whose declared
+  mode applies the `0700`; `open_registry_file` becomes `open_regular_relative`;
+  `atomic_replace` becomes `atomic_replace_leaf_identified` on the retained descriptor.
+  `src-tauri/src/credentials.rs` measures zero counted sites and is gone from
+  `INITIAL_FS_SURFACE_ALLOWLIST` and `INITIAL_FS_SURFACE_COUNTS`.
+  **The asymmetry is resolved by deletion, not by adding a flag.** `open_regular_at` carries
+  `NOFOLLOW` plus a regular-file `fstat` check, so the `O_NOFOLLOW`-alone open that accepted a
+  FIFO or a device at the registry pathname is gone rather than patched.
+  **Startup ordering is unchanged and now has a test** in `main.rs`'s `include_str!` family.
+  Decision: `d-20260912-02`, which scopes the supersession of `d-20260905-01`'s `credentials`
+  deferral clause and `d-20260905-02`'s four-variant enumeration; everything else in both stands.
+  **Residual, filed rather than accepted silently:** `f-20260912-01` — the manager now holds an
+  `Arc<AuthorizedDir>` for its lifetime, so a credential directory replaced while the application
+  runs is no longer followed, which can orphan a keyring entry. The identity comparison that would
+  refuse it needs an app-data parent descriptor and a public identity comparison on
+  `AuthorizedDir` that do not exist, is `#[cfg(unix)]`-only, is not atomic with the write it
+  guards, and would miss the re-authentication branch. The `Arc` is not incidental: holding the
+  value would span the `registry_dir` guard across an open, an fsync and a rename, and deadlock
+  against `reconcile`'s own `persist_locked` on a restart carrying a pending journal entry.
+  Not addressed here and unchanged by this diff: `f-20260905-10`, the `create_dir_all`
+  ancestor-symlink window, which `credentials.rs:279` already sat inside before the change.
+<!-- ledger-meta {"command":"annotate","effect_lines":28,"effect_sha256":"5e1fc422459c77885d789ba4fc42adb7470ce66d5a6dc2c4bf7ef418a3c2adad","input_sha256":"dd42a1568b6a68e507f43ac4618dc841b78ba70d568790b2698730bf601bd543","kind":"mutation-receipt","operation":"9943d752e0c788ee6c50cb3cca932abe75ef76bd381567d7032cc220de7a457a","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-02"],"target":"f-20260905-02","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
