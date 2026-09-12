@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: b0d69a6c4375b4f07d7c771dcce56a5dc74f90f5ad2c00e24874c4f3db1be9bb
+# agent-kit-sha256: b2f5af1d32c439cbec1d5b602a0077ddea899ed42a09724d49e044659ab23a9a
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -40,6 +40,8 @@ Subcommands
 ``annotate``    append file contents to one finding entry
 ``record-decision`` append decisions through the decisions ledger lock
 ``set-trailer`` update decision supersession references and their covering receipt
+``merge-driver`` git merge driver for the two ledgers (``%O %A %B %P``); appends merge
+                 block by block, everything else falls back to ``git merge-file``
 """
 
 from __future__ import annotations
@@ -326,6 +328,16 @@ LEDGER_META_VERSION = 1
 MUTATION_RECEIPT_KIND = "mutation-receipt"
 CITATION_CONTEXT_KIND = "citation-context"
 RECEIPT_PLACEHOLDER = "<!-- ledger-meta receipt-placeholder -->"
+# The git merge driver for the two append-only ledgers. `.gitattributes` names
+# the driver; the command can only live in the clone's own `.git/config`, so
+# `check` installs it (`ensure_merge_driver`) and a fresh clone needs no hand.
+MERGE_DRIVER_NAME = "ledger-append"
+MERGE_DRIVER_COMMAND = "./scripts/findings.py merge-driver %O %A %B %P"
+MERGE_DRIVER_DESCRIPTION = "append-only ledger merge (findings.py merge-driver)"
+MERGE_DRIVER_LEDGERS = {
+    "tasks/findings.md": "findings",
+    "tasks/decisions.md": "decisions",
+}
 # A request id has one required first character plus up to 127 more.
 REQUEST_ID_MAX_LENGTH = 128
 REQUEST_ID_RE = re.compile(
@@ -1358,6 +1370,148 @@ def _ledger_snapshot_valid(path: Path, ledger_kind: str) -> bool:
         issues += malformed_superseded_trailers(path)
         issues += duplicate_decision_ids(path)
     return not issues
+
+
+def _pure_insertions(base: list[str], side: list[str]) -> dict[int, list[str]] | None:
+    """Decompose ``side`` into ``base`` plus inserted blocks keyed by base index.
+
+    Greedy leftmost matching: ``base`` is a subsequence of ``side`` exactly when
+    every base line is found, so ``None`` means the side deleted or rewrote a
+    line and is not a pure append. An inserted line equal to the next base
+    line is matched as that base line and shifts its block by one; the block
+    stays contiguous either way, which is the property the receipts need.
+    """
+    blocks: dict[int, list[str]] = {}
+    cursor = 0
+    for index, line in enumerate(base):
+        start = cursor
+        while cursor < len(side) and side[cursor] != line:
+            cursor += 1
+        if cursor == len(side):
+            return None
+        if cursor > start:
+            blocks[index] = side[start:cursor]
+        cursor += 1
+    if cursor < len(side):
+        blocks[len(base)] = side[cursor:]
+    return blocks
+
+
+def merge_appended_blocks(base: str, ours: str, theirs: str) -> str | None:
+    """Three-way merge of two pure-append sides, each block kept contiguous.
+
+    Git's own ``merge=union`` refines a conflict against the two sides' common
+    lines, so two receipted effects that begin with the same line were folded
+    into one and the second receipt lost its effect line (measured
+    2026-09-12, f-20260907-04). Here every inserted block is emitted whole, ours
+    before theirs at the same base index, and an identical block on both sides
+    is emitted once. ``None`` when either side is not a pure append; the caller
+    then leaves the file to git's ordinary text merge.
+    """
+    base_lines = base.splitlines()
+    ours_blocks = _pure_insertions(base_lines, ours.splitlines())
+    theirs_blocks = _pure_insertions(base_lines, theirs.splitlines())
+    if ours_blocks is None or theirs_blocks is None:
+        return None
+    merged: list[str] = []
+    for index in range(len(base_lines) + 1):
+        mine = ours_blocks.get(index)
+        other = theirs_blocks.get(index)
+        if mine is not None:
+            merged.extend(mine)
+        if other is not None and other != mine:
+            merged.extend(other)
+        if index < len(base_lines):
+            merged.append(base_lines[index])
+    return "\n".join(merged) + "\n" if merged else ""
+
+
+def ensure_merge_driver(root: Path) -> bool:
+    """Install the ledger merge driver in this clone's config; True if written."""
+    key = f"merge.{MERGE_DRIVER_NAME}.driver"
+    current = _git_for_ledger(root, "config", "--get", key)
+    if current.returncode == 0 and current.stdout.strip() == MERGE_DRIVER_COMMAND:
+        return False
+    settings = (
+        (key, MERGE_DRIVER_COMMAND),
+        (f"merge.{MERGE_DRIVER_NAME}.name", MERGE_DRIVER_DESCRIPTION),
+    )
+    for name, value in settings:
+        result = _git_for_ledger(root, "config", "--local", name, value)
+        if result.returncode != 0:
+            raise LedgerError(
+                f"could not install merge driver {name}: {_git_failure_detail(result)}"
+            )
+    return True
+
+
+def cmd_merge_driver(args: argparse.Namespace) -> int:
+    """Git merge driver entry: ``%O %A %B %P``, result written into ``%A``.
+
+    A non-zero exit tells git the file conflicts and leaves ``%A`` as written,
+    so every refusal first hands the three inputs to ``git merge-file`` -- the
+    merge git would have done without a driver -- and validates a clean ledger
+    result too, so an invalid union never reports success.
+    """
+    ledger_kind = MERGE_DRIVER_LEDGERS.get(Path(args.path).as_posix())
+    reason: str
+    if ledger_kind is None:
+        reason = f"{args.path} is not a ledger this driver merges"
+    else:
+        try:
+            merged = merge_appended_blocks(
+                args.base.read_text(encoding="utf-8"),
+                args.ours.read_text(encoding="utf-8"),
+                args.theirs.read_text(encoding="utf-8"),
+            )
+        except (OSError, UnicodeDecodeError) as exc:
+            merged = None
+            reason = f"could not read the merge inputs: {exc}"
+        else:
+            reason = "a side changed existing lines instead of appending"
+        if merged is not None:
+            candidate = args.ours.with_name(f"{args.ours.name}.ledger-merge")
+            try:
+                candidate.write_text(merged, encoding="utf-8")
+                valid = _ledger_snapshot_valid(candidate, ledger_kind)
+            except (LedgerError, OSError, UnicodeError) as exc:
+                valid = False
+                reason = f"the appended blocks could not be validated: {exc}"
+            else:
+                reason = "the appended blocks do not validate together"
+            finally:
+                candidate.unlink(missing_ok=True)
+            if valid:
+                args.ours.write_text(merged, encoding="utf-8")
+                return 0
+    print(
+        f"merge-driver: {reason}; {args.path} is left to git merge-file",
+        file=sys.stderr,
+    )
+    result = _git_for_ledger(
+        cast(Path, REPO_ROOT),
+        "merge-file",
+        "-L", "ours", "-L", "base", "-L", "theirs",
+        str(args.ours), str(args.base), str(args.theirs),
+    )
+    if result.stderr.strip():
+        for line in result.stderr.splitlines():
+            print(f"merge-driver: git merge-file: {line}", file=sys.stderr)
+    if result.returncode == 0:
+        if ledger_kind is not None:
+            try:
+                valid = _ledger_snapshot_valid(args.ours, ledger_kind)
+            except (LedgerError, OSError, UnicodeError):
+                valid = False
+            if not valid:
+                print(
+                    f"merge-driver: git merge-file joined {args.path} cleanly but "
+                    "the result does not validate; left conflicted for a hand",
+                    file=sys.stderr,
+                )
+                return 1
+        return 0
+    return result.returncode if 0 < result.returncode < 128 else 1
 
 
 def _ledger_snapshot_preserved(before: Path, after: Path, ledger_kind: str) -> bool:
@@ -2508,6 +2662,8 @@ def _citation_resolution(
 
 
 def cmd_check(args: argparse.Namespace) -> int:
+    if ensure_merge_driver(cast(Path, REPO_ROOT)):
+        print(f"installed git merge driver {MERGE_DRIVER_NAME}", file=sys.stderr)
     findings, problems, vocabulary = parse(args.ledger)
     issues = validate(findings, problems, vocabulary)
     ledger_text = args.ledger.read_text(encoding="utf-8")
@@ -6876,6 +7032,16 @@ def main(argv: list[str] | None = None) -> int:
     p_trailer.add_argument("id")
     p_trailer.add_argument("--superseded-by", nargs="+", required=True)
     p_trailer.set_defaults(func=cmd_set_trailer)
+
+    p_driver = sub.add_parser(
+        "merge-driver",
+        help="git merge driver for the append-only ledgers (%%O %%A %%B %%P)",
+    )
+    p_driver.add_argument("base", type=Path)
+    p_driver.add_argument("ours", type=Path)
+    p_driver.add_argument("theirs", type=Path)
+    p_driver.add_argument("path")
+    p_driver.set_defaults(func=cmd_merge_driver)
 
     args = parser.parse_args(argv)
     root = _require_git_toplevel()
