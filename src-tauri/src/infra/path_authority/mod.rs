@@ -2762,10 +2762,13 @@ impl PathAuthority {
     }
 
     /// The one registration body behind the three root methods above: reuse the
-    /// persisted entry for this directory when its operations match, refuse it
-    /// when the directory behind it was replaced, and otherwise register it.
+    /// persisted entry for this directory when its operations match, recover a
+    /// replaced app-owned default root when its verified expected identity is
+    /// current, refuse every other replacement, and otherwise register it.
     /// `changed_noun` names the root in that refusal, so each caller keeps
-    /// telling the renderer which root to select again.
+    /// telling the renderer which root to select again. A `None` expected
+    /// identity always refuses a replaced directory; recovery is limited to a
+    /// default caller whose expected token matches the live directory.
     fn get_or_create_root(
         &mut self,
         path: &Path,
@@ -2774,23 +2777,78 @@ impl PathAuthority {
         changed_noun: &str,
         expected_identity: Option<VerifiedIdentity>,
     ) -> Result<PathRef, Error> {
+        let display_name = display_name.into();
         let purpose = purpose_for_shape(PathClass::PersistentCustomRoot, true, &operations);
-        if let Some(entry) = self.persistent.values().find(|entry| {
-            entry.stored.class == PathClass::PersistentCustomRoot
-                && entry.stored.target_is_dir
-                && match purpose {
-                    Some(purpose) => entry.stored.purpose == Some(purpose),
-                    None => entry.stored.purpose.is_none() && entry.stored.operations == operations,
-                }
-                && entry
-                    .stored
-                    .path
-                    .to_path()
-                    .is_ok_and(|stored| stored == path)
-        }) {
+        if let Some(entry) = self
+            .persistent
+            .values()
+            .find(|entry| {
+                entry.stored.class == PathClass::PersistentCustomRoot
+                    && entry.stored.target_is_dir
+                    && match purpose {
+                        Some(purpose) => entry.stored.purpose == Some(purpose),
+                        None => {
+                            entry.stored.purpose.is_none() && entry.stored.operations == operations
+                        }
+                    }
+                    && entry
+                        .stored
+                        .path
+                        .to_path()
+                        .is_ok_and(|stored| stored == path)
+            })
+            .cloned()
+        {
             let identity = validate_target(path, PathClass::PersistentCustomRoot)?;
             reject_disagreeing_expected_identity(&identity, expected_identity)?;
             if identity != entry.stored.identity {
+                if expected_identity.is_some() {
+                    let stale_root = entry.stored.id.clone();
+                    let new_root = PathRef::fresh();
+                    let (mut candidate, filtered_pending, mut filtered_provisional) =
+                        Self::complete_workspace_prune_candidate(
+                            &self.persistent,
+                            &self.pending_artifacts,
+                            &self.provisional_attachments,
+                            &stale_root.id,
+                        )?;
+                    filtered_provisional
+                        .retain(|id| !self.pending_unpersisted_removals.contains(id));
+                    let stored = StoredEntry {
+                        id: new_root.clone(),
+                        display_name,
+                        class: PathClass::PersistentCustomRoot,
+                        purpose,
+                        operations: purpose.map(canonical_operations).unwrap_or(operations),
+                        path: NativePath::from_path(path),
+                        identity,
+                        target_is_dir: true,
+                    };
+                    candidate.insert(
+                        new_root.id.clone(),
+                        Entry {
+                            stored,
+                            availability: PathAvailability::Available,
+                        },
+                    );
+
+                    let old_provisional = self.provisional_attachments.clone();
+                    self.provisional_attachments = filtered_provisional;
+                    return match self.commit_candidate_with_pending(
+                        candidate,
+                        filtered_pending,
+                        None,
+                    ) {
+                        Ok(_) => {
+                            self.session_protected_ids.insert(new_root.id.clone());
+                            Ok(new_root)
+                        }
+                        Err(error) => {
+                            self.provisional_attachments = old_provisional;
+                            Err(error)
+                        }
+                    };
+                }
                 return Err(Error::Conflict(format!(
                     "{changed_noun} root changed; select it again"
                 )));
@@ -2812,7 +2870,7 @@ impl PathAuthority {
         let id = self
             .migrate_legacy_os_path_inner(
                 path.as_os_str().to_os_string(),
-                display_name.into(),
+                display_name,
                 PathClass::PersistentCustomRoot,
                 operations,
                 expected_identity,
@@ -2820,6 +2878,56 @@ impl PathAuthority {
             .id;
         self.session_protected_ids.insert(id.id.clone());
         Ok(id)
+    }
+
+    /// Builds the recovery-only Complete prune candidate for a replaced root. Explicit workspace
+    /// removal keeps its own Complete/Partial semantics and pending-removal bookkeeping.
+    fn complete_workspace_prune_candidate(
+        persistent: &BTreeMap<String, Entry>,
+        pending_artifacts: &[PendingArtifact],
+        provisional_attachments: &BTreeSet<String>,
+        root_id: &str,
+    ) -> Result<
+        (
+            BTreeMap<String, Entry>,
+            Vec<PendingArtifact>,
+            BTreeSet<String>,
+        ),
+        Error,
+    > {
+        let removed = persistent
+            .get(root_id)
+            .ok_or_else(|| Error::InvalidInput("workspace entry is not persistent".into()))?;
+        let removed_path = removed.stored.path.to_path()?;
+        let mut candidate = persistent.clone();
+        candidate.remove(root_id);
+        if removed.stored.target_is_dir {
+            candidate.retain(|id, entry| {
+                if id == root_id {
+                    return false;
+                }
+                let Ok(path) = entry.stored.path.to_path() else {
+                    return true;
+                };
+                let is_descendant =
+                    path != removed_path && path.strip_prefix(&removed_path).is_ok();
+                !is_descendant
+            });
+        }
+
+        let removed_ids: BTreeSet<_> = persistent
+            .keys()
+            .filter(|id| !candidate.contains_key(*id))
+            .cloned()
+            .collect();
+        let mut filtered_pending = pending_artifacts.to_vec();
+        filtered_pending.retain(|pending| !removed_ids.contains(&pending.root.id));
+        let filtered_provisional = provisional_attachments
+            .iter()
+            .filter(|id| candidate.contains_key(*id))
+            .cloned()
+            .collect();
+        Ok((candidate, filtered_pending, filtered_provisional))
     }
 
     pub(crate) fn active_engine_root(&mut self) -> Result<Option<EngineRootHandle>, Error> {
@@ -9091,6 +9199,664 @@ mod tests {
                 panic!("engine images do not have a persistent root entry")
             }
         }
+    }
+
+    fn set_active_app_owned_test_root(
+        path_authority: &mut PathAuthority,
+        root: AppOwnedDefaultRoot,
+        id: &PathRef,
+    ) {
+        match root {
+            AppOwnedDefaultRoot::Databases => path_authority
+                .set_active_database_root(&DatabaseRootHandle::new(id.clone()))
+                .unwrap(),
+            AppOwnedDefaultRoot::Engines => path_authority
+                .set_active_engine_root(&EngineRootHandle::new(id.clone()))
+                .unwrap(),
+            AppOwnedDefaultRoot::Puzzles => path_authority
+                .set_active_puzzle_root(&PuzzleRootHandle::new(id.clone()))
+                .unwrap(),
+            AppOwnedDefaultRoot::EngineImages => {
+                panic!("engine images do not have a persistent root entry")
+            }
+        }
+    }
+
+    fn assert_active_app_owned_test_root_is_absent(
+        path_authority: &mut PathAuthority,
+        root: AppOwnedDefaultRoot,
+    ) {
+        match root {
+            AppOwnedDefaultRoot::Databases => {
+                assert_eq!(path_authority.active_database_root().unwrap(), None)
+            }
+            AppOwnedDefaultRoot::Engines => {
+                assert_eq!(path_authority.active_engine_root().unwrap(), None)
+            }
+            AppOwnedDefaultRoot::Puzzles => {
+                assert_eq!(path_authority.active_puzzle_root().unwrap(), None)
+            }
+            AppOwnedDefaultRoot::EngineImages => {
+                panic!("engine images do not have a persistent root entry")
+            }
+        }
+    }
+
+    fn persist_test_entry(
+        path_authority: &mut PathAuthority,
+        path: &Path,
+        id: &str,
+        purpose: EntryPurpose,
+    ) -> PathRef {
+        let stored = stored_entry_for(path, id, Some(purpose), canonical_operations(purpose));
+        let id = stored.id.clone();
+        let mut candidate = path_authority.persistent.clone();
+        candidate.insert(
+            id.id.clone(),
+            Entry {
+                stored,
+                availability: PathAvailability::Available,
+            },
+        );
+        path_authority.commit_candidate(candidate, None).unwrap();
+        id
+    }
+
+    fn pending_test_artifact(root: &PathRef, id: &str) -> PendingArtifact {
+        PendingArtifact {
+            id: PathRef { id: id.into() },
+            root: root.clone(),
+            filename: NativePath::from_path(Path::new("artifact")),
+            display_name: id.into(),
+            operations: vec![PathOperation::ReadPgn],
+            baseline: None,
+            root_identity: None,
+            payload_size: 0,
+            payload_sha256: String::new(),
+            payload_bound: false,
+            installed_identity: None,
+            installed_ctime_nanos: None,
+        }
+    }
+
+    fn assert_app_owned_root_recovers_after_deleted_directory(root: AppOwnedDefaultRoot) {
+        let dir = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(dir.path());
+        let initial = ensure_app_owned_default_dir(&app_data, root).unwrap();
+        let old_identity = initial.identity();
+        let old_path = initial.path().to_path_buf();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let old_id =
+            get_or_create_app_owned_test_root(&mut path_authority, root, &initial, old_identity)
+                .unwrap();
+        set_active_app_owned_test_root(&mut path_authority, root, &old_id);
+
+        fs::remove_dir_all(&old_path).unwrap();
+        assert_active_app_owned_test_root_is_absent(&mut path_authority, root);
+
+        let replacement = ensure_app_owned_default_dir(&app_data, root).unwrap();
+        assert_ne!(replacement.identity(), old_identity);
+        let new_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            root,
+            &replacement,
+            replacement.identity(),
+        )
+        .unwrap();
+        set_active_app_owned_test_root(&mut path_authority, root, &new_id);
+
+        assert!(!path_authority.persistent.contains_key(&old_id.id));
+        assert_eq!(
+            path_authority.persistent[&new_id.id].availability,
+            PathAvailability::Available
+        );
+        assert_eq!(
+            path_authority.persistent[&new_id.id].stored.identity,
+            Identity {
+                a: replacement.identity().pair().0,
+                b: replacement.identity().pair().1,
+            }
+        );
+
+        let reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert!(!reopened.persistent.contains_key(&old_id.id));
+        assert_eq!(
+            reopened.persistent[&new_id.id].availability,
+            PathAvailability::Available
+        );
+        assert_eq!(
+            reopened.persistent[&new_id.id].stored.identity,
+            Identity {
+                a: replacement.identity().pair().0,
+                b: replacement.identity().pair().1,
+            }
+        );
+        assert!(reopened
+            .provisional_attachments
+            .iter()
+            .all(|id| reopened.persistent.contains_key(id)));
+    }
+
+    #[test]
+    fn app_owned_database_root_recovers_after_deleted_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(dir.path());
+        let databases =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        let engines =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Engines).unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let old_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &databases,
+            databases.identity(),
+        )
+        .unwrap();
+        set_active_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &old_id,
+        );
+        let engines_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Engines,
+            &engines,
+            engines.identity(),
+        )
+        .unwrap();
+        let resource = engines.path().join("resource.nnue");
+        let resource_handle = attachment_resource(&mut path_authority, &resource);
+        assert!(path_authority
+            .persistent
+            .contains_key(&resource_handle.id.id));
+        assert!(path_authority
+            .provisional_attachments
+            .contains(&resource_handle.id.id));
+        assert!(path_authority.persistent.contains_key(&engines_id.id));
+
+        let old_identity = databases.identity();
+        fs::remove_dir_all(databases.path()).unwrap();
+        assert_eq!(path_authority.active_database_root().unwrap(), None);
+        let replacement =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        assert_ne!(replacement.identity(), old_identity);
+        let new_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &replacement,
+            replacement.identity(),
+        )
+        .unwrap();
+        set_active_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &new_id,
+        );
+        assert!(!path_authority.persistent.contains_key(&old_id.id));
+        assert!(path_authority.persistent.contains_key(&engines_id.id));
+        assert!(path_authority
+            .persistent
+            .contains_key(&resource_handle.id.id));
+        assert!(path_authority
+            .provisional_attachments
+            .contains(&resource_handle.id.id));
+
+        let reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert!(!reopened.persistent.contains_key(&old_id.id));
+        assert!(reopened.persistent.contains_key(&engines_id.id));
+        assert!(reopened.persistent.contains_key(&resource_handle.id.id));
+        assert!(reopened
+            .provisional_attachments
+            .contains(&resource_handle.id.id));
+    }
+
+    #[test]
+    fn app_owned_engine_root_recovers_after_deleted_directory() {
+        assert_app_owned_root_recovers_after_deleted_directory(AppOwnedDefaultRoot::Engines);
+    }
+
+    #[test]
+    fn app_owned_puzzle_root_recovers_after_deleted_directory() {
+        assert_app_owned_root_recovers_after_deleted_directory(AppOwnedDefaultRoot::Puzzles);
+    }
+
+    #[test]
+    fn app_owned_database_root_recovery_prunes_stale_descendants() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(dir.path());
+        let databases =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let old_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &databases,
+            databases.identity(),
+        )
+        .unwrap();
+        set_active_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &old_id,
+        );
+
+        let nested = databases.path().join("nested");
+        let nested_file = nested.join("child");
+        fs::create_dir(&nested).unwrap();
+        fs::write(&nested_file, b"child").unwrap();
+        let nested_id = persist_test_entry(
+            &mut path_authority,
+            &nested,
+            "stale-nested",
+            EntryPurpose::PgnWorkspace,
+        );
+        let nested_file_id = persist_test_entry(
+            &mut path_authority,
+            &nested_file,
+            "stale-nested-file",
+            EntryPurpose::PgnFile,
+        );
+        let sibling_root = dir.path().join("surviving");
+        let sibling_file = sibling_root.join("sibling");
+        fs::create_dir(&sibling_root).unwrap();
+        fs::write(&sibling_file, b"sibling").unwrap();
+        let sibling_id = persist_test_entry(
+            &mut path_authority,
+            &sibling_root,
+            "surviving-root",
+            EntryPurpose::PgnWorkspace,
+        );
+        let sibling_file_id = persist_test_entry(
+            &mut path_authority,
+            &sibling_file,
+            "surviving-file",
+            EntryPurpose::PgnFile,
+        );
+
+        fs::remove_dir_all(databases.path()).unwrap();
+        assert_eq!(path_authority.active_database_root().unwrap(), None);
+        let replacement =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        let new_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &replacement,
+            replacement.identity(),
+        )
+        .unwrap();
+        assert!(!path_authority.persistent.contains_key(&old_id.id));
+        assert!(!path_authority.persistent.contains_key(&nested_id.id));
+        assert!(!path_authority.persistent.contains_key(&nested_file_id.id));
+        assert!(path_authority.persistent.contains_key(&new_id.id));
+        assert!(path_authority.persistent.contains_key(&sibling_id.id));
+        assert!(path_authority.persistent.contains_key(&sibling_file_id.id));
+
+        let reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert!(!reopened.persistent.contains_key(&old_id.id));
+        assert!(!reopened.persistent.contains_key(&nested_id.id));
+        assert!(!reopened.persistent.contains_key(&nested_file_id.id));
+        assert!(reopened.persistent.contains_key(&sibling_id.id));
+        assert!(reopened.persistent.contains_key(&sibling_file_id.id));
+    }
+
+    #[test]
+    fn app_owned_database_root_recovery_prunes_pending_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(dir.path());
+        let databases =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let old_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &databases,
+            databases.identity(),
+        )
+        .unwrap();
+        let sibling_path = dir.path().join("surviving");
+        fs::create_dir(&sibling_path).unwrap();
+        let sibling_id = path_authority
+            .migrate_legacy_os_path_inner(
+                sibling_path.clone().into_os_string(),
+                "Surviving".into(),
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::DownloadFile],
+                None,
+            )
+            .unwrap()
+            .id;
+        let stale_pending = path_authority
+            .reserve_download_artifact(
+                &old_id,
+                OsString::from("stale"),
+                (0, String::new()),
+                "stale",
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        let sibling_pending = path_authority
+            .reserve_download_artifact(
+                &sibling_id,
+                OsString::from("surviving"),
+                (0, String::new()),
+                "surviving",
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        let quarantined = pending_test_artifact(
+            &PathRef {
+                id: "already-absent-root".into(),
+            },
+            "quarantined",
+        );
+        path_authority.pending_artifacts.push(quarantined.clone());
+        path_authority.save().unwrap();
+
+        fs::remove_dir_all(databases.path()).unwrap();
+        assert_eq!(path_authority.active_database_root().unwrap(), None);
+        let replacement =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        let new_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &replacement,
+            replacement.identity(),
+        )
+        .unwrap();
+        assert!(path_authority
+            .pending_artifacts
+            .iter()
+            .all(|pending| pending.id != stale_pending.id));
+        assert!(path_authority
+            .pending_artifacts
+            .iter()
+            .any(|pending| pending.id == sibling_pending.id));
+        assert!(path_authority
+            .pending_artifacts
+            .iter()
+            .any(|pending| pending.id == quarantined.id));
+        assert!(path_authority.persistent.contains_key(&new_id.id));
+
+        let reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert!(reopened
+            .pending_artifacts
+            .iter()
+            .all(|pending| pending.id != stale_pending.id));
+        assert!(reopened
+            .pending_artifacts
+            .iter()
+            .any(|pending| pending.id == sibling_pending.id));
+        assert!(reopened
+            .pending_artifacts
+            .iter()
+            .any(|pending| pending.id == quarantined.id));
+    }
+
+    #[test]
+    fn app_owned_engine_root_recovery_prunes_provisional_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(dir.path());
+        let engines =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Engines).unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let old_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Engines,
+            &engines,
+            engines.identity(),
+        )
+        .unwrap();
+        let resource = engines.path().join("resource.nnue");
+        let resource_handle = attachment_resource(&mut path_authority, &resource);
+        assert!(path_authority
+            .provisional_attachments
+            .contains(&resource_handle.id.id));
+        fs::remove_dir_all(engines.path()).unwrap();
+        assert_eq!(path_authority.active_engine_root().unwrap(), None);
+        let replacement =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Engines).unwrap();
+        let new_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Engines,
+            &replacement,
+            replacement.identity(),
+        )
+        .unwrap();
+        assert!(!path_authority.persistent.contains_key(&old_id.id));
+        assert!(!path_authority
+            .persistent
+            .contains_key(&resource_handle.id.id));
+        assert!(!path_authority
+            .provisional_attachments
+            .contains(&resource_handle.id.id));
+        assert!(path_authority.persistent.contains_key(&new_id.id));
+
+        let reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert!(!reopened.persistent.contains_key(&old_id.id));
+        assert!(!reopened.persistent.contains_key(&resource_handle.id.id));
+        assert!(!reopened
+            .provisional_attachments
+            .contains(&resource_handle.id.id));
+    }
+
+    #[test]
+    fn app_owned_database_root_recovery_keeps_registry_unchanged_on_persistence_failure() {
+        struct RegistryFailure;
+        impl AtomicWriterInjector for RegistryFailure {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::TempfileCreate {
+                    Err(std::io::Error::other("registry failure"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(dir.path());
+        let databases =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        let engines =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Engines).unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let old_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &databases,
+            databases.identity(),
+        )
+        .unwrap();
+        set_active_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &old_id,
+        );
+        let engines_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Engines,
+            &engines,
+            engines.identity(),
+        )
+        .unwrap();
+        let resource = engines.path().join("resource.nnue");
+        let resource_handle = attachment_resource(&mut path_authority, &resource);
+        let pending = path_authority
+            .reserve_download_artifact(
+                &old_id,
+                OsString::from("pending"),
+                (0, String::new()),
+                "pending",
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        let child_path = databases.path().join("child.db3");
+        fs::write(&child_path, b"child").unwrap();
+        let child = path_authority
+            .register_database_child(
+                &DatabaseRootHandle::new(old_id.clone()),
+                OsStr::new("child.db3"),
+                "child",
+            )
+            .unwrap();
+        assert!(path_authority.persistent.contains_key(&engines_id.id));
+        assert!(path_authority
+            .provisional_attachments
+            .contains(&resource_handle.id.id));
+        path_authority.save().unwrap();
+
+        fs::remove_dir_all(databases.path()).unwrap();
+        assert_eq!(path_authority.active_database_root().unwrap(), None);
+        let replacement =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        assert_ne!(replacement.identity(), databases.identity());
+
+        let persistent_before = path_authority.persistent.clone();
+        let pending_before = serde_json::to_vec(&path_authority.pending_artifacts).unwrap();
+        let provisional_before = path_authority.provisional_attachments.clone();
+        let removals_before = path_authority.pending_unpersisted_removals.clone();
+        let active_before = path_authority.active_database_root.clone();
+        let bytes_before = fs::read(dir.path().join("registry.json")).unwrap();
+
+        set_test_atomic_file_injector(Some(Arc::new(RegistryFailure)));
+        let result = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &replacement,
+            replacement.identity(),
+        );
+        set_test_atomic_file_injector(None);
+        assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+        assert!(path_authority.persistent == persistent_before);
+        assert_eq!(
+            serde_json::to_vec(&path_authority.pending_artifacts).unwrap(),
+            pending_before
+        );
+        assert_eq!(path_authority.provisional_attachments, provisional_before);
+        assert_eq!(path_authority.pending_unpersisted_removals, removals_before);
+        assert_eq!(path_authority.active_database_root, active_before);
+        assert_eq!(
+            fs::read(dir.path().join("registry.json")).unwrap(),
+            bytes_before
+        );
+        assert!(path_authority.persistent.contains_key(&old_id.id));
+        assert!(path_authority.persistent.contains_key(&child.id.id));
+        assert!(path_authority
+            .pending_artifacts
+            .iter()
+            .any(|item| item.id == pending.id));
+
+        let reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert!(reopened.persistent.contains_key(&old_id.id));
+        assert!(reopened.persistent.contains_key(&child.id.id));
+        assert_eq!(
+            fs::read(dir.path().join("registry.json")).unwrap(),
+            bytes_before
+        );
+    }
+
+    #[test]
+    fn app_owned_engine_root_recovery_drops_tombstoned_provisional_markers() {
+        struct RegistryFailure;
+        impl AtomicWriterInjector for RegistryFailure {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::TempfileCreate {
+                    Err(std::io::Error::other("registry failure"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(dir.path());
+        let databases =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        let engines =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Engines).unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let _database_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &databases,
+            databases.identity(),
+        )
+        .unwrap();
+        let engines_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Engines,
+            &engines,
+            engines.identity(),
+        )
+        .unwrap();
+        let resource = engines.path().join("resource.nnue");
+        let resource_handle = attachment_resource(&mut path_authority, &resource);
+        assert!(path_authority
+            .provisional_attachments
+            .contains(&resource_handle.id.id));
+        set_test_atomic_file_injector(Some(Arc::new(RegistryFailure)));
+        let mut dropped = Vec::new();
+        assert!(path_authority
+            .remove_workspace_entry(
+                &FileWorkspaceHandle::new(engines_id.clone()),
+                WorkspaceRemovalStatus::Complete,
+                &mut dropped,
+            )
+            .is_err());
+        set_test_atomic_file_injector(None);
+        assert!(path_authority
+            .pending_unpersisted_removals
+            .contains(&engines_id.id));
+        assert!(path_authority
+            .pending_unpersisted_removals
+            .contains(&resource_handle.id.id));
+        assert!(path_authority
+            .persistent
+            .contains_key(&resource_handle.id.id));
+
+        fs::remove_dir_all(databases.path()).unwrap();
+        assert_eq!(path_authority.active_database_root().unwrap(), None);
+        let replacement =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        let new_id = get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &replacement,
+            replacement.identity(),
+        )
+        .unwrap();
+        assert!(path_authority.persistent.contains_key(&new_id.id));
+
+        let reopened = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        assert!(!reopened
+            .provisional_attachments
+            .contains(&resource_handle.id.id));
+    }
+
+    #[test]
+    fn app_owned_database_root_disagreeing_expected_identity_after_registration_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(dir.path());
+        let databases =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Databases).unwrap();
+        let engines =
+            ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::Engines).unwrap();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(1)));
+        get_or_create_app_owned_test_root(
+            &mut path_authority,
+            AppOwnedDefaultRoot::Databases,
+            &databases,
+            databases.identity(),
+        )
+        .unwrap();
+        let error = path_authority
+            .get_or_create_database_root(databases.path(), "Databases", Some(engines.identity()))
+            .expect_err("a live identity from another path must be refused");
+        assert!(matches!(
+            error,
+            Error::Conflict(message)
+                if message == "verified identity does not match registration target"
+        ));
     }
 
     #[cfg(unix)]
