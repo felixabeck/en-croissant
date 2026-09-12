@@ -2760,3 +2760,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** they do not share a cohesive file set for one interview. 01 is interactive emit-after-cancel in `chess.rs` `process_interactive_search_output`. 02 is unscoped `stop_generation` preferring a pending admission, with an open question: which generation to stop. A ledger area is a vocabulary bucket, not a cohesive file set (`d-20260901-21`, `d-20260831-33`). Lens r4 restated 02 as should-fix; it is already filed.
 * **Decided by:** Grok, autonomously under `full auto`, drain session 833400da-2c52-444a-8880-2c4cbe8b0353 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"86ce857208bd8793a6c11fc4aa0f62012995edb674bfa01420a13a23da00e484","input_sha256":"1ee1e13011371393bf03bec0c2ec36176290109690ba1cc8e55c225114cd10b4","kind":"mutation-receipt","operation":"219842b65fb553fd502b6b28b97862b1c3dd116b6879fae06ce2244136e78f58","options":{"section":null},"request_id_sha256":null,"results":["d-20260911-09"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-12 — recorded through the decisions lock
+
+### d-20260912-01 — How does a deleted app-owned default root recover without weakening dialog callers?
+
+* **Question:** If a user deletes `db` / `engines` / `puzzles` under app-data, how does the next default-workspace call get a usable root, given `d-20260905-03` (dialog `get_or_create_*_root` must still refuse an absent directory)?
+* **Governs:** f-20260905-01
+* **Chosen:** In `get_or_create_root`, when reuse finds a persistent custom root at this path, `expected_identity` is `Some` and matches the live directory, and the stored identity differs, stage a Complete prune of that root (persistent descendants, pending whose root was removed, provisional ids no longer in the candidate, then drop ids in `pending_unpersisted_removals`) and commit one new entry. Dialog callers pass `None` and still Conflict / refuse-absent.
+* **Rejected:** skip `Unavailable` in the reuse lookup (dialog shares it); a picker for default roots; `get_or_create_app_owned_root`; wiring the helper into `remove_workspace_entry`; recovering on identity equality (that is the same directory).
+* **Reason:** `d-20260905-12` already put `Some(identity)` on default callers. The wedge is stored-identity mismatch after recreate. One candidate commit avoids `f-20260831-03`. Reversal path: restore the unconditional Conflict at the stored-identity comparison and delete the recovery tests.
+* **Decided by:** Grok, autonomously under `full auto`, drain session 57010de9-7bf7-461c-8861-1eff043d4d7a · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"5847e60e518d91f27a5f203055b6767f74aaac2232521fa52f25fb5534598c72","input_sha256":"9a6ff1caa97bed6edac49e785e74bd328b1a1116665e75bbbda88bc22490facc","kind":"mutation-receipt","operation":"45548dd6d7a55a92dfa0c795b0b7eef975764e9da7b534790627849c4f5f0f75","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-01"],"target":"decisions-ledger","v":1} -->
