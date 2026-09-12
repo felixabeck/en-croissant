@@ -8084,6 +8084,9 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Related:** `f-20260905-03` (Mandate B, depends on this), `d-20260905-07`, `f-20260905-04`.
 * **Found by:** Claude Code, rule-12a split of `tasks/plans/2026-09-12-repository-identity-key.md`, 2026-09-12.
 
+* **Handled, 2026-09-12:** `DatabaseFileTarget` now carries a private canonical `path` with `pub(crate)` accessors; `database_file_target` mints for all four database operations from the canonical parent; `delete_database_blocking`, `generate_search_index`, and `load_search_index_cancellable` use `target.path()` instead of a second resolver. `database_path` and `resolve_database` remain for A2 (`f-20260912-12`). Allowlist counts unchanged. Commit `70e17808`. Decisions `d-20260912-04` through `d-20260912-09` (parent D1–D8, D8 narrowed to the loader). Proof: `cargo fmt --check`, clippy `-D warnings` all-targets locked, `cargo test --locked` 976 passed / 1 ignored, `pnpm rust:surface:check`, `pnpm gates:contract:check`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"0ca4700e1fd7d1583a57e1494d2d67343820838752404b072a8721d39ddec1de","input_sha256":"b151e52d6bdfcf15c7e73d79c14a85ae1cce60525fd1c76873dd3045e6e434ad","kind":"mutation-receipt","operation":"39d56f879e8d3530f34cfb311016c9f1a485602ed74e5e9afee55fe0fefd66fd","options":{"section":null},"request_id_sha256":null,"results":["f-20260912-11"],"target":"f-20260912-11","v":1} -->
+
 ### `resolve_database` still hands database commands a loose `PathBuf` although the authority can mint a `DatabaseFileTarget` for every database operation
 
 * **ID:** f-20260912-12 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** sequenced-f-20260912-11
