@@ -2794,3 +2794,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** `DatabaseFileTarget` at `src-tauri/src/infra/path_authority/mod.rs:132-136` still has no `path`. The finding's 2026-09-12 re-scope made Mandate A a prerequisite of B; A was then split into A1 (carrier + the three commands that already hold a target) and A2 (`resolve_database` + operation matrix). B's key is `EntryKey { identity, parent_identity, path }` supplied by that carrier. A sequenced blocker is the queue form of that prerequisite; `f-20260830-48` is the in-repo precedent (`sequenced-f-20260830-06`).
 * **Decided by:** Grok, autonomously under `full auto` · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"16ba3b4fec58af83b608ba63f19cf9c287d2e09e0a81d778f53beb939ad6f5fb","input_sha256":"af201cbb47f0fade9b0a6bccd0939eb5bd433ea998539fdcc17c341e333bccb9","kind":"mutation-receipt","operation":"6308175a6d1f53fe42a3fe7eab2c5117c3b25db02dc9da89b1282ca9cf66989d","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20260912-04 — Does canonical_binding canonicalize the whole stored path, or only the parent?
+
+* **Question:** Does `canonical_binding` canonicalize the whole stored path, or only the parent, appending the leaf unchanged?
+* **Governs:** f-20260912-11
+* **Chosen:** canonicalize only the parent and append the leaf `OsStr` unchanged. Empty parent maps to `"."`.
+* **Rejected:** `canonicalize(stored)` of the whole path, which follows a leaf symlink introduced before or between the checks.
+* **Reason:** a leaf replaced by a symlink to the moved original must be refused; following it would mint a target for the moved file. Measured in plan review of the parent Mandate A plan (D1).
+* **Decided by:** Grok, autonomously under `full auto`, A1 of f-20260912-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"2b9da1425f7b4faad2fa630fb1145863f5b8b99689c836914e76d6f4d33cd685","input_sha256":"5f7e59e1c1896da986a87d8c5bfe618ce827adc0e5ed685281795ad1c7e2449c","kind":"mutation-receipt","operation":"1a5e7c82fbc777fafc4809c9d5efbdca07795e126cc3df285d3656a78b1cfac6","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-04"],"target":"decisions-ledger","v":1} -->
