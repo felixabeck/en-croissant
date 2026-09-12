@@ -8094,3 +8094,6 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Why it matters:** the second half of Mandate A; without it two resolvers with different symlink policies coexist and Mandate B (`f-20260905-03`) cannot key on a carrier every command holds.
 * **Related:** `f-20260905-03` (Mandate B), the Mandate A1 finding filed on 2026-09-12 (prerequisite), `d-20260905-07`.
 * **Found by:** Claude Code, rule-12a split of `tasks/plans/2026-09-12-database-target-canonical-binding.md`, 2026-09-12.
+
+* **Blocked, 2026-09-12:** A2 consumes A1's carrier (`path()`, private fields, `assemble`, `for_test_path`, four-operation mint). A1 (`f-20260912-11`) is still open. Blocked `sequenced-f-20260912-11`. Decision: the sequencing entry recorded in this run.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"734f7de1f098b109dc537a3d4f64c627c49b56d1d068998a1fec99c10587a3c0","input_sha256":"fbea8a13227a349c1752fd5224ed39627971b0c0141043a30e3b59d813ab0788","kind":"mutation-receipt","operation":"07543ff607440ee7d329ea7fd9eb2e32fded31e0e1d192e9af21185de07ca904","options":{"section":null},"request_id_sha256":null,"results":["f-20260912-12"],"target":"f-20260912-12","v":1} -->
