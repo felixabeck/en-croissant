@@ -6555,7 +6555,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### The repository is keyed on a normalised pathname, so its three filesystem reaches cannot be routed without re-keying it
 
-* **ID:** f-20260905-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** sequenced-f-20260912-12
 * **Where:** `src-tauri/src/db/repository.rs` — `canonical_database_path` and the three counted
   sites at `:610`, `:614`, `:635`; `RepositoryState.entries: HashMap<PathBuf, _>`.
 * **Defect:** three of `repository.rs`'s six allowlisted filesystem reaches exist only because
