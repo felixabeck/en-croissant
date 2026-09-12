@@ -6496,7 +6496,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### Credential initialisation runs before the path authority exists, so its five filesystem reaches cannot be routed
 
-* **ID:** f-20260905-02 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-02 · **Status:** handled · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/credentials.rs` — five counted R3/R4 sites, including
   `secure_directory` (`:612-621`) and `open_registry_file` (`:626-632`); ordering at
   `src-tauri/src/main.rs`, where credential initialisation runs **before**
