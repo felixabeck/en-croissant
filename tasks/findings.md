@@ -6483,6 +6483,13 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   records why the create-if-missing shortcut was rejected for the dialog callers.
 * **Found by:** Claude Code, plan review of `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
 
+* **Handled:** Default `db` / `engines` / `puzzles` roots recover after the user deletes the directory. `get_or_create_root` with `Some(live identity)` prunes the stale persistent subtree (descendants, pending whose root was removed, provisional ids no longer in the candidate, then tombstoned ids) and registers the new inode in one `commit_candidate_with_pending`. Dialog `None` callers still refuse an absent directory and still Conflict on same-path replacement.
+* **Commits:** `ad1de7d4` (code), `93d1c340` (`d-20260912-01`)
+* **Rejected:** skip-Unavailable in the reuse lookup; a picker; a fourth `get_or_create_app_owned_root`; wiring the helper into `remove_workspace_entry`.
+* **Proof:** 18 exact `infra::path_authority::tests::*` names, including the three recovery tests, descendant/pending/provisional prune, persistence-failure, tombstoned-provisional, and dialog refusals.
+* **Governed-by:** d-20260912-01, d-20260905-03, d-20260905-12
+<!-- ledger-meta {"command":"annotate","effect_lines":5,"effect_sha256":"6d23343a4fa17224eb0db43cb438690d444d4e68f1a0ee4955025bc033da8ee5","input_sha256":"dcdaa29f771451c09f4365c67aa5851b558d1bfc48ec515b12da9d251b47d303","kind":"mutation-receipt","operation":"9037df00225ae522f9e6c0f5b60a6cf2844fc6f725a1e98e7807aa4cb6f2c4fd","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-01"],"target":"f-20260905-01","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
