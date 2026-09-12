@@ -5,7 +5,9 @@
 //! asset-protocol route (`f-20260830-06`). Every other path is a [`PathRef`], an opaque capability
 //! identifier, and every operation is checked at resolution time. Persistent entries retain
 //! filesystem identity; replacement or disappearance makes them unavailable instead of granting
-//! authority to the object that happened to appear at the old location.
+//! authority to the object that happened to appear at the old location. The exception is an
+//! app-owned default root (`db` / `engines` / `puzzles`) recovered with a matching live
+//! `VerifiedIdentity`: that path re-registers the new inode rather than staying wedged.
 
 use crate::{
     error::Error,
