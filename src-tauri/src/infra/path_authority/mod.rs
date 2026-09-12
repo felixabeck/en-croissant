@@ -1858,6 +1858,12 @@ struct Entry {
     stored: StoredEntry,
     availability: PathAvailability,
 }
+
+type CompleteWorkspacePruneCandidate = (
+    BTreeMap<String, Entry>,
+    Vec<PendingArtifact>,
+    BTreeSet<String>,
+);
 #[derive(Clone)]
 struct DialogGrant {
     entry: Entry,
@@ -2889,14 +2895,7 @@ impl PathAuthority {
         pending_artifacts: &[PendingArtifact],
         provisional_attachments: &BTreeSet<String>,
         root_id: &str,
-    ) -> Result<
-        (
-            BTreeMap<String, Entry>,
-            Vec<PendingArtifact>,
-            BTreeSet<String>,
-        ),
-        Error,
-    > {
+    ) -> Result<CompleteWorkspacePruneCandidate, Error> {
         let removed = persistent
             .get(root_id)
             .ok_or_else(|| Error::InvalidInput("workspace entry is not persistent".into()))?;
