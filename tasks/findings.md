@@ -6581,6 +6581,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **Blocked, 2026-09-12:** Mandate A is still open. `DatabaseFileTarget` at `src-tauri/src/infra/path_authority/mod.rs:132-136` still has no `path` field. The 2026-09-12 re-scope made Mandate A a prerequisite of this finding; A was then split into A1 (`f-20260912-11`) and A2 (`f-20260912-12`). Implementing Mandate B against the current carrier would recreate the ten-round non-convergence that produced the split. Blocked `sequenced-f-20260912-12` so this entry leaves the queue until A2 is handled (A2 is itself sequenced on A1). Decision: the sequencing entry recorded in this run.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"143dd655973358033e0685620b155fbefc57038555bbf50e0cf13db1b49343dc","input_sha256":"bb93fca888e3a02c120decdd644ee472f9995909541d33ea3525c48b961568af","kind":"mutation-receipt","operation":"881013184ca45810873fe9cf02701c29813e5851793aada6857067b40dffc1d6","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-03"],"target":"f-20260905-03","v":1} -->
 
+* **A1 landed, 2026-09-12:** `f-20260912-11` is handled in `70e17808`. Mandate B remains blocked on A2 (`sequenced-f-20260912-12`).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c1c57823a1b96c2d3795f7d91eff88f908e9cde525bf389a3b4ad417c726dcda","input_sha256":"618b47a986ee9934a032c45aa6fd80da831caa446b4a660f1b98df52dc297b4d","kind":"mutation-receipt","operation":"178cef84f4620b543d66f8ecaa4028e3bb72065326a643ea64d799c68f07c171","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-03"],"target":"f-20260905-03","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
