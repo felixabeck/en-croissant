@@ -994,6 +994,8 @@ fn is_database_file_operation(op: PathOperation) -> bool {
     }
 }
 
+/// Canonicalizes only the parent and appends the leaf name unchanged, so a leaf
+/// symlink is never followed.
 fn canonical_binding(path: &Path) -> Result<PathBuf, Error> {
     let file_name = path
         .file_name()
@@ -6950,15 +6952,16 @@ mod tests {
             .split("}\n\nimpl DatabaseFileTarget")
             .next()
             .unwrap();
-        assert!(!target.contains("pub "));
+        assert!(!target.contains("pub"));
         assert!(production.contains("fn assemble("));
         assert!(!production.contains("pub fn assemble("));
+        assert!(!production.contains("pub(crate) fn assemble("));
 
         let predicate = production
             .split("fn is_database_file_operation")
             .nth(1)
             .unwrap()
-            .split("\n}\n\nfn canonical_binding")
+            .split("fn canonical_binding")
             .next()
             .unwrap();
         assert!(!predicate.contains("_ =>"));

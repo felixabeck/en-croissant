@@ -791,7 +791,7 @@ fn generate_search_index_locked(
 ) -> Result<(), Error> {
     cancellation_check(cancellation)?;
     let db_path = target.path();
-    let mut database_connection = get_db_or_create(repository, target.path())?;
+    let mut database_connection = get_db_or_create(repository, db_path)?;
     let db = &mut *database_connection;
     let index_leaf = search_index::preferred_sidecar_leaf(target.leaf());
 
@@ -2191,13 +2191,12 @@ fn delete_database_blocking(
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("delete_database", &file);
-    let handle = file.clone();
     let target = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .database_file_target(&handle, PathOperation::DatabaseMutate)?;
+        .database_file_target(&file, PathOperation::DatabaseMutate)?;
     let expected_source = IndexSource::from_database_identity(
         &repository.database_identity_expected(target.path(), target.identity())?,
     )?;
@@ -2220,7 +2219,7 @@ fn delete_database_blocking(
             .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?
             .as_mut()
             .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-            .remove_database(&handle)
+            .remove_database(&file)
     })();
     finish_database_deletion(primary_gone, unlinked, registry_result)
 }
