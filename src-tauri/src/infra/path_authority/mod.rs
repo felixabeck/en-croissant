@@ -1209,16 +1209,15 @@ impl AppOwnedRoot {
 
 /// One of the application's own default root directories under its app-data directory.
 /// The set is closed on purpose: the leaf is one half of the security property, so a caller
-/// can name only a directory the application itself defines. The other half is [`AppDataDir`],
-/// which fixes the parent. It is deliberately **not** exhaustive over the application's
-/// app-data directories — `credentials` is materialised before `PathAuthority::open` and stays
-/// outside this concept.
+/// can name only a directory the application itself defines; the declared mode is the other half.
+/// [`AppDataDir`] fixes the parent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AppOwnedDefaultRoot {
     Databases,
     Engines,
     EngineImages,
     Puzzles,
+    Credentials,
 }
 
 impl AppOwnedDefaultRoot {
@@ -1228,6 +1227,14 @@ impl AppOwnedDefaultRoot {
             Self::Engines => "engines",
             Self::EngineImages => "engine-images",
             Self::Puzzles => "puzzles",
+            Self::Credentials => "credentials",
+        }
+    }
+
+    fn private_mode(self) -> Option<u32> {
+        match self {
+            Self::Credentials => Some(0o700),
+            Self::Databases | Self::Engines | Self::EngineImages | Self::Puzzles => None,
         }
     }
 }
@@ -1355,7 +1362,16 @@ pub(crate) fn ensure_app_owned_default_dir(
 ) -> Result<AuthorizedDir, Error> {
     let path = app_data_dir.as_path().join(root.leaf());
     fs::create_dir_all(&path)?;
-    authorize_existing_dir(&path)
+    let directory = authorize_existing_dir(&path)?;
+    #[cfg(unix)]
+    if let Some(mode) = root.private_mode() {
+        rustix::fs::fchmod(
+            directory.directory.as_file(),
+            rustix::fs::Mode::from_raw_mode(mode),
+        )
+        .map_err(|error| Error::Io(Box::new(error.into())))?;
+    }
+    Ok(directory)
 }
 
 const SOUND_ROOT_LEAF: &str = "sound";
@@ -8778,11 +8794,12 @@ mod tests {
         assert_eq!(reloaded.active_database_root().unwrap(), None);
     }
 
-    const APP_OWNED_DEFAULT_ROOT_LEAVES: [(AppOwnedDefaultRoot, &str); 4] = [
+    const APP_OWNED_DEFAULT_ROOT_LEAVES: [(AppOwnedDefaultRoot, &str); 5] = [
         (AppOwnedDefaultRoot::Databases, "db"),
         (AppOwnedDefaultRoot::Engines, "engines"),
         (AppOwnedDefaultRoot::EngineImages, "engine-images"),
         (AppOwnedDefaultRoot::Puzzles, "puzzles"),
+        (AppOwnedDefaultRoot::Credentials, "credentials"),
     ];
 
     /// The leaves are written out verbatim rather than read back from the enum. A leaf is the
@@ -8799,6 +8816,32 @@ mod tests {
                 created.path().is_dir(),
                 "{root:?} must create the directory {leaf}"
             );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_app_owned_default_dir_applies_only_declared_private_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        for (_, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+            let path = dir.path().join(leaf);
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        for (root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+            let directory =
+                ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
+            let mode = fs::metadata(directory.path()).unwrap().permissions().mode() & 0o7777;
+            let expected_mode = if root == AppOwnedDefaultRoot::Credentials {
+                0o700
+            } else {
+                0o755
+            };
+            assert_eq!(directory.path(), dir.path().join(leaf));
+            assert_eq!(mode, expected_mode, "unexpected mode for {root:?}");
         }
     }
 
@@ -8835,8 +8878,8 @@ mod tests {
     }
 
     /// Per variant, not once: `create_dir_all` succeeds on a symlink to an existing directory,
-    /// and `EngineImages` is the one variant no `get_or_create_*_root` — and therefore no
-    /// `validate_target` — ever follows.
+    /// and `EngineImages` and `Credentials` are the variants no `get_or_create_*_root` — and
+    /// therefore no `validate_target` — ever follows.
     #[cfg(unix)]
     #[test]
     fn ensure_app_owned_default_dir_refuses_a_symlinked_leaf_for_every_root() {
@@ -9196,8 +9239,8 @@ mod tests {
             AppOwnedDefaultRoot::Puzzles => path_authority
                 .get_or_create_puzzle_root(directory.path(), "Puzzles", Some(expected_identity))
                 .map(|handle| handle.path_ref().clone()),
-            AppOwnedDefaultRoot::EngineImages => {
-                panic!("engine images do not have a persistent root entry")
+            AppOwnedDefaultRoot::EngineImages | AppOwnedDefaultRoot::Credentials => {
+                panic!("engine images and credentials do not have a persistent root entry")
             }
         }
     }
@@ -9217,8 +9260,8 @@ mod tests {
             AppOwnedDefaultRoot::Puzzles => path_authority
                 .set_active_puzzle_root(&PuzzleRootHandle::new(id.clone()))
                 .unwrap(),
-            AppOwnedDefaultRoot::EngineImages => {
-                panic!("engine images do not have a persistent root entry")
+            AppOwnedDefaultRoot::EngineImages | AppOwnedDefaultRoot::Credentials => {
+                panic!("engine images and credentials do not have a persistent root entry")
             }
         }
     }
@@ -9237,8 +9280,8 @@ mod tests {
             AppOwnedDefaultRoot::Puzzles => {
                 assert_eq!(path_authority.active_puzzle_root().unwrap(), None)
             }
-            AppOwnedDefaultRoot::EngineImages => {
-                panic!("engine images do not have a persistent root entry")
+            AppOwnedDefaultRoot::EngineImages | AppOwnedDefaultRoot::Credentials => {
+                panic!("engine images and credentials do not have a persistent root entry")
             }
         }
     }
