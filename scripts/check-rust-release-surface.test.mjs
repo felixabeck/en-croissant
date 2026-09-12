@@ -384,9 +384,7 @@ mod tests {
 
   test("filesystem-surface counts have no stale keys outside the allowlist", () => {
     expect(
-      Object.keys(INITIAL_FS_SURFACE_COUNTS).filter(
-        (path) => !FS_SURFACE_ALLOWLIST.has(path),
-      ),
+      Object.keys(INITIAL_FS_SURFACE_COUNTS).filter((path) => !FS_SURFACE_ALLOWLIST.has(path)),
     ).toEqual([]);
   });
 
