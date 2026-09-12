@@ -6584,6 +6584,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **A1 landed, 2026-09-12:** `f-20260912-11` is handled in `70e17808`. Mandate B remains blocked on A2 (`sequenced-f-20260912-12`).
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c1c57823a1b96c2d3795f7d91eff88f908e9cde525bf389a3b4ad417c726dcda","input_sha256":"618b47a986ee9934a032c45aa6fd80da831caa446b4a660f1b98df52dc297b4d","kind":"mutation-receipt","operation":"178cef84f4620b543d66f8ecaa4028e3bb72065326a643ea64d799c68f07c171","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-03"],"target":"f-20260905-03","v":1} -->
 
+* **A2 landed, 2026-09-12:** `f-20260912-12` is handled in `1a10660a` / `a373cb28`. Mandate B remains blocked on A2 until this entry's sequenced slug is cleared by the queue once A2 is handled.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"31a96c20af37f78543c48ed68d10c786a9d5401ad91c9d337081329f3543b375","input_sha256":"dcc83b8f5883f5af7658076d1b5d1d2f6abe0e21cc714bc9ce3910667db667b6","kind":"mutation-receipt","operation":"1200353887410304a847a02137fbd57cb8d9aa27783156c5f3b56b16fdeffebb","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-03"],"target":"f-20260905-03","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
