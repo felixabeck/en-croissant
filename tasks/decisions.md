@@ -2834,3 +2834,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** parent plan D5/D6. Re-keying is Mandate B (`f-20260905-03`).
 * **Decided by:** Grok, autonomously under `full auto`, A1 of f-20260912-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"242ecf58ca79134508bc23adb025ca65d9362a5ed83e774cb5fd975a23804280","input_sha256":"c0d51f368a606ac3458485cad7eb515e9e03697c2610072cd67fe695512fb6a3","kind":"mutation-receipt","operation":"d3c2cf038a035a1b95aff36cc7c50a406dd9e3624b4592d8817614e80bd98e78","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20260912-08 — Does A1 add open_current or puzzle_database_target?
+
+* **Question:** Does A1 add `DatabaseFileTarget::open_current` or `ResolvedPath::puzzle_database_target`?
+* **Governs:** f-20260912-11, f-20260905-03
+* **Chosen:** no. Both would be unused without the repository re-key (`-D warnings`).
+* **Rejected:** landing them as dead `pub(crate)` surface in A1.
+* **Reason:** parent plan D7. They belong to Mandate B.
+* **Decided by:** Grok, autonomously under `full auto`, A1 of f-20260912-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"5b6efcb235149145aa5e6dfde0f2124b573a079f438329130df38ff06b287aa7","input_sha256":"b2efd67f7aab9257100ba0a2960d02dd510080f1c8e4bdf0131834c856a03271","kind":"mutation-receipt","operation":"7d357955fd67e1c29cc385542d69867928c1c676fc0b24a3093d811984d1a45d","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-08"],"target":"decisions-ledger","v":1} -->
