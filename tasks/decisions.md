@@ -2804,3 +2804,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** a leaf replaced by a symlink to the moved original must be refused; following it would mint a target for the moved file. Measured in plan review of the parent Mandate A plan (D1).
 * **Decided by:** Grok, autonomously under `full auto`, A1 of f-20260912-11 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"2b9da1425f7b4faad2fa630fb1145863f5b8b99689c836914e76d6f4d33cd685","input_sha256":"5f7e59e1c1896da986a87d8c5bfe618ce827adc0e5ed685281795ad1c7e2449c","kind":"mutation-receipt","operation":"1a5e7c82fbc777fafc4809c9d5efbdca07795e126cc3df285d3656a78b1cfac6","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20260912-05 — Does database_file_target validate the stored path before canonical binding?
+
+* **Question:** Does `database_file_target` validate the stored path with today's leaf no-follow check before `canonical_binding`, or rely on the canonical walk alone?
+* **Governs:** f-20260912-11
+* **Chosen:** validate the stored path first (`validate_target` == stored identity), then the hook, then `canonical_binding`.
+* **Rejected:** relying on the canonical walk alone.
+* **Reason:** a leaf replaced by a symlink to the moved original is refused even though the symlink target has the stored identity. Parent plan D2.
+* **Decided by:** Grok, autonomously under `full auto`, A1 of f-20260912-11 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"f548b11ec5693a63898ac835599f0b863b76960ef513f3ee2c45bce2de29e05e","input_sha256":"a916c117b99bb2805f5df9e82d56eb2de5b957a8b56aa049f4462b6fa6fd64d5","kind":"mutation-receipt","operation":"c99b63e69a7d6512bba5f1b52f1b888efb205b3088ef744b194b388be1847630","options":{"section":null},"request_id_sha256":null,"results":["d-20260912-05"],"target":"decisions-ledger","v":1} -->
