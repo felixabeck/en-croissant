@@ -297,6 +297,9 @@ impl CredentialManager {
             "credential registry initialization",
         );
         drop(registry);
+        // Reopening is the enforcement `secure_registry_file` used to perform: it applies the
+        // 0600 the atomic replacement would otherwise inherit from a legacy file's bits, and an
+        // absent registry here means one disappeared between the commit above and this line.
         let registry_file = open_private_registry(&directory)
             .map_err(credential_failure)?
             .ok_or_else(|| {
@@ -1280,7 +1283,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn pending_add_reconciliation_reacquires_registry_directory_without_deadlock() {
+    fn pending_add_reconciliation_reacquires_the_registry_lock_without_deadlock() {
         let temp = tempfile::tempdir().unwrap();
         let credentials = temp.path().join("credentials");
         fs::create_dir(&credentials).unwrap();

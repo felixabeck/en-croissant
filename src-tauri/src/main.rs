@@ -2044,7 +2044,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     app.config().identifier
                 );
             }
-            // The Unix-only descriptor path preserves the existing Windows CredentialFailure outcome; see f-20260830-06.
+            // The credential store reaches the filesystem only through descriptor primitives
+            // that refuse on non-Unix. That is not a narrowing: this call already returned
+            // `Error::CredentialFailure` on Windows before the routing, because it commits the
+            // registry through `atomic_replace`, which is `#[cfg(unix)]`. See `f-20260830-06`.
             app.state::<AppState>()
                 .credentials
                 .initialize(&crate::infra::path_authority::AppDataDir::for_app(
@@ -3284,6 +3287,14 @@ mod blocking_offload_scans {
             .find("PathAuthority::open")
             .expect("path authority initialization call");
         assert!(credential < authority, "{setup}");
+        // The parent is pinned the same way `app_owned_default_roots_are_pinned_to_their_call_sites`
+        // pins the other four: swapping this for `app_config_dir()`, or re-joining the leaf that
+        // now lives on `AppOwnedDefaultRoot::Credentials`, would leave every other check green.
+        let call = &setup[credential..authority];
+        assert!(
+            call.contains("AppDataDir::for_app(") && !call.contains("credentials\")"),
+            "{call}"
+        );
     }
 
     #[test]

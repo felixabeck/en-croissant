@@ -390,6 +390,16 @@ mod tests {
     ).toEqual([]);
   });
 
+  // The allowlist may only shrink, and the shrink-only check compares a supplied allowlist
+  // against the baseline rather than the baseline against itself. Re-adding a path to both
+  // constants would therefore restore its exemption silently. f-20260905-02 emptied
+  // credentials.rs; this pins that it stays empty.
+  test("credentials.rs has left the filesystem-surface baseline for good", () => {
+    const path = "src-tauri/src/credentials.rs";
+    expect(FS_SURFACE_ALLOWLIST.has(path)).toBe(false);
+    expect(Object.keys(INITIAL_FS_SURFACE_COUNTS)).not.toContain(path);
+  });
+
   test("an allowlisted file's production match count is pinned", () => {
     const path = "src-tauri/src/fs.rs";
     const violations = checkFilesystemSurface(
