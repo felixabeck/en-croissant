@@ -8167,3 +8167,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Why it matters:** refusal is already correct; only the error category is lost, which decides whether the renderer can offer a re-selection path instead of "try again".
 * **Related:** `f-20260905-05` (plan review r2 of its descriptor-enumeration run, `review-error-handling`, surfaced this; that plan maps the same errnos for child directories it opens itself), `f-20260912-05`.
 * **Found by:** Codex `review-error-handling` lens, plan review r2 of `tasks/plans/2026-09-13-workspace-directory-enumeration.md`, 2026-09-13.
+
+---
+
+## 2026-09-13 — filed through the inbox spool
+
+### The Files and Databases pages render every listing failure as "please try again", discarding the typed error category
+* **ID:** f-20260913-05 · **Status:** open · **Area:** frontend-ui · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/components/files/FilesPage.tsx:204-209` (`Files.LoadFailed`), `src/components/databases/DatabasesPage.tsx:247-252` (`Databases.LoadError`).
+* **Defect:** both pages show one fixed retry sentence whenever the listing query errors, without reading the `TauriCommandError` category the platform facade already carries. A workspace or database root whose object changed (`Conflict`), a root that became unavailable (`Io` / missing resource) and a transient failure all look identical, and "try again" is the wrong instruction for the first two: retrying cannot succeed until the root is re-selected.
+* **Open question:** which categories get their own message and recovery action (re-select the root, remove the stale entry) versus the generic retry text, and does that belong in these two pages or in a shared listing-error component both reuse?
+* **Why it matters:** from `f-20260905-05` on, a directory or `.db3` replaced while it is being listed is deliberately refused with `Conflict` rather than silently bound; the UI currently turns that refusal into an unexplained dead end.
+* **Related:** `f-20260905-05` (plan review r2 of its descriptor-enumeration run, `review-error-handling`, surfaced this), `f-20260913-04` (the backend half: root races that still surface as `Io`).
+* **Found by:** Codex `review-error-handling` lens, plan review r2 of `tasks/plans/2026-09-13-workspace-directory-enumeration.md`, 2026-09-13; confirmed against both page sources.
