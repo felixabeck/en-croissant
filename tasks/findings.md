@@ -8154,3 +8154,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Fix shape:** one private `root_path(&mut self, id: &PathRef, operation: PathOperation) -> Result<PathBuf, Error>` (or `workspace_root` taking `&PathRef`), with the three call sites routed through it; no behaviour change, existing tests are the proof.
 * **Related:** `f-20260905-05` (plan review of its descriptor-enumeration run surfaced this; that plan no longer adds a fourth copy).
 * **Found by:** Codex `review-minimalism` lens, plan review of `tasks/plans/2026-09-13-workspace-directory-enumeration.md`, 2026-09-13.
+
+---
+
+## 2026-09-13 — filed through the inbox spool
+
+### `PathAuthority::resolve` reports a capability root replaced inside its own validate→open window as generic `Io`, not `Conflict`
+* **ID:** f-20260913-04 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority/mod.rs` `resolve` (`validate_target` of the stored root, then `resolved::resolve_unix`), `src-tauri/src/infra/path_authority/resolved.rs:602-618` (the root `openat` with `O_NOFOLLOW`, then the identity comparison).
+* **Defect:** `resolve` validates the stored root by pathname and then opens it in a separate `openat`. A root replaced by a symlink, a regular file, or removed in that window fails the `openat` with `ELOOP` / `ENOTDIR` / `ENOENT`, which surfaces as `Error::Io`; only a same-type replacement reaches the identity comparison and its `Conflict("path authority is unavailable because its object changed")`. Callers — every capability read, and from `f-20260905-05` on the workspace and database/puzzle listings — therefore cannot tell "the object you were granted changed" from an ordinary I/O failure.
+* **Fix shape:** map those three errnos from the root `openat` (and the equivalent Windows open) to the same `Conflict` the identity mismatch returns; a hook-timed test per errno.
+* **Why it matters:** refusal is already correct; only the error category is lost, which decides whether the renderer can offer a re-selection path instead of "try again".
+* **Related:** `f-20260905-05` (plan review r2 of its descriptor-enumeration run, `review-error-handling`, surfaced this; that plan maps the same errnos for child directories it opens itself), `f-20260912-05`.
+* **Found by:** Codex `review-error-handling` lens, plan review r2 of `tasks/plans/2026-09-13-workspace-directory-enumeration.md`, 2026-09-13.
