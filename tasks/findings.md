@@ -6625,6 +6625,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
   re-keying entry filed in the same run.
 * **Found by:** Claude Code, plan review of `tasks/plans/2026-09-04-fs-surface-allowlist-shrink.md`, 2026-09-05.
 
+* **Closed, 2026-09-13:** `.ecsi` VERSION 8 no longer archives a pathname (`NativePath` deleted). `DatabaseIdentity` no longer carries `path`. Commit `71772d86`. Proof: `cargo test --locked --all-targets` 1051 passed / 1 ignored; clippy `-D warnings`; `pnpm rust:surface:check`; backend-coverage ratchet green. Loader TOCTOU remains `f-20260912-07`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8cd5f5b15ea9d8020251184cc21bc0aab3ffa3b13aa1190223ed9165727b5e7c","input_sha256":"f1a4d977dd964ff63e916a3d79ef1853775bb1143aafb7ae3a5b018e40889b1c","kind":"mutation-receipt","operation":"964ee68b8e1728842f415cc0b093f9465f80562ccf61d15f29bedac4db46436f","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-04"],"target":"f-20260905-04","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
