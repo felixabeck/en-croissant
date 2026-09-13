@@ -6587,6 +6587,9 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 * **A2 landed, 2026-09-12:** `f-20260912-12` is handled in `1a10660a` / `a373cb28`. Mandate B remains blocked on A2 until this entry's sequenced slug is cleared by the queue once A2 is handled.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"31a96c20af37f78543c48ed68d10c786a9d5401ad91c9d337081329f3543b375","input_sha256":"dcc83b8f5883f5af7658076d1b5d1d2f6abe0e21cc714bc9ce3910667db667b6","kind":"mutation-receipt","operation":"1200353887410304a847a02137fbd57cb8d9aa27783156c5f3b56b16fdeffebb","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-03"],"target":"f-20260905-03","v":1} -->
 
+* **Handled, 2026-09-13:** Mandate B. DatabaseRepository keys on EntryKey { identity, parent_identity, path } from the landed DatabaseFileTarget. canonical_database_path and pathname File::open identity checks are gone. sqlite_uri is file://<canonical>?mode=rw with min_idle(0). Pool build is outside the lock and serialized per key. Idle stale entries wait-then-remove; leased Conflicts return immediately. Puzzle mint is puzzle_binding inside blocking closures. db/mod.rs and repository.rs left INITIAL_FS_SURFACE_ALLOWLIST. Commit 3bbe4c1e. Decisions d-20260913-02 through d-20260913-04. Proof: cargo fmt --check, clippy -D warnings all-targets locked, cargo test --locked 995 passed / 1 ignored, pnpm rust:surface:check, pnpm gates:contract:check.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"79aa1127b62c250204fcd1d95964855cafc2f3d9718dd7b116b925711deef477","input_sha256":"062d26298eeabc2cfd7646bdd12252697064240481d72322924cd82af90d95cb","kind":"mutation-receipt","operation":"340c8a1b422280f5c2252841ce0f8886bb04ec689d2677fe8b380f75b7b58a7e","options":{"section":null},"request_id_sha256":null,"results":["f-20260905-03"],"target":"f-20260905-03","v":1} -->
+
 ---
 
 ## 2026-09-05 — filed through the inbox spool
