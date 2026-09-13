@@ -8205,6 +8205,9 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Related:** `f-20260905-05` (plan review r2 of its descriptor-enumeration run, `review-error-handling`, surfaced this), `f-20260913-04` (the backend half: root races that still surface as `Io`).
 * **Found by:** Codex `review-error-handling` lens, plan review r2 of `tasks/plans/2026-09-13-workspace-directory-enumeration.md`, 2026-09-13; confirmed against both page sources.
 
+* **Inherited review history (2026-09-13):** load `tasks/handoffs/2026-09-13-workspace-directory-enumeration-review.md` before this finding's plan review. It carries the `f-20260905-05` plan-review record; this finding inherits issue IDs W42 from it, with their witnesses, dispositions and evidence.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"1a78d78d7af7a1cec273617be0734e0b87795637c3fc5a98bafaf2057af74933","input_sha256":"655ccecc3f05a16d02e1391e8241fb758eb3489c768b4f834c68727d583210e7","kind":"mutation-receipt","operation":"9f6516057036ed06556e630a2c81c8521177a166dba777454ef1cbe25c1a1ae8","options":{"section":null},"request_id_sha256":null,"results":["f-20260913-05"],"target":"f-20260913-05","v":1} -->
+
 ---
 
 ## 2026-09-13 — filed through the inbox spool
