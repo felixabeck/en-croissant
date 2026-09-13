@@ -8155,6 +8155,9 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Related:** `f-20260905-05` (its plan review split this out as outside that mandate — `timestamp` is metadata, not directory enumeration).
 * **Found by:** Claude Code, plan review of `tasks/plans/2026-09-13-workspace-directory-enumeration.md` (`review-minimalism`, `review-root-cause`, `review-tauri-security`), 2026-09-13.
 
+* **Inherited review history (2026-09-13):** load `tasks/handoffs/2026-09-13-workspace-directory-enumeration-review.md` before this finding's plan review. It carries the `f-20260905-05` plan-review record; this finding inherits issue IDs W6, W17 and W24 from it, with their witnesses, dispositions and evidence.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"77348836ae326aaddbf30d3292af87add36bcf5c5959bca775a2402178ed4789","input_sha256":"b01f25de5492b110de0420631b4172591d48a683eb2fa9d8d12409fc89e25970","kind":"mutation-receipt","operation":"ea141047f12318c6dd28565e0c3e371a7d8addf9ac78f014a5e2acdb48497955","options":{"section":null},"request_id_sha256":null,"results":["f-20260913-02"],"target":"f-20260913-02","v":1} -->
+
 ---
 
 ## 2026-09-13 — filed through the inbox spool
