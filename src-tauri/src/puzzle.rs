@@ -784,8 +784,21 @@ mod tests {
         name: &str,
         rating: i32,
     ) -> (tempfile::TempDir, PathBuf, DatabaseRepository) {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join(name);
+        write_puzzle_database(tempfile::tempdir().unwrap(), Path::new(name), rating)
+    }
+
+    fn write_puzzle_database(
+        directory: tempfile::TempDir,
+        relative: &Path,
+        rating: i32,
+    ) -> (tempfile::TempDir, PathBuf, DatabaseRepository) {
+        if let Some(parent) = relative
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(directory.path().join(parent)).unwrap();
+        }
+        let path = directory.path().join(relative);
         let repository = DatabaseRepository::default();
         let mut database_connection = repository
             .schema_specific_connection(&crate::db::test_target(&path))
@@ -822,7 +835,12 @@ mod tests {
     }
 
     fn puzzle_deletion_fixture(name: &str) -> PuzzleDeletionFixture {
-        let (directory, path, repository) = puzzle_database(name, 1200);
+        puzzle_deletion_fixture_at(Path::new(name))
+    }
+
+    fn puzzle_deletion_fixture_at(relative: &Path) -> PuzzleDeletionFixture {
+        let (directory, path, repository) =
+            write_puzzle_database(tempfile::tempdir().unwrap(), relative, 1200);
         let registry = directory.path().join("registry.json");
         let mut authority =
             crate::infra::path_authority::PathAuthority::open(registry, vec![]).unwrap();
@@ -969,6 +987,12 @@ mod tests {
         assert!(validate_ratings(2000, 1000).is_err());
     }
 
+    #[test]
+    fn valid_rating_range_is_accepted() {
+        assert!(validate_ratings(1000, 2000).is_ok());
+        assert!(validate_ratings(1500, 1500).is_ok());
+    }
+
     fn assert_cancelled_during_snapshot_copy<T>(
         path: &Path,
         _repository: &DatabaseRepository,
@@ -1101,6 +1125,15 @@ mod tests {
             .unwrap();
         assert!(matches!(result, Err(Error::Cancellation)));
         assert!(held.key.is_none());
+    }
+
+    #[tokio::test]
+    async fn lock_puzzle_cache_cancellable_returns_the_guard_when_the_token_is_live() {
+        let cache = Arc::new(tokio::sync::Mutex::new(PuzzleCache::new()));
+        let guard = lock_puzzle_cache_cancellable(&cache, &CancellationToken::new())
+            .await
+            .expect("a live token must acquire the cache");
+        assert!(guard.key.is_none());
     }
 
     #[test]
@@ -1444,6 +1477,140 @@ mod tests {
         assert!(!path.exists(), "physical deletion must remain committed");
         assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
         assert!(authority_contains(&authority, &handle));
+    }
+
+    #[test]
+    fn cache_key_uses_the_resolved_puzzle_binding() {
+        let fixture = puzzle_deletion_fixture("cache-key.db3");
+        let expected = crate::infra::path_authority::opened_file_identity(
+            &std::fs::File::open(&fixture.path).unwrap(),
+        )
+        .unwrap();
+        let (target, identity) = puzzle_binding(&fixture.resolved).unwrap();
+        assert_eq!(identity, expected);
+        assert_eq!(target.path(), fixture.path.canonicalize().unwrap());
+        let key = tauri::async_runtime::block_on(cache_key(
+            Arc::clone(&fixture.repository),
+            Arc::new(fixture.resolved),
+            0,
+            u16::MAX,
+            None,
+            CancellationToken::new(),
+        ))
+        .unwrap();
+        assert_eq!(key.database.object, expected);
+        assert_eq!(key.min_rating, 0);
+        assert_eq!(key.max_rating, u16::MAX);
+        assert!(key.theme.is_none());
+    }
+
+    #[test]
+    fn cache_key_conflicts_when_the_path_is_replaced_after_resolve() {
+        let fixture = puzzle_deletion_fixture("cache-key-replaced.db3");
+        let replacement = fixture.path.with_extension("replacement");
+        std::fs::write(&replacement, b"replacement puzzle database").unwrap();
+        std::fs::remove_file(&fixture.path).unwrap();
+        std::fs::rename(&replacement, &fixture.path).unwrap();
+        let error = tauri::async_runtime::block_on(cache_key(
+            Arc::clone(&fixture.repository),
+            Arc::new(fixture.resolved),
+            0,
+            u16::MAX,
+            None,
+            CancellationToken::new(),
+        ))
+        .expect_err("a replaced puzzle file must not mint a cache key");
+        assert!(
+            matches!(error, Error::Conflict(_)),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn command_flow_unlinks_via_retained_parent_when_the_parent_path_is_renamed() {
+        let fixture = puzzle_deletion_fixture_at(Path::new("nested/parent-rename.db3"));
+        let nested = fixture.path.parent().unwrap().to_owned();
+        let moved = nested.with_file_name("moved");
+        std::fs::rename(&nested, &moved).unwrap();
+        let moved_file = moved.join(fixture.path.file_name().unwrap());
+        assert!(moved_file.exists());
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            fixture.resolved,
+            fixture.path.clone(),
+            fixture.handle.clone(),
+            fixture.repository,
+            Arc::clone(&fixture.authority),
+            Arc::clone(&fixture.cache),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        assert!(
+            result.is_ok(),
+            "retained-parent unlink after parent rename failed: {result:?}"
+        );
+        assert!(!moved_file.exists());
+        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
+            .key
+            .is_none());
+        assert!(!authority_contains(&fixture.authority, &fixture.handle));
+    }
+
+    #[test]
+    fn command_flow_invalidates_canonical_cache_when_the_caller_path_differs() {
+        let fixture = puzzle_deletion_fixture("canon-diff.db3");
+        let canonical = fixture.path.canonicalize().unwrap();
+        let aliased = canonical.with_file_name("not-the-canonical-leaf.db3");
+        assert_ne!(
+            aliased, canonical,
+            "the caller path must differ from the minted canonical path"
+        );
+
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            fixture.resolved,
+            aliased,
+            fixture.handle.clone(),
+            fixture.repository,
+            Arc::clone(&fixture.authority),
+            Arc::clone(&fixture.cache),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        assert!(result.is_ok(), "aliased-path deletion failed: {result:?}");
+        assert!(!canonical.exists());
+        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
+            .key
+            .is_none());
+        assert!(!authority_contains(&fixture.authority, &fixture.handle));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_flow_surfaces_unlink_errors_other_than_not_found() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = puzzle_deletion_fixture("unlink-denied.db3");
+        let parent = fixture.path.parent().unwrap().to_owned();
+        let original = std::fs::metadata(&parent).unwrap().permissions();
+        let mut locked = original.clone();
+        locked.set_mode(0o555);
+        std::fs::set_permissions(&parent, locked).unwrap();
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            fixture.resolved,
+            fixture.path.clone(),
+            fixture.handle.clone(),
+            fixture.repository,
+            Arc::clone(&fixture.authority),
+            Arc::clone(&fixture.cache),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        std::fs::set_permissions(&parent, original).unwrap();
+        result.expect_err("a non-NotFound unlink error must reach the caller");
+        assert!(fixture.path.exists());
+        assert!(tauri::async_runtime::block_on(fixture.cache.lock())
+            .key
+            .is_some());
+        assert!(authority_contains(&fixture.authority, &fixture.handle));
     }
 
     #[test]
