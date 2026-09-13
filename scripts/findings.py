@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 5e17754a55f8db6e59205ecd025ea048b906c5f0a456aeebb60e8eb5daa5b7c9
+# agent-kit-sha256: e6192b12687c5d36d372800c52ee3f97d23b11c6feaa7c96a06df1094a05d18a
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -5741,13 +5741,15 @@ def cmd_decisions(args: argparse.Namespace) -> int:
     issues = validate(findings, problems, vocabulary)
     _warn_problems(issues, "decisions")
     if issues:
-        entry_word = "entry" if len(problems) == 1 else "entries"
+        # `validate` seeds `issues` with the parse problems, so they are a subset
+        # of the count, never a second set beside it. They are diagnostics, not
+        # entries: one entry can yield several, and a readable one can yield some.
         parse_detail = (
-            f"could not read {len(problems)} ledger {entry_word}; " if problems else ""
+            f", {len(problems)} of them from parsing" if problems else ""
         )
         print(
-            f"WARNING decisions {parse_detail}"
-            f"{len(issues)} validation problem(s) were found. Run `findings.py check`."
+            f"WARNING decisions found {len(issues)} validation problem(s)"
+            f"{parse_detail}. Run `findings.py check`."
         )
     all_waiting = _felix_waiting(findings)
     waiting = [
@@ -6327,9 +6329,13 @@ def cmd_record_decision(args: argparse.Namespace) -> int:
 
 def cmd_set_trailer(args: argparse.Namespace) -> int:
     """Replace supersession references and refresh covering receipts atomically."""
-    references = args.superseded_by
+    # `-` alone is the documented unsuperseded state, so a mistaken supersession
+    # can be reverted through the same receipted write that made it.
+    clearing = args.superseded_by in (["-"], ["`-`"])
+    references = [] if clearing else args.superseded_by
     if any(re.fullmatch(DECISION_REFERENCE_PATTERN, ref) is None for ref in references):
-        raise LedgerError("--superseded-by requires decision references")
+        raise LedgerError("--superseded-by requires decision references, or `-` alone to clear")
+    written = ", ".join(references) or "-"
     identities = [ref.removeprefix("local:") for ref in references]
     if len(set(identities)) != len(identities):
         raise LedgerError("--superseded-by contains duplicate references")
@@ -6366,7 +6372,7 @@ def cmd_set_trailer(args: argparse.Namespace) -> int:
         assert match is not None
         lines[index] = (
             lines[index][:match.start("refs")]
-            + ", ".join(references)
+            + written
             + lines[index][match.end("refs"):]
         )
         # A record-decision receipt can cover a whole batch. Refresh its entire
@@ -6403,7 +6409,7 @@ def cmd_set_trailer(args: argparse.Namespace) -> int:
                 _decision_trailer_postcondition(args.id, references),
             )
             _write_if_unchanged(args.decisions, original, candidate, durable_directory=True)
-    print(f"set {args.id} Superseded-by: {', '.join(references)}")
+    print(f"set {args.id} Superseded-by: {written}")
     return 0
 
 
