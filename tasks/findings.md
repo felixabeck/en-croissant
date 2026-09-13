@@ -8186,3 +8186,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Why it matters:** from `f-20260905-05` on, a directory or `.db3` replaced while it is being listed is deliberately refused with `Conflict` rather than silently bound; the UI currently turns that refusal into an unexplained dead end.
 * **Related:** `f-20260905-05` (plan review r2 of its descriptor-enumeration run, `review-error-handling`, surfaced this), `f-20260913-04` (the backend half: root races that still surface as `Io`).
 * **Found by:** Codex `review-error-handling` lens, plan review r2 of `tasks/plans/2026-09-13-workspace-directory-enumeration.md`, 2026-09-13; confirmed against both page sources.
+
+---
+
+## 2026-09-13 — filed through the inbox spool
+
+### Directory listings accumulate every entry of a user-chosen directory with no stated bound
+* **ID:** f-20260913-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/file_workspace.rs` `collect_tree_entries` (today `fs::read_dir` into `Vec<PathBuf>` per directory, `:291-297`, `:343-349`, plus the recursive `Vec<WorkspaceEntry>` result) and `src-tauri/src/infra/path_authority/mod.rs` `map_db3_children_cancellable` (`:54-87`); after `f-20260905-05`, the descriptor primitive `read_directory_entries_at` that both route through.
+* **Defect:** a listing materialises one record per entry of a directory the user picked, and the tree walk one `WorkspaceEntry` per listed descendant, with no limit and no `Error::ResourceLimit` path. A directory with millions of entries exhausts memory or aborts instead of failing the one listing with a typed error. `.claude/rules/async-resource-invariants.md` requires anything that accumulates to be bounded and the bound stated. The authority registry is bounded (`MAX_AUTHORITY_IDS = 4096`), but the snapshot and the filtered-out entries are not.
+* **Open question:** where does the bound sit and what does it measure — kept entries per directory snapshot, total listed entries per call (aligned with `MAX_AUTHORITY_IDS`), or bytes — and what does the renderer show when a workspace exceeds it (see `f-20260913-05` for the listing-error UI)?
+* **Why it matters:** a user-chosen workspace or database root is untrusted input to the backend; a typed refusal is the difference between one failed listing and a dead app.
+* **Related:** `f-20260905-05` (plan review r4 of its descriptor-enumeration run, `review-error-handling`, surfaced this; that plan keeps today's unbounded behaviour and names this finding), `f-20260913-05`, `f-20260830-35` (the registry bound).
+* **Found by:** Codex `review-error-handling` lens, plan review r4 of `tasks/plans/2026-09-13-workspace-directory-enumeration.md`, 2026-09-13.
