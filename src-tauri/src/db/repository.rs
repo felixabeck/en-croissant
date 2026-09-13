@@ -1131,6 +1131,7 @@ pub(crate) enum TestHook {
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct TestHooks {
+    generation: u64,
     scope: Option<PathBuf>,
     pub(crate) pre_build: Option<Box<dyn FnMut() + Send>>,
     pub(crate) post_build: Option<Box<dyn FnMut() + Send>>,
@@ -1151,11 +1152,47 @@ static TEST_HOOKS: std::sync::OnceLock<std::sync::Mutex<TestHooks>> = std::sync:
 static TEST_HOOK_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
+static TEST_HOOK_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(test)]
 fn test_hook_scope_matches(hooks: &TestHooks, path: &Path) -> bool {
     hooks
         .scope
         .as_deref()
         .is_some_and(|scope| path.starts_with(scope))
+}
+
+#[cfg(test)]
+fn normalize_test_hook_scope(scope: &Path) -> PathBuf {
+    if scope.is_dir() {
+        return scope.canonicalize().unwrap_or_else(|_| scope.to_path_buf());
+    }
+
+    let Some(file_name) = scope.file_name().filter(|name| !name.is_empty()) else {
+        return scope.to_path_buf();
+    };
+    let parent = scope
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::canonicalize(parent)
+        .map(|parent| parent.join(file_name))
+        .unwrap_or_else(|_| scope.to_path_buf())
+}
+
+#[cfg(test)]
+fn configure_test_hooks_state(
+    hooks_mutex: &std::sync::Mutex<TestHooks>,
+    scope: PathBuf,
+    generation: u64,
+    configure: impl FnOnce(&mut TestHooks),
+) {
+    let mut hooks = hooks_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    hooks.generation = generation;
+    hooks.scope = Some(scope);
+    configure(&mut hooks);
 }
 
 #[cfg(test)]
@@ -1172,19 +1209,25 @@ pub(crate) fn configure_test_hooks(
     let serial = TEST_HOOK_SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let hooks = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
-    let mut hooks = hooks
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let previous = std::mem::take(&mut *hooks);
-    // Compared verbatim against the dispatched `target.path()`: canonicalising only one side
-    // would silently stop every hook firing when the temp root is reached through a symlink.
-    hooks.scope = Some(scope.as_ref().to_path_buf());
-    configure(&mut hooks);
-    TestHooksGuard {
+    let hooks_mutex = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
+    let previous = {
+        let mut hooks = hooks_mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *hooks)
+    };
+    let generation = TEST_HOOK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let guard = TestHooksGuard {
         previous,
         _serial: serial,
-    }
+    };
+    configure_test_hooks_state(
+        hooks_mutex,
+        normalize_test_hook_scope(scope.as_ref()),
+        generation,
+        configure,
+    );
+    guard
 }
 
 #[cfg(test)]
@@ -1234,21 +1277,24 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
         TestHook::AfterBumpOp => hooks.after_bump_op.take(),
         TestHook::BeforeRevisionBump => hooks.before_revision_bump.take(),
     };
+    let generation = hooks.generation;
     drop(hooks);
     if let Some(mut callback_fn) = callback.take() {
         callback_fn();
         let mut hooks = hooks_mutex
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match hook {
-            TestHook::PreBuild => hooks.pre_build = Some(callback_fn),
-            TestHook::PostBuild => hooks.post_build = Some(callback_fn),
-            TestHook::PreInsert => hooks.pre_insert = Some(callback_fn),
-            TestHook::PreGet => hooks.pre_get = Some(callback_fn),
-            TestHook::PostGet | TestHook::AfterOpenCurrent => {}
-            TestHook::AfterReadRevision => hooks.after_read_revision = Some(callback_fn),
-            TestHook::AfterBumpOp => hooks.after_bump_op = Some(callback_fn),
-            TestHook::BeforeRevisionBump => hooks.before_revision_bump = Some(callback_fn),
+        if hooks.generation == generation {
+            match hook {
+                TestHook::PreBuild => hooks.pre_build = Some(callback_fn),
+                TestHook::PostBuild => hooks.post_build = Some(callback_fn),
+                TestHook::PreInsert => hooks.pre_insert = Some(callback_fn),
+                TestHook::PreGet => hooks.pre_get = Some(callback_fn),
+                TestHook::PostGet | TestHook::AfterOpenCurrent => {}
+                TestHook::AfterReadRevision => hooks.after_read_revision = Some(callback_fn),
+                TestHook::AfterBumpOp => hooks.after_bump_op = Some(callback_fn),
+                TestHook::BeforeRevisionBump => hooks.before_revision_bump = Some(callback_fn),
+            }
         }
     }
 }
@@ -1263,14 +1309,20 @@ fn run_after_open_current_test_hook(path: &Path) {
         return;
     }
     hooks.open_current_count = hooks.open_current_count.saturating_add(1);
-    let (mut callback, count) = (hooks.after_open_current.take(), hooks.open_current_count);
+    let (mut callback, count, generation) = (
+        hooks.after_open_current.take(),
+        hooks.open_current_count,
+        hooks.generation,
+    );
     drop(hooks);
     if let Some(mut callback_fn) = callback.take() {
         callback_fn(count);
         let mut hooks = hooks_mutex
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        hooks.after_open_current = Some(callback_fn);
+        if hooks.generation == generation {
+            hooks.after_open_current = Some(callback_fn);
+        }
     }
 }
 
@@ -1570,11 +1622,16 @@ mod tests {
         worker.join().unwrap().unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_hooks_are_scoped_to_the_database_path() {
         let directory = tempfile::tempdir().unwrap();
-        let path_a = directory.path().join("database-a.db3");
-        let path_b = directory.path().join("database-b.db3");
+        let real_parent = directory.path().join("real");
+        std::fs::create_dir(&real_parent).unwrap();
+        let linked_parent = directory.path().join("linked");
+        std::os::unix::fs::symlink(&real_parent, &linked_parent).unwrap();
+        let path_a = linked_parent.join("database-a.db3");
+        let path_b = linked_parent.join("database-b.db3");
         let target_a = test_target(&path_a);
         let repository = Arc::new(DatabaseRepository::default());
         let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1589,6 +1646,7 @@ mod tests {
             .initialization_connection(&target_a, None)
             .unwrap();
         let a_opens_before_b = opens.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(a_opens_before_b > 0, "database A's hook must fire");
 
         let worker_repository = Arc::clone(&repository);
         let worker = std::thread::spawn(move || {
@@ -1604,17 +1662,93 @@ mod tests {
     }
 
     #[test]
+    fn stale_hook_callback_cannot_overwrite_new_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let path_a = directory.path().join("database-a.db3");
+        let path_b = directory.path().join("database-b.db3");
+        let (entered, entered_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let first_call = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let a_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_a_calls = Arc::clone(&a_calls);
+        let first_a_call = Arc::clone(&first_call);
+        let _a_hooks = configure_test_hooks(&path_a, move |hooks| {
+            hooks.after_open_current = Some(Box::new(move |_| {
+                observed_a_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if first_a_call.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    entered.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                }
+            }));
+        });
+
+        let worker_path = path_a.clone();
+        let worker = std::thread::spawn(move || {
+            run_test_hook(TestHook::AfterOpenCurrent, &worker_path);
+        });
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(_a_hooks);
+
+        let b_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_b_calls = Arc::clone(&b_calls);
+        let _b_hooks = configure_test_hooks(&path_b, move |hooks| {
+            hooks.after_open_current = Some(Box::new(move |_| {
+                observed_b_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        });
+
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        run_test_hook(TestHook::AfterOpenCurrent, &path_b);
+
+        assert_eq!(
+            b_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "database B's callback must run after its configuration"
+        );
+        assert_eq!(
+            a_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "database A's callback must not run during database B's dispatch"
+        );
+    }
+
+    #[test]
     fn panicking_hook_configuration_does_not_poison_following_configuration() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("database.db3");
+        let path = directory.path().join("database-a.db3");
+        let fresh_path = directory.path().join("database-b.db3");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _hooks = configure_test_hooks(&path, |_| {
+            let _hooks = configure_test_hooks(&path, move |hooks| {
+                hooks.after_open_current = Some(Box::new(move |_| {
+                    observed_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }));
                 panic!("injected hook configuration panic");
             });
         }));
         assert!(result.is_err());
+        run_test_hook(TestHook::AfterOpenCurrent, &path);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a hook from a panicking configuration must not remain installed"
+        );
 
-        let _hooks = configure_test_hooks(&path, |_| {});
+        let fresh_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_fresh_calls = Arc::clone(&fresh_calls);
+        let _hooks = configure_test_hooks(&fresh_path, move |hooks| {
+            hooks.after_open_current = Some(Box::new(move |_| {
+                observed_fresh_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        });
+        run_test_hook(TestHook::AfterOpenCurrent, &fresh_path);
+        assert_eq!(
+            fresh_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a fresh hook must dispatch after mutex poisoning"
+        );
     }
 
     #[test]
