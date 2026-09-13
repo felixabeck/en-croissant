@@ -165,6 +165,46 @@ impl DatabaseFileTarget {
         &self.path
     }
 
+    /// Opens the exact regular file authorized by this carrier after rechecking its retained
+    /// parent and inode. The pathname walk is deliberately kept beside the carrier so repository
+    /// callers cannot substitute a pathname while probing a pooled SQLite connection.
+    #[cfg(unix)]
+    pub(crate) fn open_current(&self) -> Result<fs::File, Error> {
+        const CONFLICT: &str = "database changed after capability resolution";
+
+        fn map_probe_error(error: Error) -> Error {
+            match error {
+                Error::Conflict(_) => Error::Conflict(CONFLICT.into()),
+                Error::InvalidInput(message) if message == "target must be a regular file" => {
+                    Error::Conflict(CONFLICT.into())
+                }
+                Error::Io(error)
+                    if matches!(error.kind(), std::io::ErrorKind::NotFound)
+                        || error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
+                        || error.raw_os_error()
+                            == Some(rustix::io::Errno::NOTDIR.raw_os_error()) =>
+                {
+                    Error::Conflict(CONFLICT.into())
+                }
+                error => error,
+            }
+        }
+
+        let (parent_now, leaf) =
+            crate::infra::fs::open_verified_parent(&self.path, self.identity, false)
+                .map_err(map_probe_error)?;
+        if opened_file_identity(&parent_now)? != opened_file_identity(&self.parent)? {
+            return Err(Error::Conflict(CONFLICT.into()));
+        }
+        let file =
+            crate::infra::fs::open_regular_at(&parent_now, &leaf, RegularFileAccess::ReadOnly)
+                .map_err(map_probe_error)?;
+        if opened_file_identity(&file)? != self.identity {
+            return Err(Error::Conflict(CONFLICT.into()));
+        }
+        Ok(file)
+    }
+
     #[cfg(all(test, unix))]
     pub(crate) fn for_test_path(path: &Path) -> Result<Self, Error> {
         path.file_name()
@@ -6888,6 +6928,74 @@ mod tests {
         assert!(matches!(
             authority.database_file_target(&handle, PathOperation::DatabaseRead),
             Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn database_file_target_open_current_authenticates_the_authorized_file() {
+        const CONFLICT: &str = "database changed after capability resolution";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("database.db3");
+        fs::write(&path, b"database").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&path).unwrap();
+
+        let opened = target.open_current().unwrap();
+        assert_eq!(opened_file_identity(&opened).unwrap(), target.identity());
+
+        fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            target.open_current(),
+            Err(Error::Conflict(message)) if message == CONFLICT
+        ));
+    }
+
+    #[test]
+    fn database_file_target_open_current_rejects_directory_and_parent_replacements() {
+        const CONFLICT: &str = "database changed after capability resolution";
+        let dir = tempfile::tempdir().unwrap();
+        let directory_path = dir.path().join("directory-leaf");
+        fs::create_dir(&directory_path).unwrap();
+        let directory_file = fs::File::open(&directory_path).unwrap();
+        let directory_target = DatabaseFileTarget::assemble(
+            fs::File::open(dir.path()).unwrap(),
+            OsStr::new("directory-leaf").to_os_string(),
+            opened_file_identity(&directory_file).unwrap(),
+            directory_path.clone(),
+        );
+        assert!(matches!(
+            directory_target.open_current(),
+            Err(Error::Conflict(message)) if message == CONFLICT
+        ));
+
+        let parent = dir.path().join("parent");
+        let child = parent.join("database.db3");
+        fs::create_dir(&parent).unwrap();
+        fs::write(&child, b"database").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&child).unwrap();
+        let moved_parent = dir.path().join("moved-parent");
+        fs::rename(&parent, &moved_parent).unwrap();
+        fs::write(&parent, b"not a directory").unwrap();
+        assert!(matches!(
+            target.open_current(),
+            Err(Error::Conflict(message)) if message == CONFLICT
+        ));
+
+        let hardlink_parent = dir.path().join("hardlink-parent");
+        let hardlink_child = hardlink_parent.join("database.db3");
+        fs::create_dir(&hardlink_parent).unwrap();
+        fs::write(&hardlink_child, b"database").unwrap();
+        let hardlink_target = DatabaseFileTarget::for_test_path(&hardlink_child).unwrap();
+        let moved_hardlink_parent = dir.path().join("moved-hardlink-parent");
+        fs::rename(&hardlink_parent, &moved_hardlink_parent).unwrap();
+        fs::create_dir(&hardlink_parent).unwrap();
+        fs::hard_link(
+            moved_hardlink_parent.join("database.db3"),
+            hardlink_parent.join("database.db3"),
+        )
+        .unwrap();
+        assert!(matches!(
+            hardlink_target.open_current(),
+            Err(Error::Conflict(message)) if message == CONFLICT
         ));
     }
 

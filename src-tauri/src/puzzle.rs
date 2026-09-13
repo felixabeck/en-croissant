@@ -91,6 +91,14 @@ fn resolve_puzzle_with_authority(
         .resolve(file, operation, &[])
 }
 
+fn puzzle_binding(
+    resolved: &crate::infra::path_authority::ResolvedPath,
+) -> Result<(crate::infra::path_authority::DatabaseFileTarget, (u64, u64)), Error> {
+    let target = resolved.puzzle_database_target()?;
+    let identity = target.identity();
+    Ok((target, identity))
+}
+
 fn load_puzzles(
     repository: &DatabaseRepository,
     file: std::fs::File,
@@ -218,8 +226,7 @@ fn puzzle_database_info(
 
 async fn cache_key(
     repository: Arc<DatabaseRepository>,
-    path: PathBuf,
-    expected_object: (u64, u64),
+    resolved: Arc<crate::infra::path_authority::ResolvedPath>,
     min_rating: u16,
     max_rating: u16,
     theme: Option<String>,
@@ -230,7 +237,8 @@ async fn cache_key(
             if token.is_cancelled() {
                 return Err(Error::Cancellation);
             }
-            repository.database_identity_expected(&path, expected_object)
+            let (target, expected_object) = puzzle_binding(&resolved)?;
+            repository.database_identity_expected(&target, expected_object, Some(token))
         })
         .await?;
     Ok(PuzzleCacheKey {
@@ -270,20 +278,17 @@ pub async fn get_puzzle(
     let operation = crate::native_read_operation(ticket, &window, &state, "get_puzzle")?;
     let cancellation = operation.token();
     validate_ratings(min_rating, max_rating)?;
-    let resolved = resolve_puzzle(
+    let resolved = Arc::new(resolve_puzzle(
         &state,
         &file,
         crate::infra::path_authority::PathOperation::PuzzleRead,
-    )?;
-    let path = resolved.puzzle_database_path()?;
-    let expected_object = resolved.puzzle_database_identity()?;
+    )?);
     let repository = state.database_repository.clone();
     let puzzle_cache = Arc::clone(&state.puzzle_cache);
     crate::infra::operations::run_native_operation(operation, "get_puzzle", async move {
         let key = cache_key(
             repository.clone(),
-            path.clone(),
-            expected_object,
+            Arc::clone(&resolved),
             min_rating,
             max_rating,
             theme.clone(),
@@ -298,12 +303,14 @@ pub async fn get_puzzle(
         drop(cache);
 
         let fetch_theme = theme.clone();
+        let resolved_for_load = Arc::clone(&resolved);
         let new_puzzles = BLOCKING_GATEWAY
             .spawn_cancellable(cancellation.clone(), move |token| {
+                let (_target, expected_object) = puzzle_binding(&resolved_for_load)?;
                 // Keep the exact authority-opened descriptor alive for the entire
                 // SQLite operation; `fetch_path` is backend-only and never crosses IPC.
-                let file_handle = resolved.puzzle_database_file()?;
-                let _pinned = resolved;
+                let file_handle = resolved_for_load.puzzle_database_file()?;
+                let _pinned = resolved_for_load;
                 load_puzzles(
                     repository.as_ref(),
                     file_handle,
@@ -635,13 +642,37 @@ async fn delete_puzzle_database_resolved(
     let deleted_path = path.clone();
     let deletion_and_cleanup = BLOCKING_GATEWAY
         .spawn_cancellable(cancellation, move |token| {
-            repository.delete_exclusive_cancellable(&path, token, || {
-                match resolved.delete_puzzle_database() {
-                    Ok(()) => Ok(()),
-                    Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                    Err(error) => Err(error),
+            let canonical_path = match puzzle_binding(&resolved) {
+                Ok((target, _)) => {
+                    let canonical_path = target.path().to_owned();
+                    repository.delete_exclusive_cancellable(&target, token, || {
+                        match resolved.delete_puzzle_database() {
+                            Ok(()) => Ok(()),
+                            Err(Error::Io(error))
+                                if error.kind() == std::io::ErrorKind::NotFound =>
+                            {
+                                Ok(())
+                            }
+                            Err(error) => Err(error),
+                        }
+                    })?;
+                    Some(canonical_path)
                 }
-            })?;
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if token.is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
+                    match resolved.delete_puzzle_database() {
+                        Ok(()) => Ok(()),
+                        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    }?;
+                    None
+                }
+                Err(error) => return Err(error),
+            };
             let cleanup = authority
                 .lock()
                 .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))
@@ -651,14 +682,20 @@ async fn delete_puzzle_database_resolved(
                         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
                         .remove_puzzle_database(&file)
                 });
-            Ok::<Result<(), Error>, Error>(cleanup)
+            Ok::<(Result<(), Error>, Option<PathBuf>), Error>((cleanup, canonical_path))
         })
         .await;
-    let registry_cleanup = match deletion_and_cleanup {
-        Ok(cleanup) => cleanup,
+    let (registry_cleanup, canonical_path) = match deletion_and_cleanup {
+        Ok(result) => result,
         Err(error) => return Err(error),
     };
-    puzzle_cache.lock().await.invalidate_database(&deleted_path);
+    let mut cache = puzzle_cache.lock().await;
+    cache.invalidate_database(&deleted_path);
+    if let Some(canonical_path) = canonical_path {
+        if canonical_path != deleted_path {
+            cache.invalidate_database(&canonical_path);
+        }
+    }
     match registry_cleanup {
         Ok(()) => Ok(()),
         Err(error @ Error::CommittedDurabilityUncertain(_)) => Err(error),
@@ -750,7 +787,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(name);
         let repository = DatabaseRepository::default();
-        let mut database_connection = repository.schema_specific_connection(&path).unwrap();
+        let mut database_connection = repository
+            .schema_specific_connection(&crate::db::test_target(&path))
+            .unwrap();
         let db = &mut *database_connection;
         db.batch_execute(
             "CREATE TABLE puzzles (id INTEGER PRIMARY KEY, fen TEXT NOT NULL, moves TEXT NOT NULL, rating INTEGER NOT NULL, rating_deviation INTEGER NOT NULL, popularity INTEGER NOT NULL, nb_plays INTEGER NOT NULL);
@@ -806,7 +845,9 @@ mod tests {
             )
             .unwrap();
         let cache_key = PuzzleCacheKey {
-            database: repository.database_identity(&path).unwrap(),
+            database: repository
+                .database_identity(&crate::db::test_target(&path))
+                .unwrap(),
             min_rating: 0,
             max_rating: u16::MAX,
             theme: None,
@@ -842,8 +883,12 @@ mod tests {
     fn alternate_databases_and_short_sets_never_reuse_a_stale_puzzle() {
         let (_one_dir, one_path, one_repository) = puzzle_database("one.db", 1200);
         let (_two_dir, two_path, two_repository) = puzzle_database("two.db", 2200);
-        let one_identity = one_repository.database_identity(&one_path).unwrap();
-        let two_identity = two_repository.database_identity(&two_path).unwrap();
+        let one_identity = one_repository
+            .database_identity(&crate::db::test_target(&one_path))
+            .unwrap();
+        let two_identity = two_repository
+            .database_identity(&crate::db::test_target(&two_path))
+            .unwrap();
         let one_key = PuzzleCacheKey {
             database: one_identity,
             min_rating: 1000,
@@ -899,7 +944,9 @@ mod tests {
     fn database_invalidation_removes_only_that_database_cache_entry() {
         let (_dir, path, repository) = puzzle_database("one.db", 1200);
         let key = PuzzleCacheKey {
-            database: repository.database_identity(&path).unwrap(),
+            database: repository
+                .database_identity(&crate::db::test_target(&path))
+                .unwrap(),
             min_rating: 0,
             max_rating: u16::MAX,
             theme: None,
@@ -1082,6 +1129,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(resolved.puzzle_database_path().unwrap(), path);
+        let target = resolved.puzzle_database_target().unwrap();
+        assert_eq!(target.path(), path.canonicalize().unwrap());
         assert!(authority
             .resolve(
                 &capability,
@@ -1190,7 +1239,8 @@ mod tests {
             handle,
             resolved: _,
         } = puzzle_deletion_fixture("caller-drop-delete.db3");
-        let held_connection = repository.schema_specific_connection(&path).unwrap();
+        let target = crate::db::test_target(&path);
+        let held_connection = repository.schema_specific_connection(&target).unwrap();
         let state = crate::AppState {
             database_repository: Arc::clone(&repository),
             pgn_path_authority: Arc::clone(&authority),
@@ -1206,7 +1256,7 @@ mod tests {
             delete_puzzle_database(command_handle, state).await
         });
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while !repository.deletion_is_waiting(&path).unwrap() {
+            while !repository.deletion_is_waiting(&target).unwrap() {
                 tokio::task::yield_now().await;
             }
         })
@@ -1244,7 +1294,8 @@ mod tests {
             handle,
             resolved: _,
         } = puzzle_deletion_fixture("queued-shutdown-delete.db3");
-        let held_connection = repository.schema_specific_connection(&path).unwrap();
+        let target = crate::db::test_target(&path);
+        let held_connection = repository.schema_specific_connection(&target).unwrap();
         let state = crate::AppState {
             database_repository: Arc::clone(&repository),
             pgn_path_authority: Arc::clone(&authority),
@@ -1260,7 +1311,7 @@ mod tests {
             delete_puzzle_database(command_handle, state).await
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !repository.deletion_is_waiting(&path).unwrap() {
+            while !repository.deletion_is_waiting(&target).unwrap() {
                 tokio::task::yield_now().await;
             }
         })
@@ -1287,7 +1338,7 @@ mod tests {
         assert!(authority_contains(&authority, &handle));
         drop(held_connection);
         repository
-            .schema_specific_connection(&path)
+            .schema_specific_connection(&crate::db::test_target(&path))
             .expect("cancellation must unwind repository retirement state");
     }
 
@@ -1403,8 +1454,9 @@ mod tests {
         )
         .unwrap();
         let replacement = directory.path().join("replacement.db3");
-        let mut replacement_connection =
-            repository.schema_specific_connection(&replacement).unwrap();
+        let mut replacement_connection = repository
+            .schema_specific_connection(&crate::db::test_target(&replacement))
+            .unwrap();
         replacement_connection
             .batch_execute(
                 "CREATE TABLE puzzles (id INTEGER PRIMARY KEY, fen TEXT NOT NULL, moves TEXT NOT NULL, rating INTEGER NOT NULL, rating_deviation INTEGER NOT NULL, popularity INTEGER NOT NULL, nb_plays INTEGER NOT NULL);\
@@ -1435,8 +1487,9 @@ mod tests {
         let retained_file = std::fs::File::open(&path).unwrap();
         let expected = crate::infra::path_authority::opened_file_identity(&retained_file).unwrap();
         let replacement = directory.path().join("replacement.db3");
-        let mut replacement_connection =
-            repository.schema_specific_connection(&replacement).unwrap();
+        let mut replacement_connection = repository
+            .schema_specific_connection(&crate::db::test_target(&replacement))
+            .unwrap();
         replacement_connection
             .batch_execute(
                 "CREATE TABLE puzzles (id INTEGER PRIMARY KEY, fen TEXT NOT NULL, moves TEXT NOT NULL, rating INTEGER NOT NULL, rating_deviation INTEGER NOT NULL, popularity INTEGER NOT NULL, nb_plays INTEGER NOT NULL);\
@@ -1468,7 +1521,11 @@ mod tests {
         let path = directory.path().join("invalid.db3");
         let repository = DatabaseRepository::default();
         // Opening this creates a valid SQLite file with no puzzle tables.
-        drop(repository.schema_specific_connection(&path).unwrap());
+        drop(
+            repository
+                .schema_specific_connection(&crate::db::test_target(&path))
+                .unwrap(),
+        );
         let object = crate::infra::path_authority::opened_file_identity(
             &std::fs::File::open(&path).unwrap(),
         )
@@ -1501,7 +1558,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("empty-themes.db3");
         let repository = DatabaseRepository::default();
-        drop(repository.schema_specific_connection(&path).unwrap());
+        drop(
+            repository
+                .schema_specific_connection(&crate::db::test_target(&path))
+                .unwrap(),
+        );
         let object = opened_identity(&path);
         let error = load_puzzle_themes(
             &repository,
@@ -1520,7 +1581,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("themes-without-name.db3");
         let repository = DatabaseRepository::default();
-        let mut database_connection = repository.schema_specific_connection(&path).unwrap();
+        let mut database_connection = repository
+            .schema_specific_connection(&crate::db::test_target(&path))
+            .unwrap();
         database_connection
             .batch_execute("CREATE TABLE themes (id INTEGER PRIMARY KEY);")
             .unwrap();
@@ -1556,7 +1619,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("themed-without-themes.db3");
         let repository = DatabaseRepository::default();
-        let mut database_connection = repository.schema_specific_connection(&path).unwrap();
+        let mut database_connection = repository
+            .schema_specific_connection(&crate::db::test_target(&path))
+            .unwrap();
         database_connection
             .batch_execute(
                 "CREATE TABLE puzzles (id INTEGER PRIMARY KEY, fen TEXT NOT NULL, moves TEXT NOT NULL, rating INTEGER NOT NULL, rating_deviation INTEGER NOT NULL, popularity INTEGER NOT NULL, nb_plays INTEGER NOT NULL);

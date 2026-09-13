@@ -12,7 +12,9 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{is_write_operation, opened_file_identity, PathOperation};
+use super::{
+    canonical_binding, is_write_operation, opened_file_identity, DatabaseFileTarget, PathOperation,
+};
 
 /// Result of a successful resolution. It retains only the exact opened file, never a parent or
 /// root handle that could be used to reach a sibling.
@@ -400,6 +402,37 @@ impl ResolvedPath {
                 .as_ref()
                 .ok_or_else(|| Error::InvalidInput("puzzle capability names a directory".into()))?,
         )
+    }
+
+    /// Mints the repository carrier from the retained puzzle capability. This is a blocking
+    /// filesystem operation and callers must construct it inside their blocking closure.
+    #[cfg(unix)]
+    pub(crate) fn puzzle_database_target(&self) -> Result<DatabaseFileTarget, Error> {
+        if !matches!(
+            self.operation,
+            PathOperation::PuzzleRead | PathOperation::PuzzleDelete
+        ) {
+            return Err(Error::InvalidInput(
+                "resolved capability is not a puzzle database".into(),
+            ));
+        }
+        let parent = self
+            .parent()
+            .ok_or_else(|| Error::InvalidInput("puzzle capability names a directory".into()))?
+            .try_clone()?;
+        let leaf = self
+            .leaf()
+            .ok_or_else(|| Error::InvalidInput("puzzle capability names a directory".into()))?
+            .to_os_string();
+        let identity =
+            opened_file_identity(self.file.as_ref().ok_or_else(|| {
+                Error::InvalidInput("puzzle capability names a directory".into())
+            })?)?;
+        let path = canonical_binding(
+            self.target()
+                .ok_or_else(|| Error::Conflict("puzzle database target is unavailable".into()))?,
+        )?;
+        Ok(DatabaseFileTarget::assemble(parent, leaf, identity, path))
     }
 
     /// Duplicate the already-authorized descriptor for SQLite. The caller owns

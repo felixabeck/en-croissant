@@ -217,12 +217,18 @@ mod tests {
         let path = directory.path().join("factory.db3");
         let repository = crate::db::DatabaseRepository::default();
         let mut connection = if mode == "pool" {
-            repository.initialization_connection(&path).unwrap()
+            repository
+                .initialization_connection(&crate::db::test_target(&path), None)
+                .unwrap()
         } else if mode == "identity-first-pool" {
             let seed = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
             drop(seed);
-            repository.database_identity(&path).unwrap();
-            repository.initialization_connection(&path).unwrap()
+            repository
+                .database_identity(&crate::db::test_target(&path))
+                .unwrap();
+            repository
+                .initialization_connection(&crate::db::test_target(&path), None)
+                .unwrap()
         } else {
             let seed = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
             drop(seed);
@@ -299,7 +305,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("pooled-recovery.db3");
         let repository = crate::db::DatabaseRepository::default();
-        let mut connection = repository.initialization_connection(&path).unwrap();
+        let mut connection = repository
+            .initialization_connection(&crate::db::test_target(&path), None)
+            .unwrap();
         let token = CancellationToken::new();
         let checkpoints = cancel_on_callback(token.clone(), 2);
         let result = with_sqlite_cancellation(&token, || {

@@ -9,6 +9,8 @@ mod repository;
 mod test_support;
 #[cfg(test)]
 pub(crate) use repository::cancel_snapshot_copy_after_chunks;
+#[cfg(test)]
+pub(crate) use repository::test_target;
 mod schema;
 mod search;
 pub(crate) use search::is_position_in_db_cancellable;
@@ -59,7 +61,6 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     fs::File,
-    path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -159,10 +160,10 @@ pub(crate) struct DatabaseSchemaIdentity {
 }
 
 impl DatabaseSchemaIdentity {
-    fn from_path(path: &Path) -> Result<Self, Error> {
-        let metadata = path.metadata()?;
+    fn from_file(file: &File) -> Result<Self, Error> {
+        let metadata = file.metadata()?;
         Ok(Self {
-            object: crate::infra::path_authority::opened_file_identity(&File::open(path)?)?,
+            object: crate::infra::path_authority::opened_file_identity(file)?,
             length: metadata.len(),
             modified: metadata.modified()?,
         })
@@ -188,9 +189,10 @@ impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error>
 
 pub(crate) fn get_db_or_create(
     repository: &crate::db::DatabaseRepository,
-    db_path: &Path,
+    target: &DatabaseFileTarget,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<repository::DatabaseConnection, Error> {
-    repository.connection(db_path)
+    repository.connection(target, cancellation)
 }
 
 /// The sole database capability boundary.  Native repository code receives a
@@ -737,10 +739,10 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
     }
 
     let description = description.unwrap_or_default();
-    let write_lease = repository.write_lease(target.path())?;
+    let write_lease = repository.write_lease(&target)?;
     let _write_guard = write_lease.lock()?;
 
-    let mut database_connection = repository.initialization_connection(target.path())?;
+    let mut database_connection = repository.initialization_connection(&target, None)?;
     let db = &mut *database_connection;
     let start = Instant::now();
     let mut imported_games = 0usize;
@@ -797,7 +799,7 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
         update_database_counts(db)?;
         // This tail remains under the write lock and inside the transaction: a revision failure
         // rolls back the games, while a later commit failure only invalidates caches conservatively.
-        repository.data_changed(target.path())?;
+        repository.data_changed(&target)?;
         search_cache.invalidate_database(target.path());
         Ok(())
     })?;
@@ -821,8 +823,9 @@ pub fn generate_search_index(
 ) -> Result<(), Error> {
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
-    repository.with_write_lock_cancellable(target.path(), cancellation, || {
-        repository.with_index_lock_cancellable(target.path(), cancellation, || {
+    info!("Preparing search index for {:?}", target.path());
+    repository.with_write_lock_cancellable(&target, cancellation, || {
+        repository.with_index_lock_cancellable(&target, cancellation, || {
             generate_search_index_locked(&target, repository, search_cache, cancellation)
         })
     })
@@ -851,16 +854,18 @@ fn generate_search_index_locked(
     cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     cancellation_check(cancellation)?;
-    let mut database_connection = get_db_or_create(repository, target.path())?;
+    let mut database_connection = get_db_or_create(repository, target, Some(cancellation))?;
     let db = &mut *database_connection;
     let index_leaf = search_index::preferred_sidecar_leaf(target.leaf());
 
     info!("Generating search index for {:?}", target.path());
     let start = Instant::now();
 
-    let source = IndexSource::from_database_identity(
-        &repository.database_identity_expected(target.path(), target.identity())?,
-    )?;
+    let source = IndexSource::from_database_identity(&repository.database_identity_expected(
+        target,
+        target.identity(),
+        Some(cancellation),
+    )?)?;
     let outcome = sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
         let rows = games::table
             .select((
@@ -1051,7 +1056,7 @@ fn get_db_info_blocking(
 
     info!("get_db_info {:?}", target.path());
 
-    let mut database_connection = get_db_or_create(repository, target.path())?;
+    let mut database_connection = get_db_or_create(repository, &target, None)?;
     let db = &mut *database_connection;
 
     let info_records: Vec<Info> = info::table.load(db)?;
@@ -1075,7 +1080,7 @@ fn get_db_info_blocking(
         .and_then(|v| v.parse::<i32>().ok())
         .unwrap_or(0);
 
-    let storage_size = target.path().metadata()?.len();
+    let storage_size = repository.database_identity(&target)?.length;
     let filename = target
         .path()
         .file_name()
@@ -1124,8 +1129,8 @@ fn create_indexes_blocking(
     database_command_checkpoint("create_indexes", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_index_lock(target.path(), || {
-        let mut database_connection = get_db_or_create(repository, target.path())?;
+    repository.with_index_lock(&target, || {
+        let mut database_connection = get_db_or_create(repository, &target, None)?;
         let db = &mut *database_connection;
         create_required_indexes(db)
     })
@@ -1159,8 +1164,8 @@ fn delete_indexes_blocking(
     #[cfg(test)]
     database_command_checkpoint("delete_indexes", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
-    repository.with_index_lock(target.path(), || {
-        let mut database_connection = get_db_or_create(repository, target.path())?;
+    repository.with_index_lock(&target, || {
+        let mut database_connection = get_db_or_create(repository, &target, None)?;
         let db = &mut *database_connection;
         drop_required_indexes(db)
     })
@@ -1208,8 +1213,8 @@ fn edit_db_info_blocking(
     database_command_checkpoint("edit_db_info", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(target.path(), || {
-        let mut database_connection = get_db_or_create(repository, target.path())?;
+    repository.with_write_lock(&target, || {
+        let mut database_connection = get_db_or_create(repository, &target, None)?;
         let db = &mut *database_connection;
         if let Some(title) = title {
             diesel::insert_into(info::table)
@@ -1233,7 +1238,7 @@ fn edit_db_info_blocking(
         }
         Ok(())
     })?;
-    repository.data_changed(target.path())?;
+    repository.data_changed(&target)?;
     search_cache.invalidate_database(target.path());
     Ok(())
 }
@@ -1384,7 +1389,7 @@ fn get_games_blocking(
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, target.path())?;
+    let mut database_connection = get_db_or_create(repository, &target, Some(cancellation))?;
     let db = &mut *database_connection;
 
     let mut count: Option<i64> = None;
@@ -1622,7 +1627,7 @@ fn get_latest_game_timestamp_blocking(
 ) -> Result<Option<f64>, Error> {
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, target.path())?;
+    let mut database_connection = get_db_or_create(repository, &target, None)?;
     let db = &mut *database_connection;
     Ok(get_latest_game_timestamp_in_db(db)?.map(|timestamp| timestamp as f64))
 }
@@ -1728,7 +1733,7 @@ fn get_player_blocking(
 ) -> Result<Option<Player>, Error> {
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, target.path())?;
+    let mut database_connection = get_db_or_create(repository, &target, None)?;
     let db = &mut *database_connection;
     let player = players::table
         .filter(players::id.eq(id))
@@ -1770,7 +1775,7 @@ fn get_players_blocking(
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, target.path())?;
+    let mut database_connection = get_db_or_create(repository, &target, Some(cancellation))?;
     let db = &mut *database_connection;
     let mut count: Option<i64> = None;
 
@@ -1878,7 +1883,7 @@ fn get_tournaments_blocking(
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, target.path())?;
+    let mut database_connection = get_db_or_create(repository, &target, Some(cancellation))?;
     let db = &mut *database_connection;
     let mut count: Option<i64> = None;
 
@@ -2044,7 +2049,7 @@ fn get_players_game_info_blocking<R: tauri::Runtime>(
     cancellation_check(cancellation)?;
     let target = resolve_database(authority, &file, PathOperation::DatabaseRead)?;
 
-    let mut database_connection = get_db_or_create(repository, target.path())?;
+    let mut database_connection = get_db_or_create(repository, &target, Some(cancellation))?;
     let db = &mut *database_connection;
     let timer = Instant::now();
 
@@ -2256,16 +2261,15 @@ fn delete_database_blocking(
     database_command_checkpoint("delete_database", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
     let expected_source = IndexSource::from_database_identity(
-        &repository.database_identity_expected(target.path(), target.identity())?,
+        &repository.database_identity_expected(&target, target.identity(), Some(cancellation))?,
     )?;
     let mut primary_gone = false;
     let mut unlinked = 0;
-    let unlink_result =
-        repository.delete_exclusive_cancellable(target.path(), cancellation, || {
-            unlinked = unlink_database_files(&target, &expected_source)?;
-            primary_gone = true;
-            Ok(())
-        });
+    let unlink_result = repository.delete_exclusive_cancellable(&target, cancellation, || {
+        unlinked = unlink_database_files(&target, &expected_source)?;
+        primary_gone = true;
+        Ok(())
+    });
     if let Err(error) = unlink_result {
         return finish_database_deletion(primary_gone, unlinked, Err(error));
     }
@@ -2442,12 +2446,12 @@ fn delete_duplicated_games_blocking(
     database_command_checkpoint("delete_duplicated_games", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(target.path(), || {
-        let mut database_connection = get_db_or_create(repository, target.path())?;
+    repository.with_write_lock(&target, || {
+        let mut database_connection = get_db_or_create(repository, &target, None)?;
         let db = &mut *database_connection;
         db.transaction(delete_duplicated_games_transaction)
     })?;
-    repository.data_changed(target.path())?;
+    repository.data_changed(&target)?;
     search_cache.invalidate_database(target.path());
     Ok(())
 }
@@ -2504,12 +2508,12 @@ fn delete_empty_games_blocking(
     database_command_checkpoint("delete_empty_games", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(target.path(), || {
-        let mut database_connection = get_db_or_create(repository, target.path())?;
+    repository.with_write_lock(&target, || {
+        let mut database_connection = get_db_or_create(repository, &target, None)?;
         let db = &mut *database_connection;
         db.transaction(delete_empty_games_transaction)
     })?;
-    repository.data_changed(target.path())?;
+    repository.data_changed(&target)?;
     search_cache.invalidate_database(target.path());
     Ok(())
 }
@@ -2662,7 +2666,7 @@ fn export_to_pgn_blocking(
         (resolved, snapshot)
     };
 
-    let mut database_connection = get_db_or_create(repository, target.path())?;
+    let mut database_connection = get_db_or_create(repository, &target, None)?;
     let db = &mut *database_connection;
 
     let outcome = resolved.replace_pgn_atomic(&snapshot, |_, temporary| {
@@ -2781,12 +2785,12 @@ fn delete_db_game_blocking(
     database_command_checkpoint("delete_db_game", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(target.path(), || {
-        let mut database_connection = get_db_or_create(repository, target.path())?;
+    repository.with_write_lock(&target, || {
+        let mut database_connection = get_db_or_create(repository, &target, None)?;
         let db = &mut *database_connection;
         db.transaction(|db| delete_db_game_transaction(db, game_id))
     })?;
-    repository.data_changed(target.path())?;
+    repository.data_changed(&target)?;
     search_cache.invalidate_database(target.path());
     Ok(())
 }
@@ -2839,14 +2843,14 @@ fn write_db_game_blocking(
         .read_game(&mut importer)?
         .flatten()
         .ok_or(Error::NoMovesFound)?;
-    repository.with_write_lock(target.path(), || {
-        let mut database_connection = get_db_or_create(repository, target.path())?;
+    repository.with_write_lock(&target, || {
+        let mut database_connection = get_db_or_create(repository, &target, None)?;
         let db = &mut *database_connection;
         db.transaction(|db| {
             write_parsed_db_game(db, game_id, &temp_game, remove_orphans_and_update_counts)
         })
     })?;
-    repository.data_changed(target.path())?;
+    repository.data_changed(&target)?;
     search_cache.invalidate_database(target.path());
     Ok(())
 }
@@ -2966,12 +2970,12 @@ fn merge_players_blocking(
     database_command_checkpoint("merge_players", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(target.path(), || {
-        let mut database_connection = get_db_or_create(repository, target.path())?;
+    repository.with_write_lock(&target, || {
+        let mut database_connection = get_db_or_create(repository, &target, None)?;
         let db = &mut *database_connection;
         db.transaction(|db| merge_players_transaction(db, player1, player2))
     })?;
-    repository.data_changed(target.path())?;
+    repository.data_changed(&target)?;
     search_cache.invalidate_database(target.path());
     Ok(())
 }
@@ -3418,7 +3422,7 @@ mod tests {
         assert!(sidecar.exists());
         let expected = state
             .database_repository
-            .database_identity(&database)
+            .database_identity(&test_target(&database))
             .unwrap();
         let source = IndexSource::from_database_identity(&expected).unwrap();
         assert_eq!(
@@ -3555,7 +3559,10 @@ mod tests {
         let game_id = insert_named_game(&app, &database, "White", "Black", "Event", "Site");
         {
             let state = app.state::<AppState>();
-            let mut db = state.database_repository.connection(&database).unwrap();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             diesel::update(games::table.find(game_id))
                 .set(games::pawn_home.eq(-1))
                 .execute(&mut *db)
@@ -5043,7 +5050,7 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
         let holder = std::thread::spawn(move || {
             repository
-                .with_write_lock(&database, || {
+                .with_write_lock(&test_target(&database), || {
                     entered_tx.send(()).unwrap();
                     let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
                     Ok(())
@@ -5123,10 +5130,11 @@ mod tests {
             .search_cache
             .insert_result(cache_key.clone(), (vec![], vec![]));
 
+        let database_target = test_target(&database);
         let held_connection = app
             .state::<AppState>()
             .database_repository
-            .connection(&database)
+            .connection(&database_target, None)
             .unwrap();
         let command_app = app.clone();
         let caller = tokio::spawn(async move {
@@ -5137,7 +5145,7 @@ mod tests {
             while !app
                 .state::<AppState>()
                 .database_repository
-                .deletion_is_waiting(&database)
+                .deletion_is_waiting(&database_target)
                 .unwrap()
             {
                 tokio::task::yield_now().await;
@@ -5287,7 +5295,10 @@ mod tests {
             DatabaseCommandCase::CreateIndexes => {}
             DatabaseCommandCase::DeleteIndexes => {
                 let state = app.state::<AppState>();
-                let mut db = state.database_repository.connection(database).unwrap();
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(database), None)
+                    .unwrap();
                 create_required_indexes(&mut db).unwrap();
             }
             DatabaseCommandCase::EditDbInfo => {}
@@ -5300,7 +5311,10 @@ mod tests {
                 inputs.game_id =
                     insert_named_game(app, database, "White", "Black", "Event", "Site");
                 let state = app.state::<AppState>();
-                let mut db = state.database_repository.connection(database).unwrap();
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(database), None)
+                    .unwrap();
                 diesel::update(games::table.find(inputs.game_id))
                     .set(games::ply_count.eq(0))
                     .execute(&mut *db)
@@ -5318,7 +5332,10 @@ mod tests {
             }
             DatabaseCommandCase::MergePlayers => {
                 let state = app.state::<AppState>();
-                let mut db = state.database_repository.connection(database).unwrap();
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(database), None)
+                    .unwrap();
                 let source = create_player(&mut db, "Source").unwrap();
                 let target = create_player(&mut db, "Target").unwrap();
                 let opponent = create_player(&mut db, "Opponent").unwrap();
@@ -5444,19 +5461,31 @@ mod tests {
             }
             match case {
                 DatabaseCommandCase::ConvertPgn => {
-                    let mut db = state.database_repository.connection(&database).unwrap();
+                    let mut db = state
+                        .database_repository
+                        .connection(&test_target(&database), None)
+                        .unwrap();
                     assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 1);
                 }
                 DatabaseCommandCase::CreateIndexes => {
-                    let mut db = state.database_repository.connection(&database).unwrap();
+                    let mut db = state
+                        .database_repository
+                        .connection(&test_target(&database), None)
+                        .unwrap();
                     assert!(check_index_exists(&mut db).unwrap());
                 }
                 DatabaseCommandCase::DeleteIndexes => {
-                    let mut db = state.database_repository.connection(&database).unwrap();
+                    let mut db = state
+                        .database_repository
+                        .connection(&test_target(&database), None)
+                        .unwrap();
                     assert!(!check_index_exists(&mut db).unwrap());
                 }
                 DatabaseCommandCase::EditDbInfo => {
-                    let mut db = state.database_repository.connection(&database).unwrap();
+                    let mut db = state
+                        .database_repository
+                        .connection(&test_target(&database), None)
+                        .unwrap();
                     assert_eq!(
                         info::table
                             .find("Title")
@@ -5469,11 +5498,17 @@ mod tests {
                 }
                 DatabaseCommandCase::DeleteDatabase => assert!(!database.exists()),
                 DatabaseCommandCase::DeleteDuplicatedGames => {
-                    let mut db = state.database_repository.connection(&database).unwrap();
+                    let mut db = state
+                        .database_repository
+                        .connection(&test_target(&database), None)
+                        .unwrap();
                     assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 1);
                 }
                 DatabaseCommandCase::DeleteEmptyGames => {
-                    let mut db = state.database_repository.connection(&database).unwrap();
+                    let mut db = state
+                        .database_repository
+                        .connection(&test_target(&database), None)
+                        .unwrap();
                     assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 0);
                 }
                 DatabaseCommandCase::ExportToPgn => {
@@ -5482,11 +5517,17 @@ mod tests {
                         .contains("[White \"White\"]"));
                 }
                 DatabaseCommandCase::DeleteDbGame => {
-                    let mut db = state.database_repository.connection(&database).unwrap();
+                    let mut db = state
+                        .database_repository
+                        .connection(&test_target(&database), None)
+                        .unwrap();
                     assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 0);
                 }
                 DatabaseCommandCase::WriteDbGame => {
-                    let mut db = state.database_repository.connection(&database).unwrap();
+                    let mut db = state
+                        .database_repository
+                        .connection(&test_target(&database), None)
+                        .unwrap();
                     assert_eq!(
                         games::table
                             .select(games::ply_count)
@@ -5496,7 +5537,10 @@ mod tests {
                     );
                 }
                 DatabaseCommandCase::MergePlayers => {
-                    let mut db = state.database_repository.connection(&database).unwrap();
+                    let mut db = state
+                        .database_repository
+                        .connection(&test_target(&database), None)
+                        .unwrap();
                     assert_eq!(
                         players::table
                             .find(1)
@@ -5587,7 +5631,10 @@ mod tests {
         site: &str,
     ) -> i32 {
         let state = app.state::<AppState>();
-        let mut db = state.database_repository.connection(database).unwrap();
+        let mut db = state
+            .database_repository
+            .connection(&test_target(database), None)
+            .unwrap();
         let white = create_player(&mut db, white).unwrap();
         let black = create_player(&mut db, black).unwrap();
         let event = create_event(&mut db, event).unwrap();
@@ -5603,7 +5650,10 @@ mod tests {
         database: &Path,
     ) -> (usize, usize) {
         let state = app.state::<AppState>();
-        let mut db = state.database_repository.connection(database).unwrap();
+        let mut db = state
+            .database_repository
+            .connection(&test_target(database), None)
+            .unwrap();
         let white = create_player(&mut db, "White").unwrap();
         let black = create_player(&mut db, "Black").unwrap();
         let event = create_event(&mut db, "Heap evidence").unwrap();
@@ -5977,7 +6027,10 @@ mod tests {
         let (dir, app, handle, database) = blocking_database_case();
         {
             let state = app.state::<AppState>();
-            let mut db = state.database_repository.connection(&database).unwrap();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             imported.insert_to_db(&mut db).unwrap();
         }
         let destination_path = dir.path().join("escaped-export.pgn");
@@ -6022,7 +6075,10 @@ mod tests {
             let game_id = insert_named_game(&app, &database, "White", "Black", "Event", "Site");
             {
                 let state = app.state::<AppState>();
-                let mut db = state.database_repository.connection(&database).unwrap();
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
                 sql_query(format!(
                     "UPDATE Games SET {column} = {value} WHERE Id = {game_id}"
                 ))
@@ -6193,7 +6249,10 @@ mod tests {
         database: &Path,
     ) -> DatabaseRowCounts {
         let state = app.state::<AppState>();
-        let mut db = state.database_repository.connection(database).unwrap();
+        let mut db = state
+            .database_repository
+            .connection(&test_target(database), None)
+            .unwrap();
         DatabaseRowCounts {
             games: games::table.count().get_result(&mut *db).unwrap(),
             players: players::table.count().get_result(&mut *db).unwrap(),
@@ -6263,7 +6322,10 @@ mod tests {
         .unwrap();
 
         let state = app.state::<AppState>();
-        let mut db = state.database_repository.connection(&database).unwrap();
+        let mut db = state
+            .database_repository
+            .connection(&test_target(&database), None)
+            .unwrap();
         assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 2);
         for (name, expected) in [
             ("GameCount", 2_i64),
@@ -6345,7 +6407,10 @@ mod tests {
         std::fs::write(&source, REPLACEMENT_PGN).unwrap();
         {
             let state = app.state::<AppState>();
-            let mut db = state.database_repository.connection(&database).unwrap();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             update_database_counts(&mut db).unwrap();
             db.batch_execute(
                 "CREATE TRIGGER fail_count_update BEFORE UPDATE ON Info
@@ -6366,7 +6431,10 @@ mod tests {
             }
         );
         let state = app.state::<AppState>();
-        let mut db = state.database_repository.connection(&database).unwrap();
+        let mut db = state
+            .database_repository
+            .connection(&test_target(&database), None)
+            .unwrap();
         assert_eq!(
             info::table
                 .find("GameCount")
@@ -6420,7 +6488,10 @@ mod tests {
             #[diesel(sql_type = Text)]
             journal_mode: String,
         }
-        let mut db = state.database_repository.connection(&database).unwrap();
+        let mut db = state
+            .database_repository
+            .connection(&test_target(&database), None)
+            .unwrap();
         assert_eq!(
             sql_query("PRAGMA journal_mode")
                 .get_result::<JournalMode>(&mut *db)
@@ -6548,7 +6619,10 @@ mod tests {
         std::fs::write(&source, REPLACEMENT_PGN).unwrap();
         run_import(&app, handle, vec![grant_import_file(&app, &source)], None).unwrap();
         let state = app.state::<AppState>();
-        let mut db = state.database_repository.connection(&database).unwrap();
+        let mut db = state
+            .database_repository
+            .connection(&test_target(&database), None)
+            .unwrap();
         let indexes: Vec<IndexInfo> = sql_query(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'games_%_idx'",
         )
@@ -6583,7 +6657,10 @@ mod tests {
 
         run_import(&app, handle, vec![grant_import_file(&app, &source)], None).unwrap();
         let state = app.state::<AppState>();
-        let mut db = state.database_repository.connection(&database).unwrap();
+        let mut db = state
+            .database_repository
+            .connection(&test_target(&database), None)
+            .unwrap();
         assert_eq!(games::table.count().get_result::<i64>(&mut *db).unwrap(), 1);
         let indexes: Vec<IndexInfo> = sql_query(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'games_%_idx'",
@@ -6597,10 +6674,16 @@ mod tests {
     fn empty_import_is_a_no_op() {
         let (_dir, app, handle, database) = blocking_database_case();
         let state = app.state::<AppState>();
-        let revision = state.database_repository.data_revision(&database).unwrap();
+        let revision = state
+            .database_repository
+            .data_revision(&test_target(&database))
+            .unwrap();
         run_import(&app, handle, Vec::new(), None).unwrap();
         assert_eq!(
-            state.database_repository.data_revision(&database).unwrap(),
+            state
+                .database_repository
+                .data_revision(&test_target(&database))
+                .unwrap(),
             revision
         );
         assert_eq!(
@@ -6688,7 +6771,10 @@ mod tests {
             ),
             Err(Error::NoMovesFound)
         ));
-        let mut db = state.database_repository.connection(&database).unwrap();
+        let mut db = state
+            .database_repository
+            .connection(&test_target(&database), None)
+            .unwrap();
         let white_id = games::table
             .find(game_id)
             .select(games::white_id)
@@ -7077,7 +7163,10 @@ mod tests {
 
         {
             let state = app.state::<AppState>();
-            let mut db = state.database_repository.connection(&database).unwrap();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             diesel::update(games::table.find(empty_id))
                 .set(games::ply_count.eq(0))
                 .execute(&mut *db)
@@ -7344,7 +7433,10 @@ mod tests {
         let (_dir, app, handle, database) = blocking_database_case();
         let player_id = {
             let state = app.state::<AppState>();
-            let mut db = state.database_repository.connection(&database).unwrap();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             let player = create_player(&mut db, "Player").unwrap();
             let opponent = create_player(&mut db, "Opponent").unwrap();
             let event = create_event(&mut db, "Event").unwrap();
@@ -7459,7 +7551,10 @@ mod tests {
         let (_dir, app, handle, database) = blocking_database_case();
         let (player_id, nameless_player_id) = {
             let state = app.state::<AppState>();
-            let mut db = state.database_repository.connection(&database).unwrap();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             let player = create_player(&mut db, "Player").unwrap();
             let opponent = create_player(&mut db, "Opponent").unwrap();
             let nameless_player = create_player(&mut db, "Nameless").unwrap();
@@ -7573,7 +7668,10 @@ mod tests {
         let (_dir, app, handle, database) = blocking_database_case();
         let player_id = {
             let state = app.state::<AppState>();
-            let mut db = state.database_repository.connection(&database).unwrap();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             let player = create_player(&mut db, "Player").unwrap();
             let opponent = create_player(&mut db, "Opponent").unwrap();
             let event = create_event(&mut db, "Event").unwrap();
@@ -7665,7 +7763,10 @@ mod tests {
         let (_dir, app, handle, database) = blocking_database_case();
         let (game_id, player_id) = {
             let state = app.state::<AppState>();
-            let mut db = state.database_repository.connection(&database).unwrap();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             let player = create_player(&mut db, "Player").unwrap();
             let opponent = create_player(&mut db, "Opponent").unwrap();
             let event = create_event(&mut db, "Event").unwrap();
@@ -7720,7 +7821,10 @@ mod tests {
         mount_progress_events(&app);
         let player_id = {
             let state = app.state::<AppState>();
-            let mut db = state.database_repository.connection(&database).unwrap();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             let white = create_player(&mut db, "White").unwrap();
             let black = create_player(&mut db, "Black").unwrap();
             let event = create_event(&mut db, "Event").unwrap();
@@ -7766,7 +7870,10 @@ mod tests {
         mount_progress_events(&app);
         let player_id = {
             let state = app.state::<AppState>();
-            let mut db = state.database_repository.connection(&database).unwrap();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             let white = create_player(&mut db, "White").unwrap();
             let black = create_player(&mut db, "Black").unwrap();
             let event = create_event(&mut db, "Event").unwrap();
@@ -7838,7 +7945,10 @@ mod tests {
         let game_id = insert_named_game(&app, &database, "White", "Black", "Event", "Site");
         {
             let state = app.state::<AppState>();
-            let mut db = state.database_repository.connection(&database).unwrap();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             let mut moves = Vec::new();
             encode_comment(&"large normalization payload".repeat(2_000), &mut moves);
             diesel::update(games::table.find(game_id))
@@ -7916,7 +8026,10 @@ mod tests {
         let game_id = insert_named_game(&app, &database, "White", "Black", "Event", "Site");
         let player_id = {
             let state = app.state::<AppState>();
-            let mut connection = state.database_repository.connection(&database).unwrap();
+            let mut connection = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
             games::table
                 .find(game_id)
                 .select(games::white_id)

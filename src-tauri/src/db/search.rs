@@ -202,8 +202,11 @@ pub(crate) fn load_search_index_cancellable(
         return Err(Error::Cancellation);
     }
     let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
-    let db_identity =
-        repository.database_identity_expected(read_target.path(), read_target.identity())?;
+    let db_identity = repository.database_identity_expected(
+        &read_target,
+        read_target.identity(),
+        Some(cancellation),
+    )?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
     if let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? {
         return cache_loaded_index(
@@ -226,8 +229,11 @@ pub(crate) fn load_search_index_cancellable(
         crate::infra::cancellable_lock::lock_cancellable(&generation_lock.lock, cancellation)?;
 
     let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
-    let db_identity =
-        repository.database_identity_expected(read_target.path(), read_target.identity())?;
+    let db_identity = repository.database_identity_expected(
+        &read_target,
+        read_target.identity(),
+        Some(cancellation),
+    )?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
     if let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? {
         return cache_loaded_index(
@@ -277,8 +283,11 @@ pub(crate) fn load_search_index_cancellable(
     };
 
     let read_target = super::resolve_database(authority, handle, PathOperation::DatabaseRead)?;
-    let db_identity =
-        repository.database_identity_expected(read_target.path(), read_target.identity())?;
+    let db_identity = repository.database_identity_expected(
+        &read_target,
+        read_target.identity(),
+        Some(cancellation),
+    )?;
     let expected_source = IndexSource::from_database_identity(&db_identity)?;
     let Some(index) = open_valid_preferred(&read_target, &expected_source, cancellation)? else {
         return Err(generation_error
@@ -618,7 +627,7 @@ fn search_position_blocking<R: tauri::Runtime>(
     let _guard =
         crate::infra::cancellable_lock::lock_cancellable(&_collision_cleanup.lock, cancellation)?;
 
-    let mut database_connection = get_db_or_create(repository, target.path())?;
+    let mut database_connection = get_db_or_create(repository, &target, Some(cancellation))?;
     let db = &mut *database_connection;
 
     let start = Instant::now();
@@ -1045,7 +1054,7 @@ mod tests {
         IndexSource::from_database_identity(
             &app.state::<AppState>()
                 .database_repository
-                .database_identity(database)
+                .database_identity(&crate::db::test_target(database))
                 .unwrap(),
         )
         .unwrap()

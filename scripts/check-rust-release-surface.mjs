@@ -12,8 +12,6 @@ export const DEAD_CODE_ALLOWLIST = new Set(INITIAL_DEAD_CODE_ALLOWLIST);
 
 // Owner: f-20260830-23. This allowlist may only shrink.
 const INITIAL_FS_SURFACE_ALLOWLIST = Object.freeze([
-  "src-tauri/src/db/mod.rs",
-  "src-tauri/src/db/repository.rs",
   "src-tauri/src/file_workspace.rs",
   "src-tauri/src/fs.rs",
   "src-tauri/src/main.rs",
@@ -23,8 +21,6 @@ export const FS_SURFACE_ALLOWLIST = new Set(INITIAL_FS_SURFACE_ALLOWLIST);
 
 // Production R3+R4 match counts, measured by this checker. Shrink-only.
 export const INITIAL_FS_SURFACE_COUNTS = Object.freeze({
-  "src-tauri/src/db/mod.rs": 1,
-  "src-tauri/src/db/repository.rs": 6,
   "src-tauri/src/file_workspace.rs": 4,
   "src-tauri/src/fs.rs": 10,
   "src-tauri/src/main.rs": 1,
