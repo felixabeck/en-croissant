@@ -8142,3 +8142,15 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Why it matters:** it is the last production filesystem reach in `file_workspace.rs` once `f-20260905-05` lands; closing it removes the file from the allowlist.
 * **Related:** `f-20260905-05` (its plan review split this out as outside that mandate — `timestamp` is metadata, not directory enumeration).
 * **Found by:** Claude Code, plan review of `tasks/plans/2026-09-13-workspace-directory-enumeration.md` (`review-minimalism`, `review-root-cause`, `review-tauri-security`), 2026-09-13.
+
+---
+
+## 2026-09-13 — filed through the inbox spool
+
+### Three `PathAuthority` root-path wrappers repeat the same `workspace_root(&FileWorkspaceHandle::new(root.path_ref().clone()), operation)` call
+* **ID:** f-20260913-03 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority/mod.rs` — `engine_root_path` (`:3101-3112`), `puzzle_root_path` (`:3483-3486`), `database_root_path` (`:3792-3797`).
+* **Defect:** three private wrappers differ only in the handle type and the `PathOperation` they pass; each re-wraps a `PathRef` in a `FileWorkspaceHandle` to reach `workspace_root`. Rule 11 (extract at the second copy) was already exceeded at the third.
+* **Fix shape:** one private `root_path(&mut self, id: &PathRef, operation: PathOperation) -> Result<PathBuf, Error>` (or `workspace_root` taking `&PathRef`), with the three call sites routed through it; no behaviour change, existing tests are the proof.
+* **Related:** `f-20260905-05` (plan review of its descriptor-enumeration run surfaced this; that plan no longer adds a fourth copy).
+* **Found by:** Codex `review-minimalism` lens, plan review of `tasks/plans/2026-09-13-workspace-directory-enumeration.md`, 2026-09-13.
