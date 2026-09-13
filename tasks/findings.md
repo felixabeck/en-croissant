@@ -8115,3 +8115,17 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 * **Handled, 2026-09-12:** `resolve_database` returns `DatabaseFileTarget` via `database_file_target`; `database_path` and `db/search.rs`'s private helper are gone; every remaining database command plus the three A1 holders mint through `resolve_database` and consume `target.path()`. Search-layer `canonicalize()` walks are gone. Operation matrix: `commands_resolve_with_their_own_operation` and `search_commands_resolve_with_their_own_operation` (D-A2-1). Directory refusal and symlink-ancestor `path()` pinned through `resolve_database`. Allowlist unchanged. Commits `1a10660a`, `a373cb28`. Decision D-A2-1. Proof: `cargo fmt --check`, `cargo check --all-targets --locked`, clippy `-D warnings` all-targets locked, `cargo test --locked` 980 passed / 1 ignored, `pnpm rust:surface:check`, backend-test and backend-coverage gates.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"c86f480444cd2ea31e201c542ad987e753f17a497a513f5c4e83cf746fdad09f","input_sha256":"5b51776e64db3042af31a4efd28693ecf4867c1240c8f59be3886a9dbfee89e6","kind":"mutation-receipt","operation":"094b9d02e3e8f0deced731c00f06da8eff441291040b660e1c75e58295d5660f","options":{"section":null},"request_id_sha256":null,"results":["f-20260912-12"],"target":"f-20260912-12","v":1} -->
+
+---
+
+## 2026-09-13 — filed through the inbox spool
+
+### `Lexer::check_cancellation` can be replaced with `false` and every lexer test still passes
+
+* **ID:** f-20260913-01 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/lexer.rs` — `Lexer::check_cancellation` (`:35-46`) and every `Visitor` method that returns early through it (`:94-157`); tests `test_lex_pgn_cancels_with_checkpoints` (`:288-294`) and `test_lex_pgn_cancels_while_running_mid_parse` (`:297-333`).
+* **Defect:** weekly backend mutation on `0a39e3ab` (run 34747576752, job `backend (lexer)`) left the mutant `replace Lexer::check_cancellation -> bool with false` alive. The two cancel tests still return `Error::Cancellation` through the pre-parse token check, `CancellableReader`, or `lex_pgn_cancellable`'s `Err`/`None` arm that re-reads `cancellation.is_cancelled()` (`:188-196`). Visitor-level skip/`end_game` cancellation is therefore untested: after a cancel that does not provoke a later read error, tokens keep being pushed and `end_game` can return `Ok`.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — cancellation checked only after the work, or only on the IO wrapper, is not cancellation of the parse. A fully-buffered PGN can finish after Stop.
+* **Fix shape:** a test that cancels inside the first `san` hook and then finishes without a subsequent reader error, asserting `Error::Cancellation` and that later visitor methods did not push. That test must go red if `check_cancellation` is constantly `false`.
+* **Related:** `f-20260912-04` (open) is `convert_pgn` dropping its token, not this visitor guard. `f-20260907-01` (handled) was a different PGN mutation-survivor class (quoted-movetext / percent-escape assertions).
+* **Found by:** scheduled Mutation workflow 34747576752 on `master` `0a39e3ab`, 2026-09-13. Not caused by the in-flight 04/06/08 provenance run (no product diff yet). Database-search and the other six backend mutation packages on that run succeeded.
