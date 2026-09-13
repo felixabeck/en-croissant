@@ -8229,3 +8229,15 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 * **Inherited review history (2026-09-13):** load `tasks/handoffs/2026-09-13-workspace-directory-enumeration-review.md` before this finding's plan review. It carries the `f-20260905-05` plan-review record; this finding inherits issue IDs W65 and the registry-churn part of W97 from it, with their witnesses, dispositions and evidence.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"f9a2eed14d2a04453f4c5cc64e30304c972e09b8ec7f6f461e01ff99beb8abcc","input_sha256":"a90d6051d3eef33a158124e3731f218937998745c9cc3d91cc631e4a8fa2abcc","kind":"mutation-receipt","operation":"9622a6b93d37ee757fc60520b9333be9a5d798a9de9587ab850f80c86cbf8da9","options":{"section":null},"request_id_sha256":null,"results":["f-20260913-06"],"target":"f-20260913-06","v":1} -->
+
+---
+
+## 2026-09-14 — filed through the inbox spool
+
+### `db::repository` test hooks are process-global, so a concurrent test's open trips a hook-count assertion and poisons the serial lock for 14 more tests
+* **ID:** f-20260914-01 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/db/repository.rs` `TEST_HOOKS` / `TEST_HOOK_SERIAL` / `configure_test_hooks` (`:1146-1170`), `run_after_open_current_test_hook` (`:1234`); witness `tests::identity_from_probe_tombstone` (`:2387-2408`).
+* **Defect:** `TEST_HOOKS` is a process-wide `OnceLock<Mutex<TestHooks>>`. `configure_test_hooks` serialises only the tests that call it; any other test that opens a repository concurrently runs the installed `after_open_current` callback. In a full `cargo test` on 2026-09-14 (`f-20260905-05` phase-1 working tree, which does not touch `db/`), `identity_from_probe_tombstone` saw `left: 1, right: 0` at `:2407`. Its panic while holding the `TEST_HOOK_SERIAL` guard poisoned the mutex, and the `expect("test hook serial lock must not be poisoned")` at `:1162` then failed 14 unrelated tests (`identity_sandwich_*`, `unlinked_before_*`, `stale_probe_confirms_once_then_retires_an_idle_entry`, `swap_after_get_is_rejected_without_retiring_an_outer_lease`, `identity_from_probe_observes_cancellation`, `db::tests::convert_pgn_cancel_before_bump_does_not_commit`). An unchanged rerun was green. On the base commit, ten `cargo test db::repository` runs were 10/10 green, consistent with the race needing the full suite's concurrency.
+* **Fix direction:** scope hook dispatch to the configuring test, e.g. thread-local hooks like `infra::fs`'s `TEST_ATOMIC_FILE_INJECTOR`, or an owner token checked on dispatch, where worker threads need it. Make the serial lock poison-tolerant (`into_inner`) so one failure cannot cascade.
+* **Why it matters:** `backend-test` is a push gate; a nondeterministic red on 15 tests blocks unrelated pushes and trains reruns.
+* **Found by:** Claude Code orchestrator, `f-20260905-05` build run, phase-1 proof, 2026-09-14.
