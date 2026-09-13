@@ -229,15 +229,16 @@ fn update_info_count(
 
 fn bump_revision_in_transaction<T>(
     db: &mut SqliteConnection,
+    path: &std::path::Path,
     cancellation: &CancellationToken,
     op: impl FnOnce(&mut SqliteConnection) -> Result<T, Error>,
 ) -> Result<T, Error> {
     cancellation_check(cancellation)?;
     let current = repository::read_data_revision(db)?;
     let result = op(db)?;
-    repository::run_test_hook(repository::TestHook::AfterBumpOp);
+    repository::run_test_hook(repository::TestHook::AfterBumpOp, path);
     cancellation_check(cancellation)?;
-    repository::run_test_hook(repository::TestHook::BeforeRevisionBump);
+    repository::run_test_hook(repository::TestHook::BeforeRevisionBump, path);
     let next = i64::try_from(current)
         .ok()
         .and_then(|revision| revision.checked_add(1))
@@ -279,7 +280,7 @@ fn with_validated_mutation(
     let result = repository.with_write_lock_cancellable(target, cancellation, || {
         let mut connection = repository.initialization_connection(target, Some(cancellation))?;
         connection.transaction::<_, Error, _>(|db| {
-            bump_revision_in_transaction(db, cancellation, |db| {
+            bump_revision_in_transaction(db, target.path(), cancellation, |db| {
                 migrations::validate_existing_database(db)?;
                 operation(db)
             })
@@ -809,7 +810,7 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
             repository.initialization_connection(&target, Some(cancellation))?;
         let db = &mut *database_connection;
         db.transaction::<_, Error, _>(|db| {
-            bump_revision_in_transaction(db, cancellation, |db| {
+            bump_revision_in_transaction(db, target.path(), cancellation, |db| {
                 let database_was_created = migrations::prepare_database(db, &title, &description)?;
 
                 for file_handle in files {
@@ -8402,7 +8403,7 @@ mod tests {
         let callback_token = cancellation.clone();
         let after_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = std::sync::Arc::clone(&after_count);
-        let _hooks = repository::configure_test_hooks(move |hooks| {
+        let _hooks = repository::configure_test_hooks(&database, move |hooks| {
             hooks.after_bump_op = Some(Box::new(move || {
                 observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 callback_token.cancel();
@@ -8539,7 +8540,12 @@ mod tests {
         let _failure = repository::fail_next_revision_bump();
         let result = db.transaction::<_, Error, _>(|db| {
             create_player(db, "rolled back")?;
-            bump_revision_in_transaction(db, &CancellationToken::new(), |_| Ok(()))
+            bump_revision_in_transaction(
+                db,
+                std::path::Path::new(":memory:"),
+                &CancellationToken::new(),
+                |_| Ok(()),
+            )
         });
         assert!(
             matches!(result, Err(Error::Conflict(message)) if message == "injected revision bump failure")
@@ -8594,7 +8600,7 @@ mod tests {
         let callback_token = token.clone();
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let callback_count = std::sync::Arc::clone(&count);
-        let _hooks = repository::configure_test_hooks(move |hooks| {
+        let _hooks = repository::configure_test_hooks(&database, move |hooks| {
             hooks.after_bump_op = Some(Box::new(move || {
                 callback_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }));
@@ -8629,7 +8635,7 @@ mod tests {
         let token = CancellationToken::new();
         let after_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = std::sync::Arc::clone(&after_count);
-        let _hooks = repository::configure_test_hooks(move |hooks| {
+        let _hooks = repository::configure_test_hooks(&database, move |hooks| {
             hooks.after_bump_op = Some(Box::new(move || {
                 observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }));
@@ -8694,7 +8700,7 @@ mod tests {
         let cache_key = seed_search_cache_for_database(&app, &database);
         let token = CancellationToken::new();
         let callback_token = token.clone();
-        let _hooks = repository::configure_test_hooks(move |hooks| {
+        let _hooks = repository::configure_test_hooks(&database, move |hooks| {
             hooks.after_bump_op = Some(Box::new(move || {
                 let _ =
                     crate::db::sqlite_cancellation::cancel_on_callback(callback_token.clone(), 1);
@@ -9053,9 +9059,12 @@ mod tests {
         .unwrap();
         let _failure = repository::fail_next_revision_bump();
         let result = db.transaction::<_, Error, _>(|db| {
-            bump_revision_in_transaction(db, &CancellationToken::new(), |db| {
-                migrations::validate_existing_database(db)
-            })
+            bump_revision_in_transaction(
+                db,
+                std::path::Path::new(":memory:"),
+                &CancellationToken::new(),
+                migrations::validate_existing_database,
+            )
         });
         assert!(
             matches!(result, Err(Error::Conflict(message)) if message == "injected revision bump failure")
@@ -9203,7 +9212,7 @@ mod tests {
                 .initialization_connection(&test_target(&database), None)
                 .unwrap();
             db.transaction::<_, Error, _>(|db| {
-                bump_revision_in_transaction(db, &CancellationToken::new(), |_| Ok(()))
+                bump_revision_in_transaction(db, &database, &CancellationToken::new(), |_| Ok(()))
             })
             .unwrap();
         }

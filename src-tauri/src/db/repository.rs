@@ -449,7 +449,7 @@ impl DatabaseRepository {
         let revision = super::sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
             read_data_revision(&mut connection)
         })?;
-        run_test_hook(TestHook::AfterReadRevision);
+        run_test_hook(TestHook::AfterReadRevision, target.path());
         Ok(revision)
     }
 
@@ -701,7 +701,7 @@ impl DatabaseRepository {
             drop(initial_probe);
             let pre_build_probe = self.open_current(target)?;
             drop(pre_build_probe);
-            run_test_hook(TestHook::PreBuild);
+            run_test_hook(TestHook::PreBuild, target.path());
             let pool = Pool::builder()
                 .max_size(MAX_CONNECTIONS_PER_DATABASE)
                 .min_idle(Some(0))
@@ -710,14 +710,14 @@ impl DatabaseRepository {
                     target.path(),
                     SqliteMode::ReadWrite,
                 )?))?;
-            run_test_hook(TestHook::PostBuild);
+            run_test_hook(TestHook::PostBuild, target.path());
             initial_probe = self.open_current(target)?;
 
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
-            run_test_hook(TestHook::PreInsert);
+            run_test_hook(TestHook::PreInsert, target.path());
             if cancellation.is_some_and(CancellationToken::is_cancelled) {
                 drop(state);
                 drop(build_guard);
@@ -825,7 +825,7 @@ impl DatabaseRepository {
         target: &crate::infra::path_authority::DatabaseFileTarget,
     ) -> Result<std::fs::File, Error> {
         let result = target.open_current();
-        run_test_hook(TestHook::AfterOpenCurrent);
+        run_test_hook(TestHook::AfterOpenCurrent, target.path());
         result
     }
 
@@ -875,7 +875,7 @@ impl DatabaseRepository {
         let (key, entry, initial_probe) = self.entry(target, cancellation)?;
         drop(initial_probe);
         let lease = entry.acquire()?;
-        run_test_hook(TestHook::PreGet);
+        run_test_hook(TestHook::PreGet, target.path());
         let pre_get_probe = match self.open_current(target) {
             Ok(file) => file,
             Err(error) => {
@@ -885,7 +885,7 @@ impl DatabaseRepository {
         };
         drop(pre_get_probe);
         let connection = entry.pool.get()?;
-        run_test_hook(TestHook::PostGet);
+        run_test_hook(TestHook::PostGet, target.path());
         let post_get_probe = match self.open_current(target) {
             Ok(file) => file,
             Err(error) => {
@@ -1131,6 +1131,7 @@ pub(crate) enum TestHook {
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct TestHooks {
+    scope: Option<PathBuf>,
     pub(crate) pre_build: Option<Box<dyn FnMut() + Send>>,
     pub(crate) post_build: Option<Box<dyn FnMut() + Send>>,
     pub(crate) pre_insert: Option<Box<dyn FnMut() + Send>>,
@@ -1150,19 +1151,35 @@ static TEST_HOOKS: std::sync::OnceLock<std::sync::Mutex<TestHooks>> = std::sync:
 static TEST_HOOK_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
+fn test_hook_scope_matches(hooks: &TestHooks, path: &Path) -> bool {
+    hooks
+        .scope
+        .as_deref()
+        .is_some_and(|scope| path.starts_with(scope))
+}
+
+#[cfg(test)]
 pub(crate) struct TestHooksGuard {
     previous: TestHooks,
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
 #[cfg(test)]
-pub(crate) fn configure_test_hooks(configure: impl FnOnce(&mut TestHooks)) -> TestHooksGuard {
+pub(crate) fn configure_test_hooks(
+    scope: impl AsRef<Path>,
+    configure: impl FnOnce(&mut TestHooks),
+) -> TestHooksGuard {
     let serial = TEST_HOOK_SERIAL
         .lock()
-        .expect("test hook serial lock must not be poisoned");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let hooks = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
-    let mut hooks = hooks.lock().expect("test hooks lock must not be poisoned");
+    let mut hooks = hooks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let previous = std::mem::take(&mut *hooks);
+    // Compared verbatim against the dispatched `target.path()`: canonicalising only one side
+    // would silently stop every hook firing when the temp root is reached through a symlink.
+    hooks.scope = Some(scope.as_ref().to_path_buf());
     configure(&mut hooks);
     TestHooksGuard {
         previous,
@@ -1174,82 +1191,91 @@ pub(crate) fn configure_test_hooks(configure: impl FnOnce(&mut TestHooks)) -> Te
 impl Drop for TestHooksGuard {
     fn drop(&mut self) {
         if let Some(hooks) = TEST_HOOKS.get() {
-            if let Ok(mut hooks) = hooks.lock() {
-                let _ = std::mem::replace(&mut *hooks, std::mem::take(&mut self.previous));
-            }
+            let mut hooks = hooks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = std::mem::replace(&mut *hooks, std::mem::take(&mut self.previous));
         }
     }
 }
 
 #[cfg(test)]
-pub(crate) fn run_test_hook(hook: TestHook) {
+pub(crate) fn run_test_hook(hook: TestHook, path: &Path) {
     match hook {
         TestHook::PreBuild
         | TestHook::PostBuild
         | TestHook::PreInsert
         | TestHook::PreGet
-        | TestHook::PostGet => run_noarg_test_hook(hook),
-        TestHook::AfterOpenCurrent => run_after_open_current_test_hook(),
-        TestHook::AfterReadRevision => run_noarg_test_hook(hook),
-        TestHook::AfterBumpOp => run_noarg_test_hook(hook),
-        TestHook::BeforeRevisionBump => run_noarg_test_hook(hook),
+        | TestHook::PostGet => run_noarg_test_hook(hook, path),
+        TestHook::AfterOpenCurrent => run_after_open_current_test_hook(path),
+        TestHook::AfterReadRevision => run_noarg_test_hook(hook, path),
+        TestHook::AfterBumpOp => run_noarg_test_hook(hook, path),
+        TestHook::BeforeRevisionBump => run_noarg_test_hook(hook, path),
     }
 }
 
 #[cfg(test)]
-fn run_noarg_test_hook(hook: TestHook) {
-    let hooks = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
-    let mut callback = match hooks.lock() {
-        Ok(mut hooks) => match hook {
-            TestHook::PreBuild => hooks.pre_build.take(),
-            TestHook::PostBuild => hooks.post_build.take(),
-            TestHook::PreInsert => hooks.pre_insert.take(),
-            TestHook::PreGet => hooks.pre_get.take(),
-            TestHook::PostGet => hooks.post_get.take(),
-            TestHook::AfterOpenCurrent => None,
-            TestHook::AfterReadRevision => hooks.after_read_revision.take(),
-            TestHook::AfterBumpOp => hooks.after_bump_op.take(),
-            TestHook::BeforeRevisionBump => hooks.before_revision_bump.take(),
-        },
-        Err(_) => return,
+fn run_noarg_test_hook(hook: TestHook, path: &Path) {
+    let hooks_mutex = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
+    let mut hooks = hooks_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !test_hook_scope_matches(&hooks, path) {
+        return;
+    }
+    let mut callback = match hook {
+        TestHook::PreBuild => hooks.pre_build.take(),
+        TestHook::PostBuild => hooks.post_build.take(),
+        TestHook::PreInsert => hooks.pre_insert.take(),
+        TestHook::PreGet => hooks.pre_get.take(),
+        TestHook::PostGet => hooks.post_get.take(),
+        TestHook::AfterOpenCurrent => None,
+        TestHook::AfterReadRevision => hooks.after_read_revision.take(),
+        TestHook::AfterBumpOp => hooks.after_bump_op.take(),
+        TestHook::BeforeRevisionBump => hooks.before_revision_bump.take(),
     };
+    drop(hooks);
     if let Some(mut callback_fn) = callback.take() {
         callback_fn();
-        if let Ok(mut hooks) = hooks.lock() {
-            match hook {
-                TestHook::PreBuild => hooks.pre_build = Some(callback_fn),
-                TestHook::PostBuild => hooks.post_build = Some(callback_fn),
-                TestHook::PreInsert => hooks.pre_insert = Some(callback_fn),
-                TestHook::PreGet => hooks.pre_get = Some(callback_fn),
-                TestHook::PostGet | TestHook::AfterOpenCurrent => {}
-                TestHook::AfterReadRevision => hooks.after_read_revision = Some(callback_fn),
-                TestHook::AfterBumpOp => hooks.after_bump_op = Some(callback_fn),
-                TestHook::BeforeRevisionBump => hooks.before_revision_bump = Some(callback_fn),
-            }
+        let mut hooks = hooks_mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match hook {
+            TestHook::PreBuild => hooks.pre_build = Some(callback_fn),
+            TestHook::PostBuild => hooks.post_build = Some(callback_fn),
+            TestHook::PreInsert => hooks.pre_insert = Some(callback_fn),
+            TestHook::PreGet => hooks.pre_get = Some(callback_fn),
+            TestHook::PostGet | TestHook::AfterOpenCurrent => {}
+            TestHook::AfterReadRevision => hooks.after_read_revision = Some(callback_fn),
+            TestHook::AfterBumpOp => hooks.after_bump_op = Some(callback_fn),
+            TestHook::BeforeRevisionBump => hooks.before_revision_bump = Some(callback_fn),
         }
     }
 }
 
 #[cfg(test)]
-fn run_after_open_current_test_hook() {
-    let hooks = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
-    let (mut callback, count) = match hooks.lock() {
-        Ok(mut hooks) => {
-            hooks.open_current_count = hooks.open_current_count.saturating_add(1);
-            (hooks.after_open_current.take(), hooks.open_current_count)
-        }
-        Err(_) => return,
-    };
+fn run_after_open_current_test_hook(path: &Path) {
+    let hooks_mutex = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
+    let mut hooks = hooks_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !test_hook_scope_matches(&hooks, path) {
+        return;
+    }
+    hooks.open_current_count = hooks.open_current_count.saturating_add(1);
+    let (mut callback, count) = (hooks.after_open_current.take(), hooks.open_current_count);
+    drop(hooks);
     if let Some(mut callback_fn) = callback.take() {
         callback_fn(count);
-        if let Ok(mut hooks) = hooks.lock() {
-            hooks.after_open_current = Some(callback_fn);
-        }
+        let mut hooks = hooks_mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        hooks.after_open_current = Some(callback_fn);
     }
 }
 
 #[cfg(not(test))]
-pub(crate) fn run_test_hook(_: TestHook) {}
+pub(crate) fn run_test_hook(_: TestHook, _: &Path) {}
 
 impl DatabaseEntry {
     fn acquire(self: &Arc<Self>) -> Result<EntryLease, Error> {
@@ -1461,7 +1487,12 @@ mod tests {
         assert_eq!(read_data_revision(&mut revision_connection).unwrap(), 0);
         revision_connection
             .transaction::<_, Error, _>(|db| {
-                crate::db::bump_revision_in_transaction(db, &CancellationToken::new(), |_| Ok(()))
+                crate::db::bump_revision_in_transaction(
+                    db,
+                    &alias,
+                    &CancellationToken::new(),
+                    |_| Ok(()),
+                )
             })
             .unwrap();
         assert_eq!(read_data_revision(&mut revision_connection).unwrap(), 1);
@@ -1506,7 +1537,7 @@ mod tests {
         let first_build_callback = Arc::clone(&first_build);
         let expected_thread = Arc::new(std::sync::Mutex::new(None));
         let expected_thread_callback = Arc::clone(&expected_thread);
-        let _hooks = configure_test_hooks(|hooks| {
+        let _hooks = configure_test_hooks(&first_path, |hooks| {
             hooks.pre_build = Some(Box::new(move || {
                 let is_expected_thread =
                     expected_thread_callback.lock().ok().is_some_and(|thread| {
@@ -1540,6 +1571,53 @@ mod tests {
     }
 
     #[test]
+    fn test_hooks_are_scoped_to_the_database_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path_a = directory.path().join("database-a.db3");
+        let path_b = directory.path().join("database-b.db3");
+        let target_a = test_target(&path_a);
+        let repository = Arc::new(DatabaseRepository::default());
+        let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&opens);
+        let _hooks = configure_test_hooks(&path_a, move |hooks| {
+            hooks.after_open_current = Some(Box::new(move |_| {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        });
+
+        repository
+            .initialization_connection(&target_a, None)
+            .unwrap();
+        let a_opens_before_b = opens.load(std::sync::atomic::Ordering::SeqCst);
+
+        let worker_repository = Arc::clone(&repository);
+        let worker = std::thread::spawn(move || {
+            worker_repository.initialization_connection(&test_target(&path_b), None)
+        });
+        worker.join().unwrap().unwrap();
+
+        assert_eq!(
+            opens.load(std::sync::atomic::Ordering::SeqCst),
+            a_opens_before_b,
+            "opening an unrelated database must not run or count database A's hook"
+        );
+    }
+
+    #[test]
+    fn panicking_hook_configuration_does_not_poison_following_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database.db3");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _hooks = configure_test_hooks(&path, |_| {
+                panic!("injected hook configuration panic");
+            });
+        }));
+        assert!(result.is_err());
+
+        let _hooks = configure_test_hooks(&path, |_| {});
+    }
+
+    #[test]
     fn cancelled_build_is_not_published() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("database.db3");
@@ -1550,7 +1628,7 @@ mod tests {
         let (release, release_rx) = mpsc::channel();
         let expected_thread = Arc::new(std::sync::Mutex::new(None));
         let expected_thread_callback = Arc::clone(&expected_thread);
-        let _hooks = configure_test_hooks(|hooks| {
+        let _hooks = configure_test_hooks(&path, |hooks| {
             hooks.pre_insert = Some(Box::new(move || {
                 let is_expected_thread =
                     expected_thread_callback.lock().ok().is_some_and(|thread| {
@@ -1593,7 +1671,7 @@ mod tests {
         repository.initialization_connection(&target, None).unwrap();
         let expected_thread = Arc::new(std::sync::Mutex::new(None));
         let expected_thread_callback = Arc::clone(&expected_thread);
-        let _hooks = configure_test_hooks(|hooks| {
+        let _hooks = configure_test_hooks(&path, |hooks| {
             hooks.pre_get = Some(Box::new({
                 let path = path.clone();
                 move || {
@@ -1639,7 +1717,7 @@ mod tests {
         let old_entry = repository.entry(&target, None).unwrap().1;
         let expected_thread = Arc::new(std::sync::Mutex::new(None));
         let expected_thread_callback = Arc::clone(&expected_thread);
-        let _hooks = configure_test_hooks(|hooks| {
+        let _hooks = configure_test_hooks(&path, |hooks| {
             hooks.post_get = Some(Box::new({
                 let path = path.clone();
                 let replacement = replacement.clone();
@@ -1703,7 +1781,7 @@ mod tests {
         let probe_count_callback = Arc::clone(&probe_count);
         let expected_thread = Arc::new(std::sync::Mutex::new(None));
         let expected_thread_callback = Arc::clone(&expected_thread);
-        let _hooks = configure_test_hooks(|hooks| {
+        let _hooks = configure_test_hooks(&path, |hooks| {
             hooks.after_open_current = Some(Box::new(move |_| {
                 let is_expected_thread =
                     expected_thread_callback.lock().ok().is_some_and(|thread| {
@@ -1740,7 +1818,7 @@ mod tests {
         let repository = DatabaseRepository::default();
         let expected_thread = Arc::new(std::sync::Mutex::new(None));
         let expected_thread_callback = Arc::clone(&expected_thread);
-        let _hooks = configure_test_hooks(|hooks| {
+        let _hooks = configure_test_hooks(&path, |hooks| {
             hooks.pre_build = Some(Box::new({
                 let path = path.clone();
                 move || {
@@ -2074,7 +2152,7 @@ mod tests {
         let replacement = directory.path().join("replacement.db3");
         std::fs::write(&replacement, std::fs::read(&path).unwrap()).unwrap();
         let target = test_target(&path);
-        let _hooks = configure_test_hooks({
+        let _hooks = configure_test_hooks(&path, {
             let path = path.clone();
             let replacement = replacement.clone();
             move |hooks| {
@@ -2095,7 +2173,9 @@ mod tests {
         let mut connection = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
         connection
             .transaction::<_, Error, _>(|db| {
-                crate::db::bump_revision_in_transaction(db, &CancellationToken::new(), |_| Ok(()))
+                crate::db::bump_revision_in_transaction(db, path, &CancellationToken::new(), |_| {
+                    Ok(())
+                })
             })
             .unwrap();
     }
@@ -2107,7 +2187,7 @@ mod tests {
         let target = test_target(&path);
         let changed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let changed_callback = std::sync::Arc::clone(&changed);
-        let _hooks = configure_test_hooks(move |hooks| {
+        let _hooks = configure_test_hooks(path.clone(), move |hooks| {
             hooks.after_read_revision = Some(Box::new(move || {
                 if !changed_callback.swap(true, std::sync::atomic::Ordering::SeqCst) {
                     bump_file_revision(&path);
@@ -2127,7 +2207,7 @@ mod tests {
         let target = test_target(&path);
         let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let reads_callback = std::sync::Arc::clone(&reads);
-        let _hooks = configure_test_hooks(move |hooks| {
+        let _hooks = configure_test_hooks(path.clone(), move |hooks| {
             hooks.after_read_revision = Some(Box::new(move || {
                 if reads_callback.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
                     bump_file_revision(&path);
@@ -2147,7 +2227,7 @@ mod tests {
         let replacement = directory.path().join("replacement.db3");
         std::fs::write(&replacement, std::fs::read(&path).unwrap()).unwrap();
         let target = test_target(&path);
-        let _hooks = configure_test_hooks({
+        let _hooks = configure_test_hooks(&path, {
             let path = path.clone();
             move |hooks| {
                 hooks.after_open_current = Some(Box::new(move |count| {
@@ -2170,7 +2250,7 @@ mod tests {
         let target = test_target(&path);
         let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let reads_callback = std::sync::Arc::clone(&reads);
-        let _hooks = configure_test_hooks(move |hooks| {
+        let _hooks = configure_test_hooks(path.clone(), move |hooks| {
             hooks.after_read_revision = Some(Box::new(move || {
                 if reads_callback.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
                     bump_file_revision(&path);
@@ -2193,7 +2273,7 @@ mod tests {
             cancellation.cancel();
             let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let observed = std::sync::Arc::clone(&opens);
-            let _hooks = configure_test_hooks(|hooks| {
+            let _hooks = configure_test_hooks(&path, |hooks| {
                 hooks.after_open_current = Some(Box::new(move |_| {
                     observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }));
@@ -2214,7 +2294,7 @@ mod tests {
             let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let observed_opens = std::sync::Arc::clone(&opens);
             let observed_reads = std::sync::Arc::clone(&reads);
-            let _hooks = configure_test_hooks(move |hooks| {
+            let _hooks = configure_test_hooks(&path, move |hooks| {
                 hooks.after_open_current = Some(Box::new(move |_| {
                     observed_opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }));
@@ -2238,7 +2318,7 @@ mod tests {
             let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let observed_reads = std::sync::Arc::clone(&reads);
             let callback_token = cancellation.clone();
-            let _hooks = configure_test_hooks(move |hooks| {
+            let _hooks = configure_test_hooks(&path, move |hooks| {
                 hooks.after_read_revision = Some(Box::new(move || {
                     if observed_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == 4 {
                         callback_token.cancel();
@@ -2261,7 +2341,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let revisions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = std::sync::Arc::clone(&revisions);
-        let _hooks = configure_test_hooks(move |hooks| {
+        let _hooks = configure_test_hooks(&path, move |hooks| {
             hooks.after_read_revision = Some(Box::new(move || {
                 observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }));
@@ -2282,7 +2362,7 @@ mod tests {
         let repository = std::sync::Arc::new(repository);
         let callback_repository = std::sync::Arc::clone(&repository);
         let callback_path = path.clone();
-        let _hooks = configure_test_hooks(move |hooks| {
+        let _hooks = configure_test_hooks(&path, move |hooks| {
             hooks.after_open_current = Some(Box::new(move |count| {
                 if count == 1 {
                     callback_repository
@@ -2310,7 +2390,7 @@ mod tests {
         let callback_path = path.clone();
         let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed_reads = std::sync::Arc::clone(&reads);
-        let _hooks = configure_test_hooks(move |hooks| {
+        let _hooks = configure_test_hooks(&path, move |hooks| {
             hooks.after_read_revision = Some(Box::new(move || {
                 if observed_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == 4 {
                     let mut state = callback_repository.state.lock().unwrap();
@@ -2389,7 +2469,7 @@ mod tests {
         let target = test_target(&path);
         let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = std::sync::Arc::clone(&opens);
-        let _hooks = configure_test_hooks(|hooks| {
+        let _hooks = configure_test_hooks(&path, |hooks| {
             hooks.after_open_current = Some(Box::new(move |_| {
                 observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }));
@@ -2413,7 +2493,9 @@ mod tests {
         let target = test_target(&_path);
         let mut connection = repository.initialization_connection(&target, None).unwrap();
         let result = connection.transaction::<_, Error, _>(|db| {
-            crate::db::bump_revision_in_transaction(db, &CancellationToken::new(), |_| Ok(()))
+            crate::db::bump_revision_in_transaction(db, &_path, &CancellationToken::new(), |_| {
+                Ok(())
+            })
         });
         assert!(matches!(
             result,
