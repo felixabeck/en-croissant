@@ -2866,3 +2866,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** Parent plan review could not settle the read-caller half in five rounds. Permit-fail on Mutate-only does not prove a first mint of Read, because a first mint of Mutate would then fail at the loader's Read. The recorder at `resolve_database` entry is the existing thread-local checkpoint pattern. Reversal: if a later session can complete those three on Read-only without a Mutate grant, they may move into the Read-complete `Ok` set.
 * **Decided by:** Grok, A2 of f-20260912-12 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"fd70b5a2c7900c4b9bbea3fffdb5787012d82b494a86f1b781d1d1b1b6be308f","input_sha256":"a11bc71c5b973dd9c3faf5025575a976cb382ccfad2e4d1222d75f3ad0d34d64","kind":"mutation-receipt","operation":"5af71eaf1903a741e310839adec5fe8cbccbe5cd3f4da5300021a81bbcb6e789","options":{"section":null},"request_id_sha256":null,"results":["d-20260913-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20260913-02 — What is the repository map key after Mandate B?
+
+* **Question:** After A1/A2 landed, what does DatabaseRepository key entries on?
+* **Governs:** f-20260905-03
+* **Chosen:** EntryKey { identity, parent_identity, path } from DatabaseFileTarget (identity(), fstat of parent(), path()).
+* **Rejected:** identity alone (ten-round shared-entry races); pathname alone (the filed defect).
+* **Reason:** two hard links must stay two pools; a parent swap with a hard link must miss the old entry; spelling aliases share a canonical path.
+* **Decided by:** Grok, f-20260905-03 Mandate B · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4ef4b1707558229d0e72ff8d07eed32ee97b3a2cb5a9b87faa661b06618b51ed","input_sha256":"7ade9f4bb0be51e4c7b970077cb7c0e9bbd06b0a36f7293196580a72accc0f5d","kind":"mutation-receipt","operation":"8abc7f6b08b5f378c231cc2db10a00640c0537f98e58a8163981e67b9bffe8d7","options":{"section":null},"request_id_sha256":null,"results":["d-20260913-02"],"target":"decisions-ledger","v":1} -->
