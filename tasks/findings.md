@@ -8129,3 +8129,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Fix shape:** a test that cancels inside the first `san` hook and then finishes without a subsequent reader error, asserting `Error::Cancellation` and that later visitor methods did not push. That test must go red if `check_cancellation` is constantly `false`.
 * **Related:** `f-20260912-04` (open) is `convert_pgn` dropping its token, not this visitor guard. `f-20260907-01` (handled) was a different PGN mutation-survivor class (quoted-movetext / percent-escape assertions).
 * **Found by:** scheduled Mutation workflow 34747576752 on `master` `0a39e3ab`, 2026-09-13. Not caused by the in-flight 04/06/08 provenance run (no product diff yet). Database-search and the other six backend mutation packages on that run succeeded.
+
+---
+
+## 2026-09-13 — filed through the inbox spool
+
+### Workspace create paths read the new entry's modification time back by pathname
+* **ID:** f-20260913-02 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/file_workspace.rs` — `timestamp` (`:154-159`, `fs::metadata(path)`), called by `create_workspace_file_blocking` (`:683`) and `create_workspace_directory_inner` (`:781`) after the entry was installed through a retained parent descriptor and registered.
+* **Defect:** both create paths install the new entry descriptor-relative (`atomic_replace_at_identified`, `create_dir_at`) and register it with the installed identity, then compute `last_modified` by reopening `parent_target.path().join(name)` by pathname. A rename in that window returns the modification time of a different object, and the reach is one of `file_workspace.rs`'s counted R3 sites in `INITIAL_FS_SURFACE_COUNTS`.
+* **Open question:** where does the create path take the mtime without a pathname reach and without turning a post-commit race into an error after the entry and its sidecar are already durable and registered — `fstat` of a descriptor retained from the install (the atomic-replace helpers do not return one today), an identity-checked `statat` through the retained parent (which can fail after the durable commit), or reordering the stat before registration?
+* **Why it matters:** it is the last production filesystem reach in `file_workspace.rs` once `f-20260905-05` lands; closing it removes the file from the allowlist.
+* **Related:** `f-20260905-05` (its plan review split this out as outside that mandate — `timestamp` is metadata, not directory enumeration).
+* **Found by:** Claude Code, plan review of `tasks/plans/2026-09-13-workspace-directory-enumeration.md` (`review-minimalism`, `review-root-cause`, `review-tauri-security`), 2026-09-13.
