@@ -8171,6 +8171,9 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Related:** `f-20260905-05` (plan review r2 of its descriptor-enumeration run, `review-error-handling`, surfaced this; that plan maps the same errnos for child directories it opens itself), `f-20260912-05`.
 * **Found by:** Codex `review-error-handling` lens, plan review r2 of `tasks/plans/2026-09-13-workspace-directory-enumeration.md`, 2026-09-13.
 
+* **Second site of the same class, 2026-09-13 (plan review r4 of `tasks/plans/2026-09-13-workspace-directory-enumeration.md`, `review-correctness`):** `register_database_child_verified` (`src-tauri/src/infra/path_authority/mod.rs:3577-3581`) re-validates the child by pathname after `resolve` returned a descriptor. A `.db3` replaced by a **directory** inside that resolve→`validate_target` window is refused with `InvalidInput("file authority must be a regular file")` rather than the `Conflict` a regular-file replacement gets through `verified_identity::database_child_identity`. The refusal is correct and nothing is persisted; only the category distinguishing "the object changed" is lost, as for the root window above.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"95ff7dadc956ad75bca73ae795cc8551025e13191c81700ff711a3c13b24f078","input_sha256":"62d354dcdfe21f24f9da511080908af5741d28319913e062bb0c0460537df1de","kind":"mutation-receipt","operation":"435a337e03767d928372863c8613ea5fed633f57a9b65f2a9759941e6656cda0","options":{"section":null},"request_id_sha256":null,"results":["f-20260913-04"],"target":"f-20260913-04","v":1} -->
+
 ---
 
 ## 2026-09-13 — filed through the inbox spool
