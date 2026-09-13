@@ -6596,7 +6596,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### `DatabaseIdentity.path` is archived into every `.ecsi` sidecar, and the entry lookup holds its lock across pool construction
 
-* **ID:** f-20260905-04 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-04 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/db/repository.rs:265`, `src-tauri/src/db/mod.rs:138`,
   `src-tauri/src/db/search_index.rs:180-195` (the archived provenance) and `:20` (`VERSION`);
   plus `repository.rs` `entry()` (`:411-446`).
