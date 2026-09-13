@@ -8071,6 +8071,9 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Related:** `f-20260905-03` (its plan review surfaced this; the re-key keeps `database_identity` on the pool-building path).
 * **Found by:** Codex `review-tauri-security` lens during plan review of `tasks/plans/2026-09-12-repository-identity-key.md`, 2026-09-12.
 
+* **Closed, 2026-09-13:** PuzzleRead `cache_key` uses `identity_from_probe(..., false)` and does not build a RW pool or create `-wal`. Commit `71772d86`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"5dba181f14819a1079356e2bc165bff81d6cf0b91c9707a9bacd34e61510789a","input_sha256":"6d602826395f1ed7b08d20377e84e2c138620ce80d1de2ebcbc6b552ecd9bd33","kind":"mutation-receipt","operation":"f743e437969ee5ed902726dc1a12dab0c4d682a583b47b4a84da212f24df9bf7","options":{"section":null},"request_id_sha256":null,"results":["f-20260912-08"],"target":"f-20260912-08","v":1} -->
+
 ### `unlink_database_files` removes the preferred sidecar before it checks the primary leaf, so a database replaced after the caller's probe loses the replacement's index
 
 * **ID:** f-20260912-09 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
