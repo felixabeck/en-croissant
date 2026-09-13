@@ -9,28 +9,30 @@ use std::{
 
 #[cfg(test)]
 std::thread_local! {
-    static FAIL_NEXT_DATA_CHANGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static FAIL_NEXT_REVISION_BUMP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
-pub(crate) struct DataChangedFailureGuard;
+pub(crate) struct RevisionBumpFailureGuard;
 
 #[cfg(test)]
-impl Drop for DataChangedFailureGuard {
+impl Drop for RevisionBumpFailureGuard {
     fn drop(&mut self) {
-        FAIL_NEXT_DATA_CHANGED.with(|fail| fail.set(false));
+        FAIL_NEXT_REVISION_BUMP.with(|fail| fail.set(false));
     }
 }
 
 #[cfg(test)]
-pub(crate) fn fail_next_data_changed() -> DataChangedFailureGuard {
-    FAIL_NEXT_DATA_CHANGED.with(|fail| fail.set(true));
-    DataChangedFailureGuard
+pub(crate) fn fail_next_revision_bump() -> RevisionBumpFailureGuard {
+    FAIL_NEXT_REVISION_BUMP.with(|fail| fail.set(true));
+    RevisionBumpFailureGuard
 }
 
+use diesel::sql_types::{Nullable, Text};
 use diesel::{
+    prelude::*,
     r2d2::{ConnectionManager, Pool, PooledConnection},
-    Connection, SqliteConnection,
+    sql_query, Connection, OptionalExtension, SqliteConnection,
 };
 use parking_lot::Mutex as ParkingMutex;
 use tokio_util::sync::CancellationToken;
@@ -116,26 +118,11 @@ impl DerefMut for DatabaseConnection {
     }
 }
 
-/// Keeps the repository entry alive while a caller owns a synchronous write
-/// critical section. This prevents LRU eviction from splitting the lock from
-/// the pool that is subsequently acquired inside that section.
-pub struct DatabaseWriteLease {
-    _lease: EntryLease,
-    lock: Arc<ParkingMutex<()>>,
-}
-
-impl DatabaseWriteLease {
-    pub fn lock(&self) -> Result<parking_lot::MutexGuard<'_, ()>, Error> {
-        Ok(self.lock.lock())
-    }
-}
-
 /// Canonical object identity used by caches that consume non-game SQLite
 /// databases as well. The filesystem component catches replacement outside
-/// this process; `data_revision` is the in-process invalidation sequence.
+/// this process; `data_revision` is persisted in the database's Info table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DatabaseIdentity {
-    pub path: PathBuf,
     pub data_revision: u64,
     pub object: (u64, u64),
     pub length: u64,
@@ -173,7 +160,6 @@ impl Drop for EntryLease {
 #[derive(Default)]
 struct EntryState {
     schema_identity: Option<DatabaseSchemaIdentity>,
-    data_revision: u64,
     last_used: u64,
 }
 
@@ -344,20 +330,15 @@ impl DatabaseRepository {
         target: &crate::infra::path_authority::DatabaseFileTarget,
         cancellation: Option<&CancellationToken>,
     ) -> Result<DatabaseIdentity, Error> {
-        let (_key, entry, file) = self.entry(target, cancellation)?;
-        let identity = DatabaseSchemaIdentity::from_file(&file)?;
-        let data_revision = entry
-            .state
-            .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
-            .data_revision;
-        Ok(DatabaseIdentity {
-            path: target.path().to_owned(),
-            data_revision,
-            object: identity.object,
-            length: identity.length,
-            modified: identity.modified,
-        })
+        let owned_cancellation;
+        let cancellation = match cancellation {
+            Some(cancellation) => cancellation,
+            None => {
+                owned_cancellation = CancellationToken::new();
+                &owned_cancellation
+            }
+        };
+        self.identity_from_probe(target, cancellation, true)
     }
 
     pub fn database_identity_expected(
@@ -375,6 +356,119 @@ impl DatabaseRepository {
         Ok(identity)
     }
 
+    #[cfg(unix)]
+    pub(crate) fn identity_from_probe(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        cancellation: &CancellationToken,
+        hydrate: bool,
+    ) -> Result<DatabaseIdentity, Error> {
+        if !hydrate {
+            let schema = self.probe_schema(target, cancellation)?;
+            self.tombstone_conflict(target)?;
+            super::cancellation_check(cancellation)?;
+            return Ok(DatabaseIdentity {
+                data_revision: 0,
+                object: schema.object,
+                length: schema.length,
+                modified: schema.modified,
+            });
+        }
+
+        let (s1, r1) = self.probe_schema_and_revision(target, cancellation)?;
+        let (s2, r2) = self.probe_schema_and_revision(target, cancellation)?;
+        let (s3, r3) = self.probe_schema_and_revision(target, cancellation)?;
+        let (s4, r4) = self.probe_schema_and_revision(target, cancellation)?;
+        self.tombstone_conflict(target)?;
+        if s1 != s2 || s2 != s3 || s3 != s4 || r1 != r2 || r2 != r3 || r3 != r4 {
+            return Err(Error::Conflict(
+                "database changed while reading its identity".into(),
+            ));
+        }
+        super::cancellation_check(cancellation)?;
+        Ok(DatabaseIdentity {
+            data_revision: r4,
+            object: s4.object,
+            length: s4.length,
+            modified: s4.modified,
+        })
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn identity_from_probe(
+        &self,
+        _target: &crate::infra::path_authority::DatabaseFileTarget,
+        _cancellation: &CancellationToken,
+        _hydrate: bool,
+    ) -> Result<DatabaseIdentity, Error> {
+        Err(Error::Conflict(
+            "database identity probing is unsupported on this platform".into(),
+        ))
+    }
+
+    #[cfg(unix)]
+    fn probe_schema_and_revision(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        cancellation: &CancellationToken,
+    ) -> Result<(DatabaseSchemaIdentity, u64), Error> {
+        let schema = self.probe_schema(target, cancellation)?;
+        let revision = self.read_revision(target, cancellation)?;
+        Ok((schema, revision))
+    }
+
+    #[cfg(unix)]
+    fn probe_schema(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        cancellation: &CancellationToken,
+    ) -> Result<DatabaseSchemaIdentity, Error> {
+        super::cancellation_check(cancellation)?;
+        self.tombstone_conflict(target)?;
+        let file = self.open_current(target)?;
+        let identity = DatabaseSchemaIdentity::from_file(&file)?;
+        if identity.object != target.identity() {
+            return Err(Error::Conflict(
+                "database changed after capability resolution".into(),
+            ));
+        }
+        Ok(identity)
+    }
+
+    #[cfg(unix)]
+    fn read_revision(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+        cancellation: &CancellationToken,
+    ) -> Result<u64, Error> {
+        super::cancellation_check(cancellation)?;
+        super::sqlite_cancellation::install()?;
+        let mut connection =
+            SqliteConnection::establish(&sqlite_uri(target.path(), SqliteMode::ReadOnly)?)
+                .map_err(crate::error::map_sqlite_establish)?;
+        let revision = super::sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
+            read_data_revision(&mut connection)
+        })?;
+        run_test_hook(TestHook::AfterReadRevision);
+        Ok(revision)
+    }
+
+    fn tombstone_conflict(
+        &self,
+        target: &crate::infra::path_authority::DatabaseFileTarget,
+    ) -> Result<(), Error> {
+        if self
+            .state
+            .lock()
+            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
+            .tombstones
+            .contains(target.path())
+        {
+            return Err(Error::Conflict("database is being deleted".into()));
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn mark_schema_validated(
         &self,
@@ -384,37 +478,7 @@ impl DatabaseRepository {
         self.mark_schema_validated_entry(&entry, DatabaseSchemaIdentity::from_file(&file)?)
     }
 
-    pub fn data_changed(
-        &self,
-        target: &crate::infra::path_authority::DatabaseFileTarget,
-    ) -> Result<u64, Error> {
-        #[cfg(test)]
-        if FAIL_NEXT_DATA_CHANGED.with(|fail| fail.replace(false)) {
-            return Err(Error::Conflict("injected data revision failure".into()));
-        }
-        let (_, entry, _) = self.entry(target, None)?;
-        let mut state = entry
-            .state
-            .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
-        state.data_revision = state.data_revision.saturating_add(1);
-        Ok(state.data_revision)
-    }
-
     #[cfg(test)]
-    pub fn data_revision(
-        &self,
-        target: &crate::infra::path_authority::DatabaseFileTarget,
-    ) -> Result<u64, Error> {
-        let (_, entry, _) = self.entry(target, None)?;
-        let revision = entry
-            .state
-            .lock()
-            .map_err(|_| Error::Conflict("database repository state poisoned".into()))?
-            .data_revision;
-        Ok(revision)
-    }
-
     pub fn with_write_lock<T>(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -437,17 +501,6 @@ impl DatabaseRepository {
         let _guard =
             crate::infra::cancellable_lock::lock_cancellable(&entry.write_lock, cancellation)?;
         operation()
-    }
-
-    pub fn write_lease(
-        &self,
-        target: &crate::infra::path_authority::DatabaseFileTarget,
-    ) -> Result<DatabaseWriteLease, Error> {
-        let (_, entry, _) = self.entry(target, None)?;
-        Ok(DatabaseWriteLease {
-            lock: entry.write_lock.clone(),
-            _lease: entry.acquire()?,
-        })
     }
 
     pub fn with_index_lock<T>(
@@ -655,6 +708,7 @@ impl DatabaseRepository {
                 .connection_customizer(Box::new(ConnectionOptions))
                 .build(ConnectionManager::<SqliteConnection>::new(sqlite_uri(
                     target.path(),
+                    SqliteMode::ReadWrite,
                 )?))?;
             run_test_hook(TestHook::PostBuild);
             initial_probe = self.open_current(target)?;
@@ -920,7 +974,59 @@ fn entry_key(target: &crate::infra::path_authority::DatabaseFileTarget) -> Resul
     })
 }
 
-fn sqlite_uri(path: &Path) -> Result<String, Error> {
+#[derive(Clone, Copy)]
+enum SqliteMode {
+    ReadWrite,
+    ReadOnly,
+}
+
+#[derive(QueryableByName)]
+struct RevisionRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    value: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    count: i64,
+}
+
+pub(crate) fn read_data_revision(conn: &mut SqliteConnection) -> Result<u64, Error> {
+    let info_exists = sql_query(
+        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'Info'",
+    )
+    .get_result::<CountRow>(conn)?
+    .count
+        != 0;
+    if !info_exists {
+        return Ok(0);
+    }
+
+    let Some(row) = sql_query("SELECT Value AS value FROM Info WHERE Name = 'DataRevision'")
+        .get_result::<RevisionRow>(conn)
+        .optional()?
+    else {
+        return Ok(0);
+    };
+    let Some(value) = row.value else {
+        return Err(Error::InvalidInput(
+            "DataRevision is not a non-negative i64".into(),
+        ));
+    };
+    let value = value
+        .parse::<i64>()
+        .map_err(|_| Error::InvalidInput("DataRevision is not a non-negative i64".into()))?;
+    if value < 0 {
+        return Err(Error::InvalidInput(
+            "DataRevision is not a non-negative i64".into(),
+        ));
+    }
+    u64::try_from(value)
+        .map_err(|_| Error::InvalidInput("DataRevision is not a non-negative i64".into()))
+}
+
+fn sqlite_uri(path: &Path, mode: SqliteMode) -> Result<String, Error> {
     let path = path
         .to_str()
         .ok_or_else(|| Error::InvalidInput("Path is not valid UTF-8".into()))?;
@@ -938,7 +1044,11 @@ fn sqlite_uri(path: &Path) -> Result<String, Error> {
             encoded.push_str(&format!("{byte:02X}"));
         }
     }
-    Ok(format!("file://{encoded}?mode=rw"))
+    let mode = match mode {
+        SqliteMode::ReadWrite => "rw",
+        SqliteMode::ReadOnly => "ro",
+    };
+    Ok(format!("file://{encoded}?mode={mode}"))
 }
 
 struct BuildGuard<'a> {
@@ -1006,25 +1116,31 @@ impl Drop for TombstoneGuard<'_> {
 }
 
 #[derive(Clone, Copy)]
-enum TestHook {
+pub(crate) enum TestHook {
     PreBuild,
     PostBuild,
     PreInsert,
     PreGet,
     PostGet,
     AfterOpenCurrent,
+    AfterReadRevision,
+    AfterBumpOp,
+    BeforeRevisionBump,
 }
 
 #[cfg(test)]
 #[derive(Default)]
-struct TestHooks {
-    pre_build: Option<Box<dyn FnMut() + Send>>,
-    post_build: Option<Box<dyn FnMut() + Send>>,
-    pre_insert: Option<Box<dyn FnMut() + Send>>,
-    pre_get: Option<Box<dyn FnMut() + Send>>,
-    post_get: Option<Box<dyn FnMut() + Send>>,
-    after_open_current: Option<Box<dyn FnMut(usize) + Send>>,
-    open_current_count: usize,
+pub(crate) struct TestHooks {
+    pub(crate) pre_build: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) post_build: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) pre_insert: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) pre_get: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) post_get: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) after_open_current: Option<Box<dyn FnMut(usize) + Send>>,
+    pub(crate) after_read_revision: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) after_bump_op: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) before_revision_bump: Option<Box<dyn FnMut() + Send>>,
+    pub(crate) open_current_count: usize,
 }
 
 #[cfg(test)]
@@ -1034,13 +1150,13 @@ static TEST_HOOKS: std::sync::OnceLock<std::sync::Mutex<TestHooks>> = std::sync:
 static TEST_HOOK_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
-struct TestHooksGuard {
+pub(crate) struct TestHooksGuard {
     previous: TestHooks,
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
 #[cfg(test)]
-fn configure_test_hooks(configure: impl FnOnce(&mut TestHooks)) -> TestHooksGuard {
+pub(crate) fn configure_test_hooks(configure: impl FnOnce(&mut TestHooks)) -> TestHooksGuard {
     let serial = TEST_HOOK_SERIAL
         .lock()
         .expect("test hook serial lock must not be poisoned");
@@ -1066,7 +1182,7 @@ impl Drop for TestHooksGuard {
 }
 
 #[cfg(test)]
-fn run_test_hook(hook: TestHook) {
+pub(crate) fn run_test_hook(hook: TestHook) {
     match hook {
         TestHook::PreBuild
         | TestHook::PostBuild
@@ -1074,6 +1190,9 @@ fn run_test_hook(hook: TestHook) {
         | TestHook::PreGet
         | TestHook::PostGet => run_noarg_test_hook(hook),
         TestHook::AfterOpenCurrent => run_after_open_current_test_hook(),
+        TestHook::AfterReadRevision => run_noarg_test_hook(hook),
+        TestHook::AfterBumpOp => run_noarg_test_hook(hook),
+        TestHook::BeforeRevisionBump => run_noarg_test_hook(hook),
     }
 }
 
@@ -1088,6 +1207,9 @@ fn run_noarg_test_hook(hook: TestHook) {
             TestHook::PreGet => hooks.pre_get.take(),
             TestHook::PostGet => hooks.post_get.take(),
             TestHook::AfterOpenCurrent => None,
+            TestHook::AfterReadRevision => hooks.after_read_revision.take(),
+            TestHook::AfterBumpOp => hooks.after_bump_op.take(),
+            TestHook::BeforeRevisionBump => hooks.before_revision_bump.take(),
         },
         Err(_) => return,
     };
@@ -1100,6 +1222,9 @@ fn run_noarg_test_hook(hook: TestHook) {
                 TestHook::PreInsert => hooks.pre_insert = Some(callback_fn),
                 TestHook::PreGet => hooks.pre_get = Some(callback_fn),
                 TestHook::PostGet | TestHook::AfterOpenCurrent => {}
+                TestHook::AfterReadRevision => hooks.after_read_revision = Some(callback_fn),
+                TestHook::AfterBumpOp => hooks.after_bump_op = Some(callback_fn),
+                TestHook::BeforeRevisionBump => hooks.before_revision_bump = Some(callback_fn),
             }
         }
     }
@@ -1124,7 +1249,7 @@ fn run_after_open_current_test_hook() {
 }
 
 #[cfg(not(test))]
-fn run_test_hook(_: TestHook) {}
+pub(crate) fn run_test_hook(_: TestHook) {}
 
 impl DatabaseEntry {
     fn acquire(self: &Arc<Self>) -> Result<EntryLease, Error> {
@@ -1239,7 +1364,7 @@ mod tests {
     fn sqlite_uri_refuses_absent_file_without_creating_it() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("absent.db3");
-        let uri = sqlite_uri(&path).unwrap();
+        let uri = sqlite_uri(&path, SqliteMode::ReadWrite).unwrap();
 
         assert!(SqliteConnection::establish(&uri).is_err());
         assert!(!path.exists());
@@ -1250,7 +1375,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("present.db3");
         std::fs::File::create(&path).unwrap();
-        let uri = sqlite_uri(&path).unwrap();
+        let uri = sqlite_uri(&path, SqliteMode::ReadWrite).unwrap();
         let mut connection = SqliteConnection::establish(&uri).unwrap();
 
         diesel::connection::SimpleConnection::batch_execute(
@@ -1266,7 +1391,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("percent%question?#.db3");
         std::fs::File::create(&path).unwrap();
-        let uri = sqlite_uri(&path).unwrap();
+        let uri = sqlite_uri(&path, SqliteMode::ReadWrite).unwrap();
 
         assert!(uri.starts_with("file:///"));
         assert!(uri.contains("percent%25question%3F%23.db3"));
@@ -1276,7 +1401,7 @@ mod tests {
     #[test]
     fn sqlite_uri_refuses_non_absolute_paths() {
         assert!(matches!(
-            sqlite_uri(Path::new("database.db3")),
+            sqlite_uri(Path::new("database.db3"), SqliteMode::ReadWrite),
             Err(Error::InvalidInput(message)) if message == "SQLite database path must be absolute"
         ));
     }
@@ -1288,7 +1413,7 @@ mod tests {
 
         let path = PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/caf\xe9.db3".to_vec()));
         assert!(matches!(
-            sqlite_uri(&path),
+            sqlite_uri(&path, SqliteMode::ReadWrite),
             Err(Error::InvalidInput(message)) if message == "Path is not valid UTF-8"
         ));
     }
@@ -1302,7 +1427,7 @@ mod tests {
             .min_idle(Some(0))
             .connection_timeout(Duration::from_millis(100))
             .build(ConnectionManager::<SqliteConnection>::new(
-                sqlite_uri(&path).unwrap(),
+                sqlite_uri(&path, SqliteMode::ReadWrite).unwrap(),
             ))
             .unwrap();
         std::fs::remove_file(&path).unwrap();
@@ -1330,9 +1455,16 @@ mod tests {
         repository.connection(&test_target(&alias), None).unwrap();
 
         assert_eq!(repository.state.lock().unwrap().entries.len(), 1);
-        assert_eq!(repository.data_revision(&test_target(&path)).unwrap(), 0);
-        assert_eq!(repository.data_changed(&test_target(&alias)).unwrap(), 1);
-        assert_eq!(repository.data_revision(&test_target(&path)).unwrap(), 1);
+        let mut revision_connection = repository
+            .initialization_connection(&test_target(&alias), None)
+            .unwrap();
+        assert_eq!(read_data_revision(&mut revision_connection).unwrap(), 0);
+        revision_connection
+            .transaction::<_, Error, _>(|db| {
+                crate::db::bump_revision_in_transaction(db, &CancellationToken::new(), |_| Ok(()))
+            })
+            .unwrap();
+        assert_eq!(read_data_revision(&mut revision_connection).unwrap(), 1);
     }
 
     #[cfg(unix)]
@@ -1915,5 +2047,394 @@ mod tests {
             worker.join().unwrap();
             drop(held);
         }
+    }
+
+    fn revision_fixture(initial: i64) -> (tempfile::TempDir, PathBuf, DatabaseRepository) {
+        use diesel::connection::SimpleConnection;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("revision.db3");
+        let mut connection = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
+        connection
+            .batch_execute("CREATE TABLE Info (Name TEXT PRIMARY KEY, Value TEXT);")
+            .unwrap();
+        connection
+            .batch_execute(&format!(
+                "INSERT INTO Info (Name, Value) VALUES ('DataRevision', '{initial}');"
+            ))
+            .unwrap();
+        drop(connection);
+        (directory, path, DatabaseRepository::default())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_sandwich_rejects_object_swap() {
+        let (directory, path, repository) = revision_fixture(0);
+        let replacement = directory.path().join("replacement.db3");
+        std::fs::write(&replacement, std::fs::read(&path).unwrap()).unwrap();
+        let target = test_target(&path);
+        let _hooks = configure_test_hooks({
+            let path = path.clone();
+            let replacement = replacement.clone();
+            move |hooks| {
+                hooks.after_open_current = Some(Box::new(move |count| {
+                    if count == 1 {
+                        std::fs::rename(&replacement, &path).unwrap();
+                    }
+                }));
+            }
+        });
+        assert!(matches!(
+            repository.identity_from_probe(&target, &CancellationToken::new(), true),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    fn bump_file_revision(path: &Path) {
+        let mut connection = SqliteConnection::establish(path.to_str().unwrap()).unwrap();
+        connection
+            .transaction::<_, Error, _>(|db| {
+                crate::db::bump_revision_in_transaction(db, &CancellationToken::new(), |_| Ok(()))
+            })
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_sandwich_rejects_wal_revision_after_r1() {
+        let (_directory, path, repository) = revision_fixture(0);
+        let target = test_target(&path);
+        let changed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let changed_callback = std::sync::Arc::clone(&changed);
+        let _hooks = configure_test_hooks(move |hooks| {
+            hooks.after_read_revision = Some(Box::new(move || {
+                if !changed_callback.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    bump_file_revision(&path);
+                }
+            }));
+        });
+        assert!(matches!(
+            repository.identity_from_probe(&target, &CancellationToken::new(), true),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_sandwich_rejects_wal_revision_after_r2() {
+        let (_directory, path, repository) = revision_fixture(0);
+        let target = test_target(&path);
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reads_callback = std::sync::Arc::clone(&reads);
+        let _hooks = configure_test_hooks(move |hooks| {
+            hooks.after_read_revision = Some(Box::new(move || {
+                if reads_callback.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                    bump_file_revision(&path);
+                }
+            }));
+        });
+        assert!(matches!(
+            repository.identity_from_probe(&target, &CancellationToken::new(), true),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_sandwich_rejects_object_swap_after_r3() {
+        let (directory, path, repository) = revision_fixture(0);
+        let replacement = directory.path().join("replacement.db3");
+        std::fs::write(&replacement, std::fs::read(&path).unwrap()).unwrap();
+        let target = test_target(&path);
+        let _hooks = configure_test_hooks({
+            let path = path.clone();
+            move |hooks| {
+                hooks.after_open_current = Some(Box::new(move |count| {
+                    if count == 3 {
+                        std::fs::rename(&replacement, &path).unwrap();
+                    }
+                }));
+            }
+        });
+        assert!(matches!(
+            repository.identity_from_probe(&target, &CancellationToken::new(), true),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_sandwich_rejects_wal_revision_after_r3() {
+        let (_directory, path, repository) = revision_fixture(0);
+        let target = test_target(&path);
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reads_callback = std::sync::Arc::clone(&reads);
+        let _hooks = configure_test_hooks(move |hooks| {
+            hooks.after_read_revision = Some(Box::new(move || {
+                if reads_callback.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+                    bump_file_revision(&path);
+                }
+            }));
+        });
+        assert!(matches!(
+            repository.identity_from_probe(&target, &CancellationToken::new(), true),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_from_probe_observes_cancellation() {
+        {
+            let (_directory, path, repository) = revision_fixture(0);
+            let target = test_target(&path);
+            let cancellation = CancellationToken::new();
+            cancellation.cancel();
+            let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = std::sync::Arc::clone(&opens);
+            let _hooks = configure_test_hooks(|hooks| {
+                hooks.after_open_current = Some(Box::new(move |_| {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }));
+            });
+            assert!(matches!(
+                repository.identity_from_probe(&target, &cancellation, true),
+                Err(Error::Cancellation)
+            ));
+            assert_eq!(opens.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+
+        {
+            let (_directory, path, repository) = revision_fixture(0);
+            let target = test_target(&path);
+            let cancellation = CancellationToken::new();
+            let callback_token = cancellation.clone();
+            let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed_opens = std::sync::Arc::clone(&opens);
+            let observed_reads = std::sync::Arc::clone(&reads);
+            let _hooks = configure_test_hooks(move |hooks| {
+                hooks.after_open_current = Some(Box::new(move |_| {
+                    observed_opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }));
+                hooks.after_read_revision = Some(Box::new(move || {
+                    observed_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    callback_token.cancel();
+                }));
+            });
+            assert!(matches!(
+                repository.identity_from_probe(&target, &cancellation, true),
+                Err(Error::Cancellation)
+            ));
+            assert_eq!(opens.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
+
+        {
+            let (_directory, path, repository) = revision_fixture(0);
+            let target = test_target(&path);
+            let cancellation = CancellationToken::new();
+            let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed_reads = std::sync::Arc::clone(&reads);
+            let callback_token = cancellation.clone();
+            let _hooks = configure_test_hooks(move |hooks| {
+                hooks.after_read_revision = Some(Box::new(move || {
+                    if observed_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == 4 {
+                        callback_token.cancel();
+                    }
+                }));
+            });
+            assert!(matches!(
+                repository.identity_from_probe(&target, &cancellation, true),
+                Err(Error::Cancellation)
+            ));
+            assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 4);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_from_probe_cancels_during_read_data_revision() {
+        let (_directory, path, repository) = revision_fixture(0);
+        let target = test_target(&path);
+        let cancellation = CancellationToken::new();
+        let revisions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = std::sync::Arc::clone(&revisions);
+        let _hooks = configure_test_hooks(move |hooks| {
+            hooks.after_read_revision = Some(Box::new(move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        });
+        let checkpoints =
+            crate::db::sqlite_cancellation::cancel_on_callback(cancellation.clone(), 1);
+        let _identity = repository.identity_from_probe(&target, &cancellation, true);
+        assert!(checkpoints.load(std::sync::atomic::Ordering::SeqCst) > 0);
+        assert!(matches!(_identity, Err(Error::Cancellation)));
+        assert_eq!(revisions.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_from_probe_hydrate_false_rejects_mid_probe_tombstone() {
+        let (_directory, path, repository) = revision_fixture(0);
+        let target = test_target(&path);
+        let repository = std::sync::Arc::new(repository);
+        let callback_repository = std::sync::Arc::clone(&repository);
+        let callback_path = path.clone();
+        let _hooks = configure_test_hooks(move |hooks| {
+            hooks.after_open_current = Some(Box::new(move |count| {
+                if count == 1 {
+                    callback_repository
+                        .state
+                        .lock()
+                        .unwrap()
+                        .tombstones
+                        .insert(callback_path.clone());
+                }
+            }));
+        });
+        assert!(matches!(
+            repository.identity_from_probe(&target, &CancellationToken::new(), false),
+            Err(Error::Conflict(message)) if message == "database is being deleted"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_from_probe_hydrate_true_rejects_terminal_tombstone() {
+        let (_directory, path, repository) = revision_fixture(0);
+        let target = test_target(&path);
+        let repository = std::sync::Arc::new(repository);
+        let callback_repository = std::sync::Arc::clone(&repository);
+        let callback_path = path.clone();
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_reads = std::sync::Arc::clone(&reads);
+        let _hooks = configure_test_hooks(move |hooks| {
+            hooks.after_read_revision = Some(Box::new(move || {
+                if observed_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 == 4 {
+                    let mut state = callback_repository.state.lock().unwrap();
+                    state.tombstones.insert(callback_path.clone());
+                }
+            }));
+        });
+        assert!(matches!(
+            repository.identity_from_probe(&target, &CancellationToken::new(), true),
+            Err(Error::Conflict(message)) if message == "database is being deleted"
+        ));
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn read_data_revision_malformed_is_error() {
+        for value in [None, Some("bad"), Some("-1"), Some("9223372036854775808")] {
+            let mut connection = SqliteConnection::establish(":memory:").unwrap();
+            diesel::connection::SimpleConnection::batch_execute(
+                &mut connection,
+                "CREATE TABLE Info (Name TEXT PRIMARY KEY, Value TEXT);",
+            )
+            .unwrap();
+            match value {
+                Some(value) => diesel::sql_query(format!(
+                    "INSERT INTO Info (Name, Value) VALUES ('DataRevision', '{value}');"
+                ))
+                .execute(&mut connection)
+                .unwrap(),
+                None => diesel::sql_query(
+                    "INSERT INTO Info (Name, Value) VALUES ('DataRevision', NULL);",
+                )
+                .execute(&mut connection)
+                .unwrap(),
+            };
+            assert!(matches!(
+                read_data_revision(&mut connection),
+                Err(Error::InvalidInput(message))
+                    if message == "DataRevision is not a non-negative i64"
+            ));
+        }
+    }
+
+    #[test]
+    fn read_data_revision_missing_table_is_zero() {
+        let mut connection = SqliteConnection::establish(":memory:").unwrap();
+        assert_eq!(read_data_revision(&mut connection).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_data_revision_missing_row_is_zero() {
+        let mut connection = SqliteConnection::establish(":memory:").unwrap();
+        diesel::connection::SimpleConnection::batch_execute(
+            &mut connection,
+            "CREATE TABLE Info (Name TEXT PRIMARY KEY, Value TEXT);",
+        )
+        .unwrap();
+        assert_eq!(read_data_revision(&mut connection).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_data_revision_puzzle_schema_without_info_is_zero() {
+        let mut connection = SqliteConnection::establish(":memory:").unwrap();
+        diesel::connection::SimpleConnection::batch_execute(
+            &mut connection,
+            "CREATE TABLE puzzles (id INTEGER PRIMARY KEY, fen TEXT, moves TEXT, rating INTEGER, rating_deviation INTEGER, popularity INTEGER, nb_plays INTEGER);",
+        )
+        .unwrap();
+        assert_eq!(read_data_revision(&mut connection).unwrap(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_from_probe_tombstone() {
+        let (_directory, path, repository) = revision_fixture(0);
+        let target = test_target(&path);
+        let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = std::sync::Arc::clone(&opens);
+        let _hooks = configure_test_hooks(|hooks| {
+            hooks.after_open_current = Some(Box::new(move |_| {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        });
+        repository
+            .state
+            .lock()
+            .unwrap()
+            .tombstones
+            .insert(path.clone());
+        assert!(matches!(
+            repository.identity_from_probe(&target, &CancellationToken::new(), true),
+            Err(Error::Conflict(message)) if message == "database is being deleted"
+        ));
+        assert_eq!(opens.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn data_changed_overflow_is_error() {
+        let (_directory, _path, repository) = revision_fixture(i64::MAX);
+        let target = test_target(&_path);
+        let mut connection = repository.initialization_connection(&target, None).unwrap();
+        let result = connection.transaction::<_, Error, _>(|db| {
+            crate::db::bump_revision_in_transaction(db, &CancellationToken::new(), |_| Ok(()))
+        });
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput(message)) if message == "DataRevision overflow"
+        ));
+        let mut check = SqliteConnection::establish(_path.to_str().unwrap()).unwrap();
+        assert_eq!(read_data_revision(&mut check).unwrap(), i64::MAX as u64);
+    }
+
+    #[test]
+    fn identity_from_probe_source_has_no_pool() {
+        let source = include_str!("repository.rs");
+        let body = source
+            .split("pub(crate) fn identity_from_probe")
+            .nth(1)
+            .unwrap()
+            .split("fn tombstone_conflict")
+            .next()
+            .unwrap();
+        assert!(!body.contains("Pool::builder"));
+        assert!(!body.contains("entry("));
+        assert!(!body.contains("repository.connection("));
     }
 }

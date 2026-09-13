@@ -17,13 +17,25 @@ use crate::{
     infra::blocking::BLOCKING_GATEWAY,
 };
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 struct PuzzleCacheKey {
     database: DatabaseIdentity,
+    database_path: PathBuf,
     min_rating: u16,
     max_rating: u16,
     theme: Option<String>,
 }
+
+impl PartialEq for PuzzleCacheKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.database == other.database
+            && self.min_rating == other.min_rating
+            && self.max_rating == other.max_rating
+            && self.theme == other.theme
+    }
+}
+
+impl Eq for PuzzleCacheKey {}
 
 #[derive(Debug, Default)]
 pub struct PuzzleCache {
@@ -53,7 +65,7 @@ impl PuzzleCache {
         if self
             .key
             .as_ref()
-            .is_some_and(|key| key.database.path == path)
+            .is_some_and(|key| key.database_path == path)
         {
             self.key = None;
             self.puzzles.clear();
@@ -232,17 +244,19 @@ async fn cache_key(
     theme: Option<String>,
     cancellation: CancellationToken,
 ) -> Result<PuzzleCacheKey, Error> {
+    let (target, _) = puzzle_binding(&resolved)?;
+    let database_path = target.path().to_owned();
     let database = BLOCKING_GATEWAY
         .spawn_cancellable(cancellation, move |token| {
             if token.is_cancelled() {
                 return Err(Error::Cancellation);
             }
-            let (target, expected_object) = puzzle_binding(&resolved)?;
-            repository.database_identity_expected(&target, expected_object, Some(token))
+            repository.identity_from_probe(&target, token, false)
         })
         .await?;
     Ok(PuzzleCacheKey {
         database,
+        database_path,
         min_rating,
         max_rating,
         theme,
@@ -866,6 +880,7 @@ mod tests {
             database: repository
                 .database_identity(&crate::db::test_target(&path))
                 .unwrap(),
+            database_path: path.clone(),
             min_rating: 0,
             max_rating: u16::MAX,
             theme: None,
@@ -909,12 +924,14 @@ mod tests {
             .unwrap();
         let one_key = PuzzleCacheKey {
             database: one_identity,
+            database_path: one_path.clone(),
             min_rating: 1000,
             max_rating: 1500,
             theme: None,
         };
         let two_key = PuzzleCacheKey {
             database: two_identity,
+            database_path: two_path.clone(),
             min_rating: 2000,
             max_rating: 2500,
             theme: Some("fork".into()),
@@ -965,6 +982,7 @@ mod tests {
             database: repository
                 .database_identity(&crate::db::test_target(&path))
                 .unwrap(),
+            database_path: path.clone(),
             min_rating: 0,
             max_rating: u16::MAX,
             theme: None,
@@ -1524,6 +1542,68 @@ mod tests {
             matches!(error, Error::Conflict(_)),
             "unexpected error: {error:?}"
         );
+    }
+
+    #[test]
+    fn puzzle_cache_key_does_not_create_wal() {
+        let fixture = puzzle_deletion_fixture("cache-key-no-wal.db3");
+        let wal = fixture.path.with_extension("db3-wal");
+        let before = wal.exists();
+        let _key = tauri::async_runtime::block_on(cache_key(
+            Arc::clone(&fixture.repository),
+            Arc::new(fixture.resolved),
+            0,
+            u16::MAX,
+            None,
+            CancellationToken::new(),
+        ))
+        .unwrap();
+        assert_eq!(wal.exists(), before, "cache_key must not create a WAL file");
+    }
+
+    #[test]
+    fn puzzle_cache_key_eq_ignores_database_path() {
+        let (_directory, path, repository) = puzzle_database("cache-eq.db3", 1200);
+        let database = repository
+            .database_identity(&crate::db::test_target(&path))
+            .unwrap();
+        let first = PuzzleCacheKey {
+            database: database.clone(),
+            database_path: path.clone(),
+            min_rating: 1000,
+            max_rating: 1500,
+            theme: None,
+        };
+        let second = PuzzleCacheKey {
+            database,
+            database_path: path.with_file_name("other.db3"),
+            min_rating: 1000,
+            max_rating: 1500,
+            theme: None,
+        };
+        assert_eq!(first, second);
+        let mut cache = PuzzleCache::new();
+        cache.replace(first, vec![]);
+        cache.invalidate_database(Path::new("other.db3"));
+        assert!(cache.key.is_some());
+        cache.invalidate_database(&path);
+        assert!(cache.key.is_none());
+    }
+
+    #[test]
+    fn puzzle_cache_key_source_is_hydrate_false() {
+        let source = include_str!("puzzle.rs");
+        let body = source
+            .split("async fn cache_key")
+            .nth(1)
+            .unwrap()
+            .split("async fn lock_puzzle_cache_cancellable")
+            .next()
+            .unwrap();
+        assert!(body.contains("identity_from_probe(&target, token, false)"));
+        assert!(!body.contains("establish("));
+        assert!(!body.contains("database_identity_expected"));
+        assert!(!body.contains("Pool::builder"));
     }
 
     #[test]

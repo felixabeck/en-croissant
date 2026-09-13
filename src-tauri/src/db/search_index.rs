@@ -23,12 +23,10 @@ use crate::{
 use crate::infra::fs::atomic_replace;
 
 const MAGIC: &[u8; 4] = b"ECSI";
-const VERSION: u32 = 7;
+const VERSION: u32 = 8;
 const ARCHIVE_ALIGNMENT: usize = 16;
 const HEADER_SIZE: usize = 32;
 const CHUNK_HEADER_SIZE: usize = 16;
-// Native paths are normally at most tens of KiB. This leaves ample room for
-// platform encodings while preventing corrupt provenance from driving a large allocation.
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 pub(crate) const CHUNK_ENTRY_LIMIT: usize = 4_096;
 pub(crate) const CHUNK_PAYLOAD_TARGET_BYTES: usize = 4 * 1024 * 1024;
@@ -159,55 +157,11 @@ pub struct SearchIndexChunk {
     pub entries: Vec<SearchGameEntry>,
 }
 
-/// Lossless, platform-specific native path data that can safely be persisted
-/// in an archive. The enum remains platform-neutral so an archive's provenance
-/// is explicit even when it is inspected on a different platform.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Archive, Serialize, Deserialize)]
-pub enum NativePath {
-    Unix(Vec<u8>),
-    Windows(Vec<u16>),
-}
-
-impl NativePath {
-    fn from_path(path: &Path) -> Self {
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-
-            Self::Unix(path.as_os_str().as_bytes().to_vec())
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStrExt;
-
-            Self::Windows(path.as_os_str().encode_wide().collect())
-        }
-        #[cfg(not(any(unix, windows)))]
-        compile_error!("search indexes need a native path codec");
-    }
-}
-
-impl Default for NativePath {
-    fn default() -> Self {
-        #[cfg(unix)]
-        {
-            Self::Unix(Vec::new())
-        }
-        #[cfg(windows)]
-        {
-            Self::Windows(Vec::new())
-        }
-        #[cfg(not(any(unix, windows)))]
-        compile_error!("search indexes need a native path codec");
-    }
-}
-
 /// Provenance recorded with every archive. The canonical database identity,
 /// repository revision and filesystem freshness must agree before an archive
 /// can be used for a query.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Archive, Serialize, Deserialize)]
 pub struct IndexSource {
-    pub database: NativePath,
     pub object: (u64, u64),
     pub revision: u64,
     pub database_length: u64,
@@ -215,39 +169,45 @@ pub struct IndexSource {
 }
 
 impl IndexSource {
-    #[cfg(test)]
-    pub fn from_database(database: &Path, revision: u64) -> Result<Self, Error> {
-        let database = database.canonicalize()?;
-        let metadata = database.metadata()?;
-        let database_modified_nanos = metadata
-            .modified()?
+    fn index_source_from_parts(
+        object: (u64, u64),
+        revision: u64,
+        length: u64,
+        modified: std::time::SystemTime,
+    ) -> Result<Self, Error> {
+        let database_modified_nanos = modified
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .map_err(std::io::Error::other)?
             .as_nanos();
         Ok(Self {
-            database: NativePath::from_path(&database),
-            object: crate::infra::path_authority::opened_file_identity(&File::open(&database)?)?,
+            object,
             revision,
-            database_length: metadata.len(),
+            database_length: length,
             database_modified_nanos,
         })
+    }
+
+    #[cfg(test)]
+    pub fn from_database(database: &Path, revision: u64) -> Result<Self, Error> {
+        let database = database.canonicalize()?;
+        let metadata = database.metadata()?;
+        Self::index_source_from_parts(
+            crate::infra::path_authority::opened_file_identity(&File::open(&database)?)?,
+            revision,
+            metadata.len(),
+            metadata.modified()?,
+        )
     }
 
     pub fn from_database_identity(
         identity: &super::repository::DatabaseIdentity,
     ) -> Result<Self, Error> {
-        let database_modified_nanos = identity
-            .modified
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .map_err(std::io::Error::other)?
-            .as_nanos();
-        Ok(Self {
-            database: NativePath::from_path(&identity.path),
-            object: identity.object,
-            revision: identity.data_revision,
-            database_length: identity.length,
-            database_modified_nanos,
-        })
+        Self::index_source_from_parts(
+            identity.object,
+            identity.data_revision,
+            identity.length,
+            identity.modified,
+        )
     }
 }
 
@@ -908,7 +868,6 @@ pub fn promote_legacy_index_sidecar(db_path: &Path) -> Result<Option<PathBuf>, E
     let metadata = database.metadata()?;
     let object = crate::infra::path_authority::opened_file_identity(&File::open(&database)?)?;
     let identity = DatabaseIdentity {
-        path: database.clone(),
         data_revision: 0,
         object,
         length: metadata.len(),
@@ -1613,7 +1572,6 @@ mod tests {
             crate::infra::path_authority::opened_file_identity(&File::open(&database).unwrap())
                 .unwrap();
         let identity = DatabaseIdentity {
-            path: database.clone(),
             data_revision: 0,
             object,
             length: metadata.len(),
@@ -1772,48 +1730,43 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn non_utf8_database_paths_have_distinct_archived_provenance() {
-        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    fn sources_with_the_same_identity_are_equal_without_a_pathname() {
+        let first = IndexSource {
+            object: (1, 2),
+            revision: 7,
+            database_length: 42,
+            database_modified_nanos: 99,
+        };
+        let second = first.clone();
+        assert_eq!(first, second);
+    }
 
+    #[test]
+    fn version_7_header_is_rejected() {
         let dir = tempdir().unwrap();
-        let first_database = dir
-            .path()
-            .join(OsString::from_vec(b"source-\x80.db3".to_vec()));
-        let second_database = dir
-            .path()
-            .join(OsString::from_vec(b"source-\x81.db3".to_vec()));
-        std::fs::write(&first_database, b"first database").unwrap();
-        std::fs::write(&second_database, b"second database").unwrap();
+        let path = dir.path().join("v7.ecsi");
+        SearchIndexChunk::default().write_to(&path).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[4..8].copy_from_slice(&7_u32.to_le_bytes());
+        std::fs::write(&path, bytes).unwrap();
+        let error = MmapSearchIndex::open(&path).expect_err("v7 must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("Unsupported version"));
+    }
 
-        assert_eq!(
-            first_database.to_string_lossy(),
-            second_database.to_string_lossy(),
-            "the former string representation would have collided"
-        );
-
-        let first_source = IndexSource::from_database(&first_database, 7).unwrap();
-        let second_source = IndexSource::from_database(&second_database, 7).unwrap();
-        assert_ne!(first_source.database, second_source.database);
-        assert_ne!(first_source, second_source);
-
-        let first_index = get_index_path(&first_database);
-        let second_index = get_index_path(&second_database);
+    #[test]
+    fn v8_archive_contains_no_pathname_bytes() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("PATHMARK-v8-test.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let path = get_index_path(&database);
         SearchIndexChunk::default()
-            .write_to_with_source(&first_index, first_source.clone())
+            .write_to_with_source(&path, IndexSource::from_database(&database, 4).unwrap())
             .unwrap()
             .expect_durable();
-        SearchIndexChunk::default()
-            .write_to_with_source(&second_index, second_source.clone())
-            .unwrap()
-            .expect_durable();
-
-        assert_eq!(
-            MmapSearchIndex::open(first_index).unwrap().source(),
-            &first_source
-        );
-        assert_eq!(
-            MmapSearchIndex::open(second_index).unwrap().source(),
-            &second_source
-        );
+        let bytes = std::fs::read(path).unwrap();
+        assert!(!bytes
+            .windows(b"PATHMARK-v8-test".len())
+            .any(|window| window == b"PATHMARK-v8-test"));
     }
 }

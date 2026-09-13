@@ -227,6 +227,67 @@ fn update_info_count(
     Ok(())
 }
 
+fn bump_revision_in_transaction<T>(
+    db: &mut SqliteConnection,
+    cancellation: &CancellationToken,
+    op: impl FnOnce(&mut SqliteConnection) -> Result<T, Error>,
+) -> Result<T, Error> {
+    cancellation_check(cancellation)?;
+    let current = repository::read_data_revision(db)?;
+    let result = op(db)?;
+    repository::run_test_hook(repository::TestHook::AfterBumpOp);
+    cancellation_check(cancellation)?;
+    repository::run_test_hook(repository::TestHook::BeforeRevisionBump);
+    let next = i64::try_from(current)
+        .ok()
+        .and_then(|revision| revision.checked_add(1))
+        .ok_or_else(|| Error::InvalidInput("DataRevision overflow".into()))?;
+    #[cfg(test)]
+    if repository::FAIL_NEXT_REVISION_BUMP.with(|fail| fail.replace(false)) {
+        return Err(Error::Conflict("injected revision bump failure".into()));
+    }
+    update_info_count(db, "DataRevision", next)?;
+    cancellation_check(cancellation)?;
+    Ok(result)
+}
+
+fn finish_search_cache_after_transaction(
+    result: Result<(), Error>,
+    search_cache: &SearchCache,
+    path: &std::path::Path,
+) -> Result<(), Error> {
+    match result {
+        Ok(()) => {
+            search_cache.invalidate_database(path);
+            Ok(())
+        }
+        Err(error @ Error::Diesel(_)) => {
+            search_cache.invalidate_database(path);
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn with_validated_mutation(
+    repository: &DatabaseRepository,
+    search_cache: &SearchCache,
+    target: &DatabaseFileTarget,
+    cancellation: &CancellationToken,
+    operation: impl FnOnce(&mut SqliteConnection) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let result = repository.with_write_lock_cancellable(target, cancellation, || {
+        let mut connection = repository.initialization_connection(target, Some(cancellation))?;
+        connection.transaction::<_, Error, _>(|db| {
+            bump_revision_in_transaction(db, cancellation, |db| {
+                migrations::validate_existing_database(db)?;
+                operation(db)
+            })
+        })
+    });
+    finish_search_cache_after_transaction(result, search_cache, target.path())
+}
+
 #[derive(Debug)]
 pub struct MaterialColor {
     white: u8,
@@ -695,7 +756,7 @@ async fn convert_pgn_command_core<R: tauri::Runtime>(
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "convert_pgn", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
+            .spawn_cancellable(cancellation, move |token| {
                 convert_pgn_blocking(
                     &authority,
                     &repository,
@@ -707,6 +768,7 @@ async fn convert_pgn_command_core<R: tauri::Runtime>(
                     title,
                     description,
                     progress_id,
+                    token,
                 )
             })
             .await
@@ -729,6 +791,7 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
     title: String,
     description: Option<String>,
     progress_id: String,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("convert_pgn", &database);
@@ -739,70 +802,74 @@ fn convert_pgn_blocking<R: tauri::Runtime>(
     }
 
     let description = description.unwrap_or_default();
-    let write_lease = repository.write_lease(&target)?;
-    let _write_guard = write_lease.lock()?;
-
-    let mut database_connection = repository.initialization_connection(&target, None)?;
-    let db = &mut *database_connection;
     let start = Instant::now();
     let mut imported_games = 0usize;
-    db.transaction::<_, Error, _>(|db| {
-        let database_was_created = migrations::prepare_database(db, &title, &description)?;
+    let result = repository.with_write_lock_cancellable(&target, cancellation, || {
+        let mut database_connection =
+            repository.initialization_connection(&target, Some(cancellation))?;
+        let db = &mut *database_connection;
+        db.transaction::<_, Error, _>(|db| {
+            bump_revision_in_transaction(db, cancellation, |db| {
+                let database_was_created = migrations::prepare_database(db, &title, &description)?;
 
-        for file_handle in files {
-            let (file, current_file_name) = {
-                let mut authority = authority
-                    .lock()
-                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-                let authority = authority
-                    .as_mut()
-                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-                let display_name = authority.display_name(file_handle.path_ref())?;
-                let resolved =
-                    authority.resolve(file_handle.path_ref(), PathOperation::ReadPgn, &[])?;
-                (resolved.into_read_file()?, Some(display_name))
-            };
-            let extension = current_file_name
-                .as_deref()
-                .and_then(|name| std::path::Path::new(name).extension())
-                .map(std::ffi::OsStr::to_os_string);
-            let uncompressed: Box<dyn std::io::Read + Send> =
-                if extension.as_deref() == Some("bz2".as_ref()) {
-                    Box::new(bzip2::read::MultiBzDecoder::new(file))
-                } else if extension.as_deref() == Some("zst".as_ref()) {
-                    Box::new(zstd::Decoder::new(file)?)
-                } else {
-                    Box::new(file)
-                };
+                for file_handle in files {
+                    cancellation_check(cancellation)?;
+                    let (file, current_file_name) = {
+                        let mut authority = authority.lock().map_err(|_| {
+                            Error::Conflict("path authority lock was poisoned".into())
+                        })?;
+                        let authority = authority.as_mut().ok_or_else(|| {
+                            Error::Conflict("path authority is not initialized".into())
+                        })?;
+                        let display_name = authority.display_name(file_handle.path_ref())?;
+                        let resolved = authority.resolve(
+                            file_handle.path_ref(),
+                            PathOperation::ReadPgn,
+                            &[],
+                        )?;
+                        (resolved.into_read_file()?, Some(display_name))
+                    };
+                    let extension = current_file_name
+                        .as_deref()
+                        .and_then(|name| std::path::Path::new(name).extension())
+                        .map(std::ffi::OsStr::to_os_string);
+                    let uncompressed: Box<dyn std::io::Read + Send> =
+                        if extension.as_deref() == Some("bz2".as_ref()) {
+                            Box::new(bzip2::read::MultiBzDecoder::new(file))
+                        } else if extension.as_deref() == Some("zst".as_ref()) {
+                            Box::new(zstd::Decoder::new(file)?)
+                        } else {
+                            Box::new(file)
+                        };
 
-            let mut importer = Importer::new(timestamp.map(|t| t as i64));
-            let mut reader = BufferedReader::new(uncompressed);
-            while let Some(parsed_game) = reader.read_game(&mut importer)? {
-                let Some(game) = parsed_game else { continue };
-                if imported_games.is_multiple_of(1000) {
-                    let _ = ConvertProgress {
-                        id: progress_id.clone(),
-                        imported_games: imported_games as u32,
-                        elapsed_ms: start.elapsed().as_millis() as u32,
-                        source_file_name: current_file_name.clone(),
+                    let mut importer = Importer::new(timestamp.map(|t| t as i64));
+                    let mut reader = BufferedReader::new(uncompressed);
+                    while let Some(parsed_game) = reader.read_game(&mut importer)? {
+                        cancellation_check(cancellation)?;
+                        let Some(game) = parsed_game else { continue };
+                        if imported_games.is_multiple_of(1000) {
+                            let _ = ConvertProgress {
+                                id: progress_id.clone(),
+                                imported_games: imported_games as u32,
+                                elapsed_ms: start.elapsed().as_millis() as u32,
+                                source_file_name: current_file_name.clone(),
+                            }
+                            .emit(&app);
+                        }
+                        game.insert_to_db(db)?;
+                        imported_games += 1;
                     }
-                    .emit(&app);
                 }
-                game.insert_to_db(db)?;
-                imported_games += 1;
-            }
-        }
 
-        if database_was_created {
-            create_required_indexes(db)?;
-        }
-        update_database_counts(db)?;
-        // This tail remains under the write lock and inside the transaction: a revision failure
-        // rolls back the games, while a later commit failure only invalidates caches conservatively.
-        repository.data_changed(&target)?;
-        search_cache.invalidate_database(target.path());
-        Ok(())
-    })?;
+                if database_was_created {
+                    create_required_indexes(db)?;
+                }
+                update_database_counts(db)?;
+                Ok(())
+            })
+        })
+    });
+    finish_search_cache_after_transaction(result, search_cache, target.path())?;
 
     let _ = ConvertProgress {
         id: progress_id,
@@ -1186,7 +1253,7 @@ pub async fn edit_db_info(
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "edit_db_info", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
+            .spawn_cancellable(cancellation, move |token| {
                 edit_db_info_blocking(
                     &authority,
                     &repository,
@@ -1194,6 +1261,7 @@ pub async fn edit_db_info(
                     file,
                     title,
                     description,
+                    token,
                 )
             })
             .await
@@ -1208,14 +1276,13 @@ fn edit_db_info_blocking(
     file: DatabaseHandle,
     title: Option<String>,
     description: Option<String>,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("edit_db_info", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(&target, || {
-        let mut database_connection = get_db_or_create(repository, &target, None)?;
-        let db = &mut *database_connection;
+    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
         if let Some(title) = title {
             diesel::insert_into(info::table)
                 .values((info::name.eq("Title"), info::value.eq(title.clone())))
@@ -1237,10 +1304,7 @@ fn edit_db_info_blocking(
                 .execute(db)?;
         }
         Ok(())
-    })?;
-    repository.data_changed(&target)?;
-    search_cache.invalidate_database(target.path());
-    Ok(())
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Type)]
@@ -2260,9 +2324,14 @@ fn delete_database_blocking(
     #[cfg(test)]
     database_command_checkpoint("delete_database", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
-    let expected_source = IndexSource::from_database_identity(
-        &repository.database_identity_expected(&target, target.identity(), Some(cancellation))?,
-    )?;
+    let identity = match repository.identity_from_probe(&target, cancellation, true) {
+        Ok(identity) => identity,
+        Err(error) if crate::error::is_sqlite_notadb(&error) => {
+            repository.identity_from_probe(&target, cancellation, false)?
+        }
+        Err(error) => return Err(error),
+    };
+    let expected_source = IndexSource::from_database_identity(&identity)?;
     let mut primary_gone = false;
     let mut unlinked = 0;
     let unlink_result = repository.delete_exclusive_cancellable(&target, cancellation, || {
@@ -2427,8 +2496,14 @@ pub async fn delete_duplicated_games(
         "delete_duplicated_games",
         async move {
             BLOCKING_GATEWAY
-                .spawn_cancellable(cancellation, move |_| {
-                    delete_duplicated_games_blocking(&authority, &repository, &search_cache, file)
+                .spawn_cancellable(cancellation, move |token| {
+                    delete_duplicated_games_blocking(
+                        &authority,
+                        &repository,
+                        &search_cache,
+                        file,
+                        token,
+                    )
                 })
                 .await
         },
@@ -2441,19 +2516,15 @@ fn delete_duplicated_games_blocking(
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     file: DatabaseHandle,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("delete_duplicated_games", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(&target, || {
-        let mut database_connection = get_db_or_create(repository, &target, None)?;
-        let db = &mut *database_connection;
-        db.transaction(delete_duplicated_games_transaction)
-    })?;
-    repository.data_changed(&target)?;
-    search_cache.invalidate_database(target.path());
-    Ok(())
+    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
+        delete_duplicated_games_transaction(db)
+    })
 }
 
 fn delete_duplicated_games_transaction(db: &mut SqliteConnection) -> Result<(), Error> {
@@ -2490,8 +2561,8 @@ pub async fn delete_empty_games(
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "delete_empty_games", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
-                delete_empty_games_blocking(&authority, &repository, &search_cache, file)
+            .spawn_cancellable(cancellation, move |token| {
+                delete_empty_games_blocking(&authority, &repository, &search_cache, file, token)
             })
             .await
     })
@@ -2503,19 +2574,15 @@ fn delete_empty_games_blocking(
     repository: &DatabaseRepository,
     search_cache: &SearchCache,
     file: DatabaseHandle,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("delete_empty_games", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(&target, || {
-        let mut database_connection = get_db_or_create(repository, &target, None)?;
-        let db = &mut *database_connection;
-        db.transaction(delete_empty_games_transaction)
-    })?;
-    repository.data_changed(&target)?;
-    search_cache.invalidate_database(target.path());
-    Ok(())
+    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
+        delete_empty_games_transaction(db)
+    })
 }
 
 fn delete_empty_games_transaction(db: &mut SqliteConnection) -> Result<(), Error> {
@@ -2766,8 +2833,15 @@ pub async fn delete_db_game(
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "delete_db_game", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
-                delete_db_game_blocking(&authority, &repository, &search_cache, file, game_id)
+            .spawn_cancellable(cancellation, move |token| {
+                delete_db_game_blocking(
+                    &authority,
+                    &repository,
+                    &search_cache,
+                    file,
+                    game_id,
+                    token,
+                )
             })
             .await
     })
@@ -2780,19 +2854,15 @@ fn delete_db_game_blocking(
     search_cache: &SearchCache,
     file: DatabaseHandle,
     game_id: i32,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("delete_db_game", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(&target, || {
-        let mut database_connection = get_db_or_create(repository, &target, None)?;
-        let db = &mut *database_connection;
-        db.transaction(|db| delete_db_game_transaction(db, game_id))
-    })?;
-    repository.data_changed(&target)?;
-    search_cache.invalidate_database(target.path());
-    Ok(())
+    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
+        delete_db_game_transaction(db, game_id)
+    })
 }
 
 fn delete_db_game_transaction(db: &mut SqliteConnection, game_id: i32) -> Result<(), Error> {
@@ -2818,8 +2888,16 @@ pub async fn write_db_game(
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "write_db_game", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
-                write_db_game_blocking(&authority, &repository, &search_cache, file, game_id, pgn)
+            .spawn_cancellable(cancellation, move |token| {
+                write_db_game_blocking(
+                    &authority,
+                    &repository,
+                    &search_cache,
+                    file,
+                    game_id,
+                    pgn,
+                    token,
+                )
             })
             .await
     })
@@ -2833,6 +2911,7 @@ fn write_db_game_blocking(
     file: DatabaseHandle,
     game_id: i32,
     pgn: String,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("write_db_game", &file);
@@ -2843,16 +2922,9 @@ fn write_db_game_blocking(
         .read_game(&mut importer)?
         .flatten()
         .ok_or(Error::NoMovesFound)?;
-    repository.with_write_lock(&target, || {
-        let mut database_connection = get_db_or_create(repository, &target, None)?;
-        let db = &mut *database_connection;
-        db.transaction(|db| {
-            write_parsed_db_game(db, game_id, &temp_game, remove_orphans_and_update_counts)
-        })
-    })?;
-    repository.data_changed(&target)?;
-    search_cache.invalidate_database(target.path());
-    Ok(())
+    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
+        write_parsed_db_game(db, game_id, &temp_game, remove_orphans_and_update_counts)
+    })
 }
 
 fn write_parsed_db_game(
@@ -2943,7 +3015,7 @@ pub async fn merge_players(
     let search_cache = Arc::clone(&state.search_cache);
     crate::infra::operations::run_native_operation(operation, "merge_players", async move {
         BLOCKING_GATEWAY
-            .spawn_cancellable(cancellation, move |_| {
+            .spawn_cancellable(cancellation, move |token| {
                 merge_players_blocking(
                     &authority,
                     &repository,
@@ -2951,6 +3023,7 @@ pub async fn merge_players(
                     file,
                     player1,
                     player2,
+                    token,
                 )
             })
             .await
@@ -2965,19 +3038,15 @@ fn merge_players_blocking(
     file: DatabaseHandle,
     player1: i32,
     player2: i32,
+    cancellation: &CancellationToken,
 ) -> Result<(), Error> {
     #[cfg(test)]
     database_command_checkpoint("merge_players", &file);
     let target = resolve_database(authority, &file, PathOperation::DatabaseMutate)?;
 
-    repository.with_write_lock(&target, || {
-        let mut database_connection = get_db_or_create(repository, &target, None)?;
-        let db = &mut *database_connection;
-        db.transaction(|db| merge_players_transaction(db, player1, player2))
-    })?;
-    repository.data_changed(&target)?;
-    search_cache.invalidate_database(target.path());
-    Ok(())
+    with_validated_mutation(repository, search_cache, &target, cancellation, |db| {
+        merge_players_transaction(db, player1, player2)
+    })
 }
 
 fn merge_players_transaction(
@@ -3426,10 +3495,10 @@ mod tests {
             .unwrap();
         let source = IndexSource::from_database_identity(&expected).unwrap();
         assert_eq!(
-            source.database,
+            source.object,
             IndexSource::from_database(&database, expected.data_revision)
                 .unwrap()
-                .database
+                .object
         );
 
         let (_, index) = search::load_search_index_cancellable(
@@ -3440,7 +3509,7 @@ mod tests {
             &CancellationToken::new(),
         )
         .unwrap();
-        assert_eq!(index.source().database, source.database);
+        assert_eq!(index.source().object, source.object);
 
         delete_database_blocking(
             &state.pgn_path_authority,
@@ -4482,6 +4551,7 @@ mod tests {
                 "Imported".into(),
                 None,
                 "matrix".into(),
+                &CancellationToken::new(),
             )
         })
         .is_ok());
@@ -4535,6 +4605,7 @@ mod tests {
                 handle,
                 Some("Matrix".into()),
                 Some("Operation".into()),
+                &CancellationToken::new(),
             )
         })
         .is_ok());
@@ -4547,6 +4618,7 @@ mod tests {
                 &state.database_repository,
                 &state.search_cache,
                 handle,
+                &CancellationToken::new(),
             )
         })
         .is_ok());
@@ -4559,6 +4631,7 @@ mod tests {
                 &state.database_repository,
                 &state.search_cache,
                 handle,
+                &CancellationToken::new(),
             )
         })
         .is_ok());
@@ -4572,6 +4645,7 @@ mod tests {
                 &state.search_cache,
                 handle,
                 1,
+                &CancellationToken::new(),
             )
         })
         .is_ok());
@@ -4587,6 +4661,7 @@ mod tests {
                     handle,
                     1,
                     "".into(),
+                    &CancellationToken::new(),
                 )
             }),
             Err(Error::NoMovesFound)
@@ -4603,6 +4678,7 @@ mod tests {
                     handle,
                     1,
                     2,
+                    &CancellationToken::new(),
                 )
             }),
             Err(Error::InvalidInput(message)) if message == "source player 1 does not exist"
@@ -4808,6 +4884,7 @@ mod tests {
                     handle,
                     Some("Matrix".into()),
                     Some("Operation".into()),
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -4820,6 +4897,7 @@ mod tests {
                     &app.state::<AppState>().database_repository,
                     &app.state::<AppState>().search_cache,
                     handle,
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -4832,6 +4910,7 @@ mod tests {
                     &app.state::<AppState>().database_repository,
                     &app.state::<AppState>().search_cache,
                     handle,
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -4845,6 +4924,7 @@ mod tests {
                     &app.state::<AppState>().search_cache,
                     handle,
                     1,
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -4859,6 +4939,7 @@ mod tests {
                     handle,
                     1,
                     "".into(),
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -4873,6 +4954,7 @@ mod tests {
                     handle,
                     1,
                     2,
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -4918,6 +5000,7 @@ mod tests {
                     "Imported".into(),
                     None,
                     "matrix".into(),
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -4960,6 +5043,7 @@ mod tests {
                     "Imported".into(),
                     None,
                     "matrix".into(),
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -5006,6 +5090,7 @@ mod tests {
                     "Imported".into(),
                     None,
                     "matrix".into(),
+                    &CancellationToken::new(),
                 )
             },
         );
@@ -6233,6 +6318,30 @@ mod tests {
             "Test".into(),
             None,
             "import-test".into(),
+            &CancellationToken::new(),
+        )
+    }
+
+    fn run_import_with_token(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        database: DatabaseHandle,
+        files: Vec<FileWorkspaceHandle>,
+        timestamp: Option<i32>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), Error> {
+        let state = app.state::<AppState>();
+        convert_pgn_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            files,
+            database,
+            timestamp,
+            app.clone(),
+            "Test".into(),
+            None,
+            "import-test".into(),
+            cancellation,
         )
     }
 
@@ -6385,7 +6494,7 @@ mod tests {
         mount_convert_progress_events(&app);
         let source = dir.path().join("revision.pgn");
         std::fs::write(&source, REPLACEMENT_PGN).unwrap();
-        let _failure = repository::fail_next_data_changed();
+        let _failure = repository::fail_next_revision_bump();
 
         assert!(run_import(&app, handle, vec![grant_import_file(&app, &source)], None).is_err());
         assert_eq!(
@@ -6503,7 +6612,7 @@ mod tests {
 
         let failed = dir.path().join("failed.pgn");
         std::fs::write(&failed, REPLACEMENT_PGN).unwrap();
-        let _failure = repository::fail_next_data_changed();
+        let _failure = repository::fail_next_revision_bump();
         assert!(run_import(
             &app,
             handle.clone(),
@@ -6637,7 +6746,7 @@ mod tests {
         mount_convert_progress_events(&app);
         let source = dir.path().join("new.pgn");
         std::fs::write(&source, REPLACEMENT_PGN).unwrap();
-        let _failure = repository::fail_next_data_changed();
+        let _failure = repository::fail_next_revision_bump();
         assert!(run_import(
             &app,
             handle.clone(),
@@ -6674,18 +6783,22 @@ mod tests {
     fn empty_import_is_a_no_op() {
         let (_dir, app, handle, database) = blocking_database_case();
         let state = app.state::<AppState>();
-        let revision = state
-            .database_repository
-            .data_revision(&test_target(&database))
-            .unwrap();
-        run_import(&app, handle, Vec::new(), None).unwrap();
-        assert_eq!(
-            state
+        let revision = {
+            let mut connection = state
                 .database_repository
-                .data_revision(&test_target(&database))
-                .unwrap(),
-            revision
-        );
+                .connection(&test_target(&database), None)
+                .unwrap();
+            repository::read_data_revision(&mut connection).unwrap()
+        };
+        run_import(&app, handle, Vec::new(), None).unwrap();
+        let after_revision = {
+            let mut connection = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
+            repository::read_data_revision(&mut connection).unwrap()
+        };
+        assert_eq!(after_revision, revision);
         assert_eq!(
             database_row_counts(&app, &database),
             DatabaseRowCounts {
@@ -6768,6 +6881,7 @@ mod tests {
                 handle,
                 game_id,
                 format!("{skipped}\n{REPLACEMENT_PGN}"),
+                &CancellationToken::new(),
             ),
             Err(Error::NoMovesFound)
         ));
@@ -6811,6 +6925,7 @@ mod tests {
             handle.clone(),
             game_id,
             String::new(),
+            &CancellationToken::new(),
         );
         assert!(
             matches!(empty, Err(Error::NoMovesFound)),
@@ -6824,6 +6939,7 @@ mod tests {
             handle.clone(),
             game_id,
             REPLACEMENT_PGN.to_string(),
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -7060,6 +7176,7 @@ mod tests {
             handle.clone(),
             Some("My Library".into()),
             Some("Annotated games".into()),
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -7087,6 +7204,7 @@ mod tests {
             handle.clone(),
             Some("Renamed".into()),
             None,
+            &CancellationToken::new(),
         )
         .unwrap();
         edit_db_info_blocking(
@@ -7096,6 +7214,7 @@ mod tests {
             handle.clone(),
             None,
             Some("New description".into()),
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -7179,6 +7298,7 @@ mod tests {
             &state.database_repository,
             &state.search_cache,
             handle.clone(),
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -7201,6 +7321,7 @@ mod tests {
             &state.database_repository,
             &state.search_cache,
             handle.clone(),
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -7269,6 +7390,7 @@ mod tests {
             handle.clone(),
             source_id,
             target_id,
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -7304,6 +7426,7 @@ mod tests {
             &state.search_cache,
             handle.clone(),
             first_duplicate,
+            &CancellationToken::new(),
         )
         .unwrap();
         let remaining = get_games_blocking(
@@ -8118,6 +8241,7 @@ mod tests {
             "Test".into(),
             None,
             progress_id.to_string(),
+            &CancellationToken::new(),
         )
         .unwrap();
 
@@ -8131,5 +8255,1006 @@ mod tests {
             captured.iter().all(|frame| frame.id == progress_id),
             "both ConvertProgress frames must carry the threaded progress_id, got {captured:?}"
         );
+    }
+
+    fn start_position_query() -> GameQuery {
+        GameQuery::new().position(PositionQueryJs {
+            fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".into(),
+            type_: "exact".into(),
+        })
+    }
+
+    #[test]
+    fn wal_insert_does_not_change_main_file_mtime() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(&app, &database, "Old", "Black", "Event", "Site");
+        let before = std::fs::metadata(&database).unwrap();
+        let before_length = before.len();
+        let before_modified = before.modified().unwrap();
+        let state = app.state::<AppState>();
+        write_db_game_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            game_id,
+            REPLACEMENT_PGN.into(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let after = std::fs::metadata(&database).unwrap();
+        assert_eq!(after.len(), before_length);
+        assert_eq!(after.modified().unwrap(), before_modified);
+        assert!(database.with_extension("db3-wal").exists());
+    }
+
+    #[test]
+    fn data_revision_survives_lru_eviction() {
+        let (dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(&app, &database, "Old", "Black", "Event", "Site");
+        let state = app.state::<AppState>();
+        generate_search_index(
+            &handle,
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        write_db_game_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            game_id,
+            REPLACEMENT_PGN.into(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let stale_source = MmapSearchIndex::open(get_index_path(&database))
+            .unwrap()
+            .source()
+            .clone();
+        assert_eq!(stale_source.revision, 0);
+        for index in 0..=16 {
+            let path = dir.path().join(format!("eviction-{index}.db3"));
+            state
+                .database_repository
+                .initialization_connection(&test_target(&path), None)
+                .unwrap();
+        }
+        assert!(search::is_position_in_db(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+            &start_position_query(),
+        )
+        .unwrap());
+        let refreshed_source = MmapSearchIndex::open(get_index_path(&database))
+            .unwrap()
+            .source()
+            .clone();
+        assert!(refreshed_source.revision >= 1);
+    }
+
+    #[test]
+    fn data_revision_survives_new_repository() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(&app, &database, "Old", "Black", "Event", "Site");
+        let state = app.state::<AppState>();
+        write_db_game_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            game_id,
+            REPLACEMENT_PGN.into(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let replacement_repository = DatabaseRepository::default();
+        assert!(search::is_position_in_db(
+            &state.pgn_path_authority,
+            &replacement_repository,
+            &state.search_cache,
+            &handle,
+            &start_position_query(),
+        )
+        .unwrap());
+        let identity = replacement_repository
+            .database_identity(&test_target(&database))
+            .unwrap();
+        assert!(identity.data_revision >= 1);
+    }
+
+    #[test]
+    fn writers_call_with_validated_mutation() {
+        let source = include_str!("mod.rs");
+        for function in [
+            "edit_db_info_blocking",
+            "delete_duplicated_games_blocking",
+            "delete_empty_games_blocking",
+            "delete_db_game_blocking",
+            "write_db_game_blocking",
+            "merge_players_blocking",
+        ] {
+            let body = source
+                .split(&format!("fn {function}"))
+                .nth(1)
+                .unwrap()
+                .split("\n}\n")
+                .next()
+                .unwrap();
+            assert!(body.contains("with_validated_mutation"), "{function}");
+            assert!(!body.contains("get_db_or_create"), "{function}");
+            assert!(!body.contains("repository.connection"), "{function}");
+        }
+    }
+
+    #[test]
+    fn write_db_game_observes_worker_token() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(&app, &database, "Old", "Black", "Event", "Site");
+        let before = database_row_counts(&app, &database);
+        let state = app.state::<AppState>();
+        let cancellation = CancellationToken::new();
+        let callback_token = cancellation.clone();
+        let after_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = std::sync::Arc::clone(&after_count);
+        let _hooks = repository::configure_test_hooks(move |hooks| {
+            hooks.after_bump_op = Some(Box::new(move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                callback_token.cancel();
+            }));
+        });
+        let result = write_db_game_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            game_id,
+            REPLACEMENT_PGN.into(),
+            &cancellation,
+        );
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert!(after_count.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        assert_eq!(database_row_counts(&app, &database), before);
+    }
+
+    #[test]
+    fn writers_forward_spawn_token() {
+        let source = include_str!("mod.rs");
+        for function in [
+            "edit_db_info",
+            "delete_duplicated_games",
+            "delete_empty_games",
+            "delete_db_game",
+            "write_db_game",
+            "merge_players",
+            "convert_pgn_command_core",
+        ] {
+            let start = source
+                .find(&format!(
+                    "{}fn {function}",
+                    if function == "convert_pgn_command_core" {
+                        "async "
+                    } else {
+                        "pub async "
+                    }
+                ))
+                .unwrap();
+            let body = &source[start..source[start..].find(".await").unwrap() + start];
+            assert!(body.contains("move |token|"), "{function}");
+            assert!(body.contains("token"), "{function}");
+            assert!(body.contains("blocking"), "{function}");
+        }
+    }
+
+    fn cached_result_fixture() -> (
+        tempfile::TempDir,
+        SearchCache,
+        PathBuf,
+        crate::SearchResultKey,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("cache.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let source = IndexSource::from_database(&database, 0).unwrap();
+        let index_path = get_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&index_path, source.clone())
+            .unwrap()
+            .expect_durable();
+        let identity = crate::SearchIndexIdentity::for_database(&database, source).unwrap();
+        let key = crate::SearchResultKey::new(GameQuery::new(), identity);
+        let cache = SearchCache::default();
+        cache.insert_result(key.clone(), (Vec::new(), Vec::new()));
+        (dir, cache, database, key)
+    }
+
+    fn seed_search_cache_for_database(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        database: &Path,
+    ) -> crate::SearchResultKey {
+        let source = IndexSource::from_database(database, 0).unwrap();
+        let index_path = get_index_path(database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&index_path, source.clone())
+            .unwrap()
+            .expect_durable();
+        let identity = crate::SearchIndexIdentity::for_database(database, source).unwrap();
+        let key = crate::SearchResultKey::new(GameQuery::new(), identity);
+        app.state::<AppState>()
+            .search_cache
+            .insert_result(key.clone(), (Vec::new(), Vec::new()));
+        key
+    }
+
+    #[test]
+    fn finish_search_cache_after_transaction_classifies_errors() {
+        let (_dir, cache, path, key) = cached_result_fixture();
+        assert!(finish_search_cache_after_transaction(Ok(()), &cache, &path).is_ok());
+        assert!(cache.get_result(&key).is_none());
+
+        let (_dir, cache, path, key) = cached_result_fixture();
+        let diesel_error = Error::Diesel(Box::new(diesel::result::Error::NotFound));
+        assert!(finish_search_cache_after_transaction(Err(diesel_error), &cache, &path).is_err());
+        assert!(cache.get_result(&key).is_none());
+
+        for error in [
+            Error::Cancellation,
+            Error::Conflict("injected revision bump failure".into()),
+            Error::InvalidInput("DataRevision overflow".into()),
+        ] {
+            let (_dir, cache, path, key) = cached_result_fixture();
+            assert!(finish_search_cache_after_transaction(Err(error), &cache, &path).is_err());
+            assert!(cache.get_result(&key).is_some());
+        }
+
+        let (_dir, cache, path, key) = cached_result_fixture();
+        let pool_dir = tempfile::tempdir().unwrap();
+        let pool_path = pool_dir.path().join("pool.db3");
+        let pool = diesel::r2d2::Pool::builder()
+            .max_size(1)
+            .connection_timeout(std::time::Duration::from_millis(20))
+            .build(diesel::r2d2::ConnectionManager::<SqliteConnection>::new(
+                pool_path.to_string_lossy().into_owned(),
+            ))
+            .unwrap();
+        let _held = pool.get().unwrap();
+        let pool_error = match pool.get() {
+            Err(error) => error,
+            Ok(_) => panic!("exhausted pool unexpectedly yielded a connection"),
+        };
+        let error = Error::R2d2(Box::new(pool_error));
+        assert!(finish_search_cache_after_transaction(Err(error), &cache, &path).is_err());
+        assert!(cache.get_result(&key).is_some());
+    }
+
+    #[test]
+    fn bump_revision_rolls_back_after_successful_op() {
+        let mut db = setup_test_db();
+        let before = games::table.count().get_result::<i64>(&mut db).unwrap();
+        let _failure = repository::fail_next_revision_bump();
+        let result = db.transaction::<_, Error, _>(|db| {
+            create_player(db, "rolled back")?;
+            bump_revision_in_transaction(db, &CancellationToken::new(), |_| Ok(()))
+        });
+        assert!(
+            matches!(result, Err(Error::Conflict(message)) if message == "injected revision bump failure")
+        );
+        assert_eq!(
+            games::table.count().get_result::<i64>(&mut db).unwrap(),
+            before
+        );
+        assert!(players::table
+            .filter(players::name.eq("rolled back"))
+            .first::<Player>(&mut db)
+            .is_err());
+    }
+
+    #[test]
+    fn convert_pgn_initializes_empty_database() {
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("initialize.pgn");
+        std::fs::write(&source, REPLACEMENT_PGN).unwrap();
+        let result = run_import(&app, handle, vec![grant_import_file(&app, &source)], None);
+        assert!(result.is_ok());
+        assert_eq!(database_row_counts(&app, &database).games, 1);
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        assert_eq!(repository::read_data_revision(&mut connection).unwrap(), 1);
+    }
+
+    #[test]
+    fn convert_pgn_failed_bump_leaves_empty_database() {
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("failed-initialize.pgn");
+        std::fs::write(&source, REPLACEMENT_PGN).unwrap();
+        let _failure = repository::fail_next_revision_bump();
+        assert!(run_import(&app, handle, vec![grant_import_file(&app, &source)], None).is_err());
+        let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        let tables: Vec<IndexInfo> = sql_query(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .load(&mut connection)
+        .unwrap();
+        assert!(tables.is_empty());
+    }
+
+    fn convert_cancel_before_bump_case() -> (Result<(), Error>, PathBuf, usize, bool) {
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("cancel.pgn");
+        std::fs::write(&source, REPLACEMENT_PGN).unwrap();
+        let cache_key = seed_search_cache_for_database(&app, &database);
+        let token = CancellationToken::new();
+        let callback_token = token.clone();
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_count = std::sync::Arc::clone(&count);
+        let _hooks = repository::configure_test_hooks(move |hooks| {
+            hooks.after_bump_op = Some(Box::new(move || {
+                callback_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+            hooks.before_revision_bump = Some(Box::new(move || callback_token.cancel()));
+        });
+        let result = run_import_with_token(
+            &app,
+            handle,
+            vec![grant_import_file(&app, &source)],
+            None,
+            &token,
+        );
+        drop(_hooks);
+        (
+            result,
+            database,
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            app.state::<AppState>()
+                .search_cache
+                .get_result(&cache_key)
+                .is_some(),
+        )
+    }
+
+    #[test]
+    fn convert_pgn_cancel_before_op_does_not_commit() {
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("cancel-before-op.pgn");
+        std::fs::write(&source, REPLACEMENT_PGN).unwrap();
+        let cache_key = seed_search_cache_for_database(&app, &database);
+        let token = CancellationToken::new();
+        let after_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = std::sync::Arc::clone(&after_count);
+        let _hooks = repository::configure_test_hooks(move |hooks| {
+            hooks.after_bump_op = Some(Box::new(move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        });
+        let (entered, release) = install_database_command_checkpoint("convert_pgn", &handle);
+        let worker_app = app.clone();
+        let worker_state = worker_app.state::<AppState>();
+        let worker_authority = std::sync::Arc::clone(&worker_state.pgn_path_authority);
+        let worker_repository = std::sync::Arc::clone(&worker_state.database_repository);
+        let worker_cache = std::sync::Arc::clone(&worker_state.search_cache);
+        let worker_file = grant_import_file(&app, &source);
+        let worker_token = token.clone();
+        let worker = std::thread::spawn(move || {
+            convert_pgn_blocking(
+                &worker_authority,
+                &worker_repository,
+                &worker_cache,
+                vec![worker_file],
+                handle,
+                None,
+                worker_app,
+                "Test".into(),
+                None,
+                "cancel-before-op".into(),
+                &worker_token,
+            )
+        });
+        entered
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        token.cancel();
+        release.send(()).unwrap();
+        let result = worker.join().unwrap();
+        drop(_hooks);
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert_eq!(after_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!database_row_counts_for_path(&database));
+        assert!(app
+            .state::<AppState>()
+            .search_cache
+            .get_result(&cache_key)
+            .is_some());
+        assert!(!database_has_data_revision(&database));
+    }
+
+    #[test]
+    fn convert_pgn_cancel_before_bump_does_not_commit() {
+        let (result, database, count, cache_retained) = convert_cancel_before_bump_case();
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert_eq!(count, 1);
+        assert!(!database_row_counts_for_path(&database));
+        assert!(!database_has_data_revision(&database));
+        assert!(cache_retained);
+    }
+
+    #[test]
+    fn convert_pgn_cancel_during_bump_does_not_commit() {
+        let (dir, app, handle, database) = empty_database_case();
+        mount_convert_progress_events(&app);
+        let source = dir.path().join("cancel-during-bump.pgn");
+        std::fs::write(&source, REPLACEMENT_PGN).unwrap();
+        let cache_key = seed_search_cache_for_database(&app, &database);
+        let token = CancellationToken::new();
+        let callback_token = token.clone();
+        let _hooks = repository::configure_test_hooks(move |hooks| {
+            hooks.after_bump_op = Some(Box::new(move || {
+                let _ =
+                    crate::db::sqlite_cancellation::cancel_on_callback(callback_token.clone(), 1);
+            }));
+        });
+        let result = run_import_with_token(
+            &app,
+            handle,
+            vec![grant_import_file(&app, &source)],
+            None,
+            &token,
+        );
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert!(!database_row_counts_for_path(&database));
+        assert!(app
+            .state::<AppState>()
+            .search_cache
+            .get_result(&cache_key)
+            .is_some());
+        assert!(!database_has_data_revision(&database));
+    }
+
+    #[test]
+    fn write_db_game_failed_bump_leaves_games_unchanged() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(&app, &database, "Old", "Black", "Event", "Site");
+        let before = database_row_counts(&app, &database);
+        let state = app.state::<AppState>();
+        let _failure = repository::fail_next_revision_bump();
+        let result = write_db_game_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            game_id,
+            REPLACEMENT_PGN.into(),
+            &CancellationToken::new(),
+        );
+        assert!(
+            matches!(result, Err(Error::Conflict(message)) if message == "injected revision bump failure")
+        );
+        assert_eq!(database_row_counts(&app, &database), before);
+    }
+
+    #[test]
+    fn edit_db_info_failed_bump_leaves_title_unchanged() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let _failure = repository::fail_next_revision_bump();
+        let result = edit_db_info_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            Some("new title".into()),
+            None,
+            &CancellationToken::new(),
+        );
+        assert!(result.is_err());
+        let mut db = state
+            .database_repository
+            .connection(&test_target(&database), None)
+            .unwrap();
+        assert!(info::table
+            .find("Title")
+            .select(info::value)
+            .first::<Option<String>>(&mut *db)
+            .optional()
+            .unwrap()
+            .flatten()
+            .is_none());
+    }
+
+    #[test]
+    fn delete_db_game_failed_bump_leaves_game() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let game_id = insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+        let state = app.state::<AppState>();
+        let _failure = repository::fail_next_revision_bump();
+        assert!(delete_db_game_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            game_id,
+            &CancellationToken::new(),
+        )
+        .is_err());
+        let mut db = state
+            .database_repository
+            .connection(&test_target(&database), None)
+            .unwrap();
+        assert!(games::table.find(game_id).first::<Game>(&mut *db).is_ok());
+    }
+
+    #[test]
+    fn delete_duplicated_games_failed_bump_leaves_games() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        {
+            let state = app.state::<AppState>();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
+            let white = create_player(&mut db, "White").unwrap();
+            let black = create_player(&mut db, "Black").unwrap();
+            let event = create_event(&mut db, "Event").unwrap();
+            let site = create_site(&mut db, "Site").unwrap();
+            insert_test_game(&mut db, white.id, black.id, event.id, site.id);
+            insert_test_game(&mut db, white.id, black.id, event.id, site.id);
+        }
+        let state = app.state::<AppState>();
+        let _failure = repository::fail_next_revision_bump();
+        assert!(delete_duplicated_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            &CancellationToken::new(),
+        )
+        .is_err());
+        assert_eq!(database_row_counts(&app, &database).games, 2);
+    }
+
+    #[test]
+    fn delete_empty_games_failed_bump_leaves_games() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        {
+            let state = app.state::<AppState>();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
+            let white = create_player(&mut db, "White").unwrap();
+            let black = create_player(&mut db, "Black").unwrap();
+            let event = create_event(&mut db, "Event").unwrap();
+            let site = create_site(&mut db, "Site").unwrap();
+            insert_test_game(&mut db, white.id, black.id, event.id, site.id);
+        }
+        let state = app.state::<AppState>();
+        let _failure = repository::fail_next_revision_bump();
+        assert!(delete_empty_games_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            &CancellationToken::new(),
+        )
+        .is_err());
+        assert_eq!(database_row_counts(&app, &database).games, 1);
+    }
+
+    #[test]
+    fn merge_players_failed_bump_leaves_players() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let (source, target) = {
+            let state = app.state::<AppState>();
+            let mut db = state
+                .database_repository
+                .connection(&test_target(&database), None)
+                .unwrap();
+            (
+                create_player(&mut db, "Source").unwrap(),
+                create_player(&mut db, "Target").unwrap(),
+            )
+        };
+        let state = app.state::<AppState>();
+        let _failure = repository::fail_next_revision_bump();
+        assert!(merge_players_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            source.id,
+            target.id,
+            &CancellationToken::new(),
+        )
+        .is_err());
+        let mut db = state
+            .database_repository
+            .connection(&test_target(&database), None)
+            .unwrap();
+        assert!(players::table
+            .find(source.id)
+            .first::<Player>(&mut *db)
+            .is_ok());
+    }
+
+    #[test]
+    fn writers_failed_bump_does_not_invalidate_cache() {
+        for operation in ["write", "edit", "delete", "duplicates", "empty", "merge"] {
+            let (_dir, app, handle, database) = blocking_database_case();
+            let game_id = insert_named_game(&app, &database, "White", "Black", "Event", "Site");
+            if operation == "duplicates" {
+                let state = app.state::<AppState>();
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                let white = games::table
+                    .find(game_id)
+                    .select(games::white_id)
+                    .first::<i32>(&mut *db)
+                    .unwrap();
+                let black = games::table
+                    .find(game_id)
+                    .select(games::black_id)
+                    .first::<i32>(&mut *db)
+                    .unwrap();
+                let event = games::table
+                    .find(game_id)
+                    .select(games::event_id)
+                    .first::<i32>(&mut *db)
+                    .unwrap();
+                let site = games::table
+                    .find(game_id)
+                    .select(games::site_id)
+                    .first::<i32>(&mut *db)
+                    .unwrap();
+                insert_test_game(&mut db, white, black, event, site);
+            }
+            if operation == "merge" {
+                let state = app.state::<AppState>();
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                create_player(&mut db, "MergeSource").unwrap();
+                create_player(&mut db, "MergeTarget").unwrap();
+            }
+            if operation == "empty" {
+                let state = app.state::<AppState>();
+                let mut db = state
+                    .database_repository
+                    .connection(&test_target(&database), None)
+                    .unwrap();
+                let white = games::table
+                    .find(game_id)
+                    .select(games::white_id)
+                    .first::<i32>(&mut *db)
+                    .unwrap();
+                let black = games::table
+                    .find(game_id)
+                    .select(games::black_id)
+                    .first::<i32>(&mut *db)
+                    .unwrap();
+                let event = games::table
+                    .find(game_id)
+                    .select(games::event_id)
+                    .first::<i32>(&mut *db)
+                    .unwrap();
+                let site = games::table
+                    .find(game_id)
+                    .select(games::site_id)
+                    .first::<i32>(&mut *db)
+                    .unwrap();
+                diesel::update(games::table.find(game_id))
+                    .set(games::ply_count.eq(0))
+                    .execute(&mut *db)
+                    .unwrap();
+                let _ = (white, black, event, site);
+            }
+            let state = app.state::<AppState>();
+            generate_search_index(
+                &handle,
+                &state.pgn_path_authority,
+                &state.database_repository,
+                &state.search_cache,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            let source = MmapSearchIndex::open(get_index_path(&database))
+                .unwrap()
+                .source()
+                .clone();
+            let identity = crate::SearchIndexIdentity::for_database(&database, source).unwrap();
+            let key = crate::SearchResultKey::new(GameQuery::new(), identity);
+            state
+                .search_cache
+                .insert_result(key.clone(), (Vec::new(), Vec::new()));
+            let _failure = repository::fail_next_revision_bump();
+            let result = match operation {
+                "write" => write_db_game_blocking(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    &state.search_cache,
+                    handle,
+                    game_id,
+                    REPLACEMENT_PGN.into(),
+                    &CancellationToken::new(),
+                ),
+                "edit" => edit_db_info_blocking(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    &state.search_cache,
+                    handle,
+                    Some("x".into()),
+                    None,
+                    &CancellationToken::new(),
+                ),
+                "delete" => delete_db_game_blocking(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    &state.search_cache,
+                    handle,
+                    game_id,
+                    &CancellationToken::new(),
+                ),
+                "duplicates" => delete_duplicated_games_blocking(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    &state.search_cache,
+                    handle,
+                    &CancellationToken::new(),
+                ),
+                "empty" => delete_empty_games_blocking(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    &state.search_cache,
+                    handle,
+                    &CancellationToken::new(),
+                ),
+                "merge" => merge_players_blocking(
+                    &state.pgn_path_authority,
+                    &state.database_repository,
+                    &state.search_cache,
+                    handle,
+                    game_id + 1,
+                    game_id + 2,
+                    &CancellationToken::new(),
+                ),
+                _ => unreachable!(),
+            };
+            assert!(
+                result.is_err(),
+                "{operation} must fail at the injected bump"
+            );
+            assert!(
+                state.search_cache.get_result(&key).is_some(),
+                "{operation} invalidated pre-commit cache"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_v1_migrate_rolls_back_with_failed_bump() {
+        let mut db = SqliteConnection::establish(":memory:").unwrap();
+        db.batch_execute(
+            "CREATE TABLE Info (Name TEXT UNIQUE NOT NULL, Value TEXT);
+             CREATE TABLE Players (ID INTEGER PRIMARY KEY, Name TEXT UNIQUE, Elo INTEGER);
+             CREATE TABLE Events (ID INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT UNIQUE);
+             CREATE TABLE Sites (ID INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT UNIQUE);
+             CREATE TABLE Games (ID INTEGER PRIMARY KEY AUTOINCREMENT, EventID INTEGER, SiteID INTEGER, Date TEXT, UTCTime TEXT, Round INTEGER, WhiteID INTEGER, WhiteElo INTEGER, BlackID INTEGER, BlackElo INTEGER, WhiteMaterial INTEGER, BlackMaterial INTEGER, Result INTEGER, TimeControl TEXT, ECO TEXT, PlyCount INTEGER, FEN TEXT, Moves BLOB, PawnHome BLOB);
+             INSERT INTO Players VALUES (0, 'Unknown', NULL); INSERT INTO Events VALUES (0, 'Unknown'); INSERT INTO Sites VALUES (0, 'Unknown'); INSERT INTO Info VALUES ('Version', '1.0.0');",
+        )
+        .unwrap();
+        let _failure = repository::fail_next_revision_bump();
+        let result = db.transaction::<_, Error, _>(|db| {
+            bump_revision_in_transaction(db, &CancellationToken::new(), |db| {
+                migrations::validate_existing_database(db)
+            })
+        });
+        assert!(
+            matches!(result, Err(Error::Conflict(message)) if message == "injected revision bump failure")
+        );
+        let version: String = sql_query("SELECT Value AS value FROM Info WHERE Name = 'Version'")
+            .get_result::<InfoValue>(&mut db)
+            .unwrap()
+            .value;
+        assert_eq!(version, "1.0.0");
+        assert_eq!(repository::read_data_revision(&mut db).unwrap(), 0);
+    }
+
+    #[derive(QueryableByName)]
+    struct InfoValue {
+        #[diesel(sql_type = Text)]
+        value: String,
+    }
+
+    fn arbitrary_database_case(
+        contents: &[u8],
+    ) -> (
+        tempfile::TempDir,
+        tauri::AppHandle<tauri::test::MockRuntime>,
+        DatabaseHandle,
+        PathBuf,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("arbitrary.db3");
+        std::fs::write(&database, contents).unwrap();
+        let mut authority = PathAuthority::open(dir.path().join("registry.json"), vec![]).unwrap();
+        let operations = vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+            PathOperation::DatabaseCreate,
+            PathOperation::DatabaseExport,
+        ];
+        let grant = authority
+            .grant_dialog_operations(
+                &database,
+                "arbitrary",
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                std::time::Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let commit = authority
+            .promote_dialog(&grant, PathClass::PersistentFile, "arbitrary", operations)
+            .unwrap();
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        (
+            dir,
+            app.handle().clone(),
+            DatabaseHandle::new(commit.id),
+            database,
+        )
+    }
+
+    #[test]
+    fn delete_database_junk_file_still_unlinks() {
+        let (_dir, app, handle, database) = arbitrary_database_case(b"junk file");
+        let state = app.state::<AppState>();
+        delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(!database.exists());
+    }
+
+    #[test]
+    fn delete_database_malformed_revision_does_not_unlink() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let mut db = state
+            .database_repository
+            .connection(&test_target(&database), None)
+            .unwrap();
+        sql_query("INSERT INTO Info (Name, Value) VALUES ('DataRevision', 'malformed')")
+            .execute(&mut *db)
+            .unwrap();
+        drop(db);
+        let result = delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            &CancellationToken::new(),
+        );
+        assert!(
+            matches!(result, Err(Error::InvalidInput(message)) if message == "DataRevision is not a non-negative i64")
+        );
+        assert!(database.exists());
+    }
+
+    #[test]
+    fn delete_database_busy_does_not_unlink() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let mut blocker = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
+        blocker.batch_execute("BEGIN EXCLUSIVE;").unwrap();
+        let state = app.state::<AppState>();
+        let result = delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            &CancellationToken::new(),
+        );
+        let _ = blocker.batch_execute("ROLLBACK;");
+        assert!(result.is_err());
+        assert!(database.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_database_io_error_does_not_unlink() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        std::fs::remove_file(&database).unwrap();
+        std::fs::create_dir(&database).unwrap();
+        let state = app.state::<AppState>();
+        let result = delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            &CancellationToken::new(),
+        );
+        assert!(result.is_err());
+        assert!(database.is_dir());
+    }
+
+    #[test]
+    fn delete_database_removes_legacy_sidecar_at_revision_1() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        {
+            let mut db = state
+                .database_repository
+                .initialization_connection(&test_target(&database), None)
+                .unwrap();
+            db.transaction::<_, Error, _>(|db| {
+                bump_revision_in_transaction(db, &CancellationToken::new(), |_| Ok(()))
+            })
+            .unwrap();
+        }
+        let identity = state
+            .database_repository
+            .database_identity(&test_target(&database))
+            .unwrap();
+        let legacy = legacy_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(
+                &legacy,
+                IndexSource::from_database_identity(&identity).unwrap(),
+            )
+            .unwrap()
+            .expect_durable();
+        delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(!database.exists());
+        assert!(!legacy.exists());
+    }
+
+    fn database_row_counts_for_path(path: &Path) -> bool {
+        #[derive(QueryableByName)]
+        struct TableCount {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            count: i64,
+        }
+        let Ok(mut connection) = SqliteConnection::establish(path.to_str().unwrap()) else {
+            return false;
+        };
+        sql_query(
+            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'Games'",
+        )
+        .get_result::<TableCount>(&mut connection)
+        .map(|row| row.count > 0)
+        .unwrap_or(false)
+    }
+
+    fn database_has_data_revision(path: &Path) -> bool {
+        let Ok(mut connection) = SqliteConnection::establish(path.to_str().unwrap()) else {
+            return false;
+        };
+        sql_query("SELECT Value AS value FROM Info WHERE Name = 'DataRevision'")
+            .load::<InfoValue>(&mut connection)
+            .map(|rows| !rows.is_empty())
+            .unwrap_or(false)
     }
 }

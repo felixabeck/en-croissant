@@ -302,6 +302,45 @@ impl Error {
     }
 }
 
+fn sqlite_notadb_message(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("not a database")
+        || message.contains("notadb")
+        || message.contains("code 26")
+        || message.contains("code: 26")
+        || message.contains("(26)")
+        || message.trim() == "26"
+        || message.ends_with(" 26")
+}
+
+pub(crate) fn is_sqlite_notadb(error: &Error) -> bool {
+    match error {
+        Error::InvalidInput(message) => message == "SQLite file is not a database",
+        Error::Diesel(error) => match error.as_ref() {
+            diesel::result::Error::DatabaseError(_, information) => {
+                sqlite_notadb_message(information.message())
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+pub(crate) fn map_sqlite_establish(error: diesel::ConnectionError) -> Error {
+    let notadb = match &error {
+        diesel::ConnectionError::BadConnection(message) => sqlite_notadb_message(message),
+        diesel::ConnectionError::CouldntSetupConfiguration(
+            diesel::result::Error::DatabaseError(_, information),
+        ) => sqlite_notadb_message(information.message()),
+        _ => false,
+    };
+    if notadb {
+        Error::InvalidInput("SQLite file is not a database".into())
+    } else {
+        Error::Conflict(format!("SQLite connection failed: {error}"))
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(value: std::io::Error) -> Self {
         Self::Io(Box::new(value))
@@ -515,6 +554,40 @@ impl Drop for LogCaptureScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_sqlite_notadb_diesel_code_26() {
+        let error = Error::Diesel(Box::new(diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::Unknown,
+            Box::new("26".to_string()),
+        )));
+        assert!(is_sqlite_notadb(&error));
+    }
+
+    #[test]
+    fn is_sqlite_notadb_diesel_message() {
+        let error = Error::Diesel(Box::new(diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::Unknown,
+            Box::new("file is not a database".to_string()),
+        )));
+        assert!(is_sqlite_notadb(&error));
+        assert!(!is_sqlite_notadb(&Error::Conflict("not a database".into())));
+        assert!(!is_sqlite_notadb(&Error::InvalidInput(
+            "DataRevision is not a non-negative i64".into(),
+        )));
+        assert!(!is_sqlite_notadb(&Error::InvalidInput(
+            "DataRevision overflow".into(),
+        )));
+        assert!(!is_sqlite_notadb(&Error::Cancellation));
+        assert!(!is_sqlite_notadb(&Error::Io(Box::new(
+            std::io::Error::other("I/O failure",)
+        ))));
+        let busy = Error::Diesel(Box::new(diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::Unknown,
+            Box::new("database is locked".to_string()),
+        )));
+        assert!(!is_sqlite_notadb(&busy));
+    }
 
     fn parsed_payload(serialized: &str) -> serde_json::Value {
         let payload: serde_json::Value =
