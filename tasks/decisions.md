@@ -2876,3 +2876,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** two hard links must stay two pools; a parent swap with a hard link must miss the old entry; spelling aliases share a canonical path.
 * **Decided by:** Grok, f-20260905-03 Mandate B · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4ef4b1707558229d0e72ff8d07eed32ee97b3a2cb5a9b87faa661b06618b51ed","input_sha256":"7ade9f4bb0be51e4c7b970077cb7c0e9bbd06b0a36f7293196580a72accc0f5d","kind":"mutation-receipt","operation":"8abc7f6b08b5f378c231cc2db10a00640c0537f98e58a8163981e67b9bffe8d7","options":{"section":null},"request_id_sha256":null,"results":["d-20260913-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20260913-03 — What retirement semantics does Mandate B keep?
+
+* **Question:** Does the repository re-key wait for leases before removing a stale entry, or park/un-park without waiting?
+* **Governs:** f-20260905-03
+* **Chosen:** wait-then-remove on an idle stale entry (active == 0). A Conflict while active > 0 returns immediately; the next lease-free entry() waits.
+* **Rejected:** parking / un-park / identity tombstones / multi-entry unwind (did not converge). Also rejected: waiting while the same call holds a lease.
+* **Reason:** the finding's 2026-09-12 re-scope; nested write-lock plus get_db_or_create would self-timeout.
+* **Decided by:** Grok, f-20260905-03 Mandate B · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c962d2503bc2bfb4a468468a0aae8dc1109e75bf9fcbf6639d66b9586f4b1edb","input_sha256":"69aa158d8d3e4c91a1cbbd16bb8be8e09c71161ac69ff77c1bde791489578e8e","kind":"mutation-receipt","operation":"01af2527c55755c4f5eb92980cd7af7cb4c76aea2ac114d21830d8c452e19a69","options":{"section":null},"request_id_sha256":null,"results":["d-20260913-03"],"target":"decisions-ledger","v":1} -->
