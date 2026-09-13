@@ -2886,3 +2886,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the finding's 2026-09-12 re-scope; nested write-lock plus get_db_or_create would self-timeout.
 * **Decided by:** Grok, f-20260905-03 Mandate B · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"c962d2503bc2bfb4a468468a0aae8dc1109e75bf9fcbf6639d66b9586f4b1edb","input_sha256":"69aa158d8d3e4c91a1cbbd16bb8be8e09c71161ac69ff77c1bde791489578e8e","kind":"mutation-receipt","operation":"01af2527c55755c4f5eb92980cd7af7cb4c76aea2ac114d21830d8c452e19a69","options":{"section":null},"request_id_sha256":null,"results":["d-20260913-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20260913-04 — How does the repository open SQLite so a racing deletion cannot recreate the leaf?
+
+* **Question:** What connection string does DatabaseRepository pass to r2d2 after the re-key?
+* **Governs:** f-20260905-03
+* **Chosen:** file://<percent-encoded canonical>?mode=rw, refuse non-UTF-8 and non-absolute paths; min_idle(Some(0)) so Pool::build does not eagerly open 16 connections.
+* **Rejected:** the raw pathname (Diesel adds SQLITE_OPEN_CREATE); file: without //; shrinking connection_timeout for get() (would fail 30s busy writers).
+* **Reason:** measured sqlite3 mode=rw does not create an absent file; file:// yields an empty authority.
+* **Decided by:** Grok, f-20260905-03 Mandate B · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ea5ac5d648689c1b192fd32822d24e4cf4151ca4f81a8c4fb926d6cdf2421d8e","input_sha256":"04ec9e62716406ef73035a63a1ac44b2d3bf82ae74192fd31a715387d38fd114","kind":"mutation-receipt","operation":"190683324abc6ba4b7d090e82bdb8511af9c65fa2f698574cf25292d63d48741","options":{"section":null},"request_id_sha256":null,"results":["d-20260913-04"],"target":"decisions-ledger","v":1} -->
