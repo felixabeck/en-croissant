@@ -53,6 +53,9 @@ const MAX_TRUSTED_OWNER_FAMILIES: usize = 32;
 const MAX_PENDING_ARTIFACTS: usize = 256;
 const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LEGACY_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
+#[cfg(not(unix))]
+const UNSUPPORTED_DIRECTORY_ENUMERATION: &str =
+    "fd-relative directory enumeration is unsupported on this platform";
 
 fn map_db3_children_cancellable<T>(
     root: CapabilityDirectory,
@@ -87,14 +90,6 @@ pub(crate) struct CapabilityDirectory {
     directory: fs::File,
 }
 
-impl std::fmt::Debug for CapabilityDirectory {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CapabilityDirectory")
-            .finish_non_exhaustive()
-    }
-}
-
 impl CapabilityDirectory {
     pub(crate) fn entries(
         &self,
@@ -104,7 +99,7 @@ impl CapabilityDirectory {
         #[cfg(unix)]
         {
             let entries = read_directory_entries_at(&self.directory, cancellation, keep)?;
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             CAPABILITY_DIRECTORY_POST_ENTRIES_HOOK.with(|slot| {
                 if let Some(hook) = slot.borrow_mut().take() {
                     hook();
@@ -115,9 +110,7 @@ impl CapabilityDirectory {
         #[cfg(not(unix))]
         {
             let _ = (cancellation, keep);
-            Err(Error::Conflict(
-                "fd-relative directory enumeration is unsupported on this platform".into(),
-            ))
+            Err(Error::Conflict(UNSUPPORTED_DIRECTORY_ENUMERATION.into()))
         }
     }
 
@@ -133,7 +126,7 @@ impl CapabilityDirectory {
         crate::infra::fs::single_leaf(&entry.name)?;
         #[cfg(unix)]
         {
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             CAPABILITY_CHILD_PRE_OPEN_HOOK.with(|slot| {
                 if let Some(hook) = slot.borrow_mut().take() {
                     hook();
@@ -160,9 +153,7 @@ impl CapabilityDirectory {
         #[cfg(not(unix))]
         {
             let _ = entry;
-            Err(Error::Conflict(
-                "fd-relative directory enumeration is unsupported on this platform".into(),
-            ))
+            Err(Error::Conflict(UNSUPPORTED_DIRECTORY_ENUMERATION.into()))
         }
     }
 
@@ -180,9 +171,7 @@ impl CapabilityDirectory {
         #[cfg(not(unix))]
         {
             let _ = entry;
-            Err(Error::Conflict(
-                "fd-relative directory enumeration is unsupported on this platform".into(),
-            ))
+            Err(Error::Conflict(UNSUPPORTED_DIRECTORY_ENUMERATION.into()))
         }
     }
 
@@ -194,7 +183,7 @@ impl CapabilityDirectory {
         let sidecar = workspace_sidecar_leaf(&pgn.name)?;
         #[cfg(unix)]
         {
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             WORKSPACE_METADATA_PRE_OPEN_HOOK.with(|slot| {
                 if let Some(hook) = slot.borrow_mut().take() {
                     hook();
@@ -203,7 +192,7 @@ impl CapabilityDirectory {
             let opened =
                 match open_regular_at(&self.directory, &sidecar, RegularFileAccess::ReadOnly) {
                     Ok(file) => {
-                        #[cfg(test)]
+                        #[cfg(all(test, unix))]
                         WORKSPACE_METADATA_POST_OPEN_HOOK.with(|slot| {
                             if let Some(hook) = slot.borrow_mut().take() {
                                 hook(&file);
@@ -220,9 +209,7 @@ impl CapabilityDirectory {
         #[cfg(not(unix))]
         {
             let _ = pgn;
-            Err(Error::Conflict(
-                "fd-relative directory enumeration is unsupported on this platform".into(),
-            ))
+            Err(Error::Conflict(UNSUPPORTED_DIRECTORY_ENUMERATION.into()))
         }
     }
 }
@@ -491,17 +478,25 @@ fn refuse_unobserved(
     Ok(resolved_identity)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 type WorkspaceMetadataPostOpenHook = Box<dyn FnOnce(&fs::File)>;
 #[cfg(test)]
 type RefreshEntryHook = Box<dyn Fn(&str)>;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 std::thread_local! {
     static CAPABILITY_DIRECTORY_POST_ENTRIES_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static CAPABILITY_CHILD_PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static WORKSPACE_METADATA_POST_OPEN_HOOK: std::cell::RefCell<Option<WorkspaceMetadataPostOpenHook>> =
+        const { std::cell::RefCell::new(None) };
+    static WORKSPACE_METADATA_PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+std::thread_local! {
     static DATABASE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static DATABASE_TARGET_POST_VALIDATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -515,10 +510,6 @@ std::thread_local! {
     static RESOLVE_PRE_REGULAR_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static RESOLVE_PRE_DIRECTORY_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
-        const { std::cell::RefCell::new(None) };
-    static WORKSPACE_METADATA_POST_OPEN_HOOK: std::cell::RefCell<Option<WorkspaceMetadataPostOpenHook>> =
-        const { std::cell::RefCell::new(None) };
-    static WORKSPACE_METADATA_PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static REFRESH_ENTRY_HOOK: std::cell::RefCell<Option<RefreshEntryHook>> =
         const { std::cell::RefCell::new(None) };
@@ -534,24 +525,22 @@ fn reject_disagreeing_expected_identity(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn set_workspace_metadata_post_open_hook(hook: Option<WorkspaceMetadataPostOpenHook>) {
     WORKSPACE_METADATA_POST_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
+#[cfg(all(test, unix))]
 pub(crate) fn set_capability_directory_post_entries_hook(hook: Option<Box<dyn FnOnce()>>) {
     CAPABILITY_DIRECTORY_POST_ENTRIES_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
+#[cfg(all(test, unix))]
 pub(crate) fn set_capability_child_pre_open_hook(hook: Option<Box<dyn FnOnce()>>) {
     CAPABILITY_CHILD_PRE_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn set_workspace_metadata_pre_open_hook(hook: Option<Box<dyn FnOnce()>>) {
     WORKSPACE_METADATA_PRE_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
@@ -2341,9 +2330,7 @@ impl PathAuthority {
         #[cfg(not(unix))]
         {
             let _ = (id, operation);
-            Err(Error::Conflict(
-                "fd-relative directory enumeration is unsupported on this platform".into(),
-            ))
+            Err(Error::Conflict(UNSUPPORTED_DIRECTORY_ENUMERATION.into()))
         }
     }
 
@@ -14426,13 +14413,33 @@ mod workspace_directory_enumeration_tests {
         assert!(post.load(Ordering::SeqCst));
     }
 
-    #[test]
-    fn database_listing_refuses_a_db3_replaced_after_enumeration() {
+    #[derive(Clone, Copy)]
+    enum Db3ListingKind {
+        Database,
+        Puzzle,
+    }
+
+    enum Db3RootHandle {
+        Database(DatabaseRootHandle),
+        Puzzle(PuzzleRootHandle),
+    }
+
+    #[derive(Clone, Copy)]
+    enum Db3Replacement {
+        RegularFile,
+        Directory,
+    }
+
+    fn db3_root_fixture(
+        kind: Db3ListingKind,
+    ) -> (tempfile::TempDir, PathBuf, PathAuthority, Db3RootHandle) {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("databases");
+        let root = directory.path().join(match kind {
+            Db3ListingKind::Database => "databases",
+            Db3ListingKind::Puzzle => "puzzles",
+        });
         fs::create_dir(&root).unwrap();
-        let child = root.join("a.db3");
-        fs::write(&child, b"old").unwrap();
+        fs::write(root.join("a.db3"), b"old").unwrap();
         let mut authority = PathAuthority::open_with_clock(
             directory.path().join("registry.json"),
             vec![],
@@ -14440,82 +14447,71 @@ mod workspace_directory_enumeration_tests {
             2,
         )
         .unwrap();
-        let root_handle = authority
-            .get_or_create_database_root(&root, "Databases", None)
-            .unwrap();
+        let root_handle = match kind {
+            Db3ListingKind::Database => Db3RootHandle::Database(
+                authority
+                    .get_or_create_database_root(&root, "Databases", None)
+                    .unwrap(),
+            ),
+            Db3ListingKind::Puzzle => Db3RootHandle::Puzzle(
+                authority
+                    .get_or_create_puzzle_root(&root, "Puzzles", None)
+                    .unwrap(),
+            ),
+        };
+        (directory, root, authority, root_handle)
+    }
+
+    fn assert_db3_listing_refuses_replacement(
+        kind: Db3ListingKind,
+        replacement_kind: Db3Replacement,
+    ) {
+        let (_directory, root, mut authority, root_handle) = db3_root_fixture(kind);
+        let child = root.join("a.db3");
         let before = authority.persistent_snapshot_for_test();
         let child_for_hook = child.clone();
-        set_capability_directory_post_entries_hook(Some(Box::new(move || {
-            let replacement = child_for_hook.with_extension("replacement");
-            fs::write(&replacement, b"replacement").unwrap();
-            fs::rename(&replacement, &child_for_hook).unwrap();
-        })));
-        let result =
-            authority.list_database_children_cancellable(&root_handle, &CancellationToken::new());
+        set_capability_directory_post_entries_hook(Some(Box::new(
+            move || match replacement_kind {
+                Db3Replacement::RegularFile => {
+                    let replacement = child_for_hook.with_extension("replacement");
+                    fs::write(&replacement, b"replacement").unwrap();
+                    fs::rename(&replacement, &child_for_hook).unwrap();
+                }
+                Db3Replacement::Directory => {
+                    fs::rename(&child_for_hook, child_for_hook.with_extension("old")).unwrap();
+                    fs::create_dir(&child_for_hook).unwrap();
+                }
+            },
+        )));
+        let result = match root_handle {
+            Db3RootHandle::Database(root) => authority
+                .list_database_children_cancellable(&root, &CancellationToken::new())
+                .map(|_| ()),
+            Db3RootHandle::Puzzle(root) => authority
+                .list_puzzle_children_cancellable(&root, &CancellationToken::new())
+                .map(|_| ()),
+        };
         set_capability_directory_post_entries_hook(None);
-        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
         assert_eq!(authority.persistent_snapshot_for_test(), before);
+    }
+
+    #[test]
+    fn database_listing_refuses_a_db3_replaced_after_enumeration() {
+        assert_db3_listing_refuses_replacement(
+            Db3ListingKind::Database,
+            Db3Replacement::RegularFile,
+        );
     }
 
     #[test]
     fn puzzle_listing_refuses_a_db3_replaced_after_enumeration() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("puzzles");
-        fs::create_dir(&root).unwrap();
-        let child = root.join("a.db3");
-        fs::write(&child, b"old").unwrap();
-        let mut authority = PathAuthority::open_with_clock(
-            directory.path().join("registry.json"),
-            vec![],
-            std::sync::Arc::new(SystemClock),
-            2,
-        )
-        .unwrap();
-        let root_handle = authority
-            .get_or_create_puzzle_root(&root, "Puzzles", None)
-            .unwrap();
-        let before = authority.persistent_snapshot_for_test();
-        let child_for_hook = child.clone();
-        set_capability_directory_post_entries_hook(Some(Box::new(move || {
-            let replacement = child_for_hook.with_extension("replacement");
-            fs::write(&replacement, b"replacement").unwrap();
-            fs::rename(&replacement, &child_for_hook).unwrap();
-        })));
-        let result =
-            authority.list_puzzle_children_cancellable(&root_handle, &CancellationToken::new());
-        set_capability_directory_post_entries_hook(None);
-        assert!(matches!(result, Err(Error::Conflict(_))));
-        assert_eq!(authority.persistent_snapshot_for_test(), before);
+        assert_db3_listing_refuses_replacement(Db3ListingKind::Puzzle, Db3Replacement::RegularFile);
     }
 
     #[test]
     fn database_listing_refuses_a_db3_replaced_by_a_directory() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("databases");
-        fs::create_dir(&root).unwrap();
-        let child = root.join("a.db3");
-        fs::write(&child, b"old").unwrap();
-        let mut authority = PathAuthority::open_with_clock(
-            directory.path().join("registry.json"),
-            vec![],
-            std::sync::Arc::new(SystemClock),
-            2,
-        )
-        .unwrap();
-        let root_handle = authority
-            .get_or_create_database_root(&root, "Databases", None)
-            .unwrap();
-        let before = authority.persistent_snapshot_for_test();
-        let child_for_hook = child.clone();
-        set_capability_directory_post_entries_hook(Some(Box::new(move || {
-            fs::rename(&child_for_hook, child_for_hook.with_extension("old")).unwrap();
-            fs::create_dir(&child_for_hook).unwrap();
-        })));
-        let result =
-            authority.list_database_children_cancellable(&root_handle, &CancellationToken::new());
-        set_capability_directory_post_entries_hook(None);
-        assert!(matches!(result, Err(Error::Conflict(_))));
-        assert_eq!(authority.persistent_snapshot_for_test(), before);
+        assert_db3_listing_refuses_replacement(Db3ListingKind::Database, Db3Replacement::Directory);
     }
 
     #[test]

@@ -37,17 +37,16 @@ pub(crate) struct DirectoryEntry {
     pub(crate) modified_seconds: i64,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 type ReadDirectoryPreStatHook = Box<dyn FnMut(&OsStr)>;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 std::thread_local! {
     static READ_DIRECTORY_PRE_STAT_HOOK: std::cell::RefCell<Option<ReadDirectoryPreStatHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
+#[cfg(all(test, unix))]
 pub(crate) fn set_read_directory_pre_stat_hook(hook: Option<ReadDirectoryPreStatHook>) {
     READ_DIRECTORY_PRE_STAT_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
@@ -89,7 +88,7 @@ pub(crate) fn read_directory_entries_at(
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         READ_DIRECTORY_PRE_STAT_HOOK.with(|slot| {
             if let Some(hook) = slot.borrow_mut().as_mut() {
                 hook(&name);
