@@ -9,10 +9,13 @@
 //! app-owned default root (`db` / `engines` / `puzzles`) recovered with a matching live
 //! `VerifiedIdentity`: that path re-registers the new inode rather than staying wedged.
 
+#[cfg(unix)]
+use crate::infra::fs::{assert_entry_identity, open_directory_at, read_directory_entries_at};
 use crate::{
     error::Error,
     infra::fs::{
-        atomic_replace, read_bounded_bytes, AtomicFileOutcome, RegularFileAccess, VerifiedDir,
+        atomic_replace, open_regular_at, read_bounded_bytes, AtomicFileOutcome, DirectoryEntry,
+        DirectoryEntryKind, RegularFileAccess, VerifiedDir,
     },
 };
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
@@ -52,38 +55,176 @@ const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LEGACY_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
 
 fn map_db3_children_cancellable<T>(
-    root: &Path,
+    root: CapabilityDirectory,
     cancellation: &CancellationToken,
-    mut map: impl FnMut(OsString, String) -> Result<T, Error>,
+    mut map: impl FnMut(OsString, String, (u64, u64)) -> Result<T, Error>,
 ) -> Result<Vec<T>, Error> {
-    let mut children = Vec::new();
-    for entry in fs::read_dir(root)? {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancellation);
-        }
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension() != Some(OsStr::new("db3")) {
-            continue;
-        }
-        let metadata = fs::symlink_metadata(path)?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            continue;
-        }
-        let filename = entry.file_name();
-        let display_name = filename.to_string_lossy().into_owned();
-        children.push((display_name, filename));
+    let mut children: Vec<(String, DirectoryEntry)> = root
+        .entries(cancellation, &mut |name| {
+            Path::new(name).extension() == Some(OsStr::new("db3"))
+        })?
+        .into_iter()
+        .filter(|entry| entry.kind == DirectoryEntryKind::RegularFile)
+        .map(|entry| (entry.name.to_string_lossy().into_owned(), entry))
+        .collect();
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
     }
     children.sort_by(|(left, _), (right, _)| left.cmp(right));
 
     let mut mapped = Vec::with_capacity(children.len());
-    for (display_name, filename) in children {
+    for (display_name, entry) in children {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        mapped.push(map(filename, display_name)?);
+        mapped.push(map(entry.name, display_name, entry.identity)?);
     }
     Ok(mapped)
+}
+
+/// A directory reached through a `PathRef` capability. It carries no pathname.
+pub(crate) struct CapabilityDirectory {
+    directory: fs::File,
+}
+
+impl std::fmt::Debug for CapabilityDirectory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CapabilityDirectory")
+            .finish_non_exhaustive()
+    }
+}
+
+impl CapabilityDirectory {
+    pub(crate) fn entries(
+        &self,
+        cancellation: &CancellationToken,
+        keep: &mut dyn FnMut(&OsStr) -> bool,
+    ) -> Result<Vec<DirectoryEntry>, Error> {
+        #[cfg(unix)]
+        {
+            let entries = read_directory_entries_at(&self.directory, cancellation, keep)?;
+            #[cfg(test)]
+            CAPABILITY_DIRECTORY_POST_ENTRIES_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    hook();
+                }
+            });
+            Ok(entries)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (cancellation, keep);
+            Err(Error::Conflict(
+                "fd-relative directory enumeration is unsupported on this platform".into(),
+            ))
+        }
+    }
+
+    pub(crate) fn open_child_directory(
+        &self,
+        entry: &DirectoryEntry,
+    ) -> Result<CapabilityDirectory, Error> {
+        if entry.kind != DirectoryEntryKind::Directory {
+            return Err(Error::InvalidInput(
+                "directory entry is not a directory".into(),
+            ));
+        }
+        crate::infra::fs::single_leaf(&entry.name)?;
+        #[cfg(unix)]
+        {
+            #[cfg(test)]
+            CAPABILITY_CHILD_PRE_OPEN_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    hook();
+                }
+            });
+            let opened = open_directory_at(&self.directory, &entry.name).map_err(|error| {
+                if let Error::Io(io_error) = &error {
+                    if matches!(
+                        io_error.raw_os_error(),
+                        Some(code)
+                            if code == rustix::io::Errno::LOOP.raw_os_error()
+                                || code == rustix::io::Errno::NOTDIR.raw_os_error()
+                                || code == rustix::io::Errno::NOENT.raw_os_error()
+                    ) {
+                        return Error::Conflict("workspace directory changed concurrently".into());
+                    }
+                }
+                error
+            })?;
+            Ok(CapabilityDirectory {
+                directory: VerifiedDir::new(opened, entry.identity)?.into_file(),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = entry;
+            Err(Error::Conflict(
+                "fd-relative directory enumeration is unsupported on this platform".into(),
+            ))
+        }
+    }
+
+    pub(crate) fn confirm_entry(&self, entry: &DirectoryEntry) -> Result<(), Error> {
+        crate::infra::fs::single_leaf(&entry.name)?;
+        #[cfg(unix)]
+        {
+            assert_entry_identity(
+                &self.directory,
+                &entry.name,
+                entry.identity,
+                entry.kind == DirectoryEntryKind::Directory,
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = entry;
+            Err(Error::Conflict(
+                "fd-relative directory enumeration is unsupported on this platform".into(),
+            ))
+        }
+    }
+
+    pub(crate) fn open_metadata_sidecar(
+        &self,
+        pgn: &DirectoryEntry,
+    ) -> Result<Option<fs::File>, Error> {
+        crate::infra::fs::single_leaf(&pgn.name)?;
+        let sidecar = workspace_sidecar_leaf(&pgn.name)?;
+        #[cfg(unix)]
+        {
+            #[cfg(test)]
+            WORKSPACE_METADATA_PRE_OPEN_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    hook();
+                }
+            });
+            let opened =
+                match open_regular_at(&self.directory, &sidecar, RegularFileAccess::ReadOnly) {
+                    Ok(file) => {
+                        #[cfg(test)]
+                        WORKSPACE_METADATA_POST_OPEN_HOOK.with(|slot| {
+                            if let Some(hook) = slot.borrow_mut().take() {
+                                hook(&file);
+                            }
+                        });
+                        Some(file)
+                    }
+                    Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error),
+                };
+            self.confirm_entry(pgn)?;
+            Ok(opened)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pgn;
+            Err(Error::Conflict(
+                "fd-relative directory enumeration is unsupported on this platform".into(),
+            ))
+        }
+    }
 }
 
 fn engine_file_operations() -> Vec<PathOperation> {
@@ -340,6 +481,16 @@ pub(crate) use verified_identity::VerifiedIdentity;
 
 const VERIFIED_REGISTRATION_CONFLICT: &str = "verified identity does not match registration target";
 
+fn refuse_unobserved(
+    resolved_identity: VerifiedIdentity,
+    observed: (u64, u64),
+) -> Result<VerifiedIdentity, Error> {
+    if resolved_identity.pair() != observed {
+        return Err(Error::Conflict(VERIFIED_REGISTRATION_CONFLICT.into()));
+    }
+    Ok(resolved_identity)
+}
+
 #[cfg(test)]
 type WorkspaceMetadataPostOpenHook = Box<dyn FnOnce(&fs::File)>;
 #[cfg(test)]
@@ -347,6 +498,10 @@ type RefreshEntryHook = Box<dyn Fn(&str)>;
 
 #[cfg(test)]
 std::thread_local! {
+    static CAPABILITY_DIRECTORY_POST_ENTRIES_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static CAPABILITY_CHILD_PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
     static DATABASE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static DATABASE_TARGET_POST_VALIDATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -382,6 +537,18 @@ fn reject_disagreeing_expected_identity(
 #[cfg(test)]
 pub(crate) fn set_workspace_metadata_post_open_hook(hook: Option<WorkspaceMetadataPostOpenHook>) {
     WORKSPACE_METADATA_POST_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn set_capability_directory_post_entries_hook(hook: Option<Box<dyn FnOnce()>>) {
+    CAPABILITY_DIRECTORY_POST_ENTRIES_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn set_capability_child_pre_open_hook(hook: Option<Box<dyn FnOnce()>>) {
+    CAPABILITY_CHILD_PRE_OPEN_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
 #[cfg(test)]
@@ -2141,6 +2308,45 @@ pub(crate) fn workspace_sidecar_leaf(leaf: &OsStr) -> Result<OsString, Error> {
 }
 
 impl PathAuthority {
+    #[cfg(test)]
+    pub(crate) fn persistent_snapshot_for_test(&self) -> Vec<(String, (u64, u64), bool)> {
+        let mut snapshot = self
+            .persistent
+            .values()
+            .map(|entry| {
+                (
+                    entry.stored.display_name.clone(),
+                    (entry.stored.identity.a, entry.stored.identity.b),
+                    entry.stored.target_is_dir,
+                )
+            })
+            .collect::<Vec<_>>();
+        snapshot.sort();
+        snapshot
+    }
+
+    pub(crate) fn capability_directory(
+        &mut self,
+        id: &PathRef,
+        operation: PathOperation,
+    ) -> Result<CapabilityDirectory, Error> {
+        #[cfg(unix)]
+        {
+            let mut resolved = self.resolve(id, operation, &[])?;
+            let directory = resolved
+                .take_directory()
+                .ok_or_else(|| Error::InvalidInput("path capability is not a directory".into()))?;
+            Ok(CapabilityDirectory { directory })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (id, operation);
+            Err(Error::Conflict(
+                "fd-relative directory enumeration is unsupported on this platform".into(),
+            ))
+        }
+    }
+
     /// Turns a native save-dialog choice into one persistent, exact PGN destination. The renderer
     /// receives only the resulting workspace handle; the selected native path never leaves this
     /// authority boundary. A new target is materialized before the dialog grant is promoted so
@@ -3462,13 +3668,18 @@ impl PathAuthority {
         root: &PuzzleRootHandle,
         cancellation: &CancellationToken,
     ) -> Result<Vec<PuzzleDatabaseDescriptor>, Error> {
-        let root_path = self.puzzle_root_path(root)?;
-        map_db3_children_cancellable(&root_path, cancellation, |filename, display_name| {
-            Ok(PuzzleDatabaseDescriptor {
-                file: self.register_puzzle_child(root, &filename)?,
-                filename: display_name,
-            })
-        })
+        let root_directory =
+            self.capability_directory(root.path_ref(), PathOperation::PuzzleRead)?;
+        map_db3_children_cancellable(
+            root_directory,
+            cancellation,
+            |filename, display_name, identity| {
+                Ok(PuzzleDatabaseDescriptor {
+                    file: self.register_puzzle_child(root, &filename, identity)?,
+                    filename: display_name,
+                })
+            },
+        )
     }
 
     pub(crate) fn puzzle_download_destination(
@@ -3490,6 +3701,7 @@ impl PathAuthority {
         &mut self,
         root: &PuzzleRootHandle,
         filename: &OsStr,
+        observed: (u64, u64),
     ) -> Result<PathRef, Error> {
         validate_components(&[filename.to_os_string()])?;
         let resolved = self.resolve(
@@ -3497,6 +3709,7 @@ impl PathAuthority {
             PathOperation::PuzzleRead,
             &[filename.to_os_string()],
         )?;
+        let resolved_identity = refuse_unobserved(resolved.identity()?, observed)?;
         #[cfg(test)]
         PUZZLE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
             if let Some(hook) = slot.borrow_mut().take() {
@@ -3508,7 +3721,7 @@ impl PathAuthority {
             &path,
             filename.to_string_lossy(),
             canonical_operations(EntryPurpose::PuzzleFile),
-            resolved.identity()?,
+            resolved_identity,
         )?;
         require_durable(commit.durability)?;
         Ok(commit.id)
@@ -3523,14 +3736,24 @@ impl PathAuthority {
         root: &DatabaseRootHandle,
         cancellation: &CancellationToken,
     ) -> Result<Vec<DatabaseDescriptor>, Error> {
-        let root_path = self.database_root_path(root)?;
-        map_db3_children_cancellable(&root_path, cancellation, |filename, display_name| {
-            Ok(DatabaseDescriptor {
-                handle: self.register_database_child(root, &filename, display_name.clone())?,
-                filename: display_name,
-                availability: PathAvailability::Available,
-            })
-        })
+        let root_directory =
+            self.capability_directory(root.path_ref(), PathOperation::DatabaseRead)?;
+        map_db3_children_cancellable(
+            root_directory,
+            cancellation,
+            |filename, display_name, identity| {
+                Ok(DatabaseDescriptor {
+                    handle: self.register_database_child(
+                        root,
+                        &filename,
+                        display_name.clone(),
+                        identity,
+                    )?,
+                    filename: display_name,
+                    availability: PathAvailability::Available,
+                })
+            },
+        )
     }
 
     /// Registers an exact database child after validating it relative to the
@@ -3541,22 +3764,23 @@ impl PathAuthority {
         root: &DatabaseRootHandle,
         filename: &OsStr,
         display_name: impl Into<String>,
+        observed: (u64, u64),
     ) -> Result<DatabaseHandle, Error> {
         let components = vec![filename.to_os_string()];
         let resolved = self.resolve(root.path_ref(), PathOperation::DatabaseRead, &components)?;
+        let resolved_identity = refuse_unobserved(resolved.identity()?, observed)?;
         #[cfg(test)]
         DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
             if let Some(hook) = slot.borrow_mut().take() {
                 hook();
             }
         });
-        let expected_identity = resolved.identity()?;
         self.register_database_child_verified(
             root,
             filename,
             display_name.into(),
             &resolved,
-            expected_identity,
+            resolved_identity,
         )
     }
 
@@ -4348,115 +4572,16 @@ impl PathAuthority {
         Ok(root)
     }
 
-    /// Opens the optional metadata sidecar beside an authority-resolved PGN. The PGN traversal
-    /// and sidecar acquisition happen under the caller's authority lock; returned bytes may be
-    /// consumed after the lock is released.
-    pub(crate) fn open_workspace_metadata(
-        &mut self,
-        workspace: &FileWorkspaceHandle,
-        components: &[OsString],
-    ) -> Result<Option<fs::File>, Error> {
-        let resolved = self.resolve(workspace.path_ref(), PathOperation::ReadPgn, components)?;
-        let parent = resolved
-            .parent()
-            .ok_or_else(|| Error::InvalidInput("PGN has no retained parent".into()))?;
-        let leaf = resolved
-            .leaf()
-            .ok_or_else(|| Error::InvalidInput("PGN has no filename".into()))?;
-        let sidecar = workspace_sidecar_leaf(leaf)?;
-        #[cfg(test)]
-        WORKSPACE_METADATA_PRE_OPEN_HOOK.with(|slot| {
-            if let Some(hook) = slot.borrow_mut().take() {
-                hook();
-            }
-        });
-        #[cfg(unix)]
-        let opened =
-            crate::infra::fs::open_regular_at(parent, &sidecar, RegularFileAccess::ReadOnly);
-        #[cfg(windows)]
-        let opened = open_windows_child(parent, &sidecar, false, false, true);
-        match opened {
-            Ok(file) => {
-                #[cfg(test)]
-                WORKSPACE_METADATA_POST_OPEN_HOOK.with(|slot| {
-                    if let Some(hook) = slot.borrow_mut().take() {
-                        hook(&file);
-                    }
-                });
-                Ok(Some(file))
-            }
-            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Persists an opaque child handle for a validated workspace entry. The child keeps the
-    /// workspace operations and its own identity, so open tabs and recent entries survive a
-    /// renderer remount or application restart without serializing a physical path.
-    pub(crate) fn register_workspace_child(
+    /// Persists an opaque child handle for an entry observed through a retained directory
+    /// descriptor. The supplied identity is the one captured during enumeration.
+    pub(crate) fn register_workspace_child_observed(
         &mut self,
         workspace: &FileWorkspaceHandle,
         components: &[OsString],
         display_name: impl Into<String>,
-    ) -> Result<FileWorkspaceHandle, Error> {
-        validate_components(components)?;
-        if components.is_empty() {
-            return Err(Error::InvalidInput("workspace child is required".into()));
-        }
-        let root_entry = self
-            .persistent
-            .get(&workspace.path_ref().id)
-            .cloned()
-            .ok_or_else(|| Error::InvalidInput("workspace is not persistent".into()))?;
-        if !root_entry.stored.target_is_dir
-            || !root_entry
-                .stored
-                .operations
-                .contains(&PathOperation::ReadPgn)
-        {
-            return Err(Error::InvalidInput("invalid PGN workspace root".into()));
-        }
-        // `resolve` performs fd/handle-relative no-follow traversal before we persist the
-        // descriptor. The native path remains backend-only registry data.
-        self.resolve(workspace.path_ref(), PathOperation::ReadPgn, components)?;
-        let root = self.workspace_root(workspace, PathOperation::ReadPgn)?;
-        let path = components.iter().fold(root, |mut path, component| {
-            path.push(component);
-            path
-        });
-        let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
-            return Err(Error::InvalidInput(
-                "workspace entry must be a regular file or directory".into(),
-            ));
-        }
-        let class = if metadata.is_dir() {
-            PathClass::PersistentCustomRoot
-        } else {
-            PathClass::PersistentFile
-        };
-        let identity = validate_target(&path, class)?;
-        self.persist_workspace_child(
-            root_entry,
-            path,
-            display_name.into(),
-            class,
-            identity,
-            metadata.is_dir(),
-        )
-    }
-
-    /// Persists a child created through retained descriptors. The caller supplies the exact
-    /// inode captured from the installed/opened FD, so registration cannot bind a pathname
-    /// replacement that appears after the namespace commit.
-    #[cfg(unix)]
-    pub(crate) fn register_workspace_child_expected(
-        &mut self,
-        workspace: &FileWorkspaceHandle,
-        components: &[OsString],
-        display_name: impl Into<String>,
-        expected_identity: (u64, u64),
+        identity: (u64, u64),
         is_dir: bool,
+        operation: PathOperation,
     ) -> Result<FileWorkspaceHandle, Error> {
         validate_components(components)?;
         if components.is_empty() {
@@ -4467,15 +4592,8 @@ impl PathAuthority {
             .get(&workspace.path_ref().id)
             .cloned()
             .ok_or_else(|| Error::InvalidInput("workspace is not persistent".into()))?;
-        if !root_entry.stored.target_is_dir
-            || !root_entry
-                .stored
-                .operations
-                .contains(&PathOperation::WritePgn)
-        {
-            return Err(Error::InvalidInput(
-                "invalid writable PGN workspace root".into(),
-            ));
+        if !root_entry.stored.target_is_dir || !root_entry.stored.operations.contains(&operation) {
+            return Err(Error::InvalidInput("invalid PGN workspace root".into()));
         }
         let root = root_entry.stored.path.to_path()?;
         let path = components.iter().fold(root, |mut path, component| {
@@ -4493,8 +4611,8 @@ impl PathAuthority {
             display_name.into(),
             class,
             Identity {
-                a: expected_identity.0,
-                b: expected_identity.1,
+                a: identity.0,
+                b: identity.1,
             },
             is_dir,
         )
@@ -5747,6 +5865,13 @@ mod tests {
 
     static CURRENT_DIR_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    #[cfg(unix)]
+    fn observed_identity(path: &Path) -> (u64, u64) {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(path).unwrap();
+        (metadata.dev(), metadata.ino())
+    }
+
     const _: fn(VerifiedFile, u64, usize) -> Result<Vec<u8>, Error> = read_engine_image_bytes;
 
     #[test]
@@ -6141,6 +6266,7 @@ mod tests {
         let replacement = dir.path().join("replacement.db3");
         fs::write(&child, b"original").unwrap();
         fs::write(&replacement, b"replacement").unwrap();
+        let original_identity = observed_identity(&child);
         let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
         let root = authority
             .get_or_create_database_root(&root_path, "Databases", None)
@@ -6154,7 +6280,12 @@ mod tests {
                 .is_none());
         });
         let error = authority
-            .register_database_child(&root, OsStr::new("child.db3"), "child.db3")
+            .register_database_child(
+                &root,
+                OsStr::new("child.db3"),
+                "child.db3",
+                original_identity,
+            )
             .expect_err("the descriptor and joined pathname identities disagree");
 
         let Error::Conflict(message) = error else {
@@ -6205,6 +6336,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn list_workspace_databases_cancels_between_entries_before_later_durable_registration() {
         let dir = tempfile::tempdir().unwrap();
@@ -6237,6 +6369,7 @@ mod tests {
         assert_eq!(registered, 1, "only the completed entry may be durable");
     }
 
+    #[cfg(unix)]
     #[test]
     fn list_puzzle_databases_cancels_between_entries_before_later_durable_registration() {
         let dir = tempfile::tempdir().unwrap();
@@ -7281,12 +7414,13 @@ mod tests {
         fs::rename(&path, workspace.join("original.pgn")).unwrap();
         fs::write(&path, b"replacement").unwrap();
         let handle = authority
-            .register_workspace_child_expected(
+            .register_workspace_child_observed(
                 &root,
                 &[OsString::from("game.pgn")],
                 "game",
                 (original.a, original.b),
                 false,
+                PathOperation::WritePgn,
             )
             .unwrap();
 
@@ -7298,7 +7432,14 @@ mod tests {
         let source = workspace.join("source.pgn");
         fs::write(&source, b"move source").unwrap();
         let moved_handle = authority
-            .register_workspace_child(&root, &[OsString::from("source.pgn")], "source")
+            .register_workspace_child_observed(
+                &root,
+                &[OsString::from("source.pgn")],
+                "source",
+                observed_identity(&source),
+                false,
+                PathOperation::ReadPgn,
+            )
             .unwrap();
         let moved = workspace.join("moved.pgn");
         fs::rename(&source, &moved).unwrap();
@@ -7360,17 +7501,27 @@ mod tests {
                 .id,
         );
         let victim_handle = authority
-            .register_workspace_child(&root, &[OsString::from("victim")], "victim")
+            .register_workspace_child_observed(
+                &root,
+                &[OsString::from("victim")],
+                "victim",
+                observed_identity(&victim),
+                true,
+                PathOperation::ReadPgn,
+            )
             .unwrap();
         let nested_handle = authority
-            .register_workspace_child(
+            .register_workspace_child_observed(
                 &root,
                 &[OsString::from("victim"), OsString::from("nested")],
                 "nested",
+                observed_identity(&victim.join("nested")),
+                true,
+                PathOperation::ReadPgn,
             )
             .unwrap();
         let game_handle = authority
-            .register_workspace_child(
+            .register_workspace_child_observed(
                 &root,
                 &[
                     OsString::from("victim"),
@@ -7378,10 +7529,20 @@ mod tests {
                     OsString::from("game.pgn"),
                 ],
                 "game",
+                observed_identity(&victim.join("nested/game.pgn")),
+                false,
+                PathOperation::ReadPgn,
             )
             .unwrap();
         let sibling_handle = authority
-            .register_workspace_child(&root, &[OsString::from("sibling.pgn")], "sibling")
+            .register_workspace_child_observed(
+                &root,
+                &[OsString::from("sibling.pgn")],
+                "sibling",
+                observed_identity(&workspace.join("sibling.pgn")),
+                false,
+                PathOperation::ReadPgn,
+            )
             .unwrap();
         let engine_handle = authority
             .register_engine_file(&executable, "engine")
@@ -7482,20 +7643,33 @@ mod tests {
                 .id,
         );
         let victim_handle = authority
-            .register_workspace_child(&root, &[OsString::from("victim")], "victim")
+            .register_workspace_child_observed(
+                &root,
+                &[OsString::from("victim")],
+                "victim",
+                observed_identity(&victim),
+                true,
+                PathOperation::ReadPgn,
+            )
             .unwrap();
         let removed_handle = authority
-            .register_workspace_child(
+            .register_workspace_child_observed(
                 &root,
                 &[OsString::from("victim"), OsString::from("removed.pgn")],
                 "removed",
+                observed_identity(&victim.join("removed.pgn")),
+                false,
+                PathOperation::ReadPgn,
             )
             .unwrap();
         let survived_handle = authority
-            .register_workspace_child(
+            .register_workspace_child_observed(
                 &root,
                 &[OsString::from("victim"), OsString::from("survived.pgn")],
                 "survived",
+                observed_identity(&victim.join("survived.pgn")),
+                false,
+                PathOperation::ReadPgn,
             )
             .unwrap();
         let removed_engine_handle = authority
@@ -10264,6 +10438,7 @@ mod tests {
                 &DatabaseRootHandle::new(old_id.clone()),
                 OsStr::new("child.db3"),
                 "child",
+                observed_identity(&databases.path().join("child.db3")),
             )
             .unwrap();
         assert!(path_authority.persistent.contains_key(&engines_id.id));
@@ -11025,10 +11200,13 @@ mod tests {
             "uncertain",
         ))));
         let error = authority
-            .register_workspace_child(
+            .register_workspace_child_observed(
                 &FileWorkspaceHandle::new(root),
                 &[OsString::from("game.pgn")],
                 "game",
+                observed_identity(&dir.path().join("root/game.pgn")),
+                false,
+                PathOperation::ReadPgn,
             )
             .expect_err("uncertain persistence must be surfaced");
         set_test_atomic_file_injector(None);
@@ -11039,6 +11217,7 @@ mod tests {
             .any(|entry| entry.stored.display_name == "game"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn create_database_child_parent_sync_does_not_roll_back_completed_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -11188,10 +11367,13 @@ mod tests {
         let new = dir.path().join("root/new.pgn");
         fs::write(&old, b"*").unwrap();
         let handle = authority
-            .register_workspace_child(
+            .register_workspace_child_observed(
                 &FileWorkspaceHandle::new(root),
                 &[OsString::from("old.pgn")],
                 "old",
+                observed_identity(&old),
+                false,
+                PathOperation::ReadPgn,
             )
             .unwrap();
         fs::rename(&old, &new).unwrap();
@@ -11220,10 +11402,13 @@ mod tests {
         let new = dir.path().join("root/new");
         fs::create_dir(&old).unwrap();
         let handle = authority
-            .register_workspace_child(
+            .register_workspace_child_observed(
                 &FileWorkspaceHandle::new(root),
                 &[OsString::from("old")],
                 "old",
+                observed_identity(&old),
+                true,
+                PathOperation::ReadPgn,
             )
             .unwrap();
         fs::rename(&old, &new).unwrap();
@@ -11458,10 +11643,13 @@ mod tests {
         let removed_path = dir.path().join("root/removed");
         fs::create_dir(&removed_path).unwrap();
         let removed = authority
-            .register_workspace_child(
+            .register_workspace_child_observed(
                 &FileWorkspaceHandle::new(root.clone()),
                 &[OsString::from("removed")],
                 "removed",
+                observed_identity(&removed_path),
+                true,
+                PathOperation::ReadPgn,
             )
             .unwrap();
         let executable = removed_path.join("engine");
@@ -12584,7 +12772,14 @@ mod tests {
         fs::write(&workspace_file, b"*").unwrap();
         let workspace = FileWorkspaceHandle::new(workspace_root);
         let child = authority
-            .register_workspace_child(&workspace, &[OsString::from("study.pgn")], "study")
+            .register_workspace_child_observed(
+                &workspace,
+                &[OsString::from("study.pgn")],
+                "study",
+                observed_identity(&workspace_file),
+                false,
+                PathOperation::ReadPgn,
+            )
             .unwrap();
         authority
             .persistent
@@ -12594,7 +12789,14 @@ mod tests {
             .operations = vec![PathOperation::ReadPgn];
         authority.save().unwrap();
         let reused = authority
-            .register_workspace_child(&workspace, &[OsString::from("study.pgn")], "study")
+            .register_workspace_child_observed(
+                &workspace,
+                &[OsString::from("study.pgn")],
+                "study",
+                observed_identity(&workspace_file),
+                false,
+                PathOperation::ReadPgn,
+            )
             .unwrap();
         assert_eq!(reused, child);
         assert_eq!(
@@ -12610,7 +12812,12 @@ mod tests {
             .get_or_create_database_root(&database_root_path, "databases", None)
             .unwrap();
         let database = authority
-            .register_database_child(&database_root, OsStr::new("child.db3"), "child")
+            .register_database_child(
+                &database_root,
+                OsStr::new("child.db3"),
+                "child",
+                observed_identity(&database_root_path.join("child.db3")),
+            )
             .unwrap();
         authority
             .persistent
@@ -12620,7 +12827,12 @@ mod tests {
             .operations = vec![PathOperation::DatabaseRead];
         authority.save().unwrap();
         let database_again = authority
-            .register_database_child(&database_root, OsStr::new("child.db3"), "child")
+            .register_database_child(
+                &database_root,
+                OsStr::new("child.db3"),
+                "child",
+                observed_identity(&database_root_path.join("child.db3")),
+            )
             .unwrap();
         assert_eq!(database_again, database);
         assert_eq!(
@@ -12670,10 +12882,13 @@ mod tests {
         authority.save().unwrap();
 
         let registered = authority
-            .register_workspace_child(
+            .register_workspace_child_observed(
                 &FileWorkspaceHandle::new(root),
                 &[OsString::from("study.pgn")],
                 "study",
+                observed_identity(&child_path),
+                false,
+                PathOperation::ReadPgn,
             )
             .unwrap();
         assert_ne!(registered.path_ref().id, "unrelated-unknown");
@@ -14009,5 +14224,487 @@ mod tests {
             }),
             Err(Error::Conflict(_))
         ));
+    }
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod workspace_directory_enumeration_tests {
+    use super::*;
+    use crate::infra::blocking::source_scan::body_at_indent;
+    use crate::infra::path_authority::{
+        set_capability_child_pre_open_hook, set_capability_directory_post_entries_hook,
+        set_workspace_metadata_post_open_hook, set_workspace_metadata_pre_open_hook, SystemClock,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn root_fixture(path: &Path) -> (tempfile::TempDir, PathAuthority, PathRef) {
+        let directory = tempfile::tempdir().unwrap();
+        if !path.exists() {
+            fs::create_dir_all(path).unwrap();
+        }
+        let mut authority = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            std::sync::Arc::new(SystemClock),
+            2,
+        )
+        .unwrap();
+        let id = authority
+            .migrate_legacy_os_path(
+                path.to_path_buf().into_os_string(),
+                "root",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap()
+            .id;
+        (directory, authority, id)
+    }
+    #[test]
+    fn capability_child_open_refuses_a_symlink_swap() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        let child = root.join("child");
+        let outside = directory.path().join("outside");
+        fs::create_dir_all(&child).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let (_registry, mut authority, id) = root_fixture(&root);
+        let capability = authority
+            .capability_directory(&id, PathOperation::ReadPgn)
+            .unwrap();
+        let entry = capability
+            .entries(&CancellationToken::new(), &mut |_| true)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.name == "child")
+            .unwrap();
+        let old = root.join("child-old");
+        let child_for_hook = child.clone();
+        set_capability_child_pre_open_hook(Some(Box::new(move || {
+            fs::rename(&child_for_hook, &old).unwrap();
+            symlink(&outside, &child_for_hook).unwrap();
+        })));
+        let result = capability.open_child_directory(&entry);
+        set_capability_child_pre_open_hook(None);
+        assert!(matches!(result, Err(Error::Conflict(_))));
+    }
+
+    #[test]
+    fn capability_child_open_refuses_a_directory_swap() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        let child = root.join("child");
+        fs::create_dir_all(&child).unwrap();
+        let (_registry, mut authority, id) = root_fixture(&root);
+        let capability = authority
+            .capability_directory(&id, PathOperation::ReadPgn)
+            .unwrap();
+        let entry = capability
+            .entries(&CancellationToken::new(), &mut |_| true)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.name == "child")
+            .unwrap();
+        let old = root.join("child-old");
+        let child_for_hook = child.clone();
+        set_capability_child_pre_open_hook(Some(Box::new(move || {
+            fs::rename(&child_for_hook, &old).unwrap();
+            fs::create_dir(&child_for_hook).unwrap();
+        })));
+        let result = capability.open_child_directory(&entry);
+        set_capability_child_pre_open_hook(None);
+        assert!(matches!(result, Err(Error::Conflict(_))));
+    }
+
+    #[test]
+    fn capability_child_open_refuses_a_file_swap_and_a_removal() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        let child = root.join("child");
+        fs::create_dir_all(&child).unwrap();
+        let (_registry, mut authority, id) = root_fixture(&root);
+        let capability = authority
+            .capability_directory(&id, PathOperation::ReadPgn)
+            .unwrap();
+        let entry = capability
+            .entries(&CancellationToken::new(), &mut |_| true)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.name == "child")
+            .unwrap();
+        fs::remove_dir(&child).unwrap();
+        fs::write(&child, b"file").unwrap();
+        assert!(matches!(
+            capability.open_child_directory(&entry),
+            Err(Error::Conflict(_))
+        ));
+        fs::remove_file(&child).unwrap();
+        assert!(matches!(
+            capability.open_child_directory(&entry),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn metadata_sidecar_is_read_from_the_enumerated_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        fs::create_dir(&root).unwrap();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("a.pgn"), b"*").unwrap();
+        fs::write(sub.join("a.info"), b"trusted").unwrap();
+        let (_registry, mut authority, id) = root_fixture(&root);
+        let root_capability = authority
+            .capability_directory(&id, PathOperation::ReadPgn)
+            .unwrap();
+        let sub_entry = root_capability
+            .entries(&CancellationToken::new(), &mut |name| {
+                name == OsStr::new("sub")
+            })
+            .unwrap()
+            .pop()
+            .unwrap();
+        let capability = root_capability.open_child_directory(&sub_entry).unwrap();
+        let entry = capability
+            .entries(&CancellationToken::new(), &mut |name| {
+                name == OsStr::new("a.pgn")
+            })
+            .unwrap()
+            .pop()
+            .unwrap();
+        let moved = directory.path().join("moved");
+        fs::rename(&sub, &moved).unwrap();
+        fs::create_dir(&sub).unwrap();
+        fs::hard_link(moved.join("a.pgn"), sub.join("a.pgn")).unwrap();
+        fs::write(sub.join("a.info"), b"attacker").unwrap();
+        let mut sidecar = capability.open_metadata_sidecar(&entry).unwrap().unwrap();
+        let mut bytes = Vec::new();
+        sidecar.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"trusted");
+    }
+
+    #[test]
+    fn metadata_sidecar_refuses_a_pgn_replaced_before_the_sidecar_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        fs::create_dir(&root).unwrap();
+        let pgn = root.join("a.pgn");
+        let info = root.join("a.info");
+        fs::write(&pgn, b"*").unwrap();
+        fs::write(&info, b"trusted").unwrap();
+        let (_registry, mut authority, id) = root_fixture(&root);
+        let capability = authority
+            .capability_directory(&id, PathOperation::ReadPgn)
+            .unwrap();
+        let entry = capability
+            .entries(&CancellationToken::new(), &mut |name| {
+                name == OsStr::new("a.pgn")
+            })
+            .unwrap()
+            .pop()
+            .unwrap();
+        let post = std::sync::Arc::new(AtomicBool::new(false));
+        let post_observed = std::sync::Arc::clone(&post);
+        set_workspace_metadata_post_open_hook(Some(Box::new(move |_| {
+            post_observed.store(true, Ordering::SeqCst);
+        })));
+        let pgn_for_hook = pgn.clone();
+        let info_for_hook = info.clone();
+        set_workspace_metadata_pre_open_hook(Some(Box::new(move || {
+            fs::rename(&pgn_for_hook, root.join("old.pgn")).unwrap();
+            fs::write(&pgn_for_hook, b"replacement").unwrap();
+            fs::rename(&info_for_hook, root.join("old.info")).unwrap();
+            fs::write(&info_for_hook, b"attacker").unwrap();
+        })));
+        let result = capability.open_metadata_sidecar(&entry);
+        set_workspace_metadata_pre_open_hook(None);
+        set_workspace_metadata_post_open_hook(None);
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert!(post.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn database_listing_refuses_a_db3_replaced_after_enumeration() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("databases");
+        fs::create_dir(&root).unwrap();
+        let child = root.join("a.db3");
+        fs::write(&child, b"old").unwrap();
+        let mut authority = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            std::sync::Arc::new(SystemClock),
+            2,
+        )
+        .unwrap();
+        let root_handle = authority
+            .get_or_create_database_root(&root, "Databases", None)
+            .unwrap();
+        let before = authority.persistent_snapshot_for_test();
+        let child_for_hook = child.clone();
+        set_capability_directory_post_entries_hook(Some(Box::new(move || {
+            let replacement = child_for_hook.with_extension("replacement");
+            fs::write(&replacement, b"replacement").unwrap();
+            fs::rename(&replacement, &child_for_hook).unwrap();
+        })));
+        let result =
+            authority.list_database_children_cancellable(&root_handle, &CancellationToken::new());
+        set_capability_directory_post_entries_hook(None);
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert_eq!(authority.persistent_snapshot_for_test(), before);
+    }
+
+    #[test]
+    fn puzzle_listing_refuses_a_db3_replaced_after_enumeration() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("puzzles");
+        fs::create_dir(&root).unwrap();
+        let child = root.join("a.db3");
+        fs::write(&child, b"old").unwrap();
+        let mut authority = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            std::sync::Arc::new(SystemClock),
+            2,
+        )
+        .unwrap();
+        let root_handle = authority
+            .get_or_create_puzzle_root(&root, "Puzzles", None)
+            .unwrap();
+        let before = authority.persistent_snapshot_for_test();
+        let child_for_hook = child.clone();
+        set_capability_directory_post_entries_hook(Some(Box::new(move || {
+            let replacement = child_for_hook.with_extension("replacement");
+            fs::write(&replacement, b"replacement").unwrap();
+            fs::rename(&replacement, &child_for_hook).unwrap();
+        })));
+        let result =
+            authority.list_puzzle_children_cancellable(&root_handle, &CancellationToken::new());
+        set_capability_directory_post_entries_hook(None);
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert_eq!(authority.persistent_snapshot_for_test(), before);
+    }
+
+    #[test]
+    fn database_listing_refuses_a_db3_replaced_by_a_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("databases");
+        fs::create_dir(&root).unwrap();
+        let child = root.join("a.db3");
+        fs::write(&child, b"old").unwrap();
+        let mut authority = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            std::sync::Arc::new(SystemClock),
+            2,
+        )
+        .unwrap();
+        let root_handle = authority
+            .get_or_create_database_root(&root, "Databases", None)
+            .unwrap();
+        let before = authority.persistent_snapshot_for_test();
+        let child_for_hook = child.clone();
+        set_capability_directory_post_entries_hook(Some(Box::new(move || {
+            fs::rename(&child_for_hook, child_for_hook.with_extension("old")).unwrap();
+            fs::create_dir(&child_for_hook).unwrap();
+        })));
+        let result =
+            authority.list_database_children_cancellable(&root_handle, &CancellationToken::new());
+        set_capability_directory_post_entries_hook(None);
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert_eq!(authority.persistent_snapshot_for_test(), before);
+    }
+
+    #[test]
+    fn enumeration_consumers_use_no_direct_pathname_producer() {
+        let sources = [
+            (
+                include_str!("mod.rs"),
+                concat!("fn map_db3_children_cancellable", "<T>("),
+            ),
+            (
+                include_str!("mod.rs"),
+                concat!("pub(crate) fn open_child_directory(", "\n        &self"),
+            ),
+            (
+                include_str!("mod.rs"),
+                concat!("pub(crate) fn confirm_entry", "(&self"),
+            ),
+            (
+                include_str!("mod.rs"),
+                concat!("pub(crate) fn open_metadata_sidecar(", "\n        &self"),
+            ),
+            (
+                include_str!("../fs.rs"),
+                concat!("pub(crate) fn read_directory_entries_at(", "\n    dir:"),
+            ),
+            (
+                include_str!("../../file_workspace.rs"),
+                concat!("fn collect_tree_entries(", "\n    pgn_path_authority"),
+            ),
+            (
+                include_str!("../../file_workspace.rs"),
+                concat!("fn metadata_from(", "\n    directory"),
+            ),
+        ];
+        let forbidden = [
+            "Path::",
+            "&Path",
+            "PathBuf",
+            "std::fs",
+            "fs::metadata(",
+            "fs::read(",
+            "File::open",
+            "OpenOptions",
+            "timestamp(",
+            "workspace_root(",
+            "workspace_components(",
+            "canonicalize",
+            ".exists(",
+            ".is_file(",
+            ".is_dir(",
+            "symlink_metadata",
+            "read_dir(",
+        ];
+        for (source, signature) in sources {
+            let body = body_at_indent(source, signature);
+            for token in forbidden {
+                if signature.starts_with("fn map_db3") && token == "Path::" {
+                    assert_eq!(body.matches(token).count(), 1);
+                } else {
+                    assert!(!body.contains(token), "{signature} contains {token}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn database_and_puzzle_listing_skip_symlinked_and_non_db3_and_keep_order() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("databases");
+        let puzzle_path = directory.path().join("puzzles");
+        fs::create_dir(&database_path).unwrap();
+        fs::create_dir(&puzzle_path).unwrap();
+        for root in [&database_path, &puzzle_path] {
+            fs::write(root.join("b.db3"), b"b").unwrap();
+            fs::write(root.join("a.db3"), b"a").unwrap();
+            fs::write(root.join("C.db3"), b"C").unwrap();
+            let first = OsString::from_vec(b"\x81.db3".to_vec());
+            let second = OsString::from_vec(b"\x80_.db3".to_vec());
+            fs::write(root.join(&first), b"first").unwrap();
+            fs::write(root.join(&second), b"second").unwrap();
+            let raw_cmp = first.as_bytes().cmp(second.as_bytes());
+            let lossy_cmp = first.to_string_lossy().cmp(&second.to_string_lossy());
+            assert_ne!(raw_cmp, lossy_cmp);
+            fs::write(root.join("notes.txt"), b"notes").unwrap();
+            symlink(root.join("a.db3"), root.join("d.db3")).unwrap();
+        }
+        let mut authority = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            std::sync::Arc::new(SystemClock),
+            2,
+        )
+        .unwrap();
+        let database = authority
+            .get_or_create_database_root(&database_path, "Databases", None)
+            .unwrap();
+        let puzzle = authority
+            .get_or_create_puzzle_root(&puzzle_path, "Puzzles", None)
+            .unwrap();
+        let databases = authority
+            .list_database_children_cancellable(&database, &CancellationToken::new())
+            .unwrap();
+        let puzzles = authority
+            .list_puzzle_children_cancellable(&puzzle, &CancellationToken::new())
+            .unwrap();
+        assert_eq!(
+            databases
+                .iter()
+                .map(|entry| entry.filename.as_str())
+                .collect::<Vec<_>>(),
+            ["C.db3", "a.db3", "b.db3", "�.db3", "�_.db3"]
+        );
+        assert_eq!(
+            puzzles
+                .iter()
+                .map(|entry| entry.filename.as_str())
+                .collect::<Vec<_>>(),
+            ["C.db3", "a.db3", "b.db3", "�.db3", "�_.db3"]
+        );
+    }
+
+    #[test]
+    fn database_listing_cancels_after_an_empty_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("databases");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("notes.txt"), b"notes").unwrap();
+        let mut authority = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            std::sync::Arc::new(SystemClock),
+            2,
+        )
+        .unwrap();
+        let root_handle = authority
+            .get_or_create_database_root(&root, "Databases", None)
+            .unwrap();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        set_capability_directory_post_entries_hook(Some(Box::new(move || cancel.cancel())));
+        let result = authority.list_database_children_cancellable(&root_handle, &token);
+        set_capability_directory_post_entries_hook(None);
+        assert!(matches!(result, Err(Error::Cancellation)), "{result:?}");
+    }
+
+    #[test]
+    fn capability_directory_methods_refuse_non_leaf_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("root");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("safe"), b"safe").unwrap();
+        let sibling = directory.path().join("sibling");
+        fs::write(&sibling, b"untouched").unwrap();
+        let (_registry, mut authority, id) = root_fixture(&root);
+        let capability = authority
+            .capability_directory(&id, PathOperation::ReadPgn)
+            .unwrap();
+        let regular = DirectoryEntry {
+            name: OsString::from("safe"),
+            kind: DirectoryEntryKind::RegularFile,
+            identity: (0, 0),
+            modified_seconds: 0,
+        };
+        assert!(matches!(
+            capability.open_child_directory(&regular),
+            Err(Error::InvalidInput(_))
+        ));
+        for name in ["..", "a/b", "/abs", ""] {
+            let entry = DirectoryEntry {
+                name: OsString::from(name),
+                kind: DirectoryEntryKind::RegularFile,
+                identity: (0, 0),
+                modified_seconds: 0,
+            };
+            assert!(matches!(
+                capability.open_child_directory(&entry),
+                Err(Error::InvalidInput(_))
+            ));
+            assert!(matches!(
+                capability.confirm_entry(&entry),
+                Err(Error::InvalidInput(_))
+            ));
+            assert!(matches!(
+                capability.open_metadata_sidecar(&entry),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+        assert_eq!(fs::read(sibling).unwrap(), b"untouched");
     }
 }

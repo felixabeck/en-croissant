@@ -8,16 +8,18 @@ use crate::{
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
     infra::cancellable_lock::lock_std_cancellable,
+    infra::fs::{DirectoryEntry, DirectoryEntryKind},
     infra::path_authority::{
-        workspace_sidecar_leaf as sidecar_leaf, CommitDurability, FileWorkspaceDescriptor,
-        FileWorkspaceHandle, PathAuthority, PathClass, PathOperation, PathRef,
-        WorkspaceMutationTarget, WorkspaceRemovalStatus,
+        workspace_sidecar_leaf as sidecar_leaf, CapabilityDirectory, CommitDurability,
+        FileWorkspaceDescriptor, FileWorkspaceHandle, PathAuthority, PathClass, PathOperation,
+        PathRef, WorkspaceMutationTarget, WorkspaceRemovalStatus,
     },
     pgn, AppState,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::{
+    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
@@ -124,18 +126,10 @@ fn serialize_metadata(metadata: &WorkspaceMetadata) -> Result<Vec<u8>, Error> {
 }
 
 fn metadata_from(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
-    workspace: &FileWorkspaceHandle,
-    path: &Path,
+    directory: &CapabilityDirectory,
+    pgn: &DirectoryEntry,
 ) -> Result<WorkspaceMetadata, Error> {
-    let components = workspace_components(pgn_path_authority, workspace, path)?;
-    let mut sidecar = {
-        let mut guard = authority(pgn_path_authority)?;
-        let authority = guard
-            .as_mut()
-            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-        authority.open_workspace_metadata(workspace, &components)?
-    };
+    let mut sidecar = directory.open_metadata_sidecar(pgn)?;
     let Some(sidecar) = sidecar.as_mut() else {
         return Ok(WorkspaceMetadata::default());
     };
@@ -149,6 +143,16 @@ fn metadata_from(
     )?;
     serde_json::from_slice(&bytes)
         .map_err(|error| Error::InvalidInput(format!("invalid PGN metadata: {error}")))
+}
+
+fn listed_mtime(entry: &DirectoryEntry) -> Result<i64, Error> {
+    if entry.modified_seconds < 0 {
+        return Err(Error::InvalidInput(format!(
+            "invalid modification time: {}",
+            entry.modified_seconds
+        )));
+    }
+    Ok(entry.modified_seconds)
 }
 
 fn timestamp(path: &Path) -> Result<i64, Error> {
@@ -215,19 +219,6 @@ fn workspace_components(
         .collect())
 }
 
-fn register_entry(
-    pgn_path_authority: &Mutex<Option<PathAuthority>>,
-    workspace: &FileWorkspaceHandle,
-    path: &Path,
-    display_name: String,
-) -> Result<FileWorkspaceHandle, Error> {
-    let components = workspace_components(pgn_path_authority, workspace, path)?;
-    authority(pgn_path_authority)?
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .register_workspace_child(workspace, &components, display_name)
-}
-
 #[cfg(unix)]
 fn register_created_entry(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
@@ -241,7 +232,14 @@ fn register_created_entry(
     authority(pgn_path_authority)?
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .register_workspace_child_expected(workspace, &components, display_name, identity, is_dir)
+        .register_workspace_child_observed(
+            workspace,
+            &components,
+            display_name,
+            identity,
+            is_dir,
+            PathOperation::WritePgn,
+        )
 }
 
 pub(crate) fn map_picker_join(error: tokio::task::JoinError) -> Error {
@@ -252,112 +250,229 @@ pub(crate) fn map_picker_join(error: tokio::task::JoinError) -> Error {
     }
 }
 
+#[cfg(test)]
+type WorkspaceListingConfirmHook = Box<dyn FnMut(&DirectoryEntry)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static WORKSPACE_LISTING_PRE_REGISTER_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+    static WORKSPACE_LISTING_PRE_CONFIRM_HOOK: std::cell::RefCell<Option<WorkspaceListingConfirmHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn set_workspace_listing_pre_register_hook(hook: Option<Box<dyn FnMut()>>) {
+    WORKSPACE_LISTING_PRE_REGISTER_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn set_workspace_listing_pre_confirm_hook(hook: Option<WorkspaceListingConfirmHook>) {
+    WORKSPACE_LISTING_PRE_CONFIRM_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(unix)]
+const MAX_WORKSPACE_LISTING_DEPTH: usize = 64;
+
 // A pre-existing synchronous helper is the blocking body and gets no pass-through
 // wrapper, so the command holds the spawn. Same keep-name rule as puzzle.rs:
 // `collect_tree_entries`, `create_workspace_directory_inner`, `trash_entry`,
 // `restore_entry`.
+#[cfg(unix)]
 fn collect_tree_entries(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
     token: &CancellationToken,
 ) -> Result<(Vec<WorkspaceEntry>, Vec<FileWorkspaceHandle>), Error> {
-    fn visit(
-        pgn_path_authority: &Mutex<Option<PathAuthority>>,
-        workspace: &FileWorkspaceHandle,
-        path: PathBuf,
-        missing: &mut Vec<FileWorkspaceHandle>,
+    use std::os::unix::ffi::OsStrExt;
+
+    struct Staged {
+        components: Vec<std::ffi::OsString>,
+        name: String,
+        identity: (u64, u64),
+        last_modified: i64,
+        body: StagedBody,
+    }
+
+    enum StagedBody {
+        Directory(Vec<Staged>),
+        File(WorkspaceMetadata),
+    }
+
+    fn confirm_staged(dir: &CapabilityDirectory, entry: &DirectoryEntry) -> Result<(), Error> {
+        #[cfg(test)]
+        WORKSPACE_LISTING_PRE_CONFIRM_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().as_mut() {
+                hook(entry);
+            }
+        });
+        dir.confirm_entry(entry)
+    }
+
+    fn walk(
+        dir: &CapabilityDirectory,
+        components: Vec<std::ffi::OsString>,
+        depth: usize,
         token: &CancellationToken,
-    ) -> Result<Option<WorkspaceEntry>, Error> {
+    ) -> Result<Vec<Staged>, Error> {
+        if depth > MAX_WORKSPACE_LISTING_DEPTH {
+            return Err(Error::ResourceLimit(
+                "workspace listing exceeded 64 levels".into(),
+            ));
+        }
         if token.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        let meta = fs::symlink_metadata(&path)?;
-        if meta.file_type().is_symlink()
-            || path.file_name().is_some_and(|name| name == TRASH_DIRECTORY)
-        {
-            return Ok(None);
+        let mut entries = dir.entries(token, &mut |name| name != OsStr::new(TRASH_DIRECTORY))?;
+        if token.is_cancelled() {
+            return Err(Error::Cancellation);
         }
-        let name = path
-            .file_name()
-            .ok_or_else(|| Error::InvalidInput("workspace entry has no name".into()))?
-            .to_string_lossy()
-            .into_owned();
-        if meta.is_dir() {
-            let handle = register_entry(pgn_path_authority, workspace, &path, name.clone())?;
+        entries.sort_by(|left, right| {
+            left.name
+                .as_os_str()
+                .as_bytes()
+                .cmp(right.name.as_os_str().as_bytes())
+        });
+        let mut staged = Vec::new();
+        for entry in entries {
             if token.is_cancelled() {
                 return Err(Error::Cancellation);
             }
-            let mut children = Vec::new();
-            for entry in fs::read_dir(&path)? {
-                if token.is_cancelled() {
-                    return Err(Error::Cancellation);
-                }
-                children.push(entry?.path());
+            if entry.kind == DirectoryEntryKind::Other {
+                continue;
             }
-            children.sort();
-            let mut output = Vec::new();
-            for child in children {
-                if token.is_cancelled() {
-                    return Err(Error::Cancellation);
+            let mut child_components = components.clone();
+            child_components.push(entry.name.clone());
+            let display = entry.name.to_string_lossy().into_owned();
+            match entry.kind {
+                DirectoryEntryKind::Directory => {
+                    let last_modified = listed_mtime(&entry)?;
+                    let child = dir.open_child_directory(&entry)?;
+                    let children = walk(&child, child_components.clone(), depth + 1, token)?;
+                    if token.is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
+                    confirm_staged(dir, &entry)?;
+                    staged.push(Staged {
+                        components: child_components,
+                        name: display,
+                        identity: entry.identity,
+                        last_modified,
+                        body: StagedBody::Directory(children),
+                    });
                 }
-                if let Some(entry) = visit(pgn_path_authority, workspace, child, missing, token)? {
-                    output.push(entry);
+                DirectoryEntryKind::RegularFile => {
+                    if !display.to_ascii_lowercase().ends_with(".pgn") {
+                        continue;
+                    }
+                    let name = display.trim_end_matches(".pgn").to_string();
+                    let last_modified = listed_mtime(&entry)?;
+                    let metadata = metadata_from(dir, &entry)?;
+                    if token.is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
+                    confirm_staged(dir, &entry)?;
+                    staged.push(Staged {
+                        components: child_components,
+                        name,
+                        identity: entry.identity,
+                        last_modified,
+                        body: StagedBody::File(metadata),
+                    });
                 }
+                DirectoryEntryKind::Other => continue,
             }
-            return Ok(Some(WorkspaceEntry {
-                handle,
-                kind: WorkspaceEntryKind::Directory,
-                name,
-                children: output,
-                metadata: None,
-                game_count: None,
-                last_modified: timestamp(&path)?,
-            }));
         }
-        if !meta.is_file() || !name.to_ascii_lowercase().ends_with(".pgn") {
-            return Ok(None);
-        }
-        let handle = register_entry(
-            pgn_path_authority,
-            workspace,
-            &path,
-            name.trim_end_matches(".pgn").to_string(),
-        )?;
-        missing.push(handle.clone());
-        Ok(Some(WorkspaceEntry {
-            handle,
-            kind: WorkspaceEntryKind::File,
-            name: name.trim_end_matches(".pgn").to_string(),
-            children: vec![],
-            metadata: Some(metadata_from(pgn_path_authority, workspace, &path)?),
-            game_count: None,
-            last_modified: timestamp(&path)?,
-        }))
+        Ok(staged)
     }
 
-    if token.is_cancelled() {
-        return Err(Error::Cancellation);
-    }
-    let root = workspace_root(pgn_path_authority, workspace)?;
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(root)? {
-        if token.is_cancelled() {
-            return Err(Error::Cancellation);
+    fn register(
+        staged: Vec<Staged>,
+        pgn_path_authority: &Mutex<Option<PathAuthority>>,
+        workspace: &FileWorkspaceHandle,
+        token: &CancellationToken,
+        missing: &mut Vec<FileWorkspaceHandle>,
+    ) -> Result<Vec<WorkspaceEntry>, Error> {
+        let mut result = Vec::new();
+        for entry in staged {
+            if token.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            #[cfg(test)]
+            WORKSPACE_LISTING_PRE_REGISTER_HOOK.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().as_mut() {
+                    hook();
+                }
+            });
+            let Staged {
+                components,
+                name,
+                identity,
+                last_modified,
+                body,
+            } = entry;
+            let (is_dir, metadata, children) = match body {
+                StagedBody::Directory(children) => (true, None, Some(children)),
+                StagedBody::File(metadata) => (false, Some(metadata), None),
+            };
+            let handle = authority(pgn_path_authority)?
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+                .register_workspace_child_observed(
+                    workspace,
+                    &components,
+                    name.clone(),
+                    identity,
+                    is_dir,
+                    PathOperation::ReadPgn,
+                )?;
+            if !is_dir {
+                missing.push(handle.clone());
+            }
+            let nested = match children {
+                Some(children) => {
+                    register(children, pgn_path_authority, workspace, token, missing)?
+                }
+                None => Vec::new(),
+            };
+            result.push(WorkspaceEntry {
+                handle,
+                kind: if is_dir {
+                    WorkspaceEntryKind::Directory
+                } else {
+                    WorkspaceEntryKind::File
+                },
+                name,
+                children: nested,
+                metadata,
+                game_count: None,
+                last_modified,
+            });
         }
-        paths.push(entry?.path());
+        Ok(result)
     }
-    paths.sort();
-    let mut entries = Vec::new();
+
+    let root = authority(pgn_path_authority)?
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
+        .capability_directory(workspace.path_ref(), PathOperation::ReadPgn)?;
+    let staged = walk(&root, Vec::new(), 0, token)?;
     let mut missing = Vec::new();
-    for path in paths {
-        if token.is_cancelled() {
-            return Err(Error::Cancellation);
-        }
-        if let Some(entry) = visit(pgn_path_authority, workspace, path, &mut missing, token)? {
-            entries.push(entry);
-        }
-    }
+    let entries = register(staged, pgn_path_authority, workspace, token, &mut missing)?;
     Ok((entries, missing))
+}
+
+#[cfg(not(unix))]
+fn collect_tree_entries(
+    _pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    _workspace: &FileWorkspaceHandle,
+    _token: &CancellationToken,
+) -> Result<(Vec<WorkspaceEntry>, Vec<FileWorkspaceHandle>), Error> {
+    Err(Error::Conflict(
+        "workspace listing is unsupported on this platform".into(),
+    ))
 }
 
 fn set_workspace_game_count(
@@ -1341,6 +1456,7 @@ mod tests {
         entries
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn shutdown_cancels_every_workspace_command_at_the_actual_mutation_lock() {
         for command in [
@@ -1494,6 +1610,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn every_workspace_command_finishes_its_tail_after_caller_abort() {
         for command in [
@@ -1785,21 +1902,71 @@ mod tests {
         (child, entry)
     }
 
+    fn metadata_from_path(
+        pgn_path_authority: &Mutex<Option<PathAuthority>>,
+        workspace: &FileWorkspaceHandle,
+        path: &Path,
+    ) -> Result<WorkspaceMetadata, Error> {
+        let components = workspace_components(pgn_path_authority, workspace, path)?;
+        let mut guard = authority(pgn_path_authority)?;
+        let authority = guard
+            .as_mut()
+            .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+        let mut directory =
+            authority.capability_directory(workspace.path_ref(), PathOperation::ReadPgn)?;
+        let token = CancellationToken::new();
+        for component in &components[..components.len().saturating_sub(1)] {
+            let entries = directory.entries(&token, &mut |name| name == component)?;
+            let entry = entries
+                .into_iter()
+                .find(|entry| entry.name == *component)
+                .ok_or_else(|| {
+                    Error::Io(Box::new(std::io::Error::from(std::io::ErrorKind::NotFound)))
+                })?;
+            directory = directory.open_child_directory(&entry)?;
+        }
+        let leaf = components
+            .last()
+            .ok_or_else(|| Error::InvalidInput("PGN has no filename".into()))?;
+        let entry = directory
+            .entries(&token, &mut |name| name == leaf)?
+            .into_iter()
+            .find(|entry| entry.name == *leaf)
+            .ok_or_else(|| {
+                Error::Io(Box::new(std::io::Error::from(std::io::ErrorKind::NotFound)))
+            })?;
+        metadata_from(&directory, &entry)
+    }
+
+    #[cfg(unix)]
     fn registered_child_file(
         state: &AppState,
         workspace: &FileWorkspaceHandle,
         path: &Path,
     ) -> FileWorkspaceHandle {
-        register_entry(
-            &state.pgn_path_authority,
-            workspace,
-            path,
-            path.file_stem()
-                .expect("file stem")
-                .to_string_lossy()
-                .into_owned(),
-        )
-        .expect("registered file")
+        let metadata = fs::symlink_metadata(path).expect("file metadata");
+        let identity = {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.dev(), metadata.ino())
+        };
+        let components = workspace_components(&state.pgn_path_authority, workspace, path)
+            .expect("workspace components");
+        authority(&state.pgn_path_authority)
+            .expect("authority lock")
+            .as_mut()
+            .expect("authority")
+            .register_workspace_child_observed(
+                workspace,
+                &components,
+                path.file_stem()
+                    .expect("file stem")
+                    .to_string_lossy()
+                    .into_owned(),
+                identity,
+                false,
+                PathOperation::ReadPgn,
+            )
+            .expect("registered file")
     }
 
     fn registered_engine_file(state: &AppState, path: &Path) -> PathRef {
@@ -1844,6 +2011,7 @@ mod tests {
         result
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn committed_delete_removes_authority_record_when_parent_sync_fails() {
         let (_directory, state, workspace) = workspace_state();
@@ -1869,6 +2037,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn partial_delete_keeps_authority_record() {
         let (_directory, state, workspace) = workspace_state();
@@ -1964,6 +2133,7 @@ mod tests {
         assert!(!serialized.contains(r"C:\private\registry"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn sidecar_failure_after_unlink_still_removes_authority_record() {
         let (_directory, state, workspace) = workspace_state();
@@ -2001,6 +2171,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn partial_removal_wins_over_registry_reconciliation_failure() {
         let (_directory, state, workspace) = workspace_state();
@@ -2299,6 +2470,7 @@ mod tests {
         assert!(state.engine_supervisor.get_exact(&key).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn trash_and_restore_directory_keep_descendant_records() {
         let (_directory, state, workspace) = workspace_state();
@@ -2351,6 +2523,7 @@ mod tests {
         assert_eq!(pgn_name("Study.PGN").unwrap(), "Study.PGN");
     }
 
+    #[cfg(unix)]
     #[test]
     fn metadata_sidecars_default_parse_and_reject_invalid_json() {
         let (_directory, state, workspace) = workspace_state();
@@ -2358,7 +2531,7 @@ mod tests {
         let pgn = root.join("game.pgn");
         fs::write(&pgn, "[Event \"test\"]\n").expect("PGN");
         assert_eq!(
-            metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
+            metadata_from_path(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
             WorkspaceMetadata::default()
         );
 
@@ -2369,13 +2542,13 @@ mod tests {
         };
         fs::write(&sidecar, serde_json::to_vec(&metadata).unwrap()).expect("metadata");
         assert_eq!(
-            metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
+            metadata_from_path(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
             metadata
         );
 
         fs::write(sidecar, "not json").expect("invalid metadata");
         assert!(matches!(
-            metadata_from(&state.pgn_path_authority, &workspace, &pgn),
+            metadata_from_path(&state.pgn_path_authority, &workspace, &pgn),
             Err(Error::InvalidInput(_))
         ));
     }
@@ -2395,13 +2568,13 @@ mod tests {
         .unwrap();
 
         std::os::unix::fs::symlink("target", &sidecar).unwrap();
-        assert!(metadata_from(&state.pgn_path_authority, &workspace, &pgn).is_err());
+        assert!(metadata_from_path(&state.pgn_path_authority, &workspace, &pgn).is_err());
         fs::remove_file(&sidecar).unwrap();
         std::os::unix::fs::symlink("missing", &sidecar).unwrap();
-        assert!(metadata_from(&state.pgn_path_authority, &workspace, &pgn).is_err());
+        assert!(metadata_from_path(&state.pgn_path_authority, &workspace, &pgn).is_err());
         fs::remove_file(&sidecar).unwrap();
         fs::create_dir(&sidecar).unwrap();
-        assert!(metadata_from(&state.pgn_path_authority, &workspace, &pgn).is_err());
+        assert!(metadata_from_path(&state.pgn_path_authority, &workspace, &pgn).is_err());
         fs::remove_dir(&sidecar).unwrap();
         let status = std::process::Command::new("mkfifo")
             .arg(&sidecar)
@@ -2442,7 +2615,7 @@ mod tests {
                 }
             }
         });
-        let result = metadata_from(&state.pgn_path_authority, &workspace, &pgn);
+        let result = metadata_from_path(&state.pgn_path_authority, &workspace, &pgn);
         let _ = completed_tx.send(());
         let released_regression = watchdog.join().unwrap();
         assert!(result.is_err());
@@ -2465,7 +2638,7 @@ mod tests {
         };
         fs::write(sidecar, serialize_metadata(&expected).unwrap()).unwrap();
         assert_eq!(
-            metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
+            metadata_from_path(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
             expected
         );
     }
@@ -2500,7 +2673,7 @@ mod tests {
             .unwrap();
         })));
         assert_eq!(
-            metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
+            metadata_from_path(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
             trusted
         );
         set_workspace_metadata_pre_open_hook(None);
@@ -2527,7 +2700,7 @@ mod tests {
             .unwrap();
         })));
         assert_eq!(
-            metadata_from(
+            metadata_from_path(
                 &second_state.pgn_path_authority,
                 &second_workspace,
                 &second_pgn,
@@ -2538,6 +2711,7 @@ mod tests {
         set_workspace_metadata_post_open_hook(None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn metadata_sidecar_exact_limit_succeeds_and_growth_consumes_only_cap_plus_one() {
         let (_directory, state, workspace) = workspace_state();
@@ -2550,7 +2724,7 @@ mod tests {
         exact.resize(MAX_WORKSPACE_METADATA_BYTES, b' ');
         fs::write(&sidecar, &exact).unwrap();
         assert_eq!(
-            metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
+            metadata_from_path(&state.pgn_path_authority, &workspace, &pgn).unwrap(),
             expected
         );
 
@@ -2568,7 +2742,7 @@ mod tests {
                 .write_all(&vec![b' '; MAX_WORKSPACE_METADATA_BYTES + 1])
                 .unwrap();
         })));
-        let error = metadata_from(&state.pgn_path_authority, &workspace, &pgn).unwrap_err();
+        let error = metadata_from_path(&state.pgn_path_authority, &workspace, &pgn).unwrap_err();
         set_workspace_metadata_post_open_hook(None);
         assert!(matches!(error, Error::ResourceLimit(_)));
         let mut retained = observed.lock().unwrap().take().unwrap();
@@ -2627,6 +2801,7 @@ mod tests {
         assert!(!root.join("after.info").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn workspace_helpers_bind_only_registered_descendants_and_preserve_sidecar_names() {
         let (directory, state, workspace) = workspace_state();
@@ -2650,16 +2825,26 @@ mod tests {
         );
         assert!(sidecar_leaf(Path::new("/").as_os_str()).is_err());
 
-        let entry = register_entry(
-            &state.pgn_path_authority,
-            &workspace,
-            &game,
-            "Round one".into(),
-        )
-        .expect("entry handle");
+        let metadata = fs::metadata(&game).expect("game metadata");
         #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        let identity = (metadata.dev(), metadata.ino());
+        let components = workspace_components(&state.pgn_path_authority, &workspace, &game)
+            .expect("workspace components");
+        let entry = authority(&state.pgn_path_authority)
+            .expect("authority lock")
+            .as_mut()
+            .expect("authority")
+            .register_workspace_child_observed(
+                &workspace,
+                &components,
+                "Round one",
+                identity,
+                false,
+                PathOperation::ReadPgn,
+            )
+            .expect("entry handle");
         {
-            use std::os::unix::fs::MetadataExt;
             let metadata = fs::metadata(&game).expect("game metadata");
             let expected = register_created_entry(
                 &state.pgn_path_authority,
@@ -2872,6 +3057,7 @@ mod tests {
         assert!(root.path().join("created").is_dir());
     }
 
+    #[cfg(unix)]
     #[test]
     fn collect_tree_entries_stops_traversal_when_cancelled() {
         let (_directory, state, workspace) = workspace_state();
@@ -2888,6 +3074,7 @@ mod tests {
         assert!(matches!(result, Err(Error::Cancellation)));
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn multi_file_count_cancellation_stops_subsequent_counts() {
         let (_directory, state, workspace) = workspace_state();
@@ -2923,6 +3110,7 @@ mod tests {
         assert!(matches!(result, Err(Error::Cancellation)));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn parent_token_survives_child_reads() {
         let (_directory, state, workspace) = workspace_state();
@@ -2952,5 +3140,810 @@ mod tests {
             .expect("count");
         assert_eq!(count, 1);
         assert!(!parent.is_cancelled());
+    }
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod workspace_directory_enumeration_tests {
+    use super::*;
+    use crate::infra::path_authority::{
+        set_capability_child_pre_open_hook, set_capability_directory_post_entries_hook,
+        PathAuthority, SystemClock,
+    };
+    use tempfile::TempDir;
+
+    fn workspace_fixture() -> (
+        TempDir,
+        Mutex<Option<PathAuthority>>,
+        FileWorkspaceHandle,
+        PathBuf,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("workspace");
+        fs::create_dir(&root).unwrap();
+        let mut authority = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            Arc::new(SystemClock),
+            2,
+        )
+        .unwrap();
+        let id = authority
+            .migrate_legacy_os_path(
+                root.clone().into_os_string(),
+                "workspace",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            )
+            .unwrap()
+            .id;
+        (
+            directory,
+            Mutex::new(Some(authority)),
+            FileWorkspaceHandle::new(id),
+            root,
+        )
+    }
+
+    #[test]
+    fn collect_tree_entries_matches_the_workspace_shape() {
+        use std::{
+            ffi::OsString,
+            os::unix::{
+                ffi::{OsStrExt, OsStringExt},
+                fs::symlink,
+            },
+        };
+
+        let (directory, authority, workspace, root) = workspace_fixture();
+        fs::write(root.join("a.pgn"), b"*").unwrap();
+        fs::write(
+            root.join("a.info"),
+            br#"{"type":"game","tags":["trusted"]}"#,
+        )
+        .unwrap();
+        fs::write(root.join("B.PGN"), b"*").unwrap();
+        let raw_first = OsString::from_vec(b"\x81.pgn".to_vec());
+        let raw_second = OsString::from_vec(b"\x80_.pgn".to_vec());
+        fs::write(root.join(&raw_first), b"*").unwrap();
+        fs::write(root.join(&raw_second), b"*").unwrap();
+        fs::write(root.join("notes.txt"), b"notes").unwrap();
+        let raw_order = [&raw_first, &raw_second];
+        let lossy_order = raw_order
+            .iter()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let raw_cmp = raw_order[0].as_bytes().cmp(raw_order[1].as_bytes());
+        let lossy_cmp = lossy_order[0].cmp(&lossy_order[1]);
+        assert_ne!(raw_cmp, lossy_cmp);
+        let nested = root.join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("inner.pgn"), b"*").unwrap();
+        fs::create_dir(root.join(TRASH_DIRECTORY)).unwrap();
+        fs::create_dir(nested.join(TRASH_DIRECTORY)).unwrap();
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        symlink(root.join("a.pgn"), root.join("linked.pgn")).unwrap();
+        symlink(&outside, root.join("linked-dir")).unwrap();
+        let fifo = root.join("f.pgn");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let (entries, missing) =
+            collect_tree_entries(&authority, &workspace, &CancellationToken::new()).unwrap();
+        let top_names = entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(top_names, ["B.PGN", "a", "nested", "�_", "�"]);
+        let a_entry = entries.iter().find(|entry| entry.name == "a").unwrap();
+        assert_eq!(a_entry.kind, WorkspaceEntryKind::File);
+        assert_eq!(a_entry.metadata.as_ref().unwrap().tags, ["trusted"]);
+        let nested_entry = entries.iter().find(|entry| entry.name == "nested").unwrap();
+        assert_eq!(nested_entry.kind, WorkspaceEntryKind::Directory);
+        assert_eq!(nested_entry.children.len(), 1);
+        assert_eq!(nested_entry.children[0].name, "inner");
+        assert_eq!(nested_entry.children[0].kind, WorkspaceEntryKind::File);
+
+        fn flatten<'a>(entries: &'a [WorkspaceEntry], out: &mut Vec<&'a WorkspaceEntry>) {
+            for entry in entries {
+                out.push(entry);
+                flatten(&entry.children, out);
+            }
+        }
+        let mut listed = Vec::new();
+        flatten(&entries, &mut listed);
+        assert_eq!(missing.len(), 5);
+        let listed_files = listed
+            .iter()
+            .filter(|entry| entry.kind == WorkspaceEntryKind::File)
+            .collect::<Vec<_>>();
+        assert_eq!(listed_files.len(), missing.len());
+        assert!(listed_files
+            .iter()
+            .all(|entry| missing.iter().any(|handle| handle == &entry.handle)));
+        assert!(missing
+            .iter()
+            .all(|handle| { missing.iter().filter(|other| *other == handle).count() == 1 }));
+        let mut guard = authority.lock().unwrap();
+        let authority = guard.as_mut().unwrap();
+        let snapshot = authority.persistent_snapshot_for_test();
+        let expected_paths = [
+            root.join("a.pgn"),
+            root.join("B.PGN"),
+            root.join(&raw_first),
+            root.join(&raw_second),
+            nested.join("inner.pgn"),
+        ];
+        let expected_entries = [
+            (root.join("a.pgn"), "a".to_string()),
+            (root.join("B.PGN"), "B.PGN".to_string()),
+            (root.join(&raw_first), "�".to_string()),
+            (root.join(&raw_second), "�_".to_string()),
+            (nested.clone(), "nested".to_string()),
+            (nested.join("inner.pgn"), "inner".to_string()),
+        ];
+        for entry in &listed {
+            let (path, _) = expected_entries
+                .iter()
+                .find(|(_, display)| display == &entry.name)
+                .unwrap();
+            assert_eq!(entry.last_modified, mtime_seconds(path));
+        }
+        for entry in &listed_files {
+            let resolved = authority
+                .resolve(entry.handle.path_ref(), PathOperation::ReadPgn, &[])
+                .unwrap();
+            let path = expected_paths
+                .iter()
+                .find(|path| {
+                    let filename = path.file_name().unwrap().to_string_lossy();
+                    let display = if filename.ends_with(".pgn") {
+                        filename.trim_end_matches(".pgn").to_string()
+                    } else {
+                        filename.into_owned()
+                    };
+                    display == entry.name
+                })
+                .unwrap();
+            use std::os::unix::fs::MetadataExt;
+            let metadata = fs::symlink_metadata(path).unwrap();
+            let identity = (metadata.dev(), metadata.ino());
+            assert!(snapshot
+                .iter()
+                .any(|(_, observed, is_dir)| { !*is_dir && *observed == identity }));
+            assert_eq!(entry.last_modified, mtime_seconds(path));
+            let _ = resolved;
+        }
+        assert!(missing
+            .iter()
+            .all(|handle| { listed_files.iter().any(|entry| entry.handle == *handle) }));
+    }
+
+    fn mtime_seconds(path: &Path) -> i64 {
+        use std::os::unix::fs::MetadataExt;
+        fs::symlink_metadata(path).unwrap().mtime()
+    }
+
+    #[test]
+    fn collect_tree_entries_lists_a_workspace_under_a_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let real = directory.path().join("real");
+        let link = directory.path().join("link");
+        let root = real.join("workspace");
+        fs::create_dir_all(&root).unwrap();
+        symlink(&real, &link).unwrap();
+        fs::write(root.join("a.pgn"), b"*").unwrap();
+        let mut authority = PathAuthority::open_with_clock(
+            directory.path().join("registry.json"),
+            vec![],
+            Arc::new(SystemClock),
+            2,
+        )
+        .unwrap();
+        let id = authority
+            .migrate_legacy_os_path(
+                link.join("workspace").into_os_string(),
+                "workspace",
+                PathClass::PersistentCustomRoot,
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap()
+            .id;
+        let workspace = FileWorkspaceHandle::new(id);
+        let authority = Mutex::new(Some(authority));
+        let (entries, _) =
+            collect_tree_entries(&authority, &workspace, &CancellationToken::new()).unwrap();
+        assert_eq!(entries[0].name, "a");
+    }
+
+    #[test]
+    fn collect_tree_entries_refuses_a_directory_swapped_mid_walk() {
+        use std::os::unix::fs::symlink;
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let sub = root.join("sub");
+        let outside = root.join("outside");
+        fs::create_dir(&sub).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("leak.pgn"), b"*").unwrap();
+        let old = root.join("sub-old");
+        let sub_for_hook = sub.clone();
+        let outside_for_hook = outside.clone();
+        set_capability_child_pre_open_hook(Some(Box::new(move || {
+            fs::rename(&sub_for_hook, &old).unwrap();
+            symlink(&outside_for_hook, &sub_for_hook).unwrap();
+        })));
+        let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+        set_capability_child_pre_open_hook(None);
+        assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
+        use std::os::unix::fs::MetadataExt;
+        let outside_identity = (
+            fs::symlink_metadata(&outside).unwrap().dev(),
+            fs::symlink_metadata(&outside).unwrap().ino(),
+        );
+        let leak_identity = (
+            fs::symlink_metadata(outside.join("leak.pgn"))
+                .unwrap()
+                .dev(),
+            fs::symlink_metadata(outside.join("leak.pgn"))
+                .unwrap()
+                .ino(),
+        );
+        let snapshot = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        assert!(!snapshot.iter().any(|(_, identity, _)| {
+            *identity == outside_identity || *identity == leak_identity
+        }));
+    }
+
+    #[test]
+    fn collect_tree_entries_never_returns_metadata_from_a_replaced_parent() {
+        let (directory, authority, workspace, root) = workspace_fixture();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        let pgn = sub.join("a.pgn");
+        fs::write(&pgn, b"*").unwrap();
+        fs::write(sub.join("a.info"), br#"{"type":"game","tags":["trusted"]}"#).unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_for_hook = Arc::clone(&calls);
+        let sub_for_hook = sub.clone();
+        set_capability_directory_post_entries_hook(Some(Box::new(move || {
+            if calls_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                let moved = directory.path().join("sub-old");
+                fs::rename(&sub_for_hook, &moved).unwrap();
+                fs::create_dir(&sub_for_hook).unwrap();
+                fs::hard_link(moved.join("a.pgn"), sub_for_hook.join("a.pgn")).unwrap();
+                fs::write(sub_for_hook.join("a.info"), b"attacker").unwrap();
+            }
+        })));
+        let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+        set_capability_directory_post_entries_hook(None);
+        match result {
+            Ok((entries, _)) => {
+                let metadata = entries[0].children[0].metadata.as_ref().unwrap();
+                assert_eq!(metadata.tags, ["trusted"]);
+            }
+            Err(Error::Conflict(_)) => {}
+            Err(error) => panic!("unexpected error: {error:?}"),
+        }
+    }
+
+    #[test]
+    fn collect_tree_entries_refuses_a_pgn_replaced_after_enumeration() {
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let pgn = root.join("a.pgn");
+        fs::write(&pgn, b"*").unwrap();
+        let pgn_for_hook = pgn.clone();
+        set_capability_directory_post_entries_hook(Some(Box::new(move || {
+            let replacement = pgn_for_hook.with_extension("replacement");
+            fs::write(&replacement, b"replacement").unwrap();
+            fs::rename(&replacement, &pgn_for_hook).unwrap();
+        })));
+        let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+        set_capability_directory_post_entries_hook(None);
+        assert!(matches!(result, Err(Error::Conflict(_))), "{result:?}");
+        assert!(!authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test()
+            .iter()
+            .any(|(name, _, _)| name == "a"));
+    }
+
+    #[test]
+    fn collect_tree_entries_refuses_an_entry_replaced_before_registration() {
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let pgn = root.join("a.pgn");
+        fs::write(&pgn, b"*").unwrap();
+        let before = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        let replacement = root.join("a.replacement");
+        let pgn_for_hook = pgn.clone();
+        set_workspace_listing_pre_confirm_hook(Some(Box::new(move |_| {
+            fs::rename(&pgn_for_hook, &replacement).unwrap();
+            fs::write(&pgn_for_hook, b"replacement").unwrap();
+        })));
+        let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+        set_workspace_listing_pre_confirm_hook(None);
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert_eq!(
+            authority
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .persistent_snapshot_for_test(),
+            before
+        );
+
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("inner.pgn"), b"*").unwrap();
+        let before = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        let sub_for_hook = sub.clone();
+        set_workspace_listing_pre_confirm_hook(Some(Box::new(move |entry| {
+            if entry.name == "sub" {
+                fs::rename(&sub_for_hook, root.join("sub-old")).unwrap();
+                fs::create_dir(&sub_for_hook).unwrap();
+            }
+        })));
+        let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+        set_workspace_listing_pre_confirm_hook(None);
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        let after = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        assert_eq!(after, before);
+        assert!(!after
+            .iter()
+            .any(|(name, _, is_dir)| name == "inner" && !*is_dir));
+    }
+
+    #[test]
+    fn collect_tree_entries_propagates_a_vanished_entry() {
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        let pgn = sub.join("a.pgn");
+        fs::write(&pgn, b"*").unwrap();
+        let before = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        let pgn_for_hook = pgn.clone();
+        crate::infra::fs::set_read_directory_pre_stat_hook(Some(Box::new(move |name| {
+            if name == OsStr::new("a.pgn") && pgn_for_hook.exists() {
+                fs::remove_file(&pgn_for_hook).unwrap();
+            }
+        })));
+        let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+        crate::infra::fs::set_read_directory_pre_stat_hook(None);
+        assert!(result.is_err());
+        let after = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        assert_eq!(after, before);
+        assert!(!after
+            .iter()
+            .any(|(name, _, _)| name == "sub" || name == "a"));
+    }
+
+    #[test]
+    fn collect_tree_entries_cancels_after_an_empty_snapshot() {
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        fs::create_dir(root.join(TRASH_DIRECTORY)).unwrap();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        set_capability_directory_post_entries_hook(Some(Box::new(move || cancel.cancel())));
+        let result = collect_tree_entries(&authority, &workspace, &token);
+        set_capability_directory_post_entries_hook(None);
+        assert!(matches!(result, Err(Error::Cancellation)));
+    }
+
+    #[test]
+    fn collect_tree_entries_cancels_between_directories() {
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        fs::create_dir(root.join("sub")).unwrap();
+        let before = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        set_capability_directory_post_entries_hook(Some(Box::new(move || cancel.cancel())));
+        let result = collect_tree_entries(&authority, &workspace, &token);
+        set_capability_directory_post_entries_hook(None);
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert_eq!(
+            authority
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .persistent_snapshot_for_test(),
+            before
+        );
+    }
+
+    #[test]
+    fn collect_tree_entries_refuses_a_pre_epoch_listed_entry() {
+        let old = std::time::SystemTime::UNIX_EPOCH - Duration::from_secs(1);
+
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let pgn = root.join("old.pgn");
+        fs::write(&pgn, b"*").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&pgn)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let before = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        assert!(matches!(
+            collect_tree_entries(&authority, &workspace, &CancellationToken::new()),
+            Err(Error::InvalidInput(_))
+        ));
+        assert_eq!(
+            authority
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .persistent_snapshot_for_test(),
+            before
+        );
+
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("a.pgn"), b"*").unwrap();
+        fs::File::open(&sub).unwrap().set_modified(old).unwrap();
+        let before = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        assert!(matches!(
+            collect_tree_entries(&authority, &workspace, &CancellationToken::new()),
+            Err(Error::InvalidInput(_))
+        ));
+        let after = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        assert_eq!(after, before);
+        assert!(!after
+            .iter()
+            .any(|(name, _, _)| name == "sub" || name == "a"));
+
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let notes = root.join("notes.txt");
+        fs::write(&notes, b"notes").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&notes)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert!(collect_tree_entries(&authority, &workspace, &CancellationToken::new()).is_ok());
+    }
+
+    #[test]
+    fn collect_tree_entries_refuses_beyond_the_depth_bound() {
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let mut current = root;
+        for index in 0..64 {
+            current = current.join(format!("d{index}"));
+            fs::create_dir(&current).unwrap();
+        }
+        let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+        let (entries, _) = result.unwrap();
+        let mut cursor = &entries[0];
+        for index in 1..64 {
+            cursor = &cursor.children[0];
+            assert_eq!(cursor.name, format!("d{index}"));
+        }
+        assert_eq!(cursor.name, "d63");
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let mut current = root;
+        for index in 0..65 {
+            current = current.join(format!("d{index}"));
+            fs::create_dir(&current).unwrap();
+        }
+        let before = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        assert!(matches!(
+            collect_tree_entries(&authority, &workspace, &CancellationToken::new()),
+            Err(Error::ResourceLimit(_))
+        ));
+        assert_eq!(
+            authority
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .persistent_snapshot_for_test(),
+            before
+        );
+    }
+
+    #[test]
+    fn collect_tree_entries_returns_refusing_handles_for_entries_replaced_after_confirmation() {
+        use std::os::unix::fs::symlink;
+        let (directory, authority, workspace, root) = workspace_fixture();
+        let a = root.join("a.pgn");
+        let b = root.join("b.pgn");
+        let c = root.join("c.pgn");
+        let deep = root.join("deep");
+        let sub = root.join("sub");
+        fs::write(&a, b"a").unwrap();
+        fs::write(&b, b"b").unwrap();
+        fs::write(&c, b"c").unwrap();
+        fs::create_dir(&deep).unwrap();
+        fs::write(deep.join("d.pgn"), b"d").unwrap();
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("inner.pgn"), b"inner").unwrap();
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter_for_hook = Arc::clone(&counter);
+        set_workspace_listing_pre_register_hook(Some(Box::new(move || {
+            match counter_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => {
+                    fs::rename(&a, root.join("a-old.pgn")).unwrap();
+                    fs::write(&a, b"replacement").unwrap();
+                }
+                1 => {
+                    fs::rename(&b, root.join("b-old.pgn")).unwrap();
+                    fs::create_dir(&b).unwrap();
+                }
+                2 => {
+                    fs::remove_file(&c).unwrap();
+                }
+                3 => {
+                    fs::rename(&deep, root.join("deep-old")).unwrap();
+                    fs::hard_link(root.join("deep-old/d.pgn"), outside.join("d.pgn")).unwrap();
+                    symlink(&outside, &deep).unwrap();
+                }
+                5 => {
+                    fs::rename(&sub, root.join("sub-old")).unwrap();
+                    fs::create_dir(&sub).unwrap();
+                }
+                _ => {}
+            }
+        })));
+        let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+        set_workspace_listing_pre_register_hook(None);
+        let (entries, _) = result.unwrap();
+        let mut authority = authority.lock().unwrap();
+        fn assert_refusing(authority: &mut PathAuthority, entries: &[WorkspaceEntry]) {
+            for entry in entries {
+                assert!(
+                    authority
+                        .resolve(entry.handle.path_ref(), PathOperation::ReadPgn, &[])
+                        .is_err(),
+                    "{} should refuse after replacement",
+                    entry.name
+                );
+                assert_refusing(authority, &entry.children);
+            }
+        }
+        assert_refusing(authority.as_mut().unwrap(), &entries);
+    }
+
+    #[test]
+    fn collect_tree_entries_cancels_between_registrations() {
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        fs::write(root.join("a.pgn"), b"*").unwrap();
+        fs::write(root.join("b.pgn"), b"*").unwrap();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_for_hook = Arc::clone(&calls);
+        set_workspace_listing_pre_register_hook(Some(Box::new(move || {
+            if calls_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                cancel.cancel();
+            }
+        })));
+        let result = collect_tree_entries(&authority, &workspace, &token);
+        set_workspace_listing_pre_register_hook(None);
+        assert!(matches!(result, Err(Error::Cancellation)));
+        let snapshot = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        assert!(snapshot
+            .iter()
+            .any(|(name, _, is_dir)| name == "a" && !*is_dir));
+        assert!(!snapshot
+            .iter()
+            .any(|(name, _, is_dir)| name == "b" && !*is_dir));
+
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        let sub = root.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("inner.pgn"), b"*").unwrap();
+        fs::write(sub.join("other.pgn"), b"*").unwrap();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_for_hook = Arc::clone(&calls);
+        set_workspace_listing_pre_register_hook(Some(Box::new(move || {
+            if calls_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                cancel.cancel();
+            }
+        })));
+        let result = collect_tree_entries(&authority, &workspace, &token);
+        set_workspace_listing_pre_register_hook(None);
+        assert!(matches!(result, Err(Error::Cancellation)));
+        let snapshot = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        assert!(snapshot
+            .iter()
+            .any(|(name, _, is_dir)| name == "inner" && !*is_dir));
+        assert!(!snapshot
+            .iter()
+            .any(|(name, _, is_dir)| name == "other" && !*is_dir));
+    }
+
+    #[test]
+    fn collect_tree_entries_propagates_a_pass_two_registry_failure() {
+        use crate::infra::fs::{
+            set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
+        };
+
+        struct WriteFault;
+        impl AtomicWriterInjector for WriteFault {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::Write {
+                    Err(std::io::Error::other("second registry commit failed"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        struct SecondCommitFault<F> {
+            point: AtomicFileFaultPoint,
+            calls: std::sync::atomic::AtomicUsize,
+            fault: F,
+        }
+        impl<F: AtomicWriterInjector> AtomicWriterInjector for SecondCommitFault<F> {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point != self.point {
+                    return Ok(());
+                }
+                let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let second_commit = match self.point {
+                    // Registry persistence retries an I/O failure once, so the second
+                    // commit occupies calls 1 and 2; call 3 (the third commit) passes.
+                    AtomicFileFaultPoint::Write => matches!(call, 1 | 2),
+                    _ => call == 1,
+                };
+                if second_commit {
+                    self.fault.inject(point)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        for name in ["a.pgn", "b.pgn", "c.pgn"] {
+            fs::write(root.join(name), b"*").unwrap();
+        }
+        let injector = Arc::new(SecondCommitFault {
+            point: AtomicFileFaultPoint::ParentSync,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            fault: crate::infra::fs::ParentSyncFault("second registry commit uncertain"),
+        });
+        set_test_atomic_file_injector(Some(injector));
+        let uncertain = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+        set_test_atomic_file_injector(None);
+        assert!(matches!(
+            uncertain,
+            Err(Error::CommittedDurabilityUncertain(_))
+        ));
+        let snapshot = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        for name in ["a", "b"] {
+            let path = root.join(format!("{name}.pgn"));
+            let metadata = fs::symlink_metadata(path).unwrap();
+            #[cfg(unix)]
+            use std::os::unix::fs::MetadataExt;
+            #[cfg(unix)]
+            let identity = (metadata.dev(), metadata.ino());
+            assert!(snapshot.iter().any(|(display, observed, is_dir)| {
+                display == name && !*is_dir && *observed == identity
+            }));
+        }
+        assert!(!snapshot.iter().any(|(name, _, _)| name == "c"));
+
+        let (_directory, authority, workspace, root) = workspace_fixture();
+        for name in ["a.pgn", "b.pgn", "c.pgn"] {
+            fs::write(root.join(name), b"*").unwrap();
+        }
+        let injector = Arc::new(SecondCommitFault {
+            point: AtomicFileFaultPoint::Write,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            fault: WriteFault,
+        });
+        set_test_atomic_file_injector(Some(injector));
+        let hard_failure = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
+        set_test_atomic_file_injector(None);
+        assert!(
+            matches!(hard_failure, Err(Error::Io(_))),
+            "{hard_failure:?}"
+        );
+        let snapshot = authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .persistent_snapshot_for_test();
+        let metadata = fs::symlink_metadata(root.join("a.pgn")).unwrap();
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        #[cfg(unix)]
+        let identity = (metadata.dev(), metadata.ino());
+        assert!(snapshot.iter().any(|(display, observed, is_dir)| {
+            display == "a" && !*is_dir && *observed == identity
+        }));
+        assert!(!snapshot
+            .iter()
+            .any(|(name, _, _)| name == "b" || name == "c"));
     }
 }

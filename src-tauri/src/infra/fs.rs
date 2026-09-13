@@ -13,11 +13,114 @@ use crate::error::Error;
 #[cfg(test)]
 use std::sync::Arc;
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs::File,
     io::{Read, Write},
     path::Path,
 };
+use tokio_util::sync::CancellationToken;
+
+/// The file kind observed by descriptor-relative directory enumeration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectoryEntryKind {
+    Directory,
+    RegularFile,
+    Other,
+}
+
+/// A directory entry snapshot carrying no pathname.
+#[derive(Clone, Debug)]
+pub(crate) struct DirectoryEntry {
+    pub(crate) name: OsString,
+    pub(crate) kind: DirectoryEntryKind,
+    pub(crate) identity: (u64, u64),
+    pub(crate) modified_seconds: i64,
+}
+
+#[cfg(test)]
+type ReadDirectoryPreStatHook = Box<dyn FnMut(&OsStr)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static READ_DIRECTORY_PRE_STAT_HOOK: std::cell::RefCell<Option<ReadDirectoryPreStatHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn set_read_directory_pre_stat_hook(hook: Option<ReadDirectoryPreStatHook>) {
+    READ_DIRECTORY_PRE_STAT_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(unix)]
+pub(crate) fn read_directory_entries_at(
+    dir: &File,
+    cancellation: &CancellationToken,
+    keep: &mut dyn FnMut(&OsStr) -> bool,
+) -> Result<Vec<DirectoryEntry>, Error> {
+    use rustix::fs::{self as rfs, AtFlags, Dir, FileType, Mode, OFlags};
+    use std::os::unix::ffi::OsStringExt;
+
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    let opened = rfs::openat(
+        dir,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| Error::Io(Box::new(error.into())))?;
+    let mut entries = Dir::new(opened).map_err(|error| Error::Io(Box::new(error.into())))?;
+    let mut result = Vec::new();
+    while let Some(entry) = entries.read() {
+        let entry = entry.map_err(|error| Error::Io(Box::new(error.into())))?;
+        let bytes = entry.file_name().to_bytes();
+        if bytes == b"." || bytes == b".." {
+            continue;
+        }
+        let name = OsString::from_vec(bytes.to_vec());
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        if !keep(&name) {
+            continue;
+        }
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        #[cfg(test)]
+        READ_DIRECTORY_PRE_STAT_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().as_mut() {
+                hook(&name);
+            }
+        });
+        let stat = rfs::statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|error| Error::Io(Box::new(error.into())))?;
+        let kind = match FileType::from_raw_mode(stat.st_mode) {
+            FileType::Directory => DirectoryEntryKind::Directory,
+            FileType::RegularFile => DirectoryEntryKind::RegularFile,
+            _ => DirectoryEntryKind::Other,
+        };
+        result.push(DirectoryEntry {
+            name,
+            kind,
+            identity: (stat.st_dev, stat.st_ino),
+            modified_seconds: stat.st_mtime,
+        });
+    }
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancellation);
+    }
+    let directory_stat = rfs::fstat(dir).map_err(|error| Error::Io(Box::new(error.into())))?;
+    if directory_stat.st_nlink == 0 {
+        return Err(Error::Io(Box::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "directory was removed during enumeration",
+        ))));
+    }
+    Ok(result)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RegularFileAccess {
@@ -1233,7 +1336,7 @@ pub(crate) fn open_verified_directory(
 }
 
 #[cfg(unix)]
-fn assert_entry_identity(
+pub(crate) fn assert_entry_identity(
     parent: &File,
     name: &OsStr,
     expected: (u64, u64),
@@ -1719,6 +1822,205 @@ mod tests {
             read_bounded_bytes(&mut FailedReader, 0, 1, "too large", || Ok(())),
             Err(Error::Io(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_directory_entries_at_classifies_without_following() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        let regular = root.path().join("regular");
+        std::fs::write(&regular, b"regular").unwrap();
+        symlink(&directory, root.path().join("outside-link")).unwrap();
+        symlink(&regular, root.path().join("file-link")).unwrap();
+        let handle = File::open(root.path()).unwrap();
+        rustix::fs::mknodat(
+            &handle,
+            "fifo",
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            rustix::fs::makedev(0, 0),
+        )
+        .unwrap();
+        let entries =
+            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true).unwrap();
+        assert_eq!(entries.len(), 5);
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.name == "regular")
+                .unwrap()
+                .kind,
+            DirectoryEntryKind::RegularFile
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.name == "directory")
+                .unwrap()
+                .kind,
+            DirectoryEntryKind::Directory
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.kind == DirectoryEntryKind::Other)
+                .count(),
+            3
+        );
+        for entry in entries {
+            assert_ne!(entry.name, ".");
+            assert_ne!(entry.name, "..");
+            assert_eq!(entry.identity, inode(&root.path().join(&entry.name)));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_directory_entries_at_stats_only_after_keep() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["a", "b", "c"] {
+            std::fs::write(root.path().join(name), name).unwrap();
+        }
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let hook_events = Arc::clone(&events);
+        set_read_directory_pre_stat_hook(Some(Box::new(move |name| {
+            hook_events
+                .lock()
+                .unwrap()
+                .push(format!("stat:{}", name.to_string_lossy()));
+        })));
+        let keep_events = Arc::clone(&events);
+        let root_path = root.path().to_path_buf();
+        let mut keep = move |name: &OsStr| {
+            keep_events
+                .lock()
+                .unwrap()
+                .push(format!("keep:{}", name.to_string_lossy()));
+            if name != OsStr::new("b") {
+                std::fs::remove_file(root_path.join(name)).unwrap();
+                false
+            } else {
+                true
+            }
+        };
+        let handle = File::open(root.path()).unwrap();
+        let result = read_directory_entries_at(&handle, &CancellationToken::new(), &mut keep);
+        set_read_directory_pre_stat_hook(None);
+        assert!(result.is_ok());
+        let log = events.lock().unwrap().clone();
+        assert_eq!(
+            log.iter()
+                .filter(|event| event.starts_with("stat:"))
+                .count(),
+            1
+        );
+        let stat_index = log.iter().position(|event| event == "stat:b").unwrap();
+        let keep_index = log.iter().position(|event| event == "keep:b").unwrap();
+        assert!(keep_index < stat_index);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_directory_entries_at_checks_cancellation_before_opening() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("file");
+        std::fs::write(&file, b"file").unwrap();
+        let descriptor = File::open(file).unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+        assert!(matches!(
+            read_directory_entries_at(&descriptor, &token, &mut |_| true),
+            Err(Error::Cancellation)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_directory_entries_at_skips_the_stat_once_keep_cancels() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a"), b"a").unwrap();
+        std::fs::write(root.path().join("b"), b"b").unwrap();
+        let token = CancellationToken::new();
+        let worker = token.clone();
+        let fired = Arc::new(Mutex::new(false));
+        let observed = Arc::clone(&fired);
+        set_read_directory_pre_stat_hook(Some(Box::new(move |_| {
+            *observed.lock().unwrap() = true;
+        })));
+        let handle = File::open(root.path()).unwrap();
+        let result = read_directory_entries_at(&handle, &token, &mut |_| {
+            worker.cancel();
+            true
+        });
+        set_read_directory_pre_stat_hook(None);
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert!(!*fired.lock().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_directory_entries_at_checks_cancellation_at_end_of_stream() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a"), b"a").unwrap();
+        let token = CancellationToken::new();
+        let worker = token.clone();
+        set_read_directory_pre_stat_hook(Some(Box::new(move |_| worker.cancel())));
+        let handle = File::open(root.path()).unwrap();
+        let result = read_directory_entries_at(&handle, &token, &mut |_| true);
+        set_read_directory_pre_stat_hook(None);
+        assert!(matches!(result, Err(Error::Cancellation)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_directory_entries_at_fails_for_an_entry_removed_before_stat() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("a");
+        std::fs::write(&path, b"a").unwrap();
+        let remove = path.clone();
+        set_read_directory_pre_stat_hook(Some(Box::new(move |_| {
+            std::fs::remove_file(&remove).unwrap();
+        })));
+        let handle = File::open(root.path()).unwrap();
+        let result = read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true);
+        set_read_directory_pre_stat_hook(None);
+        assert!(
+            matches!(result, Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_directory_entries_at_refuses_a_removed_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        let handle = File::open(&directory).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
+        assert!(matches!(
+            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true),
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+
+    #[test]
+    fn directory_types_carry_no_pathname() {
+        let source = include_str!("fs.rs");
+        let directory = body_at_indent(source, "pub(crate) struct DirectoryEntry {");
+        assert_eq!(
+            directory.trim(),
+            "pub(crate) struct DirectoryEntry {\n    pub(crate) name: OsString,\n    pub(crate) kind: DirectoryEntryKind,\n    pub(crate) identity: (u64, u64),\n    pub(crate) modified_seconds: i64,"
+        );
+        let capability_source = include_str!("path_authority/mod.rs");
+        let capability =
+            body_at_indent(capability_source, "pub(crate) struct CapabilityDirectory {");
+        assert_eq!(
+            capability.trim(),
+            "pub(crate) struct CapabilityDirectory {\n    directory: fs::File,"
+        );
     }
 
     #[test]

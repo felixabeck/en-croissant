@@ -21,7 +21,7 @@ export const FS_SURFACE_ALLOWLIST = new Set(INITIAL_FS_SURFACE_ALLOWLIST);
 
 // Production R3+R4 match counts, measured by this checker. Shrink-only.
 export const INITIAL_FS_SURFACE_COUNTS = Object.freeze({
-  "src-tauri/src/file_workspace.rs": 4,
+  "src-tauri/src/file_workspace.rs": 1,
   "src-tauri/src/fs.rs": 10,
   "src-tauri/src/main.rs": 1,
 });
