@@ -8063,7 +8063,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### A `PuzzleRead` capability builds the repository's read-write SQLite pool, whose acquire hook runs `PRAGMA journal_mode = WAL`
 
-* **ID:** f-20260912-08 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **ID:** f-20260912-08 · **Status:** handled · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
 * **Where:** `src-tauri/src/puzzle.rs:219-241` (`cache_key` → `repository.database_identity_expected`, which reaches `entry()` and builds the pool), `src-tauri/src/db/mod.rs:177-181` (`ConnectionOptions::on_acquire`: `PRAGMA journal_mode = WAL`, `synchronous = FULL`), `src-tauri/src/db/repository.rs:559-604`.
 * **Defect:** computing the puzzle cache key only needs the database's identity, length, mtime and revision, but `database_identity` goes through `entry()`, which constructs the full read-write pool. Establishing those connections runs the WAL pragma, which can convert a journal-mode database and create `-wal`/`-shm` sidecars — a mutation performed under a read-only capability, and 16 connections opened for a value that reads none of them.
 * **Fix shape:** `database_identity` (and its target-taking successor) should read length/mtime from the probed descriptor and the revision from the entry **if present**, without building a pool when there is none — a revision of 0 for a never-opened database is what a fresh entry would report anyway. Lens: `review-tauri-security` (mutation under a read capability).
