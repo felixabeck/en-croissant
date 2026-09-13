@@ -8048,6 +8048,9 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Related:** `f-20260905-04` (provenance contents), `f-20260905-03` (whose plan review surfaced this; the re-key does not change when an entry is evicted).
 * **Found by:** Codex `review-correctness` and `review-pgn-index` lenses during plan review of `tasks/plans/2026-09-12-repository-identity-key.md`, 2026-09-12.
 
+* **Closed, 2026-09-13:** `Info.DataRevision` is bumped inside the write transaction. WAL-only imports survive LRU eviction and a new repository (`data_revision_survives_*`). Commit `71772d86`.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"9001ccbdc2b2c28de1822f72c1ffb982c28ed8efc24a175d9e14d73fc4e5a3aa","input_sha256":"e19943fe5e335c8a8811719a847f98d8cf2e8db84da7eea3ceeadd7e9e5a0cd0","kind":"mutation-receipt","operation":"ac8d99d442642c5af86706b1726538788cd16470130a74bc538d55c7f5ac8bcf","options":{"section":null},"request_id_sha256":null,"results":["f-20260912-06"],"target":"f-20260912-06","v":1} -->
+
 ### The search-index loader trusts a sidecar validated against an earlier database probe, so a database replaced after the probe can answer searches from the old index
 
 * **ID:** f-20260912-07 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
