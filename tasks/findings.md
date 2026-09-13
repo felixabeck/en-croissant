@@ -8170,6 +8170,9 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Related:** `f-20260905-05` (plan review of its descriptor-enumeration run surfaced this; that plan no longer adds a fourth copy).
 * **Found by:** Codex `review-minimalism` lens, plan review of `tasks/plans/2026-09-13-workspace-directory-enumeration.md`, 2026-09-13.
 
+* **Inherited review history (2026-09-13):** load `tasks/handoffs/2026-09-13-workspace-directory-enumeration-review.md` before this finding's plan review. It carries the `f-20260905-05` plan-review record; this finding inherits issue IDs W11 from it, with their witnesses, dispositions and evidence.
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"60f378c39e8c6225593b26d22ea8df0bb9225d9e78b0e9d670eab7a3d29d63be","input_sha256":"16162f96461088a5edc53d8c41022659e72b5202d8ed7a224829768df7fc38ba","kind":"mutation-receipt","operation":"59c3bfc4768c9d1435d4593e9b766c05f02c06ee0933a9830865b59f79564dce","options":{"section":null},"request_id_sha256":null,"results":["f-20260913-03"],"target":"f-20260913-03","v":1} -->
+
 ---
 
 ## 2026-09-13 — filed through the inbox spool
