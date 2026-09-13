@@ -1747,6 +1747,7 @@ mod tests {
         let path = dir.path().join("v7.ecsi");
         SearchIndexChunk::default().write_to(&path).unwrap();
         let mut bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[4..8], &8_u32.to_le_bytes());
         bytes[4..8].copy_from_slice(&7_u32.to_le_bytes());
         std::fs::write(&path, bytes).unwrap();
         let error = MmapSearchIndex::open(&path).expect_err("v7 must be rejected");

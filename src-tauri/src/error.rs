@@ -302,15 +302,18 @@ impl Error {
     }
 }
 
+const SQLITE_NOTADB: i32 = 26;
+
 fn sqlite_notadb_message(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
+    let code = SQLITE_NOTADB.to_string();
     message.contains("not a database")
         || message.contains("notadb")
-        || message.contains("code 26")
-        || message.contains("code: 26")
-        || message.contains("(26)")
-        || message.trim() == "26"
-        || message.ends_with(" 26")
+        || message.contains(&format!("code {code}"))
+        || message.contains(&format!("code: {code}"))
+        || message.contains(&format!("({code})"))
+        || message.trim() == code
+        || message.ends_with(&format!(" {code}"))
 }
 
 pub(crate) fn is_sqlite_notadb(error: &Error) -> bool {
@@ -337,7 +340,7 @@ pub(crate) fn map_sqlite_establish(error: diesel::ConnectionError) -> Error {
     if notadb {
         Error::InvalidInput("SQLite file is not a database".into())
     } else {
-        Error::Conflict(format!("SQLite connection failed: {error}"))
+        Error::InvalidInput(format!("could not open SQLite database: {error}"))
     }
 }
 
