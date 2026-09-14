@@ -8607,3 +8607,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Open question:** rebind such entries at registry load (in memory, persisted at the next commit) only when the canonical binding proves the same identity through the parent descriptor — and if so, how is a rebinding failure surfaced (mark unavailable, keep available and log, or report through the availability API) — or migrate them once with a registry schema bump, or leave them and tell the user to re-select?
 * **Related:** `f-20260914-33` (the acquisition-time fix; plan-review record `tasks/handoffs/2026-09-14-f-20260914-33-review.md`, issue R1-06, load before review), `d-20260912-04`, `d-20260912-05`.
 * **Found by:** Codex plan lenses review-minimalism, review-tauri-security, review-root-cause, review-tests and review-error-handling (round 1, confidence 89-99) during the `f-20260914-33` plan review, 2026-09-14: load-time rebinding was proposed and cut as outside that finding's mandate.
+
+---
+
+## 2026-09-14 — filed through the inbox spool
+
+### Live analysis accepts a pending result from an engine that was unloaded while the search ran
+
+* **ID:** f-20260914-37 · **Status:** open · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** lens · **Blocked:** none
+* **Where:** `src/components/boards/EvalListener.tsx`, `isCurrentAttempt` (around line 222) and the `onBestMoves` / search-result handlers that call it.
+* **Defect:** `isCurrentAttempt` checks that the component is mounted, that the attempt is the active, uncancelled one, that the request fingerprint (tab, close revision, FEN, moves, settings, engine id and handle or URL) is unchanged, that analysis is enabled, that the game is not over, and that the tab exists and is not closing — but not that the engine is still present in the engine list and `loaded`. If an engine (notably a remote one) is unloaded while its result is pending, the result can resolve before the passive unmount cleanup runs and still update the evaluation cache and progress.
+* **Why it matters:** this is the incident class `03826167` ("results from unloaded engines were still consumed", cited in `.claude/rules/async-resource-invariants.md` and `engine-lifecycle.md`), which requires a payload to be used only while its engine is loaded.
+* **Related:** `f-20260831-09` and `f-20260903-01` (same root, handled: results bound to tab, position and process).
+* **Found by:** Codex `review-engine-protocol` plan lens (round 8, confidence 92) during the macOS engine-launch build run, 2026-09-14; source read by the orchestrator, not reproduced by a test.
