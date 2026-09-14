@@ -1152,14 +1152,16 @@ static TEST_HOOKS: std::sync::OnceLock<std::sync::Mutex<TestHooks>> = std::sync:
 static TEST_HOOK_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
-static TEST_HOOK_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_TEST_HOOK_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
 
 #[cfg(test)]
 fn test_hook_scope_matches(hooks: &TestHooks, path: &Path) -> bool {
+    let normalized_path = normalize_test_hook_scope(path);
     hooks
         .scope
         .as_deref()
-        .is_some_and(|scope| path.starts_with(scope))
+        .is_some_and(|scope| normalized_path.starts_with(scope))
 }
 
 #[cfg(test)]
@@ -1181,23 +1183,8 @@ fn normalize_test_hook_scope(scope: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-fn configure_test_hooks_state(
-    hooks_mutex: &std::sync::Mutex<TestHooks>,
-    scope: PathBuf,
-    generation: u64,
-    configure: impl FnOnce(&mut TestHooks),
-) {
-    let mut hooks = hooks_mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    hooks.generation = generation;
-    hooks.scope = Some(scope);
-    configure(&mut hooks);
-}
-
-#[cfg(test)]
 pub(crate) struct TestHooksGuard {
-    previous: TestHooks,
+    previous: Option<TestHooks>,
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -1209,35 +1196,34 @@ pub(crate) fn configure_test_hooks(
     let serial = TEST_HOOK_SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let hooks_mutex = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
-    let previous = {
-        let mut hooks = hooks_mutex
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        std::mem::take(&mut *hooks)
-    };
-    let generation = TEST_HOOK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let guard = TestHooksGuard {
-        previous,
+    let scope = normalize_test_hook_scope(scope.as_ref());
+    let generation = NEXT_TEST_HOOK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut guard = TestHooksGuard {
+        previous: None,
         _serial: serial,
     };
-    configure_test_hooks_state(
-        hooks_mutex,
-        normalize_test_hook_scope(scope.as_ref()),
-        generation,
-        configure,
-    );
+    let hooks_mutex = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
+    let mut hooks = hooks_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard.previous = Some(std::mem::take(&mut *hooks));
+    hooks.generation = generation;
+    hooks.scope = Some(scope);
+    configure(&mut hooks);
     guard
 }
 
 #[cfg(test)]
 impl Drop for TestHooksGuard {
     fn drop(&mut self) {
+        let Some(previous) = self.previous.take() else {
+            return;
+        };
         if let Some(hooks) = TEST_HOOKS.get() {
             let mut hooks = hooks
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let _ = std::mem::replace(&mut *hooks, std::mem::take(&mut self.previous));
+            let _ = std::mem::replace(&mut *hooks, previous);
         }
     }
 }
@@ -1552,6 +1538,49 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn bump_hook_matches_a_canonical_scope_for_a_raw_alias_path() {
+        use diesel::connection::SimpleConnection;
+
+        let directory = tempfile::tempdir().unwrap();
+        let real_parent = directory.path().join("real");
+        std::fs::create_dir(&real_parent).unwrap();
+        let linked_parent = directory.path().join("linked");
+        std::os::unix::fs::symlink(&real_parent, &linked_parent).unwrap();
+        let raw_alias = linked_parent.join("database.db3");
+        let scoped_target = test_target(&raw_alias);
+        let canonical_scope = scoped_target.path().to_path_buf();
+        let mut connection =
+            SqliteConnection::establish(canonical_scope.to_str().unwrap()).unwrap();
+        connection
+            .batch_execute(
+                "CREATE TABLE Info (Name TEXT PRIMARY KEY, Value TEXT);\
+                 INSERT INTO Info (Name, Value) VALUES ('DataRevision', '0');",
+            )
+            .unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let _hooks = configure_test_hooks(&canonical_scope, move |hooks| {
+            hooks.after_bump_op = Some(Box::new(move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        });
+
+        connection
+            .transaction::<_, Error, _>(|db| {
+                crate::db::bump_revision_in_transaction(
+                    db,
+                    &raw_alias,
+                    &CancellationToken::new(),
+                    |_| Ok(()),
+                )
+            })
+            .unwrap();
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn hard_link_bindings_have_separate_repository_entries() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("database.db3");
@@ -1661,30 +1690,82 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stale_hook_callback_cannot_overwrite_new_configuration() {
+    struct StaleHookCallback {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        first_call: Arc<std::sync::atomic::AtomicBool>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl StaleHookCallback {
+        fn invoke(&self) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self
+                .first_call
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                self.entered.send(()).unwrap();
+                self.release.recv().unwrap();
+            }
+        }
+    }
+
+    fn install_stale_hook(hooks: &mut TestHooks, hook: TestHook, callback: StaleHookCallback) {
+        match hook {
+            TestHook::AfterOpenCurrent => {
+                hooks.after_open_current = Some(Box::new(move |_| callback.invoke()));
+            }
+            TestHook::AfterReadRevision => {
+                hooks.after_read_revision = Some(Box::new(move || callback.invoke()));
+            }
+            _ => unreachable!("stale hook test only supports callback forms"),
+        }
+    }
+
+    fn install_counting_hook(
+        hooks: &mut TestHooks,
+        hook: TestHook,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        match hook {
+            TestHook::AfterOpenCurrent => {
+                hooks.after_open_current = Some(Box::new(move |_| {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }));
+            }
+            TestHook::AfterReadRevision => {
+                hooks.after_read_revision = Some(Box::new(move || {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }));
+            }
+            _ => unreachable!("stale hook test only supports callback forms"),
+        }
+    }
+
+    fn stale_hook_writeback_case(hook: TestHook) {
         let directory = tempfile::tempdir().unwrap();
         let path_a = directory.path().join("database-a.db3");
         let path_b = directory.path().join("database-b.db3");
         let (entered, entered_rx) = mpsc::channel();
         let (release, release_rx) = mpsc::channel();
-        let first_call = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let a_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed_a_calls = Arc::clone(&a_calls);
-        let first_a_call = Arc::clone(&first_call);
         let _a_hooks = configure_test_hooks(&path_a, move |hooks| {
-            hooks.after_open_current = Some(Box::new(move |_| {
-                observed_a_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if first_a_call.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                    entered.send(()).unwrap();
-                    release_rx.recv().unwrap();
-                }
-            }));
+            install_stale_hook(
+                hooks,
+                hook,
+                StaleHookCallback {
+                    entered,
+                    release: release_rx,
+                    first_call: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    calls: observed_a_calls,
+                },
+            );
         });
 
         let worker_path = path_a.clone();
         let worker = std::thread::spawn(move || {
-            run_test_hook(TestHook::AfterOpenCurrent, &worker_path);
+            run_test_hook(hook, &worker_path);
         });
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         drop(_a_hooks);
@@ -1692,14 +1773,12 @@ mod tests {
         let b_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed_b_calls = Arc::clone(&b_calls);
         let _b_hooks = configure_test_hooks(&path_b, move |hooks| {
-            hooks.after_open_current = Some(Box::new(move |_| {
-                observed_b_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }));
+            install_counting_hook(hooks, hook, observed_b_calls);
         });
 
         release.send(()).unwrap();
         worker.join().unwrap();
-        run_test_hook(TestHook::AfterOpenCurrent, &path_b);
+        run_test_hook(hook, &path_b);
 
         assert_eq!(
             b_calls.load(std::sync::atomic::Ordering::SeqCst),
@@ -1711,6 +1790,16 @@ mod tests {
             1,
             "database A's callback must not run during database B's dispatch"
         );
+    }
+
+    #[test]
+    fn stale_hook_callback_cannot_overwrite_new_configuration() {
+        stale_hook_writeback_case(TestHook::AfterOpenCurrent);
+    }
+
+    #[test]
+    fn stale_noarg_hook_callback_cannot_overwrite_new_configuration() {
+        stale_hook_writeback_case(TestHook::AfterReadRevision);
     }
 
     #[test]
@@ -1729,7 +1818,10 @@ mod tests {
             });
         }));
         assert!(result.is_err());
-        run_test_hook(TestHook::AfterOpenCurrent, &path);
+        let repository = DatabaseRepository::default();
+        repository
+            .initialization_connection(&test_target(&path), None)
+            .unwrap();
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
             0,
