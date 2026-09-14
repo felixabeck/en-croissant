@@ -2678,6 +2678,8 @@ mod tests {
         assert!(!released_regression, "metadata opener blocked on the FIFO");
     }
 
+    // APFS cannot store non-UTF-8 file names; the non-UTF-8 name is the point of this test
+    #[cfg(not(target_os = "macos"))]
     #[cfg(unix)]
     #[test]
     fn metadata_sidecar_keeps_lossy_non_utf8_naming() {
@@ -3254,12 +3256,11 @@ mod workspace_directory_enumeration_tests {
 
     #[test]
     fn collect_tree_entries_matches_the_workspace_shape() {
+        use std::os::unix::fs::symlink;
+        #[cfg(not(target_os = "macos"))]
         use std::{
             ffi::OsString,
-            os::unix::{
-                ffi::{OsStrExt, OsStringExt},
-                fs::symlink,
-            },
+            os::unix::ffi::{OsStrExt, OsStringExt},
         };
 
         let (directory, authority, workspace, root) = workspace_fixture();
@@ -3270,19 +3271,27 @@ mod workspace_directory_enumeration_tests {
         )
         .unwrap();
         fs::write(root.join("B.PGN"), b"*").unwrap();
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(not(target_os = "macos"))]
         let raw_first = OsString::from_vec(b"\x81.pgn".to_vec());
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(not(target_os = "macos"))]
         let raw_second = OsString::from_vec(b"\x80_.pgn".to_vec());
-        fs::write(root.join(&raw_first), b"*").unwrap();
-        fs::write(root.join(&raw_second), b"*").unwrap();
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(not(target_os = "macos"))]
+        {
+            fs::write(root.join(&raw_first), b"*").unwrap();
+            fs::write(root.join(&raw_second), b"*").unwrap();
+            let raw_order = [&raw_first, &raw_second];
+            let lossy_order = raw_order
+                .iter()
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            let raw_cmp = raw_order[0].as_bytes().cmp(raw_order[1].as_bytes());
+            let lossy_cmp = lossy_order[0].cmp(&lossy_order[1]);
+            assert_ne!(raw_cmp, lossy_cmp);
+        }
         fs::write(root.join("notes.txt"), b"notes").unwrap();
-        let raw_order = [&raw_first, &raw_second];
-        let lossy_order = raw_order
-            .iter()
-            .map(|name| name.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        let raw_cmp = raw_order[0].as_bytes().cmp(raw_order[1].as_bytes());
-        let lossy_cmp = lossy_order[0].cmp(&lossy_order[1]);
-        assert_ne!(raw_cmp, lossy_cmp);
         let nested = root.join("nested");
         fs::create_dir(&nested).unwrap();
         fs::write(nested.join("inner.pgn"), b"*").unwrap();
@@ -3305,7 +3314,13 @@ mod workspace_directory_enumeration_tests {
             .iter()
             .map(|entry| entry.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(top_names, ["B.PGN", "a", "nested", "�_", "�"]);
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(not(target_os = "macos"))]
+        let expected_top_names = ["B.PGN", "a", "nested", "�_", "�"];
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(target_os = "macos")]
+        let expected_top_names = ["B.PGN", "a", "nested"];
+        assert_eq!(top_names, expected_top_names);
         let a_entry = entries.iter().find(|entry| entry.name == "a").unwrap();
         assert_eq!(a_entry.kind, WorkspaceEntryKind::File);
         assert_eq!(a_entry.metadata.as_ref().unwrap().tags, ["trusted"]);
@@ -3323,7 +3338,13 @@ mod workspace_directory_enumeration_tests {
         }
         let mut listed = Vec::new();
         flatten(&entries, &mut listed);
-        assert_eq!(missing.len(), 5);
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(not(target_os = "macos"))]
+        let expected_missing = 5;
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(target_os = "macos")]
+        let expected_missing = 3;
+        assert_eq!(missing.len(), expected_missing);
         let listed_files = listed
             .iter()
             .filter(|entry| entry.kind == WorkspaceEntryKind::File)
@@ -3338,6 +3359,8 @@ mod workspace_directory_enumeration_tests {
         let mut guard = authority.lock().unwrap();
         let authority = guard.as_mut().unwrap();
         let snapshot = authority.persistent_snapshot_for_test();
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(not(target_os = "macos"))]
         let expected_paths = [
             root.join("a.pgn"),
             root.join("B.PGN"),
@@ -3345,11 +3368,28 @@ mod workspace_directory_enumeration_tests {
             root.join(&raw_second),
             nested.join("inner.pgn"),
         ];
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(target_os = "macos")]
+        let expected_paths = [
+            root.join("a.pgn"),
+            root.join("B.PGN"),
+            nested.join("inner.pgn"),
+        ];
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(not(target_os = "macos"))]
         let expected_entries = [
             (root.join("a.pgn"), "a".to_string()),
             (root.join("B.PGN"), "B.PGN".to_string()),
             (root.join(&raw_first), "�".to_string()),
             (root.join(&raw_second), "�_".to_string()),
+            (nested.clone(), "nested".to_string()),
+            (nested.join("inner.pgn"), "inner".to_string()),
+        ];
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(target_os = "macos")]
+        let expected_entries = [
+            (root.join("a.pgn"), "a".to_string()),
+            (root.join("B.PGN"), "B.PGN".to_string()),
             (nested.clone(), "nested".to_string()),
             (nested.join("inner.pgn"), "inner".to_string()),
         ];
