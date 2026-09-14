@@ -349,7 +349,7 @@ fn open_valid_preferred(
     _expected_source: &IndexSource,
     _cancellation: &CancellationToken,
 ) -> Result<Option<MmapSearchIndex>, Error> {
-    Err(crate::platform_support::unsupported(
+    Err(crate::infra::platform_support::unsupported(
         "fd-relative search index loading",
     ))
 }

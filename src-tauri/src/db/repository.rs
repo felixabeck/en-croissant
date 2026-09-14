@@ -401,7 +401,7 @@ impl DatabaseRepository {
         _cancellation: &CancellationToken,
         _hydrate: bool,
     ) -> Result<DatabaseIdentity, Error> {
-        Err(crate::platform_support::unsupported(
+        Err(crate::infra::platform_support::unsupported(
             "database identity probing",
         ))
     }

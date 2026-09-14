@@ -1621,7 +1621,7 @@ pub(crate) fn entry_identity_at(
     _name: &OsStr,
     _dir: bool,
 ) -> Result<(u64, u64), Error> {
-    Err(crate::platform_support::unsupported(
+    Err(crate::infra::platform_support::unsupported(
         "fd-relative entry identity",
     ))
 }
@@ -1637,7 +1637,7 @@ pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
 
 #[cfg(not(unix))]
 pub(crate) fn create_dir_at(_parent: &File, _name: &OsStr) -> Result<(), Error> {
-    Err(crate::platform_support::unsupported(
+    Err(crate::infra::platform_support::unsupported(
         "fd-relative directory creation",
     ))
 }
@@ -1658,7 +1658,7 @@ pub(crate) fn open_directory_at(parent: &File, name: &OsStr) -> Result<File, Err
 
 #[cfg(not(unix))]
 pub(crate) fn open_directory_at(_parent: &File, _name: &OsStr) -> Result<File, Error> {
-    Err(crate::platform_support::unsupported(
+    Err(crate::infra::platform_support::unsupported(
         "fd-relative directory opening",
     ))
 }
@@ -1758,7 +1758,9 @@ pub(crate) fn rename_entry_at(
     _target_parent: &File,
     _target: &OsStr,
 ) -> Result<(), Error> {
-    Err(crate::platform_support::unsupported("fd-relative renames"))
+    Err(crate::infra::platform_support::unsupported(
+        "fd-relative renames",
+    ))
 }
 
 #[cfg(unix)]
@@ -1852,7 +1854,9 @@ pub(crate) fn remove_entry_at(
     _expected: (u64, u64),
     _is_dir: bool,
 ) -> Result<(), Error> {
-    Err(crate::platform_support::unsupported("fd-relative removals"))
+    Err(crate::infra::platform_support::unsupported(
+        "fd-relative removals",
+    ))
 }
 
 #[cfg(unix)]
@@ -1874,7 +1878,7 @@ pub(crate) fn remove_optional_regular_at(parent: &File, name: &OsStr) -> Result<
 
 #[cfg(not(unix))]
 pub(crate) fn remove_optional_regular_at(_parent: &File, _name: &OsStr) -> Result<(), Error> {
-    Err(crate::platform_support::unsupported(
+    Err(crate::infra::platform_support::unsupported(
         "fd-relative optional-file removal",
     ))
 }
@@ -1896,7 +1900,7 @@ pub(crate) fn remove_regular_at(parent: &File, name: &OsStr) -> Result<(), Error
 
 #[cfg(not(unix))]
 pub(crate) fn remove_regular_at(_parent: &File, _name: &OsStr) -> Result<(), Error> {
-    Err(crate::platform_support::unsupported(
+    Err(crate::infra::platform_support::unsupported(
         "fd-relative regular-file removal",
     ))
 }
@@ -1956,7 +1960,7 @@ where
     #[cfg(not(unix))]
     {
         let _ = (parent, leaf, precommit, write_fn);
-        Err(crate::platform_support::unsupported(
+        Err(crate::infra::platform_support::unsupported(
             "fd-relative atomic replacement",
         ))
     }

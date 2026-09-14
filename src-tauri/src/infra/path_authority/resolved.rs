@@ -102,7 +102,7 @@ impl ResolvedPath {
         #[cfg(not(unix))]
         {
             let _ = (target, temporary_directory);
-            Err(crate::platform_support::unsupported(
+            Err(crate::infra::platform_support::unsupported(
                 "atomic archive installation",
             ))
         }
@@ -419,7 +419,7 @@ impl ResolvedPath {
 
     #[cfg(not(unix))]
     pub(crate) fn puzzle_database_target(&self) -> Result<DatabaseFileTarget, Error> {
-        Err(crate::platform_support::unsupported(
+        Err(crate::infra::platform_support::unsupported(
             "puzzle database targets",
         ))
     }
@@ -477,7 +477,7 @@ impl ResolvedPath {
 
     #[cfg(not(unix))]
     pub(crate) fn delete_puzzle_database(&self) -> Result<(), Error> {
-        Err(crate::platform_support::unsupported(
+        Err(crate::infra::platform_support::unsupported(
             "puzzle database deletion",
         ))
     }
@@ -507,7 +507,7 @@ impl ResolvedPath {
 
     #[cfg(not(unix))]
     pub(crate) fn mark_engine_executable(&self) -> Result<(), Error> {
-        Err(crate::platform_support::unsupported(
+        Err(crate::infra::platform_support::unsupported(
             "engine executable mode",
         ))
     }

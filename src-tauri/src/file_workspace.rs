@@ -199,7 +199,9 @@ fn mutation_target(
     _pgn_path_authority: &Mutex<Option<PathAuthority>>,
     _entry: &FileWorkspaceHandle,
 ) -> Result<WorkspaceMutationTarget, Error> {
-    Err(crate::platform_support::unsupported("workspace mutations"))
+    Err(crate::infra::platform_support::unsupported(
+        "workspace mutations",
+    ))
 }
 
 fn durability_uncertainty(
@@ -270,7 +272,9 @@ fn register_created_entry(
     _identity: (u64, u64),
     _is_dir: bool,
 ) -> Result<FileWorkspaceHandle, Error> {
-    Err(crate::platform_support::unsupported("workspace mutations"))
+    Err(crate::infra::platform_support::unsupported(
+        "workspace mutations",
+    ))
 }
 
 pub(crate) fn map_picker_join(error: tokio::task::JoinError) -> Error {
@@ -488,7 +492,9 @@ fn collect_tree_entries(
     _workspace: &FileWorkspaceHandle,
     _token: &CancellationToken,
 ) -> Result<(Vec<WorkspaceEntry>, Vec<FileWorkspaceHandle>), Error> {
-    Err(crate::platform_support::unsupported("workspace listing"))
+    Err(crate::infra::platform_support::unsupported(
+        "workspace listing",
+    ))
 }
 
 fn set_workspace_game_count(
@@ -668,7 +674,9 @@ fn paired_rename(
     _target_parent: &fs::File,
     _target_leaf: &std::ffi::OsStr,
 ) -> Result<(), Error> {
-    Err(crate::platform_support::unsupported("workspace mutations"))
+    Err(crate::infra::platform_support::unsupported(
+        "workspace mutations",
+    ))
 }
 
 fn rebind_after_move(

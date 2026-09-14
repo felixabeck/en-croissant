@@ -19,7 +19,6 @@ mod lichess;
 mod oauth;
 mod opening;
 mod pgn;
-mod platform_support;
 mod progress;
 mod puzzle;
 mod sound;

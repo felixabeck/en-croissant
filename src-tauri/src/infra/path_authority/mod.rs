@@ -115,7 +115,7 @@ impl CapabilityDirectory {
         #[cfg(not(unix))]
         {
             let _ = (cancellation, keep);
-            Err(crate::platform_support::unsupported(
+            Err(crate::infra::platform_support::unsupported(
                 UNSUPPORTED_DIRECTORY_ENUMERATION,
             ))
         }
@@ -331,7 +331,7 @@ impl DatabaseFileTarget {
 
     #[cfg(not(unix))]
     pub(crate) fn open_current(&self) -> Result<fs::File, Error> {
-        Err(crate::platform_support::unsupported(
+        Err(crate::infra::platform_support::unsupported(
             "database file reopening",
         ))
     }
@@ -580,7 +580,9 @@ impl AuthorizedDir {
         #[cfg(not(unix))]
         {
             let _ = (leaf, identity);
-            Err(crate::platform_support::unsupported("fd-relative removal"))
+            Err(crate::infra::platform_support::unsupported(
+                "fd-relative removal",
+            ))
         }
     }
 
@@ -607,7 +609,7 @@ impl AuthorizedDir {
         #[cfg(not(unix))]
         {
             let _ = relative;
-            Err(crate::platform_support::unsupported(
+            Err(crate::infra::platform_support::unsupported(
                 "fd-relative regular-file opening",
             ))
         }
@@ -1634,7 +1636,7 @@ fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
 #[cfg(not(unix))]
 fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
     let _ = path;
-    Err(crate::platform_support::unsupported_plural(
+    Err(crate::infra::platform_support::unsupported_plural(
         "authorized directories",
     ))
 }
@@ -1656,7 +1658,7 @@ pub(crate) fn ensure_app_owned_default_dir(
     app_data_dir: &AppDataDir,
     root: AppOwnedDefaultRoot,
 ) -> Result<AuthorizedDir, Error> {
-    crate::platform_support::off_unix_refusal("app-owned default directories", cfg!(unix))?;
+    crate::infra::platform_support::off_unix_refusal("app-owned default directories", cfg!(unix))?;
     let path = app_data_dir.as_path().join(root.leaf());
     fs::create_dir_all(&path)?;
     let directory = authorize_existing_dir(&path)?;
@@ -1897,7 +1899,7 @@ fn opened_file_change_stamp(file: &fs::File) -> Result<i128, Error> {
         return Ok(i128::from(file.metadata()?.last_write_time()));
     }
     #[allow(unreachable_code)]
-    Err(crate::platform_support::unsupported_plural(
+    Err(crate::infra::platform_support::unsupported_plural(
         "post-rename marker timestamps",
     ))
 }
@@ -2342,7 +2344,7 @@ impl PathAuthority {
         #[cfg(not(unix))]
         {
             let _ = (id, operation);
-            Err(crate::platform_support::unsupported(
+            Err(crate::infra::platform_support::unsupported(
                 UNSUPPORTED_DIRECTORY_ENUMERATION,
             ))
         }
@@ -2357,7 +2359,7 @@ impl PathAuthority {
         path: &Path,
         display_name: impl Into<String>,
     ) -> Result<FileWorkspaceDescriptor, Error> {
-        crate::platform_support::off_unix_refusal("PGN export destinations", cfg!(unix))?;
+        crate::infra::platform_support::off_unix_refusal("PGN export destinations", cfg!(unix))?;
         let extension_is_pgn = path
             .extension()
             .and_then(OsStr::to_str)
@@ -3404,7 +3406,10 @@ impl PathAuthority {
         resource: &EngineResourceHandle,
     ) -> Result<EngineResourceLease, Error> {
         if resource.kind == EngineResourceHandleKind::Directory {
-            crate::platform_support::off_unix_refusal("engine directory resources", cfg!(unix))?;
+            crate::infra::platform_support::off_unix_refusal(
+                "engine directory resources",
+                cfg!(unix),
+            )?;
         }
         let mut resolved =
             self.resolve(resource.path_ref(), PathOperation::EngineResourceRead, &[])?;
@@ -3891,7 +3896,7 @@ impl PathAuthority {
         #[cfg(not(unix))]
         {
             let _ = root;
-            Err(crate::platform_support::unsupported(
+            Err(crate::infra::platform_support::unsupported(
                 "descriptor-relative database creation",
             ))
         }
@@ -4020,7 +4025,7 @@ impl PathAuthority {
         _handle: &DatabaseHandle,
         _operation: PathOperation,
     ) -> Result<DatabaseFileTarget, Error> {
-        Err(crate::platform_support::unsupported(
+        Err(crate::infra::platform_support::unsupported(
             "database file targets",
         ))
     }

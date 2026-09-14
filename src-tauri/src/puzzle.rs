@@ -289,7 +289,7 @@ pub async fn get_puzzle(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Puzzle, Error> {
-    crate::platform_support::off_unix_refusal("puzzle loading", cfg!(unix))?;
+    crate::infra::platform_support::off_unix_refusal("puzzle loading", cfg!(unix))?;
     let operation = crate::native_read_operation(ticket, &window, &state, "get_puzzle")?;
     let cancellation = operation.token();
     validate_ratings(min_rating, max_rating)?;
@@ -615,7 +615,7 @@ pub async fn delete_puzzle_database(
     file: crate::infra::path_authority::PathRef,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), Error> {
-    crate::platform_support::off_unix_refusal("puzzle database deletion", cfg!(unix))?;
+    crate::infra::platform_support::off_unix_refusal("puzzle database deletion", cfg!(unix))?;
     let operation = state.operations.accept("delete_puzzle_database")?;
     let cancellation = operation.token();
     let state = state.inner().clone();

@@ -2427,7 +2427,7 @@ fn unlink_database_files(
     _target: &DatabaseFileTarget,
     _expected_source: &IndexSource,
 ) -> Result<usize, Error> {
-    Err(crate::platform_support::unsupported(
+    Err(crate::infra::platform_support::unsupported(
         "database file deletion",
     ))
 }

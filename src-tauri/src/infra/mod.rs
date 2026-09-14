@@ -5,5 +5,6 @@ pub(crate) mod keyed_locks;
 pub mod net;
 pub mod operations;
 pub mod path_authority;
+pub(crate) mod platform_support;
 pub mod runtime;
 pub mod validation;

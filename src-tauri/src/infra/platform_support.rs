@@ -131,17 +131,17 @@ mod tests {
 
     fn source_for(file: &str) -> &'static str {
         match file {
-            "infra/path_authority/mod.rs" => include_str!("infra/path_authority/mod.rs"),
-            "infra/path_authority/resolved.rs" => include_str!("infra/path_authority/resolved.rs"),
-            "infra/fs.rs" => include_str!("infra/fs.rs"),
-            "fs.rs" => include_str!("fs.rs"),
-            "chesscom.rs" => include_str!("chesscom.rs"),
-            "oauth.rs" => include_str!("oauth.rs"),
-            "puzzle.rs" => include_str!("puzzle.rs"),
-            "db/repository.rs" => include_str!("db/repository.rs"),
-            "db/search.rs" => include_str!("db/search.rs"),
-            "db/mod.rs" => include_str!("db/mod.rs"),
-            "file_workspace.rs" => include_str!("file_workspace.rs"),
+            "infra/path_authority/mod.rs" => include_str!("path_authority/mod.rs"),
+            "infra/path_authority/resolved.rs" => include_str!("path_authority/resolved.rs"),
+            "infra/fs.rs" => include_str!("fs.rs"),
+            "fs.rs" => include_str!("../fs.rs"),
+            "chesscom.rs" => include_str!("../chesscom.rs"),
+            "oauth.rs" => include_str!("../oauth.rs"),
+            "puzzle.rs" => include_str!("../puzzle.rs"),
+            "db/repository.rs" => include_str!("../db/repository.rs"),
+            "db/search.rs" => include_str!("../db/search.rs"),
+            "db/mod.rs" => include_str!("../db/mod.rs"),
+            "file_workspace.rs" => include_str!("../file_workspace.rs"),
             other => panic!("unknown source-test file {other}"),
         }
     }
@@ -169,7 +169,7 @@ mod tests {
     ) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
         let body = braced_body(source, signature);
         let normalised = normalise(source, Literals::Blank);
-        let guard = "crate::platform_support::off_unix_refusal(";
+        let guard = "crate::infra::platform_support::off_unix_refusal(";
         let start = normalised[body.start..body.end]
             .find(guard)
             .map(|offset| body.start + offset)
@@ -283,10 +283,17 @@ mod tests {
                         _ => depth,
                     });
             let raw_statement = compact(&source[statement.clone()]);
-            let expected = format!(
-                "crate::platform_support::off_unix_refusal(\"{}\",cfg!(unix))?;",
-                row.operation
-            );
+            let expected = if row.operation == "engine directory resources" {
+                format!(
+                    "crate::infra::platform_support::off_unix_refusal(\"{}\",cfg!(unix),)?;",
+                    row.operation
+                )
+            } else {
+                format!(
+                    "crate::infra::platform_support::off_unix_refusal(\"{}\",cfg!(unix))?;",
+                    row.operation
+                )
+            };
             assert_eq!(raw_statement, expected, "guard row {}", row.signature);
             if row.nested {
                 let if_signature = "if resource.kind == EngineResourceHandleKind::Directory";
@@ -470,11 +477,11 @@ mod tests {
             let suffix = &source[attribute_start..];
             let body = braced_body(suffix, row.signature);
             let expected = format!(
-                "{{Err(crate::platform_support::unsupported(\"{}\"))}}",
+                "{{Err(crate::infra::platform_support::unsupported(\"{}\"))}}",
                 row.operation
             );
             let expected_with_trailing_argument_comma = format!(
-                "{{Err(crate::platform_support::unsupported(\"{}\",))}}",
+                "{{Err(crate::infra::platform_support::unsupported(\"{}\",))}}",
                 row.operation
             );
             let actual = compact(&suffix[body]);
@@ -636,9 +643,10 @@ mod tests {
             let source = source_for(file);
             let normalised = compact(&normalise(source, Literals::Keep));
             let needle = if operation == "fd-relative directory enumeration" {
-                "crate::platform_support::unsupported(UNSUPPORTED_DIRECTORY_ENUMERATION)".into()
+                "crate::infra::platform_support::unsupported(UNSUPPORTED_DIRECTORY_ENUMERATION)"
+                    .into()
             } else {
-                format!("crate::platform_support::{function}(\"{operation}\")")
+                format!("crate::infra::platform_support::{function}(\"{operation}\")")
             };
             let comma_needle = format!("{},)", needle.strip_suffix(')').unwrap());
             let mut search = cursor;
@@ -682,10 +690,10 @@ mod tests {
             let source = source_for(file);
             let compacted = compact(&normalise(source, Literals::Keep));
             let call_count = compacted
-                .matches("crate::platform_support::unsupported(")
+                .matches("crate::infra::platform_support::unsupported(")
                 .count()
                 + compacted
-                    .matches("crate::platform_support::unsupported_plural(")
+                    .matches("crate::infra::platform_support::unsupported_plural(")
                     .count();
             let expected_count = expected.iter().filter(|row| row.0 == file).count();
             assert_eq!(
@@ -699,10 +707,10 @@ mod tests {
                 let source = std::fs::read_to_string(path).unwrap();
                 let compacted = compact(&normalise(&source, Literals::Keep));
                 tree_count += compacted
-                    .matches("crate::platform_support::unsupported(")
+                    .matches("crate::infra::platform_support::unsupported(")
                     .count()
                     + compacted
-                        .matches("crate::platform_support::unsupported_plural(")
+                        .matches("crate::infra::platform_support::unsupported_plural(")
                         .count();
             }
         }
