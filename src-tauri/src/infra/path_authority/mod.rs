@@ -7193,9 +7193,13 @@ mod tests {
             Err(Error::InvalidInput(message)) if message == "database path needs a leaf name"
         ));
 
-        let non_utf8 = dir.path().join(OsString::from_vec(b"caf\xe9.db3".to_vec()));
-        let target = DatabaseFileTarget::for_test_path(&non_utf8).unwrap();
-        assert_eq!(target.leaf(), non_utf8.file_name().unwrap());
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(not(target_os = "macos"))]
+        {
+            let non_utf8 = dir.path().join(OsString::from_vec(b"caf\xe9.db3".to_vec()));
+            let target = DatabaseFileTarget::for_test_path(&non_utf8).unwrap();
+            assert_eq!(target.leaf(), non_utf8.file_name().unwrap());
+        }
     }
 
     #[test]
@@ -8056,6 +8060,8 @@ mod tests {
         assert!(a.resolve(&second, PathOperation::ReadPgn, &[]).is_ok());
         assert!(a.resolve(&third, PathOperation::ReadPgn, &[]).is_ok());
     }
+    // The non-UTF-8 name is the point of this test, and APFS cannot store non-UTF-8 file names.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn persistent_identity_reload_and_native_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
@@ -14640,6 +14646,7 @@ mod workspace_directory_enumeration_tests {
 
     #[test]
     fn database_and_puzzle_listing_skip_symlinked_and_non_db3_and_keep_order() {
+        #[cfg(not(target_os = "macos"))]
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
         use std::os::unix::fs::symlink;
         let directory = tempfile::tempdir().unwrap();
@@ -14651,13 +14658,17 @@ mod workspace_directory_enumeration_tests {
             fs::write(root.join("b.db3"), b"b").unwrap();
             fs::write(root.join("a.db3"), b"a").unwrap();
             fs::write(root.join("C.db3"), b"C").unwrap();
-            let first = OsString::from_vec(b"\x81.db3".to_vec());
-            let second = OsString::from_vec(b"\x80_.db3".to_vec());
-            fs::write(root.join(&first), b"first").unwrap();
-            fs::write(root.join(&second), b"second").unwrap();
-            let raw_cmp = first.as_bytes().cmp(second.as_bytes());
-            let lossy_cmp = first.to_string_lossy().cmp(&second.to_string_lossy());
-            assert_ne!(raw_cmp, lossy_cmp);
+            // APFS cannot store non-UTF-8 file names
+            #[cfg(not(target_os = "macos"))]
+            {
+                let first = OsString::from_vec(b"\x81.db3".to_vec());
+                let second = OsString::from_vec(b"\x80_.db3".to_vec());
+                fs::write(root.join(&first), b"first").unwrap();
+                fs::write(root.join(&second), b"second").unwrap();
+                let raw_cmp = first.as_bytes().cmp(second.as_bytes());
+                let lossy_cmp = first.to_string_lossy().cmp(&second.to_string_lossy());
+                assert_ne!(raw_cmp, lossy_cmp);
+            }
             fs::write(root.join("notes.txt"), b"notes").unwrap();
             symlink(root.join("a.db3"), root.join("d.db3")).unwrap();
         }
@@ -14680,19 +14691,24 @@ mod workspace_directory_enumeration_tests {
         let puzzles = authority
             .list_puzzle_children_cancellable(&puzzle, &CancellationToken::new())
             .unwrap();
+        // APFS cannot store non-UTF-8 file names
+        #[cfg(not(target_os = "macos"))]
+        let expected = ["C.db3", "a.db3", "b.db3", "�.db3", "�_.db3"];
+        #[cfg(target_os = "macos")]
+        let expected = ["C.db3", "a.db3", "b.db3"];
         assert_eq!(
             databases
                 .iter()
                 .map(|entry| entry.filename.as_str())
                 .collect::<Vec<_>>(),
-            ["C.db3", "a.db3", "b.db3", "�.db3", "�_.db3"]
+            expected
         );
         assert_eq!(
             puzzles
                 .iter()
                 .map(|entry| entry.filename.as_str())
                 .collect::<Vec<_>>(),
-            ["C.db3", "a.db3", "b.db3", "�.db3", "�_.db3"]
+            expected
         );
     }
 

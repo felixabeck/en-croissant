@@ -60,6 +60,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # macOS temp dirs live under the /var symlink, and the path authority deliberately refuses
+      # symlinked ancestors, so the tests need a canonical temp root.
+      - name: Use a canonical temporary directory
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         shell: bash
         run: bash scripts/setup-rust.sh

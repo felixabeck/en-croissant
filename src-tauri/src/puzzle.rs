@@ -796,6 +796,12 @@ mod tests {
     use super::*;
     use tauri::Manager;
 
+    async fn yield_until(mut ready: impl FnMut() -> bool) {
+        while !ready() {
+            tokio::task::yield_now().await;
+        }
+    }
+
     fn puzzle_database(
         name: &str,
         rating: i32,
@@ -1308,26 +1314,24 @@ mod tests {
             let state = command_app.state::<crate::AppState>();
             delete_puzzle_database(command_handle, state).await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while !repository.deletion_is_waiting(&target).unwrap() {
-                tokio::task::yield_now().await;
-            }
-        })
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            yield_until(|| repository.deletion_is_waiting(&target).unwrap()),
+        )
         .await
         .unwrap();
         caller.abort();
         drop(held_connection);
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while !app
-                .state::<crate::AppState>()
-                .operations
-                .outstanding_labels()
-                .unwrap()
-                .is_empty()
-            {
-                tokio::task::yield_now().await;
-            }
-        })
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            yield_until(|| {
+                app.state::<crate::AppState>()
+                    .operations
+                    .outstanding_labels()
+                    .unwrap()
+                    .is_empty()
+            }),
+        )
         .await
         .unwrap();
 
@@ -1363,11 +1367,10 @@ mod tests {
             let state = command_app.state::<crate::AppState>();
             delete_puzzle_database(command_handle, state).await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !repository.deletion_is_waiting(&target).unwrap() {
-                tokio::task::yield_now().await;
-            }
-        })
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            yield_until(|| repository.deletion_is_waiting(&target).unwrap()),
+        )
         .await
         .expect("delete must wait on the held production connection");
         app.state::<crate::AppState>()
