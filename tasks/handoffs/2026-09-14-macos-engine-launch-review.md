@@ -1,0 +1,478 @@
+# macOS engine launch and removed held directory — plan review record
+
+Durable record of the plan review for findings `f-20260914-31` (macOS engine launch through
+`/proc/self/fd`) and `f-20260914-32` (removed held directory on APFS), required by rule 12a. The run
+plan itself (`tasks/plans/2026-09-14-macos-engine-launch-and-removed-dir.md`, final revision r16) is
+gitignored; this file carries its goal and the complete issue and round history so the review can be
+recovered without it. Raw lens reports lived under `/tmp/build-macos-runtime/` and are ephemeral.
+
+- **Mandate:** the Defect, Why it matters and Open question bullets of `f-20260914-31` and
+  `f-20260914-32`, and Felix, 2026-09-14: „continue autonomously until everything is fixed … full auto“.
+- **Probe evidence:** GitHub Actions runs 34871741087, 34872901465, 34875031951 (macOS runner).
+- **Decisions:** recorded in `tasks/decisions.md` with this file as their review reference.
+
+## Goal
+
+Close `f-20260914-31` and `f-20260914-32`, the two defects that keep `rust-macos-test` red on
+master (run 34869067618, `6ac915bb`: 1101 passed / 10 failed). Done means: engines launch on macOS
+with file and directory resources; the executable and file resources keep the substitution
+resistance the Linux arm has; a directory removed while it is walked is refused on macOS as on
+Linux; the Test workflow — red today only on `rust-macos-test` — is green on the pushed master, and
+no existing test is skipped or cfg'd out for these findings.
+
+MANDATE (fixed across rounds): the `Defect`, `Why it matters` and `Open question` bullets of
+`f-20260914-31` and `f-20260914-32` in `tasks/findings.md`, and Felix, 2026-09-14: "continue
+autonomously until everything is fixed … full auto".
+
+## Reviews
+
+### Round 1 (revision r1) — six Codex lenses, all REVISE
+
+Raw verdicts: review-plan REVISE · review-minimalism REVISE · review-tests REVISE ·
+review-error-handling REVISE · review-engine-protocol REVISE · review-tauri-security REVISE.
+Raw reports: `/tmp/build-macos-runtime/lens-*.txt` (ephemeral; promoted to the handoff at step 10).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R1-01 | Per-`setoption` resource recheck has no access to leases; runtime receives strings only (plan 99, error-handling 98, engine-protocol 98, tauri-security 93) | Fix | Verification must be lease-owned at the runtime send boundary |
+| R1-02 | Pathname + identity recheck leaves a TOCTOU window; violates the pinning requirement of f-31 (engine-protocol 99, tauri-security 98) | Fix | Redesign around descriptor-sourced materialisation; measure `fclonefileat` first (rule 12b) |
+| R1-03 | Negative test replaces before spawn, not before `setoption` (plan 95, tests 94) | Fix | Test must mutate after spawn and before the resource send |
+| R1-04 | No spawned engine consumes a directory resource (plan 94, tests 97) | Fix | Add a live directory-resource engine fixture |
+| R1-05 | No test removes the held directory during the walk (plan 93) | Fix | Use the existing per-entry hook |
+| R1-06 | f-32 open question includes recursive-delete and install walks; plan deferred it (plan 96) | Fix | Answer inside this plan |
+| R1-07 | `tasks/decisions.md` missing from FILES (plan 99) | Fix | Add |
+| R1-08 | "Whole Test workflow green", "byte-for-byte", advisory cross clippy exceed mandate (minimalism 95, error-handling 99, engine-protocol 100, tauri-security 99, tests 95) | Fix (partial) | Drop byte-for-byte and advisory clippy from proof. Keep workflow-green: Felix's mandate "continue autonomously until everything is fixed" names the whole run, which is red only on this job |
+| R1-09 | A's identity helper and B's predicate duplicate the path-vs-descriptor comparison (minimalism 89) | Fix | One helper |
+| R1-10 | Removal predicate has one caller; inline (minimalism 96) | Fix | Superseded by R1-06 placement; decided in r2 |
+| R1-11 | Resource-lease extraction repeated three times in chess.rs/game.rs (minimalism 99) | Fix | Rule 11, same files phase 2 edits |
+| R1-12 | Duplicate path-authority lock/resolution wrappers chess.rs:63 / game.rs:1081 (minimalism 96) | Fix | Rule 11, same files |
+| R1-13 | Target extraction repeated in file/directory branches of `engine_resource` (minimalism nit 94) | Fix | |
+| R1-14 | CI never asserts the named tests ran on macOS (tests 99) | Fix | Orchestrator verifies each named test's `ok` line in the job log; no new checker (rule 6d) |
+| R1-15 | No `ENOENT` regression anchor for the recheck (tests 94) | Fix | |
+| R1-16 | No removal + same-name replacement test for the removal predicate (tests 94) | Fix | |
+| R1-17 | Recheck must map `ENOTDIR` like `ENOENT` (error-handling 93) | Fix | |
+| R1-18 | Proof must collect the post-push `rust-macos-test` result (error-handling 96) | Fix | |
+| R1-19 | `F_GETPATH` primitive is Apple-only; plan scoped it to all non-Linux Unix (tauri-security 90) | Fix | Scope to `target_vendor = "apple"`, fail closed elsewhere |
+
+Correction revision for all R1 issues: r2. Closure checks: round 2.
+
+### Round 2 (revision r2) — six Codex lenses
+
+Raw verdicts: review-plan REVISE · review-minimalism APPROVED · review-tests REVISE ·
+review-error-handling REVISE · review-engine-protocol REVISE · review-tauri-security REVISE.
+Raw reports: `/tmp/build-macos-runtime/lens2-*.txt`.
+
+R1 closure results (per lens, raw): R1-01 closed (plan, minimalism, error-handling, engine-protocol,
+tauri-security; tests partial) · R1-02 open (plan, engine-protocol, tauri-security: destination
+leaf and directory pathname races; tests partial) · R1-03 closed (plan, error-handling,
+tauri-security; engine-protocol partial: destination race untested) · R1-04, R1-05, R1-07, R1-09,
+R1-10, R1-11, R1-12, R1-13, R1-14, R1-15, R1-16, R1-17, R1-18, R1-19 closed by every reporting lens
+· R1-06 closed (plan, minimalism, error-handling, engine-protocol) / not closed (tauri-security:
+recursive-delete rename-away) / partial (tests) · R1-08 partial with workflow scope disputed (plan,
+tauri-security) / closed under its disposition (error-handling, engine-protocol, minimalism).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R2-01 | Materialised UUID leaf is a pathname a same-UID process can replace before spawn/open (plan 99, engine-protocol 99, tauri-security 98) | Skip (focused judgment) | Same-UID mutation of app-private state is outside the boundary the Linux arm defends (L1); judgment APPROVED, below |
+| R2-02 | Apple directory resources remain pathname-based after `verify_current` (tauri-security 97) | Fix (record) | Judgment Q3 (a): keep the pre-send check, record the measured residual in `tasks/decisions.md` |
+| R2-03 | Startup sweep can remove a concurrent instance's live leaves; no single-instance guard (error-handling 97, tauri-security 97) | Fix | A1 per-instance directory with `flock`; grep confirmed no single-instance plugin |
+| R2-04 | `get_engine_config` spawn path not routed through A6 (engine-protocol 96) | Fix | Materialisation moved to `EngineRuntime::spawn`, reached by all four flows (traced); A6 lists all four |
+| R2-05 | Report re-resolution: fresh Apple leases have no materialised path; restoration needs source identity (plan 95, engine-protocol 94) | Fix | Fresh leases never reach spawn; restoration compares recorded `VerifiedIdentity` (A4) |
+| R2-06 | Partial leaf after create has no cleanup owner (error-handling 96, engine-protocol 95) | Fix | Guard owns the leaf from creation (A2) |
+| R2-07 | Synchronous removal in `Drop` on async paths; failure only logged (error-handling 91) | Fix | One unlink handed to the gateway when a runtime is current; sweep bounds leftovers (A2) |
+| R2-08 | Materialisation lacks a cancellation token and before/after checks (error-handling 91, engine-protocol 91) | Fix | Admission token threaded; checks before, per chunk, after, before `Command::spawn` |
+| R2-09 | `getpath` absence errors must map to `NotFound` (error-handling 86) | Fix | B2 |
+| R2-10 | Moving the check into the walker lets `NotFound` pre-empt cancellation (error-handling 85) | Fix | B2 cancellation precedence |
+| R2-11 | Shared walker check does not stop recursive delete through a held child renamed out of the root (tauri-security 99) | Skip (orchestrator-verified) | `remove_tree_at` (`infra/fs.rs:1185-1293`) opens every child `NOFOLLOW` relative to a held parent, checks inode identity and mount crossing before descent, and unlinks by name relative to held descriptors. Renaming a held directory away changes where that directory lives, not which entries are reachable from it: every removed entry was already reachable from the authorized tree through that held descriptor, and links and special files are refused. Not introduced by this plan; removal detection was never the containment mechanism |
+| R2-12 | `ensure_app_owned_default_dir` follows ancestor symlinks for the new root (tauri-security 96) | Skip (settled by f-20260905-10) | That open finding owns the ancestor window for every default root; annotated to include `EngineLaunch` |
+| R2-13 | No real `ChildUciIo` assertion that a rejected lease sends no `setoption` (tests 94) | Fix | A7 |
+| R2-14 | No recursive-delete removal-during-walk test (tests 98) | Fix | B3 |
+| R2-15 | No seam replacing the source between descriptor acquisition and clone/copy (tests 92) | Fix | A7 |
+| R2-16 | Workflow-green bar expands mandate (plan 97, tauri-security nit 96) | Skip (settled by R1-08) | No new evidence; Felix's instruction names the whole run |
+
+Correction revision for adopted R2 issues: r3.
+
+### Focused judgment (rule 12a) — recurring dispute R1-02 → R2-01/R2-02
+
+- **Contested invariant:** does launching from an app-private materialised clone, and sending Apple
+  directory resources as a verified canonical path, preserve f-20260914-31's pinning invariant as
+  this codebase defines it?
+- **Previous answers:** R1-02 (recheck window, adopted → r2); R2-01 (leaf replaceable by same UID);
+  R2-02 (directory pathname race).
+- **New evidence:** L1/L2 Linux probe; runner clone probe (run 34875031951); `/dev/fd` directory
+  probe (run 34871741087); 0o700 root principals; registry path writable by the same user
+  (`main.rs` setup `app_config_dir()/path-authority.json`); recorded attacker tests stage pathname
+  substitution only; no single-instance plugin.
+- **Judgment** (fresh-context `review-plan` leaf, `lens3-judgment`, role review-plan): Q1 no —
+  same-UID mutation is outside the defended boundary; Q2 yes — L2-class substitution resistance;
+  Q3 (a) — pre-send identity check plus recorded residual, refusal rejected; Q4 no substantive
+  change. Raw verdict: **APPROVED** (confidence 94, limitation: no local macOS runtime).
+- **Resulting obligations:** A2/A3 unchanged in mechanism; A3 and "Decisions" record the residual.
+
+### Round 3 (revision r3) — six Codex lenses
+
+Raw verdicts: review-plan REVISE · review-minimalism APPROVED · review-tests REVISE ·
+review-error-handling REVISE · review-engine-protocol REVISE · review-tauri-security REVISE.
+Raw reports: `/tmp/build-macos-runtime/lens4-*.txt`. No lens reopened R2-01, R2-11, R2-12 or R2-16.
+
+Closure results (raw, abbreviated): R2-02 closed in text (all; decision record pending) · R2-03
+closed (tests, error-handling, engine-protocol, tauri-security) / open (plan: launch context not
+threaded) · R2-04 closed routing (all) / value handoff open (plan, engine-protocol, tauri-security) ·
+R2-05 open (plan, tests, engine-protocol, tauri-security) · R2-06 closed (all) · R2-07 open (plan:
+detached; error-handling, engine-protocol: nested gateway) / closed (tests, tauri-security) · R2-08
+open (tests, engine-protocol) / closed (plan, error-handling) · R2-09 open (tests: no `ENOTDIR`
+anchor) / closed (others) · R2-10 partial (plan, tests, error-handling) / closed (engine-protocol) ·
+R2-13 open (tests: no-held-lease needs real child) / closed (others) · R2-14 open (tests: not
+revert-distinguishing) / closed (others) · R2-15 closed (all).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R3-01 | Option values and resource provenance are built in `resolve_engine_options` before spawn, so spawn-time materialisation cannot reach them (plan 99, engine-protocol 99, tauri-security 99) | Fix | Split resolution: leases under the lock, materialise after unlock, then build values (r4 A2) |
+| R3-02 | `EngineRuntime::spawn` has no path to the launch directory (plan 98) | Fix | Materialisation moves to the resolution helper, which reaches the authority (r4 A2) |
+| R3-03 | `Drop` cleanup detaches a task with no owner (plan 93) and re-enters `BLOCKING_GATEWAY` from inside a gateway closure (error-handling 96, engine-protocol 89) | Fix | Owned cleanup on terminate through the gateway; inline unlink only on abnormal paths (r4 A2) |
+| R3-04 | Walker/recursive-delete APIs take no token; external `remove_entry_at` callers not in FILES (plan 91) | Fix | Removal check becomes a shared post-walk function called by each consumer after its own cancellation check; no signature change to walkers (r4 B2) |
+| R3-05 | Ordinary admissions carry no cancellation token; tab close/shutdown cancel the admission flag, so materialisation can proceed after cancellation (engine-protocol 96) | Fix | Admit before materialising; check `AdmissionLease::cancel_error()` (r4 A2), per engine-lifecycle "admit a spawn before its first asynchronous … wait" |
+| R3-06 | No failure policy for sibling lock open/`flock` errors or sweep failures (error-handling 85) | Fix | Fail safe: only a proven-unlocked sibling is removed (r4 A1) |
+| R3-07 | Engine-archive install at `src-tauri/src/fs.rs:1227` ignores cancellation and reports success (error-handling 97) | Skip (false positive, orchestrator-verified) | Cancellation is checked at `:1222` before the install; `atomic_install_download_dir` commits atomically, so a completed install reported as succeeded is truthful and aborting it midway would leave the partial tree the atomic contract forbids |
+| R3-08 | Report identity test may fail earlier than the restore (tests 98) | Fix | Direct restore-level assertion (r4 A7) |
+| R3-09 | Removal tests not revert-distinguishing; exact walker `NotFound` and same-name preservation required (tests 99) | Fix | r4 B3 |
+| R3-10 | No cancellation test after materialisation / before `Command::spawn` (tests 94) | Fix | r4 A7 |
+| R3-11 | No-held-lease test must use a real `ChildUciIo` (tests 93) | Fix | r4 A7 |
+| R3-12 | Cancellation-precedence test not tied to a shared-walker caller (tests 95) | Fix | r4 B3 |
+| R3-13 | No test for the Apple `ENOTDIR` branch (tests 91) | Fix | r4 B3 |
+| R3-14 | No test that setup creates and injects the instance directory and lock (tests 90) | Fix | Extract the setup step into a testable function (r4 A1, A7) |
+
+Correction revision for adopted R3 issues and the still-open R2-03, R2-04, R2-05, R2-07, R2-08,
+R2-09, R2-10, R2-13 and R2-14 closure gaps: r4.
+
+### Round 4 (revision r4) — five Codex lenses (minimalism omitted: approved r2 and r3, drove no r4 correction)
+
+Raw verdicts: review-plan REVISE · review-tests REVISE · review-error-handling APPROVED ·
+review-engine-protocol REVISE · review-tauri-security APPROVED.
+Raw reports: `/tmp/build-macos-runtime/lens5-*.txt`. No lens reopened R2-01, R2-11, R2-12, R2-16 or
+R3-07.
+
+Closure results (raw, abbreviated): R3-01, R3-02, R3-04, R3-09, R3-12, R3-13, R2-09, R2-10, R2-13,
+R2-14 closed (all reporting lenses) · R3-03 closed (plan, tauri-security) / partial (error-handling:
+double cleanup; engine-protocol: inline `Drop` blocks) · R3-05 closed (plan, error-handling,
+tauri-security) / open (tests: no ordering assertion; engine-protocol: not synchronized through
+spawn) · R3-06 closed (plan, error-handling, engine-protocol, tauri-security) / open (tests) · R3-08
+closed (error-handling, engine-protocol, tauri-security) / partial (plan: no identity data source;
+tests: production call untested) · R3-10 open (plan: not atomic) / partial (engine-protocol) /
+closed (tests, error-handling, tauri-security) · R3-11 closed (all) · R3-14 closed (plan,
+error-handling, engine-protocol, tauri-security) / open (tests: wiring untested) · R2-03 closed /
+partial (tests) · R2-04 closed / partial (tests: no config runtime test) · R2-05 open (plan) /
+partial (tests) / closed (engine-protocol, tauri-security) · R2-07 closed / partial
+(engine-protocol) · R2-08 closed / partial (engine-protocol).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R4-01 | Report path has no data source for the child-held `VerifiedIdentity`; restore gets string maps (plan 98) | Fix | `inherited_identities` recorded before the leases move (r5 A2) — superseded in r6 by R5-04 |
+| R4-02 | Apple directory renamed away between positions keeps identity but the inherited path fails verification (plan 96) | Fix (specify) | Fail closed rather than send a path the engine cannot open; asserted (r5 A2, A7; r6 restated by R5-01) |
+| R4-03 | Pre-spawn cancellation check is not atomic with process creation; "no child started" cannot hold (plan 97, engine-protocol 97) | Fix | Guarantee restated as the existing reap-the-late-actor contract (r5 A2 step 5, A7) |
+| R4-04 | `PendingActorGuard::Drop` terminates through an untracked `tokio::spawn` that shutdown does not own (`engine/process.rs:1351-1363`, engine-protocol 91) | Defer (filed f-20260914-34) | Orchestrator-verified; pre-existing and outside MANDATE; owning pending-actor termination across shutdown is its own design question |
+| R4-05 | Inline `unlinkat` in `Drop` on abnormal paths blocks a Tokio worker (engine-protocol 93) | Fix | `Drop` performs no filesystem work; every removal is explicit on an awaitable or already-blocking path (r5 A2) |
+| R4-06 | `working_directory` is the original mutable pathname (engine-protocol 89) | Skip | Same on the Linux arm today; the working directory is not part of the pinning invariant, and a vanished directory fails the spawn rather than substituting anything |
+| R4-07 | End-to-end report "resource changed between positions" test replaced by a helper test (tests 98) | Fix | Both tests (r5 A7; r6 keeps the end-to-end test) |
+| R4-08 | Terminate removes leaves and `Drop` removes them again, logging `ENOENT` (error-handling 96) | Fix | Removal consumes the guards (r5 A2) |
+| R4-09 | Tests do not prove `main.rs` wires the launch root into `PathAuthority` (tests 97) | Fix | Type-enforced: Apple production constructor requires `EngineLaunchRoot`; root-less constructors are test/non-Apple only (r5 A1; r6 extends to `open_with_clock`) |
+| R4-10 | `get_engine_config` has no runtime launch test (tests 95) | Fix | r5 A7 |
+| R4-11 | No test proves admission precedes resolution and pinning (tests 91) | Fix | Pre-cancelled admission with a resolution counter (r5 A7; r6 adds the empty-instance-directory assertion) |
+| R4-12 | Sweep lacks flock/removal failure and continuation cases (tests 90) | Fix | r5 A7 |
+| R4-13 | Multi-resource options: only single values tested (tests 88) | Fix | r5 A7 |
+| R4-14 | Report-analysis helper failures after the progress lease starts could skip terminalization (error-handling 94) | Fix | Route the initial launch through `fail_analysis_progress_before_child` (r5 A2; r6 keeps per-position failures on `fail_analysis_progress!`, R5-08) |
+| R4-15 | Recursive delete wraps the post-walk `NotFound` in `PartialRemoval` after progress (`infra/fs.rs:1824`, error-handling 96) | Fix | Orchestrator-verified; B3 assertion adjusted |
+| R4-16 | `fclonefileat` needs a non-existent destination; "guard owns a leaf before any byte" is ambiguous (plan 89) | Fix | Reserve the name, create the entry only by clone or fallback (r5 A2) |
+
+Correction revision for adopted R4 issues: r5.
+
+### Round 5 (revision r5) — four Codex lenses (minimalism and tauri-security omitted: both approved r4 and drove no r5 correction)
+
+Raw verdicts: review-plan REVISE · review-tests REVISE · review-error-handling APPROVED ·
+review-engine-protocol REVISE.
+Raw reports: `/tmp/build-macos-runtime/lens6-*.txt`. No lens reopened R2-01, R2-11, R2-12, R2-16,
+R3-07, R4-04 or R4-06.
+
+Closure results (raw, abbreviated): R4-03, R4-05, R4-08, R4-10, R4-12, R4-13, R4-15, R4-16 closed
+(all reporting lenses) · R4-01 closed (plan, error-handling, engine-protocol) / partial (tests) ·
+R4-02 open (plan, error-handling: fresh resolution fails before verification) / partial (tests) /
+closed (engine-protocol) · R4-07 closed / partial (tests: not revert-distinguishing) · R4-09 open
+(plan: `open_with_clock`) / closed (tests, error-handling, engine-protocol) · R4-11 closed / partial
+(tests: pinning unobserved) · R4-14 closed (plan, error-handling) / open (engine-protocol:
+post-publication failures misrouted) · R3-03, R3-06, R3-14, R2-03, R2-04, R2-07, R2-08 closed · R3-05,
+R3-08, R3-10, R2-05 partial (tests) / closed (others).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R5-01 | A renamed-away Apple directory fails fresh resolution in `validate_target` with an I/O error before any `Conflict` mapping or `verify_current` (plan 97, error-handling 96) | Fix | Outcome restated: the report fails closed with the resolution error (r6 A2, A7) |
+| R5-02 | `PathAuthority::open_with_clock` is a second public root-less constructor in the Apple build (plan 94) | Fix | Both root-less constructors gated `any(test, not(apple))`; its only other callers are tests (r6 A1) |
+| R5-03 | Workflow-green bar expands mandate (plan 98) | Skip (settled by R1-08, R2-16) | No new evidence |
+| R5-04 | Two-position report test is not revert-distinguishing: the authority rejects a replaced persistent resource before `restore_inherited_resource_provenance` (tests 98) | Fix | Orchestrator-verified (`PathAuthority::resolve` persisted-identity check); the redundant identity map is removed and the end-to-end test pins the per-position re-resolution (r6 A2, A7); R3-08's helper assertion is superseded with it |
+| R5-05 | No deterministic seam for cancellation between pinning and spawn (tests 92) | Fix | Test-only seam (r6 A7) |
+| R5-06 | Pre-cancelled admission test observes resolution but not pinning (tests 88) | Fix | Also assert the instance directory stays empty (r6 A7) |
+| R5-07 | Stop deadline resets on every `info` line (`engine/process.rs:1747`, `:1842`; engine-protocol 99) | Skip (settled by f-20260911-03) | Already filed, open; outside MANDATE |
+| R5-08 | Routing every report `resolve_launch` failure through `fail_analysis_progress_before_child` would skip terminating the already-published engine on later positions (engine-protocol 96) | Fix | Only the first-position launch uses the before-child path; later positions keep `fail_analysis_progress!` (r6 A2) |
+| R5-09 | A fresh token for config/game admissions owns nothing after publication; an aborted config command leaves its probe registered (engine-protocol 93) | Fix + Defer (filed) | Flows without an operation token use `EngineSupervisor::admit` (r6 A2 step 1); the pre-existing probe left registered on command drop is filed as `f-20260914-35` |
+| R5-10 | `kill_engine` checks only published actors, not pending admissions (`chess.rs:458`; engine-protocol 94) | Skip (settled by f-20260914-23) | Already filed, open; outside MANDATE |
+| R5-11 | Unscoped Stop prefers the newest pending admission over the live actor (`engine/process.rs:1101`; engine-protocol 91) | Skip (settled by f-20260911-02) | Already filed, open; outside MANDATE |
+
+Correction revision for adopted R5 issues: r6.
+
+### Round 6 (revision r6) — four Codex lenses (minimalism and tauri-security omitted: both approved r4 and drove no r5/r6 correction)
+
+Raw verdicts: review-plan REVISE · review-tests REVISE · review-error-handling REVISE ·
+review-engine-protocol REVISE.
+Raw reports: `/tmp/build-macos-runtime/lens7-*.txt`. No lens reopened R2-01, R2-11, R2-12, R2-16,
+R3-07, R4-04, R4-06, R5-03, R5-07, R5-10 or R5-11.
+
+Closure results (raw, abbreviated): R5-01, R5-02, R5-04, R5-05, R5-06, R5-08 and the carried R4-01,
+R4-02, R4-07, R4-09, R4-11, R4-14, R3-05, R3-08, R3-10, R2-05 closed (plan, tests, error-handling,
+engine-protocol) · R5-09 closed (error-handling, engine-protocol) / open (plan: `admit` is private) /
+extra (tests).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R6-01 | The listing pre-stat hook runs before `statat`, so a removal there fails at the entry before the post-walk check; the listing and install tests have no deterministic path to the new assertion (tests 96, plan 97) | Fix | One test-only injection point after the `walk_directory` loop, shared by all three callers (r7 B3) |
+| R6-02 | New tests are unnamed while post-push verification matches `... ok` lines (tests 90) | Fix | Required list derived from the pushed diff, per job (r7 "Verification after push") |
+| R6-03 | `EngineSupervisor::admit` for config/game is outside the mandate (tests 88) | Skip | Admission before pinning is required by R3-05 and `engine-lifecycle.md`; `admit` is the admission those flows already get today, not new scope |
+| R6-04 | Sweeping before the own lock is held — and any create-then-lock order — lets another instance's sweep remove a live instance (error-handling 95) | Fix | Own lock file created already locked with `O_EXLOCK` before its directory and before the sweep (r7 A1) |
+| R6-05 | `start_game` has no construction owner after engine initialization (`game.rs:1380`; engine-protocol 98) | Skip (settled by f-20260908-02) | Already filed, open; outside MANDATE |
+| R6-06 | Leaves are left to the sweep when `Command::spawn` fails after pinning, because the consumed executable's guards only log (engine-protocol 93) | Fix | `EngineRuntime::spawn` removes them on that failure (r7 A2 cleanup) |
+| R6-07 | `rustix::fs::flock(LockExclusiveNonBlocking)` does not exist; rustix 1.1.4 names it `FlockOperation::NonBlockingLockExclusive` (plan 99) | Fix | r7 A1 |
+| R6-08 | `EngineSupervisor::admit` is private to `engine/process.rs`; `chess.rs`/`game.rs` cannot call it (plan 98) | Fix | New `pub(crate) admit_for_launch` wrapper (r7 A2 step 1) |
+| R6-09 | The new `UciIo` method names only `ChildUciIo` and `RecordingUciIo`; `FakeIo` and the three termination fakes would not compile (plan 96) | Fix | Required method without a default; every implementation named (r7 A4) |
+| R6-10 | Atomic-install removal needs a per-entry `sync_tree` seam that does not exist (plan 95) | Fix | Covered by the shared post-walk injection point (r7 B3) |
+| R6-11 | The claimed typed refusal for Unix targets other than Linux and Apple does not exist today (plan 94) | Fix | Refusal arm added by this plan, stated as new (r7 platform arms, B2) |
+
+Correction revision for adopted R6 issues: r7 (this text).
+
+### Round 7 (revision r7) — four Codex lenses (minimalism and tauri-security omitted: both approved r4 and drove no later correction)
+
+Raw verdicts: review-plan REVISE · review-tests REVISE · review-error-handling REVISE ·
+review-engine-protocol REVISE.
+Raw reports: `/tmp/build-macos-runtime/lens8-*.txt`. No lens reopened a settled issue.
+
+Closure results (raw): R6-01, R6-02, R6-07, R6-08, R6-09, R6-10, R5-09 closed (all reporting
+lenses) · R6-04 closed (plan, error-handling, engine-protocol) / open (tests: race unproved) · R6-06
+closed (plan, tests, engine-protocol) / partial (error-handling: `NoStdin`/`NoStdout`) · R6-11 open
+(plan: arm never compiled; tests) / partial (error-handling) / closed (engine-protocol).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R7-01 | Cancellation after pinning and before `EngineActor::spawn` has no leaf remover; `Drop` only logs (error-handling 98, engine-protocol 97) | Fix | Released-leaf registry: every drop releases, reclaim at next pinning, at exit shutdown, and by the sweep (r8 A2) |
+| R7-02 | `EngineRuntime::spawn` can fail after spawning (`NoStdin`/`NoStdout`) and drop the executable without removal (error-handling 90) | Fix | Covered by the registry (r8 A2) |
+| R7-03 | A failing `terminate` (quit or reap error, timeout) skips the leaf removal, and `terminate_exact` then drops the owner (engine-protocol 96) | Fix | Covered by the registry; tested (r8 A2, A7) |
+| R7-04 | Cleanup logs carry only the random leaf name, not engine key or id (error-handling 84) | Fix | Registry entries carry engine key and id (r8 A2) |
+| R7-05 | The lock test never races initializers, so a create-then-lock regression passes (tests 99) | Fix | Competing sweep injected right after lock-file creation (r8 A7) |
+| R7-06 | The other-Unix refusal arm is never compiled or executed by any listed target (plan 99, tests 98, error-handling 91) | Fix | Replaced by a `compile_error!` for Unix targets that are neither Linux nor Apple (r8 platform arms, B2) |
+
+Correction revision for adopted R7 issues: r8 (this text).
+
+### Round 8 (revision r8) — four Codex lenses (minimalism and tauri-security omitted: both approved r4 and drove no later correction)
+
+Raw verdicts: review-plan REVISE · review-tests REVISE · review-error-handling REVISE ·
+review-engine-protocol REVISE.
+Raw reports: `/tmp/build-macos-runtime/lens9-*.txt`. No lens reopened a settled issue.
+
+Closure results (raw): R7-03, R7-05, R6-04 closed (plan, error-handling, engine-protocol) / partial
+(tests) · R7-04 closed (plan, error-handling, engine-protocol) / partial (tests: log unasserted) ·
+R7-01 mechanism closed (plan, tests) / partial (error-handling: publication abort; engine-protocol:
+unbounded) · R7-02 closed (plan, engine-protocol) / partial (tests, error-handling: untested) · R7-06
+and R6-11 closed for non-Apple Unix (plan, engine-protocol) / open (error-handling: Apple vendor) /
+partial (tests) · R6-06 closed in mechanism (plan, engine-protocol) / partial (tests, error-handling).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R8-01 | Phase 1 proof uses `cargo test --lib`, but the package has no library target (plan 99) | Fix | Measured: `--lib` → rc 101 "no library targets found"; filter form lists 77 tests (r9 proofs) |
+| R8-02 | Released-leaf registry has no finite bound when removals keep failing (plan 97, engine-protocol 97, error-handling 92) | Fix | Cap of 64 with a typed `ResourceLimit` refusal before materialising (r9 A2, A7) |
+| R8-03 | `target_vendor = "apple"` also matches iOS, tvOS and watchOS, bypassing the `compile_error!` (plan 93, engine-protocol 93, error-handling 95) | Fix | `target_os = "macos"` throughout, as existing macOS code does (r9) |
+| R8-04 | Publication-abort actors held by the untracked task keep leaves past the exit reclaim (error-handling 97) | Fix (restate) | Guarantee restated: those and budget leftovers go to the next start's sweep; the underlying task is `f-20260914-34` (r9 A2) |
+| R8-05 | A free lock file without its directory has no defined sweep handling (error-handling 96) | Fix | Removed like any free lock file (r9 A1) |
+| R8-06 | `NoStdin`/`NoStdout` after spawn are claimed but untested (tests 98, error-handling 90) | Fix | Test-only hook for both (r9 A7) |
+| R8-07 | Terminate-failure test lacks the timeout branch and a real `ChildUciIo` (tests 92) | Fix | r9 A7 |
+| R8-08 | Failed-reclaim log content with engine key and id is unasserted (tests 98) | Fix | `LogCaptureScope` assertion (r9 A7) |
+| R8-09 | Lock-race test does not assert its hook fired (tests 96) | Fix | r9 A7 |
+| R8-10 | The `compile_error!` arm is never compiled for another Unix target (tests 95) | Skip | A `compile_error!` has no runtime behaviour; the three supported targets compiling proves its guard does not match them, and an unsupported target that it failed to reject would only build what it builds today, in an unsupported configuration CI does not produce |
+| R8-11 | Redaction test cannot distinguish provenance from path shape (tests 89) | Fix | Registered path redacted, same-shape unregistered path kept (r9 A7) |
+| R8-12 | `EvalListener.tsx:222` `isCurrentAttempt` ignores engine membership and `loaded`, so an unloaded remote engine's pending result can update cache and progress (engine-protocol 92) | Defer (filed) | Renderer area outside MANDATE and not read by this run; filed after verification |
+
+Correction revision for adopted R8 issues: r9 (this text).
+
+### Round 9 (revision r9) — four Codex lenses (minimalism and tauri-security omitted: both approved r4 and drove no later correction)
+
+Raw verdicts: review-plan REVISE · review-tests APPROVED · review-error-handling APPROVED ·
+review-engine-protocol REVISE.
+Raw reports: `/tmp/build-macos-runtime/lens10-*.txt`. No lens reopened a settled issue.
+
+Closure results (raw): R8-01, R8-03, R8-06, R8-07, R8-09, R8-11, R7-02, R7-06, R6-06, R6-11 closed (all
+reporting lenses) · R8-02 and R7-01 not closed (plan, error-handling, engine-protocol: cap bypass) /
+closed (tests) · R8-04 not closed (plan: exit reclaim runs concurrently) / closed (others) · R8-05
+closed (plan, error-handling, engine-protocol) / partial (tests: no anchor) · R8-08 and R7-04 not
+closed (plan: thread-local capture) / closed (others).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R9-01 | The cap is checked only before pinning while active leaves are uncounted until `Drop`; one launch creates several leaves and launches overlap, so the registry can exceed 64 (plan 99, error-handling 96, engine-protocol 96) | Fix | Slots reserved under the registry lock before any leaf exists; `live` counts active and released leaves (r10 A2) |
+| R9-02 | The exit reclaim is said to run after engine teardown, but `shutdown_backend_with_attachments` joins teardown concurrently (`main.rs:1733-1748`; plan 97) | Fix | Reclaim awaited after the existing `tokio::join!` (r10 A2) |
+| R9-03 | `LogCaptureScope` storage is thread-local and cannot observe a log written on the gateway's blocking worker (`error.rs:491-512`; plan 93) | Fix | Reclaim returns a report the async caller logs; tests assert the report (r10 A2, A7) |
+| R9-04 | No test for a free lock file without its directory (tests 96) | Fix | r10 A7 |
+| R9-05 | The `EXDEV` fallback lacks a byte-content or executable assertion (tests 89) | Fix | r10 A7 |
+| R9-06 | `EngineRuntime::spawn` drops an already-spawned child on `NoStdin`/`NoStdout`; `kill_on_drop` does not await the reap (`engine/process.rs:1604-1636`; error-handling 95) | Fix (own commit, outside the plan's phases) | Pre-existing, same file and area as phase 2, specifiable, not a design question (rule 4b): kill and await the reap within the existing kill-reap deadline before returning the error; reviewed in the cumulative diff review |
+| R9-07 | Synchronous `verify_resources` runs Apple `getpath`/`lstat` inside the Tokio engine actor, so a stalled filesystem blocks `stop`/`terminate` (engine-protocol 93) | Fix | Async, on the gateway, raced against the actor's interrupt (r10 A4) |
+
+Correction revision for adopted R9 issues: r10 (this text).
+
+### Round 10 (revision r10) — four Codex lenses
+
+Raw verdicts: review-plan REVISE · review-tests REVISE · review-error-handling APPROVED ·
+review-engine-protocol REVISE. Raw reports: `/tmp/build-macos-runtime/lens11-*.txt`. No settled issue reopened.
+
+Closure results (raw): R9-01/R8-02/R7-01, R9-02/R8-04, R9-03/R8-08/R7-04, R9-04/R8-05, R9-05 closed
+(plan, error-handling, engine-protocol) / partial (tests: R9-01, R9-03) · R9-07 open (plan,
+tests, engine-protocol: Stop blocked behind a stalled command) / partial (error-handling:
+gateway permits) · R9-06 disposition unchanged.
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R10-01 | Racing verification against the actor interrupt does not keep Stop/Terminate responsive: the actor awaits the command, Stop only queues, the supervisor waits for Stop before Terminate (`engine/process.rs:2163-2173`, `:2096-2100`, `:1128-1130`); no stall test (plan 99, 97; tests 98; engine-protocol 98) | Fix | Verification moves out of the actor into the calling flow, on the gateway with cancellation and a deadline, plus a stall test (r11 A4, A7) |
+| R10-02 | Resolution under the authority lock is unspecified synchronous work on a Tokio worker (error-handling 91) | Fix | Steps 2–3 run as one cancellable gateway job (r11 A2) |
+| R10-03 | `ResourceLimit("engine launch cleanup is failing")` misattributes capacity exhaustion (error-handling 96) | Fix | Message "engine launch leaf limit reached" (r11 A2) |
+| R10-04 | Apple launch fixtures build authorities with the root-less constructor; no test launch root (plan 93) | Fix | `EngineLaunchRoot::for_test` through the root-taking constructor (r11 A1) |
+| R10-05 | Cap test lacks a barrier and outcome assertions (tests 93) | Fix | r11 A7 |
+| R10-06 | Caller logging of the report is untested (tests 94) | Fix | r11 A7 |
+| R10-07 | `ENOTSUP` fallback branch untested (tests 95) | Fix | r11 A7 |
+| R10-08 | Stalled verification jobs can occupy gateway permits (error-handling 94) | Fix (bounded, recorded) | Blocking filesystem calls cannot be aborted; the flow stops waiting at the verification deadline (r11 A4); the permit is released when the kernel returns |
+
+Correction revision for adopted R10 issues: r11 (this text).
+
+### Round 11 (revision r11) — four Codex lenses
+
+Raw verdicts: review-plan REVISE · review-tests REVISE · review-error-handling APPROVED ·
+review-engine-protocol REVISE. Raw reports: `/tmp/build-macos-runtime/lens12-*.txt`. No settled issue reopened.
+
+Closure results (raw): R10-01/R9-07 closed (tests, error-handling) / not closed (plan: depends on the
+missing cancellation adapter; engine-protocol: dispatch race) · R10-02 closed (plan, error-handling,
+engine-protocol) / open (tests: no boundary proof) · R10-03 closed / partial (tests: message not
+asserted) · R10-04 closed / open (tests: wiring unproven) · R10-05..R10-07, R9-01, R9-03 closed (all) ·
+R10-08 closed (error-handling, engine-protocol) / partial (tests: permit accounting).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R11-01 | `spawn_cancellable` needs a `CancellationToken`, but interactive/config/game admissions expose only an `AtomicBool` (`engine/process.rs:676-700`, `infra/blocking.rs:478-501`) (plan 96, error-handling 96) | Fix | No adapter needed: the pinning job runs on `spawn`, awaited to completion, observing the admission probe; verification selects on the actor `interrupt` token and the operation token (r12 A2, A4) |
+| R11-02 | Verification completing while cancellation lands can still queue `SetOption` to a cancelled actor (engine-protocol 97) | Fix | Token re-check after verification; a terminated actor rejects later commands (`engine/process.rs:2206-2211`); test (r12 A4, A7) |
+| R11-03 | `UCI_Chess960` (`chess.rs:134-140`) and earlier options are sent before a later resource fails verification (engine-protocol 99) | Fix | One preflight helper runs first in `set_options` and the game closure (r12 A4, A7) |
+| R11-04 | A cleanup failure after a pinning failure is not surfaced (error-handling 91) | Fix | `OperationAndCleanup`, leaf kept as released (r12 A2, A7) |
+| R11-05 | Nothing proves resolution/pinning run off the Tokio worker (tests 96) | Fix | Hook asserting no current runtime handle (r12 A7) |
+| R11-06 | The refusal message is not asserted (tests 99) | Fix | r12 A7 |
+| R11-07 | Apple fixture wiring to the launch root is unproven (tests 93) | Fix | Missing root refuses launch, plus test (r12 A1, A7) |
+| R11-08 | Permit accounting during a stall is unproven (tests 90) | Fix | `available_permits` assertion (r12 A7) |
+
+Correction revision for adopted R11 issues: r12 (this text).
+
+### Round 12 (revision r12) — four Codex lenses
+
+Raw verdicts: review-plan REVISE · review-tests REVISE · review-error-handling APPROVED ·
+review-engine-protocol REVISE. Raw reports: `/tmp/build-macos-runtime/lens13-*.txt`. No settled issue reopened.
+
+Closure results (raw): R11-01 closed (plan, error-handling, engine-protocol) / partial (tests:
+flow-level admission order) · R11-02 closed (plan, tests, error-handling) / open (engine-protocol) ·
+R11-03, R11-05, R11-06, R11-07 closed (all) · R11-04 closed (plan, tests, engine-protocol) / diagnostic
+surface open (error-handling) · R11-08 closed (error-handling, engine-protocol) / open (plan: private
+semaphore) / partial (tests: shared gateway) · R10-01/R9-07, R10-02, R10-03, R10-04 closed (all) ·
+R10-08 closed except with R11-08 (plan).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R12-01 | The verifier has no access to the executable's held lease set; report positions after the first drop fresh leases and reuse inherited values (`chess.rs:787-803`, `engine/process.rs:517-529`) (plan 98, engine-protocol 94) | Fix | Actor handle stores the held leases; values match against that set (r13 A4, A7) |
+| R12-02 | `set_options` has no operation token (`chess.rs:123-127`, `:1118-1177`) (plan 95) | Fix | `operation` parameter, report passes its token (r13 A4) |
+| R12-03 | The final token check is not synchronized with dispatch; `cancel_analysis` does not terminate the actor (`chess.rs:854-865`, `engine/process.rs:2163-2173`) (engine-protocol 98) | Fix | Token carried in `SetOption`, checked in the actor arm immediately before the write; test (r13 A4, A7) |
+| R12-04 | `available_permits` is private and the global gateway is shared by parallel tests (`infra/blocking.rs:19-20,452-506`) (plan 96, tests 89) | Fix | Gateway-parameter variant with an isolated test gateway and a test-only accessor (r13 A4, A7) |
+| R12-05 | Admission-order test bypasses the four production flows (tests 96) | Fix | One sealed-supervisor case per flow (r13 A7) |
+| R12-06 | Same-name recreation is proven only for listing (tests 95) | Fix | Sentinel cases for install and recursive delete (r13 B3) |
+| R12-07 | Launch-root modes unasserted (tests 91) | Fix | r13 A7 |
+| R12-08 | Sweep logging unasserted (tests 85) | Fix | `LogCaptureScope` on the test thread (r13 A7) |
+| R12-09 | A sweep removal failing with `PartialRemoval` leaves a partly deleted sibling and an untested outcome (`infra/fs.rs:1813-1827`) (error-handling 96) | Fix | Lock kept so the next start retries; test (r13 A1, A7) |
+| R12-10 | `OperationAndCleanup` reaches IPC only as generic text; no native diagnostic (`error.rs:250-251,438-447`) (error-handling 94) | Fix | Caller log with key, id and both categories; test (r13 A2, A7) |
+
+Correction revision for adopted R12 issues: r13 (this text).
+
+### Round 13 (revision r13) — four Codex lenses
+
+Raw verdicts: review-plan REVISE · review-tests REVISE · review-error-handling APPROVED ·
+review-engine-protocol REVISE. Raw reports: `/tmp/build-macos-runtime/lens14-*.txt`.
+
+Closure results (raw): R12-01, R12-04, R12-06..R12-09, R11-08/R10-08 closed (all) · R12-02 closed
+(plan: report path; error-handling; engine-protocol) / open (tests: not driven through
+`analyze_game_core`) · R12-03 closed (tests, error-handling, engine-protocol) / open (plan: write
+boundary) · R12-05 closed (tests, error-handling, engine-protocol) / open (plan: sealed case impossible
+for interactive) · R12-10 and R11-04 closed (tests, engine-protocol) / open (plan, error-handling:
+categories lost) · R11-01 closed / partial (plan) · R11-02 closed / open (plan).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R13-01 | Interactive cancellation sets `SupervisedEngine::cancelled` through `cancel_exact` and never cancels the interrupt, so a stalled verifier times out instead of cancelling (`chess.rs:854`, `engine/process.rs:1139`, `:2101`) (plan 98) | Fix | `EngineCommandCancellation` with the flag polled at 25 ms (r14 A4, A7) |
+| R13-02 | The actor-arm check precedes synchronous preparation and awaits before the write (`engine/process.rs:1688`, `:1815`, `:2163`) (plan 96) | Fix | Check inside `set_option_with_resources` immediately before `send`, whose first await is the write; hook test at that point (r14 A4, A7) |
+| R13-03 | Sealed supervisor cannot reach interactive analysis: `consume_engine_search` never checks `sealed` (`engine/process.rs:877`, `:1242`) (plan 98) | Fix | Interactive case uses a removed reservation with its exact error (r14 A7) |
+| R13-04 | `OperationAndCleanup` keeps only strings, so the caller cannot log categories (`error.rs:245-254`) (plan 99, error-handling 99) | Fix | Typed private `PinFailure` logged before conversion; `error.rs` unchanged (r14 A2) |
+| R13-05 | `infra/blocking.rs` missing from Files and Phase 2 (plan 98) | Fix | r14 Files, Phase 2 |
+| R13-06 | `LogCaptureScope` is thread-local; the runtime flavour is not pinned (`error.rs:491-512`) (plan 89) | Fix | Explicit current-thread flavour (r14 A7) |
+| R13-07 | Cancellation cases do not run through `analyze_game_core` or the interactive flow (tests 94) | Fix | r14 A7 |
+| R13-08 | A runtime-handle hook in the job does not prove where resolution runs (tests 88) | Fix | Hooks at the resolution functions' entries (r14 A7) |
+| (re-reports) | Engine-protocol listed seven existing defects outside this mandate: `PendingActorGuard::drop` untracked task, stop deadline reset per line, config probe left registered, game construction cancellation, unscoped stop preferring a pending admission, `kill_engine` ignoring a reservation, `EvalListener` loaded guard (engine-protocol 96-99) | Defer (already filed) | f-20260914-34, f-20260911-03, f-20260914-35, f-20260908-02, f-20260911-02, f-20260914-23, f-20260914-37; settled as R4-04, R5-07, R6-05, R5-11, R5-10, R8-12 with no new evidence |
+
+Correction revision for adopted R13 issues: r14 (this text).
+
+### Round 14 (revision r14) — four Codex lenses
+
+Raw verdicts: review-plan REVISE · review-tests REVISE · review-error-handling APPROVED ·
+review-engine-protocol REVISE. Raw reports: `/tmp/build-macos-runtime/lens15-*.txt`.
+
+Closure results (raw): R13-02, R13-04, R13-05, R13-06 closed (all) · R13-01 closed (plan, tests) /
+partial (error-handling, engine-protocol: wrong cancellation route) · R13-03 closed (plan,
+error-handling, engine-protocol) / open (tests) · R13-07 closed (plan, tests) / open or partial
+(error-handling, engine-protocol) · R13-08 closed (tests, engine-protocol) / open (plan,
+error-handling: unsound oracle) · R12-02, R12-03, R12-05, R12-10, R11-01, R11-02, R11-04 closed (all).
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R14-01 | `Handle::try_current()` succeeds inside a `spawn_blocking` job, so the R13-08 oracle fails the correct implementation (plan 99, error-handling 99) | Fix | Measured: `tokio-1.50.0/src/runtime/blocking/pool.rs:471` calls `rt.enter()` in the worker. Thread-identity oracle under a current-thread runtime (r15 A7) |
+| R14-02 | `cancel_analysis` targets `EngineKey("analysis", id)`; interactive searches are cancelled by `stop_engine`/`kill_engine`, so the interactive cases cannot drive the flag (engine-protocol 99, error-handling 99) | Fix | Traced: `stop_generation` terminates the actor (`engine/process.rs:1128-1132`), cancelling the interrupt (`:2102`). The flag route is removed; interactive and game rely on the interrupt, report on its token; tests drive `stop_engine` (r15 A4, A7) |
+| R14-03 | A flag cancellation landing during the write lets the interactive flow reach `go` and read indefinitely (engine-protocol 96) | Fix (dissolved by R14-02) | Interactive cancellation terminates the actor, which rejects `go` (`engine/process.rs:2206-2211`); the interactive hook case asserts no `go` (r15 A4, A7) |
+| R14-04 | The interactive admission case stays green if a sealed check in `consume_engine_search` is absent (tests 98) | Skip | No such check is part of this plan (R13-03 changed only the test's route). The case guards admission before resolution through the resolution counter, and resolving first fails it |
+| R13-01 (withdrawn) | Interactive cancellation needs the supervised flag | Withdrawn in r15 | Its premise traced `cancel_analysis`, which does not cancel interactive searches; see R14-02 |
+
+Correction revision for adopted R14 issues: r15 (this text).
+
+### Round 15 (revision r15) — four Codex lenses
+
+Raw verdicts: review-plan APPROVED · review-tests REVISE · review-error-handling APPROVED ·
+review-engine-protocol APPROVED. Raw reports: `/tmp/build-macos-runtime/lens16-*.txt`.
+
+Closure results (raw): R14-01, R14-02, R13-07, R13-08 closed (all) · R14-03 closed (plan,
+error-handling, engine-protocol) / open (tests: the hook terminates before `go` is reached). A
+whitespace-only edit (one blank line before the Round 14 record) was made after launch; semantics and
+proof unchanged, snapshot refreshed.
+
+| ID | Claim (witnesses) | Disposition | Reason |
+|---|---|---|---|
+| R15-01 | The interactive hook terminates inside `set_options`, so `go` is never issued and "no go" proves nothing about rejection after termination (`chess.rs:742-744`) (tests 99) | Fix | Second hook between `set_options` and `go`, asserting `go` was attempted and rejected (r16 A7) |
+
+Correction revision for adopted R15 issues: r16 (this text). Re-review: review-plan and review-tests
+(the driving lens); no other domain lens is newly affected by a test-only case.
+
+### Round 16 (revision r16) — closure check: review-plan, review-tests
+
+Raw verdicts: review-plan APPROVED · review-tests APPROVED. Raw reports:
+`/tmp/build-macos-runtime/lens17-*.txt`. Closure results: R15-01 closed (both), R14-03 closed (both).
+
+### Closure (r16)
+
+Every issue R1-01 … R15-01 carries an explicit disposition above. Every adopted substantive
+correction received a reviewer closure check: r15's corrections by all four lenses (round 15), r16's
+by review-plan and the driving lens review-tests (round 16). No required review is missing or failed,
+and no adopted mandate defect is open or deferred. Plan review is closed at r16.
+
+Metrics: 16 completed rounds (rounds 1–9 before this session's compaction, 10–16 after), no rewrite,
+no split. `plan_adopted_per_round` (this session's rounds): r10=8 r11=8 r12=10 r13=8 r14=3 r15=1.
+Withdrawn: R13-01 (r15). Out-of-mandate re-reports settled against existing findings, not counted.
+
