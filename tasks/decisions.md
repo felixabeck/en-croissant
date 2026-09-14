@@ -2928,3 +2928,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** a silent pathname fallback would make the security property platform-dependent without any signal. An explicit refusal is visible and is reversed by the port.
 * **Decided by:** Claude Code, f-20260905-05 build run · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4834f7e05738f2640801ee9c4aea568cb695d3f17c5cfabf9ee363628e5889d3","input_sha256":"00935430e44f12e98280343dfeb5dd5a7f0a0f4473a13c05b70061084274c496","kind":"mutation-receipt","operation":"422702c6693a69c4a008337e8664bcecc96853bac8a635d55574555fdbc6a534","options":{"section":null},"request_id_sha256":null,"results":["d-20260914-03"],"target":"decisions-ledger","v":1} -->
+
+### d-20260914-04 — How are db::repository test hooks isolated between concurrently running tests?
+
+* **Question:** How do repository test hooks, which fire on worker threads, stay confined to the test that installed them?
+* **Governs:** f-20260914-01
+* **Chosen:** Scope by database path plus a configuration generation. `configure_test_hooks(scope, ..)` and `run_test_hook(hook, path)` normalise both paths like `DatabaseFileTarget::for_test_path` (canonical parent plus leaf); a hook fires, or counts, only when the path lies under the scope. A callback is written back only if the generation it was taken under is still current. Take, install and configure run under one hook-mutex hold, with the restoring guard created first. Both mutexes recover from poisoning.
+* **Rejected:** thread-local hooks (hooked code runs on BLOCKING_GATEWAY and spawned workers); making every repository-opening test take `TEST_HOOK_SERIAL` (fragile, since any new test that forgets it reintroduces the race); a test-only seam proving configuration atomicity (that window no longer exists, so a seam at the old point would test the seam; the review-tests closure item was triaged Skip with that evidence).
+* **Reason:** each test already owns a unique tempdir database, so the path is a natural owner key that survives thread hops. Before this fix, three of roughly five full `cargo test` runs reddened 15 tests.
+* **Decided by:** Claude Code, f-20260905-05 build run (red gate) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"bc4bbb77e5657694b5dd3c0e5cea1255b8f686666745631775bfb3b15069038d","input_sha256":"0da2e3634582e5b07e9c249a64ea41375a180ac473d47482cbcae6bb0ee37a6d","kind":"mutation-receipt","operation":"d2b1f840816048a952927fa93e95e6b8feed2bdeab287809e43e878552d3a8ca","options":{"section":null},"request_id_sha256":null,"results":["d-20260914-04"],"target":"decisions-ledger","v":1} -->
