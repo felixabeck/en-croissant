@@ -798,13 +798,17 @@ impl EngineResourceHandle {
     }
 }
 
-/// Backend-only lease for a resource passed to an engine.  The descriptor is
-/// retained for the complete process lifetime, so replacement cannot redirect
-/// an engine's lazy access after UCI configuration.
+/// Backend-only lease for a resource passed to an engine. Unix retains the
+/// opened descriptor for the complete process lifetime; Windows retains the
+/// opened no-delete handle alongside its path. In both cases, replacement
+/// cannot redirect an engine's lazy access after UCI configuration.
 #[derive(Debug)]
 pub(crate) struct EngineResourceLease {
     #[cfg(unix)]
     file: fs::File,
+    #[cfg(windows)]
+    /// Holds the no-delete handle until the lease is dropped.
+    _file: fs::File,
     #[cfg(windows)]
     target: PathBuf,
 }
@@ -1020,13 +1024,17 @@ impl OpeningBookHandle {
     }
 }
 
-/// Backend-only sealed executable object. It owns the revalidated opened executable; callers
-/// cannot obtain a filesystem path from a renderer capability.
+/// Backend-only sealed executable object. Unix retains the revalidated opened
+/// descriptor; Windows retains its revalidated no-delete handle and launch
+/// path. Callers cannot obtain a filesystem path from a renderer capability.
 pub(crate) struct EngineExecutable {
     #[cfg(unix)]
     file: fs::File,
     working_directory: PathBuf,
     resource_leases: Vec<EngineResourceLease>,
+    #[cfg(windows)]
+    /// Holds the no-delete handle until the executable is dropped.
+    _file: fs::File,
     #[cfg(windows)]
     command_path: PathBuf,
 }
@@ -3414,6 +3422,8 @@ impl PathAuthority {
                     #[cfg(unix)]
                     file,
                     #[cfg(windows)]
+                    _file,
+                    #[cfg(windows)]
                     target: resolved.take_target().ok_or_else(|| {
                         Error::Conflict("engine resource target is unavailable".into())
                     })?,
@@ -3430,6 +3440,9 @@ impl PathAuthority {
                 #[cfg(windows)]
                 {
                     Ok(EngineResourceLease {
+                        _file: resolved.take_file().ok_or_else(|| {
+                            Error::InvalidInput("engine resource must be a directory".into())
+                        })?,
                         target: resolved.take_target().ok_or_else(|| {
                             Error::Conflict("engine resource target is unavailable".into())
                         })?,
@@ -3584,6 +3597,8 @@ impl PathAuthority {
             file,
             working_directory,
             resource_leases: Vec::new(),
+            #[cfg(windows)]
+            _file,
             #[cfg(windows)]
             command_path: verified_path,
         })

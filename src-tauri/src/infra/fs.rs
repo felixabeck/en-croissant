@@ -170,25 +170,15 @@ mod verified_directory {
     impl VerifiedDir {
         #[cfg(unix)]
         pub(crate) fn new(opened: File, expected: (u64, u64)) -> Result<Self, Error> {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                let verified = Self(opened);
-                let metadata = verified.as_file().metadata()?;
-                if (metadata.dev(), metadata.ino()) != expected {
-                    return Err(Error::Conflict(
-                        "workspace directory changed concurrently".into(),
-                    ));
-                }
-                Ok(verified)
+            use std::os::unix::fs::MetadataExt;
+            let verified = Self(opened);
+            let metadata = verified.as_file().metadata()?;
+            if (metadata.dev(), metadata.ino()) != expected {
+                return Err(Error::Conflict(
+                    "workspace directory changed concurrently".into(),
+                ));
             }
-            #[cfg(not(unix))]
-            {
-                let _ = (opened, expected);
-                Err(crate::platform_support::unsupported_plural(
-                    "verified directories",
-                ))
-            }
+            Ok(verified)
         }
 
         pub(crate) fn as_file(&self) -> &File {
@@ -1152,6 +1142,11 @@ mod unix {
             let name = std::ffi::OsString::from_vec(bytes.to_vec());
             let stat =
                 fs::statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW).map_err(|e| io(e.into()))?;
+            if depth.saturating_add(1) >= MAX_REMOVE_TREE_DEPTH {
+                return Err(Error::ResourceLimit(format!(
+                    "directory install exceeded {MAX_REMOVE_TREE_DEPTH} levels"
+                )));
+            }
             match FileType::from_raw_mode(stat.st_mode) {
                 FileType::RegularFile => File::from(
                     fs::openat(
@@ -1165,11 +1160,6 @@ mod unix {
                 .sync_all()
                 .map_err(io)?,
                 FileType::Directory => {
-                    if depth.saturating_add(1) >= MAX_REMOVE_TREE_DEPTH {
-                        return Err(Error::ResourceLimit(format!(
-                            "directory install exceeded {MAX_REMOVE_TREE_DEPTH} levels"
-                        )));
-                    }
                     let child = File::from(
                         fs::openat(
                             dir,
@@ -1680,39 +1670,29 @@ pub(crate) fn open_regular_at(
     access: RegularFileAccess,
 ) -> Result<File, Error> {
     single_leaf(name)?;
-    #[cfg(unix)]
-    {
-        use rustix::fs::{self as rfs, FileType, Mode, OFlags};
-        let opened = File::from(
-            rfs::openat(
-                parent,
-                name,
-                match access {
-                    RegularFileAccess::ReadOnly => OFlags::RDONLY,
-                    RegularFileAccess::ReadWrite => OFlags::RDWR,
-                } | OFlags::NOFOLLOW
-                    | OFlags::CLOEXEC
-                    | OFlags::NONBLOCK,
-                Mode::empty(),
-            )
-            .map_err(|error| Error::Io(Box::new(error.into())))?,
-        );
-        let stat = rfs::fstat(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
-        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-            return Err(Error::InvalidInput("target must be a regular file".into()));
-        }
-        let flags = rfs::fcntl_getfl(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
-        rfs::fcntl_setfl(&opened, flags - OFlags::NONBLOCK)
-            .map_err(|error| Error::Io(Box::new(error.into())))?;
-        Ok(opened)
+    use rustix::fs::{self as rfs, FileType, Mode, OFlags};
+    let opened = File::from(
+        rfs::openat(
+            parent,
+            name,
+            match access {
+                RegularFileAccess::ReadOnly => OFlags::RDONLY,
+                RegularFileAccess::ReadWrite => OFlags::RDWR,
+            } | OFlags::NOFOLLOW
+                | OFlags::CLOEXEC
+                | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|error| Error::Io(Box::new(error.into())))?,
+    );
+    let stat = rfs::fstat(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(Error::InvalidInput("target must be a regular file".into()));
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (parent, access);
-        Err(crate::platform_support::unsupported(
-            "fd-relative regular-file opening",
-        ))
-    }
+    let flags = rfs::fcntl_getfl(&opened).map_err(|error| Error::Io(Box::new(error.into())))?;
+    rfs::fcntl_setfl(&opened, flags - OFlags::NONBLOCK)
+        .map_err(|error| Error::Io(Box::new(error.into())))?;
+    Ok(opened)
 }
 
 /// Creates one private regular-file leaf below a retained directory descriptor. The exclusive
@@ -1721,33 +1701,23 @@ pub(crate) fn open_regular_at(
 #[cfg(unix)]
 pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u64, u64)), Error> {
     single_leaf(name)?;
-    #[cfg(unix)]
-    {
-        use rustix::fs::{self as rfs, FileType, Mode, OFlags};
-        let created = File::from(
-            rfs::openat(
-                parent,
-                name,
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::from_raw_mode(0o600),
-            )
-            .map_err(|error| Error::Io(Box::new(error.into())))?,
-        );
-        let stat = rfs::fstat(&created).map_err(|error| Error::Io(Box::new(error.into())))?;
-        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-            return Err(Error::InvalidInput(
-                "created database must be a regular file".into(),
-            ));
-        }
-        Ok((created, unix::raw_stat_identity(&stat)))
+    use rustix::fs::{self as rfs, FileType, Mode, OFlags};
+    let created = File::from(
+        rfs::openat(
+            parent,
+            name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|error| Error::Io(Box::new(error.into())))?,
+    );
+    let stat = rfs::fstat(&created).map_err(|error| Error::Io(Box::new(error.into())))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(Error::InvalidInput(
+            "created database must be a regular file".into(),
+        ));
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (parent, name);
-        Err(crate::platform_support::unsupported(
-            "descriptor-relative exclusive creation",
-        ))
-    }
+    Ok((created, unix::raw_stat_identity(&stat)))
 }
 
 #[cfg(unix)]
@@ -3991,6 +3961,45 @@ mod tests {
             b"old"
         );
         assert!(current.join("boundary").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_install_refuses_a_regular_file_beyond_the_maximum_depth() {
+        let (_root, source, target) = directory_fixture();
+        std::fs::remove_file(source.join("new")).expect("fixture file");
+        let mut current = source.clone();
+        for level in 0..(MAX_REMOVE_TREE_DEPTH - 1) {
+            current = current.join(format!("level-{level}"));
+            std::fs::create_dir(&current).expect("nested directory");
+        }
+        std::fs::write(current.join("boundary"), b"boundary").expect("boundary");
+
+        let error = atomic_install_dir(&source, &target).expect_err("file depth must be bounded");
+        assert!(matches!(error, Error::ResourceLimit(_)));
+        assert_eq!(
+            std::fs::read(target.join("old")).expect("old target"),
+            b"old"
+        );
+
+        let (_root, source, target) = directory_fixture();
+        std::fs::remove_file(source.join("new")).expect("fixture file");
+        let mut current = source.clone();
+        for level in 0..(MAX_REMOVE_TREE_DEPTH - 2) {
+            current = current.join(format!("level-{level}"));
+            std::fs::create_dir(&current).expect("nested directory");
+        }
+        std::fs::write(current.join("boundary"), b"boundary").expect("boundary");
+        let boundary = current
+            .strip_prefix(&source)
+            .expect("boundary below source")
+            .join("boundary");
+
+        atomic_install_dir(&source, &target).expect("shallower file depth must install");
+        assert_eq!(
+            std::fs::read(target.join(boundary)).expect("installed boundary"),
+            b"boundary"
+        );
     }
 
     #[cfg(unix)]

@@ -86,15 +86,6 @@ mod tests {
     #[test]
     fn routed_plural_refusals_are_byte_identical() {
         assert_eq!(
-            error_message(unsupported_plural("verified directories")),
-            [
-                "verified directories",
-                " are unsupported on this ",
-                "platform"
-            ]
-            .concat()
-        );
-        assert_eq!(
             error_message(unsupported_plural("authorized directories")),
             [
                 "authorized directories",
@@ -141,12 +132,35 @@ mod tests {
     fn source_for(file: &str) -> &'static str {
         match file {
             "infra/path_authority/mod.rs" => include_str!("infra/path_authority/mod.rs"),
+            "infra/path_authority/resolved.rs" => include_str!("infra/path_authority/resolved.rs"),
+            "infra/fs.rs" => include_str!("infra/fs.rs"),
             "fs.rs" => include_str!("fs.rs"),
             "chesscom.rs" => include_str!("chesscom.rs"),
             "oauth.rs" => include_str!("oauth.rs"),
             "puzzle.rs" => include_str!("puzzle.rs"),
+            "db/repository.rs" => include_str!("db/repository.rs"),
+            "db/search.rs" => include_str!("db/search.rs"),
+            "db/mod.rs" => include_str!("db/mod.rs"),
+            "file_workspace.rs" => include_str!("file_workspace.rs"),
             other => panic!("unknown source-test file {other}"),
         }
+    }
+
+    fn rust_source_paths() -> Vec<std::path::PathBuf> {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let mut paths = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from(root)];
+        while let Some(path) = stack.pop() {
+            let metadata = std::fs::metadata(&path).unwrap();
+            if metadata.is_dir() {
+                for entry in std::fs::read_dir(path).unwrap() {
+                    stack.push(entry.unwrap().path());
+                }
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+                paths.push(path);
+            }
+        }
+        paths
     }
 
     fn guard_statement(
@@ -427,18 +441,19 @@ mod tests {
                 signature: "pub(crate) fn mark_engine_executable(",
                 operation: "engine executable mode",
             },
+            CounterpartRow {
+                file: "db/repository.rs",
+                signature: "pub(crate) fn identity_from_probe(",
+                operation: "database identity probing",
+            },
+            CounterpartRow {
+                file: "db/search.rs",
+                signature: "fn open_valid_preferred(",
+                operation: "fd-relative search index loading",
+            },
         ];
         for row in rows {
-            let source: &str = match row.file {
-                "file_workspace.rs" => include_str!("file_workspace.rs"),
-                "infra/fs.rs" => include_str!("infra/fs.rs"),
-                "infra/path_authority/mod.rs" => include_str!("infra/path_authority/mod.rs"),
-                "infra/path_authority/resolved.rs" => {
-                    include_str!("infra/path_authority/resolved.rs")
-                }
-                "db/mod.rs" => include_str!("db/mod.rs"),
-                other => panic!("unknown counterpart source {other}"),
-            };
+            let source = source_for(row.file);
             let attribute = "#[cfg(not(unix))]";
             let normalised = normalise(source, Literals::Blank);
             let attribute_start = source
@@ -475,30 +490,19 @@ mod tests {
     fn refusal_text_has_one_source() {
         let needle = ["unsupported on this ", "platform"].concat();
         let mut occurrences = Vec::new();
-        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
-        let mut stack = vec![std::path::PathBuf::from(root)];
-        while let Some(path) = stack.pop() {
-            let metadata = std::fs::metadata(&path).unwrap();
-            if metadata.is_dir() {
-                for entry in std::fs::read_dir(path).unwrap() {
-                    stack.push(entry.unwrap().path());
-                }
-            } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
-                let source = std::fs::read_to_string(&path).unwrap();
-                let normalised = normalise(&source, Literals::Keep);
-                for offset in normalised.match_indices(&needle).map(|(offset, _)| offset) {
-                    if path.file_name().and_then(|name| name.to_str())
-                        != Some("platform_support.rs")
-                    {
-                        let allowed = path.ends_with("infra/fs.rs")
-                            && normalised[offset + needle.len()..].starts_with(':');
-                        if !allowed {
-                            occurrences.push(format!(
-                                "{}:{}",
-                                path.display(),
-                                source[..offset].matches('\n').count() + 1
-                            ));
-                        }
+        for path in rust_source_paths() {
+            let source = std::fs::read_to_string(&path).unwrap();
+            let normalised = normalise(&source, Literals::Keep);
+            for offset in normalised.match_indices(&needle).map(|(offset, _)| offset) {
+                if path.file_name().and_then(|name| name.to_str()) != Some("platform_support.rs") {
+                    let allowed = path.ends_with("infra/fs.rs")
+                        && normalised[offset + needle.len()..].starts_with(':');
+                    if !allowed {
+                        occurrences.push(format!(
+                            "{}:{}",
+                            path.display(),
+                            source[..offset].matches('\n').count() + 1
+                        ));
                     }
                 }
             }
@@ -512,7 +516,6 @@ mod tests {
     #[test]
     fn routed_refusal_labels_are_unchanged() {
         let expected = [
-            ("infra/fs.rs", "verified directories", "unsupported_plural"),
             ("infra/fs.rs", "fd-relative entry identity", "unsupported"),
             (
                 "infra/fs.rs",
@@ -522,16 +525,6 @@ mod tests {
             (
                 "infra/fs.rs",
                 "fd-relative directory opening",
-                "unsupported",
-            ),
-            (
-                "infra/fs.rs",
-                "fd-relative regular-file opening",
-                "unsupported",
-            ),
-            (
-                "infra/fs.rs",
-                "descriptor-relative exclusive creation",
                 "unsupported",
             ),
             ("infra/fs.rs", "fd-relative renames", "unsupported"),
@@ -640,18 +633,7 @@ mod tests {
                 current_file = file;
                 cursor = 0;
             }
-            let source: &str = match file {
-                "infra/fs.rs" => include_str!("infra/fs.rs"),
-                "infra/path_authority/mod.rs" => include_str!("infra/path_authority/mod.rs"),
-                "infra/path_authority/resolved.rs" => {
-                    include_str!("infra/path_authority/resolved.rs")
-                }
-                "db/repository.rs" => include_str!("db/repository.rs"),
-                "db/mod.rs" => include_str!("db/mod.rs"),
-                "db/search.rs" => include_str!("db/search.rs"),
-                "file_workspace.rs" => include_str!("file_workspace.rs"),
-                _ => unreachable!(),
-            };
+            let source = source_for(file);
             let normalised = compact(&normalise(source, Literals::Keep));
             let needle = if operation == "fd-relative directory enumeration" {
                 "crate::platform_support::unsupported(UNSUPPORTED_DIRECTORY_ENUMERATION)".into()
@@ -697,18 +679,7 @@ mod tests {
             "db/search.rs",
             "file_workspace.rs",
         ] {
-            let source: &str = match file {
-                "infra/fs.rs" => include_str!("infra/fs.rs"),
-                "infra/path_authority/mod.rs" => include_str!("infra/path_authority/mod.rs"),
-                "infra/path_authority/resolved.rs" => {
-                    include_str!("infra/path_authority/resolved.rs")
-                }
-                "db/repository.rs" => include_str!("db/repository.rs"),
-                "db/mod.rs" => include_str!("db/mod.rs"),
-                "db/search.rs" => include_str!("db/search.rs"),
-                "file_workspace.rs" => include_str!("file_workspace.rs"),
-                _ => unreachable!(),
-            };
+            let source = source_for(file);
             let compacted = compact(&normalise(source, Literals::Keep));
             let call_count = compacted
                 .matches("crate::platform_support::unsupported(")
@@ -722,18 +693,9 @@ mod tests {
                 "routed refusal count changed in {file}"
             );
         }
-        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
-        let mut stack = vec![std::path::PathBuf::from(root)];
         let mut tree_count = 0;
-        while let Some(path) = stack.pop() {
-            let metadata = std::fs::metadata(&path).unwrap();
-            if metadata.is_dir() {
-                for entry in std::fs::read_dir(path).unwrap() {
-                    stack.push(entry.unwrap().path());
-                }
-            } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs")
-                && path.file_name().and_then(|name| name.to_str()) != Some("platform_support.rs")
-            {
+        for path in rust_source_paths() {
+            if path.file_name().and_then(|name| name.to_str()) != Some("platform_support.rs") {
                 let source = std::fs::read_to_string(path).unwrap();
                 let compacted = compact(&normalise(&source, Literals::Keep));
                 tree_count += compacted

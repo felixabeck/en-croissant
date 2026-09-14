@@ -2530,34 +2530,34 @@ mod tests {
         let entry =
             std::iter::repeat_n("a", crate::infra::fs::MAX_REMOVE_TREE_DEPTH).collect::<PathBuf>();
 
-        for source_name in ["first", "second"] {
-            let source = root.path().join(source_name);
-            let output = source.join(&entry);
-            std::fs::create_dir_all(output.parent().unwrap()).unwrap();
-            std::fs::write(output, b"content").unwrap();
-            let result = crate::infra::fs::atomic_install_dir(&source, &target);
-            if source_name == "first" {
-                result.unwrap();
-            } else {
-                let error = result.unwrap_err();
-                assert!(matches!(
-                    error,
-                    Error::CommittedDurabilityUncertain(
-                        crate::error::DurabilityStage::OldDirectoryCleanup
-                    )
-                ));
-                let serialized = serde_json::to_string(&error).unwrap();
-                let payload: serde_json::Value =
-                    serde_json::from_str(&serialized).expect("serialized error is a JSON object");
-                assert_eq!(payload["category"], "durability");
-                assert_eq!(
-                    payload["message"],
-                    "Committed but durability uncertain: old directory cleanup"
-                );
-                assert!(!serialized.contains(&root.path().display().to_string()));
-                assert!(!serialized.contains("directory cleanup exceeded"));
-            }
-        }
+        let first = root.path().join("first");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::write(first.join("content"), b"content").unwrap();
+        crate::infra::fs::atomic_install_dir(&first, &target).unwrap();
+
+        std::fs::remove_dir_all(&target).unwrap();
+        let output = target.join(&entry);
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(output, b"content").unwrap();
+
+        let second = root.path().join("second");
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(second.join("content"), b"content").unwrap();
+        let error = crate::infra::fs::atomic_install_dir(&second, &target).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(crate::error::DurabilityStage::OldDirectoryCleanup)
+        ));
+        let serialized = serde_json::to_string(&error).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&serialized).expect("serialized error is a JSON object");
+        assert_eq!(payload["category"], "durability");
+        assert_eq!(
+            payload["message"],
+            "Committed but durability uncertain: old directory cleanup"
+        );
+        assert!(!serialized.contains(&root.path().display().to_string()));
+        assert!(!serialized.contains("directory cleanup exceeded"));
     }
 
     #[test]

@@ -20,8 +20,11 @@ use tokio_util::sync::CancellationToken;
 use super::canonical_binding;
 use super::{is_write_operation, opened_file_identity, DatabaseFileTarget, PathOperation};
 
-/// Result of a successful resolution. It retains only the exact opened file, never a parent or
-/// root handle that could be used to reach a sibling.
+/// Result of a successful resolution. It retains the exact opened file when
+/// present, the verified directory handle for directory targets, and the
+/// parent handle plus authority-validated leaf needed for relative operations.
+/// Those handles stay private and are used only with that retained leaf, so a
+/// resolution cannot be used to reach a sibling.
 pub struct ResolvedPath {
     operation: PathOperation,
     #[cfg(unix)]

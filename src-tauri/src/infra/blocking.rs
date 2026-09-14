@@ -20,10 +20,11 @@ pub struct BlockingGateway {
     semaphore: Arc<tokio::sync::Semaphore>,
 }
 
-/// Source-text scanning shared by the blocking-offload invariant tests in `main.rs`,
-/// `puzzle.rs` and `infra/path_authority.rs`. It lives here, beside the non-nesting rule it
-/// exists to prove, and there is exactly one copy on purpose: both scans depend on the same
-/// delimiter list, so a private second copy would let an edit to one (a new `fn` prefix,
+/// Source-text scanning shared by the blocking-offload invariant tests in `main.rs`, `chess.rs`,
+/// `engine/process.rs`, `fs.rs`, `infra/fs.rs`, `infra/path_authority/mod.rs`,
+/// `platform_support.rs` and `sound.rs`. It lives here, beside the non-nesting rule it exists to
+/// prove, and there is exactly one copy on purpose: all scans depend on the same delimiter list,
+/// so a private second copy would let an edit to one (a new `fn` prefix,
 /// attribute placement, CRLF) silently change what the other treats as a function body.
 #[cfg(test)]
 pub(crate) mod source_scan {

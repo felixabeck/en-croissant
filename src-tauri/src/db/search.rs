@@ -312,44 +312,46 @@ pub(crate) fn load_search_index_cancellable(
     )
 }
 
+#[cfg(unix)]
 fn open_valid_preferred(
     target: &DatabaseFileTarget,
     expected_source: &IndexSource,
     cancellation: &CancellationToken,
 ) -> Result<Option<MmapSearchIndex>, Error> {
-    #[cfg(unix)]
-    {
-        use rustix::{
-            fs::{self as rfs, Mode, OFlags},
-            io::Errno,
-        };
-        let leaf = preferred_sidecar_leaf(target.leaf());
-        let file = match rfs::openat(
-            target.parent(),
-            &leaf,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) {
-            Ok(file) => std::fs::File::from(file),
-            Err(error) if error == Errno::NOENT || error == Errno::LOOP => return Ok(None),
-            Err(error) => return Err(Error::Io(Box::new(error.into()))),
-        };
-        let index = match MmapSearchIndex::open_file_cancellable(file, cancellation) {
-            Ok(index) => index,
-            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData => {
-                return Ok(None)
-            }
-            Err(error) => return Err(error),
-        };
-        Ok((index.source() == expected_source).then_some(index))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (target, expected_source, cancellation);
-        Err(crate::platform_support::unsupported(
-            "fd-relative search index loading",
-        ))
-    }
+    use rustix::{
+        fs::{self as rfs, Mode, OFlags},
+        io::Errno,
+    };
+    let leaf = preferred_sidecar_leaf(target.leaf());
+    let file = match rfs::openat(
+        target.parent(),
+        &leaf,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(file) => std::fs::File::from(file),
+        Err(error) if error == Errno::NOENT || error == Errno::LOOP => return Ok(None),
+        Err(error) => return Err(Error::Io(Box::new(error.into()))),
+    };
+    let index = match MmapSearchIndex::open_file_cancellable(file, cancellation) {
+        Ok(index) => index,
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData => {
+            return Ok(None)
+        }
+        Err(error) => return Err(error),
+    };
+    Ok((index.source() == expected_source).then_some(index))
+}
+
+#[cfg(not(unix))]
+fn open_valid_preferred(
+    _target: &DatabaseFileTarget,
+    _expected_source: &IndexSource,
+    _cancellation: &CancellationToken,
+) -> Result<Option<MmapSearchIndex>, Error> {
+    Err(crate::platform_support::unsupported(
+        "fd-relative search index loading",
+    ))
 }
 
 fn cache_loaded_index(
