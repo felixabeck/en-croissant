@@ -2918,3 +2918,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** the handle carries the observed identity, so refusal on use already guarantees that no descriptor to a replacement reaches a caller. Pass-1 atomicity is testable and covers every refusal that happens before registration.
 * **Decided by:** Claude Code, f-20260905-05 build run (focused judgments on W85 and W47) · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"a2926206aff387cfda6a9379e91a7c4c18d18a65584f43230680af98bb6d5a9b","input_sha256":"ca8b0da3e83aa6c9a9e82192c3322f7ff9f483dac32664e83c22f9186dd1f4cb","kind":"mutation-receipt","operation":"422accd66d9d36b89a23fce6f9e5bcad6cabeb83267d2a0c50d44aea221c2603","options":{"section":null},"request_id_sha256":null,"results":["d-20260914-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20260914-03 — What do descriptor-based listings do on non-unix platforms?
+
+* **Question:** How do `CapabilityDirectory`, `capability_directory` and `collect_tree_entries` behave where no fd-relative directory API is ported?
+* **Governs:** f-20260905-05, f-20260912-10
+* **Chosen:** Refuse with `Error::Conflict`, using one message constant: "fd-relative directory enumeration is unsupported on this platform" (for the workspace listing, "workspace listing is unsupported on this platform"). Tests that route through the capability are `#[cfg(unix)]`, and test hooks are `cfg(all(test, unix))`.
+* **Rejected:** keeping the old pathname walk as a Windows fallback (it reintroduces the exact re-resolution gap this finding closes); a partial Windows port inside this run (a separate area, filed as f-20260912-10).
+* **Reason:** a silent pathname fallback would make the security property platform-dependent without any signal. An explicit refusal is visible and is reversed by the port.
+* **Decided by:** Claude Code, f-20260905-05 build run · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"4834f7e05738f2640801ee9c4aea568cb695d3f17c5cfabf9ee363628e5889d3","input_sha256":"00935430e44f12e98280343dfeb5dd5a7f0a0f4473a13c05b70061084274c496","kind":"mutation-receipt","operation":"422702c6693a69c4a008337e8664bcecc96853bac8a635d55574555fdbc6a534","options":{"section":null},"request_id_sha256":null,"results":["d-20260914-03"],"target":"decisions-ledger","v":1} -->
