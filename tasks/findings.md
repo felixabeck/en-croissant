@@ -8579,3 +8579,17 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Open question:** should aborted-publication termination be owned by the supervisor (a pending-termination set that tab shutdown and `RunEvent::ExitRequested` await with the existing bounded deadlines), or be performed inline by the caller of `spawn_registered` on its error path before returning, and how is the `Drop` backstop then reduced to a logged invariant violation?
 * **Related:** `f-20260830-51` (app exit terminates nothing deterministically — handled), `f-20260830-53` (detached stderr reader — handled), `f-20260914-31`.
 * **Found by:** Codex `review-engine-protocol` plan lens (round 4, confidence 91) during the macOS engine-launch build run, 2026-09-14; source verified by the orchestrator. Not reproduced by a test.
+
+---
+
+## 2026-09-14 — filed through the inbox spool
+
+### An engine-configuration probe stays registered until application exit when its command is dropped after publication
+
+* **ID:** f-20260914-35 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/chess.rs` `get_engine_config`: `spawn_registered(…, collect_engine_configuration)` publishes the probe under a unique `EngineKey("engine-config", <uuid>)`, and only the normal path afterwards calls `state.engine_supervisor.terminate_exact(&key, supervised.generation)`.
+* **Defect:** if the command future is dropped after publication and before `terminate_exact` (renderer reload, webview teardown, or any future cancellation of the command task), nothing terminates the probe: its key belongs to no tab, so tab close never reaches it, and it stays an idle engine child registered in the supervisor until application exit. `.claude/rules/async-resource-invariants.md` requires cleanup on every exit path, including cancellation.
+* **Why it matters:** each abandoned probe keeps an engine process (and, on macOS after `f-20260914-31`, its materialised launch leaves) alive for the rest of the session.
+* **Open question:** should the probe's termination be owned by a drop guard held across the `spawn_registered` → `terminate_exact` span (which then needs an owned asynchronous termination, the same design question as `f-20260914-34`), or should configuration probing run inside a supervisor-owned operation whose cancellation terminates the probe?
+* **Related:** `f-20260914-34` (unowned termination of an aborted publication), `f-20260901-14` (config probe moved under the supervisor — handled).
+* **Found by:** Codex `review-engine-protocol` plan lens (round 5, confidence 93) during the macOS engine-launch build run, 2026-09-14; source verified by the orchestrator. Not reproduced by a test.
