@@ -589,7 +589,7 @@ test("reports all pre-Phase-3 checker finding paths through CLI fixtures", async
     mutateCheckedInFileAndRunCli(
       subtest,
       ".github/workflows/test.yml",
-      (text) => replaceWorkflowJobSetup(text, ".github/workflows/test.yml", ""),
+      (text) => replaceNamedJobSetup(text, workflowJobName(".github/workflows/test.yml"), ""),
       ".github/workflows/test.yml: job test must contain exactly one unconditional, failure-propagating bash scripts/setup-rust.sh step with shell bash",
     ),
   );
@@ -728,16 +728,6 @@ function workflowJobName(path) {
       : "release";
 }
 
-function replaceWorkflowJobSetup(workflow, path, replacement) {
-  const jobName = workflowJobName(path);
-  const jobPattern = new RegExp(`(^  ${jobName}:\\n[\\s\\S]*?)(?=^  \\S|(?![\\s\\S]))`, "mu");
-  const job = workflow.match(jobPattern)?.[1];
-  assert.ok(job, `missing ${jobName} in ${path}`);
-  const changed = job.replace(sharedSetupBlock, replacement);
-  assert.notEqual(changed, job, `missing setup block in ${path} job ${jobName}`);
-  return workflow.replace(job, changed);
-}
-
 function oldCheckerAcceptsSetup(workflow, path) {
   const jobName = workflowJobName(path);
   const jobPattern = new RegExp(`^  ${jobName}:\\n([\\s\\S]*?)(?=^  \\S|(?![\\s\\S]))`, "mu");
@@ -753,7 +743,9 @@ function oldCheckerAcceptsSetup(workflow, path) {
 test("rejects every workflow reverted to its original floating action", async (t) => {
   for (const { path, original } of workflowSetups) {
     await t.test(path, (subtest) =>
-      mutateCheckedInFile(subtest, path, (text) => replaceWorkflowJobSetup(text, path, original)),
+      mutateCheckedInFile(subtest, path, (text) =>
+        replaceNamedJobSetup(text, workflowJobName(path), original),
+      ),
     );
   }
 });
@@ -761,13 +753,15 @@ test("rejects every workflow reverted to its original floating action", async (t
 test("rejects deletion and no-op replacement of every workflow setup", async (t) => {
   for (const { path } of workflowSetups) {
     await t.test(`${path} deleted`, (subtest) =>
-      mutateCheckedInFile(subtest, path, (text) => replaceWorkflowJobSetup(text, path, "")),
+      mutateCheckedInFile(subtest, path, (text) =>
+        replaceNamedJobSetup(text, workflowJobName(path), ""),
+      ),
     );
     await t.test(`${path} no-op`, (subtest) =>
       mutateCheckedInFile(subtest, path, (text) =>
-        replaceWorkflowJobSetup(
+        replaceNamedJobSetup(
           text,
-          path,
+          workflowJobName(path),
           sharedSetupBlock.replace("        run: bash scripts/setup-rust.sh", "        run: :"),
         ),
       ),
@@ -779,7 +773,11 @@ test("rejects a setup without explicit bash shell in every workflow", async (t) 
   for (const { path } of workflowSetups) {
     await t.test(path, (subtest) =>
       mutateCheckedInFile(subtest, path, (text) =>
-        replaceWorkflowJobSetup(text, path, sharedSetupBlock.replace("        shell: bash\n", "")),
+        replaceNamedJobSetup(
+          text,
+          workflowJobName(path),
+          sharedSetupBlock.replace("        shell: bash\n", ""),
+        ),
       ),
     );
   }
@@ -793,7 +791,7 @@ test("accepts harmless setup names, reordered fields, and explicit failure propa
       const workflow = await readFile(workflowPath, "utf8");
       const reordered =
         "      - run: bash scripts/setup-rust.sh\n        continue-on-error: false\n        name: Prepare pinned Rust\n        shell: bash";
-      await put(root, path, replaceWorkflowJobSetup(workflow, path, reordered));
+      await put(root, path, replaceNamedJobSetup(workflow, workflowJobName(path), reordered));
       assert.deepEqual(await checkToolVersionParity(root), []);
     });
   }
@@ -806,9 +804,9 @@ test("rejects blank-line conditional and failure-tolerant setup bypasses in ever
         const root = await checkedInRustFixture(subtest);
         const workflowPath = join(root, path);
         const workflow = await readFile(workflowPath, "utf8");
-        const bypass = replaceWorkflowJobSetup(
+        const bypass = replaceNamedJobSetup(
           workflow,
-          path,
+          workflowJobName(path),
           `${sharedSetupBlock}\n\n        ${declaration}`,
         );
         assert.equal(oldCheckerAcceptsSetup(bypass, path), true);

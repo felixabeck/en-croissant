@@ -159,18 +159,21 @@ function indentation(line) {
   return line.match(/^\s*/u)[0].length;
 }
 
-function topLevelJobValue(body, key) {
+function jobLayout(body) {
   const lines = body.split(/\r?\n/u);
   const populated = lines.filter((line) => line.trim());
   const level = populated.length === 0 ? 0 : Math.min(...populated.map(indentation));
+  return { lines, level };
+}
+
+function topLevelJobValue(body, key) {
+  const { lines, level } = jobLayout(body);
   const prefix = new RegExp(`^\\s{${level}}${key}:\\s*(.*)$`, "u");
   return lines.find((line) => prefix.test(line))?.match(prefix)?.[1];
 }
 
 function nestedJobValue(body, parent, key) {
-  const lines = body.split(/\r?\n/u);
-  const populated = lines.filter((line) => line.trim());
-  const level = populated.length === 0 ? 0 : Math.min(...populated.map(indentation));
+  const { lines, level } = jobLayout(body);
   const parentLine = lines.findIndex(
     (line) => indentation(line) === level && new RegExp(`^${parent}:\\s*$`, "u").test(line.trim()),
   );
@@ -210,9 +213,7 @@ function yamlScalar(value) {
 }
 
 function matrixIncludeEntries(body) {
-  const lines = body.split(/\r?\n/u);
-  const populated = lines.filter((line) => line.trim());
-  const level = populated.length === 0 ? 0 : Math.min(...populated.map(indentation));
+  const { lines, level } = jobLayout(body);
   const strategyIndex = lines.findIndex(
     (line) => indentation(line) === level && line.trim() === "strategy:",
   );
