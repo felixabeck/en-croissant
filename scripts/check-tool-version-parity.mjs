@@ -5,11 +5,55 @@ import { workflowJobs, workflowSteps } from "./check-gate-routing.mjs";
 import { isEntrypoint } from "./entrypoint.mjs";
 import { listWorkingTreeFiles } from "./working-tree-files.mjs";
 
+/*
+Failure-path map. Every finding below is exercised through the CLI fixture helper, which asserts
+the named message and status 1 in the same run. The test names are the node:test subtests.
+  contractFile(ENOENT) -> reports all pre-Phase-3 checker finding paths / missing contract file;
+  requiredWorkflowJob -> ... / missing registered workflow job;
+  channel -> ... / invalid Rust channel;
+  required component (each loop value) -> ... / missing rustfmt, missing clippy, missing llvm-tools;
+  profile -> ... / non-minimal Rust profile;
+  setup preamble/guard/install/report -> ... / setup strict-bash preamble, setup toolchain guard,
+    setup install command, setup active-toolchain report;
+  workflow RUSTUP_TOOLCHAIN -> ... / workflow RUSTUP_TOOLCHAIN declaration;
+  workflow setup contract -> ... / registered workflow setup contract and
+    registers each new Rust job's setup step / rust-platform, rust-macos-test;
+  dtolnay action -> ... / forbidden floating Rust action;
+  release target setup -> ... / release target setup contract;
+  push-skill setup fence -> ... / push skill setup fence;
+  family minimum/authority/mismatch -> ... / tool-version family minimum, tool-version family
+    authority, tool-version family mismatch;
+  release clauses (1a)-(1d) -> reports each release matrix target-coverage clause / matching clause;
+  release (1e), one per required target -> ... / missing aarch64-apple-darwin, missing
+    x86_64-apple-darwin, missing x86_64-pc-windows-msvc;
+  release (1f), both family cases -> ... / macOS entry carrying Windows target, Windows entry
+    carrying macOS target;
+  rust-platform (2), three targets plus family -> reports each rust-platform contract clause /
+    matching subtest;
+  rust-platform (3)-(5b) -> ... / matching subtest;
+  rust-macos-test (6a)-(6b) -> reports each macOS test-job contract clause / matching subtest;
+  main findings return 1 -> every status-1 fixture above;
+  unexpected main error return 2 -> reports an unexpected checker error with status 2;
+  unaltered fixture -> accepts the complete Phase 3 fixture through the CLI (status 0).
+*/
+
 const TEST_FILE_GLOBS = ["scripts/*-tests.mjs", "scripts/*.test.mjs"];
 const REQUIRED_RUST_COMPONENTS = ["rustfmt", "clippy", "llvm-tools"];
 const COMPLETE_NUMERIC_RUST_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
+export const REQUIRED_NON_LINUX_TARGETS = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+];
+const RUST_PLATFORM_CHECK =
+  "cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked";
+const RUST_PLATFORM_CLIPPY =
+  "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings";
+const RUST_MACOS_TEST = "cargo test --manifest-path src-tauri/Cargo.toml --all-targets";
 const RUST_WORKFLOW_JOBS = [
   [".github/workflows/test.yml", "test"],
+  [".github/workflows/test.yml", "rust-platform"],
+  [".github/workflows/test.yml", "rust-macos-test"],
   [".github/workflows/mutation.yml", "backend"],
   [".github/workflows/release.yml", "release"],
 ];
@@ -111,6 +155,241 @@ function declaresRustupToolchain(workflow) {
   );
 }
 
+function indentation(line) {
+  return line.match(/^\s*/u)[0].length;
+}
+
+function topLevelJobValue(body, key) {
+  const lines = body.split(/\r?\n/u);
+  const populated = lines.filter((line) => line.trim());
+  const level = populated.length === 0 ? 0 : Math.min(...populated.map(indentation));
+  const prefix = new RegExp(`^\\s{${level}}${key}:\\s*(.*)$`, "u");
+  return lines.find((line) => prefix.test(line))?.match(prefix)?.[1];
+}
+
+function nestedJobValue(body, parent, key) {
+  const lines = body.split(/\r?\n/u);
+  const populated = lines.filter((line) => line.trim());
+  const level = populated.length === 0 ? 0 : Math.min(...populated.map(indentation));
+  const parentLine = lines.findIndex(
+    (line) => indentation(line) === level && new RegExp(`^${parent}:\\s*$`, "u").test(line.trim()),
+  );
+  if (parentLine < 0) return undefined;
+  const parentIndentation = indentation(lines[parentLine]);
+  for (let index = parentLine + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() && indentation(line) <= parentIndentation) break;
+    const match = new RegExp(`^\\s+${key}:\\s*(.*)$`, "u").exec(line);
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+function yamlScalar(value) {
+  if (value === undefined) return { present: false, isString: false, value: undefined };
+  const trimmed = value.trim();
+  if (trimmed === "") return { present: true, isString: false, value: undefined };
+  if (trimmed.startsWith("'")) {
+    const end = trimmed.indexOf("'", 1);
+    if (end > 0) {
+      return {
+        present: true,
+        isString: true,
+        value: trimmed.slice(1, end).replaceAll("''", "'"),
+      };
+    }
+  }
+  if (trimmed.startsWith('"')) {
+    const end = trimmed.indexOf('"', 1);
+    if (end > 0) return { present: true, isString: true, value: trimmed.slice(1, end) };
+  }
+  if (/^(?:\[|\{|true$|false$|null$|-?\d)/u.test(trimmed)) {
+    return { present: true, isString: false, value: trimmed };
+  }
+  return { present: true, isString: true, value: trimmed };
+}
+
+function matrixIncludeEntries(body) {
+  const lines = body.split(/\r?\n/u);
+  const populated = lines.filter((line) => line.trim());
+  const level = populated.length === 0 ? 0 : Math.min(...populated.map(indentation));
+  const strategyIndex = lines.findIndex(
+    (line) => indentation(line) === level && line.trim() === "strategy:",
+  );
+  if (strategyIndex < 0) return undefined;
+  const strategyIndentation = indentation(lines[strategyIndex]);
+  const includeIndex = lines.findIndex((line, index) => {
+    if (index <= strategyIndex || indentation(line) <= strategyIndentation) return false;
+    return /^include:\s*(?:\[\])?\s*$/u.test(line.trim());
+  });
+  if (includeIndex < 0) return undefined;
+  if (lines[includeIndex].trim() === "include: []") return [];
+  const includeIndentation = indentation(lines[includeIndex]);
+  const entries = [];
+  let current;
+  let entryIndentation;
+  const addProperty = (entry, text) => {
+    const match = /^(platform|args|os|target):\s*(.*)$/u.exec(text.trim());
+    if (match) entry[match[1]] = yamlScalar(match[2]);
+  };
+  for (let index = includeIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() && indentation(line) <= includeIndentation) break;
+    if (line.trim().startsWith("-") && indentation(line) > includeIndentation) {
+      if (current) entries.push(current);
+      current = {};
+      entryIndentation = indentation(line);
+      addProperty(current, line.trim().slice(1).trim());
+      continue;
+    }
+    if (current && line.trim() && indentation(line) > entryIndentation) {
+      addProperty(current, line);
+    }
+  }
+  if (current) entries.push(current);
+  return entries;
+}
+
+function targetFamily(target) {
+  if (target.endsWith("-apple-darwin")) return "macos";
+  if (/-pc-windows-/u.test(target)) return "windows";
+  return undefined;
+}
+
+function platformFamily(platform) {
+  if (platform.startsWith("macos-")) return "macos";
+  if (platform.startsWith("windows-")) return "windows";
+  return undefined;
+}
+
+function targetsFromReleaseEntry(entry) {
+  const platform = entry.platform?.value;
+  if (!entry.platform?.isString || typeof platform !== "string") return [];
+  if (!entry.args?.present) {
+    return platform.startsWith("windows-") ? ["x86_64-pc-windows-msvc"] : [];
+  }
+  if (!entry.args.isString || typeof entry.args.value !== "string") return [];
+  const targets = [...entry.args.value.matchAll(/--target\s+([^\s'"`]+)/gu)].map(
+    (match) => match[1],
+  );
+  return targets.length === 0 && platform.startsWith("windows-")
+    ? ["x86_64-pc-windows-msvc"]
+    : targets;
+}
+
+function checkTargetCoverage(workflows, findings) {
+  const release = workflows.get(".github/workflows/release.yml");
+  const releaseJob = release?.jobs.find((job) => job.name === "release");
+  if (releaseJob === undefined) return;
+  const entries = matrixIncludeEntries(releaseJob.body);
+  if (entries === undefined) {
+    findings.push(".github/workflows/release.yml: (1a) release job has no strategy.matrix.include");
+    return;
+  }
+  if (entries.length === 0) {
+    findings.push(".github/workflows/release.yml: (1b) release matrix.include is empty");
+    return;
+  }
+
+  const derived = [];
+  for (const [index, entry] of entries.entries()) {
+    if (
+      !entry.platform?.present ||
+      !entry.platform.isString ||
+      typeof entry.platform.value !== "string" ||
+      entry.platform.value === ""
+    ) {
+      findings.push(
+        `.github/workflows/release.yml: (1c) release matrix entry ${index + 1} has no platform`,
+      );
+      continue;
+    }
+    if (entry.args?.present && !entry.args.isString) {
+      findings.push(
+        `.github/workflows/release.yml: (1d) release matrix entry ${index + 1} args must be a string`,
+      );
+      continue;
+    }
+    const platform = entry.platform.value;
+    for (const target of targetsFromReleaseEntry(entry)) {
+      derived.push({ target, platform });
+      const targetOs = targetFamily(target);
+      const platformOs = platformFamily(platform);
+      if (targetOs !== undefined && targetOs !== platformOs) {
+        findings.push(
+          `.github/workflows/release.yml: (1f) derived target ${target} does not match release platform ${platform}`,
+        );
+      }
+    }
+  }
+  for (const target of REQUIRED_NON_LINUX_TARGETS) {
+    if (!derived.some((entry) => entry.target === target)) {
+      findings.push(
+        `.github/workflows/release.yml: (1e) required target ${target} is not derived from any release matrix entry`,
+      );
+    }
+  }
+
+  const platformJob = workflows
+    .get(".github/workflows/test.yml")
+    ?.jobs.find((job) => job.name === "rust-platform");
+  if (platformJob === undefined) return;
+  const platformEntries = matrixIncludeEntries(platformJob.body) ?? [];
+  for (const targetEntry of derived.filter((entry) => targetFamily(entry.target) !== undefined)) {
+    const expectedOs = `${targetFamily(targetEntry.target)}-latest`;
+    const matching = platformEntries.find(
+      (entry) => entry.target?.isString && entry.target.value === targetEntry.target,
+    );
+    if (matching === undefined) {
+      findings.push(
+        `.github/workflows/test.yml: (2) rust-platform matrix is missing target ${targetEntry.target}`,
+      );
+    } else if (matching.os?.value !== expectedOs) {
+      findings.push(
+        `.github/workflows/test.yml: (2) rust-platform target ${targetEntry.target} must use os ${expectedOs}`,
+      );
+    }
+  }
+  const runsOn = topLevelJobValue(platformJob.body, "runs-on");
+  if (runsOn !== "${{ matrix.os }}") {
+    findings.push(
+      ".github/workflows/test.yml: (3) rust-platform must use runs-on: ${{ matrix.os }}",
+    );
+  }
+  const buildTarget = nestedJobValue(platformJob.body, "env", "CARGO_BUILD_TARGET");
+  if (buildTarget !== "${{ matrix.target }}") {
+    findings.push(
+      ".github/workflows/test.yml: (4) rust-platform must set CARGO_BUILD_TARGET: ${{ matrix.target }}",
+    );
+  }
+  const platformSteps = workflowSteps(platformJob.body);
+  if (!platformSteps.some((step) => step.run === RUST_PLATFORM_CHECK)) {
+    findings.push(
+      `.github/workflows/test.yml: (5a) rust-platform is missing the exact cargo check step: ${RUST_PLATFORM_CHECK}`,
+    );
+  }
+  if (!platformSteps.some((step) => step.run === RUST_PLATFORM_CLIPPY)) {
+    findings.push(
+      `.github/workflows/test.yml: (5b) rust-platform is missing the exact cargo clippy step: ${RUST_PLATFORM_CLIPPY}`,
+    );
+  }
+
+  const macosTest = workflows
+    .get(".github/workflows/test.yml")
+    ?.jobs.find((job) => job.name === "rust-macos-test");
+  if (macosTest === undefined) return;
+  if (topLevelJobValue(macosTest.body, "runs-on") !== "macos-latest") {
+    findings.push(
+      ".github/workflows/test.yml: (6a) rust-macos-test must use runs-on: macos-latest",
+    );
+  }
+  if (!workflowSteps(macosTest.body).some((step) => step.run === RUST_MACOS_TEST)) {
+    findings.push(
+      `.github/workflows/test.yml: (6b) rust-macos-test is missing the receipt command: ${RUST_MACOS_TEST}`,
+    );
+  }
+}
+
 export async function checkRustToolchainContract(repoRoot, { contents = new Map() } = {}) {
   const findings = [];
   const toolchain = await contractFile(repoRoot, "rust-toolchain.toml", findings, contents);
@@ -193,6 +472,8 @@ export async function checkRustToolchainContract(repoRoot, { contents = new Map(
       findings.push(`${path}: job ${jobName} must not use dtolnay/rust-toolchain`);
     }
   }
+
+  checkTargetCoverage(workflows, findings);
 
   const release = workflows.get(".github/workflows/release.yml");
   if (release !== undefined) {
