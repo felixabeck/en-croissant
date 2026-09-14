@@ -2896,3 +2896,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** measured sqlite3 mode=rw does not create an absent file; file:// yields an empty authority.
 * **Decided by:** Grok, f-20260905-03 Mandate B · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"ea5ac5d648689c1b192fd32822d24e4cf4151ca4f81a8c4fb926d6cdf2421d8e","input_sha256":"04ec9e62716406ef73035a63a1ac44b2d3bf82ae74192fd31a715387d38fd114","kind":"mutation-receipt","operation":"190683324abc6ba4b7d090e82bdb8511af9c65fa2f698574cf25292d63d48741","options":{"section":null},"request_id_sha256":null,"results":["d-20260913-04"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-14 — recorded through the decisions lock
+
+### d-20260914-01 — How does PathAuthority enumerate a directory without re-resolving children by pathname?
+
+* **Question:** Which primitive and capability type carry workspace and `.db3` listings below an authorized root?
+* **Governs:** f-20260905-05
+* **Chosen:** `infra::fs::read_directory_entries_at` over rustix `Dir`, read from a fresh `openat(dir, ".")` descriptor, with a no-follow `statat` per name kept by a caller predicate. It returns pathless `DirectoryEntry{name, kind, identity, modified_seconds}`. A `CapabilityDirectory` wraps the fd from `resolve(id, op, &[])` and exposes `entries`, `open_child_directory` (`VerifiedDir` identity check; `ELOOP`/`ENOTDIR`/`ENOENT` map to Conflict), `confirm_entry` and `open_metadata_sidecar`, which reads the sidecar from the enumerated directory and confirms the PGN after the open. `.db3` registration refuses a resolved identity that differs from the enumerated one.
+* **Rejected:** rustix `RawDir` (`cfg(linux_kernel)` only, which would break macOS, see f-20260830-06); reusing `AuthorizedDir` (its producer set is pinned by `authorized_dir_has_no_arbitrary_path_constructor`); `open_verified_directory` for the root (refuses symlinked ancestors a registered workspace may legitimately sit under); trusting dirent `d_type`/`d_ino` (at a bind mount `d_ino` names the covered inode, measured).
+* **Reason:** measured that a removed directory read through its fd lists `[]` with `st_nlink == 0` while `openat(".")` still succeeds, so `st_nlink == 0` after the loop is the removal signal. Every reach below the root stays descriptor-relative, and the release-surface allowlist for `file_workspace.rs` drops from 4 to 1.
+* **Decided by:** Claude Code, f-20260905-05 build run (plan review r1-r12 plus two focused judgments) · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"3e88b4533240d86e9a3d22c5ab25046a13e8e7355c4fcce525eb42c0b014e131","input_sha256":"5a47d9f8250e1beb6cf83353536a29eaa61d20c9f83de02f4e50acba142854b2","kind":"mutation-receipt","operation":"bd0267ad0d98f92372591b6d38b1b78640658bb8d798e312f8db24cf1cf5907a","options":{"section":null},"request_id_sha256":null,"results":["d-20260914-01"],"target":"decisions-ledger","v":1} -->
