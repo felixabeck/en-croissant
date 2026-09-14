@@ -6634,7 +6634,7 @@ survives the `keepMounted={false}` unmount that made Cancel a no-op. See the clo
 
 ### `PathAuthority` has no directory-enumeration capability, so `file_workspace.rs`'s five reaches have nowhere to go
 
-* **ID:** f-20260905-05 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260905-05 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/file_workspace.rs` — five counted R3/R4 sites;
   `src-tauri/src/infra/fs.rs` (no primitive lists a directory);
   `src-tauri/src/infra/path_authority.rs` — `workspace_mutation_target` (`:3501`), which is
