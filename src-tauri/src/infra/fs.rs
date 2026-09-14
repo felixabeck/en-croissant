@@ -105,14 +105,25 @@ pub(crate) fn read_directory_entries_at(
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let directory_stat = rfs::fstat(dir).map_err(|error| Error::Io(Box::new(error.into())))?;
-    if directory_stat.st_nlink == 0 {
-        return Err(Error::Io(Box::new(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "directory was removed during enumeration",
-        ))));
-    }
+    unix::ensure_directory_not_removed(dir)?;
     Ok(result)
+}
+
+#[cfg(any(target_vendor = "apple", all(test, unix)))]
+pub(crate) fn held_matches_path(held: &File, path: &Path) -> Result<bool, Error> {
+    use rustix::{fs, io::Errno};
+
+    let held_stat = match fs::fstat(held) {
+        Ok(stat) => stat,
+        Err(Errno::NOENT | Errno::NOTDIR) => return Ok(false),
+        Err(error) => return Err(Error::Io(Box::new(error.into()))),
+    };
+    let path_stat = match fs::lstat(path) {
+        Ok(stat) => stat,
+        Err(Errno::NOENT | Errno::NOTDIR) => return Ok(false),
+        Err(error) => return Err(Error::Io(Box::new(error.into()))),
+    };
+    Ok(unix::raw_stat_identity(&held_stat) == unix::raw_stat_identity(&path_stat))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -370,6 +381,7 @@ mod unix {
         BeforeChildStat,
         BeforeChildOpen,
         BeforeDirOpen,
+        AfterDirectoryWalk,
         AfterEntryRemoved,
         ParentSync,
     }
@@ -496,6 +508,39 @@ mod unix {
         identity_from_parts(stat.st_dev, stat.st_ino)
     }
 
+    fn directory_removed_error() -> Error {
+        Error::Io(Box::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "directory was removed during enumeration",
+        )))
+    }
+
+    pub(super) fn ensure_directory_not_removed(dir: &File) -> Result<(), Error> {
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let directory_stat = fs::fstat(dir).map_err(|error| io(error.into()))?;
+            if directory_stat.st_nlink == 0 {
+                return Err(directory_removed_error());
+            }
+        }
+        #[cfg(target_vendor = "apple")]
+        {
+            use std::os::unix::ffi::OsStrExt;
+
+            let path = fs::getpath(dir).map_err(|error| {
+                if matches!(error, Errno::NOENT | Errno::NOTDIR) {
+                    directory_removed_error()
+                } else {
+                    io(error.into())
+                }
+            })?;
+            if !super::held_matches_path(dir, Path::new(OsStr::from_bytes(path.as_bytes())))? {
+                return Err(directory_removed_error());
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn raw_mode_from(mode: u32) -> Result<rustix::fs::RawMode, Error> {
         rustix::fs::RawMode::try_from(mode)
             .map_err(|_| Error::InvalidInput("file mode does not fit this platform".into()))
@@ -586,6 +631,8 @@ mod unix {
                 visit(bytes, entry.ino())?;
             }
         }
+        #[cfg(test)]
+        inject_removal(RemovalFaultPoint::AfterDirectoryWalk)?;
         Ok(())
     }
 
@@ -1179,6 +1226,7 @@ mod unix {
             }
             Ok(())
         })?;
+        ensure_directory_not_removed(dir)?;
         dir.sync_all().map_err(io)
     }
 
@@ -1276,6 +1324,7 @@ mod unix {
                         removed_entries,
                     )
                 })?;
+                ensure_directory_not_removed(&child)?;
                 // The descriptor pins the traversed directory, but this walk has no
                 // inode-conditional unlink. The parent-relative terminal lookup remains
                 // type-confined by `REMOVEDIR`; it can still name a concurrently substituted
@@ -2287,6 +2336,153 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn held_matches_path_compares_the_held_and_named_identities() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        let handle = File::open(&directory).unwrap();
+
+        assert!(held_matches_path(&handle, &directory).unwrap());
+        std::fs::remove_dir(&directory).unwrap();
+        assert!(!held_matches_path(&handle, &directory).unwrap());
+        std::fs::create_dir(&directory).unwrap();
+        assert!(!held_matches_path(&handle, &directory).unwrap());
+    }
+
+    #[cfg(unix)]
+    fn assert_directory_removed_during_enumeration(error: &Error) {
+        assert!(matches!(
+            error,
+            Error::Io(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && error.to_string() == "directory was removed during enumeration"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_directory_entries_at_refuses_a_directory_removed_after_the_walk() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("entry"), b"entry").unwrap();
+        let handle = File::open(&directory).unwrap();
+        let injector = Arc::new(PostWalkMutation::new(
+            directory.clone(),
+            PostWalkAction::Remove,
+        ));
+
+        let result = {
+            let _guard = unix::scoped_test_removal_injector(injector);
+            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true)
+        };
+
+        let error = result.expect_err("post-walk removal must be refused");
+        assert_directory_removed_during_enumeration(&error);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_directory_entries_at_rejects_a_same_name_directory_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("entry"), b"entry").unwrap();
+        let handle = File::open(&directory).unwrap();
+        let injector = Arc::new(PostWalkMutation::new(
+            directory.clone(),
+            PostWalkAction::ReplaceWithSentinel,
+        ));
+
+        let result = {
+            let _guard = unix::scoped_test_removal_injector(injector);
+            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true)
+        };
+
+        let error = result.expect_err("same-name replacement must be refused");
+        assert_directory_removed_during_enumeration(&error);
+        assert_eq!(
+            std::fs::read(directory.join("sentinel")).unwrap(),
+            b"sentinel"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_directory_entries_at_accepts_a_directory_renamed_after_the_walk() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("directory");
+        let moved = root.path().join("moved");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("entry"), b"entry").unwrap();
+        let handle = File::open(&directory).unwrap();
+        let injector = Arc::new(PostWalkMutation::new(
+            directory,
+            PostWalkAction::RenameAway {
+                destination: moved.clone(),
+            },
+        ));
+
+        let result = {
+            let _guard = unix::scoped_test_removal_injector(injector);
+            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true)
+        };
+
+        assert!(
+            result.is_ok(),
+            "rename-away must preserve the held directory"
+        );
+        assert!(moved.join("entry").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_directory_entries_at_keeps_cancellation_precedence_at_the_post_walk_point() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        let handle = File::open(&directory).unwrap();
+        let token = CancellationToken::new();
+        let injector = Arc::new(
+            PostWalkMutation::new(directory, PostWalkAction::Remove)
+                .with_cancellation(token.clone()),
+        );
+
+        let result = {
+            let _guard = unix::scoped_test_removal_injector(injector);
+            read_directory_entries_at(&handle, &token, &mut |_| true)
+        };
+
+        assert!(matches!(result, Err(Error::Cancellation)));
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn read_directory_entries_at_maps_getpath_enotdir_to_removed_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("parent");
+        let directory = parent.join("directory");
+        std::fs::create_dir_all(&directory).unwrap();
+        let handle = File::open(&directory).unwrap();
+        let injector = Arc::new(PostWalkMutation::new(
+            directory,
+            PostWalkAction::RemoveParentAndCreateFile {
+                parent: parent.clone(),
+            },
+        ));
+
+        let result = {
+            let _guard = unix::scoped_test_removal_injector(injector);
+            read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true)
+        };
+
+        let error = result.expect_err("parent replacement must be refused");
+        assert_directory_removed_during_enumeration(&error);
+        assert!(std::fs::metadata(parent).unwrap().is_file());
+    }
+
     #[test]
     fn directory_types_carry_no_pathname() {
         let source = include_str!("fs.rs");
@@ -2720,6 +2916,50 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn recursive_delete_reports_a_held_directory_removed_after_the_walk() {
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
+        std::fs::write(victim.join("removed"), b"content").unwrap();
+        let injector = Arc::new(PostWalkMutation::new(
+            victim.clone(),
+            PostWalkAction::Remove,
+        ));
+
+        let error = remove_entry_with_injector(&parent, OsStr::new("victim"), expected, injector)
+            .expect_err("removed held directory must be reported");
+
+        let Error::PartialRemoval {
+            removed_entries,
+            cause,
+        } = &error
+        else {
+            panic!("expected partial removal, got {error:?}");
+        };
+        assert!(*removed_entries >= 1);
+        assert_directory_removed_during_enumeration(cause);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_rejects_a_same_name_directory_replacement_after_the_walk() {
+        let (_temp, _root, victim, expected, parent) = removal_fixture();
+        std::fs::write(victim.join("removed"), b"content").unwrap();
+        let injector = Arc::new(PostWalkMutation::new(
+            victim.clone(),
+            PostWalkAction::ReplaceWithSentinel,
+        ));
+
+        let error = remove_entry_with_injector(&parent, OsStr::new("victim"), expected, injector)
+            .expect_err("same-name replacement must be reported");
+
+        let Error::PartialRemoval { cause, .. } = &error else {
+            panic!("expected partial removal, got {error:?}");
+        };
+        assert_directory_removed_during_enumeration(cause);
+        assert_eq!(std::fs::read(victim.join("sentinel")).unwrap(), b"sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn recursive_delete_rejects_a_symlink_planted_below_the_top_level() {
         // The test above refuses a symlink that is a direct child of the removed entry, so the
         // walk rejects it before descending into any directory. The property that matters is that
@@ -2766,6 +3006,76 @@ mod tests {
             if point == self.point && self.replacement.exists() {
                 std::fs::remove_dir_all(&self.target)?;
                 std::fs::rename(&self.replacement, &self.target)?;
+            }
+            Ok(None)
+        }
+    }
+
+    #[cfg(unix)]
+    enum PostWalkAction {
+        Remove,
+        ReplaceWithSentinel,
+        RenameAway {
+            destination: PathBuf,
+        },
+        #[cfg(target_vendor = "apple")]
+        RemoveParentAndCreateFile {
+            parent: PathBuf,
+        },
+    }
+
+    #[cfg(unix)]
+    struct PostWalkMutation {
+        target: PathBuf,
+        action: PostWalkAction,
+        cancellation: Option<CancellationToken>,
+        fired: std::sync::atomic::AtomicBool,
+    }
+
+    #[cfg(unix)]
+    impl PostWalkMutation {
+        fn new(target: PathBuf, action: PostWalkAction) -> Self {
+            Self {
+                target,
+                action,
+                cancellation: None,
+                fired: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+
+        fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
+            self.cancellation = Some(cancellation);
+            self
+        }
+    }
+
+    #[cfg(unix)]
+    impl unix::RemovalInjector for PostWalkMutation {
+        fn inject(&self, point: unix::RemovalFaultPoint) -> std::io::Result<Option<u64>> {
+            if point != unix::RemovalFaultPoint::AfterDirectoryWalk
+                || self.fired.swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Ok(None);
+            }
+            match &self.action {
+                PostWalkAction::Remove => std::fs::remove_dir_all(&self.target)?,
+                PostWalkAction::ReplaceWithSentinel => {
+                    std::fs::remove_dir_all(&self.target)?;
+                    std::fs::create_dir(&self.target)?;
+                    std::fs::write(self.target.join("sentinel"), b"sentinel")?;
+                }
+                PostWalkAction::RenameAway { destination } => {
+                    std::fs::rename(&self.target, destination)?;
+                }
+                #[cfg(target_vendor = "apple")]
+                PostWalkAction::RemoveParentAndCreateFile { parent } => {
+                    std::fs::remove_dir_all(&self.target)?;
+                    std::fs::remove_dir_all(parent)?;
+                    std::fs::write(parent, b"parent replacement")?;
+                }
+            }
+            if let Some(cancellation) = &self.cancellation {
+                cancellation.cancel();
             }
             Ok(None)
         }
@@ -3945,6 +4255,46 @@ mod tests {
         std::fs::create_dir(&target).expect("target");
         std::fs::write(target.join("old"), b"old").expect("old");
         (root, source, target)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_install_refuses_a_source_removed_after_the_walk() {
+        let (_root, source, target) = directory_fixture();
+        let injector = Arc::new(PostWalkMutation::new(
+            source.clone(),
+            PostWalkAction::Remove,
+        ));
+
+        let result = {
+            let _guard = unix::scoped_test_removal_injector(injector);
+            atomic_install_dir(&source, &target)
+        };
+
+        let error = result.expect_err("source removal must be refused");
+        assert_directory_removed_during_enumeration(&error);
+        assert_eq!(std::fs::read(target.join("old")).unwrap(), b"old");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_install_refuses_a_same_name_source_replacement_after_the_walk() {
+        let (_root, source, target) = directory_fixture();
+        let injector = Arc::new(PostWalkMutation::new(
+            source.clone(),
+            PostWalkAction::ReplaceWithSentinel,
+        ));
+
+        let result = {
+            let _guard = unix::scoped_test_removal_injector(injector);
+            atomic_install_dir(&source, &target)
+        };
+
+        let error = result.expect_err("same-name source replacement must be refused");
+        assert_directory_removed_during_enumeration(&error);
+        assert_eq!(std::fs::read(target.join("old")).unwrap(), b"old");
+        assert!(!target.join("sentinel").exists());
+        assert_eq!(std::fs::read(source.join("sentinel")).unwrap(), b"sentinel");
     }
 
     #[cfg(unix)]
