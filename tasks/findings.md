@@ -8261,3 +8261,290 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
   Each went red against its defect. Commits `370fe35d`, `ea642c5d` and `98e254ac`; three consecutive full `cargo test` runs green (1094 passed).
 <!-- ledger-meta {"command":"annotate","effect_lines":8,"effect_sha256":"9cfa69751492a28b1ebbbdbf20003507a7df166dd92df3d0490d79995fd4e1c7","input_sha256":"5e9bda95953206d33111fbcec148a38e3721d3561be679a5787171dcce86b992","kind":"mutation-receipt","operation":"ed6068d60b15d1de67c854d53cf1deaac88f8a9177b8178cdcb34a7a46470ac1","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-01"],"target":"f-20260914-01","v":1} -->
+
+---
+
+## 2026-09-14 — filed through the inbox spool
+
+### Workspace file creation returns an error after the file, sidecar and registry record are committed
+
+* **ID:** f-20260914-02 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/file_workspace.rs:770-795` (`create_workspace_file` core): `register_created_entry(...)?` and `timestamp(&target)?` run after the PGN and its sidecar were installed; the analogous post-create steps in `create_workspace_directory` (~`:883`).
+* **Defect:** once the file and sidecar exist on disk (and, for the timestamp step, the registry record too), a registry-persistence or metadata error is returned through `?` as a plain failure. The renderer is told creation failed while a committed file remains, with no rollback and no `applied-despite-error` result, so a retry collides with the leftover name.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` (every exit path cleaned up or reported truthfully) and `d-20260906-03` (committed-but-uncertain outcomes are reported, never presented as clean failure).
+* **Open question:** after a committed create, should a later registry/metadata failure compensate (unlink the just-created entry, which d-20260906-03 warns can delete the only committed copy) or report an applied-despite-error outcome the renderer relists on?
+* **Found by:** `review-error-handling` plan lens (Codex), 2026-09-14, confidence 96, during the f-20260830-06 slice-1 plan review; the call shape was confirmed by reading lines 755-795. Outside that run's MANDATE (compile surface), so deferred.
+
+### Position search discards progress-store and progress-event errors
+
+* **ID:** f-20260914-03 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/db/search.rs:682-689` — `let _ = update_progress_with_state(...)` inside the per-entry closure of the position search.
+* **Defect:** every 50 000 games the search updates its progress lease and emits the event, and any error from that (stale lease, store failure, emit failure) is dropped. The search keeps running and later reports success while the UI's bar has stopped, and nothing is logged, so the stall cannot be diagnosed.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — errors are returned or reported with context, never swallowed; `.claude/rules/ipc-events.md` — progress is part of the operation's observable contract.
+* **Fix shape:** at minimum log the error once with the lease id; if the error is a stale/cancelled lease, treat it as cancellation of the search rather than continuing.
+* **Found by:** `review-error-handling` plan lens (Codex), 2026-09-14, confidence 91, f-20260830-06 slice-1 plan review; the `let _ =` was confirmed by reading lines 672-695.
+
+### Search index loading repeats target resolution and source derivation three times
+
+* **ID:** f-20260914-04 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/db/search.rs:204-246` and `:285-307` (`load_search_index_cancellable` and its neighbours), calls to `resolve_database` at `search.rs:204,231,248,285`.
+* **Defect:** the same database-target resolution plus identity/`IndexSource` derivation is written out three times in one flow. Universal rule 11 (extract at the second copy): a later change to the provenance or identity check must be mirrored by hand at each copy, which is exactly how one copy drifts.
+* **Fix shape:** one helper returning the validated target and source, all three sites routed through it; no behaviour change.
+* **Found by:** `review-minimalism` plan lens (Codex), 2026-09-14, confidence 96, f-20260830-06 slice-1 plan review. Not read line by line in that run; verify the three copies before extracting.
+
+### PGN page reads are bounded by game count, not by bytes
+
+* **ID:** f-20260914-05 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/pgn.rs:599` (`read_games` / `read_games_core`), consumer `src/components/tabs/ImportModal.tsx`.
+* **Defect (reported):** the page limit caps the number of games (≤1 000) but not their total size, so a file of up to 1 000 very large games is materialised into one `Vec<String>` in a single call; the ImportModal requests the whole corpus that way, and a file with 1 001 games is rejected outright.
+* **Why it matters:** `.claude/rules/pgn-scanning.md` — no whole-file materialisation of large PGNs.
+* **Related:** `f-20260831-06` handled whole-corpus import/export buffers; `f-20260905-16` handled range results in the same reader. Neither is known to bound bytes per page; the entry body names them instead of a shared `Root` because a common cause is not evidenced.
+* **Open question:** what is the page contract — a byte budget per call with continuation, or a streaming reader — and how does ImportModal's "whole corpus" probe change with it?
+* **Found by:** `review-pgn-index` plan lens (Codex), 2026-09-14, confidence 99, f-20260830-06 slice-1 plan review. Not reproduced in that run; verify against the current reader before designing.
+
+### Concurrent imports into the same database share one conversion progress id
+
+* **ID:** f-20260914-06 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/utils/db.ts:111` derives `conversion:${databaseHandleKey(database)}`; Rust emits it as `ConvertProgress.id` (`src-tauri/src/db/mod.rs:753,852,875`); `useConversionProgress` filters on it.
+* **Defect (reported):** `f-20260901-04` gave `ConvertProgress` an id and filtered on it, but the id is derived from the target database, not from the operation. Two imports into the same database therefore emit the same id; both frames pass the filter, counts and source names interleave, and one completion clears the other operation's state.
+* **Related:** `f-20260901-04` (handled 2026-09-04) — this is new evidence that its discriminator is per database, not per operation; not a reopening of a decision.
+* **Open question:** should concurrent conversions into one database be refused (one conversion per target) or tracked separately with a renderer-minted per-operation id and a per-operation progress entry?
+* **Found by:** `review-ipc-contract` plan lens (Codex), 2026-09-14, confidence 98, f-20260830-06 slice-1 plan review. Not reproduced in that run.
+
+### No test job runs the Rust suite on Windows, so every Windows refusal branch is compile-verified only
+
+* **ID:** f-20260914-07 · **Status:** open · **Area:** ci-workflows · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** `.github/workflows/test.yml` (`rust-platform` runs check + clippy on `windows-latest`; `rust-macos-test` runs tests on macOS only); every `#[cfg(not(unix))]` refusal added for `f-20260830-06` slice 1 (workspace mutations, database targets, puzzle database, downloads, engine resources, executable mode, app-owned roots).
+* **Defect:** no assertion executes on Windows. Replacing any typed `Error::Conflict` refusal with a pathname operation, changing its variant, or moving it after a side effect still passes every gate.
+* **Why it matters:** Felix decided on 2026-09-12 that ChessFable ports Windows (`f-20260830-06`); a supported platform with no runtime test cannot claim anything about behaviour, and the refusals are the only thing keeping unported Windows paths from bypassing identity/no-follow invariants.
+* **Open question:** how does a Windows test job become green before the Windows port lands — run the whole suite and gate unported Unix-only tests by cfg (already true for most), or add a routed filtered run of the refusal tests first — without a gate that checks nothing locally (`d-20260830-20`)?
+* **Related:** `f-20260830-06` (parent; slice 1 filed this). Root `non-linux-platform-port` is the shared cause: the filesystem authority layer was designed on Linux-only/Unix-only primitives.
+* **Found by:** `review-tests` plan lens (Codex, confidence 99, rounds 1 and 2) during the `f-20260830-06` slice-1 plan review, 2026-09-14; deferred because running the suite on Windows exercises the unported areas themselves.
+
+### Workspace create, move, rename, trash, restore and delete are refused on Windows
+
+* **ID:** f-20260914-08 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/file_workspace.rs` mutation cores and their Unix helpers `mutation_target` (`:177`), `register_created_entry` (`:223`), `paired_rename` (`:594`); `src-tauri/src/infra/fs.rs` `create_dir_at`, `rename_entry_at`, `remove_entry_at`, `remove_regular_at`, `remove_optional_regular_at`, `open_directory_at`, `entry_identity_at`; workspace listing already refuses at `file_workspace.rs:461`.
+* **Defect:** after `f-20260830-06` slice 1 every workspace mutation command returns `Error::Conflict("… is unsupported on this platform")` on Windows, and listing refuses too, so the Files page is unusable there.
+* **Why it matters:** Windows is a supported platform (Felix, 2026-09-12, `f-20260830-06`).
+* **Open question:** what is the Windows equivalent of descriptor-relative, identity-checked create/rename/remove with durable parent sync — `NtCreateFile` relative to a retained directory handle plus `SetFileInformationByHandle` rename/disposition — and how is "durably committed" defined on NTFS where there is no directory fsync?
+* **Related:** `f-20260830-06` (parent); existing Windows handle helpers `open_windows_child`, `windows_file_identity` in `infra/path_authority/mod.rs`; depends on the Windows durable atomic replacement finding filed alongside.
+* **Found by:** `f-20260830-06` slice-1 plan (Codex locate probe-2 and cross `cargo check --target x86_64-pc-windows-gnu`), 2026-09-14.
+
+### Database, search-index and puzzle-database operations are refused on Windows
+
+* **ID:** f-20260914-09 · **Status:** open · **Area:** db-search · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** `PathAuthority::database_file_target` (`src-tauri/src/infra/path_authority/mod.rs:3945`), `DatabaseFileTarget::open_current` (`:300`), `DatabaseRepository::identity_from_probe` refusal (`src-tauri/src/db/repository.rs:397-405`), `db::unlink_database_files` (`src-tauri/src/db/mod.rs:2376`), `promote_legacy_index_sidecar_at` (`src-tauri/src/db/search_index.rs:890`) and `open_valid_preferred`'s refusal (`db/search.rs:344`), `ResolvedPath::puzzle_database_target` and `delete_puzzle_database` (`infra/path_authority/resolved.rs`).
+* **Defect:** after `f-20260830-06` slice 1, `resolve_database` and therefore essentially every database command (open, import, export, search, player stats, indexes, delete), position search, reference preload, novelty lookup and puzzle database access return `Error::Conflict` on Windows.
+* **Why it matters:** Windows is a supported platform (Felix, 2026-09-12, `f-20260830-06`); the database is the product's core.
+* **Open question:** how does SQLite open a database bound to a retained Windows handle identity (SQLite takes a path/URI), and how are sidecar promotion and deletion made identity-checked without POSIX `unlinkat`?
+* **Related:** `f-20260830-06` (parent); the previous Windows puzzle delete compared identity and then deleted by pathname, which slice 1 replaced with a refusal.
+* **Found by:** `f-20260830-06` slice-1 plan (Codex locate probe-2, review-error-handling round 2), 2026-09-14.
+
+### Atomic replacement, downloads and PGN writes are refused on Windows
+
+* **ID:** f-20260914-10 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/fs.rs` `atomic_replace_with_precommit` / `atomic_replace_at_*` / `atomic_install_dir` non-unix refusals (`:1232`, `:1672`, `:1724`); download commands in `src-tauri/src/fs.rs` (ordinary download ~`:787`, `download_engine_archive` `:1162`), which slice 1 made refuse before any registry lease or staging.
+* **Defect:** every write that goes through the atomic-replace primitive — downloads, PGN edits, native export, registry persistence — is refused on Windows, because parent-directory durability "cannot be proven" there.
+* **Why it matters:** this primitive is the prerequisite for the Windows workspace, database and registry/startup ports filed alongside; Windows is a supported platform (Felix, 2026-09-12).
+* **Open question:** what counts as a durable commit on NTFS (`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` / `SetFileInformationByHandle(FileRenameInfoEx, POSIX semantics)` plus `FlushFileBuffers` on the file), and how does `CommittedDurabilityUncertain` (`d-20260906-03`) map onto it?
+* **Related:** `f-20260830-06` (parent), `d-20260906-03`.
+* **Found by:** `f-20260830-06` slice-1 plan (Codex locate probe-2, review-error-handling round 2), 2026-09-14.
+
+### Windows startup cannot persist the path-authority and credential registries or create app-owned roots
+
+* **ID:** f-20260914-11 · **Status:** open · **Area:** app-startup · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** `ensure_app_owned_default_dir` and `authorize_existing_dir` (`src-tauri/src/infra/path_authority/mod.rs` ~`:1625-1660`), `PathAuthority::open` app-root creation (`~:2561`), registry persistence through `atomic_replace`, credential registry initialisation in `src-tauri/src/credentials.rs`.
+* **Defect:** on Windows, authorised directories are refused and registry persistence goes through the refused atomic-replace primitive, so startup reaches typed failures before any feature-level refusal is visible; the application may not start at all.
+* **Why it matters:** Windows is a supported platform (Felix, 2026-09-12, `f-20260830-06`); this is the first thing a Windows user hits.
+* **Open question:** is startup made tolerant of unported registries (degraded mode) or do the registries get a Windows persistence path first, and how does that interact with the descriptor-backed `AppDataDir` design still open in `f-20260905-10`?
+* **Related:** `f-20260830-06` (parent), `f-20260905-10` (ancestor-symlink bootstrap, all platforms), and the Windows atomic-replacement finding filed alongside, which this depends on.
+* **Found by:** `f-20260830-06` slice-1 plan (Codex locate probe-2, review-tauri-security round 2), 2026-09-14.
+
+### Windows engine directory resources, archive install and executable mode are refused
+
+* **ID:** f-20260914-12 · **Status:** open · **Area:** engine-uci · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** `resolve_windows` returns an empty `ResolvedPath` for directories (`src-tauri/src/infra/path_authority/resolved.rs:840-846`), consumed by `engine_resource` (`src-tauri/src/infra/path_authority/mod.rs:3417-3427`); `atomic_install_download_dir` (`resolved.rs:85-97`); `mark_engine_executable` (`resolved.rs:101-125`).
+* **Defect:** after `f-20260830-06` slice 1 an engine directory resource, an engine archive download/install and "set file as executable" all return `Error::Conflict` on Windows instead of working. Engines whose UCI options name a directory (tablebases, books) cannot be configured.
+* **Why it matters:** Windows is a supported platform (Felix, 2026-09-12). The 2026-09-06 handoff `tasks/handoffs/2026-09-06-non-linux-directory-resources.md` carries the required proof: empty-path and nested directory resources, replaced roots/reparse points, and a live engine resource lease on real target tooling.
+* **Open question:** how is a Windows directory lease carried (retained directory handle + target) without reintroducing pathname trust, and should executable mode be a successful no-op on Windows rather than a refusal?
+* **Related:** `f-20260830-06` (parent), the handoff above, and the Windows atomic-replacement finding filed alongside (archive install depends on it).
+* **Found by:** `f-20260830-06` slice-1 plan review (review-plan, review-root-cause, review-tauri-security, review-error-handling), 2026-09-14.
+
+### The non-Linux sound route keeps a separate asset-protocol path whose unification waited on the platform decision
+
+* **ID:** f-20260914-13 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/sound.rs` (Linux loopback sound server under `#[cfg(target_os = "linux")]`, `sound_resource_path` for other platforms), `assetProtocol.scope` `["$RESOURCE/**"]` in `src-tauri/tauri.conf.json`, the renderer's non-Linux sound branch.
+* **Defect:** `d-20260906-04` narrowed the non-Linux route's grants but deliberately did not replace it, because whether the fork supported macOS/Windows was parked; its reversal path was "the answer to `f-20260830-06`". Felix answered on 2026-09-12 (port all three), so the two routes now both have to work and be maintained, and the Windows side depends on `authorize_existing_dir`, which refuses on non-unix.
+* **Open question:** unify on one route (the loopback server on every platform, deleting the asset-protocol grant and the renderer branch) or keep and verify both — given `d-20260905-11`'s WebKitGTK measurement and that macOS/Windows webviews differ?
+* **Related:** `f-20260830-06` (parent), `d-20260906-04`, `d-20260905-11`.
+* **Found by:** `f-20260830-06` slice-1 plan, 2026-09-14 (reversal path of `d-20260906-04` now open).
+
+### Account game exports share one progress id per player across concurrent exports
+
+* **ID:** f-20260914-14 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/chesscom.rs:290` emits `ProgressEvent` under `chesscom_${player}`; `src-tauri/src/fs.rs:1113` uses `lichess_${player}` for `download_to_destination`; `src/components/home/AccountCard.tsx:180-193` filters on that same id and ignores the command's unique `job_id`.
+* **Defect (reported):** the progress id is derived from the account, not the operation. Two exports for the same player (repeated click, two windows) emit the same id, so both consumers see interleaved progress and one terminal state ends the other's bar.
+* **Why it matters:** `.claude/rules/ipc-events.md` — anything broadcast carries an id that identifies the operation the receiver asked for.
+* **Related:** the conversion-progress finding filed from the same plan review on 2026-09-14 (per-database id for concurrent imports, inbox `20260914-050617-2959455-…`) has the same shape — an id derived from the resource instead of the operation; `f-20260901-04` (handled) introduced operation ids for conversions. A shared `Root` is not assigned because a common implementation cause is not evidenced.
+* **Open question:** use the renderer-minted `job_id` as the progress id for account exports, or refuse a second concurrent export per account?
+* **Found by:** `review-ipc-contract` plan lens (Codex), 2026-09-14, confidence 95, `f-20260830-06` slice-1 plan review round 3. Not reproduced in that run.
+
+### Windows refusals happen after in-process work, and no mechanism gates conditionally supported commands
+
+* **ID:** f-20260914-15 · **Status:** open · **Area:** bindings-ipc · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** every `#[tauri::command]` whose non-Unix execution ends in an `Error::Conflict("… is unsupported on this platform")` refusal; examples measured 2026-09-14: `search_position` creates a progress lease (`src-tauri/src/db/search.rs:556-558` → `progress.rs:330-335`) before `resolve_database` refuses; `preload_reference_db` admits an operation first (`db/mod.rs:3141-3175`); `list_puzzle_databases` admits before directory enumeration refuses (`puzzle.rs:484-501`); `delete_game`/`write_game` resolve and read the PGN before atomic replacement refuses (`pgn.rs:911-923`); `set_file_as_executable` and `delete_puzzle_database` resolve through the path authority before refusing; `analyze_game` with `annotate_novelties = true` claims ownership, creates progress and admits/spawns an engine before the database path refuses (`chess.rs:887-907,1143,1170-1199,1298-1334`), while `annotate_novelties = false` is supported.
+* **Defect:** after `f-20260830-06` slice 1 a Windows user of an unported feature sees operation admission, a progress bar starting, handles being opened (and for `analyze_game`, an engine starting) before a typed refusal arrives. No external filesystem, network or credential effect precedes a refusal (slice 1 moved those refusals first), but the in-process work is wasted and, under a full or sealed operation registry, a different error (`ResourceLimit`, "admission is sealed") answers first.
+* **Why it matters:** a clean platform-capability story is part of porting Windows (Felix, 2026-09-12, `f-20260830-06`); the refusals are also the list of what the port still owes.
+* **Rejected in slice 1, with evidence:** (1) a guard in every command body — three plan-review rounds kept finding bodies whose admission, progress, registry, resolution or credential step preceded the guard; (2) one refusal table in the Tauri invoke handler (measured feasible: `tauri-2.10.2/src/ipc/mod.rs:211-216,409,543`, `error.rs:437-449` payload identical to a command `Err`, `generated.ts:11-13`) — judged UNSOUND by a focused review-plan architecture judgment because a name-only gate cannot express conditionally supported commands such as `analyze_game`, and its table had no completeness proof against the 117 registered commands.
+* **Open question:** how are platform capabilities expressed so that a command refuses before any work exactly when the requested variant is unported — per-argument capability checks at command entry, a capability query the renderer consults before offering the feature, or both — and how is completeness over the command registry proven?
+* **Related:** `f-20260830-06` (parent); follow-ups filed from the same plan on 2026-09-14 for Windows workspace, database, atomic replacement, startup, engine resources, sound route and the Windows test job. Plan-review history: `tasks/handoffs/2026-09-14-f-20260830-06-slice-1-review.md` (issues R3-09, R4-01, R4-03, R4-09, R5-01, R5-02).
+* **Found by:** `f-20260830-06` slice-1 plan review rounds 3-5 (review-plan, review-error-handling, review-ipc-contract, review-root-cause, review-tauri-security, review-tests), 2026-09-14.
+
+### A legacy session record carrying a bearer token can survive in Web Storage when both sanitising writes fail
+
+* **ID:** f-20260914-16 · **Status:** open · **Area:** oauth-credentials · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/utils/session.ts:79` (sanitised `setItem`, then fallback `removeItem`), startup abort at `:132`.
+* **Defect (reported):** when rewriting a legacy serialised session record without its `accessToken`, a failing `setItem` falls back to `removeItem`; if that also throws, the original record — including the bearer token — stays in Web Storage. Startup aborts but neither erases nor retries, so the token remains renderer-readable.
+* **Why it matters:** `CLAUDE.md` Conventions and `.claude/rules/async-resource-invariants.md` — a bearer token must never remain in the renderer; the sanitisation's failure path is exactly where it matters.
+* **Open question:** what is the terminal behaviour when storage refuses both the sanitised write and the removal — clear the whole storage area, retry on next start with a persistent "must erase" marker, or refuse to continue with an explicit user-visible reset?
+* **Found by:** `review-tauri-security` plan lens (Codex), 2026-09-14, confidence 96, during the `f-20260830-06` slice-1 plan review round 6. Not reproduced in that run; outside that run's MANDATE.
+
+### Practice synchronisation deduplicates by four FEN fields but later looks cards up by the full FEN
+
+* **ID:** f-20260914-17 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/components/files/opening.ts:135 (dedupe keeps the first card's full FEN), src/components/panels/practice/PracticePanel.tsx:240 (exact full-FEN equality)
+* **Defect:** Cards are deduplicated on the first four FEN fields, but the retained card keeps its original halfmove/fullmove counters. When the same position is reached with different counters (`8/8/8/8/8/8/4P3/K6k w - - 0 12` versus `... w - - 30 44`), the exact full-FEN lookup fails and practice drops the card instead of locating the node.
+* **Why it matters:** `.claude/rules/chess-tree-semantics.md`: position identity is the first four FEN fields; a lookup that compares counters treats one position as two.
+* **Found by:** `review-chess-semantics` cumulative diff review lens (Codex), 2026-09-14, confidence 99, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `18f6a1a2`), outside that run's area, so deferred; not reproduced in that run.
+
+### Database export ignores cancellation while decoding and writing rows
+
+* **ID:** f-20260914-18 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src-tauri/src/db/mod.rs:2725 (the cancellable export worker discards its token; `export_to_pgn_blocking` has no checks)
+* **Defect:** Cancelling an export, or shutting down during one, of a large database (hundreds of MB, millions of games) still processes every row and can publish the completed destination. Distinct from handled `f-20260904-04` (rows silently dropped on decode failure).
+* **Why it matters:** `.claude/rules/async-resource-invariants.md`: cancellation must be checked before use, and a cancelled export must not publish.
+* **Open question:** Where are cancellation checkpoints placed (per row, per chunk) and what happens to a partially written destination on cancel — discard the staging file, or never publish?
+* **Found by:** `review-pgn-index` cumulative diff review lens (Codex), 2026-09-14, confidence 96, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `6ab7c3f3`), outside that run's area, so deferred; not reproduced in that run.
+
+### Index creation and deletion honour cancellation only at worker admission
+
+* **ID:** f-20260914-19 · **Status:** open · **Area:** db-search · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src-tauri/src/db/mod.rs:1190 (`create_indexes`, `delete_indexes`)
+* **Defect:** Cancellation is checked only when the worker is admitted; the SQLite DDL and the index-lock wait are not cancellable. On a large database, cancelling during index creation can still mutate the database and report success.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` (cancellation before use, truthful terminal state).
+* **Open question:** Can the DDL be interrupted safely (SQLite progress handler / `sqlite3_interrupt`) with a defined rollback, or must cancellation be refused once DDL starts and reported as such?
+* **Found by:** `review-pgn-index` cumulative diff review lens (Codex), 2026-09-14, confidence 93, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `6ab7c3f3`), outside that run's area, so deferred; not reproduced in that run.
+
+### Board editing keeps castling rights for a king that is no longer on its starting square
+
+* **ID:** f-20260914-20 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/utils/chessops.ts:59, reached from the board editor at src/components/boards/Board.tsx:322
+* **Defect:** Castling rights are preserved whenever a king of that colour exists, without checking that the king (and rook) are on their starting squares. Editing the standard position to `rnbqkbnr/pppppppp/8/8/8/8/4K3/RNBQ1BNR w KQkq - 0 1` retains `KQ` although White's king stands on e2.
+* **Why it matters:** An illegal FEN is produced and fed to engines and move generation.
+* **Found by:** `review-chess-semantics` cumulative diff review lens (Codex), 2026-09-14, confidence 98, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `3afed031`), outside that run's area, so deferred; not reproduced in that run.
+
+### A failed engine-image cleanup is logged but omitted from the returned error, orphaning the image file
+
+* **ID:** f-20260914-21 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src-tauri/src/main.rs:1459-1462
+* **Defect:** When registering an engine image fails and the cleanup of the written image file also fails, only the primary error is returned and the cleanup failure is logged. The unregistered image stays on disk, and startup cleanup cannot recover it because it only tracks persisted cleanup records.
+* **Why it matters:** Unbounded orphaned files the user cannot see or remove; `.claude/rules/async-resource-invariants.md`.
+* **Open question:** Should the cleanup failure be persisted as a startup cleanup record, surfaced to the caller alongside the primary error, or both?
+* **Found by:** `review-error-handling` cumulative diff review lens (Codex), 2026-09-14, confidence 94, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `ec6f4149`), outside that run's area, so deferred; not reproduced in that run.
+
+### A later standard FEN tag clears the stored FEN but keeps the custom starting position used to encode moves
+
+* **ID:** f-20260914-22 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src-tauri/src/db/mod.rs:468
+* **Defect:** With duplicate tags — a custom `FEN` followed by the standard initial `FEN` and `1. Qg7+ *` — the second tag clears `game.fen` but leaves the custom `game.position`. Moves are encoded from the custom position and stored without a FEN, so decoding replays them from the standard start and yields a corrupt game.
+* **Why it matters:** Silent data corruption on import; `.claude/rules/pgn-scanning.md` (encode/decode symmetry).
+* **Found by:** `review-pgn-index` cumulative diff review lens (Codex), 2026-09-14, confidence 98, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `361dab41`), outside that run's area, so deferred; not reproduced in that run.
+
+### `kill_engine` ignores a reserved but not yet published engine generation
+
+* **ID:** f-20260914-23 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src-tauri/src/chess.rs:458 (`kill_engine` checks published actors only), `prepare_engine_search` / `get_best_moves_core`
+* **Defect:** When `prepare_engine_search` has reserved generation G2 but not yet published it, Kill Engine returns success; `get_best_moves_core` can then publish and run G2 after the user asked for the engine to stop.
+* **Why it matters:** `.claude/rules/engine-lifecycle.md` and `.claude/rules/async-resource-invariants.md`: a cancel must reach work admitted before it, or the stop is not a stop. Related: the ledger entry "Unscoped stop prefers a pending admission and leaves the live search running" covers `stop_engine`, not `kill_engine`.
+* **Open question:** Does a kill cancel reservations (so G2 never publishes), or wait for publication and then terminate — and how is that ordering proven for the reservation window?
+* **Found by:** `review-engine-protocol` cumulative diff review lens (Codex), 2026-09-14, confidence 93, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `67941e1b`), outside that run's area, so deferred; not reproduced in that run.
+
+### A failed cleanup of a new PGN export file after registration failure is discarded
+
+* **ID:** f-20260914-24 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src-tauri/src/infra/path_authority/mod.rs:2421 (`create_pgn_export_destination` best-effort `remove_file`)
+* **Defect:** If registering a freshly created export destination fails and removing that file also fails, the removal error is discarded and only the registration error returns, leaving an unregistered file at the path the user selected.
+* **Why it matters:** The user is told export failed while a stray file remains at their chosen path; `.claude/rules/async-resource-invariants.md`.
+* **Open question:** How is a primary error plus a failed compensation reported — a combined error variant, an applied-despite-error result, or a persisted cleanup record?
+* **Found by:** `review-error-handling` cumulative diff review lens (Codex), 2026-09-14, confidence 92, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `97c29add`), outside that run's area, so deferred; not reproduced in that run.
+
+### A header-only game followed by another header block is indexed as one game
+
+* **ID:** f-20260914-25 · **Status:** open · **Area:** pgn-import · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src-tauri/src/pgn.rs:491 (a header starts a new game only after `has_movetext`)
+* **Defect:** The byte-offset indexer starts a new game at a header only once movetext has been seen, so `[Event "empty"]\n\n[Event "B"]\n\n1. e4 *` is indexed as a single range although the parser reads two games; offsets then disagree with game numbering.
+* **Why it matters:** `.claude/rules/pgn-scanning.md`: game-boundary detection and the cached byte-offset index must agree with the parser.
+* **Found by:** `review-pgn-index` cumulative diff review lens (Codex), 2026-09-14, confidence 99, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `97c29add`), outside that run's area, so deferred; not reproduced in that run.
+
+### Deleting or promoting a variation rebases the cursor and start header but not `practicePath`
+
+* **ID:** f-20260914-26 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/state/store/tree.ts:818 (delete/promote rebase `state.position` and `headers.start` only)
+* **Defect:** If practice stands at `[0,0]` after `1.e4 e5` and `[0,0]` is deleted, the cursor rebases to `[0]` but `practicePath` still points at the deleted node; `goToNext` then follows the surviving sibling (for example `1...c5`) as the deleted card's continuation.
+* **Why it matters:** `number[]` paths must be rebased after every tree mutation (`.claude/rules/chess-tree-semantics.md`).
+* **Found by:** `review-chess-semantics` cumulative diff review lens (Codex), 2026-09-14, confidence 92, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `93b36669 / b82021ec`), outside that run's area, so deferred; not reproduced in that run.
+
+### `setFen` rebuilds the root but leaves `headers.fen` stale, so a later header edit restores the old start position
+
+* **ID:** f-20260914-27 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/state/store/tree.ts:217 (`setFen`), and `setHeaders` which rebuilds the root from `headers.fen`
+* **Defect:** After `setFen` to a custom position (for example `8/8/8/8/8/8/4K3/7k b - - 0 23`), `headers.fen` still holds the previous start FEN. Editing any ordinary header through `setHeaders({...headers, event: "x"})` rebuilds the root from that stale FEN and erases the custom position and its moves.
+* **Why it matters:** The game tree silently loses the user's position on an unrelated header edit; `.claude/rules/chess-tree-semantics.md`.
+* **Found by:** `review-chess-semantics` cumulative diff review lens (Codex), 2026-09-14, confidence 99, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `93b36669`), outside that run's area, so deferred; not reproduced in that run.
+
+### Threefold detection after `appendMove` walks the selected variation instead of the main line it appended to
+
+* **ID:** f-20260914-28 · **Status:** open · **Area:** chess-tree · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** src/state/store/tree.ts:697 (`appendMove` appends to the main line), :769 (repetition walk follows `state.position`)
+* **Defect:** With main line `Nf3 Nf6 Ng1 Ng8 Nf3 Nf6 Ng1`, a side variation selected at `[1]`, and `Ng8` appended to the main line, the initial position has occurred three times but the result stays `*`, because the repetition walk follows the selected side variation rather than the path the move was appended to.
+* **Why it matters:** A drawn game is not declared; `.claude/rules/chess-tree-semantics.md` (mainline-vs-variation assumptions).
+* **Found by:** `review-chess-semantics` cumulative diff review lens (Codex), 2026-09-14, confidence 94, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `93b36669`), outside that run's area, so deferred; not reproduced in that run.
+
+### Windows PGN cache revision uses creation time as ctime, so a same-length in-place rewrite keeps stale offsets
+
+* **ID:** f-20260914-29 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** src-tauri/src/infra/path_authority/resolved.rs:181
+* **Defect:** On Windows, revision tracking substitutes `creation_time()` for ctime. An in-place, same-length rewrite that restores the last-write timestamp leaves identity, size, mtime and creation time unchanged, so stale game offsets stay trusted (a cached two-game file rewritten as a padded one-game file still returns the old second range).
+* **Why it matters:** Wrong games are served from a stale index on Windows; part of the Windows port.
+* **Open question:** Which Windows change signal is trustworthy for cache revision (USN journal, `FILE_ID_INFO` plus `ChangeTime` from `FileBasicInfo`, or content hashing), and what does it cost on large PGNs?
+* **Found by:** `review-pgn-index` cumulative diff review lens (Codex), 2026-09-14, confidence 97, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `0fd2dbed`), outside that run's area, so deferred; not reproduced in that run.
+
+### Engine retirement failures during workspace deletion are logged and discarded
+
+* **ID:** f-20260914-30 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** src-tauri/src/file_workspace.rs:1255-1262
+* **Defect:** A workspace deletion that succeeds on disk returns success even when retiring the engine processes or executable registrations it owned fails; the failure is only logged, so engines or registrations may remain active with no error surfaced.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md`: every exit path is cleaned up or reported truthfully. Distinct from the inbox entry about workspace creation post-commit errors (filed the same day).
+* **Open question:** After a committed delete, is a retirement failure returned as an applied-despite-error outcome the renderer acts on, retried, or recorded for startup reconciliation?
+* **Found by:** `review-error-handling` cumulative diff review lens (Codex), 2026-09-14, confidence 98, during the `f-20260830-06` slice-1 build run (range `950f2e1d..16476781`). Pre-existing (originating commit `dc6b7841`), outside that run's area, so deferred; not reproduced in that run.
+
+### On macOS no engine can start: the executable and every resource lease are passed as `/proc/self/fd/N`
+
+* **ID:** f-20260914-31 · **Status:** open · **Area:** engine-uci · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority/mod.rs:821` (`EngineResourceLease::uci_value` returns `/proc/self/fd/{fd}` under `cfg(unix)`), `:1049` (`EngineExecutable` launch path `/proc/self/fd/{fd}`), `:1065-1066` (the documented interpreter-script re-exec via that path), `src-tauri/src/engine/process.rs:261` (spawn relies on it); Linux-only test harnesses in `src-tauri/src/chess.rs:1861`, `src-tauri/src/game.rs:3379` and `src-tauri/src/infra/path_authority/mod.rs:7943-7947` read `/proc/self/fd`.
+* **Defect:** the engine launch and UCI resource options are built on Linux procfs. macOS has no `/proc`, so spawning any engine fails with `NotFound` and every resource value handed to `setoption` names a path that does not exist. Observed on the real macOS runner in CI run 34866102377 (`rust-macos-test`, commit `6544ca56`): `engine::process::tests::{inherited_resource_fd_survives_path_replacement_for_uci_child, real_child_ignoring_quit_is_force_killed_within_reap_budget, spawn_owns_the_stderr_drain_until_terminate}`, `infra::path_authority::tests::{engine_resource_leases_pin_files_and_directories, inherited_descriptors_cover_every_resource_lease_and_the_engine_image}`, `game::tests::{game_engine_initialization_passes_resource_provenance_to_actor_logs, game_engine_is_registered_while_uci_initialization_is_pending}` (timeout), `chess::tests::{get_best_moves_core_wires_resource_options_through_production_flow, report_core_restores_child_resource_provenance_after_fresh_resolution}` ("resource engine did not reach its log barrier"). The `rust-macos-test` job stays red for this finding.
+* **Why it matters:** Felix decided on 2026-09-12 that ChessFable ships on macOS; without a launch path the app cannot analyse on macOS at all. The descriptor-pinning invariant (a replaced executable or resource cannot be launched after authorisation) must survive the port.
+* **Open question:** what replaces `/proc/self/fd/N` on macOS while keeping the pinned-inode guarantee — `/dev/fd/N` (on macOS opening it duplicates the descriptor and shares its offset, and an interpreter script re-opening that path after `exec` loses a close-on-exec descriptor), `posix_spawn` of a verified path with an identity re-check, or passing resources as inherited descriptors with a different UCI value — and how are the Linux-only test harnesses made platform-neutral?
+* **Related:** `f-20260830-06` (parent; slice 1 made this observable), follow-up (f) "Windows engine directory resources, archive install and executable mode" (inbox `20260914-053235-3130471`), plan-review record `tasks/handoffs/2026-09-14-f-20260830-06-slice-1-review.md` (load before review).
+* **Found by:** the `rust-macos-test` CI job added by `f-20260830-06` slice 1, run 34866102377, 2026-09-14; source trace by the slice's orchestrator (grep of `/proc/self/fd` uses). Not reproduced locally (no macOS runtime on this machine).
+
+### On macOS, listing a directory removed during enumeration returns success instead of `NotFound`
+
+* **ID:** f-20260914-32 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/fs.rs` `read_directory_entries_at` end-of-stream check (`fstat(dir)` then `if directory_stat.st_nlink == 0` → `NotFound`, around line 107-114); test `infra::fs::tests::read_directory_entries_at_refuses_a_removed_directory` (~line 2275).
+* **Defect:** removal of the held directory during enumeration is detected only by `st_nlink == 0`. On the real macOS runner (CI run 34866102377, `rust-macos-test`, commit `6544ca56`) the test that opens a directory, removes it and enumerates the held descriptor did not get `Error::Io(NotFound)`, so on APFS the removed directory still reports a non-zero link count and the listing returns success. The `rust-macos-test` job stays red for this finding.
+* **Why it matters:** workspace and database listings would present a snapshot of a directory that no longer exists instead of refusing it, which the Linux path deliberately refuses (`f-20260905-05` descriptor-relative enumeration). The slice-1 port of the walker (`f-20260830-06`) preserved identity, no-follow and mount refusal on macOS but not this invariant.
+* **Open question:** which signal proves on APFS that a held directory descriptor refers to a removed directory — `fcntl(F_GETPATH)` failing, `openat(dir, ".")` returning `ENOENT`, `fstatat` of the parent-relative name, or `getattrlist` — measured on a real macOS runner before choosing, and does the chosen signal also hold for the recursive-delete and install walks?
+* **Related:** `f-20260830-06` (parent), plan-review record `tasks/handoffs/2026-09-14-f-20260830-06-slice-1-review.md` (load before review), decision `d-20260914-07` (the shared `Dir` walker).
+* **Found by:** the `rust-macos-test` CI job added by `f-20260830-06` slice 1, run 34866102377, 2026-09-14. Not reproduced locally (no macOS runtime on this machine).
