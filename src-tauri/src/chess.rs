@@ -1498,8 +1498,10 @@ fn naive_eval(pos: &Chess) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use crate::engine::EngineSupervisor;
     use shakmaty::FromSetup;
+    #[cfg(unix)]
     use std::time::Duration;
     use tauri::{Listener, Manager};
 
@@ -1911,6 +1913,7 @@ done
         (directory, app, engine, resource)
     }
 
+    #[cfg(unix)]
     fn assert_safe_resource_logs(logs: &[EngineLog]) {
         assert!(logs.iter().any(|entry| matches!(
             entry,
@@ -1928,6 +1931,7 @@ done
         }));
     }
 
+    #[cfg(unix)]
     fn assert_resource_wire_capture(directory: &tempfile::TempDir, expected: &str) {
         let capture = std::fs::read_to_string(directory.path().join("capture.log")).unwrap();
         let eval = capture
@@ -1955,6 +1959,7 @@ done
         );
     }
 
+    #[cfg(unix)]
     async fn collect_barriered_resource_logs<T: Send>(
         directory: &tempfile::TempDir,
         supervisor: &Arc<EngineSupervisor>,

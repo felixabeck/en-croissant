@@ -627,6 +627,7 @@ pub async fn download_file(
     job_id: String,
     integrity: Option<ArtifactIntegrity>,
 ) -> Result<(), Error> {
+    crate::platform_support::off_unix_refusal("file downloads", cfg!(unix))?;
     download_to_destination(
         &id,
         &url,
@@ -1064,6 +1065,7 @@ pub async fn download_lichess_games(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
+    crate::platform_support::off_unix_refusal("Lichess game downloads", cfg!(unix))?;
     download_lichess_games_runtime(
         handle,
         destination,
@@ -1169,6 +1171,7 @@ pub async fn download_engine_archive(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), Error> {
+    crate::platform_support::off_unix_refusal("engine archive downloads", cfg!(unix))?;
     let lease = state.download_registry.begin(&state.operations, &job_id)?;
     let cancellation = lease.cancellation_token();
     let operation = lease.into_operation();
@@ -1258,7 +1261,10 @@ fn create_private_dir_all(path: &Path) -> Result<(), Error> {
 }
 
 fn private_tempdir() -> Result<tempfile::TempDir, Error> {
+    #[cfg(unix)]
     let mut builder = tempfile::Builder::new();
+    #[cfg(not(unix))]
+    let builder = tempfile::Builder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1290,6 +1296,7 @@ fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
     if p.is_absolute() {
         return Err(Error::InvalidInput("Absolute path in archive".into()));
     }
+    #[cfg(unix)]
     let mut normal_components = 0usize;
     for component in p.components() {
         match component {
@@ -1303,7 +1310,10 @@ fn validate_archive_path(path: &str) -> Result<PathBuf, Error> {
                 return Err(Error::InvalidInput("Parent dir in path".into()))
             }
             std::path::Component::Normal(n) => {
-                normal_components += 1;
+                #[cfg(unix)]
+                {
+                    normal_components += 1;
+                }
                 let s = n.to_string_lossy();
                 if s.contains('\0') {
                     return Err(Error::InvalidInput("Null byte in path".into()));
@@ -1592,6 +1602,7 @@ fn set_file_as_executable_blocking(
     authority: &Mutex<Option<crate::infra::path_authority::PathAuthority>>,
     file: crate::infra::path_authority::PathRef,
 ) -> Result<(), Error> {
+    crate::platform_support::off_unix_refusal("engine executable mode", cfg!(unix))?;
     let mut authority = authority
         .lock()
         .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;

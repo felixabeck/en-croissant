@@ -7,22 +7,22 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 std::thread_local! {
     pub(crate) static FAIL_NEXT_REVISION_BUMP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) struct RevisionBumpFailureGuard;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl Drop for RevisionBumpFailureGuard {
     fn drop(&mut self) {
         FAIL_NEXT_REVISION_BUMP.with(|fail| fail.set(false));
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn fail_next_revision_bump() -> RevisionBumpFailureGuard {
     FAIL_NEXT_REVISION_BUMP.with(|fail| fail.set(true));
     RevisionBumpFailureGuard
@@ -64,7 +64,7 @@ impl Drop for SnapshotCopyHookGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn cancel_snapshot_copy_after_chunks(cancellation: CancellationToken, chunks: usize) {
     let mut seen = 0usize;
     SNAPSHOT_COPY_HOOK.with(|hook| {
@@ -200,7 +200,7 @@ impl Default for DatabaseRepository {
 }
 
 impl DatabaseRepository {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn with_retire_wait(retire_wait: Duration) -> Self {
         Self {
             state: Mutex::new(RepositoryState::default()),
@@ -253,7 +253,7 @@ impl DatabaseRepository {
 
     /// Test-fixture helper for creating non-game SQLite schemas. Production
     /// puzzle reads must use a retained authority descriptor below.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn schema_specific_connection(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -401,8 +401,8 @@ impl DatabaseRepository {
         _cancellation: &CancellationToken,
         _hydrate: bool,
     ) -> Result<DatabaseIdentity, Error> {
-        Err(Error::Conflict(
-            "database identity probing is unsupported on this platform".into(),
+        Err(crate::platform_support::unsupported(
+            "database identity probing",
         ))
     }
 
@@ -449,10 +449,12 @@ impl DatabaseRepository {
         let revision = super::sqlite_cancellation::with_sqlite_cancellation(cancellation, || {
             read_data_revision(&mut connection)
         })?;
+        #[cfg(all(test, unix))]
         run_test_hook(TestHook::AfterReadRevision, target.path());
         Ok(revision)
     }
 
+    #[cfg(unix)]
     fn tombstone_conflict(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -469,7 +471,7 @@ impl DatabaseRepository {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn mark_schema_validated(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -478,7 +480,7 @@ impl DatabaseRepository {
         self.mark_schema_validated_entry(&entry, DatabaseSchemaIdentity::from_file(&file)?)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn with_write_lock<T>(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -529,7 +531,7 @@ impl DatabaseRepository {
 
     /// Evicts every resource owned by this canonical database. A future open
     /// receives a fresh pool and therefore cannot use a deleted/replaced file.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn close_and_invalidate(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -542,7 +544,7 @@ impl DatabaseRepository {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn deletion_is_waiting(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -564,7 +566,7 @@ impl DatabaseRepository {
         }))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn is_building(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -582,7 +584,7 @@ impl DatabaseRepository {
     /// can recreate a pool for the soon-to-be-deleted inode. The reservation
     /// is released only after the deletion operation has reached a terminal
     /// success/failure result.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn delete_exclusive<T>(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -701,6 +703,7 @@ impl DatabaseRepository {
             drop(initial_probe);
             let pre_build_probe = self.open_current(target)?;
             drop(pre_build_probe);
+            #[cfg(all(test, unix))]
             run_test_hook(TestHook::PreBuild, target.path());
             let pool = Pool::builder()
                 .max_size(MAX_CONNECTIONS_PER_DATABASE)
@@ -710,6 +713,7 @@ impl DatabaseRepository {
                     target.path(),
                     SqliteMode::ReadWrite,
                 )?))?;
+            #[cfg(all(test, unix))]
             run_test_hook(TestHook::PostBuild, target.path());
             initial_probe = self.open_current(target)?;
 
@@ -717,6 +721,7 @@ impl DatabaseRepository {
                 .state
                 .lock()
                 .map_err(|_| Error::Conflict("database repository state poisoned".into()))?;
+            #[cfg(all(test, unix))]
             run_test_hook(TestHook::PreInsert, target.path());
             if cancellation.is_some_and(CancellationToken::is_cancelled) {
                 drop(state);
@@ -763,7 +768,7 @@ impl DatabaseRepository {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn remove_entry(&self, key: &EntryKey) -> Result<Option<Arc<DatabaseEntry>>, Error> {
         Ok(self
             .state
@@ -825,6 +830,7 @@ impl DatabaseRepository {
         target: &crate::infra::path_authority::DatabaseFileTarget,
     ) -> Result<std::fs::File, Error> {
         let result = target.open_current();
+        #[cfg(all(test, unix))]
         run_test_hook(TestHook::AfterOpenCurrent, target.path());
         result
     }
@@ -875,6 +881,7 @@ impl DatabaseRepository {
         let (key, entry, initial_probe) = self.entry(target, cancellation)?;
         drop(initial_probe);
         let lease = entry.acquire()?;
+        #[cfg(all(test, unix))]
         run_test_hook(TestHook::PreGet, target.path());
         let pre_get_probe = match self.open_current(target) {
             Ok(file) => file,
@@ -885,6 +892,7 @@ impl DatabaseRepository {
         };
         drop(pre_get_probe);
         let connection = entry.pool.get()?;
+        #[cfg(all(test, unix))]
         run_test_hook(TestHook::PostGet, target.path());
         let post_get_probe = match self.open_current(target) {
             Ok(file) => file,
@@ -977,6 +985,7 @@ fn entry_key(target: &crate::infra::path_authority::DatabaseFileTarget) -> Resul
 #[derive(Clone, Copy)]
 enum SqliteMode {
     ReadWrite,
+    #[cfg(unix)]
     ReadOnly,
 }
 
@@ -1046,6 +1055,7 @@ fn sqlite_uri(path: &Path, mode: SqliteMode) -> Result<String, Error> {
     }
     let mode = match mode {
         SqliteMode::ReadWrite => "rw",
+        #[cfg(unix)]
         SqliteMode::ReadOnly => "ro",
     };
     Ok(format!("file://{encoded}?mode={mode}"))
@@ -1115,6 +1125,7 @@ impl Drop for TombstoneGuard<'_> {
     }
 }
 
+#[cfg(all(test, unix))]
 #[derive(Clone, Copy)]
 pub(crate) enum TestHook {
     PreBuild,
@@ -1128,7 +1139,7 @@ pub(crate) enum TestHook {
     BeforeRevisionBump,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[derive(Default)]
 pub(crate) struct TestHooks {
     generation: u64,
@@ -1145,17 +1156,17 @@ pub(crate) struct TestHooks {
     pub(crate) open_current_count: usize,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static TEST_HOOKS: std::sync::OnceLock<std::sync::Mutex<TestHooks>> = std::sync::OnceLock::new();
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static TEST_HOOK_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static NEXT_TEST_HOOK_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(1);
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn test_hook_scope_matches(hooks: &TestHooks, path: &Path) -> bool {
     let normalized_path = normalize_test_hook_path(path);
     hooks
@@ -1164,7 +1175,7 @@ fn test_hook_scope_matches(hooks: &TestHooks, path: &Path) -> bool {
         .is_some_and(|scope| normalized_path.starts_with(scope))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn normalize_test_hook_path(scope: &Path) -> PathBuf {
     if scope.is_dir() {
         return scope.canonicalize().unwrap_or_else(|_| scope.to_path_buf());
@@ -1182,13 +1193,13 @@ fn normalize_test_hook_path(scope: &Path) -> PathBuf {
         .unwrap_or_else(|_| scope.to_path_buf())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) struct TestHooksGuard {
     previous: Option<TestHooks>,
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn configure_test_hooks(
     scope: impl AsRef<Path>,
     configure: impl FnOnce(&mut TestHooks),
@@ -1213,7 +1224,7 @@ pub(crate) fn configure_test_hooks(
     guard
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl Drop for TestHooksGuard {
     fn drop(&mut self) {
         let Some(previous) = self.previous.take() else {
@@ -1228,7 +1239,7 @@ impl Drop for TestHooksGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn run_test_hook(hook: TestHook, path: &Path) {
     match hook {
         TestHook::PreBuild
@@ -1237,13 +1248,14 @@ pub(crate) fn run_test_hook(hook: TestHook, path: &Path) {
         | TestHook::PreGet
         | TestHook::PostGet => run_noarg_test_hook(hook, path),
         TestHook::AfterOpenCurrent => run_after_open_current_test_hook(path),
+        #[cfg(unix)]
         TestHook::AfterReadRevision => run_noarg_test_hook(hook, path),
         TestHook::AfterBumpOp => run_noarg_test_hook(hook, path),
         TestHook::BeforeRevisionBump => run_noarg_test_hook(hook, path),
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn run_noarg_test_hook(hook: TestHook, path: &Path) {
     let hooks_mutex = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
     let mut hooks = hooks_mutex
@@ -1259,6 +1271,7 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
         TestHook::PreGet => hooks.pre_get.take(),
         TestHook::PostGet => hooks.post_get.take(),
         TestHook::AfterOpenCurrent => None,
+        #[cfg(unix)]
         TestHook::AfterReadRevision => hooks.after_read_revision.take(),
         TestHook::AfterBumpOp => hooks.after_bump_op.take(),
         TestHook::BeforeRevisionBump => hooks.before_revision_bump.take(),
@@ -1277,6 +1290,7 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
                 TestHook::PreInsert => hooks.pre_insert = Some(callback_fn),
                 TestHook::PreGet => hooks.pre_get = Some(callback_fn),
                 TestHook::PostGet | TestHook::AfterOpenCurrent => {}
+                #[cfg(unix)]
                 TestHook::AfterReadRevision => hooks.after_read_revision = Some(callback_fn),
                 TestHook::AfterBumpOp => hooks.after_bump_op = Some(callback_fn),
                 TestHook::BeforeRevisionBump => hooks.before_revision_bump = Some(callback_fn),
@@ -1285,7 +1299,7 @@ fn run_noarg_test_hook(hook: TestHook, path: &Path) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn run_after_open_current_test_hook(path: &Path) {
     let hooks_mutex = TEST_HOOKS.get_or_init(|| std::sync::Mutex::new(TestHooks::default()));
     let mut hooks = hooks_mutex
@@ -1312,9 +1326,6 @@ fn run_after_open_current_test_hook(path: &Path) {
     }
 }
 
-#[cfg(not(test))]
-pub(crate) fn run_test_hook(_: TestHook, _: &Path) {}
-
 impl DatabaseEntry {
     fn acquire(self: &Arc<Self>) -> Result<EntryLease, Error> {
         let mut lifecycle = self
@@ -1332,7 +1343,7 @@ impl DatabaseEntry {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn retire_and_wait(&self, timeout: Duration) -> Result<(), Error> {
         self.retire_and_wait_cancellable(timeout, None)
     }
@@ -1406,13 +1417,13 @@ impl DatabaseEntry {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn test_target(path: &Path) -> crate::infra::path_authority::DatabaseFileTarget {
     crate::infra::path_authority::DatabaseFileTarget::for_test_path(path)
         .expect("test database path must produce a target")
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use diesel::RunQueryDsl;

@@ -1,15 +1,15 @@
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod allocation_probe;
 mod encoding;
 mod migrations;
 mod models;
 mod ops;
 mod repository;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod test_support;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) use repository::cancel_snapshot_copy_after_chunks;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) use repository::test_target;
 mod schema;
 mod search;
@@ -30,7 +30,6 @@ use crate::{
     error::Error,
     infra::{
         blocking::BLOCKING_GATEWAY,
-        fs::remove_optional_regular_at,
         path_authority::{
             DatabaseFileTarget, DatabaseHandle, FileWorkspaceHandle, PathAuthority, PathOperation,
         },
@@ -42,6 +41,9 @@ use crate::{
     },
     AppState, SearchCache,
 };
+
+#[cfg(unix)]
+use crate::infra::fs::remove_optional_regular_at;
 use chrono::{NaiveDate, NaiveTime};
 use diesel::{
     connection::{DefaultLoadingMode, SimpleConnection},
@@ -57,9 +59,10 @@ use shakmaty::{
     PositionError,
 };
 use specta::Type;
+#[cfg(unix)]
+use std::ffi::OsStr;
 use std::{
     collections::HashMap,
-    ffi::OsStr,
     fs::File,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -109,7 +112,7 @@ fn cancellation_check(cancellation: &CancellationToken) -> Result<(), Error> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 const CREATE_TABLES_SQL: &str = include_str!("create.sql");
 
 const WHITE_PAWN: Piece = Piece {
@@ -233,17 +236,21 @@ fn bump_revision_in_transaction<T>(
     cancellation: &CancellationToken,
     op: impl FnOnce(&mut SqliteConnection) -> Result<T, Error>,
 ) -> Result<T, Error> {
+    #[cfg(not(all(test, unix)))]
+    let _ = path;
     cancellation_check(cancellation)?;
     let current = repository::read_data_revision(db)?;
     let result = op(db)?;
+    #[cfg(all(test, unix))]
     repository::run_test_hook(repository::TestHook::AfterBumpOp, path);
     cancellation_check(cancellation)?;
+    #[cfg(all(test, unix))]
     repository::run_test_hook(repository::TestHook::BeforeRevisionBump, path);
     let next = i64::try_from(current)
         .ok()
         .and_then(|revision| revision.checked_add(1))
         .ok_or_else(|| Error::InvalidInput("DataRevision overflow".into()))?;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     if repository::FAIL_NEXT_REVISION_BUMP.with(|fail| fail.replace(false)) {
         return Err(Error::Conflict("injected revision bump failure".into()));
     }
@@ -615,7 +622,7 @@ static DATABASE_COMMAND_CHECKPOINTS: once_cell::sync::Lazy<
     std::sync::Mutex<DatabaseCommandCheckpoints>,
 > = once_cell::sync::Lazy::new(Default::default);
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn install_database_command_checkpoint(
     label: &'static str,
     handle: &DatabaseHandle,
@@ -656,12 +663,12 @@ std::thread_local! {
     };
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn take_resolve_database_operations() -> Vec<PathOperation> {
     RESOLVE_DATABASE_OPERATIONS.with(|operations| std::mem::take(&mut *operations.borrow_mut()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn schema_database_case(
     file_stem: &str,
     operations: Vec<PathOperation>,
@@ -2415,6 +2422,16 @@ fn unlink_database_files(
     Ok(unlinked + 1)
 }
 
+#[cfg(not(unix))]
+fn unlink_database_files(
+    _target: &DatabaseFileTarget,
+    _expected_source: &IndexSource,
+) -> Result<usize, Error> {
+    Err(crate::platform_support::unsupported(
+        "database file deletion",
+    ))
+}
+
 #[cfg(unix)]
 fn legacy_sidecar_matches(
     parent: &File,
@@ -3177,7 +3194,7 @@ fn preload_reference_db_blocking(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::{db::allocation_probe, infra::path_authority::PathClass};
@@ -3393,7 +3410,10 @@ mod tests {
     #[test]
     fn database_target_source_text_anchors() {
         let source = include_str!("mod.rs");
-        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let production = source
+            .split("#[cfg(all(test, unix))]\nmod tests")
+            .next()
+            .unwrap();
         assert_eq!(production.matches("resolve_database(").count(), 20);
         let resolver = production
             .split("pub(crate) fn resolve_database(")
@@ -3408,7 +3428,10 @@ mod tests {
         assert!(!production.contains("assemble("));
 
         let source = include_str!("search.rs");
-        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let production = source
+            .split("#[cfg(all(test, unix))]\nmod tests")
+            .next()
+            .unwrap();
         assert_eq!(production.matches("resolve_database(").count(), 6);
         assert_eq!(production.matches("database_file_target(").count(), 0);
         assert!(!production.contains("canonicalize("));

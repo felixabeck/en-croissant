@@ -8,24 +8,31 @@ use crate::{
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
     infra::cancellable_lock::lock_std_cancellable,
-    infra::fs::{DirectoryEntry, DirectoryEntryKind},
     infra::path_authority::{
-        workspace_sidecar_leaf as sidecar_leaf, CapabilityDirectory, CommitDurability,
-        FileWorkspaceDescriptor, FileWorkspaceHandle, PathAuthority, PathClass, PathOperation,
-        PathRef, WorkspaceMutationTarget, WorkspaceRemovalStatus,
+        workspace_sidecar_leaf as sidecar_leaf, CommitDurability, FileWorkspaceDescriptor,
+        FileWorkspaceHandle, PathAuthority, PathClass, PathOperation, PathRef,
+        WorkspaceMutationTarget, WorkspaceRemovalStatus,
     },
     pgn, AppState,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::{
-    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, UNIX_EPOCH},
 };
 use tokio_util::sync::CancellationToken;
+
+#[cfg(unix)]
+use crate::infra::fs::DirectoryEntry;
+#[cfg(unix)]
+use crate::infra::fs::DirectoryEntryKind;
+#[cfg(unix)]
+use crate::infra::path_authority::CapabilityDirectory;
+#[cfg(unix)]
+use std::ffi::OsStr;
 
 const TRASH_DIRECTORY: &str = ".en-croissant-trash";
 const MAX_WORKSPACE_METADATA_BYTES: usize = 1024 * 1024;
@@ -108,7 +115,7 @@ fn pgn_name(name: &str) -> Result<String, Error> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn info_path(pgn: &Path) -> Result<PathBuf, Error> {
     let leaf = pgn
         .file_name()
@@ -125,6 +132,7 @@ fn serialize_metadata(metadata: &WorkspaceMetadata) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
+#[cfg(unix)]
 fn metadata_from(
     directory: &CapabilityDirectory,
     pgn: &DirectoryEntry,
@@ -145,6 +153,7 @@ fn metadata_from(
         .map_err(|error| Error::InvalidInput(format!("invalid PGN metadata: {error}")))
 }
 
+#[cfg(unix)]
 fn listed_mtime(entry: &DirectoryEntry) -> Result<i64, Error> {
     if entry.modified_seconds < 0 {
         return Err(Error::InvalidInput(format!(
@@ -163,6 +172,7 @@ fn timestamp(path: &Path) -> Result<i64, Error> {
         .as_secs() as i64)
 }
 
+#[cfg(unix)]
 fn workspace_root(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
@@ -182,6 +192,14 @@ fn mutation_target(
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .workspace_mutation_target(entry)
+}
+
+#[cfg(not(unix))]
+fn mutation_target(
+    _pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    _entry: &FileWorkspaceHandle,
+) -> Result<WorkspaceMutationTarget, Error> {
+    Err(crate::platform_support::unsupported("workspace mutations"))
 }
 
 fn durability_uncertainty(
@@ -204,6 +222,7 @@ fn ensure_registered_descendant(
     Ok(())
 }
 
+#[cfg(unix)]
 fn workspace_components(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
@@ -240,6 +259,18 @@ fn register_created_entry(
             is_dir,
             PathOperation::WritePgn,
         )
+}
+
+#[cfg(not(unix))]
+fn register_created_entry(
+    _pgn_path_authority: &Mutex<Option<PathAuthority>>,
+    _workspace: &FileWorkspaceHandle,
+    _path: &Path,
+    _display_name: String,
+    _identity: (u64, u64),
+    _is_dir: bool,
+) -> Result<FileWorkspaceHandle, Error> {
+    Err(crate::platform_support::unsupported("workspace mutations"))
 }
 
 pub(crate) fn map_picker_join(error: tokio::task::JoinError) -> Error {
@@ -457,9 +488,7 @@ fn collect_tree_entries(
     _workspace: &FileWorkspaceHandle,
     _token: &CancellationToken,
 ) -> Result<(Vec<WorkspaceEntry>, Vec<FileWorkspaceHandle>), Error> {
-    Err(Error::Conflict(
-        "workspace listing is unsupported on this platform".into(),
-    ))
+    Err(crate::platform_support::unsupported("workspace listing"))
 }
 
 fn set_workspace_game_count(
@@ -631,6 +660,15 @@ fn paired_rename(
         };
     }
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn paired_rename(
+    _source: &WorkspaceMutationTarget,
+    _target_parent: &fs::File,
+    _target_leaf: &std::ffi::OsStr,
+) -> Result<(), Error> {
+    Err(crate::platform_support::unsupported("workspace mutations"))
 }
 
 fn rebind_after_move(
@@ -1343,27 +1381,31 @@ fn permanently_delete_entry_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::engine::EngineKey;
+    #[cfg(unix)]
+    use crate::infra::fs::{set_test_removal_injector, RemovalFault, RemovalFaultPoint};
     #[cfg(unix)]
     use crate::infra::path_authority::{
         set_workspace_metadata_post_open_hook, set_workspace_metadata_pre_open_hook,
     };
+    #[cfg(unix)]
     use crate::infra::{
-        fs::{
-            set_test_atomic_file_injector, set_test_removal_injector, AtomicFileFaultPoint,
-            AtomicWriterInjector, RemovalFault, RemovalFaultPoint,
-        },
+        fs::{set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector},
         path_authority::PathAuthority,
     };
     #[cfg(unix)]
+    use std::io::{Seek, Write};
+    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
-    use std::{
-        io::{Seek, Write},
-        sync::{Arc, Mutex as StdMutex},
-    };
+    #[cfg(unix)]
+    use std::sync::{Arc, Mutex as StdMutex};
+    #[cfg(unix)]
     use tauri::Manager;
+    #[cfg(unix)]
     use tempfile::TempDir;
 
+    #[cfg(unix)]
     #[derive(Clone, Copy, Debug)]
     enum QueuedWorkspaceCommand {
         CreateFile,
@@ -1377,11 +1419,13 @@ mod tests {
 
     /// Owns the contended standard mutex on a bounded worker thread so async tests never retain
     /// a `MutexGuard` across `.await`. Drop always releases and joins the holder.
+    #[cfg(unix)]
     struct HeldWorkspaceMutation {
         release: Option<std::sync::mpsc::SyncSender<()>>,
         worker: Option<std::thread::JoinHandle<()>>,
     }
 
+    #[cfg(unix)]
     impl HeldWorkspaceMutation {
         fn new(mutation: Arc<StdMutex<()>>) -> Self {
             let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
@@ -1410,6 +1454,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for HeldWorkspaceMutation {
         fn drop(&mut self) {
             if let Some(release) = self.release.take() {
@@ -1421,6 +1466,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn workspace_tree_snapshot(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
         fn visit(root: &Path, directory: &Path, entries: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
             let mut children = fs::read_dir(directory)
@@ -1788,6 +1834,7 @@ mod tests {
         assert!(matches!(map_picker_join(error), Error::Cancellation));
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn production_workspace_file_tail_finishes_after_command_caller_drop() {
         let (directory, state, workspace) = workspace_state();
@@ -1833,6 +1880,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     fn workspace_state() -> (TempDir, AppState, FileWorkspaceHandle) {
         let directory = tempfile::tempdir().expect("temporary workspace parent");
         let root = directory.path().join("workspace");
@@ -1865,6 +1913,7 @@ mod tests {
         (directory, state, workspace)
     }
 
+    #[cfg(unix)]
     fn registered_child_directory(
         state: &AppState,
         workspace: &FileWorkspaceHandle,
@@ -1892,6 +1941,7 @@ mod tests {
         (child, entry)
     }
 
+    #[cfg(unix)]
     fn metadata_from_path(
         pgn_path_authority: &Mutex<Option<PathAuthority>>,
         workspace: &FileWorkspaceHandle,
@@ -1956,6 +2006,7 @@ mod tests {
             .expect("registered file")
     }
 
+    #[cfg(unix)]
     fn registered_engine_file(state: &AppState, path: &Path) -> PathRef {
         authority(&state.pgn_path_authority)
             .expect("authority lock")
@@ -1966,6 +2017,7 @@ mod tests {
             .id
     }
 
+    #[cfg(unix)]
     async fn supervise_test_engine(
         state: &AppState,
         key: &EngineKey,
@@ -1980,6 +2032,7 @@ mod tests {
             .expect("registered supervised engine");
     }
 
+    #[cfg(unix)]
     async fn delete_entry_with_fault(
         state: &AppState,
         workspace: &FileWorkspaceHandle,
@@ -2063,8 +2116,10 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     struct RegistryWriteFailure;
 
+    #[cfg(unix)]
     impl AtomicWriterInjector for RegistryWriteFailure {
         fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
             if point == AtomicFileFaultPoint::Write {
@@ -2077,6 +2132,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn registry_failure_after_unlink_is_applied_despite_error_and_keeps_persisted_state() {
         let (_directory, state, workspace) = workspace_state();
@@ -2201,6 +2257,7 @@ mod tests {
         assert!(!serialized.contains(r"C:\private\registry"));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn permanent_directory_delete_retires_only_its_engine_executable() {
         let (_directory, state, workspace) = workspace_state();
@@ -2253,6 +2310,7 @@ mod tests {
         state.engine_supervisor.terminate_all().await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn production_delete_retirement_tail_survives_command_caller_drop() {
         let (_directory, state, workspace) = workspace_state();
@@ -2327,6 +2385,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn production_delete_error_retirement_tail_survives_command_caller_drop() {
         let (directory, state, workspace) = workspace_state();
@@ -2405,6 +2464,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn trash_directory_does_not_retire_its_engine_executable() {
         let (_directory, state, workspace) = workspace_state();
@@ -2428,6 +2488,7 @@ mod tests {
         state.engine_supervisor.terminate_all().await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn registry_failure_after_unlink_still_retires_engine_executable() {
         let (_directory, state, workspace) = workspace_state();
@@ -2739,6 +2800,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn oversized_metadata_refuses_create_and_rename_before_mutation() {
         let (_directory, state, workspace) = workspace_state();
@@ -2879,6 +2941,7 @@ mod tests {
     /// Creates `before.pgn` with an empty tag list, renames it to `after.pgn` with the tag
     /// `renamed` under `injector`, and returns the workspace root, the entry handle and the
     /// rename result.
+    #[cfg(unix)]
     fn rename_under_injector(
         injector: Option<Arc<dyn AtomicWriterInjector + Send + Sync>>,
     ) -> (
@@ -2925,6 +2988,7 @@ mod tests {
     }
 
     /// The rename, the sidecar rewrite and the registry rebind all landed, whatever the result.
+    #[cfg(unix)]
     fn assert_rename_landed(state: &AppState, root: &Path, handle: &FileWorkspaceHandle) {
         assert!(root.join("after.pgn").is_file());
         assert!(!root.join("before.pgn").exists());
@@ -2938,6 +3002,7 @@ mod tests {
         assert_eq!(rebound.path(), root.join("after.pgn"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn rename_workspace_file_moves_pgn_sidecar_and_registry_entry() {
         let (_directory, state, root, handle, result) = rename_under_injector(None);
@@ -2945,6 +3010,7 @@ mod tests {
         assert_rename_landed(&state, &root, &handle);
     }
 
+    #[cfg(unix)]
     #[test]
     fn rename_workspace_file_reports_uncertain_sidecar_after_a_durable_rebind() {
         // Fails only the first parent sync, which is the sidecar rewrite; the registry rebind
@@ -2973,6 +3039,7 @@ mod tests {
         assert_rename_landed(&state, &root, &handle);
     }
 
+    #[cfg(unix)]
     #[test]
     fn rename_workspace_file_lets_a_failed_rebind_outrank_the_sidecar_uncertainty() {
         // The sidecar rewrite loses its parent sync; the registry rebind that follows fails
@@ -3004,6 +3071,7 @@ mod tests {
         assert!(root.join("after.info").is_file());
     }
 
+    #[cfg(unix)]
     #[test]
     fn rename_workspace_file_reports_the_sidecar_stage_over_a_registry_uncertainty() {
         // Every parent sync fails: the sidecar rewrite and the registry rebind are both
@@ -3020,6 +3088,7 @@ mod tests {
         assert_rename_landed(&state, &root, &handle);
     }
 
+    #[cfg(unix)]
     #[test]
     fn create_workspace_directory_parent_sync_keeps_completed_directory() {
         let (_directory, state, workspace) = workspace_state();

@@ -329,6 +329,7 @@ pub(crate) fn is_sqlite_notadb(error: &Error) -> bool {
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn map_sqlite_establish(error: diesel::ConnectionError) -> Error {
     let notadb = match &error {
         diesel::ConnectionError::BadConnection(message) => sqlite_notadb_message(message),

@@ -10,21 +10,26 @@
 //! link or leave the opened parent directory.
 
 use crate::error::Error;
+#[cfg(unix)]
+use std::io::Write;
 #[cfg(test)]
 use std::sync::Arc;
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
-    io::{Read, Write},
+    io::Read,
     path::Path,
 };
+#[cfg(unix)]
 use tokio_util::sync::CancellationToken;
 
 /// The file kind observed by descriptor-relative directory enumeration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DirectoryEntryKind {
+    #[cfg(unix)]
     Directory,
     RegularFile,
+    #[cfg(unix)]
     Other,
 }
 
@@ -34,6 +39,7 @@ pub(crate) struct DirectoryEntry {
     pub(crate) name: OsString,
     pub(crate) kind: DirectoryEntryKind,
     pub(crate) identity: (u64, u64),
+    #[cfg(unix)]
     pub(crate) modified_seconds: i64,
 }
 
@@ -110,6 +116,7 @@ pub(crate) fn read_directory_entries_at(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(unix)]
 pub(crate) enum RegularFileAccess {
     ReadOnly,
     ReadWrite,
@@ -153,6 +160,7 @@ pub(crate) fn read_bounded_bytes<R: Read>(
 }
 
 mod verified_directory {
+    #[cfg(unix)]
     use crate::error::Error;
     use std::fs::File;
 
@@ -160,6 +168,7 @@ mod verified_directory {
     pub(crate) struct VerifiedDir(File);
 
     impl VerifiedDir {
+        #[cfg(unix)]
         pub(crate) fn new(opened: File, expected: (u64, u64)) -> Result<Self, Error> {
             #[cfg(unix)]
             {
@@ -176,8 +185,8 @@ mod verified_directory {
             #[cfg(not(unix))]
             {
                 let _ = (opened, expected);
-                Err(Error::Conflict(
-                    "verified directories are unsupported on this platform".into(),
+                Err(crate::platform_support::unsupported_plural(
+                    "verified directories",
                 ))
             }
         }
@@ -186,6 +195,7 @@ mod verified_directory {
             &self.0
         }
 
+        #[cfg(unix)]
         pub(crate) fn into_file(self) -> File {
             self.0
         }
@@ -196,6 +206,13 @@ pub(crate) use verified_directory::VerifiedDir;
 
 #[derive(Debug)]
 #[must_use = "the rename may have landed without a durable parent; decide what CommittedDurabilityUncertain means at this site"]
+#[cfg_attr(
+    all(not(unix), not(test)),
+    expect(
+        dead_code,
+        reason = "atomic replacement refuses off Unix until the Windows port constructs an outcome (f-20260830-06 follow-up (d))"
+    )
+)]
 pub enum AtomicFileOutcome {
     DurableCommit,
     CommittedDurabilityUncertain(std::io::Error),
@@ -261,6 +278,7 @@ pub(crate) enum AtomicFileFaultPoint {
     PermissionCopy,
     PreCommitRevalidate,
     Rename,
+    #[cfg(unix)]
     PostRenameMetadata,
     ParentSync,
     Cleanup,
@@ -309,6 +327,7 @@ pub(crate) fn current_test_atomic_file_injector(
     TEST_ATOMIC_FILE_INJECTOR.with(|current| current.borrow().clone())
 }
 
+#[cfg(any(test, unix))]
 fn io(err: std::io::Error) -> Error {
     Error::Io(Box::new(err))
 }
@@ -1606,6 +1625,17 @@ pub(crate) fn entry_identity_at(
     Ok(unix::raw_stat_identity(&stat))
 }
 
+#[cfg(not(unix))]
+pub(crate) fn entry_identity_at(
+    _parent: &File,
+    _name: &OsStr,
+    _dir: bool,
+) -> Result<(u64, u64), Error> {
+    Err(crate::platform_support::unsupported(
+        "fd-relative entry identity",
+    ))
+}
+
 #[cfg(unix)]
 pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
     use rustix::fs::{self as rfs, Mode};
@@ -1613,6 +1643,13 @@ pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
         .map_err(|error| Error::Io(Box::new(error.into())))?;
     parent.sync_all()?;
     Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn create_dir_at(_parent: &File, _name: &OsStr) -> Result<(), Error> {
+    Err(crate::platform_support::unsupported(
+        "fd-relative directory creation",
+    ))
 }
 
 #[cfg(unix)]
@@ -1629,6 +1666,14 @@ pub(crate) fn open_directory_at(parent: &File, name: &OsStr) -> Result<File, Err
     ))
 }
 
+#[cfg(not(unix))]
+pub(crate) fn open_directory_at(_parent: &File, _name: &OsStr) -> Result<File, Error> {
+    Err(crate::platform_support::unsupported(
+        "fd-relative directory opening",
+    ))
+}
+
+#[cfg(unix)]
 pub(crate) fn open_regular_at(
     parent: &File,
     name: &OsStr,
@@ -1664,8 +1709,8 @@ pub(crate) fn open_regular_at(
     #[cfg(not(unix))]
     {
         let _ = (parent, access);
-        Err(Error::Conflict(
-            "fd-relative regular-file opening is unsupported on this platform".into(),
+        Err(crate::platform_support::unsupported(
+            "fd-relative regular-file opening",
         ))
     }
 }
@@ -1673,6 +1718,7 @@ pub(crate) fn open_regular_at(
 /// Creates one private regular-file leaf below a retained directory descriptor. The exclusive
 /// no-follow open is the namespace mutation; the returned inode identity is the only identity
 /// callers may use for later registration or cleanup.
+#[cfg(unix)]
 pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u64, u64)), Error> {
     single_leaf(name)?;
     #[cfg(unix)]
@@ -1698,8 +1744,8 @@ pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u
     #[cfg(not(unix))]
     {
         let _ = (parent, name);
-        Err(Error::Conflict(
-            "descriptor-relative exclusive creation is unsupported on this platform".into(),
+        Err(crate::platform_support::unsupported(
+            "descriptor-relative exclusive creation",
         ))
     }
 }
@@ -1731,6 +1777,18 @@ pub(crate) fn rename_entry_at(
         target_parent.sync_all()?;
     }
     Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn rename_entry_at(
+    _source_parent: &File,
+    _source: &OsStr,
+    _expected: (u64, u64),
+    _source_is_dir: bool,
+    _target_parent: &File,
+    _target: &OsStr,
+) -> Result<(), Error> {
+    Err(crate::platform_support::unsupported("fd-relative renames"))
 }
 
 #[cfg(unix)]
@@ -1817,6 +1875,16 @@ pub(crate) fn remove_entry_at(
     Ok(())
 }
 
+#[cfg(not(unix))]
+pub(crate) fn remove_entry_at(
+    _parent: &File,
+    _name: &OsStr,
+    _expected: (u64, u64),
+    _is_dir: bool,
+) -> Result<(), Error> {
+    Err(crate::platform_support::unsupported("fd-relative removals"))
+}
+
 #[cfg(unix)]
 pub(crate) fn remove_optional_regular_at(parent: &File, name: &OsStr) -> Result<(), Error> {
     use rustix::{
@@ -1834,6 +1902,13 @@ pub(crate) fn remove_optional_regular_at(parent: &File, name: &OsStr) -> Result<
     }
 }
 
+#[cfg(not(unix))]
+pub(crate) fn remove_optional_regular_at(_parent: &File, _name: &OsStr) -> Result<(), Error> {
+    Err(crate::platform_support::unsupported(
+        "fd-relative optional-file removal",
+    ))
+}
+
 #[cfg(unix)]
 pub(crate) fn remove_regular_at(parent: &File, name: &OsStr) -> Result<(), Error> {
     use rustix::fs::{self as rfs, AtFlags, FileType};
@@ -1847,6 +1922,13 @@ pub(crate) fn remove_regular_at(parent: &File, name: &OsStr) -> Result<(), Error
     rfs::unlinkat(parent, name, AtFlags::empty())
         .map_err(|error| Error::Io(Box::new(error.into())))?;
     Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn remove_regular_at(_parent: &File, _name: &OsStr) -> Result<(), Error> {
+    Err(crate::platform_support::unsupported(
+        "fd-relative regular-file removal",
+    ))
 }
 
 pub fn atomic_replace_at_with_precommit<F, P>(
@@ -1904,13 +1986,13 @@ where
     #[cfg(not(unix))]
     {
         let _ = (parent, leaf, precommit, write_fn);
-        Err(Error::Conflict(
-            "fd-relative atomic replacement is unsupported on this platform".into(),
+        Err(crate::platform_support::unsupported(
+            "fd-relative atomic replacement",
         ))
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AtomicDirFaultPoint {
     SyncEntry,
@@ -1920,25 +2002,25 @@ pub(crate) enum AtomicDirFaultPoint {
     ParentSync,
     BackupCleanup,
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) trait AtomicDirInjector {
     fn inject(&self, _: AtomicDirFaultPoint) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 std::thread_local! {
     static TEST_ATOMIC_DIR_INJECTOR: std::cell::RefCell<Option<Box<dyn AtomicDirInjector>>> =
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn set_test_atomic_dir_injector(injector: Option<Box<dyn AtomicDirInjector>>) {
     TEST_ATOMIC_DIR_INJECTOR.with(|current| *current.borrow_mut() = injector);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn inject_atomic_dir(point: AtomicDirFaultPoint) -> Result<(), Error> {
     TEST_ATOMIC_DIR_INJECTOR.with(|current| {
         current
@@ -2237,14 +2319,14 @@ mod tests {
         let directory = body_at_indent(source, "pub(crate) struct DirectoryEntry {");
         assert_eq!(
             directory.trim(),
-            "pub(crate) struct DirectoryEntry {\n    pub(crate) name: OsString,\n    pub(crate) kind: DirectoryEntryKind,\n    pub(crate) identity: (u64, u64),\n    pub(crate) modified_seconds: i64,"
+            "pub(crate) struct DirectoryEntry {\n    pub(crate) name: OsString,\n    pub(crate) kind: DirectoryEntryKind,\n    pub(crate) identity: (u64, u64),\n    #[cfg(unix)]\n    pub(crate) modified_seconds: i64,"
         );
         let capability_source = include_str!("path_authority/mod.rs");
         let capability =
             body_at_indent(capability_source, "pub(crate) struct CapabilityDirectory {");
         assert_eq!(
             capability.trim(),
-            "pub(crate) struct CapabilityDirectory {\n    directory: fs::File,"
+            "pub(crate) struct CapabilityDirectory {\n    #[cfg(unix)]\n    directory: fs::File,"
         );
     }
 
@@ -3757,6 +3839,7 @@ mod tests {
     }
 
     struct PrivateTemp {
+        #[cfg(unix)]
         parent: PathBuf,
     }
 
@@ -3805,6 +3888,8 @@ mod tests {
     }
     impl AtomicWriterInjector for PrivateTemp {
         fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            #[cfg(not(unix))]
+            let _ = point;
             #[cfg(unix)]
             if matches!(
                 point,
@@ -3823,13 +3908,16 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     struct DirFault {
         point: AtomicDirFaultPoint,
     }
 
+    #[cfg(unix)]
     struct SourceSwap {
         source: PathBuf,
     }
+    #[cfg(unix)]
     impl AtomicDirInjector for SourceSwap {
         fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
             if point == AtomicDirFaultPoint::PreCommit {
@@ -3842,10 +3930,12 @@ mod tests {
             Ok(())
         }
     }
+    #[cfg(unix)]
     struct DirTargetMutation {
         target: PathBuf,
         existing: bool,
     }
+    #[cfg(unix)]
     impl AtomicDirInjector for DirTargetMutation {
         fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
             if point == AtomicDirFaultPoint::PreCommit {
@@ -3861,6 +3951,7 @@ mod tests {
             Ok(())
         }
     }
+    #[cfg(unix)]
     impl AtomicDirInjector for DirFault {
         fn inject(&self, point: AtomicDirFaultPoint) -> std::io::Result<()> {
             if point == self.point {
@@ -3870,6 +3961,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn directory_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let root = tempfile::tempdir().expect("tempdir");
         let source = root.path().join("source");
@@ -3952,6 +4044,7 @@ mod tests {
         result
     }
 
+    #[cfg(unix)]
     fn run_atomic_dir_fault(
         source: &Path,
         target: &Path,
@@ -3970,6 +4063,7 @@ mod tests {
         let outcome = run_atomic_file_fault(
             &target,
             Arc::new(PrivateTemp {
+                #[cfg(unix)]
                 parent: dir.path().to_path_buf(),
             }),
             |f| f.write_all(b"new").map_err(io),
@@ -4429,6 +4523,7 @@ mod tests {
         assert!(second_observed_own_name);
     }
 
+    #[cfg(unix)]
     #[test]
     fn directory_fault_matrix_preserves_or_recovers_old_target() {
         for point in [

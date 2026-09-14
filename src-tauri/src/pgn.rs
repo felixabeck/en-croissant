@@ -239,7 +239,7 @@ impl PgnRepository {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn set_count_hook(&self, hook: Option<BoundedHook>) -> Result<(), Error> {
         self.inner()?.count_hook = hook;
         Ok(())

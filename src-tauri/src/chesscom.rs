@@ -224,6 +224,7 @@ pub async fn download_chess_com_games(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<ArtifactPublication, Error> {
+    crate::platform_support::off_unix_refusal("Chess.com game downloads", cfg!(unix))?;
     uuid::Uuid::parse_str(&job_id)
         .map_err(|_| Error::InvalidInput("download job ID must be a UUID".into()))?;
     let lower_player = player.to_ascii_lowercase();

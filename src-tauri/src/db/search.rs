@@ -23,6 +23,10 @@ use tauri::Manager;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(unix)]
+use crate::db::search_index::{
+    legacy_sidecar_leaf, preferred_sidecar_leaf, promote_legacy_index_sidecar_at,
+};
 use crate::{
     db::{
         encoding::{decode_move, try_iter_mainline_move_bytes_cancellable},
@@ -31,9 +35,7 @@ use crate::{
         normalize_games,
         schema::*,
         search_index::{
-            get_index_path, legacy_sidecar_leaf, preferred_sidecar_leaf,
-            promote_legacy_index_sidecar_at, GameResult, IndexSource, MmapSearchIndex,
-            SearchGameEntryRef,
+            get_index_path, GameResult, IndexSource, MmapSearchIndex, SearchGameEntryRef,
         },
         DatabaseRepository, MaterialCount,
     },
@@ -175,7 +177,7 @@ fn is_end_reachable(end: u16, pos: u16) -> bool {
     end & !pos == 0
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn load_search_index(
     authority: &Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
@@ -245,24 +247,28 @@ pub(crate) fn load_search_index_cancellable(
         );
     }
 
-    let mutate_target = super::resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
-    let preferred_leaf = preferred_sidecar_leaf(mutate_target.leaf());
-    let legacy_leaf = legacy_sidecar_leaf(mutate_target.leaf());
-    promote_legacy_index_sidecar_at(
-        mutate_target.parent(),
-        &preferred_leaf,
-        &legacy_leaf,
-        &db_identity,
-        cancellation,
-    )?;
-    if let Some(index) = open_valid_preferred(&mutate_target, &expected_source, cancellation)? {
-        return cache_loaded_index(
-            search_cache,
-            mutate_target.path(),
-            expected_source,
-            index,
+    #[cfg(unix)]
+    {
+        let mutate_target =
+            super::resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
+        let preferred_leaf = preferred_sidecar_leaf(mutate_target.leaf());
+        let legacy_leaf = legacy_sidecar_leaf(mutate_target.leaf());
+        promote_legacy_index_sidecar_at(
+            mutate_target.parent(),
+            &preferred_leaf,
+            &legacy_leaf,
+            &db_identity,
             cancellation,
-        );
+        )?;
+        if let Some(index) = open_valid_preferred(&mutate_target, &expected_source, cancellation)? {
+            return cache_loaded_index(
+                search_cache,
+                mutate_target.path(),
+                expected_source,
+                index,
+                cancellation,
+            );
+        }
     }
 
     info!("Search index is absent, corrupt, or stale; generating automatically...");
@@ -339,9 +345,9 @@ fn open_valid_preferred(
     }
     #[cfg(not(unix))]
     {
-        let _ = (target, expected_source);
-        Err(Error::Conflict(
-            "fd-relative search index loading is unsupported on this platform".into(),
+        let _ = (target, expected_source, cancellation);
+        Err(crate::platform_support::unsupported(
+            "fd-relative search index loading",
         ))
     }
 }
@@ -810,7 +816,7 @@ fn search_position_blocking<R: tauri::Runtime>(
     Ok((openings, normalized_games))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub fn is_position_in_db(
     authority: &Mutex<Option<PathAuthority>>,
     repository: &DatabaseRepository,
@@ -920,7 +926,7 @@ pub(crate) fn is_position_in_db_cancellable(
     Ok(exists)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::{
@@ -1210,7 +1216,7 @@ mod tests {
         assert!(loader.contains("generation_lock(get_index_path(read_target.path()))"));
         assert!(loader.contains("get_index_path(read_target.path())"));
         assert!(loader.contains(
-            "cache_loaded_index(\n            search_cache,\n            mutate_target.path()"
+            "cache_loaded_index(\n                search_cache,\n                mutate_target.path()"
         ));
         assert!(!loader.contains("atomic_replace(&"));
         assert!(!loader.contains("std::fs::remove_file"));

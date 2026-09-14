@@ -29,7 +29,7 @@ mod mint {
             )
         }
 
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         pub(in crate::infra::path_authority) fn try_clone_inner(
             &self,
         ) -> std::io::Result<std::fs::File> {

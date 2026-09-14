@@ -1,10 +1,14 @@
+#[cfg(unix)]
+use crate::infra::fs::RegularFileAccess;
 use crate::{
     error::Error,
-    infra::fs::{AtomicFileOutcome, AtomicInstalledFile, RegularFileAccess},
+    infra::fs::{AtomicFileOutcome, AtomicInstalledFile},
 };
 use sha2::Digest;
+#[cfg(unix)]
+use std::ffi::OsStr;
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -12,9 +16,9 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    canonical_binding, is_write_operation, opened_file_identity, DatabaseFileTarget, PathOperation,
-};
+#[cfg(unix)]
+use super::canonical_binding;
+use super::{is_write_operation, opened_file_identity, DatabaseFileTarget, PathOperation};
 
 /// Result of a successful resolution. It retains only the exact opened file, never a parent or
 /// root handle that could be used to reach a sibling.
@@ -50,10 +54,12 @@ impl ResolvedPath {
         self.directory.take()
     }
 
+    #[cfg(unix)]
     pub(super) fn parent(&self) -> Option<&fs::File> {
         self.parent.as_ref()
     }
 
+    #[cfg(unix)]
     pub(super) fn leaf(&self) -> Option<&OsStr> {
         self.leaf.as_deref()
     }
@@ -67,6 +73,7 @@ impl ResolvedPath {
         self.target.as_deref()
     }
 
+    #[cfg(unix)]
     pub(super) fn operation(&self) -> PathOperation {
         self.operation
     }
@@ -91,40 +98,9 @@ impl ResolvedPath {
         }
         #[cfg(not(unix))]
         {
-            let _ = temporary_directory;
-            Err(Error::Conflict(
-                "atomic archive installation is unsupported on this platform".into(),
-            ))
-        }
-    }
-
-    /// Marks exactly the authority-resolved engine file executable. Windows deliberately reports
-    /// unsupported because POSIX executable bits have no truthful equivalent there.
-    pub(crate) fn mark_engine_executable(&self) -> Result<(), Error> {
-        if self.operation != PathOperation::EngineInstall {
-            return Err(Error::InvalidInput(
-                "resolved capability is not an engine install target".into(),
-            ));
-        }
-        #[cfg(unix)]
-        {
-            use rustix::fs::{fchmod, Mode};
-            use std::os::unix::fs::MetadataExt;
-            let file = self
-                .file
-                .as_ref()
-                .ok_or_else(|| Error::InvalidInput("engine target is a directory".into()))?;
-            let mode = file.metadata()?.mode() | 0o111;
-            fchmod(
-                file,
-                Mode::from_raw_mode(crate::infra::fs::raw_mode_from(mode)?),
-            )
-            .map_err(|error| Error::from(std::io::Error::from(error)))
-        }
-        #[cfg(not(unix))]
-        {
-            Err(Error::InvalidInput(
-                "engine executable mode is unsupported on this platform".into(),
+            let _ = (target, temporary_directory);
+            Err(crate::platform_support::unsupported(
+                "atomic archive installation",
             ))
         }
     }
@@ -220,7 +196,7 @@ impl ResolvedPath {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn atomic_replace_download<F>(&self, write: F) -> Result<AtomicFileOutcome, Error>
     where
         F: FnOnce(&mut fs::File) -> Result<(), Error>,
@@ -266,7 +242,7 @@ impl ResolvedPath {
     /// Streams a previously reserved staging file into the private atomic temporary inode and
     /// verifies its exact reservation digest before `renameat`. A substituted staging pathname
     /// therefore fails before the visible target changes.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn atomic_install_reserved_download(
         &self,
         reservation: &super::PendingArtifactReservation,
@@ -438,6 +414,13 @@ impl ResolvedPath {
         Ok(DatabaseFileTarget::assemble(parent, leaf, identity, path))
     }
 
+    #[cfg(not(unix))]
+    pub(crate) fn puzzle_database_target(&self) -> Result<DatabaseFileTarget, Error> {
+        Err(crate::platform_support::unsupported(
+            "puzzle database targets",
+        ))
+    }
+
     /// Duplicate the already-authorized descriptor for SQLite. The caller owns
     /// this duplicate for the complete database connection lifetime, so a
     /// pathname swap cannot redirect SQLite after capability resolution.
@@ -456,6 +439,7 @@ impl ResolvedPath {
     /// pathname mutation, a race after that final kernel check cannot be
     /// expressed as a compare-and-delete operation and is intentionally not
     /// hidden from callers by a retry.
+    #[cfg(unix)]
     pub(crate) fn delete_puzzle_database(&self) -> Result<(), Error> {
         if self.operation != PathOperation::PuzzleDelete {
             return Err(Error::InvalidInput(
@@ -473,34 +457,56 @@ impl ResolvedPath {
             .leaf
             .as_ref()
             .ok_or_else(|| Error::Conflict("puzzle database leaf handle is unavailable".into()))?;
-        #[cfg(unix)]
+        use rustix::fs::{self as rfs, AtFlags, FileType};
+        let stat = rfs::statat(parent, leaf, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|error| Error::from(std::io::Error::from(error)))?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+            || crate::infra::fs::raw_stat_identity(&stat) != expected
         {
-            use rustix::fs::{self as rfs, AtFlags, FileType};
-            let stat = rfs::statat(parent, leaf, AtFlags::SYMLINK_NOFOLLOW)
-                .map_err(|error| Error::from(std::io::Error::from(error)))?;
-            if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-                || crate::infra::fs::raw_stat_identity(&stat) != expected
-            {
-                return Err(Error::Conflict(
-                    "puzzle database changed before deletion".into(),
-                ));
-            }
-            rfs::unlinkat(parent, leaf, AtFlags::empty())
-                .map_err(|error| Error::from(std::io::Error::from(error)))?;
-            Ok(())
+            return Err(Error::Conflict(
+                "puzzle database changed before deletion".into(),
+            ));
         }
-        #[cfg(windows)]
-        {
-            let target = self.puzzle_database_path()?;
-            let current = opened_file_identity(&super::open_windows_nofollow(&target, true)?)?;
-            if current != expected {
-                return Err(Error::Conflict(
-                    "puzzle database changed before deletion".into(),
-                ));
-            }
-            fs::remove_file(target)?;
-            Ok(())
+        rfs::unlinkat(parent, leaf, AtFlags::empty())
+            .map_err(|error| Error::from(std::io::Error::from(error)))?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn delete_puzzle_database(&self) -> Result<(), Error> {
+        Err(crate::platform_support::unsupported(
+            "puzzle database deletion",
+        ))
+    }
+
+    /// Marks exactly the authority-resolved engine file executable. Windows deliberately reports
+    /// unsupported because POSIX executable bits have no truthful equivalent there.
+    #[cfg(unix)]
+    pub(crate) fn mark_engine_executable(&self) -> Result<(), Error> {
+        if self.operation != PathOperation::EngineInstall {
+            return Err(Error::InvalidInput(
+                "resolved capability is not an engine install target".into(),
+            ));
         }
+        use rustix::fs::{fchmod, Mode};
+        use std::os::unix::fs::MetadataExt;
+        let file = self
+            .file
+            .as_ref()
+            .ok_or_else(|| Error::InvalidInput("engine target is a directory".into()))?;
+        let mode = file.metadata()?.mode() | 0o111;
+        fchmod(
+            file,
+            Mode::from_raw_mode(crate::infra::fs::raw_mode_from(mode)?),
+        )
+        .map_err(|error| Error::from(std::io::Error::from(error)))
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn mark_engine_executable(&self) -> Result<(), Error> {
+        Err(crate::platform_support::unsupported(
+            "engine executable mode",
+        ))
     }
 
     pub(crate) fn replace_pgn_atomic<F>(

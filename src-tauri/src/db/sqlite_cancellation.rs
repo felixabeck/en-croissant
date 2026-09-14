@@ -181,7 +181,7 @@ where
     result
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn cancel_on_callback(
     cancellation: CancellationToken,
     callback_number: usize,
@@ -203,7 +203,7 @@ pub(crate) fn cancel_on_callback(
     checkpoints
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use diesel::{connection::SimpleConnection, Connection, SqliteConnection};

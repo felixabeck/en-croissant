@@ -10,14 +10,19 @@
 //! `VerifiedIdentity`: that path re-registers the new inode rather than staying wedged.
 
 #[cfg(unix)]
-use crate::infra::fs::{assert_entry_identity, open_directory_at, read_directory_entries_at};
+use crate::infra::fs::RegularFileAccess;
+#[cfg(unix)]
+use crate::infra::fs::{
+    assert_entry_identity, open_directory_at, open_regular_at, read_directory_entries_at,
+};
 use crate::{
     error::Error,
     infra::fs::{
-        atomic_replace, open_regular_at, read_bounded_bytes, AtomicFileOutcome, DirectoryEntry,
-        DirectoryEntryKind, RegularFileAccess, VerifiedDir,
+        atomic_replace, read_bounded_bytes, AtomicFileOutcome, DirectoryEntry, DirectoryEntryKind,
+        VerifiedDir,
     },
 };
+#[cfg(unix)]
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -54,8 +59,7 @@ const MAX_PENDING_ARTIFACTS: usize = 256;
 const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LEGACY_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
 #[cfg(not(unix))]
-const UNSUPPORTED_DIRECTORY_ENUMERATION: &str =
-    "fd-relative directory enumeration is unsupported on this platform";
+const UNSUPPORTED_DIRECTORY_ENUMERATION: &str = "fd-relative directory enumeration";
 
 fn map_db3_children_cancellable<T>(
     root: CapabilityDirectory,
@@ -87,6 +91,7 @@ fn map_db3_children_cancellable<T>(
 
 /// A directory reached through a `PathRef` capability. It carries no pathname.
 pub(crate) struct CapabilityDirectory {
+    #[cfg(unix)]
     directory: fs::File,
 }
 
@@ -110,10 +115,13 @@ impl CapabilityDirectory {
         #[cfg(not(unix))]
         {
             let _ = (cancellation, keep);
-            Err(Error::Conflict(UNSUPPORTED_DIRECTORY_ENUMERATION.into()))
+            Err(crate::platform_support::unsupported(
+                UNSUPPORTED_DIRECTORY_ENUMERATION,
+            ))
         }
     }
 
+    #[cfg(unix)]
     pub(crate) fn open_child_directory(
         &self,
         entry: &DirectoryEntry,
@@ -150,13 +158,9 @@ impl CapabilityDirectory {
                 directory: VerifiedDir::new(opened, entry.identity)?.into_file(),
             })
         }
-        #[cfg(not(unix))]
-        {
-            let _ = entry;
-            Err(Error::Conflict(UNSUPPORTED_DIRECTORY_ENUMERATION.into()))
-        }
     }
 
+    #[cfg(unix)]
     pub(crate) fn confirm_entry(&self, entry: &DirectoryEntry) -> Result<(), Error> {
         crate::infra::fs::single_leaf(&entry.name)?;
         #[cfg(unix)]
@@ -168,21 +172,17 @@ impl CapabilityDirectory {
                 entry.kind == DirectoryEntryKind::Directory,
             )
         }
-        #[cfg(not(unix))]
-        {
-            let _ = entry;
-            Err(Error::Conflict(UNSUPPORTED_DIRECTORY_ENUMERATION.into()))
-        }
     }
 
+    #[cfg(unix)]
     pub(crate) fn open_metadata_sidecar(
         &self,
         pgn: &DirectoryEntry,
     ) -> Result<Option<fs::File>, Error> {
         crate::infra::fs::single_leaf(&pgn.name)?;
-        let sidecar = workspace_sidecar_leaf(&pgn.name)?;
         #[cfg(unix)]
         {
+            let sidecar = workspace_sidecar_leaf(&pgn.name)?;
             #[cfg(all(test, unix))]
             WORKSPACE_METADATA_PRE_OPEN_HOOK.with(|slot| {
                 if let Some(hook) = slot.borrow_mut().take() {
@@ -205,11 +205,6 @@ impl CapabilityDirectory {
                 };
             self.confirm_entry(pgn)?;
             Ok(opened)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = pgn;
-            Err(Error::Conflict(UNSUPPORTED_DIRECTORY_ENUMERATION.into()))
         }
     }
 }
@@ -265,6 +260,7 @@ pub(crate) struct DatabaseFileTarget {
 }
 
 impl DatabaseFileTarget {
+    #[cfg(unix)]
     fn assemble(parent: fs::File, leaf: OsString, identity: (u64, u64), path: PathBuf) -> Self {
         Self {
             parent,
@@ -331,6 +327,13 @@ impl DatabaseFileTarget {
             return Err(Error::Conflict(CONFLICT.into()));
         }
         Ok(file)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn open_current(&self) -> Result<fs::File, Error> {
+        Err(crate::platform_support::unsupported(
+            "database file reopening",
+        ))
     }
 
     #[cfg(all(test, unix))]
@@ -577,9 +580,7 @@ impl AuthorizedDir {
         #[cfg(not(unix))]
         {
             let _ = (leaf, identity);
-            Err(Error::Conflict(
-                "fd-relative removal is unsupported on this platform".into(),
-            ))
+            Err(crate::platform_support::unsupported("fd-relative removal"))
         }
     }
 
@@ -606,8 +607,8 @@ impl AuthorizedDir {
         #[cfg(not(unix))]
         {
             let _ = relative;
-            Err(Error::Conflict(
-                "fd-relative regular-file opening is unsupported on this platform".into(),
+            Err(crate::platform_support::unsupported(
+                "fd-relative regular-file opening",
             ))
         }
     }
@@ -803,8 +804,6 @@ impl EngineResourceHandle {
 #[derive(Debug)]
 pub(crate) struct EngineResourceLease {
     #[cfg(unix)]
-    file: fs::File,
-    #[cfg(windows)]
     file: fs::File,
     #[cfg(windows)]
     target: PathBuf,
@@ -1029,8 +1028,6 @@ pub(crate) struct EngineExecutable {
     working_directory: PathBuf,
     resource_leases: Vec<EngineResourceLease>,
     #[cfg(windows)]
-    file: fs::File,
-    #[cfg(windows)]
     command_path: PathBuf,
 }
 impl EngineExecutable {
@@ -1165,6 +1162,7 @@ pub enum PathOperation {
     OpenShell,
 }
 
+#[cfg(unix)]
 fn is_database_file_operation(op: PathOperation) -> bool {
     match op {
         PathOperation::DatabaseRead
@@ -1192,6 +1190,7 @@ fn is_database_file_operation(op: PathOperation) -> bool {
 
 /// Canonicalizes only the parent and appends the leaf name unchanged, so a leaf
 /// symlink is never followed.
+#[cfg(unix)]
 fn canonical_binding(path: &Path) -> Result<PathBuf, Error> {
     let file_name = path
         .file_name()
@@ -1200,6 +1199,7 @@ fn canonical_binding(path: &Path) -> Result<PathBuf, Error> {
     Ok(fs::canonicalize(parent_of(path))?.join(file_name))
 }
 
+#[cfg(unix)]
 fn parent_of(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -1568,7 +1568,7 @@ impl ResourceDir {
 
     /// Test-only for the same reason as [`AppDataDir::for_test`]: arbitrary resource roots must
     /// not be constructible in the shipped binary.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn for_test(path: &Path) -> Self {
         Self(path.to_path_buf())
     }
@@ -1626,8 +1626,8 @@ fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
 #[cfg(not(unix))]
 fn authorize_existing_dir(path: &Path) -> Result<AuthorizedDir, Error> {
     let _ = path;
-    Err(Error::Conflict(
-        "authorized directories are unsupported on this platform".into(),
+    Err(crate::platform_support::unsupported_plural(
+        "authorized directories",
     ))
 }
 
@@ -1648,6 +1648,7 @@ pub(crate) fn ensure_app_owned_default_dir(
     app_data_dir: &AppDataDir,
     root: AppOwnedDefaultRoot,
 ) -> Result<AuthorizedDir, Error> {
+    crate::platform_support::off_unix_refusal("app-owned default directories", cfg!(unix))?;
     let path = app_data_dir.as_path().join(root.leaf());
     fs::create_dir_all(&path)?;
     let directory = authorize_existing_dir(&path)?;
@@ -1674,7 +1675,7 @@ const BUNDLED_SOUND_COLLECTIONS: [(&str, bool); 8] = [
     ("woodland", true),
 ];
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", all(test, unix)))]
 pub(crate) fn open_app_owned_resource_dir(
     resource_dir: &ResourceDir,
 ) -> Result<AuthorizedDir, Error> {
@@ -1780,7 +1781,7 @@ pub(crate) async fn hash_staged_payload_cancellable(
         .await
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn sha256_file(path: &Path) -> Result<(u64, String), Error> {
     let mut file = fs::File::open(path)?;
     sha256_open_file(&mut file, None)
@@ -1888,8 +1889,8 @@ fn opened_file_change_stamp(file: &fs::File) -> Result<i128, Error> {
         return Ok(i128::from(file.metadata()?.last_write_time()));
     }
     #[allow(unreachable_code)]
-    Err(Error::Conflict(
-        "post-rename marker timestamps are unsupported on this platform".into(),
+    Err(crate::platform_support::unsupported_plural(
+        "post-rename marker timestamps",
     ))
 }
 /// Stable identity for any already-opened object. This intentionally exposes no path and
@@ -1956,7 +1957,7 @@ fn open_windows_child(
     };
     use windows_sys::{
         Wdk::{
-            Foundation::{IO_STATUS_BLOCK, OBJECT_ATTRIBUTES},
+            Foundation::OBJECT_ATTRIBUTES,
             Storage::FileSystem::{NtCreateFile, FILE_OPEN},
         },
         Win32::{
@@ -1964,6 +1965,7 @@ fn open_windows_child(
             Storage::FileSystem::{
                 FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
             },
+            System::IO::IO_STATUS_BLOCK,
         },
     };
     const OBJ_CASE_INSENSITIVE: u32 = 0x40;
@@ -1979,7 +1981,7 @@ fn open_windows_child(
         MaximumLength: (wide.len() * 2) as u16,
         Buffer: wide.as_mut_ptr(),
     };
-    let mut attributes = OBJECT_ATTRIBUTES {
+    let attributes = OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: dir.as_raw_handle() as _,
         ObjectName: &mut unicode,
@@ -2000,7 +2002,7 @@ fn open_windows_child(
         NtCreateFile(
             &mut handle,
             desired,
-            &mut attributes,
+            &attributes,
             &mut status,
             null_mut(),
             0,
@@ -2030,7 +2032,7 @@ fn open_windows_child(
     Ok(file)
 }
 
-#[cfg_attr(not(windows), allow(dead_code))] // the only production caller is the Windows resolver; the test runs everywhere
+#[cfg(any(windows, test))]
 fn allows_delete_sharing_for_operation(operation: PathOperation, is_final_leaf: bool) -> bool {
     !is_final_leaf
         || !matches!(
@@ -2299,7 +2301,7 @@ pub(crate) fn workspace_sidecar_leaf(leaf: &OsStr) -> Result<OsString, Error> {
 }
 
 impl PathAuthority {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn persistent_snapshot_for_test(&self) -> Vec<(String, (u64, u64), bool)> {
         let mut snapshot = self
             .persistent
@@ -2332,7 +2334,9 @@ impl PathAuthority {
         #[cfg(not(unix))]
         {
             let _ = (id, operation);
-            Err(Error::Conflict(UNSUPPORTED_DIRECTORY_ENUMERATION.into()))
+            Err(crate::platform_support::unsupported(
+                UNSUPPORTED_DIRECTORY_ENUMERATION,
+            ))
         }
     }
 
@@ -2345,6 +2349,7 @@ impl PathAuthority {
         path: &Path,
         display_name: impl Into<String>,
     ) -> Result<FileWorkspaceDescriptor, Error> {
+        crate::platform_support::off_unix_refusal("PGN export destinations", cfg!(unix))?;
         let extension_is_pgn = path
             .extension()
             .and_then(OsStr::to_str)
@@ -3390,17 +3395,23 @@ impl PathAuthority {
         &mut self,
         resource: &EngineResourceHandle,
     ) -> Result<EngineResourceLease, Error> {
+        if resource.kind == EngineResourceHandleKind::Directory {
+            crate::platform_support::off_unix_refusal("engine directory resources", cfg!(unix))?;
+        }
         let mut resolved =
             self.resolve(resource.path_ref(), PathOperation::EngineResourceRead, &[])?;
         match resource.kind {
             EngineResourceHandleKind::File => {
+                #[cfg(unix)]
                 let file = resolved
+                    .take_file()
+                    .ok_or_else(|| Error::InvalidInput("engine resource must be a file".into()))?;
+                #[cfg(windows)]
+                let _file = resolved
                     .take_file()
                     .ok_or_else(|| Error::InvalidInput("engine resource must be a file".into()))?;
                 Ok(EngineResourceLease {
                     #[cfg(unix)]
-                    file,
-                    #[cfg(windows)]
                     file,
                     #[cfg(windows)]
                     target: resolved.take_target().ok_or_else(|| {
@@ -3418,11 +3429,7 @@ impl PathAuthority {
                 }
                 #[cfg(windows)]
                 {
-                    let file = resolved.take_file().ok_or_else(|| {
-                        Error::InvalidInput("engine resource must be a directory".into())
-                    })?;
                     Ok(EngineResourceLease {
-                        file,
                         target: resolved.take_target().ok_or_else(|| {
                             Error::Conflict("engine resource target is unavailable".into())
                         })?,
@@ -3556,7 +3563,12 @@ impl PathAuthority {
             return Err(Error::InvalidInput("invalid engine operation".into()));
         }
         let mut resolved = self.resolve(engine.path_ref(), operation, &[])?;
+        #[cfg(unix)]
         let file = resolved
+            .take_file()
+            .ok_or_else(|| Error::InvalidInput("engine capability is not a file".into()))?;
+        #[cfg(windows)]
+        let _file = resolved
             .take_file()
             .ok_or_else(|| Error::InvalidInput("engine capability is not a file".into()))?;
         let verified_path = self.workspace_entry_path(
@@ -3568,6 +3580,7 @@ impl PathAuthority {
             .ok_or_else(|| Error::InvalidInput("engine executable has no parent directory".into()))?
             .to_path_buf();
         Ok(EngineExecutable {
+            #[cfg(unix)]
             file,
             working_directory,
             resource_leases: Vec::new(),
@@ -3781,6 +3794,8 @@ impl PathAuthority {
         resolved: &ResolvedPath,
         expected_identity: VerifiedIdentity,
     ) -> Result<DatabaseHandle, Error> {
+        #[cfg(not(unix))]
+        let _ = resolved;
         #[cfg(unix)]
         if resolved.parent().is_none() || resolved.leaf().is_none() {
             return Err(Error::InvalidInput(
@@ -3861,9 +3876,9 @@ impl PathAuthority {
         #[cfg(not(unix))]
         {
             let _ = root;
-            return Err(Error::Conflict(
-                "descriptor-relative database creation is unsupported on this platform".into(),
-            ));
+            Err(crate::platform_support::unsupported(
+                "descriptor-relative database creation",
+            ))
         }
         #[cfg(unix)]
         {
@@ -3981,6 +3996,17 @@ impl PathAuthority {
             .insert(handle.path_ref().id.clone());
         Ok(DatabaseFileTarget::assemble(
             parent, leaf, expected, canonical,
+        ))
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn database_file_target(
+        &mut self,
+        _handle: &DatabaseHandle,
+        _operation: PathOperation,
+    ) -> Result<DatabaseFileTarget, Error> {
+        Err(crate::platform_support::unsupported(
+            "database file targets",
         ))
     }
 
@@ -4563,6 +4589,7 @@ impl PathAuthority {
 
     /// Persists an opaque child handle for an entry observed through a retained directory
     /// descriptor. The supplied identity is the one captured during enumeration.
+    #[cfg(unix)]
     pub(crate) fn register_workspace_child_observed(
         &mut self,
         workspace: &FileWorkspaceHandle,
@@ -4607,6 +4634,7 @@ impl PathAuthority {
         )
     }
 
+    #[cfg(unix)]
     fn persist_workspace_child(
         &mut self,
         root_entry: Entry,
@@ -5240,7 +5268,7 @@ impl PathAuthority {
             refresh_entry(entry);
         }
     }
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn save(&mut self) -> Result<CommitDurability, Error> {
         self.commit_registry(
             self.persistent.clone(),
@@ -7153,7 +7181,10 @@ mod tests {
     #[test]
     fn database_file_target_production_surface_is_private_and_canonically_bound() {
         let source = include_str!("mod.rs");
-        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let production = source
+            .split("#[cfg(unix)]\n#[cfg(test)]\nmod tests")
+            .next()
+            .unwrap();
         let target = production
             .split("pub(crate) struct DatabaseFileTarget {")
             .nth(1)
@@ -7183,11 +7214,19 @@ mod tests {
             .unwrap();
         assert!(first_statement.starts_with("if !is_database_file_operation(operation)"));
 
-        for source in [
-            include_str!("../../db/mod.rs"),
-            include_str!("../../db/search.rs"),
+        for (source, marker) in [
+            (
+                include_str!("../../db/mod.rs"),
+                "#[cfg(all(test, unix))]\nmod tests",
+            ),
+            (
+                include_str!("../../db/search.rs"),
+                "#[cfg(all(test, unix))]\nmod tests",
+            ),
         ] {
-            let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+            let Some((production, _tests)) = source.split_once(marker) else {
+                panic!("missing test-module marker {marker:?}");
+            };
             assert!(!production.contains("DatabaseFileTarget {"));
             assert!(!production.contains("assemble("));
         }

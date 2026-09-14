@@ -1,7 +1,7 @@
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -12,10 +12,18 @@ use rkyv::{Archive, Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    db::DatabaseIdentity,
-    error::{DurabilityStage, Error},
-    infra::fs::{atomic_replace_at, remove_optional_regular_at, AtomicFileOutcome},
+    error::Error,
+    infra::fs::{atomic_replace_at, AtomicFileOutcome},
 };
+
+#[cfg(unix)]
+use crate::db::DatabaseIdentity;
+#[cfg(any(test, unix))]
+use crate::error::DurabilityStage;
+#[cfg(unix)]
+use crate::infra::fs::remove_optional_regular_at;
+#[cfg(unix)]
+use std::io::Read;
 
 // Only the test-only helpers below still replace an index by pathname; production
 // writes go through the descriptor-relative `atomic_replace_at`.
@@ -25,12 +33,15 @@ use crate::infra::fs::atomic_replace;
 const MAGIC: &[u8; 4] = b"ECSI";
 const VERSION: u32 = 8;
 const ARCHIVE_ALIGNMENT: usize = 16;
+#[cfg(any(test, unix))]
 const HEADER_SIZE: usize = 32;
+#[cfg(any(test, unix))]
 const CHUNK_HEADER_SIZE: usize = 16;
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 pub(crate) const CHUNK_ENTRY_LIMIT: usize = 4_096;
 pub(crate) const CHUNK_PAYLOAD_TARGET_BYTES: usize = 4 * 1024 * 1024;
 
+#[cfg(any(test, unix))]
 #[derive(Debug, Clone, Copy)]
 struct ArchiveHeader {
     source_len: usize,
@@ -42,6 +53,7 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
+#[cfg(any(test, unix))]
 fn read_u64(bytes: &[u8], offset: usize, name: &str) -> io::Result<u64> {
     let end = offset
         .checked_add(8)
@@ -56,6 +68,7 @@ fn read_u64(bytes: &[u8], offset: usize, name: &str) -> io::Result<u64> {
     ))
 }
 
+#[cfg(any(test, unix))]
 fn checked_usize(value: u64, name: &str) -> io::Result<usize> {
     usize::try_from(value).map_err(|_| invalid_data(format!("{name} exceeds platform limits")))
 }
@@ -67,6 +80,7 @@ fn align_up(offset: usize) -> io::Result<usize> {
         .ok_or_else(|| invalid_data("archive offset overflow"))
 }
 
+#[cfg(any(test, unix))]
 fn verify_header(header: &[u8]) -> io::Result<ArchiveHeader> {
     if header.len() < HEADER_SIZE {
         return Err(io::Error::new(
@@ -557,6 +571,7 @@ pub struct MmapSearchIndex {
     /// individual method call, never stored with a fabricated lifetime.
     mmap: Arc<Mmap>,
     entry_count: usize,
+    #[cfg(any(test, unix))]
     source: IndexSource,
     chunks: Arc<[ChunkMetadata]>,
 }
@@ -576,10 +591,12 @@ impl MmapSearchIndex {
         Self::open_file(File::open(path)?)
     }
 
+    #[cfg(any(test, unix))]
     pub(crate) fn open_file(file: File) -> io::Result<Self> {
         Self::open_file_inner(file, None)
     }
 
+    #[cfg(unix)]
     pub(crate) fn open_file_cancellable(
         file: File,
         cancellation: &CancellationToken,
@@ -593,6 +610,7 @@ impl MmapSearchIndex {
         })
     }
 
+    #[cfg(any(test, unix))]
     fn open_file_inner(file: File, cancellation: Option<&CancellationToken>) -> io::Result<Self> {
         let check = || {
             if cancellation.is_some_and(CancellationToken::is_cancelled) {
@@ -745,6 +763,7 @@ impl MmapSearchIndex {
         self.entry_count
     }
 
+    #[cfg(any(test, unix))]
     pub fn source(&self) -> &IndexSource {
         &self.source
     }
@@ -862,7 +881,7 @@ pub(crate) fn legacy_sidecar_leaf(database_leaf: &OsStr) -> OsString {
 /// still replace that pathname. In that case provenance on every later load
 /// forces regeneration, while this bounded filesystem race remains visible
 /// rather than being misrepresented as atomic deletion.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub fn promote_legacy_index_sidecar(db_path: &Path) -> Result<Option<PathBuf>, Error> {
     let database = db_path.canonicalize()?;
     let metadata = database.metadata()?;
@@ -985,7 +1004,9 @@ fn legacy_file_identity_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infra::fs::{open_verified_parent, set_test_atomic_file_injector};
+    #[cfg(unix)]
+    use crate::infra::fs::open_verified_parent;
+    use crate::infra::fs::set_test_atomic_file_injector;
     use tempfile::tempdir;
 
     #[test]
@@ -1522,6 +1543,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn legacy_sidecar_is_atomically_promoted_without_overwriting_a_collision() {
         let dir = tempdir().unwrap();
@@ -1653,6 +1675,7 @@ mod tests {
         assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
     }
 
+    #[cfg(unix)]
     #[test]
     fn same_stem_legacy_sidecar_is_not_promoted_for_another_database_object() {
         let dir = tempdir().unwrap();
@@ -1672,6 +1695,7 @@ mod tests {
         assert!(!get_index_path(&sqlite).exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn promote_skips_a_legacy_directory_and_unreadable_bytes() {
         let dir = tempdir().unwrap();
@@ -1687,6 +1711,7 @@ mod tests {
         assert!(!get_index_path(&database).exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn unprovenanced_legacy_sidecar_is_left_for_regeneration() {
         let dir = tempdir().unwrap();
