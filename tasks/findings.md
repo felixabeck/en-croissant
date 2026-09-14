@@ -8565,3 +8565,17 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Open question:** should every acquisition door (dialog grant, legacy migration, PGN creation) canonicalise the parent once at acquisition through the existing `canonical_binding` so the stored pathname is symlink-free, or should the no-follow walk start from a canonicalised ancestor at use time — and which of the two keeps the ancestor-swap guarantee the no-follow walk exists for (`nofollow_rejects_ancestor_and_final_parent_symlinks_and_temp_collision_retries`)?
 * **Related:** `f-20260830-06` (parent port), `f-20260905-10` (ancestor-symlink window in app-data bootstrap — a different door), `f-20260912-11` (canonical pathname carried by `DatabaseFileTarget`).
 * **Found by:** Claude Code orchestrator source trace of CI run 34862122222, 2026-09-14, during the macOS runtime build run. Reproducible on Linux with a symlinked ancestor; not yet reproduced by a test.
+
+---
+
+## 2026-09-14 — filed through the inbox spool
+
+### A spawned engine whose publication is aborted is terminated by an untracked task that shutdown does not await
+
+* **ID:** f-20260914-34 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs` `impl Drop for PendingActorGuard` (around line 1351): when the guard still holds an actor, it moves it into `tokio::spawn(async move { actor.terminate().await … })` and returns. Reached when `spawn_registered` has spawned the child but publication is aborted before registration (admission cancelled by tab close, retirement or shutdown, or an initialization error).
+* **Defect:** the termination and reap of that child run in a detached task with no owner, no join handle and no registration the shutdown path walks. Tab shutdown and application exit terminate only registered actors; if the runtime is torn down before the detached task runs, the child is neither terminated nor reaped, and its termination error surfaces only as a log line. This contradicts `.claude/rules/async-resource-invariants.md` ("Leave a spawned process … whose removal depends on the happy path" is a DO NOT) and the engine-lifecycle rule that a canceled late actor is reaped.
+* **Why it matters:** engine children outliving the application is the incident class of issue #723 (`e5422566`) and `f-20260830-51`; this is the remaining unowned path. The macOS engine-launch plan (`tasks/plans/2026-09-14-macos-engine-launch-and-removed-dir.md`, round 4, R4-04) relies on this reap for its cancellation guarantee.
+* **Open question:** should aborted-publication termination be owned by the supervisor (a pending-termination set that tab shutdown and `RunEvent::ExitRequested` await with the existing bounded deadlines), or be performed inline by the caller of `spawn_registered` on its error path before returning, and how is the `Drop` backstop then reduced to a logged invariant violation?
+* **Related:** `f-20260830-51` (app exit terminates nothing deterministically — handled), `f-20260830-53` (detached stderr reader — handled), `f-20260914-31`.
+* **Found by:** Codex `review-engine-protocol` plan lens (round 4, confidence 91) during the macOS engine-launch build run, 2026-09-14; source verified by the orchestrator. Not reproduced by a test.
