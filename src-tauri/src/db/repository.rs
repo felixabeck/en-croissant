@@ -1157,7 +1157,7 @@ static NEXT_TEST_HOOK_GENERATION: std::sync::atomic::AtomicU64 =
 
 #[cfg(test)]
 fn test_hook_scope_matches(hooks: &TestHooks, path: &Path) -> bool {
-    let normalized_path = normalize_test_hook_scope(path);
+    let normalized_path = normalize_test_hook_path(path);
     hooks
         .scope
         .as_deref()
@@ -1165,7 +1165,7 @@ fn test_hook_scope_matches(hooks: &TestHooks, path: &Path) -> bool {
 }
 
 #[cfg(test)]
-fn normalize_test_hook_scope(scope: &Path) -> PathBuf {
+fn normalize_test_hook_path(scope: &Path) -> PathBuf {
     if scope.is_dir() {
         return scope.canonicalize().unwrap_or_else(|_| scope.to_path_buf());
     }
@@ -1196,7 +1196,7 @@ pub(crate) fn configure_test_hooks(
     let serial = TEST_HOOK_SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let scope = normalize_test_hook_scope(scope.as_ref());
+    let scope = normalize_test_hook_path(scope.as_ref());
     let generation = NEXT_TEST_HOOK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut guard = TestHooksGuard {
         previous: None,
