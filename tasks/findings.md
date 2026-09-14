@@ -8244,3 +8244,13 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Fix direction:** scope hook dispatch to the configuring test, e.g. thread-local hooks like `infra::fs`'s `TEST_ATOMIC_FILE_INJECTOR`, or an owner token checked on dispatch, where worker threads need it. Make the serial lock poison-tolerant (`into_inner`) so one failure cannot cascade.
 * **Why it matters:** `backend-test` is a push gate; a nondeterministic red on 15 tests blocks unrelated pushes and trains reruns.
 * **Found by:** Claude Code orchestrator, `f-20260905-05` build run, phase-1 proof, 2026-09-14.
+
+* **Handled 2026-09-14 (Claude Code, found and fixed in the `f-20260905-05` build run, executor Codex):** the red `backend-coverage` gate made this blocking for that push. Repository test hooks are now scoped. `configure_test_hooks(scope, ..)` normalises the scope like `DatabaseFileTarget::for_test_path`. `run_test_hook(hook, path)` normalises the dispatched path the same way and fires, or counts, only on a match; the path is threaded through `bump_revision_in_transaction`. Each configuration carries a generation, so a callback still running on a worker cannot be written back into a later test's hooks. Take, install and configure happen under one mutex hold, with the restoring guard created first. Both hook mutexes recover from poisoning. Regression tests cover:
+  * an unrelated database's open;
+  * a symlinked scope, and a raw-alias bump;
+  * stale write-back on both dispatch paths;
+  * a panic mid-configuration;
+  * dispatch after poisoning.
+
+  Each went red against its defect. Commits `370fe35d`, `ea642c5d` and `98e254ac`; three consecutive full `cargo test` runs green (1094 passed).
+<!-- ledger-meta {"command":"annotate","effect_lines":8,"effect_sha256":"9cfa69751492a28b1ebbbdbf20003507a7df166dd92df3d0490d79995fd4e1c7","input_sha256":"5e9bda95953206d33111fbcec148a38e3721d3561be679a5787171dcce86b992","kind":"mutation-receipt","operation":"ed6068d60b15d1de67c854d53cf1deaac88f8a9177b8178cdcb34a7a46470ac1","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-01"],"target":"f-20260914-01","v":1} -->
