@@ -3134,8 +3134,10 @@ mod workspace_directory_enumeration_tests {
     use super::*;
     use crate::infra::path_authority::{
         set_capability_child_pre_open_hook, set_capability_directory_post_entries_hook,
-        set_workspace_metadata_pre_open_hook, PathAuthority, SystemClock,
+        set_workspace_metadata_post_open_hook, set_workspace_metadata_pre_open_hook, PathAuthority,
+        SystemClock,
     };
+    use std::os::unix::fs::FileExt;
     use std::os::unix::fs::MetadataExt;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tempfile::TempDir;
@@ -3399,7 +3401,24 @@ mod workspace_directory_enumeration_tests {
         fs::create_dir(&sub).unwrap();
         let pgn = sub.join("a.pgn");
         fs::write(&pgn, b"*").unwrap();
-        fs::write(sub.join("a.info"), br#"{"type":"game","tags":["trusted"]}"#).unwrap();
+        let trusted_sidecar = br#"{"type":"game","tags":["trusted"]}"#.to_vec();
+        fs::write(sub.join("a.info"), &trusted_sidecar).unwrap();
+        let opened_sidecar = Arc::new(Mutex::new(None::<Vec<u8>>));
+        let opened_sidecar_for_hook = Arc::clone(&opened_sidecar);
+        set_workspace_metadata_post_open_hook(Some(Box::new(move |file| {
+            let length = file.metadata().unwrap().len() as usize;
+            let mut bytes = vec![0; length];
+            let mut offset = 0;
+            while offset < bytes.len() {
+                let read = file.read_at(&mut bytes[offset..], offset as u64).unwrap();
+                if read == 0 {
+                    bytes.truncate(offset);
+                    break;
+                }
+                offset += read;
+            }
+            *opened_sidecar_for_hook.lock().unwrap() = Some(bytes);
+        })));
         let replacement_ran = Arc::new(AtomicBool::new(false));
         let replacement_ran_for_hook = Arc::clone(&replacement_ran);
         let sub_for_hook = sub.clone();
@@ -3417,7 +3436,17 @@ mod workspace_directory_enumeration_tests {
         })));
         let result = collect_tree_entries(&authority, &workspace, &CancellationToken::new());
         set_workspace_metadata_pre_open_hook(None);
+        set_workspace_metadata_post_open_hook(None);
         assert!(replacement_ran.load(Ordering::SeqCst));
+        let recorded_sidecar = opened_sidecar.lock().unwrap().clone();
+        assert!(
+            recorded_sidecar.is_some(),
+            "metadata sidecar post-open hook did not fire"
+        );
+        assert_eq!(
+            recorded_sidecar.as_deref(),
+            Some(trusted_sidecar.as_slice())
+        );
         match result {
             Ok((entries, _)) => {
                 let metadata = entries
