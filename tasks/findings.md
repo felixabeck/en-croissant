@@ -1435,7 +1435,7 @@ everything else to its existing arm with "Zip must contain a .pgn, .epd, or .bin
 
 ### The crate cannot compile for the configured macOS *or* Windows release targets
 
-* **ID:** f-20260830-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** felix-decision
+* **ID:** f-20260830-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 * **Where:** two independent breaks.
   * **macOS:** `src-tauri/src/infra/fs.rs:53` (`#[cfg(unix)] mod unix`), using `rustix::fs::RawDir`
     at `fs.rs:347` (`sync_tree`) and `fs.rs:408` (`remove_tree_at`).
@@ -1532,6 +1532,7 @@ instrument.
 
 * **Additional porting evidence (2026-09-06, Codex):** The final Luna correctness lens over 9330ef47..5b51fa6a found that resolve_windows returns no file/target for an empty-component directory resource (current path_authority.rs:5703), so engine_resource refuses that directory lease. Root confirmed the branch and preserves the existing non-Linux support decision/verification boundary. Include it in the platform work rather than add Windows-only behavior unobservable by current gates. Follow-up: tasks/handoffs/2026-09-06-non-linux-directory-resources.md. Existing blocked status is unchanged.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"64f8e99421b3de0a8b9c4d9d56f421eea05e5f2f5ea5a25929e6c1de36550a7e","input_sha256":"e1c864499215d24e3e4798a9555119f8bf3ff4a5575abac29ccb06e611122862","kind":"mutation-receipt","operation":"2d1e5ba5907a84e07356b5a567e4d186f46a4d902c8c993d5018e73118c17247","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-06"],"target":"f-20260830-06","v":1} -->
+* **Decision made:** (a) Keep and port all three platforms: Linux, macOS, and Windows. Felix chose this in chat on 2026-09-12: "this is not only for me but this should work for users worldwide" and "I think all three is the best way"; he then confirmed the choice and asked that it be recorded for automatic drain pickup. This resolves the product-support question in favor of all three platforms, superseding the earlier agent recommendation to declare Linux-only. Implement and verify the required platform ports and CI, including the Windows directory-resource issue recorded in tasks/handoffs/2026-09-06-non-linux-directory-resources.md. This is the intended support scope, not a claim that the currently broken targets already work. Keep the finding open for implementation; no further product decision about retaining these platforms is needed. Preserve this choice as product precedent when implementing the finding.
 
 ### Deleting a workspace directory leaves an authority record for every descendant behind
 
