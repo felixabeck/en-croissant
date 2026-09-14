@@ -8593,3 +8593,17 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Open question:** should the probe's termination be owned by a drop guard held across the `spawn_registered` → `terminate_exact` span (which then needs an owned asynchronous termination, the same design question as `f-20260914-34`), or should configuration probing run inside a supervisor-owned operation whose cancellation terminates the probe?
 * **Related:** `f-20260914-34` (unowned termination of an aborted publication), `f-20260901-14` (config probe moved under the supervisor — handled).
 * **Found by:** Codex `review-engine-protocol` plan lens (round 5, confidence 93) during the macOS engine-launch build run, 2026-09-14; source verified by the orchestrator. Not reproduced by a test.
+
+---
+
+## 2026-09-14 — filed through the inbox spool
+
+### Path-authority entries already persisted under a symlinked-ancestor spelling stay unusable for descriptor-relative operations
+
+* **ID:** f-20260914-36 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority/mod.rs` registry load (`PathAuthority::open_with_clock`, the `for mut stored in registry.entries` loop near `:2458-2520`) and `refresh_entry` (`:5844`), which deserialise and validate a stored `NativePath` verbatim with the ancestor-following `validate_target`; the refusing use-time walks are `infra/fs.rs` `open_verified_parent` / `open_verified_directory` (via `workspace_mutation_target`, atomic replacement).
+* **Defect:** the fix for `f-20260914-33` binds newly acquired pathnames to their canonical parent, but an entry persisted before that fix (a PGN workspace, PGN file, download destination or engine resource selected through `/tmp`, `/var` or a symlinked home) keeps its symlinked-ancestor spelling. `refresh_entry` still marks it `Available`, while every descriptor-relative mutation refuses it with `Io(NotADirectory)`; re-selecting the same object creates a second entry beside it because the reuse lookups compare spellings lexically.
+* **Why it matters:** the user sees an available workspace that cannot be written; Windows/macOS/Linux porting (`f-20260830-06`, Felix 2026-09-12) makes symlinked system directories an ordinary selection.
+* **Open question:** rebind such entries at registry load (in memory, persisted at the next commit) only when the canonical binding proves the same identity through the parent descriptor — and if so, how is a rebinding failure surfaced (mark unavailable, keep available and log, or report through the availability API) — or migrate them once with a registry schema bump, or leave them and tell the user to re-select?
+* **Related:** `f-20260914-33` (the acquisition-time fix; plan-review record `tasks/handoffs/2026-09-14-f-20260914-33-review.md`, issue R1-06, load before review), `d-20260912-04`, `d-20260912-05`.
+* **Found by:** Codex plan lenses review-minimalism, review-tauri-security, review-root-cause, review-tests and review-error-handling (round 1, confidence 89-99) during the `f-20260914-33` plan review, 2026-09-14: load-time rebinding was proposed and cut as outside that finding's mandate.
