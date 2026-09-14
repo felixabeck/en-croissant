@@ -1673,6 +1673,8 @@ struct SoundServerLifecycle {
 }
 
 impl SoundServerLifecycle {
+    // The sound route runs only on Linux (d-20260906-04); elsewhere nothing constructs it.
+    #[cfg(any(target_os = "linux", test))]
     fn new(
         shutdown: Option<tokio::sync::oneshot::Sender<()>>,
         join: Option<tauri::async_runtime::JoinHandle<()>>,

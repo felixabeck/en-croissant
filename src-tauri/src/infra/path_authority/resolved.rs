@@ -115,8 +115,11 @@ impl ResolvedPath {
                 .as_ref()
                 .ok_or_else(|| Error::InvalidInput("engine target is a directory".into()))?;
             let mode = file.metadata()?.mode() | 0o111;
-            fchmod(file, Mode::from_raw_mode(mode))
-                .map_err(|error| Error::from(std::io::Error::from(error)))
+            fchmod(
+                file,
+                Mode::from_raw_mode(crate::infra::fs::raw_mode_from(mode)?),
+            )
+            .map_err(|error| Error::from(std::io::Error::from(error)))
         }
         #[cfg(not(unix))]
         {
@@ -476,7 +479,7 @@ impl ResolvedPath {
             let stat = rfs::statat(parent, leaf, AtFlags::SYMLINK_NOFOLLOW)
                 .map_err(|error| Error::from(std::io::Error::from(error)))?;
             if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-                || (stat.st_dev, stat.st_ino) != expected
+                || crate::infra::fs::raw_stat_identity(&stat) != expected
             {
                 return Err(Error::Conflict(
                     "puzzle database changed before deletion".into(),
@@ -670,10 +673,8 @@ pub(super) fn resolve_unix(
             ));
         }
         if last && ty == FileType::RegularFile {
-            let leaf_identity = super::Identity {
-                a: stat.st_dev,
-                b: stat.st_ino,
-            };
+            let (a, b) = crate::infra::fs::raw_stat_identity(&stat);
+            let leaf_identity = super::Identity { a, b };
             if !root_is_dir && leaf_identity != *expected_root {
                 return Err(Error::Conflict(
                     "file authority changed concurrently".into(),
@@ -713,10 +714,8 @@ pub(super) fn resolve_unix(
                 .map_err(|e| Error::from(std::io::Error::from(e)))?,
             );
             let opened_identity = file_identity(&handle.metadata()?);
-            let stat_identity = super::Identity {
-                a: stat.st_dev,
-                b: stat.st_ino,
-            };
+            let (a, b) = crate::infra::fs::raw_stat_identity(&stat);
+            let stat_identity = super::Identity { a, b };
             if opened_identity != stat_identity {
                 return Err(Error::Conflict("directory changed while resolving".into()));
             }

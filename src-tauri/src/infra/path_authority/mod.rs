@@ -1518,7 +1518,8 @@ impl AppOwnedDefaultRoot {
         }
     }
 
-    fn private_mode(self) -> Option<u32> {
+    #[cfg(unix)]
+    fn private_mode(self) -> Option<rustix::fs::RawMode> {
         match self {
             Self::Credentials => Some(0o700),
             Self::Databases | Self::Engines | Self::EngineImages | Self::Puzzles => None,
@@ -1673,6 +1674,7 @@ const BUNDLED_SOUND_COLLECTIONS: [(&str, bool); 8] = [
     ("woodland", true),
 ];
 
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn open_app_owned_resource_dir(
     resource_dir: &ResourceDir,
 ) -> Result<AuthorizedDir, Error> {

@@ -973,7 +973,7 @@ fn legacy_file_identity_at(
             "legacy search sidecar changed during promotion".into(),
         ));
     }
-    let identity = (stat.st_dev, stat.st_ino);
+    let identity = crate::infra::fs::raw_stat_identity(&stat);
     if identity != expected {
         return Err(Error::Conflict(
             "legacy search sidecar changed during promotion".into(),

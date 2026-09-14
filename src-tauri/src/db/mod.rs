@@ -2403,7 +2403,7 @@ fn unlink_database_files(
     let stat = rfs::statat(target.parent(), target.leaf(), AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|error| Error::Io(Box::new(error.into())))?;
     if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-        || (stat.st_dev, stat.st_ino) != target.identity()
+        || crate::infra::fs::raw_stat_identity(&stat) != target.identity()
     {
         return Err(Error::Conflict("database changed before deletion".into()));
     }

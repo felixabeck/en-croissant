@@ -57,33 +57,20 @@ pub(crate) fn read_directory_entries_at(
     cancellation: &CancellationToken,
     keep: &mut dyn FnMut(&OsStr) -> bool,
 ) -> Result<Vec<DirectoryEntry>, Error> {
-    use rustix::fs::{self as rfs, AtFlags, Dir, FileType, Mode, OFlags};
+    use rustix::fs::{self as rfs, AtFlags, FileType};
     use std::os::unix::ffi::OsStringExt;
 
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
-    let opened = rfs::openat(
-        dir,
-        ".",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|error| Error::Io(Box::new(error.into())))?;
-    let mut entries = Dir::new(opened).map_err(|error| Error::Io(Box::new(error.into())))?;
     let mut result = Vec::new();
-    while let Some(entry) = entries.read() {
-        let entry = entry.map_err(|error| Error::Io(Box::new(error.into())))?;
-        let bytes = entry.file_name().to_bytes();
-        if bytes == b"." || bytes == b".." {
-            continue;
-        }
+    unix::walk_directory(dir, |bytes, _ino| {
         let name = OsString::from_vec(bytes.to_vec());
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
         if !keep(&name) {
-            continue;
+            return Ok(());
         }
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
@@ -104,10 +91,11 @@ pub(crate) fn read_directory_entries_at(
         result.push(DirectoryEntry {
             name,
             kind,
-            identity: (stat.st_dev, stat.st_ino),
+            identity: unix::raw_stat_identity(&stat),
             modified_seconds: stat.st_mtime,
         });
-    }
+        Ok(())
+    })?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancellation);
     }
@@ -334,17 +322,18 @@ pub(crate) fn inject_atomic_file(point: AtomicFileFaultPoint) -> Result<(), Erro
 mod unix {
     use super::*;
     use rustix::{
-        fs::{self, AtFlags, FileType, Mode, OFlags, RenameFlags},
+        fs::{self, AtFlags, Dir, FileType, Mode, OFlags, RenameFlags},
         io::Errno,
     };
+    #[cfg(target_os = "linux")]
+    use std::io::Read;
+    #[cfg(any(test, target_os = "linux"))]
+    use std::os::unix::io::AsRawFd;
     use std::{
         ffi::OsStr,
-        io::Read,
-        mem::MaybeUninit,
         os::unix::{
             ffi::{OsStrExt, OsStringExt},
             fs::MetadataExt,
-            io::AsRawFd,
         },
         path::Component,
     };
@@ -354,12 +343,15 @@ mod unix {
         pub ctime_nanos: i128,
     }
 
-    /// Directory levels `remove_tree_at` will descend before refusing.
+    /// Directory levels `remove_tree_at` and `sync_tree` will descend before refusing.
+    ///
+    /// Each open level holds two descriptors (the level's `File` and the one `Dir` owns), so one
+    /// walk keeps at most `2 * MAX_REMOVE_TREE_DEPTH + 1` descriptors. Directory buffers are
+    /// heap-owned by `Dir`: rustix caps its Linux `getdents` buffer growth, and macOS libc grows
+    /// its `DIR` buffer once to 8 KiB, except on union mounts, which the walker refuses.
     pub(crate) const MAX_REMOVE_TREE_DEPTH: usize = 64;
-    /// `RawDir` buffer per open level. The worst-case stack contribution is this value times
-    /// `MAX_REMOVE_TREE_DEPTH` (512 KiB), against a Tokio worker's 2 MiB stack.
-    const REMOVE_TREE_DIR_BUFFER_BYTES: usize = 8192;
     /// Maximum accepted size of one `/proc/self/fdinfo` record.
+    #[cfg(target_os = "linux")]
     const MAX_FDINFO_RECORD_BYTES: u64 = 4096;
 
     #[cfg(test)]
@@ -368,6 +360,7 @@ mod unix {
         BeforeTopOpen,
         BeforeChildStat,
         BeforeChildOpen,
+        BeforeDirOpen,
         AfterEntryRemoved,
         ParentSync,
     }
@@ -379,6 +372,7 @@ mod unix {
         }
 
         /// Supplies raw `statx` attribute-mask and attribute bits to the production decision.
+        #[cfg(target_os = "linux")]
         fn statx_mount_attributes(
             &self,
             _: std::os::fd::RawFd,
@@ -387,7 +381,23 @@ mod unix {
         }
 
         /// Supplies a raw fdinfo record to the production bounded parser.
+        #[cfg(target_os = "linux")]
         fn fdinfo_record(&self, _: std::os::fd::RawFd) -> Option<std::io::Result<Vec<u8>>> {
+            None
+        }
+
+        /// Supplies the raw mount-point buffer used by non-Linux mount evidence.
+        #[cfg(not(target_os = "linux"))]
+        fn mount_path_buffer(
+            &self,
+            _: std::os::fd::RawFd,
+        ) -> Option<std::io::Result<Vec<libc::c_char>>> {
+            None
+        }
+
+        /// Supplies the filesystem flags used by the non-Linux directory-walk bound.
+        #[cfg(not(target_os = "linux"))]
+        fn mount_flags(&self, _: std::os::fd::RawFd) -> Option<std::io::Result<u32>> {
             None
         }
     }
@@ -453,6 +463,225 @@ mod unix {
             .map_or(Ok(None), |injector| injector.inject(point).map_err(io))
     }
 
+    trait RawDevice {
+        fn canonical(self) -> u64;
+    }
+
+    impl RawDevice for i32 {
+        fn canonical(self) -> u64 {
+            self as u64
+        }
+    }
+
+    impl RawDevice for u64 {
+        fn canonical(self) -> u64 {
+            self
+        }
+    }
+
+    fn identity_from_parts<D: RawDevice>(dev: D, ino: u64) -> (u64, u64) {
+        (dev.canonical(), ino)
+    }
+
+    pub(crate) fn raw_stat_identity(stat: &rustix::fs::Stat) -> (u64, u64) {
+        identity_from_parts(stat.st_dev, stat.st_ino)
+    }
+
+    pub(crate) fn raw_mode_from(mode: u32) -> Result<rustix::fs::RawMode, Error> {
+        rustix::fs::RawMode::try_from(mode)
+            .map_err(|_| Error::InvalidInput("file mode does not fit this platform".into()))
+    }
+
+    #[cfg(any(test, not(target_os = "linux")))]
+    pub(super) fn mount_path_from_buffer(buffer: &[libc::c_char]) -> Result<Vec<u8>, Error> {
+        let end = buffer.iter().position(|byte| *byte == 0).ok_or_else(|| {
+            Error::InvalidInput("directory cleanup cannot establish mount path".into())
+        })?;
+        if end == 0 {
+            return Err(Error::InvalidInput(
+                "directory cleanup cannot establish mount path".into(),
+            ));
+        }
+        Ok(buffer[..end].iter().map(|byte| *byte as u8).collect())
+    }
+
+    #[cfg(any(test, not(target_os = "linux")))]
+    pub(super) fn mount_crossing_from(
+        parent: Result<Vec<u8>, Error>,
+        child: Result<Vec<u8>, Error>,
+    ) -> Result<bool, Error> {
+        let parent = parent?;
+        let child = child?;
+        Ok(parent != child)
+    }
+
+    #[cfg(any(test, not(target_os = "linux")))]
+    pub(super) fn union_mount_refusal(f_flags: u32, union_flag: u32) -> Result<(), Error> {
+        if f_flags & union_flag != 0 {
+            return Err(Error::InvalidInput(
+                "directory walks refuse union mounts".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn mount_path_evidence(file: &File) -> Result<Vec<u8>, Error> {
+        #[cfg(test)]
+        if let Some(buffer) = current_test_removal_injector()
+            .and_then(|injector| injector.mount_path_buffer(file.as_raw_fd()))
+        {
+            return mount_path_from_buffer(&buffer.map_err(io)?);
+        }
+        let stat = fs::fstatfs(file).map_err(|error| io(error.into()))?;
+        mount_path_from_buffer(&stat.f_mntonname)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn mount_flags(file: &File) -> Result<u32, Error> {
+        #[cfg(test)]
+        if let Some(flags) = current_test_removal_injector()
+            .and_then(|injector| injector.mount_flags(file.as_raw_fd()))
+        {
+            return flags.map_err(io);
+        }
+        let stat = fs::fstatfs(file).map_err(|error| io(error.into()))?;
+        Ok(stat.f_flags)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn refuse_union_mount(file: &File) -> Result<(), Error> {
+        union_mount_refusal(mount_flags(file)?, libc::MNT_UNION as u32)
+    }
+
+    pub(super) fn walk_directory(
+        dir: &File,
+        mut visit: impl FnMut(&[u8], u64) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        #[cfg(not(target_os = "linux"))]
+        refuse_union_mount(dir)?;
+        #[cfg(test)]
+        inject_removal(RemovalFaultPoint::BeforeDirOpen)?;
+        let opened = fs::openat(
+            dir,
+            ".",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| io(error.into()))?;
+        let mut entries = Dir::new(opened).map_err(|error| io(error.into()))?;
+        while let Some(entry) = entries.read() {
+            let entry = entry.map_err(|error| io(error.into()))?;
+            let bytes = entry.file_name().to_bytes();
+            if bytes != b"." && bytes != b".." {
+                visit(bytes, entry.ino())?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod identity_tests {
+        use super::{identity_from_parts, raw_mode_from, raw_stat_identity};
+        use crate::infra::blocking::source_scan::{braced_body, normalise, Literals};
+
+        #[cfg(target_os = "macos")]
+        use crate::error::Error;
+        use rustix::fs::fstat;
+
+        #[test]
+        fn identity_from_parts_canonicalises_signed_and_unsigned_devices() {
+            assert_eq!(identity_from_parts(-1_i32, 7), (u64::MAX, 7));
+            assert_eq!(identity_from_parts(i32::MIN, 7), (i32::MIN as u64, 7));
+            assert_eq!(identity_from_parts(u64::MAX, 7), (u64::MAX, 7));
+        }
+
+        #[test]
+        fn raw_stat_identity_matches_file_metadata() {
+            use std::os::unix::fs::MetadataExt;
+            let temp = tempfile::tempdir().expect("tempdir");
+            let path = temp.path().join("file");
+            std::fs::write(&path, b"file").expect("file");
+            let file = std::fs::File::open(&path).expect("open file");
+            let stat = fstat(&file).expect("fstat");
+            let metadata = file.metadata().expect("metadata");
+            assert_eq!(raw_stat_identity(&stat), (metadata.dev(), metadata.ino()));
+        }
+
+        #[test]
+        fn raw_stat_identity_body_is_the_plain_call() {
+            let source = include_str!("fs.rs");
+            let body = braced_body(source, "pub(crate) fn raw_stat_identity(");
+            let compact: String = normalise(&source[body], Literals::Blank)
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect();
+            let expected = ["{identity_from_parts(stat.st", "_dev,stat.st_ino)}"].concat();
+            assert_eq!(compact, expected);
+        }
+
+        #[test]
+        fn raw_mode_from_accepts_platform_mode() {
+            assert_eq!(raw_mode_from(0o100_644).expect("mode"), 0o100_644);
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn macos_port_raw_mode_rejects_wide_mode() {
+            for mode in [0x1_0000, u32::MAX] {
+                assert!(matches!(raw_mode_from(mode), Err(Error::InvalidInput(_))));
+            }
+        }
+
+        #[test]
+        fn raw_device_is_read_once() {
+            fn rust_sources(path: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+                for entry in std::fs::read_dir(path).expect("source directory") {
+                    let entry = entry.expect("source entry");
+                    let path = entry.path();
+                    if path.is_dir() {
+                        rust_sources(&path, files);
+                    } else if path.extension().and_then(std::ffi::OsStr::to_str) == Some("rs") {
+                        files.push(path);
+                    }
+                }
+            }
+
+            let source_root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+            let mut files = Vec::new();
+            rust_sources(&source_root, &mut files);
+            let needle = ["st", "_dev"].concat();
+            let mut occurrences = Vec::new();
+            for file in files {
+                let source = std::fs::read_to_string(&file).expect("Rust source");
+                let normalised = normalise(&source, Literals::Blank);
+                for (offset, _) in normalised.match_indices(&needle) {
+                    let line = source[..offset]
+                        .bytes()
+                        .filter(|byte| *byte == b'\n')
+                        .count()
+                        + 1;
+                    occurrences.push(format!("{}:{line}", file.display()));
+                }
+            }
+            assert_eq!(
+                occurrences.len(),
+                1,
+                "raw device occurrences: {occurrences:?}"
+            );
+            let fs_source = include_str!("fs.rs");
+            let body = braced_body(fs_source, "pub(crate) fn raw_stat_identity(");
+            let offset = normalise(fs_source, Literals::Blank)
+                .find(&needle)
+                .expect("raw device occurrence");
+            assert!(
+                body.contains(&offset),
+                "raw device access is outside helper"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     pub(super) fn parse_fdinfo_mount_id(record: &[u8]) -> Result<u64, Error> {
         if record.len() > MAX_FDINFO_RECORD_BYTES as usize {
             return Err(Error::InvalidInput(
@@ -505,6 +734,7 @@ mod unix {
         })
     }
 
+    #[cfg(target_os = "linux")]
     pub(super) fn read_fdinfo_mount_id(file: &File) -> Result<u64, Error> {
         #[cfg(test)]
         if let Some(record) = current_test_removal_injector()
@@ -522,6 +752,7 @@ mod unix {
         parse_fdinfo_mount_id(&record)
     }
 
+    #[cfg(target_os = "linux")]
     fn statx_mount_attributes(file: &File) -> Result<(u64, u64), Error> {
         #[cfg(test)]
         if let Some(attributes) = current_test_removal_injector()
@@ -544,6 +775,7 @@ mod unix {
         .map_err(|error| io(error.into()))
     }
 
+    #[cfg(target_os = "linux")]
     fn mount_crossing(parent: &File, child: &File) -> Result<bool, Error> {
         let mount_root = fs::StatxAttributes::MOUNT_ROOT.bits();
         match statx_mount_attributes(child) {
@@ -555,6 +787,11 @@ mod unix {
             Err(error) => return Err(error),
         }
         Ok(read_fdinfo_mount_id(parent)? != read_fdinfo_mount_id(child)?)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn mount_crossing(parent: &File, child: &File) -> Result<bool, Error> {
+        mount_crossing_from(mount_path_evidence(parent), mount_path_evidence(child))
     }
 
     fn name(path: &Path) -> Result<&OsStr, Error> {
@@ -618,7 +855,7 @@ mod unix {
         FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile
     }
     fn same_inode(left: &fs::Stat, right: &fs::Stat) -> bool {
-        left.st_dev == right.st_dev && left.st_ino == right.st_ino
+        raw_stat_identity(left) == raw_stat_identity(right)
     }
     fn temp_name() -> std::ffi::OsString {
         #[cfg(test)]
@@ -842,7 +1079,7 @@ mod unix {
                 let (installed_identity, installed_ctime_nanos) = fs::fstat(&temp)
                     .map(|stat| {
                         (
-                            (stat.st_dev, stat.st_ino),
+                            raw_stat_identity(&stat),
                             i128::from(stat.st_ctime) * 1_000_000_000
                                 + i128::from(stat.st_ctime_nsec),
                         )
@@ -891,15 +1128,8 @@ mod unix {
         }
     }
 
-    fn sync_tree(dir: &File) -> Result<(), Error> {
-        let mut buffer = [MaybeUninit::uninit(); 8192];
-        let mut entries = fs::RawDir::new(dir, &mut buffer);
-        while let Some(entry) = entries.next() {
-            let entry = entry.map_err(|e| io(e.into()))?;
-            let bytes = entry.file_name().to_bytes();
-            if bytes == b"." || bytes == b".." {
-                continue;
-            }
+    fn sync_tree(dir: &File, depth: usize) -> Result<(), Error> {
+        walk_directory(dir, |bytes, _ino| {
             let name = std::ffi::OsString::from_vec(bytes.to_vec());
             let stat =
                 fs::statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW).map_err(|e| io(e.into()))?;
@@ -916,6 +1146,11 @@ mod unix {
                 .sync_all()
                 .map_err(io)?,
                 FileType::Directory => {
+                    if depth.saturating_add(1) >= MAX_REMOVE_TREE_DEPTH {
+                        return Err(Error::ResourceLimit(format!(
+                            "directory install exceeded {MAX_REMOVE_TREE_DEPTH} levels"
+                        )));
+                    }
                     let child = File::from(
                         fs::openat(
                             dir,
@@ -925,7 +1160,7 @@ mod unix {
                         )
                         .map_err(|e| io(e.into()))?,
                     );
-                    sync_tree(&child)?;
+                    sync_tree(&child, depth + 1)?;
                 }
                 _ => {
                     return Err(Error::InvalidInput(
@@ -933,7 +1168,8 @@ mod unix {
                     ))
                 }
             }
-        }
+            Ok(())
+        })?;
         dir.sync_all().map_err(io)
     }
 
@@ -956,7 +1192,7 @@ mod unix {
         // `st_dev`, and "refuses to cross a mount" is the true reason, not "changed concurrently".
         match FileType::from_raw_mode(stat.st_mode) {
             FileType::RegularFile => {
-                if (stat.st_dev, stat.st_ino) != expected {
+                if raw_stat_identity(&stat) != expected {
                     return Err(Error::Conflict(
                         "directory cleanup entry changed concurrently".into(),
                     ));
@@ -996,7 +1232,8 @@ mod unix {
                 // `MOUNT_ROOT` requires Linux 5.8. When the bit is unavailable, or `statx`
                 // returns `NOSYS`, descriptor mount IDs provide the required evidence. Failure to
                 // read or strictly parse either bounded fdinfo record refuses destructive descent.
-                let is_mount = if opened.st_dev != compared_parent_dev {
+                let opened_identity = raw_stat_identity(&opened);
+                let is_mount = if opened_identity.0 != compared_parent_dev {
                     true
                 } else {
                     match mount_crossing(parent, &child) {
@@ -1013,29 +1250,23 @@ mod unix {
                         "directory cleanup refuses to cross a mount".into(),
                     ));
                 }
-                if (stat.st_dev, stat.st_ino) != expected {
+                if raw_stat_identity(&stat) != expected {
                     return Err(Error::Conflict(
                         "directory cleanup entry changed concurrently".into(),
                     ));
                 }
-                let mut buffer = [MaybeUninit::uninit(); REMOVE_TREE_DIR_BUFFER_BYTES];
-                let mut entries = fs::RawDir::new(&child, &mut buffer);
-                while let Some(entry) = entries.next() {
-                    let entry = entry.map_err(|e| io(e.into()))?;
-                    let bytes = entry.file_name().to_bytes();
-                    if bytes != b"." && bytes != b".." {
-                        #[cfg(test)]
-                        inject_removal(RemovalFaultPoint::BeforeChildStat)?;
-                        remove_tree_at(
-                            &child,
-                            OsStr::from_bytes(bytes),
-                            (opened.st_dev, entry.ino()),
-                            depth + 1,
-                            opened.st_dev,
-                            removed_entries,
-                        )?;
-                    }
-                }
+                walk_directory(&child, |bytes, ino| {
+                    #[cfg(test)]
+                    inject_removal(RemovalFaultPoint::BeforeChildStat)?;
+                    remove_tree_at(
+                        &child,
+                        OsStr::from_bytes(bytes),
+                        (opened_identity.0, ino),
+                        depth + 1,
+                        opened_identity.0,
+                        removed_entries,
+                    )
+                })?;
                 // The descriptor pins the traversed directory, but this walk has no
                 // inode-conditional unlink. The parent-relative terminal lookup remains
                 // type-confined by `REMOVEDIR`; it can still name a concurrently substituted
@@ -1084,7 +1315,7 @@ mod unix {
             )
             .map_err(|e| io(e.into()))?,
         );
-        sync_tree(&source_dir)?;
+        sync_tree(&source_dir, 0)?;
         let original = match target_stat(&parent_dir, target_name)? {
             Some(stat) if FileType::from_raw_mode(stat.st_mode) == FileType::Directory => {
                 Some(stat)
@@ -1184,7 +1415,7 @@ mod unix {
             if let Err(error) = remove_tree_at(
                 &parent_dir,
                 source_name,
-                (original.st_dev, original.st_ino),
+                raw_stat_identity(original),
                 0,
                 parent_meta.dev(),
                 &mut removed_entries,
@@ -1208,13 +1439,13 @@ mod unix {
     }
 }
 
-#[cfg(unix)]
-pub(crate) use unix::MAX_REMOVE_TREE_DEPTH;
 #[cfg(all(test, unix))]
 pub(crate) use unix::{
     current_test_removal_injector, set_test_removal_injector, RemovalFault, RemovalFaultPoint,
     RemovalInjector,
 };
+#[cfg(unix)]
+pub(crate) use unix::{raw_mode_from, raw_stat_identity, MAX_REMOVE_TREE_DEPTH};
 
 pub fn atomic_replace_with_precommit<F, P>(
     target: &Path,
@@ -1275,7 +1506,7 @@ pub(crate) fn open_verified_parent(
     directory: bool,
 ) -> Result<(File, std::ffi::OsString), Error> {
     use rustix::fs::{self as rfs, AtFlags, FileType, Mode, OFlags};
-    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+    use std::os::unix::ffi::OsStrExt;
     let parent = unix::open_parent(path)?;
     let leaf = path
         .file_name()
@@ -1285,8 +1516,7 @@ pub(crate) fn open_verified_parent(
     let stat = rfs::statat(&parent, &leaf, AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|error| Error::Io(Box::new(error.into())))?;
     let kind = FileType::from_raw_mode(stat.st_mode);
-    if stat.st_dev != expected.0
-        || stat.st_ino != expected.1
+    if unix::raw_stat_identity(&stat) != expected
         || (directory && kind != FileType::Directory)
         || (!directory && kind != FileType::RegularFile)
     {
@@ -1305,8 +1535,10 @@ pub(crate) fn open_verified_parent(
             )
             .map_err(|error| Error::Io(Box::new(error.into())))?,
         );
-        let meta = opened.metadata()?;
-        if (meta.dev(), meta.ino()) != expected {
+        if unix::raw_stat_identity(
+            &rfs::fstat(&opened).map_err(|error| Error::Io(Box::new(error.into())))?,
+        ) != expected
+        {
             return Err(Error::Conflict(
                 "workspace directory changed concurrently".into(),
             ));
@@ -1345,7 +1577,7 @@ pub(crate) fn assert_entry_identity(
     let stat = rfs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|error| Error::Io(Box::new(error.into())))?;
     let kind = FileType::from_raw_mode(stat.st_mode);
-    if (stat.st_dev, stat.st_ino) != expected
+    if unix::raw_stat_identity(&stat) != expected
         || (dir && kind != FileType::Directory)
         || (!dir && kind != FileType::RegularFile)
     {
@@ -1371,7 +1603,7 @@ pub(crate) fn entry_identity_at(
             "workspace entry has an unexpected file type".into(),
         ));
     }
-    Ok((stat.st_dev, stat.st_ino))
+    Ok(unix::raw_stat_identity(&stat))
 }
 
 #[cfg(unix)]
@@ -1461,7 +1693,7 @@ pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u
                 "created database must be a regular file".into(),
             ));
         }
-        Ok((created, (stat.st_dev, stat.st_ino)))
+        Ok((created, unix::raw_stat_identity(&stat)))
     }
     #[cfg(not(unix))]
     {
@@ -1553,7 +1785,7 @@ pub(crate) fn remove_entry_at(
             name,
             expected,
             0,
-            parent_stat.st_dev,
+            unix::raw_stat_identity(&parent_stat).0,
             &mut removed_entries,
         ) {
             return if removed_entries == 0 {
@@ -1731,7 +1963,7 @@ pub fn atomic_install_dir(temp_path: &Path, target_path: &Path) -> Result<(), Er
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infra::blocking::source_scan::body_at_indent;
+    use crate::infra::blocking::source_scan::{body_at_indent, braced_body, normalise, Literals};
     use std::{
         io::{Read, Write},
         path::PathBuf,
@@ -1827,6 +2059,7 @@ mod tests {
     #[test]
     fn read_directory_entries_at_classifies_without_following() {
         use std::os::unix::fs::symlink;
+        use std::os::unix::net::UnixListener;
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().join("directory");
         std::fs::create_dir(&directory).unwrap();
@@ -1835,14 +2068,7 @@ mod tests {
         symlink(&directory, root.path().join("outside-link")).unwrap();
         symlink(&regular, root.path().join("file-link")).unwrap();
         let handle = File::open(root.path()).unwrap();
-        rustix::fs::mknodat(
-            &handle,
-            "fifo",
-            rustix::fs::FileType::Fifo,
-            rustix::fs::Mode::from_raw_mode(0o600),
-            rustix::fs::makedev(0, 0),
-        )
-        .unwrap();
+        let _socket = UnixListener::bind(root.path().join("socket")).unwrap();
         let entries =
             read_directory_entries_at(&handle, &CancellationToken::new(), &mut |_| true).unwrap();
         assert_eq!(entries.len(), 5);
@@ -2020,6 +2246,19 @@ mod tests {
             capability.trim(),
             "pub(crate) struct CapabilityDirectory {\n    directory: fs::File,"
         );
+    }
+
+    #[test]
+    fn mark_engine_executable_uses_checked_raw_mode() {
+        let source = include_str!("path_authority/resolved.rs");
+        let body = braced_body(source, "pub(crate) fn mark_engine_executable(");
+        let compact: String = normalise(&source[body.clone()], Literals::Blank)
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        assert!(compact.contains("Mode::from_raw_mode(crate::infra::fs::raw_mode_from(mode)?)"));
+        assert_eq!(compact.matches("from_raw_mode(").count(), 1);
+        assert!(!normalise(&source[body], Literals::Blank).contains(" as "));
     }
 
     #[test]
@@ -2489,7 +2728,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[derive(Clone, Copy)]
     enum InjectedStatx {
         Nosys,
@@ -2498,21 +2737,21 @@ mod tests {
         Error(i32),
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     enum InjectedFdinfo {
         Real,
         Unreadable,
         ByDescriptor(Mutex<std::collections::HashMap<std::os::fd::RawFd, Vec<u8>>>),
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     struct MountEvidenceInjector {
         statx: InjectedStatx,
         fdinfo: InjectedFdinfo,
         child_fdinfo_record: Option<Vec<u8>>,
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     impl MountEvidenceInjector {
         fn real_fdinfo(statx: InjectedStatx) -> Self {
             Self {
@@ -2546,7 +2785,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     impl unix::RemovalInjector for MountEvidenceInjector {
         fn statx_mount_attributes(
             &self,
@@ -2597,6 +2836,298 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    struct MacMountInjector {
+        paths: Mutex<Vec<std::io::Result<Vec<libc::c_char>>>>,
+        flags: Mutex<Vec<std::io::Result<u32>>>,
+        events: Mutex<Vec<&'static str>>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl MacMountInjector {
+        fn new(
+            paths: Vec<std::io::Result<Vec<libc::c_char>>>,
+            flags: Vec<std::io::Result<u32>>,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                paths: Mutex::new(paths),
+                flags: Mutex::new(flags),
+                events: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn path(bytes: &[u8]) -> std::io::Result<Vec<libc::c_char>> {
+            Ok(bytes.iter().map(|byte| *byte as libc::c_char).collect())
+        }
+
+        fn events(&self) -> Vec<&'static str> {
+            self.events.lock().expect("mount events").clone()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl unix::RemovalInjector for MacMountInjector {
+        fn inject(&self, point: unix::RemovalFaultPoint) -> std::io::Result<Option<u64>> {
+            if point == unix::RemovalFaultPoint::BeforeDirOpen {
+                self.events
+                    .lock()
+                    .expect("mount events")
+                    .push("before_dir_open");
+            }
+            Ok(None)
+        }
+
+        fn mount_path_buffer(
+            &self,
+            _: std::os::fd::RawFd,
+        ) -> Option<std::io::Result<Vec<libc::c_char>>> {
+            self.events.lock().expect("mount events").push("mount_path");
+            let mut paths = self.paths.lock().expect("mount paths");
+            (!paths.is_empty()).then(|| paths.remove(0))
+        }
+
+        fn mount_flags(&self, _: std::os::fd::RawFd) -> Option<std::io::Result<u32>> {
+            self.events
+                .lock()
+                .expect("mount events")
+                .push("mount_flags");
+            let mut flags = self.flags.lock().expect("mount flags");
+            (!flags.is_empty()).then(|| flags.remove(0))
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mount_path_buffer_parser_accepts_only_terminated_non_empty_paths() {
+        let path = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| *byte as libc::c_char)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            unix::mount_path_from_buffer(&path(b"/private/tmp\0trailing"))
+                .expect("terminated mount path"),
+            b"/private/tmp"
+        );
+        for buffer in [path(b"/private/tmp"), path(b"\0")].iter() {
+            assert!(matches!(
+                unix::mount_path_from_buffer(buffer),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mount_decision_compares_paths_and_propagates_either_error() {
+        assert!(!unix::mount_crossing_from(Ok(b"/tmp".to_vec()), Ok(b"/tmp".to_vec())).unwrap());
+        assert!(unix::mount_crossing_from(Ok(b"/".to_vec()), Ok(b"/dev".to_vec())).unwrap());
+        let parent_error = Error::InvalidInput("parent evidence".into());
+        assert!(matches!(
+            unix::mount_crossing_from(Err(parent_error), Ok(Vec::new())),
+            Err(Error::InvalidInput(message)) if message == "parent evidence"
+        ));
+        let child_error = Error::InvalidInput("child evidence".into());
+        assert!(matches!(
+            unix::mount_crossing_from(Ok(Vec::new()), Err(child_error)),
+            Err(Error::InvalidInput(message)) if message == "child evidence"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn union_mount_refusal_rejects_the_union_flag() {
+        assert!(unix::union_mount_refusal(0, 0x20).is_ok());
+        for flags in [0x20, 0x21] {
+            assert!(unix::union_mount_refusal(flags, 0x20).is_err());
+        }
+        assert!(matches!(
+            unix::union_mount_refusal(0x20, 0x20),
+            Err(Error::InvalidInput(message)) if message == "directory walks refuse union mounts"
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_port_mnt_union_is_the_expected_flag() {
+        assert_eq!(libc::MNT_UNION as u32, 0x20);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_port_real_tempdir_walk_passes_union_check() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("file"), b"file").expect("file");
+        let directory = File::open(temp.path()).expect("directory");
+        unix::walk_directory(&directory, |_, _| Ok(())).expect("ordinary tempdir walk");
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_mount_fixture() -> (tempfile::TempDir, PathBuf, (u64, u64), File) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let victim = root.join("victim");
+        std::fs::create_dir_all(victim.join("child")).expect("tree");
+        std::fs::write(victim.join("child/file"), b"file").expect("file");
+        let parent = File::open(&root).expect("parent");
+        (temp, victim.clone(), inode(&victim), parent)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn assert_macos_mount_error(
+        paths: Vec<std::io::Result<Vec<libc::c_char>>>,
+    ) -> (Error, tempfile::TempDir, PathBuf, Arc<MacMountInjector>) {
+        let (temp, victim, expected, parent) = macos_mount_fixture();
+        let injector = MacMountInjector::new(paths, Vec::new());
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Arc::clone(&injector) as Arc<dyn unix::RemovalInjector + Send + Sync>,
+        )
+        .expect_err("injected mount evidence must refuse deletion");
+        (error, temp, victim, injector)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_port_mount_crossing_refuses_different_mount_paths() {
+        let paths = vec![
+            MacMountInjector::path(b"/parent\0"),
+            MacMountInjector::path(b"/child\0"),
+        ];
+        let (error, _temp, victim, _injector) = assert_macos_mount_error(paths);
+        assert!(matches!(
+            error,
+            Error::InvalidInput(message) if message == "directory cleanup refuses to cross a mount"
+        ));
+        assert!(victim.join("child/file").is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_port_mount_crossing_rejects_unterminated_path() {
+        let paths = vec![
+            MacMountInjector::path(b"/parent\0"),
+            MacMountInjector::path(b"/child"),
+        ];
+        let (error, _temp, victim, _injector) = assert_macos_mount_error(paths);
+        assert!(matches!(error, Error::InvalidInput(_)));
+        assert!(victim.join("child/file").is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_port_mount_crossing_rejects_empty_paths() {
+        let paths = vec![MacMountInjector::path(b"\0"), MacMountInjector::path(b"\0")];
+        let (error, _temp, victim, _injector) = assert_macos_mount_error(paths);
+        assert!(matches!(error, Error::InvalidInput(_)));
+        assert!(victim.join("child/file").is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_port_mount_crossing_propagates_child_error() {
+        let paths = vec![
+            MacMountInjector::path(b"/parent\0"),
+            Err(std::io::Error::from_raw_os_error(libc::EIO)),
+        ];
+        let (error, _temp, victim, _injector) = assert_macos_mount_error(paths);
+        assert!(matches!(error, Error::Io(io_error) if io_error.raw_os_error() == Some(libc::EIO)));
+        assert!(victim.join("child/file").is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_port_mount_crossing_propagates_parent_error() {
+        let paths = vec![
+            Err(std::io::Error::from_raw_os_error(libc::EIO)),
+            MacMountInjector::path(b"/child\0"),
+        ];
+        let (error, _temp, victim, _injector) = assert_macos_mount_error(paths);
+        assert!(matches!(error, Error::Io(io_error) if io_error.raw_os_error() == Some(libc::EIO)));
+        assert!(victim.join("child/file").is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_port_union_mount_refusal_happens_before_child_dir_open() {
+        let (temp, victim, expected, parent) = macos_mount_fixture();
+        let injector = MacMountInjector::new(Vec::new(), vec![Ok(0), Ok(libc::MNT_UNION as u32)]);
+        let error = remove_entry_with_injector(
+            &parent,
+            OsStr::new("victim"),
+            expected,
+            Arc::clone(&injector) as Arc<dyn unix::RemovalInjector + Send + Sync>,
+        )
+        .expect_err("union mount must refuse deletion");
+        assert!(matches!(
+            error,
+            Error::InvalidInput(message) if message == "directory walks refuse union mounts"
+        ));
+        assert!(victim.join("child/file").is_file());
+        let events = injector.events();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == "mount_flags")
+                .count(),
+            2
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == "before_dir_open")
+                .count(),
+            1
+        );
+        assert_eq!(events.last(), Some(&"mount_flags"));
+        drop(temp);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_port_union_mount_refusal_happens_before_install_dir_open() {
+        let (temp, source, target) = directory_fixture();
+        let nested = source.join("nested");
+        std::fs::create_dir(&nested).expect("nested");
+        std::fs::write(nested.join("file"), b"file").expect("file");
+        let injector = MacMountInjector::new(Vec::new(), vec![Ok(0), Ok(libc::MNT_UNION as u32)]);
+        let _guard = unix::scoped_test_removal_injector(
+            Arc::clone(&injector) as Arc<dyn unix::RemovalInjector + Send + Sync>
+        );
+        let error =
+            atomic_install_dir(&source, &target).expect_err("union mount must refuse install");
+        assert!(matches!(
+            error,
+            Error::InvalidInput(message) if message == "directory walks refuse union mounts"
+        ));
+        assert!(source.join("new").is_file());
+        assert!(nested.join("file").is_file());
+        assert_eq!(
+            std::fs::read(target.join("old")).expect("old target"),
+            b"old"
+        );
+        assert_eq!(
+            injector.events(),
+            vec!["mount_flags", "before_dir_open", "mount_flags"]
+        );
+        drop(temp);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_port_real_mount_evidence_distinguishes_devfs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = File::open(temp.path()).expect("tempdir descriptor");
+        let second = File::open(temp.path()).expect("second descriptor");
+        assert!(!unix::mount_crossing(&first, &second).expect("same mount evidence"));
+        let root = File::open("/").expect("root descriptor");
+        let dev = File::open("/dev").expect("devfs descriptor");
+        assert!(unix::mount_crossing(&root, &dev).expect("devfs mount evidence"));
+    }
+
     #[cfg(unix)]
     fn removal_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, (u64, u64), File) {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -2619,7 +3150,7 @@ mod tests {
         remove_entry_at(parent, name, expected, true)
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn fdinfo_mount_id_parser_accepts_one_decimal_field() {
         assert_eq!(
@@ -2629,7 +3160,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn fdinfo_mount_id_parser_rejects_missing_duplicate_malformed_and_boundedness_failures() {
         let oversized = vec![b'x'; 4097];
@@ -2647,7 +3178,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn fdinfo_mount_id_reads_real_descriptor_records() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -2659,7 +3190,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn recursive_delete_succeeds_with_same_mount_fdinfo_for_both_statx_unavailable_forms() {
         for statx in [InjectedStatx::Nosys, InjectedStatx::MissingMountRootMask] {
@@ -2677,7 +3208,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn recursive_delete_propagates_non_nosys_statx_errors_before_deletion() {
         let (_temp, _root, victim, expected, parent) = removal_fixture();
@@ -2698,7 +3229,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn recursive_delete_refuses_unreadable_fdinfo_before_deletion() {
         let (_temp, _root, victim, expected, parent) = removal_fixture();
@@ -2719,7 +3250,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn recursive_delete_refuses_invalid_fdinfo_before_deletion() {
         use std::os::fd::AsRawFd;
@@ -2745,7 +3276,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn recursive_delete_refuses_unequal_mount_ids_even_when_devices_match() {
         use std::os::fd::AsRawFd;
@@ -2771,7 +3302,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn recursive_delete_accepts_equal_descriptor_addressed_mount_ids() {
         use std::os::fd::AsRawFd;
@@ -2793,7 +3324,7 @@ mod tests {
         assert!(!victim.exists());
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn recursive_delete_uses_supported_statx_mount_root_without_fdinfo() {
         let (_temp, _root, victim, expected, parent) = removal_fixture();
@@ -3348,6 +3879,63 @@ mod tests {
         std::fs::create_dir(&target).expect("target");
         std::fs::write(target.join("old"), b"old").expect("old");
         (root, source, target)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_install_refuses_more_than_the_maximum_depth() {
+        let (_root, source, target) = directory_fixture();
+        let mut current = source.clone();
+        for level in 0..MAX_REMOVE_TREE_DEPTH {
+            current = current.join(format!("level-{level}"));
+            std::fs::create_dir(&current).expect("nested directory");
+        }
+        std::fs::write(current.join("boundary"), b"boundary").expect("boundary");
+
+        let error = atomic_install_dir(&source, &target).expect_err("depth must be bounded");
+        assert!(matches!(error, Error::ResourceLimit(_)));
+        assert_eq!(
+            std::fs::read(target.join("old")).expect("old target"),
+            b"old"
+        );
+        assert!(current.join("boundary").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_install_rejects_links_and_special_files_without_following() {
+        use std::os::unix::{fs::symlink, net::UnixListener};
+
+        let (root, source, target) = directory_fixture();
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&outside).expect("outside");
+        std::fs::write(outside.join("sentinel"), b"untouched").expect("sentinel");
+        symlink(&outside, source.join("outside-link")).expect("link");
+        let error = atomic_install_dir(&source, &target).expect_err("link must be rejected");
+        assert!(matches!(
+            error,
+            Error::InvalidInput(message) if message == "directory install rejects links and special files"
+        ));
+        assert_eq!(
+            std::fs::read(target.join("old")).expect("old target"),
+            b"old"
+        );
+        assert_eq!(
+            std::fs::read(outside.join("sentinel")).expect("sentinel"),
+            b"untouched"
+        );
+
+        let (_root, source, target) = directory_fixture();
+        let _socket = UnixListener::bind(source.join("socket")).expect("socket");
+        let error = atomic_install_dir(&source, &target).expect_err("socket must be rejected");
+        assert!(matches!(
+            error,
+            Error::InvalidInput(message) if message == "directory install rejects links and special files"
+        ));
+        assert_eq!(
+            std::fs::read(target.join("old")).expect("old target"),
+            b"old"
+        );
     }
 
     fn run_atomic_file_fault<F>(

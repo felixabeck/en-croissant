@@ -27,6 +27,197 @@ pub struct BlockingGateway {
 /// attribute placement, CRLF) silently change what the other treats as a function body.
 #[cfg(test)]
 pub(crate) mod source_scan {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Literals {
+        Blank,
+        Keep,
+    }
+
+    fn blank(bytes: &mut [u8], start: usize, end: usize) {
+        for byte in &mut bytes[start..end] {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
+        }
+    }
+
+    fn raw_open(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
+        let hash_start = if bytes.get(start) == Some(&b'r') {
+            start + 1
+        } else if bytes.get(start) == Some(&b'b') && bytes.get(start + 1) == Some(&b'r') {
+            start + 2
+        } else {
+            return None;
+        };
+        let mut cursor = hash_start;
+        while bytes.get(cursor) == Some(&b'#') {
+            cursor += 1;
+        }
+        (bytes.get(cursor) == Some(&b'"')).then_some((cursor + 1, cursor - hash_start))
+    }
+
+    fn raw_end(bytes: &[u8], content_start: usize, hashes: usize) -> Option<usize> {
+        let mut cursor = content_start;
+        while cursor < bytes.len() {
+            if bytes[cursor] == b'"'
+                && bytes
+                    .get(cursor + 1..cursor + 1 + hashes)
+                    .is_some_and(|suffix| suffix.iter().all(|byte| *byte == b'#'))
+            {
+                return Some(cursor + 1 + hashes);
+            }
+            cursor += 1;
+        }
+        None
+    }
+
+    fn quoted_end(bytes: &[u8], quote: usize) -> Option<usize> {
+        let mut cursor = quote + 1;
+        while cursor < bytes.len() {
+            match bytes[cursor] {
+                b'\\' => cursor = cursor.saturating_add(2),
+                b'"' => return Some(cursor + 1),
+                b'\n' => return None,
+                _ => cursor += 1,
+            }
+        }
+        None
+    }
+
+    fn char_end(bytes: &[u8], quote: usize) -> Option<usize> {
+        let mut cursor = quote + 1;
+        if bytes.get(cursor) == Some(&b'\\') {
+            cursor += 1;
+            if bytes.get(cursor) == Some(&b'u') && bytes.get(cursor + 1) == Some(&b'{') {
+                cursor += 2;
+                let digits_start = cursor;
+                while bytes.get(cursor).is_some_and(|byte| *byte != b'}') {
+                    cursor += 1;
+                }
+                if cursor == digits_start || bytes.get(cursor) != Some(&b'}') {
+                    return None;
+                }
+            } else if cursor >= bytes.len() {
+                return None;
+            }
+            cursor += 1;
+        } else {
+            let character = std::str::from_utf8(bytes.get(cursor..)?)
+                .ok()?
+                .chars()
+                .next()?;
+            cursor += character.len_utf8();
+        }
+        (bytes.get(cursor) == Some(&b'\'')).then_some(cursor + 1)
+    }
+
+    /// Blanks comments and, when requested, literals without changing byte offsets.
+    pub(crate) fn normalise(text: &str, literals: Literals) -> String {
+        let mut bytes = text.as_bytes().to_vec();
+        let mut cursor = 0;
+        let mut block_depth = 0;
+        while cursor < bytes.len() {
+            if block_depth > 0 {
+                if bytes.get(cursor..cursor + 2) == Some(b"/*") {
+                    blank(&mut bytes, cursor, cursor + 2);
+                    block_depth += 1;
+                    cursor += 2;
+                } else if bytes.get(cursor..cursor + 2) == Some(b"*/") {
+                    blank(&mut bytes, cursor, cursor + 2);
+                    block_depth -= 1;
+                    cursor += 2;
+                } else {
+                    if bytes[cursor] != b'\n' {
+                        bytes[cursor] = b' ';
+                    }
+                    cursor += 1;
+                }
+                continue;
+            }
+
+            if bytes.get(cursor..cursor + 2) == Some(b"//") {
+                let start = cursor;
+                while cursor < bytes.len() && bytes[cursor] != b'\n' {
+                    cursor += 1;
+                }
+                blank(&mut bytes, start, cursor);
+                continue;
+            }
+            if bytes.get(cursor..cursor + 2) == Some(b"/*") {
+                blank(&mut bytes, cursor, cursor + 2);
+                block_depth = 1;
+                cursor += 2;
+                continue;
+            }
+
+            let raw = raw_open(&bytes, cursor);
+            if let Some((content_start, hashes)) = raw {
+                if let Some(end) = raw_end(text.as_bytes(), content_start, hashes) {
+                    if literals == Literals::Blank {
+                        blank(&mut bytes, cursor, end);
+                    }
+                    cursor = end;
+                    continue;
+                }
+            }
+            if bytes[cursor] == b'b' && bytes.get(cursor + 1) == Some(&b'"') {
+                if let Some(end) = quoted_end(text.as_bytes(), cursor + 1) {
+                    if literals == Literals::Blank {
+                        blank(&mut bytes, cursor, end);
+                    }
+                    cursor = end;
+                    continue;
+                }
+            }
+            if bytes[cursor] == b'"' {
+                if let Some(end) = quoted_end(text.as_bytes(), cursor) {
+                    if literals == Literals::Blank {
+                        blank(&mut bytes, cursor, end);
+                    }
+                    cursor = end;
+                    continue;
+                }
+            }
+            if bytes[cursor] == b'\'' {
+                if let Some(end) = char_end(text.as_bytes(), cursor) {
+                    if literals == Literals::Blank {
+                        blank(&mut bytes, cursor, end);
+                    }
+                    cursor = end;
+                    continue;
+                }
+            }
+            cursor += 1;
+        }
+        String::from_utf8(bytes).expect("normalisation replaces only with ASCII bytes")
+    }
+
+    /// Finds the byte range of a braced source body, ignoring delimiters in comments and literals.
+    pub(crate) fn braced_body(source: &str, signature: &str) -> std::ops::Range<usize> {
+        let normalised = normalise(source, Literals::Blank);
+        let signature_start = normalised
+            .find(signature)
+            .unwrap_or_else(|| panic!("signature {signature:?} must exist"));
+        let opening = normalised[signature_start..]
+            .find('{')
+            .map(|offset| signature_start + offset)
+            .unwrap_or_else(|| panic!("signature {signature:?} must have a body"));
+        let mut depth = 0;
+        for (offset, byte) in normalised.as_bytes()[opening..].iter().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return opening..opening + offset + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("signature {signature:?} has an unterminated body")
+    }
+
     /// The source text of `signature`'s body, from its signature line up to the first line at
     /// the same or an outer indentation that opens a new item or closes this one.
     pub(crate) fn body_at_indent<'a>(source: &'a str, signature: &str) -> &'a str {
@@ -76,6 +267,89 @@ pub(crate) mod source_scan {
             || trimmed.starts_with("impl ")
             || trimmed.starts_with("mod ")
             || trimmed == "}"
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{braced_body, normalise, Literals};
+
+        fn assert_body(source: &str) {
+            let range = braced_body(source, "fn body");
+            let opening = source.find('{').expect("opening brace");
+            assert_eq!(range.start, opening);
+            assert_eq!(range.end, source.rfind('}').expect("closing brace") + 1);
+            assert_eq!(&source[range.clone()], &source[opening..range.end]);
+        }
+
+        #[test]
+        fn source_scan_ignores_line_comment_braces() {
+            assert_body("fn body() { // }\n let _ = 1; }");
+        }
+
+        #[test]
+        fn source_scan_ignores_nested_block_comment_braces() {
+            assert_body("fn body() { /* { /* } */ } */ let _ = 1; }");
+        }
+
+        #[test]
+        fn source_scan_ignores_escaped_plain_string_braces() {
+            assert_body(r#"fn body() { let _ = "\"}"; }"#);
+        }
+
+        #[test]
+        fn source_scan_ignores_raw_string_braces() {
+            assert_body(r##"fn body() { let _ = r#"}"#; }"##);
+        }
+
+        #[test]
+        fn source_scan_ignores_byte_string_braces() {
+            assert_body(r##"fn body() { let _ = b"}"; }"##);
+        }
+
+        #[test]
+        fn source_scan_ignores_char_literal_braces() {
+            assert_body("fn body() { let _ = '}'; }");
+        }
+
+        #[test]
+        fn source_scan_ignores_escaped_char_and_following_string_braces() {
+            assert_body(r#"fn body() { let _ = '\''; let _ = "}"; }"#);
+        }
+
+        #[test]
+        fn source_scan_ignores_two_hash_raw_byte_string_braces() {
+            assert_body(r####"fn body() { let _ = br##"x"#}"##; }"####);
+        }
+
+        #[test]
+        fn source_scan_keeps_lifetimes_and_ignores_brace_characters() {
+            assert_body("fn body<'a>() { let _ = '{'; let _: &'a str = \"ok\"; }");
+        }
+
+        #[test]
+        fn source_scan_ignores_multibyte_comment_and_literal_braces() {
+            assert_body("fn body() { // ü }\n let _ = \"ä}\"; let _ = 'é'; }");
+        }
+
+        #[test]
+        fn source_scan_normalise_preserves_offsets_newlines_and_utf8() {
+            let source = "fn body() { // ü }\r\n let _ = \"ä}\"; /* é */\n }";
+            for literals in [Literals::Blank, Literals::Keep] {
+                let normalised = normalise(source, literals);
+                assert_eq!(normalised.len(), source.len());
+                assert_eq!(
+                    normalised.match_indices('\n').collect::<Vec<_>>(),
+                    source.match_indices('\n').collect::<Vec<_>>()
+                );
+                assert!(std::str::from_utf8(normalised.as_bytes()).is_ok());
+            }
+        }
+
+        #[test]
+        #[should_panic(expected = "signature")]
+        fn source_scan_missing_signature_panics() {
+            let _ = braced_body("fn other() {}", "fn body(");
+        }
     }
 }
 
