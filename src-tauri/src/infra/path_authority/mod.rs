@@ -828,6 +828,16 @@ pub(crate) struct EngineResourceLease {
     #[cfg(windows)]
     target: PathBuf,
 }
+
+#[cfg(target_os = "macos")]
+fn descriptor_path(file: &fs::File) -> Result<PathBuf, Error> {
+    use std::os::unix::ffi::OsStrExt;
+
+    rustix::fs::getpath(file)
+        .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
+        .map_err(|error| Error::Io(Box::new(std::io::Error::from(error))))
+}
+
 impl EngineResourceLease {
     #[cfg(target_os = "linux")]
     pub(crate) fn uci_value(&self) -> Result<String, Error> {
@@ -908,11 +918,7 @@ impl EngineResourceLease {
 
     pub(crate) fn test_file(file: fs::File) -> Self {
         #[cfg(target_os = "macos")]
-        use std::os::unix::ffi::OsStrExt;
-        #[cfg(target_os = "macos")]
-        let target = rustix::fs::getpath(&file)
-            .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
-            .unwrap_or_else(|_| PathBuf::new());
+        let target = descriptor_path(&file).unwrap_or_else(|_| PathBuf::new());
         Self {
             file,
             #[cfg(target_os = "macos")]
@@ -926,10 +932,7 @@ impl EngineResourceLease {
 
     #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn test_directory(file: fs::File) -> Self {
-        use std::os::unix::ffi::OsStrExt;
-        let target = rustix::fs::getpath(&file)
-            .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
-            .unwrap_or_default();
+        let target = descriptor_path(&file).unwrap_or_default();
         Self {
             file,
             target: std::sync::OnceLock::from(target),
@@ -946,11 +949,8 @@ impl EngineExecutable {
         resource_leases: Vec<EngineResourceLease>,
     ) -> Self {
         #[cfg(target_os = "macos")]
-        use std::os::unix::ffi::OsStrExt;
-        #[cfg(target_os = "macos")]
-        let command_path = rustix::fs::getpath(&file)
-            .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
-            .unwrap_or_else(|_| working_directory.join("engine"));
+        let command_path =
+            descriptor_path(&file).unwrap_or_else(|_| working_directory.join("engine"));
         Self {
             file,
             working_directory,
@@ -4206,12 +4206,7 @@ impl PathAuthority {
                     .take_file()
                     .ok_or_else(|| Error::InvalidInput("engine resource must be a file".into()))?;
                 #[cfg(target_os = "macos")]
-                let target = {
-                    use std::os::unix::ffi::OsStrExt;
-                    rustix::fs::getpath(&file)
-                        .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
-                        .map_err(|error| Error::Io(Box::new(std::io::Error::from(error))))?
-                };
+                let target = descriptor_path(&file)?;
                 Ok(EngineResourceLease {
                     #[cfg(unix)]
                     file,
@@ -4236,12 +4231,7 @@ impl PathAuthority {
                         Error::InvalidInput("engine resource must be a directory".into())
                     })?;
                     #[cfg(target_os = "macos")]
-                    let target = {
-                        use std::os::unix::ffi::OsStrExt;
-                        rustix::fs::getpath(&file)
-                            .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
-                            .map_err(|error| Error::Io(Box::new(std::io::Error::from(error))))?
-                    };
+                    let target = descriptor_path(&file)?;
                     Ok(EngineResourceLease {
                         file,
                         #[cfg(target_os = "macos")]
@@ -4410,12 +4400,7 @@ impl PathAuthority {
             .ok_or_else(|| Error::InvalidInput("engine executable has no parent directory".into()))?
             .to_path_buf();
         #[cfg(target_os = "macos")]
-        let command_path = {
-            use std::os::unix::ffi::OsStrExt;
-            rustix::fs::getpath(&file)
-                .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
-                .map_err(|error| Error::Io(Box::new(std::io::Error::from(error))))?
-        };
+        let command_path = descriptor_path(&file)?;
         Ok(EngineExecutable {
             #[cfg(unix)]
             file,

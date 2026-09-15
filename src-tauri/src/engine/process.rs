@@ -383,10 +383,15 @@ enum ForceKillAndReap {
     },
 }
 
+enum ReapTimeoutPolicy {
+    EngineTimeout,
+    OperationAndCleanup,
+}
+
 fn map_force_kill_and_reap(
     primary: &Error,
     result: ForceKillAndReap,
-    timeout_without_kill_error: bool,
+    timeout_policy: ReapTimeoutPolicy,
 ) -> Result<(), Error> {
     match result {
         ForceKillAndReap::Reaped => Ok(()),
@@ -414,16 +419,15 @@ fn map_force_kill_and_reap(
         ForceKillAndReap::ReapTimedOut {
             kill_error: None,
             timeout,
-        } if timeout_without_kill_error => Err(Error::EngineTimeout(format!(
-            "waiting for engine reap after force-kill exceeded {timeout:?}"
-        ))),
-        ForceKillAndReap::ReapTimedOut {
-            kill_error: None,
-            timeout,
-        } => Err(Error::OperationAndCleanup {
-            primary: primary.to_string(),
-            cleanup: format!("final reap exceeded {timeout:?}"),
-        }),
+        } => match timeout_policy {
+            ReapTimeoutPolicy::EngineTimeout => Err(Error::EngineTimeout(format!(
+                "waiting for engine reap after force-kill exceeded {timeout:?}"
+            ))),
+            ReapTimeoutPolicy::OperationAndCleanup => Err(Error::OperationAndCleanup {
+                primary: primary.to_string(),
+                cleanup: format!("final reap exceeded {timeout:?}"),
+            }),
+        },
     }
 }
 
@@ -478,7 +482,7 @@ async fn terminate_child<C: ChildControl>(
     match map_force_kill_and_reap(
         &primary,
         force_kill_and_reap(&mut child, kill_reap_timeout).await,
-        true,
+        ReapTimeoutPolicy::EngineTimeout,
     ) {
         Ok(()) => {
             error!("engine graceful shutdown failed but child reaped: {primary}");
@@ -501,7 +505,7 @@ async fn cleanup_spawn_io_failure(
     match map_force_kill_and_reap(
         &primary,
         force_kill_and_reap(&mut cleanup, kill_reap_timeout).await,
-        false,
+        ReapTimeoutPolicy::OperationAndCleanup,
     ) {
         Ok(()) => primary,
         Err(error) => error,

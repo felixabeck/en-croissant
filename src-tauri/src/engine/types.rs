@@ -7,8 +7,6 @@ use crate::{
     infra::path_authority::{EngineResourceHandle, EngineResourceHandleKind},
 };
 
-pub(crate) use super::process::{resolve_launch, resolve_option_leases, verify_option_resources};
-
 /// A stable, exact identity for one interactive engine process.  In
 /// particular, `tab == "a"` and `tab == "ab"` are different identities;
 /// callers must never implement cleanup with prefix matching.
