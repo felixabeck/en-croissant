@@ -1977,6 +1977,7 @@ impl MaterializedFile {
         let cloned = match forced_failure {
             Some(EngineLaunchFailure::CloneExdev) => Err(Errno::XDEV),
             Some(EngineLaunchFailure::CloneEnotsup) => Err(Errno::NOTSUP),
+            Some(EngineLaunchFailure::Copy) => Err(Errno::XDEV),
             _ => rfs::fclonefileat(source, &self.root.instance, &self.leaf, CloneFlags::empty()),
         };
         #[cfg(not(test))]
@@ -10430,10 +10431,11 @@ mod tests {
             let directory =
                 ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
             let mode = fs::metadata(directory.path()).unwrap().permissions().mode() & 0o7777;
-            let expected_mode = if root == AppOwnedDefaultRoot::Credentials {
-                0o700
-            } else {
-                0o755
+            let expected_mode = match root {
+                AppOwnedDefaultRoot::Credentials => 0o700,
+                #[cfg(target_os = "macos")]
+                AppOwnedDefaultRoot::EngineLaunch => 0o700,
+                _ => 0o755,
             };
             assert_eq!(directory.path(), dir.path().join(leaf));
             assert_eq!(mode, expected_mode, "unexpected mode for {root:?}");
@@ -15972,27 +15974,41 @@ mod workspace_directory_enumeration_tests {
         use std::sync::{Arc, Barrier};
         let directory = tempfile::tempdir().unwrap();
         let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
-        let barrier = Arc::new(Barrier::new(3));
+        let start_barrier = Arc::new(Barrier::new(3));
+        let attempted_barrier = Arc::new(Barrier::new(3));
         let results = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut threads = Vec::new();
         for index in 0..2 {
             let root = root.clone();
-            let barrier = barrier.clone();
+            let start_barrier = start_barrier.clone();
+            let attempted_barrier = attempted_barrier.clone();
             let results = results.clone();
             threads.push(std::thread::spawn(move || {
-                barrier.wait();
+                start_barrier.wait();
                 let result = root.reserve_leaves(33, &format!("test:{index}"), "bounded");
-                results.lock().unwrap().push(result.is_ok());
+                let outcome = match &result {
+                    Ok(_) => Ok(()),
+                    Err(Error::ResourceLimit(message)) => Err(message.clone()),
+                    Err(error) => panic!("unexpected reservation failure: {error}"),
+                };
+                results.lock().unwrap().push(outcome);
+                attempted_barrier.wait();
                 drop(result);
             }));
         }
-        barrier.wait();
+        start_barrier.wait();
+        attempted_barrier.wait();
         for thread in threads {
             thread.join().unwrap();
         }
         let results = results.lock().unwrap().clone();
-        assert_eq!(results.iter().filter(|success| **success).count(), 1);
-        assert_eq!(results.iter().filter(|success| !**success).count(), 1);
+        assert_eq!(results.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+        let failures: Vec<_> = results
+            .iter()
+            .filter_map(|outcome| outcome.as_ref().err())
+            .collect();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0], "engine launch leaf limit reached");
         assert_eq!(root.registry_snapshot_for_test().0, 0);
     }
 
