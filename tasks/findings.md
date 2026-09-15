@@ -8623,3 +8623,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Why it matters:** this is the incident class `03826167` ("results from unloaded engines were still consumed", cited in `.claude/rules/async-resource-invariants.md` and `engine-lifecycle.md`), which requires a payload to be used only while its engine is loaded.
 * **Related:** `f-20260831-09` and `f-20260903-01` (same root, handled: results bound to tab, position and process).
 * **Found by:** Codex `review-engine-protocol` plan lens (round 8, confidence 92) during the macOS engine-launch build run, 2026-09-14; source read by the orchestrator, not reproduced by a test.
+
+---
+
+## 2026-09-15 — filed through the inbox spool
+
+### A trailing line from a finished search can be consumed as the next search's result
+
+* **ID:** f-20260915-01 · **Status:** open · **Area:** engine-uci · **Root:** result-not-bound-to-its-process · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs`, `service_search_read` (the request-id check before reading, around line 3032) and the actor state transition to idle on the first `bestmove`.
+* **Defect:** the request id is checked only before a read starts. After search G1's first `bestmove` sets the runtime idle, output that G1 still emits — a delayed `info` line or a duplicate `bestmove` — stays in the pipe untagged. If the caller then sends `position`/`go` for search G2, that old line is read inside G2's search and can be taken as G2's result.
+* **Why it matters:** `engine-lifecycle.md` forbids binding a response to the most recent request because it arrived after it; a result from G1 attributed to G2's position is the stale-result class of `4e8d10b0` and `03826167`.
+* **Related:** `f-20260914-37`, `f-20260831-09`, `f-20260903-01` (same root).
+* **Found by:** Codex `review-engine-protocol` diff lens (confidence 94) during the macOS engine-launch build run, 2026-09-15. The lines blame to `17fac36f`, `97c29add` and `e4e0f8d3`, before that run; source read by the orchestrator, not reproduced by a test.
