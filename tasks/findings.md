@@ -8687,3 +8687,15 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Why it matters:** `.claude/rules/async-resource-invariants.md` — never move a raw backend diagnostic into the renderer; the crate already maps comparable failures to opaque variants (`Error::TauriOpener` is categorised `Platform`, `error.rs:265`).
 * **Fix shape:** return the opener failure through the existing opaque variant (`Error::TauriOpener` or an `Io`-style fixed-text mapping) so the payload carries only a category, and add a serialisation test that an opener error containing a path does not appear in the payload.
 * **Found by:** `review-tauri-security` plan lens (Codex retry), 2026-09-15, confidence 94, during the `f-20260914-07` plan review; the orchestrator verified the `map_err` and the `InvalidInput` serialisation at source. Outside that run's area, so deferred. Not reproduced with a live opener failure.
+
+---
+
+## 2026-09-15 — filed through the inbox spool
+
+### Interactive engine command may wait for EOF after `bestmove`, holding a live engine until the ten-minute timeout
+
+* **ID:** f-20260915-05 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/chess.rs:599` (reported; the interactive read loop after `bestmove`).
+* **Defect (reported, not verified):** after `bestmove` the loop keeps reading until EOF; a conforming UCI engine stays alive after `bestmove`, so the command would wait for the ten-minute timeout before cleanup.
+* **Why it matters:** `.claude/rules/engine-lifecycle.md` / `async-resource-invariants.md` — every async operation needs a terminal state that does not depend on the child exiting.
+* **Found by:** `review-engine-protocol` plan lens (Codex retry), 2026-09-15, confidence 99, during the `f-20260914-07` plan review, which does not touch engine code. Outside that run's mandate and area; not read line by line — verify the loop and its terminal condition before fixing. Checked against open `engine-uci` findings: not a duplicate of `f-20260911-03` (stop deadline) or `f-20260915-01` (trailing line).
