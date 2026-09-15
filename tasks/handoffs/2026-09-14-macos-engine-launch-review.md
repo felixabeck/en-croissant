@@ -591,3 +591,34 @@ carried, closed (correctness).
 
 Correction: one Codex fix round resuming the Phase 2 session for D3-01 to D3-08. Re-review after it:
 tests (D3-01 to D3-04, D2-01 carried), minimalism (D3-05), code-quality (D3-06 to D3-08).
+
+## Diff review — round 4 (range origin/master..1ad9513e)
+
+Correction commit `1ad9513e` (Codex resume of the Phase 2 session for D3-01 to D3-08). The leaf's
+required sweep of every macOS-only test and macOS branch for assertions that contradict macOS
+semantics (file leases pinned, directory leases path-checked) listed twelve sites; only D3-01 and D3-02
+contradicted them, and both were fixed. D3-03 was shown red with the first resource left unheld and
+green restored. D3-01, D3-02 and D3-04 are macOS-only; they compile under the Apple target here and
+their runtime proof is the `rust-macos-test` job.
+
+Orchestrator verification on that tree before commit: `cargo fmt --check`; clippy `--all-targets -D warnings` for the native, aarch64-apple-darwin and x86_64-pc-windows-gnu targets (cross targets with check-only CC/AR/windres stubs); three full test runs (1152 passed, 1 ignored each); `pnpm gate:ensure backend-coverage` (ratchet and floors passed).
+
+Lenses: the three whose findings drove round-3 Fixes, launched under executor `gemini` (agy), all
+`--role sensitive`. review-minimalism completed on agy. review-tests and review-code-quality ended with
+an identified agy quota failure ("Individual quota reached … Resets in 3h31m") and were relaunched
+once on Codex through `leaf-quota-retry.py` (executor-profiles §1d); later lenses in this run go to
+Codex directly until the quota resets.
+Raw verdicts: review-minimalism APPROVED · review-tests (Codex retry) APPROVED ·
+review-code-quality (Codex retry) APPROVED.
+
+Round-3 closure results (raw): D3-05 closed (minimalism) · D3-01..D3-04 closed (tests) · macOS file/directory sweep closed (tests) · D2-01 carried, closed for the clone path (tests) · D3-06..D3-08 closed (code-quality). The tests lens also reports the mandate closed: `f-20260914-31` (executable, file-resource and directory substitution anchors) and `f-20260914-32` (removal, replacement, `ENOTDIR`, recursive delete, install), all running in `rust-macos-test`.
+
+| ID | Finding (witnesses) | Verdict | Reason |
+|---|---|---|---|
+| D4-01 | The macOS `getpath` → `PathBuf` conversion is repeated verbatim in `engine_resource` (file and directory branches) and `engine_executable` (minimalism 82), and again in the test lease and executable constructors | Fix | Verified in source at all sites; rule 11, one private helper |
+| D4-02 | `engine/types.rs` re-exports `resolve_launch`, `resolve_option_leases` and `verify_option_resources` from `process`, while `engine/mod.rs` already holds the module's `process` re-exports (code-quality 96) | Fix | Verified in source; move them beside the existing `pub(crate) use process::{…}` |
+| D4-03 | `map_force_kill_and_reap` takes a bare `true` in `terminate_child` and `false` in `cleanup_spawn_io_failure`, so the timeout classification is invisible at the call sites (code-quality 94) | Fix | Verified in source; a named policy instead of the boolean |
+
+Correction: one Codex fix round resuming the Phase 2 session for D4-01 to D4-03. Closure check after
+it: minimalism (D4-01) and code-quality (D4-02, D4-03), on Codex while the agy quota is exhausted.
+No review lens has an open `Fix` from rounds 1 to 3.
