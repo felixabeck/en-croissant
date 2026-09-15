@@ -622,3 +622,27 @@ Round-3 closure results (raw): D3-05 closed (minimalism) · D3-01..D3-04 closed 
 Correction: one Codex fix round resuming the Phase 2 session for D4-01 to D4-03. Closure check after
 it: minimalism (D4-01) and code-quality (D4-02, D4-03), on Codex while the agy quota is exhausted.
 No review lens has an open `Fix` from rounds 1 to 3.
+
+## Diff review — round 5 (range origin/master..42dbac5b)
+
+Correction commit `42dbac5b` (Codex resume of the Phase 2 session for D4-01 to D4-03). Orchestrator
+verification on that tree before commit: `cargo fmt --check`; clippy `--all-targets -D warnings` for the
+native, aarch64-apple-darwin and x86_64-pc-windows-gnu targets; three full test runs (1152 passed,
+1 ignored each); `pnpm gate:ensure backend-coverage` (ratchet and floors passed).
+
+Closure check by the two lenses whose findings drove round-4 Fixes, launched directly on Codex (agy
+quota exhausted), `--role sensitive`. Raw verdicts: review-minimalism REVISE · review-code-quality
+APPROVED.
+
+Round-4 closure results (raw): D4-01 closed (minimalism) · D4-02, D4-03 closed (code-quality).
+code-quality reports the mandate closure evidence for `f-20260914-31` and `f-20260914-32` unchanged.
+
+| ID | Finding (witnesses) | Verdict | Reason |
+|---|---|---|---|
+| D5-01 | `EngineActor::recording_test_actor` repeats the writes/`RecordingUciIo` construction of `recording_test_actor_with_resources_and_deadlines` (minimalism 96) | Fix | Verified in source; the resource variant is new in this range. Rule 11, one shared test constructor |
+| D5-02 | `BlockingGateway::available_permits` is a one-caller test-only pass-through; the other ten assertions read `gateway.semaphore.available_permits()` directly (minimalism 99, code-quality 99) | Fix | Verified: this range added the accessor and switched one assertion to it. Delete it and restore direct access |
+| D5-03 | `#[derive(Clone)]` on `BlockingGateway` has no caller; every clone is of `Arc<BlockingGateway>` (minimalism 99) | Fix | Verified by grep and added in this range; proof is a clean compile on all three targets without it |
+| D5-04 | macOS setup builds `AppDataDir::for_app` again right after the credential initialisation built it (minimalism 95) | Fix | Verified in `main.rs` setup; added in this range. One local, with the `AppDataDir::for_app` source-scan tests kept green |
+
+Correction: one Codex fix round resuming the Phase 2 session for D5-01 to D5-04. Closure check after it:
+minimalism (D5-01 to D5-04) and code-quality (D5-02), on Codex.
