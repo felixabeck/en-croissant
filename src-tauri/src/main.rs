@@ -2097,11 +2097,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // that refuse on non-Unix. That is not a narrowing: this call already returned
             // `Error::CredentialFailure` on Windows before the routing, because it commits the
             // registry through `atomic_replace`, which is `#[cfg(unix)]`. See `f-20260830-06`.
+            let app_data = crate::infra::path_authority::AppDataDir::for_app(app.handle())?;
             app.state::<AppState>()
                 .credentials
-                .initialize(&crate::infra::path_authority::AppDataDir::for_app(
-                    app.handle(),
-                )?)
+                .initialize(&app_data)
                 .map_err(|error| {
                     log::error!("native credential storage could not be initialized: {error}");
                     "native credential storage could not be initialized"
@@ -2109,7 +2108,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let authority_registry = app.path().app_config_dir()?.join("path-authority.json");
             #[cfg(target_os = "macos")]
             let authority = {
-                let app_data = crate::infra::path_authority::AppDataDir::for_app(app.handle())?;
                 let launch_root =
                     crate::infra::path_authority::initialize_engine_launch_root(&app_data)
                         .map_err(|error| {
@@ -3461,17 +3459,28 @@ mod blocking_offload_scans {
     fn credential_initialization_precedes_path_authority_open() {
         let main = include_str!("main.rs");
         let setup = body_at_indent(main, ".setup(move |app| {");
+        let app_data = setup
+            .find(
+                "let app_data = crate::infra::path_authority::AppDataDir::for_app(app.handle())?;",
+            )
+            .expect("application data directory local");
         let credential = setup
             .find(".credentials\n                .initialize(")
             .expect("credential initialization call");
         let authority = setup
             .find("PathAuthority::open")
             .expect("path authority initialization call");
+        assert!(app_data < credential, "{setup}");
         assert!(credential < authority, "{setup}");
-        // The parent is pinned the same way `app_owned_default_roots_are_pinned_to_their_call_sites`
-        // pins the other four: swapping this for `app_config_dir()`, or re-joining the leaf that
-        // now lives on `AppOwnedDefaultRoot::Credentials`, would leave every other check green.
-        let call = &setup[credential..authority];
+        // The application-data descriptor is constructed once and shared by credential
+        // initialization and the macOS launch-root setup.
+        let call = &setup[app_data..authority];
+        assert_eq!(call.matches("AppDataDir::for_app(").count(), 1, "{call}");
+        assert!(
+            call.contains(".initialize(&app_data)")
+                && call.contains("initialize_engine_launch_root(&app_data)"),
+            "{call}"
+        );
         assert!(
             call.contains("AppDataDir::for_app(") && !call.contains("credentials\")"),
             "{call}"

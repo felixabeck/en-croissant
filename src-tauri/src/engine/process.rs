@@ -2389,14 +2389,10 @@ impl EngineActor {
 
     #[cfg(test)]
     pub fn recording_test_actor(lines: &[&str]) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
-        let writes = Arc::new(Mutex::new(Vec::new()));
-        let io = RecordingUciIo {
-            writes: writes.clone(),
-            lines: lines.iter().map(|line| Some((*line).into())).collect(),
-        };
-        (
-            Arc::new(Self::new(Box::new(io), EngineDeadlines::default())),
-            writes,
+        Self::recording_test_actor_with_resources_and_deadlines_impl(
+            lines,
+            Vec::new(),
+            EngineDeadlines::default(),
         )
     }
 
@@ -2414,6 +2410,15 @@ impl EngineActor {
 
     #[cfg(all(test, unix))]
     pub fn recording_test_actor_with_resources_and_deadlines(
+        lines: &[&str],
+        resources: Vec<Arc<crate::infra::path_authority::EngineResourceLease>>,
+        deadlines: EngineDeadlines,
+    ) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
+        Self::recording_test_actor_with_resources_and_deadlines_impl(lines, resources, deadlines)
+    }
+
+    #[cfg(test)]
+    fn recording_test_actor_with_resources_and_deadlines_impl(
         lines: &[&str],
         resources: Vec<Arc<crate::infra::path_authority::EngineResourceLease>>,
         deadlines: EngineDeadlines,
@@ -5906,7 +5911,7 @@ mod tests {
             resources: Vec::new(),
             resource_values: vec![value.clone()],
         }];
-        let gateway = BlockingGateway::new(1);
+        let gateway = Arc::new(BlockingGateway::new(1));
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         set_resource_verify_hook(
@@ -5976,7 +5981,7 @@ mod tests {
                 release_rx.recv().unwrap();
             })),
         );
-        let gateway = BlockingGateway::new(1);
+        let gateway = Arc::new(BlockingGateway::new(1));
         let task_gateway = gateway.clone();
         let verification = tokio::spawn({
             let actor = actor.clone();
