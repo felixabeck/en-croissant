@@ -278,24 +278,18 @@ struct ProcessChildControl {
 }
 
 #[async_trait]
-trait ChildControl: Send {
-    async fn write_quit(&mut self) -> Result<(), Error>;
+trait ChildCleanup: Send {
     fn start_kill(&mut self) -> Result<(), Error>;
     async fn wait(&mut self) -> Result<(), Error>;
 }
 
 #[async_trait]
-impl ChildControl for ProcessChildControl {
-    async fn write_quit(&mut self) -> Result<(), Error> {
-        #[cfg(test)]
-        if matches!(self.terminate_failure, Some(TerminateFailure::QuitKillReap)) {
-            return Err(Error::Conflict("injected engine quit failure".into()));
-        }
-        self.stdin.write_all(b"quit\n").await?;
-        self.stdin.flush().await?;
-        Ok(())
-    }
+trait ChildControl: ChildCleanup {
+    async fn write_quit(&mut self) -> Result<(), Error>;
+}
 
+#[async_trait]
+impl ChildCleanup for ProcessChildControl {
     fn start_kill(&mut self) -> Result<(), Error> {
         #[cfg(test)]
         if matches!(self.terminate_failure, Some(TerminateFailure::QuitKillReap)) {
@@ -315,6 +309,88 @@ impl ChildControl for ProcessChildControl {
         }
         self.child.wait().await?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl ChildControl for ProcessChildControl {
+    async fn write_quit(&mut self) -> Result<(), Error> {
+        #[cfg(test)]
+        if matches!(self.terminate_failure, Some(TerminateFailure::QuitKillReap)) {
+            return Err(Error::Conflict("injected engine quit failure".into()));
+        }
+        self.stdin.write_all(b"quit\n").await?;
+        self.stdin.flush().await?;
+        Ok(())
+    }
+}
+
+struct SpawnChildCleanup<'a> {
+    child: &'a mut Child,
+    #[cfg(test)]
+    terminate_failure: Option<TerminateFailure>,
+}
+
+#[async_trait]
+impl ChildCleanup for SpawnChildCleanup<'_> {
+    fn start_kill(&mut self) -> Result<(), Error> {
+        #[cfg(test)]
+        if matches!(self.terminate_failure, Some(TerminateFailure::QuitKillReap)) {
+            return match self.child.start_kill() {
+                Ok(()) => Err(std::io::Error::other("injected engine kill failure").into()),
+                Err(error) => Err(error.into()),
+            };
+        }
+        self.child.start_kill().map_err(Into::into)
+    }
+
+    async fn wait(&mut self) -> Result<(), Error> {
+        #[cfg(test)]
+        if self.terminate_failure == Some(TerminateFailure::ReapTimeout) {
+            std::future::pending::<()>().await;
+        }
+        #[cfg(test)]
+        if self.terminate_failure == Some(TerminateFailure::ReapError) {
+            self.child.wait().await?;
+            return Err(Error::Conflict("injected engine reap failure".into()));
+        }
+        self.child.wait().await.map(|_| ()).map_err(Into::into)
+    }
+}
+
+enum ForceKillAndReap {
+    Reaped,
+    ReapFailed {
+        kill_error: Option<Error>,
+        reap_error: Error,
+    },
+    ReapTimedOut {
+        kill_error: Option<Error>,
+        timeout: Duration,
+    },
+}
+
+async fn force_kill_and_reap<C: ChildCleanup>(
+    child: &mut C,
+    kill_reap_timeout: Duration,
+) -> ForceKillAndReap {
+    let kill_error = child.start_kill().err();
+    let reap = timeout(kill_reap_timeout, child.wait()).await;
+    match reap {
+        Ok(Ok(())) => {
+            if let Some(kill) = kill_error.as_ref() {
+                error!("engine force-kill reported an error but child reaped: {kill}");
+            }
+            ForceKillAndReap::Reaped
+        }
+        Ok(Err(reap_error)) => ForceKillAndReap::ReapFailed {
+            kill_error,
+            reap_error,
+        },
+        Err(_) => ForceKillAndReap::ReapTimedOut {
+            kill_error,
+            timeout: kill_reap_timeout,
+        },
     }
 }
 
@@ -342,33 +418,81 @@ async fn terminate_child<C: ChildControl>(
         (Ok(()), Err(_)) => Error::EngineTimeout("waiting for engine exit".into()),
         (Ok(()), Ok(Ok(()))) => return Ok(()),
     };
-    let kill = child.start_kill().err();
-    let reap = timeout(kill_reap_timeout, child.wait()).await;
-    match (kill, reap) {
-        (kill, Ok(Ok(()))) => {
-            if let Some(kill) = kill {
-                error!("engine force-kill reported an error but child reaped: {kill}");
-            }
+    match force_kill_and_reap(&mut child, kill_reap_timeout).await {
+        ForceKillAndReap::Reaped => {
             error!("engine graceful shutdown failed but child reaped: {primary}");
             Ok(())
         }
-        (Some(kill), Ok(Err(reap))) => Err(Error::OperationAndCleanup {
+        ForceKillAndReap::ReapFailed {
+            kill_error: Some(kill),
+            reap_error: reap,
+        } => Err(Error::OperationAndCleanup {
             primary: primary.to_string(),
             cleanup: format!("force-kill failed: {kill}; final reap failed: {reap}"),
         }),
-        (None, Ok(Err(reap))) => Err(Error::OperationAndCleanup {
+        ForceKillAndReap::ReapFailed {
+            kill_error: None,
+            reap_error: reap,
+        } => Err(Error::OperationAndCleanup {
             primary: primary.to_string(),
             cleanup: format!("final reap failed: {reap}"),
         }),
-        (Some(kill), Err(_)) => Err(Error::OperationAndCleanup {
+        ForceKillAndReap::ReapTimedOut {
+            kill_error: Some(kill),
+            timeout,
+        } => Err(Error::OperationAndCleanup {
             primary: primary.to_string(),
-            cleanup: format!(
-                "force-kill failed: {kill}; final reap exceeded {kill_reap_timeout:?}"
-            ),
+            cleanup: format!("force-kill failed: {kill}; final reap exceeded {timeout:?}"),
         }),
-        (None, Err(_)) => Err(Error::EngineTimeout(format!(
-            "waiting for engine reap after force-kill exceeded {kill_reap_timeout:?}"
+        ForceKillAndReap::ReapTimedOut {
+            kill_error: None,
+            timeout,
+        } => Err(Error::EngineTimeout(format!(
+            "waiting for engine reap after force-kill exceeded {timeout:?}"
         ))),
+    }
+}
+
+async fn cleanup_spawn_io_failure(
+    child: &mut Child,
+    primary: Error,
+    kill_reap_timeout: Duration,
+) -> Error {
+    let mut cleanup = SpawnChildCleanup {
+        child,
+        #[cfg(test)]
+        terminate_failure: take_terminate_failure(),
+    };
+    match force_kill_and_reap(&mut cleanup, kill_reap_timeout).await {
+        ForceKillAndReap::Reaped => primary,
+        ForceKillAndReap::ReapFailed {
+            kill_error: Some(kill),
+            reap_error: reap,
+        } => Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: format!("force-kill failed: {kill}; final reap failed: {reap}"),
+        },
+        ForceKillAndReap::ReapFailed {
+            kill_error: None,
+            reap_error: reap,
+        } => Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: format!("final reap failed: {reap}"),
+        },
+        ForceKillAndReap::ReapTimedOut {
+            kill_error: Some(kill),
+            timeout,
+        } => Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: format!("force-kill failed: {kill}; final reap exceeded {timeout:?}"),
+        },
+        ForceKillAndReap::ReapTimedOut {
+            kill_error: None,
+            timeout,
+        } => Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: format!("final reap exceeded {timeout:?}"),
+        },
     }
 }
 
@@ -1909,17 +2033,46 @@ impl EngineRuntime {
             .await
             .map_err(|_| Error::EngineTimeout("spawning engine".into()))??;
         #[cfg(test)]
+        observe_spawned_child(&child);
+        #[cfg(test)]
         let forced_io_failure = take_spawn_io_failure();
+        let stdin = child.stdin.take();
         #[cfg(test)]
-        if forced_io_failure == Some(SpawnIoFailure::NoStdin) {
-            return Err(Error::NoStdin);
-        }
-        let stdin = child.stdin.take().ok_or(Error::NoStdin)?;
+        let stdin = if forced_io_failure == Some(SpawnIoFailure::NoStdin) {
+            None
+        } else {
+            stdin
+        };
+        let stdin = match stdin {
+            Some(stdin) => stdin,
+            None => {
+                return Err(cleanup_spawn_io_failure(
+                    &mut child,
+                    Error::NoStdin,
+                    deadlines.kill_reap,
+                )
+                .await)
+            }
+        };
         #[cfg(test)]
-        if forced_io_failure == Some(SpawnIoFailure::NoStdout) {
-            return Err(Error::NoStdout);
-        }
-        let stdout = child.stdout.take().ok_or(Error::NoStdout)?;
+        let stdout = if forced_io_failure == Some(SpawnIoFailure::NoStdout) {
+            None
+        } else {
+            child.stdout.take()
+        };
+        #[cfg(not(test))]
+        let stdout = child.stdout.take();
+        let stdout = match stdout {
+            Some(stdout) => stdout,
+            None => {
+                return Err(cleanup_spawn_io_failure(
+                    &mut child,
+                    Error::NoStdout,
+                    deadlines.kill_reap,
+                )
+                .await)
+            }
+        };
         let stderr_drain_task = child.stderr.take().map(|stderr| {
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stderr);
@@ -2635,25 +2788,47 @@ enum SpawnIoFailure {
 }
 
 #[cfg(test)]
-static SPAWN_IO_FAILURE: std::sync::OnceLock<std::sync::Mutex<Option<SpawnIoFailure>>> =
+std::thread_local! {
+    static SPAWN_IO_FAILURE: std::cell::RefCell<Option<SpawnIoFailure>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+type SpawnChildObserver = Box<dyn FnOnce(Option<u32>) + Send>;
+
+#[cfg(test)]
+static SPAWN_CHILD_OBSERVER: std::sync::OnceLock<std::sync::Mutex<Option<SpawnChildObserver>>> =
     std::sync::OnceLock::new();
 
 #[cfg(test)]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn set_spawn_io_failure(failure: Option<SpawnIoFailure>) {
-    *SPAWN_IO_FAILURE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .unwrap() = failure;
+    SPAWN_IO_FAILURE.with(|slot| *slot.borrow_mut() = failure);
 }
 
 #[cfg(test)]
 fn take_spawn_io_failure() -> Option<SpawnIoFailure> {
-    SPAWN_IO_FAILURE
+    SPAWN_IO_FAILURE.with(|slot| slot.borrow_mut().take())
+}
+
+#[cfg(test)]
+fn set_spawn_child_observer(observer: Option<SpawnChildObserver>) {
+    *SPAWN_CHILD_OBSERVER
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = observer;
+}
+
+#[cfg(test)]
+fn observe_spawned_child(child: &Child) {
+    let observer = SPAWN_CHILD_OBSERVER
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .unwrap()
-        .take()
+        .take();
+    if let Some(observer) = observer {
+        observer(child.id());
+    }
 }
 
 #[cfg(test)]
@@ -2661,6 +2836,7 @@ fn take_spawn_io_failure() -> Option<SpawnIoFailure> {
 enum TerminateFailure {
     QuitKillReap,
     ReapTimeout,
+    ReapError,
 }
 
 #[cfg(test)]
@@ -3193,15 +3369,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl ChildControl for FakeChildControl {
-        async fn write_quit(&mut self) -> Result<(), Error> {
-            if self.quit_pending {
-                std::future::pending().await
-            } else {
-                Ok(())
-            }
-        }
-
+    impl ChildCleanup for FakeChildControl {
         fn start_kill(&mut self) -> Result<(), Error> {
             self.kill_calls.fetch_add(1, AtomicOrdering::SeqCst);
             if self.kill_error {
@@ -3215,6 +3383,17 @@ mod tests {
             match self.waits.pop_front().unwrap_or(FakeWait::Pending) {
                 FakeWait::Ready => Ok(()),
                 FakeWait::Pending => std::future::pending().await,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ChildControl for FakeChildControl {
+        async fn write_quit(&mut self) -> Result<(), Error> {
+            if self.quit_pending {
+                std::future::pending().await
+            } else {
+                Ok(())
             }
         }
     }
@@ -5519,6 +5698,94 @@ mod tests {
             started.elapsed() < Duration::from_millis(500),
             "quit-ignoring child must not outlive quit + kill_reap + slack"
         );
+    }
+
+    #[cfg(unix)]
+    fn assert_child_is_reaped(pid: u32) {
+        let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        assert_eq!(result, -1, "child {pid} still exists after spawn failure");
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH),
+            "child {pid} was not reaped"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_io_take_failures_force_kill_and_reap_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for failure in [SpawnIoFailure::NoStdin, SpawnIoFailure::NoStdout] {
+            let directory = tempfile::tempdir().unwrap();
+            let script = directory.path().join("spawn-io-failure-engine.sh");
+            std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let executable = EngineExecutable::test_fixture(
+                std::fs::File::open(&script).unwrap(),
+                directory.path().to_path_buf(),
+                Vec::new(),
+            );
+            let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+            set_spawn_child_observer(Some(Box::new(move |pid| {
+                let _ = pid_tx.send(pid);
+            })));
+            set_spawn_io_failure(Some(failure));
+            let result = EngineRuntime::spawn(
+                executable,
+                EngineDeadlines {
+                    kill_reap: Duration::from_millis(200),
+                    ..EngineDeadlines::default()
+                },
+            )
+            .await;
+            set_spawn_io_failure(None);
+            set_spawn_child_observer(None);
+
+            let pid = pid_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .expect("spawn observer must see a real child pid");
+            match failure {
+                SpawnIoFailure::NoStdin => assert!(matches!(result, Err(Error::NoStdin))),
+                SpawnIoFailure::NoStdout => assert!(matches!(result, Err(Error::NoStdout))),
+            }
+            assert_child_is_reaped(pid);
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("spawn-io-reap-failure-engine.sh");
+        std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = EngineExecutable::test_fixture(
+            std::fs::File::open(&script).unwrap(),
+            directory.path().to_path_buf(),
+            Vec::new(),
+        );
+        let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+        set_spawn_child_observer(Some(Box::new(move |pid| {
+            let _ = pid_tx.send(pid);
+        })));
+        set_spawn_io_failure(Some(SpawnIoFailure::NoStdin));
+        set_terminate_failure(Some(TerminateFailure::ReapError));
+        let result = EngineRuntime::spawn(
+            executable,
+            EngineDeadlines {
+                kill_reap: Duration::from_millis(200),
+                ..EngineDeadlines::default()
+            },
+        )
+        .await;
+        set_spawn_io_failure(None);
+        set_terminate_failure(None);
+        set_spawn_child_observer(None);
+
+        let pid = pid_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .expect("spawn observer must see a real child pid");
+        assert!(matches!(result, Err(Error::OperationAndCleanup { .. })));
+        assert_child_is_reaped(pid);
     }
 
     #[tokio::test]
