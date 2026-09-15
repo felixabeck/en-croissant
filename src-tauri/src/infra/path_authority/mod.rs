@@ -2865,10 +2865,21 @@ enum AcquireShape {
     Root,
 }
 
-/// The stored `(path, identity)` is the proven canonical pair. `parent_and_leaf` is the proving
-/// descriptor consumed by `database_file_target`/`for_test_path` and dropped by registration
-/// doors, whose later use re-walks the stored path no-follow. The PGN export door keeps its own
-/// proving parent and passes `None`.
+impl AcquireShape {
+    fn for_persistent_class(class: PathClass) -> Self {
+        if class == PathClass::PersistentCustomRoot {
+            Self::Root
+        } else {
+            Self::File
+        }
+    }
+}
+
+/// On Unix, a path with a normal leaf stores the proven canonical `(path, identity)` pair.
+/// Leafless paths and non-Unix targets keep the caller's spelling and carry no descriptor.
+/// `parent_and_leaf` is the proving descriptor consumed by `database_file_target`/`for_test_path`
+/// and dropped by registration doors, whose later use re-walks the stored path no-follow. The PGN
+/// export door keeps its own proving parent and passes `None`.
 struct AcquiredTarget {
     path: PathBuf,
     identity: Identity,
@@ -2897,10 +2908,10 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
         ),
     };
 
-    let normal_leaf = path
-        .file_name()
-        .filter(|name| !name.is_empty() && *name != OsStr::new(".") && *name != OsStr::new(".."));
-    let Some(_) = normal_leaf else {
+    let has_normal_leaf = path.file_name().is_some_and(|name| {
+        !name.is_empty() && name != OsStr::new(".") && name != OsStr::new("..")
+    });
+    if !has_normal_leaf {
         return Ok(AcquiredTarget {
             path: path.to_path_buf(),
             identity,
@@ -3785,11 +3796,7 @@ impl PathAuthority {
             ));
         }
         let path = grant.entry.stored.path.to_path()?;
-        let shape = if target_is_dir {
-            AcquireShape::Root
-        } else {
-            AcquireShape::File
-        };
+        let shape = AcquireShape::for_persistent_class(persistent_class);
         let acquired = acquire_target(&path, shape)?;
         if acquired.path != path || acquired.identity != grant.entry.stored.identity {
             return Err(Error::Conflict(
@@ -3919,11 +3926,7 @@ impl PathAuthority {
     ) -> Result<(PathBuf, Identity), Error> {
         match expected_identity {
             None => {
-                let shape = if class == PathClass::PersistentCustomRoot {
-                    AcquireShape::Root
-                } else {
-                    AcquireShape::File
-                };
+                let shape = AcquireShape::for_persistent_class(class);
                 let acquired = acquire_target(path, shape)?;
                 Ok((acquired.path, acquired.identity))
             }
@@ -3961,9 +3964,10 @@ impl PathAuthority {
         self.persist_entry(&path, identity, display_name, class, operations)
     }
     /// Registers a bundled/app-owned or picker-selected persistent file. A call without an
-    /// expected identity canonicalises through `acquire_target`. Existing persistent entries
-    /// retain their opaque ID across restarts; a replaced object is rejected rather than silently
-    /// reusing the old capability.
+    /// expected identity acquires through `acquire_target`; Unix paths with normal leaves are
+    /// canonicalised, while leafless paths and non-Unix paths retain their input spelling.
+    /// Existing persistent entries retain their opaque ID across restarts; a replaced object is
+    /// rejected rather than silently reusing the old capability.
     pub fn get_or_create_persistent_file(
         &mut self,
         path: &Path,
