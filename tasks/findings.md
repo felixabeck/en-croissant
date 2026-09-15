@@ -8699,3 +8699,15 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Defect (reported, not verified):** after `bestmove` the loop keeps reading until EOF; a conforming UCI engine stays alive after `bestmove`, so the command would wait for the ten-minute timeout before cleanup.
 * **Why it matters:** `.claude/rules/engine-lifecycle.md` / `async-resource-invariants.md` — every async operation needs a terminal state that does not depend on the child exiting.
 * **Found by:** `review-engine-protocol` plan lens (Codex retry), 2026-09-15, confidence 99, during the `f-20260914-07` plan review, which does not touch engine code. Outside that run's mandate and area; not read line by line — verify the loop and its terminal condition before fixing. Checked against open `engine-uci` findings: not a duplicate of `f-20260911-03` (stop deadline) or `f-20260915-01` (trailing line).
+
+---
+
+## 2026-09-15 — filed through the inbox spool
+
+### `get_best_moves` has no backend owner that terminates its published engine when the command is cancelled
+
+* **ID:** f-20260915-06 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/chess.rs:722` (reported; `get_best_moves` after publication and its only `terminate_exact`).
+* **Defect (reported, not verified):** cancelling the command after the engine actor is published skips its only `terminate_exact`, and a still-open tab may never clean the actor up.
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — cleanup on every exit path, not only the happy path. Same class as `f-20260914-35` (configuration probe) and `f-20260908-02` (game construction), which name different commands; no shared `Root` is asserted because a common cause is not evidenced.
+* **Found by:** `review-engine-protocol` plan lens (Codex retry), 2026-09-15, confidence 90, during the `f-20260914-07` plan review. Outside that run's mandate and area; not read line by line — verify the drop path before fixing.
