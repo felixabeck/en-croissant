@@ -1895,21 +1895,24 @@ mod tests {
         );
     }
 
+    /// Grants and promotes `selected` as a persistent PGN workspace in a fresh authority whose
+    /// registry lives in `directory`.
     #[cfg(unix)]
-    fn workspace_state() -> (TempDir, AppState, FileWorkspaceHandle) {
-        let directory = tempfile::tempdir().expect("temporary workspace parent");
-        let root = directory.path().join("workspace");
-        fs::create_dir(&root).expect("workspace root");
+    fn promoted_workspace_state(
+        directory: &TempDir,
+        selected: &Path,
+        uses_left: u32,
+    ) -> (AppState, FileWorkspaceHandle) {
         let mut path_authority =
             PathAuthority::open(directory.path().join("registry.json"), vec![]).expect("authority");
         let grant = path_authority
             .grant_dialog_operations(
-                &root,
+                selected,
                 "Workspace",
                 PathClass::BoundedDialogGrant,
                 vec![PathOperation::ReadPgn, PathOperation::WritePgn],
                 Duration::from_secs(60),
-                4,
+                uses_left,
             )
             .expect("workspace grant");
         let workspace = FileWorkspaceHandle::new(
@@ -1925,6 +1928,15 @@ mod tests {
         );
         let state = AppState::default();
         *state.pgn_path_authority.lock().expect("authority lock") = Some(path_authority);
+        (state, workspace)
+    }
+
+    #[cfg(unix)]
+    fn workspace_state() -> (TempDir, AppState, FileWorkspaceHandle) {
+        let directory = tempfile::tempdir().expect("temporary workspace parent");
+        let root = directory.path().join("workspace");
+        fs::create_dir(&root).expect("workspace root");
+        let (state, workspace) = promoted_workspace_state(&directory, &root, 4);
         (directory, state, workspace)
     }
 
@@ -1938,32 +1950,7 @@ mod tests {
         let root = real.join("ws");
         fs::create_dir_all(&root).expect("workspace root");
         symlink(&real, &link).expect("workspace ancestor symlink");
-
-        let mut path_authority =
-            PathAuthority::open(directory.path().join("registry.json"), vec![]).expect("authority");
-        let grant = path_authority
-            .grant_dialog_operations(
-                &link.join("ws"),
-                "Workspace",
-                PathClass::BoundedDialogGrant,
-                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
-                Duration::from_secs(60),
-                1,
-            )
-            .expect("workspace grant");
-        let workspace = FileWorkspaceHandle::new(
-            path_authority
-                .promote_dialog(
-                    &grant,
-                    PathClass::PersistentCustomRoot,
-                    "Workspace",
-                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
-                )
-                .expect("persistent workspace")
-                .id,
-        );
-        let state = AppState::default();
-        *state.pgn_path_authority.lock().expect("authority lock") = Some(path_authority);
+        let (state, workspace) = promoted_workspace_state(&directory, &link.join("ws"), 1);
         (directory, root, state, workspace)
     }
 
