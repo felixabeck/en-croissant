@@ -8674,3 +8674,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Open question:** should the registry persist the parent directory identity at acquisition (a `StoredEntry` schema change with a migration for existing entries, which cannot be recovered for entries persisted before it) and have every use-time resolution compare it, or is the leaf identity plus the no-follow walk the accepted boundary, documented as such?
 * **Related:** `f-20260914-33` (acquisition-time canonical binding; review record `tasks/handoffs/2026-09-14-f-20260914-33-review.md`, diff-review issue D1-01), `f-20260914-36` (use-time validations of persisted entries that compare identity only — R3-05 is the same identity-only comparison in `database_file_target`), `f-20260830-09` (unlink by name).
 * **Found by:** Codex `review-tauri-security` diff lens (confidence 98) during the `f-20260914-33` build run, 2026-09-15. Source read by the orchestrator; not reproduced by a test.
+
+---
+
+## 2026-09-15 — filed through the inbox spool
+
+### Opening the engine workspace sends the raw opener diagnostic, which can carry a native path, to the renderer
+
+* **ID:** f-20260915-04 · **Status:** open · **Area:** bindings-ipc · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/main.rs:1615-1631` (`open_engine_workspace_blocking`): `.map_err(|error| Error::InvalidInput(format!("cannot open engine workspace: {error}")))`; serialisation `src-tauri/src/error.rs` — `Error::InvalidInput` carries its owned message into the renderer payload (pinned by `error::tests::invalid_input_serializes_the_owned_message`, `:816-828`).
+* **Defect:** the `tauri_plugin_opener` error is formatted into an `InvalidInput` string, and `InvalidInput` is the one variant whose message crosses IPC verbatim. An opener failure that quotes the resolved engine-root path or an OS diagnostic therefore puts native path text into the renderer, which the path authority exists to keep out (`engine_root_path` is resolved in the backend precisely so the renderer never sees it).
+* **Why it matters:** `.claude/rules/async-resource-invariants.md` — never move a raw backend diagnostic into the renderer; the crate already maps comparable failures to opaque variants (`Error::TauriOpener` is categorised `Platform`, `error.rs:265`).
+* **Fix shape:** return the opener failure through the existing opaque variant (`Error::TauriOpener` or an `Io`-style fixed-text mapping) so the payload carries only a category, and add a serialisation test that an opener error containing a path does not appear in the payload.
+* **Found by:** `review-tauri-security` plan lens (Codex retry), 2026-09-15, confidence 94, during the `f-20260914-07` plan review; the orchestrator verified the `map_err` and the `InvalidInput` serialisation at source. Outside that run's area, so deferred. Not reproduced with a live opener failure.
