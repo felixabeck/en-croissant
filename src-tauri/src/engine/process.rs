@@ -6565,7 +6565,7 @@ mod tests {
             std::fs::write(
                 script,
                 format!(
-                    "#!/bin/sh\necho $$ > '{}'\nwhile IFS= read -r line; do [ \"$line\" = quit ] && exit 0; done\n",
+                    "#!/bin/sh\nmarker='{}'\nprintf '%s\\n' \"$$\" > \"$marker.tmp\"\nmv \"$marker.tmp\" \"$marker\"\nwhile IFS= read -r line; do [ \"$line\" = quit ] && exit 0; done\n",
                     marker.display()
                 ),
             )
@@ -6620,29 +6620,32 @@ mod tests {
             }
         };
 
-        let marker_ready = tokio::time::timeout(Duration::from_secs(1), async {
-            while !marker_a.exists() || !marker_b.exists() {
-                tokio::task::yield_now().await;
+        let marker_pids = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let pid_a = std::fs::read_to_string(&marker_a)
+                    .ok()
+                    .and_then(|pid| pid.trim().parse::<u32>().ok());
+                let pid_b = std::fs::read_to_string(&marker_b)
+                    .ok()
+                    .and_then(|pid| pid.trim().parse::<u32>().ok());
+                if let (Some(pid_a), Some(pid_b)) = (pid_a, pid_b) {
+                    break (pid_a, pid_b);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
-        .await
-        .is_ok();
+        .await;
         let observed_a = pid_a_rx.recv_timeout(Duration::from_secs(1));
         let observed_b = pid_b_rx.recv_timeout(Duration::from_secs(1));
-        let actual_a = std::fs::read_to_string(&marker_a)
-            .ok()
-            .and_then(|pid| pid.trim().parse::<u32>().ok());
-        let actual_b = std::fs::read_to_string(&marker_b)
-            .ok()
-            .and_then(|pid| pid.trim().parse::<u32>().ok());
         let termination_a = runtime_a.terminate().await;
         let termination_b = runtime_b.terminate().await;
 
-        assert!(marker_ready, "both observer child markers must be written");
+        let (actual_a, actual_b) =
+            marker_pids.expect("both observer child markers must contain pids");
         assert!(termination_a.is_ok(), "observer A child must terminate");
         assert!(termination_b.is_ok(), "observer B child must terminate");
-        assert_eq!(observed_a.ok().flatten(), actual_a);
-        assert_eq!(observed_b.ok().flatten(), actual_b);
+        assert_eq!(observed_a.ok().flatten(), Some(actual_a));
+        assert_eq!(observed_b.ok().flatten(), Some(actual_b));
     }
 
     #[tokio::test]
