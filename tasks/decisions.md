@@ -2978,3 +2978,15 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** f-20260830-06 names the missing gate as the real defect, and d-20260830-20 forbids a gate that reports success without checking. A red job is truthful; a job that skips is not.
 * **Decided by:** Claude Code, autonomously under `full auto` in a drain session · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"de3b8b553847e1b40ade7922ef947381a154148a31e069b24d4c551a0c3d47a9","input_sha256":"d58148f35999452f6df4a7425ff0c3c5da765525a77bd374508e6737993bf799","kind":"mutation-receipt","operation":"0eb88efbbe83ab2d977eb7c13521dfdeb0ee775625ea4ace274add9faf13f7c3","options":{"section":null},"request_id_sha256":"e3a166d7d06446eaba4cbd50ace71d1da4a157c3510c7b8f6ff7cf117b761dd6","results":["d-20260914-08"],"target":"decisions-ledger","v":1} -->
+
+## 2026-09-15 — recorded through the decisions lock
+
+### d-20260915-01 — Which signal proves on APFS that a held directory was removed, and which walks enforce it?
+
+* **Question:** Which signal proves on APFS that a held directory was removed, and which walks enforce it?
+* **Governs:** f-20260914-32
+* **Chosen:** one shared check, `ensure_directory_not_removed`, runs after the walk of each held directory in `read_directory_entries_at`, `sync_tree` and `remove_tree_at`: every non-Apple Unix target keeps `fstat(dir).st_nlink == 0`; Apple takes `rustix::fs::getpath(dir)` and compares `lstat` of that path with `fstat(dir)` by device and inode (`held_matches_path`), treating `ENOENT`, `ENOTDIR` or a mismatch as removed. In the listing walk the existing post-walk cancellation check runs first, so a cancelled listing never reports removal; `sync_tree` and `remove_tree_at` have no cancellation check. Install therefore refuses a source removed mid-walk instead of installing a partial tree, and recursive delete reports the removal (wrapped as `PartialRemoval` when entries were already removed).
+* **Rejected:** `st_nlink` on APFS (measured: stays 2 after `rmdir`); `openat(dir, ".")` (measured: succeeds after `rmdir`); creating a probe child with `O_CREAT|O_EXCL` (measured `ENOENT` after removal, but it writes into user directories).
+* **Reason:** measured on the macOS runner (run 34872901465): the path of a removed directory no longer resolves, or resolves to a different object after same-name recreation, while a directory renamed away keeps its identity at its new path and is correctly still live.
+* **Decided by:** Claude Code, autonomously under `full auto` · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"0f5b5d5d2dc63ec2db25ce26ce45c1b9ec2e259a0242a12b67688af7f30208f7","input_sha256":"183a74a614df90787335876b6531f4365733ebc2620a8bd5d03650f934294da9","kind":"mutation-receipt","operation":"d12bc3950f59cf68268d6e873f440e3e52c0c9aa1ce34fd7f505e4e8754111d4","options":{"section":null},"request_id_sha256":null,"results":["d-20260915-01"],"target":"decisions-ledger","v":1} -->
