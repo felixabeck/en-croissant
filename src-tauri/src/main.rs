@@ -2752,6 +2752,104 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_engine_launch_root_reclaims_released_leaves_and_reports_failure() {
+        use crate::infra::path_authority::{EngineLaunchRoot, PathAuthority};
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let source = directory.path().join("source");
+        std::fs::write(&source, b"released").unwrap();
+        let mut leaf = root
+            .reserve_leaves(1, "shutdown:success", "shutdown-engine")
+            .unwrap()
+            .pop()
+            .unwrap();
+        leaf.create_from(&std::fs::File::open(&source).unwrap(), 0o600, &|| false)
+            .unwrap();
+        let leaf_path = leaf.path();
+        drop(leaf);
+        let authority = Arc::new(Mutex::new(Some(
+            PathAuthority::open_with_launch_root(
+                directory.path().join("registry.json"),
+                Vec::new(),
+                root.clone(),
+            )
+            .unwrap(),
+        )));
+        let supervisor = EngineSupervisor::default();
+        let games = GameManager::new();
+        let operations = OperationRegistry::default();
+        assert!(
+            shutdown_backend_with_attachments(
+                &supervisor,
+                &games,
+                None,
+                &operations,
+                std::future::ready(Ok::<(), String>(())),
+                async move {
+                    shutdown_engine_launch_root(authority)
+                        .await
+                        .map_err(|error| error.to_string())
+                },
+                Duration::from_secs(2),
+            )
+            .await
+        );
+        assert!(!leaf_path.exists());
+
+        let failure_directory = tempfile::tempdir().unwrap();
+        let failure_root = EngineLaunchRoot::for_test(failure_directory.path()).unwrap();
+        let failure_source = failure_directory.path().join("source");
+        std::fs::write(&failure_source, b"retained").unwrap();
+        let mut failure_leaf = failure_root
+            .reserve_leaves(1, "shutdown:failure", "shutdown-engine")
+            .unwrap()
+            .pop()
+            .unwrap();
+        failure_leaf
+            .create_from(
+                &std::fs::File::open(&failure_source).unwrap(),
+                0o600,
+                &|| false,
+            )
+            .unwrap();
+        drop(failure_leaf);
+        let failure_authority = Arc::new(Mutex::new(Some(
+            PathAuthority::open_with_launch_root(
+                failure_directory.path().join("registry.json"),
+                Vec::new(),
+                failure_root,
+            )
+            .unwrap(),
+        )));
+        crate::infra::fs::set_test_removal_injector(Some(Arc::new(
+            crate::infra::fs::RemovalFault(crate::infra::fs::RemovalFaultPoint::BeforeTopOpen),
+        )));
+        let capture = crate::error::LogCaptureScope::start();
+        let failed = shutdown_backend_with_attachments(
+            &EngineSupervisor::default(),
+            &GameManager::new(),
+            None,
+            &OperationRegistry::default(),
+            std::future::ready(Ok::<(), String>(())),
+            async move {
+                shutdown_engine_launch_root(failure_authority)
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+            Duration::from_secs(2),
+        )
+        .await;
+        crate::infra::fs::set_test_removal_injector(None);
+        assert!(!failed);
+        assert!(capture
+            .messages()
+            .iter()
+            .any(|message| message.contains("engine launch-root teardown failed")));
+    }
+
     #[tokio::test]
     async fn shutdown_seals_cancels_and_drains_a_real_native_owned_tail() {
         let supervisor = EngineSupervisor::default();

@@ -817,9 +817,9 @@ pub(crate) struct EngineResourceLease {
     #[cfg(unix)]
     file: fs::File,
     #[cfg(target_os = "macos")]
-    target: std::sync::Mutex<PathBuf>,
+    target: std::sync::OnceLock<PathBuf>,
     #[cfg(target_os = "macos")]
-    pinned_target: std::sync::Mutex<Option<PathBuf>>,
+    pinned_target: std::sync::OnceLock<PathBuf>,
     #[cfg(target_os = "macos")]
     is_directory: bool,
     #[cfg(windows)]
@@ -835,14 +835,19 @@ impl EngineResourceLease {
         format!("/proc/self/fd/{}", self.file.as_raw_fd())
     }
     #[cfg(target_os = "macos")]
-    pub(crate) fn uci_value(&self) -> String {
-        let target = self
-            .pinned_target
-            .lock()
-            .ok()
-            .and_then(|target| target.clone())
-            .or_else(|| self.target.lock().ok().map(|target| target.clone()));
-        target.map_or_else(String::new, |path| path.to_string_lossy().into_owned())
+    pub(crate) fn uci_value(&self) -> Result<String, Error> {
+        let target = if self.is_directory {
+            self.target
+                .get()
+                .ok_or_else(|| Error::Conflict("engine resource target is unavailable".into()))?
+        } else {
+            self.pinned_target.get().ok_or_else(|| {
+                Error::Conflict(
+                    "engine file resource was not pinned before value construction".into(),
+                )
+            })?
+        };
+        Ok(target.to_string_lossy().into_owned())
     }
     #[cfg(windows)]
     pub(crate) fn uci_value(&self) -> String {
@@ -861,10 +866,9 @@ impl EngineResourceLease {
         }
         let path = self
             .target
-            .lock()
-            .map_err(|_| Error::Conflict("engine resource lock was poisoned".into()))?
-            .clone();
-        if crate::infra::fs::held_matches_path(&self.file, &path)? {
+            .get()
+            .ok_or_else(|| Error::Conflict("engine resource target is unavailable".into()))?;
+        if crate::infra::fs::held_matches_path(&self.file, path)? {
             Ok(())
         } else {
             Err(Error::Conflict(
@@ -880,12 +884,9 @@ impl EngineResourceLease {
 
     #[cfg(target_os = "macos")]
     pub(crate) fn set_pinned_target(&self, target: PathBuf) -> Result<(), Error> {
-        *self
-            .pinned_target
-            .lock()
-            .map_err(|_| Error::Conflict("engine resource lock was poisoned".into()))? =
-            Some(target);
-        Ok(())
+        self.pinned_target
+            .set(target)
+            .map_err(|_| Error::Conflict("engine file resource was pinned more than once".into()))
     }
 
     #[cfg(target_os = "macos")]
@@ -895,6 +896,16 @@ impl EngineResourceLease {
 }
 #[cfg(all(test, unix))]
 impl EngineResourceLease {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn pin_test_target_to_original(&self) -> Result<(), Error> {
+        let target = self
+            .target
+            .get()
+            .cloned()
+            .ok_or_else(|| Error::Conflict("engine resource target is unavailable".into()))?;
+        self.set_pinned_target(target)
+    }
+
     pub(crate) fn test_file(file: fs::File) -> Self {
         #[cfg(target_os = "macos")]
         use std::os::unix::ffi::OsStrExt;
@@ -905,9 +916,9 @@ impl EngineResourceLease {
         Self {
             file,
             #[cfg(target_os = "macos")]
-            target: std::sync::Mutex::new(target),
+            target: std::sync::OnceLock::from(target),
             #[cfg(target_os = "macos")]
-            pinned_target: std::sync::Mutex::new(None),
+            pinned_target: std::sync::OnceLock::new(),
             #[cfg(target_os = "macos")]
             is_directory: false,
         }
@@ -921,8 +932,8 @@ impl EngineResourceLease {
             .unwrap_or_default();
         Self {
             file,
-            target: std::sync::Mutex::new(target),
-            pinned_target: std::sync::Mutex::new(None),
+            target: std::sync::OnceLock::from(target),
+            pinned_target: std::sync::OnceLock::new(),
             is_directory: true,
         }
     }
@@ -1829,6 +1840,10 @@ pub(crate) fn ensure_app_owned_default_dir(
 
 #[cfg(target_os = "macos")]
 const MAX_ENGINE_LAUNCH_LEAVES: usize = 64;
+#[cfg(target_os = "macos")]
+pub(crate) const ENGINE_EXECUTABLE_LEAF_MODE: u32 = 0o700;
+#[cfg(target_os = "macos")]
+pub(crate) const ENGINE_RESOURCE_LEAF_MODE: u32 = 0o600;
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone)]
@@ -1844,6 +1859,16 @@ struct EngineLaunchRootInner {
     instance: fs::File,
     instance_path: PathBuf,
     registry: std::sync::Mutex<LaunchLeafRegistry>,
+}
+
+#[cfg(target_os = "macos")]
+impl EngineLaunchRootInner {
+    fn registry(&self) -> std::sync::MutexGuard<'_, LaunchLeafRegistry> {
+        match self.registry.lock() {
+            Ok(registry) => registry,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1875,23 +1900,7 @@ pub(crate) struct MaterializedFile {
     engine_key: String,
     engine_id: String,
     attempted: bool,
-    created: bool,
     active: bool,
-}
-
-#[cfg(target_os = "macos")]
-impl std::fmt::Debug for MaterializedFile {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("MaterializedFile")
-            .field("leaf", &self.leaf)
-            .field("engine_key", &self.engine_key)
-            .field("engine_id", &self.engine_id)
-            .field("attempted", &self.attempted)
-            .field("created", &self.created)
-            .field("active", &self.active)
-            .finish()
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1901,14 +1910,14 @@ impl Drop for MaterializedFile {
             return;
         }
         if self.attempted {
-            if let Ok(mut registry) = self.root.registry.lock() {
-                registry.released.push(ReleasedLeaf {
-                    leaf: self.leaf.clone(),
-                    engine_key: self.engine_key.clone(),
-                    engine_id: self.engine_id.clone(),
-                });
-            }
-        } else if let Ok(mut registry) = self.root.registry.lock() {
+            let mut registry = self.root.registry();
+            registry.released.push(ReleasedLeaf {
+                leaf: self.leaf.clone(),
+                engine_key: self.engine_key.clone(),
+                engine_id: self.engine_id.clone(),
+            });
+        } else {
+            let mut registry = self.root.registry();
             registry.live = registry.live.saturating_sub(1);
         }
     }
@@ -2015,7 +2024,6 @@ impl MaterializedFile {
         }
         rfs::fchmod(&target, Mode::from_raw_mode(mode))
             .map_err(|error| Error::Io(Box::new(std::io::Error::from(error))))?;
-        self.created = true;
         if is_cancelled() {
             return Err(Error::Cancellation);
         }
@@ -2042,9 +2050,8 @@ impl MaterializedFile {
         };
         if result.is_ok() {
             self.active = false;
-            if let Ok(mut registry) = self.root.registry.lock() {
-                registry.live = registry.live.saturating_sub(1);
-            }
+            let mut registry = self.root.registry();
+            registry.live = registry.live.saturating_sub(1);
         }
         result
     }
@@ -2063,11 +2070,7 @@ impl EngineLaunchRoot {
         engine_key: &str,
         engine_id: &str,
     ) -> Result<Vec<MaterializedFile>, Error> {
-        let mut registry = self
-            .inner
-            .registry
-            .lock()
-            .map_err(|_| Error::Conflict("engine launch registry lock was poisoned".into()))?;
+        let mut registry = self.inner.registry();
         if registry.live.saturating_add(count) > MAX_ENGINE_LAUNCH_LEAVES {
             return Err(Error::ResourceLimit(
                 "engine launch leaf limit reached".into(),
@@ -2081,16 +2084,15 @@ impl EngineLaunchRoot {
                 engine_key: engine_key.into(),
                 engine_id: engine_id.into(),
                 attempted: false,
-                created: false,
                 active: true,
             })
             .collect())
     }
 
     pub(crate) fn reclaim(&self) -> ReclaimReport {
-        let released = match self.inner.registry.lock() {
-            Ok(mut registry) => std::mem::take(&mut registry.released),
-            Err(_) => return ReclaimReport::default(),
+        let released = {
+            let mut registry = self.inner.registry();
+            std::mem::take(&mut registry.released)
         };
         let mut report = ReclaimReport::default();
         for leaf in released {
@@ -2111,14 +2113,12 @@ impl EngineLaunchRoot {
             match result {
                 Ok(()) => {
                     report.removed += 1;
-                    if let Ok(mut registry) = self.inner.registry.lock() {
-                        registry.live = registry.live.saturating_sub(1);
-                    }
+                    let mut registry = self.inner.registry();
+                    registry.live = registry.live.saturating_sub(1);
                 }
                 Err(error) => {
-                    if let Ok(mut registry) = self.inner.registry.lock() {
-                        registry.released.push(leaf.clone());
-                    }
+                    let mut registry = self.inner.registry();
+                    registry.released.push(leaf.clone());
                     report.failed.push((leaf, error));
                 }
             }
@@ -2128,11 +2128,8 @@ impl EngineLaunchRoot {
 
     #[cfg(test)]
     pub(crate) fn registry_snapshot_for_test(&self) -> (usize, Vec<ReleasedLeaf>) {
-        self.inner
-            .registry
-            .lock()
-            .map(|registry| (registry.live, registry.released.clone()))
-            .unwrap_or_default()
+        let registry = self.inner.registry();
+        (registry.live, registry.released.clone())
     }
 
     #[cfg(test)]
@@ -2344,11 +2341,6 @@ pub(crate) type EngineResolutionTrace =
     Arc<std::sync::Mutex<Vec<(&'static str, std::thread::ThreadId)>>>;
 
 #[cfg(test)]
-static ENGINE_RESOLUTION_TRACE: std::sync::OnceLock<
-    std::sync::Mutex<Option<EngineResolutionTrace>>,
-> = std::sync::OnceLock::new();
-
-#[cfg(test)]
 std::thread_local! {
     static ENGINE_RESOLUTION_TRACE_LOCAL: std::cell::RefCell<Option<EngineResolutionTrace>> =
         const { std::cell::RefCell::new(None) };
@@ -2356,20 +2348,12 @@ std::thread_local! {
 
 #[cfg(test)]
 pub(crate) fn set_engine_resolution_trace(trace: Option<EngineResolutionTrace>) {
-    ENGINE_RESOLUTION_TRACE_LOCAL.with(|slot| *slot.borrow_mut() = trace.clone());
-    *ENGINE_RESOLUTION_TRACE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .unwrap() = trace;
+    ENGINE_RESOLUTION_TRACE_LOCAL.with(|slot| *slot.borrow_mut() = trace);
 }
 
 #[cfg(test)]
 pub(crate) fn take_engine_resolution_trace_for_worker() -> Option<EngineResolutionTrace> {
-    ENGINE_RESOLUTION_TRACE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .unwrap()
-        .take()
+    ENGINE_RESOLUTION_TRACE_LOCAL.with(|slot| slot.borrow_mut().take())
 }
 
 #[cfg(test)]
@@ -4242,9 +4226,9 @@ impl PathAuthority {
                     #[cfg(unix)]
                     file,
                     #[cfg(target_os = "macos")]
-                    target: std::sync::Mutex::new(target),
+                    target: std::sync::OnceLock::from(target),
                     #[cfg(target_os = "macos")]
-                    pinned_target: std::sync::Mutex::new(None),
+                    pinned_target: std::sync::OnceLock::new(),
                     #[cfg(target_os = "macos")]
                     is_directory: false,
                     #[cfg(windows)]
@@ -4271,9 +4255,9 @@ impl PathAuthority {
                     Ok(EngineResourceLease {
                         file,
                         #[cfg(target_os = "macos")]
-                        target: std::sync::Mutex::new(target),
+                        target: std::sync::OnceLock::from(target),
                         #[cfg(target_os = "macos")]
-                        pinned_target: std::sync::Mutex::new(None),
+                        pinned_target: std::sync::OnceLock::new(),
                         #[cfg(target_os = "macos")]
                         is_directory: true,
                     })
@@ -15733,6 +15717,11 @@ mod workspace_directory_enumeration_tests {
             ran_in_hook.store(true, Ordering::SeqCst);
             let root =
                 ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::EngineLaunch).unwrap();
+            assert!(!root.path().read_dir().unwrap().any(|entry| entry
+                .unwrap()
+                .file_type()
+                .unwrap()
+                .is_dir()));
             sweep_engine_launch_root(&root, OsStr::new("not-own.lock"), OsStr::new("not-own"))
                 .unwrap();
         })));
@@ -16014,5 +16003,54 @@ mod workspace_directory_enumeration_tests {
         assert_eq!(results.iter().filter(|success| **success).count(), 1);
         assert_eq!(results.iter().filter(|success| !**success).count(), 1);
         assert_eq!(root.registry_snapshot_for_test().0, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn poisoned_engine_launch_registry_preserves_drop_and_reclaim_accounting() {
+        use std::panic::AssertUnwindSafe;
+
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source");
+        fs::write(&source_path, b"released").unwrap();
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut leaf = root
+            .reserve_leaves(1, "test:poisoned", "poisoned-engine")
+            .unwrap()
+            .pop()
+            .unwrap();
+        leaf.create_from(
+            &fs::File::open(&source_path).unwrap(),
+            ENGINE_RESOURCE_LEAF_MODE,
+            &|| false,
+        )
+        .unwrap();
+
+        let poisoned = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _registry = root.inner.registry.lock().unwrap();
+            panic!("poison the engine launch registry");
+        }));
+        assert!(poisoned.is_err());
+        drop(leaf);
+        assert_eq!(root.registry_snapshot_for_test().0, 1);
+        assert_eq!(root.registry_snapshot_for_test().1.len(), 1);
+        let report = root.reclaim();
+        assert_eq!(report.removed, 1);
+        assert_eq!(root.registry_snapshot_for_test().0, 0);
+        assert!(root.registry_snapshot_for_test().1.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unpinned_file_resource_value_construction_is_a_typed_conflict() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        fs::write(&source, b"resource").unwrap();
+        let lease = EngineResourceLease::test_file(fs::File::open(&source).unwrap());
+        assert!(matches!(
+            lease.uci_value(),
+            Err(Error::Conflict(message))
+                if message == "engine file resource was not pinned before value construction"
+        ));
     }
 }

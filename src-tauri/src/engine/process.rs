@@ -275,6 +275,8 @@ struct ProcessChildControl {
     child: Child,
     #[cfg(test)]
     terminate_failure: Option<TerminateFailure>,
+    #[cfg(test)]
+    force_kill_started: bool,
 }
 
 #[async_trait]
@@ -293,7 +295,11 @@ impl ChildCleanup for ProcessChildControl {
     fn start_kill(&mut self) -> Result<(), Error> {
         #[cfg(test)]
         if matches!(self.terminate_failure, Some(TerminateFailure::QuitKillReap)) {
-            return Err(std::io::Error::other("injected engine kill failure").into());
+            self.force_kill_started = true;
+            return match self.child.start_kill() {
+                Ok(()) => Err(std::io::Error::other("injected engine kill failure").into()),
+                Err(error) => Err(error.into()),
+            };
         }
         self.child.start_kill().map_err(Into::into)
     }
@@ -304,7 +310,14 @@ impl ChildCleanup for ProcessChildControl {
             std::future::pending::<()>().await;
         }
         #[cfg(test)]
+        if self.terminate_failure == Some(TerminateFailure::QuitKillReap)
+            && !self.force_kill_started
+        {
+            return Err(Error::Conflict("injected engine reap failure".into()));
+        }
+        #[cfg(test)]
         if self.terminate_failure == Some(TerminateFailure::QuitKillReap) {
+            self.child.wait().await?;
             return Err(Error::Conflict("injected engine reap failure".into()));
         }
         self.child.wait().await?;
@@ -370,6 +383,50 @@ enum ForceKillAndReap {
     },
 }
 
+fn map_force_kill_and_reap(
+    primary: &Error,
+    result: ForceKillAndReap,
+    timeout_without_kill_error: bool,
+) -> Result<(), Error> {
+    match result {
+        ForceKillAndReap::Reaped => Ok(()),
+        ForceKillAndReap::ReapFailed {
+            kill_error: Some(kill),
+            reap_error: reap,
+        } => Err(Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: format!("force-kill failed: {kill}; final reap failed: {reap}"),
+        }),
+        ForceKillAndReap::ReapFailed {
+            kill_error: None,
+            reap_error: reap,
+        } => Err(Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: format!("final reap failed: {reap}"),
+        }),
+        ForceKillAndReap::ReapTimedOut {
+            kill_error: Some(kill),
+            timeout,
+        } => Err(Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: format!("force-kill failed: {kill}; final reap exceeded {timeout:?}"),
+        }),
+        ForceKillAndReap::ReapTimedOut {
+            kill_error: None,
+            timeout,
+        } if timeout_without_kill_error => Err(Error::EngineTimeout(format!(
+            "waiting for engine reap after force-kill exceeded {timeout:?}"
+        ))),
+        ForceKillAndReap::ReapTimedOut {
+            kill_error: None,
+            timeout,
+        } => Err(Error::OperationAndCleanup {
+            primary: primary.to_string(),
+            cleanup: format!("final reap exceeded {timeout:?}"),
+        }),
+    }
+}
+
 async fn force_kill_and_reap<C: ChildCleanup>(
     child: &mut C,
     kill_reap_timeout: Duration,
@@ -418,38 +475,16 @@ async fn terminate_child<C: ChildControl>(
         (Ok(()), Err(_)) => Error::EngineTimeout("waiting for engine exit".into()),
         (Ok(()), Ok(Ok(()))) => return Ok(()),
     };
-    match force_kill_and_reap(&mut child, kill_reap_timeout).await {
-        ForceKillAndReap::Reaped => {
+    match map_force_kill_and_reap(
+        &primary,
+        force_kill_and_reap(&mut child, kill_reap_timeout).await,
+        true,
+    ) {
+        Ok(()) => {
             error!("engine graceful shutdown failed but child reaped: {primary}");
             Ok(())
         }
-        ForceKillAndReap::ReapFailed {
-            kill_error: Some(kill),
-            reap_error: reap,
-        } => Err(Error::OperationAndCleanup {
-            primary: primary.to_string(),
-            cleanup: format!("force-kill failed: {kill}; final reap failed: {reap}"),
-        }),
-        ForceKillAndReap::ReapFailed {
-            kill_error: None,
-            reap_error: reap,
-        } => Err(Error::OperationAndCleanup {
-            primary: primary.to_string(),
-            cleanup: format!("final reap failed: {reap}"),
-        }),
-        ForceKillAndReap::ReapTimedOut {
-            kill_error: Some(kill),
-            timeout,
-        } => Err(Error::OperationAndCleanup {
-            primary: primary.to_string(),
-            cleanup: format!("force-kill failed: {kill}; final reap exceeded {timeout:?}"),
-        }),
-        ForceKillAndReap::ReapTimedOut {
-            kill_error: None,
-            timeout,
-        } => Err(Error::EngineTimeout(format!(
-            "waiting for engine reap after force-kill exceeded {timeout:?}"
-        ))),
+        Err(error) => Err(error),
     }
 }
 
@@ -463,36 +498,13 @@ async fn cleanup_spawn_io_failure(
         #[cfg(test)]
         terminate_failure: take_terminate_failure(),
     };
-    match force_kill_and_reap(&mut cleanup, kill_reap_timeout).await {
-        ForceKillAndReap::Reaped => primary,
-        ForceKillAndReap::ReapFailed {
-            kill_error: Some(kill),
-            reap_error: reap,
-        } => Error::OperationAndCleanup {
-            primary: primary.to_string(),
-            cleanup: format!("force-kill failed: {kill}; final reap failed: {reap}"),
-        },
-        ForceKillAndReap::ReapFailed {
-            kill_error: None,
-            reap_error: reap,
-        } => Error::OperationAndCleanup {
-            primary: primary.to_string(),
-            cleanup: format!("final reap failed: {reap}"),
-        },
-        ForceKillAndReap::ReapTimedOut {
-            kill_error: Some(kill),
-            timeout,
-        } => Error::OperationAndCleanup {
-            primary: primary.to_string(),
-            cleanup: format!("force-kill failed: {kill}; final reap exceeded {timeout:?}"),
-        },
-        ForceKillAndReap::ReapTimedOut {
-            kill_error: None,
-            timeout,
-        } => Error::OperationAndCleanup {
-            primary: primary.to_string(),
-            cleanup: format!("final reap exceeded {timeout:?}"),
-        },
+    match map_force_kill_and_reap(
+        &primary,
+        force_kill_and_reap(&mut cleanup, kill_reap_timeout).await,
+        false,
+    ) {
+        Ok(()) => primary,
+        Err(error) => error,
     }
 }
 
@@ -1675,14 +1687,22 @@ fn pin_engine_launch(
             Err(error) => return Err(PinFailure::Primary(error)),
         };
     let result = (|| {
-        files[0].create_from(executable.image_file(), 0o700, is_cancelled)?;
+        files[0].create_from(
+            executable.image_file(),
+            crate::infra::path_authority::ENGINE_EXECUTABLE_LEAF_MODE,
+            is_cancelled,
+        )?;
         let mut file_index = 1;
         for lease in executable.resource_leases() {
             if lease.is_directory() {
                 continue;
             }
             lease.file().metadata().map_err(Error::from)?;
-            files[file_index].create_from(lease.file(), 0o600, is_cancelled)?;
+            files[file_index].create_from(
+                lease.file(),
+                crate::infra::path_authority::ENGINE_RESOURCE_LEAF_MODE,
+                is_cancelled,
+            )?;
             lease.set_pinned_target(files[file_index].path())?;
             file_index += 1;
         }
@@ -1740,8 +1760,7 @@ pub(crate) async fn resolve_launch(
             if is_cancelled() {
                 return Ok(Err(PinFailure::Primary(Error::Cancellation)));
             }
-            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-            let (mut executable, mut resolved) = {
+            let (executable, mut resolved) = {
                 let mut guard = authority
                     .lock()
                     .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
@@ -1765,18 +1784,25 @@ pub(crate) async fn resolve_launch(
                 }
             }
             #[cfg(target_os = "macos")]
+            let option_leases = resolved
+                .iter()
+                .flat_map(|option| option.resources.iter().cloned())
+                .collect();
+            #[cfg(target_os = "macos")]
+            let mut executable = executable.with_resource_leases(option_leases);
+            #[cfg(target_os = "macos")]
             let reclaim_failures =
                 match pin_engine_launch(&mut executable, &key, &engine_id, &is_cancelled) {
                     Ok(reclaim_failures) => reclaim_failures,
                     Err(failure) => return Ok(Err(failure)),
                 };
-            #[cfg(test)]
+            #[cfg(all(test, target_os = "macos"))]
             if take_engine_launch_value_failure() {
                 return Ok(Err(PinFailure::Primary(Error::Conflict(
                     "injected engine launch value construction failure".into(),
                 ))));
             }
-            #[cfg(test)]
+            #[cfg(all(test, target_os = "macos"))]
             if let Ok(mut hook) = ENGINE_LAUNCH_POST_PIN_HOOK
                 .get_or_init(|| std::sync::Mutex::new(None))
                 .lock()
@@ -1788,7 +1814,7 @@ pub(crate) async fn resolve_launch(
             #[cfg(not(target_os = "macos"))]
             let reclaim_failures = Vec::new();
             for option in &mut resolved {
-                option.refresh_resource_values();
+                option.refresh_resource_values()?;
             }
             Ok(Ok(LaunchResult {
                 executable: executable.with_resource_leases(
@@ -1994,6 +2020,8 @@ impl EngineRuntime {
         deadlines: EngineDeadlines,
     ) -> Result<Self, Error> {
         let command_target = executable.command_target();
+        #[cfg(test)]
+        let command_target_for_observer = command_target.to_path_buf();
         let working_directory = executable.working_directory().to_path_buf();
         let mut command = Command::new(command_target);
         command
@@ -2033,11 +2061,11 @@ impl EngineRuntime {
             .await
             .map_err(|_| Error::EngineTimeout("spawning engine".into()))??;
         #[cfg(test)]
-        observe_spawned_child(&child);
-        #[cfg(test)]
+        observe_spawned_child(&child, &command_target_for_observer);
+        #[cfg(all(test, unix))]
         let forced_io_failure = take_spawn_io_failure();
         let stdin = child.stdin.take();
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let stdin = if forced_io_failure == Some(SpawnIoFailure::NoStdin) {
             None
         } else {
@@ -2054,13 +2082,13 @@ impl EngineRuntime {
                 .await)
             }
         };
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let stdout = if forced_io_failure == Some(SpawnIoFailure::NoStdout) {
             None
         } else {
             child.stdout.take()
         };
-        #[cfg(not(test))]
+        #[cfg(any(not(test), all(test, not(unix))))]
         let stdout = child.stdout.take();
         let stdout = match stdout {
             Some(stdout) => stdout,
@@ -2086,6 +2114,8 @@ impl EngineRuntime {
                     child,
                     #[cfg(test)]
                     terminate_failure: take_terminate_failure(),
+                    #[cfg(test)]
+                    force_kill_started: false,
                 }),
                 reader: BufReader::new(stdout),
                 _executable: executable,
@@ -2684,10 +2714,18 @@ pub(crate) async fn verify_option_resources_in(
             }
         }
         for value in values {
-            let Some(resource) = resources
-                .iter()
-                .find(|resource| resource.uci_value() == value)
-            else {
+            let Some(resource) = resources.iter().find(|resource| {
+                #[cfg(target_os = "macos")]
+                {
+                    resource
+                        .uci_value()
+                        .is_ok_and(|candidate| candidate == value)
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    resource.uci_value() == value
+                }
+            }) else {
                 return Err(Error::Conflict(
                     "engine option resource was not produced by the launched engine".into(),
                 ));
@@ -2763,16 +2801,15 @@ fn set_engine_launch_resolution_hook(hook: Option<EngineLaunchResolutionHook>) {
         .unwrap() = hook;
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 type EngineLaunchPostPinHook = Box<dyn FnOnce() + Send>;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 static ENGINE_LAUNCH_POST_PIN_HOOK: std::sync::OnceLock<
     std::sync::Mutex<Option<EngineLaunchPostPinHook>>,
 > = std::sync::OnceLock::new();
 
-#[cfg(test)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(all(test, target_os = "macos"))]
 fn set_engine_launch_post_pin_hook(hook: Option<EngineLaunchPostPinHook>) {
     *ENGINE_LAUNCH_POST_PIN_HOOK
         .get_or_init(|| std::sync::Mutex::new(None))
@@ -2780,14 +2817,14 @@ fn set_engine_launch_post_pin_hook(hook: Option<EngineLaunchPostPinHook>) {
         .unwrap() = hook;
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SpawnIoFailure {
     NoStdin,
     NoStdout,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 std::thread_local! {
     static SPAWN_IO_FAILURE: std::cell::RefCell<Option<SpawnIoFailure>> =
         const { std::cell::RefCell::new(None) };
@@ -2797,35 +2834,54 @@ std::thread_local! {
 type SpawnChildObserver = Box<dyn FnOnce(Option<u32>) + Send>;
 
 #[cfg(test)]
-static SPAWN_CHILD_OBSERVER: std::sync::OnceLock<std::sync::Mutex<Option<SpawnChildObserver>>> =
-    std::sync::OnceLock::new();
+struct SpawnChildObservation {
+    command_target: std::path::PathBuf,
+    observer: SpawnChildObserver,
+}
 
 #[cfg(test)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+static SPAWN_CHILD_OBSERVER: std::sync::OnceLock<std::sync::Mutex<Option<SpawnChildObservation>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(all(test, unix))]
 fn set_spawn_io_failure(failure: Option<SpawnIoFailure>) {
     SPAWN_IO_FAILURE.with(|slot| *slot.borrow_mut() = failure);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn take_spawn_io_failure() -> Option<SpawnIoFailure> {
     SPAWN_IO_FAILURE.with(|slot| slot.borrow_mut().take())
 }
 
 #[cfg(test)]
-fn set_spawn_child_observer(observer: Option<SpawnChildObserver>) {
+fn set_spawn_child_observer(
+    command_target: Option<std::path::PathBuf>,
+    observer: Option<SpawnChildObserver>,
+) {
     *SPAWN_CHILD_OBSERVER
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
-        .unwrap() = observer;
+        .unwrap() = command_target
+        .zip(observer)
+        .map(|(command_target, observer)| SpawnChildObservation {
+            command_target,
+            observer,
+        });
 }
 
 #[cfg(test)]
-fn observe_spawned_child(child: &Child) {
-    let observer = SPAWN_CHILD_OBSERVER
+fn observe_spawned_child(child: &Child, command_target: &std::path::Path) {
+    let mut registration = SPAWN_CHILD_OBSERVER
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
-        .unwrap()
-        .take();
+        .unwrap();
+    let observer = registration
+        .as_ref()
+        .filter(|observation| observation.command_target == command_target)
+        .is_some()
+        .then(|| registration.take())
+        .flatten()
+        .map(|observation| observation.observer);
     if let Some(observer) = observer {
         observer(child.id());
     }
@@ -2855,12 +2911,11 @@ fn take_terminate_failure() -> Option<TerminateFailure> {
     TERMINATE_FAILURE.with(|slot| slot.borrow_mut().take())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 static ENGINE_LAUNCH_VALUE_FAILURE: std::sync::OnceLock<std::sync::Mutex<bool>> =
     std::sync::OnceLock::new();
 
-#[cfg(test)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(all(test, target_os = "macos"))]
 fn set_engine_launch_value_failure(failure: bool) {
     *ENGINE_LAUNCH_VALUE_FAILURE
         .get_or_init(|| std::sync::Mutex::new(false))
@@ -2868,41 +2923,13 @@ fn set_engine_launch_value_failure(failure: bool) {
         .unwrap() = failure;
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 fn take_engine_launch_value_failure() -> bool {
     ENGINE_LAUNCH_VALUE_FAILURE
         .get_or_init(|| std::sync::Mutex::new(false))
         .lock()
         .map(|mut failure| std::mem::take(&mut *failure))
         .unwrap_or(false)
-}
-
-impl EngineActor {
-    pub(crate) async fn resolve_launch(
-        authority: Arc<std::sync::Mutex<Option<PathAuthority>>>,
-        engine: EngineHandle,
-        operation: PathOperation,
-        options: &[EngineOption],
-        admission: &AdmissionLease,
-    ) -> Result<(EngineExecutable, Vec<ResolvedEngineOption>), Error> {
-        resolve_launch(authority, engine, operation, options, admission).await
-    }
-
-    pub(crate) async fn resolve_option_leases(
-        authority: Arc<std::sync::Mutex<Option<PathAuthority>>>,
-        options: &[EngineOption],
-        cancellation: CancellationToken,
-    ) -> Result<Vec<ResolvedEngineOption>, Error> {
-        resolve_option_leases(authority, options, cancellation).await
-    }
-
-    pub(crate) async fn verify_option_resources(
-        actor: &Arc<Self>,
-        options: &[ResolvedEngineOption],
-        operation: Option<&CancellationToken>,
-    ) -> Result<(), Error> {
-        verify_option_resources(actor, options, operation).await
-    }
 }
 
 async fn engine_actor_loop(
@@ -3182,13 +3209,13 @@ mod tests {
         let lease = crate::infra::path_authority::EngineResourceLease::test_file(
             std::fs::File::open(&resource).unwrap(),
         );
-        #[allow(unused_mut)]
-        #[allow(unused_mut)]
-        let mut executable = crate::infra::path_authority::EngineExecutable::test_fixture(
+        let executable = crate::infra::path_authority::EngineExecutable::test_fixture(
             std::fs::File::open(&script).unwrap(),
             directory.path().to_path_buf(),
             vec![lease],
         );
+        #[cfg(target_os = "macos")]
+        let mut executable = executable;
         #[cfg(target_os = "macos")]
         {
             let root =
@@ -3198,7 +3225,10 @@ mod tests {
             pin_engine_launch(&mut executable, &key, "engine", &|| false).unwrap();
         }
         // The production UCI value, not a hand-built path: this is what
-        // `resolve_engine_options` hands to `setoption`.
+        // The resolved option value is handed to `setoption`.
+        #[cfg(target_os = "macos")]
+        let uci_value = executable.resource_leases()[0].uci_value().unwrap();
+        #[cfg(target_os = "linux")]
         let uci_value = executable.resource_leases()[0].uci_value();
         let actor = EngineActor::spawn_initialized(executable, EngineDeadlines::default())
             .await
@@ -3266,15 +3296,19 @@ mod tests {
         #[cfg(target_os = "linux")]
         let resource = crate::infra::path_authority::EngineResourceLease::test_file(resource_file);
         let resource = Arc::new(resource);
+        #[cfg(target_os = "macos")]
+        let value = resource.uci_value().unwrap();
+        #[cfg(target_os = "linux")]
         let value = resource.uci_value();
         let image = std::fs::File::open(&script).unwrap();
-        #[allow(unused_mut)]
-        let mut executable = crate::infra::path_authority::EngineExecutable::test_fixture(
+        let executable = crate::infra::path_authority::EngineExecutable::test_fixture(
             image,
             directory.path().to_path_buf(),
             vec![],
         )
         .with_resource_leases(vec![resource.clone()]);
+        #[cfg(target_os = "macos")]
+        let mut executable = executable;
         #[cfg(target_os = "macos")]
         {
             executable.set_test_launch_root(
@@ -5702,6 +5736,13 @@ mod tests {
 
     #[cfg(unix)]
     fn assert_child_is_reaped(pid: u32) {
+        for _ in 0..100 {
+            let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            if result == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
         assert_eq!(result, -1, "child {pid} still exists after spawn failure");
         assert_eq!(
@@ -5726,10 +5767,14 @@ mod tests {
                 directory.path().to_path_buf(),
                 Vec::new(),
             );
+            let command_target = executable.command_target().to_path_buf();
             let (pid_tx, pid_rx) = std::sync::mpsc::channel();
-            set_spawn_child_observer(Some(Box::new(move |pid| {
-                let _ = pid_tx.send(pid);
-            })));
+            set_spawn_child_observer(
+                Some(command_target),
+                Some(Box::new(move |pid| {
+                    let _ = pid_tx.send(pid);
+                })),
+            );
             set_spawn_io_failure(Some(failure));
             let result = EngineRuntime::spawn(
                 executable,
@@ -5740,7 +5785,7 @@ mod tests {
             )
             .await;
             set_spawn_io_failure(None);
-            set_spawn_child_observer(None);
+            set_spawn_child_observer(None, None);
 
             let pid = pid_rx
                 .recv_timeout(Duration::from_secs(1))
@@ -5762,10 +5807,14 @@ mod tests {
             directory.path().to_path_buf(),
             Vec::new(),
         );
+        let command_target = executable.command_target().to_path_buf();
         let (pid_tx, pid_rx) = std::sync::mpsc::channel();
-        set_spawn_child_observer(Some(Box::new(move |pid| {
-            let _ = pid_tx.send(pid);
-        })));
+        set_spawn_child_observer(
+            Some(command_target),
+            Some(Box::new(move |pid| {
+                let _ = pid_tx.send(pid);
+            })),
+        );
         set_spawn_io_failure(Some(SpawnIoFailure::NoStdin));
         set_terminate_failure(Some(TerminateFailure::ReapError));
         let result = EngineRuntime::spawn(
@@ -5778,7 +5827,7 @@ mod tests {
         .await;
         set_spawn_io_failure(None);
         set_terminate_failure(None);
-        set_spawn_child_observer(None);
+        set_spawn_child_observer(None, None);
 
         let pid = pid_rx
             .recv_timeout(Duration::from_secs(1))
@@ -5855,6 +5904,11 @@ mod tests {
                 std::fs::File::open(&path).unwrap(),
             ),
         );
+        #[cfg(target_os = "macos")]
+        lease.pin_test_target_to_original().unwrap();
+        #[cfg(target_os = "macos")]
+        let value = lease.uci_value().unwrap();
+        #[cfg(target_os = "linux")]
         let value = lease.uci_value();
         let (actor, writes) = EngineActor::recording_test_actor_with_resources(&[], vec![lease]);
         let options = vec![ResolvedEngineOption {
@@ -5906,6 +5960,11 @@ mod tests {
                 std::fs::File::open(&path).unwrap(),
             ),
         );
+        #[cfg(target_os = "macos")]
+        lease.pin_test_target_to_original().unwrap();
+        #[cfg(target_os = "macos")]
+        let value = lease.uci_value().unwrap();
+        #[cfg(target_os = "linux")]
         let value = lease.uci_value();
         let deadlines = EngineDeadlines {
             resource_verify: std::time::Duration::from_millis(500),
@@ -6003,7 +6062,18 @@ mod tests {
                 std::fs::File::open(&second_path).unwrap(),
             ),
         );
+        #[cfg(target_os = "macos")]
+        {
+            first.pin_test_target_to_original().unwrap();
+            second.pin_test_target_to_original().unwrap();
+        }
+        #[cfg(target_os = "macos")]
+        let first_value = first.uci_value().unwrap();
+        #[cfg(target_os = "linux")]
         let first_value = first.uci_value();
+        #[cfg(target_os = "macos")]
+        let second_value = second.uci_value().unwrap();
+        #[cfg(target_os = "linux")]
         let second_value = second.uci_value();
         let (actor, writes) = EngineActor::recording_test_actor_with_resources(
             &[],
@@ -6071,7 +6141,7 @@ mod tests {
             std::fs::rename(&replacement, replacement.with_extension("replaced")).unwrap();
             std::fs::write(&replacement, "#!/bin/sh\nexit 22\n").unwrap();
         })));
-        let (executable, _) = EngineActor::resolve_launch(
+        let (executable, _) = resolve_launch(
             authority,
             engine,
             PathOperation::EngineExecute,
@@ -6086,6 +6156,262 @@ mod tests {
             .await
             .unwrap();
         actor.terminate().await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_launch_pins_file_resource_before_value_construction() {
+        use crate::infra::path_authority::{
+            EngineLaunchRoot, EngineResourceHandleKind, PathAuthority, PathClass,
+        };
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("resolve-launch-resource-engine.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) p=${line#*value }; cat \"$p\";; quit) exit 0;; esac; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let resource_path = directory.path().join("resource.bin");
+        std::fs::write(&resource_path, b"authorized-resource\n").unwrap();
+        let launch_root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut authority = PathAuthority::open_with_launch_root(
+            directory.path().join("registry.json"),
+            Vec::new(),
+            launch_root.clone(),
+        )
+        .unwrap();
+        let engine = authority
+            .register_engine_file(&script, "resolve-launch-resource-engine")
+            .unwrap();
+        let grant = authority
+            .grant_dialog(
+                &resource_path,
+                "resource",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let resource = authority
+            .promote_engine_resource(&grant, EngineResourceHandleKind::File, "resource")
+            .unwrap();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("resolve-launch-resource".into(), engine.id.id.clone()).unwrap();
+        let admission = supervisor
+            .admit_for_launch(
+                key,
+                "resolve-launch-resource-engine".into(),
+                engine.id.clone(),
+            )
+            .await
+            .unwrap();
+        let (executable, resolved) = resolve_launch(
+            authority,
+            engine,
+            PathOperation::EngineExecute,
+            &[EngineOption::Resource {
+                name: "EvalFile".into(),
+                resources: vec![resource],
+            }],
+            &admission,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved.len(), 1);
+        let value = resolved[0].value.clone();
+        assert!(value.starts_with(launch_root.instance_path().to_string_lossy().as_ref()));
+        assert_ne!(value, resource_path.to_string_lossy());
+
+        std::fs::rename(
+            &resource_path,
+            directory.path().join("resource-original.bin"),
+        )
+        .unwrap();
+        std::fs::write(&resource_path, b"replacement-resource\n").unwrap();
+        let actor = EngineActor::spawn_initialized(executable, EngineDeadlines::default())
+            .await
+            .unwrap();
+        actor
+            .set_option_with_resources("EvalFile", &value, std::slice::from_ref(&value))
+            .await
+            .unwrap();
+        actor.ensure_ready().await.unwrap();
+        let logs = actor.logs().await.unwrap();
+        assert!(logs.iter().any(|entry| {
+            matches!(entry, EngineLog::Engine(line) if line == "authorized-resource")
+        }));
+        assert!(!logs.iter().any(|entry| {
+            matches!(entry, EngineLog::Engine(line) if line == "replacement-resource")
+        }));
+        actor.terminate().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn earlier_duplicate_directory_replacement_is_ignored_when_effective_option_is_valid() {
+        use crate::infra::path_authority::{EngineResourceHandleKind, PathAuthority, PathClass};
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("duplicate-directory-engine.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        #[cfg(target_os = "macos")]
+        let launch_root =
+            crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut authority = {
+            #[cfg(target_os = "macos")]
+            {
+                PathAuthority::open_with_launch_root(
+                    directory.path().join("registry.json"),
+                    Vec::new(),
+                    launch_root.clone(),
+                )
+                .unwrap()
+            }
+            #[cfg(target_os = "linux")]
+            {
+                PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap()
+            }
+        };
+        let engine = authority
+            .register_engine_file(&script, "duplicate-directory-engine")
+            .unwrap();
+        let first_path = directory.path().join("first-tables");
+        let second_path = directory.path().join("second-tables");
+        std::fs::create_dir(&first_path).unwrap();
+        std::fs::create_dir(&second_path).unwrap();
+        let promote = |authority: &mut PathAuthority, path: &std::path::Path, name: &str| {
+            let grant = authority
+                .grant_dialog(
+                    path,
+                    name,
+                    PathClass::SingleDialogGrant,
+                    PathOperation::EngineResourceRead,
+                    Duration::from_secs(30),
+                    1,
+                )
+                .unwrap();
+            authority
+                .promote_engine_resource(&grant, EngineResourceHandleKind::Directory, name)
+                .unwrap()
+        };
+        let first = promote(&mut authority, &first_path, "first-tables");
+        let second = promote(&mut authority, &second_path, "second-tables");
+        std::fs::remove_dir(&first_path).unwrap();
+        std::fs::write(&first_path, b"replaced").unwrap();
+
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("duplicate-directory".into(), engine.id.id.clone()).unwrap();
+        let admission = supervisor
+            .admit_for_launch(key, "duplicate-directory-engine".into(), engine.id.clone())
+            .await
+            .unwrap();
+        let result = resolve_launch(
+            authority,
+            engine,
+            PathOperation::EngineExecute,
+            &[
+                EngineOption::Resource {
+                    name: "SyzygyPath".into(),
+                    resources: vec![first],
+                },
+                EngineOption::Resource {
+                    name: "SyzygyPath".into(),
+                    resources: vec![second],
+                },
+            ],
+            &admission,
+        )
+        .await;
+        let (executable, resolved) = result.unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].resources.len(), 1);
+        drop(executable);
+        #[cfg(target_os = "macos")]
+        assert!(launch_root.reclaim().removed >= 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn duplicate_evalfile_options_use_only_the_effective_resources_for_leaf_capacity() {
+        use crate::infra::path_authority::{
+            EngineLaunchRoot, EngineResourceHandleKind, PathAuthority, PathClass,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("duplicate-evalfile-engine.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let launch_root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut authority = PathAuthority::open_with_launch_root(
+            directory.path().join("registry.json"),
+            Vec::new(),
+            launch_root.clone(),
+        )
+        .unwrap();
+        let engine = authority
+            .register_engine_file(&script, "duplicate-evalfile-engine")
+            .unwrap();
+        let mut resources = Vec::new();
+        for index in 0..64 {
+            let path = directory.path().join(format!("resource-{index}.bin"));
+            std::fs::write(&path, index.to_string()).unwrap();
+            let grant = authority
+                .grant_dialog(
+                    &path,
+                    format!("resource-{index}"),
+                    PathClass::SingleDialogGrant,
+                    PathOperation::EngineResourceRead,
+                    Duration::from_secs(30),
+                    1,
+                )
+                .unwrap();
+            resources.push(
+                authority
+                    .promote_engine_resource(
+                        &grant,
+                        EngineResourceHandleKind::File,
+                        format!("resource-{index}"),
+                    )
+                    .unwrap(),
+            );
+        }
+        let first = resources[..32].to_vec();
+        let second = resources[32..].to_vec();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("duplicate-evalfile".into(), engine.id.id.clone()).unwrap();
+        let admission = supervisor
+            .admit_for_launch(key, "duplicate-evalfile-engine".into(), engine.id.clone())
+            .await
+            .unwrap();
+        let (executable, resolved) = resolve_launch(
+            authority,
+            engine,
+            PathOperation::EngineExecute,
+            &[
+                EngineOption::Resource {
+                    name: "EvalFile".into(),
+                    resources: first,
+                },
+                EngineOption::Resource {
+                    name: "EvalFile".into(),
+                    resources: second,
+                },
+            ],
+            &admission,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].resources.len(), 32);
+        assert_eq!(launch_root.registry_snapshot_for_test().0, 33);
+        drop(executable);
+        assert_eq!(launch_root.reclaim().removed, 33);
     }
 
     #[cfg(unix)]
@@ -6143,7 +6469,7 @@ mod tests {
             .admit_for_launch(key, "thread-engine".into(), engine.id.clone())
             .await
             .unwrap();
-        let result = EngineActor::resolve_launch(
+        let result = resolve_launch(
             authority,
             engine,
             PathOperation::EngineExecute,
@@ -6198,7 +6524,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            EngineActor::resolve_launch(
+            resolve_launch(
                 authority,
                 engine,
                 PathOperation::EngineExecute,
@@ -6209,6 +6535,74 @@ mod tests {
             Err(Error::Conflict(message))
                 if message == "engine launch root is not initialized"
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn launch_reports_a_failed_prior_reclaim_with_engine_identity() {
+        use crate::error::LogCaptureScope;
+        use crate::infra::path_authority::{EngineLaunchRoot, PathAuthority};
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        std::fs::write(&source, b"released").unwrap();
+        let launch_root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut released = launch_root
+            .reserve_leaves(1, "stale-tab:stale-engine", "stale-engine")
+            .unwrap()
+            .pop()
+            .unwrap();
+        released
+            .create_from(
+                &std::fs::File::open(&source).unwrap(),
+                crate::infra::path_authority::ENGINE_RESOURCE_LEAF_MODE,
+                &|| false,
+            )
+            .unwrap();
+        drop(released);
+
+        let script = directory.path().join("reclaim-log-engine.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut authority = PathAuthority::open_with_launch_root(
+            directory.path().join("registry.json"),
+            Vec::new(),
+            launch_root.clone(),
+        )
+        .unwrap();
+        let engine = authority
+            .register_engine_file(&script, "reclaim-log-engine")
+            .unwrap();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("reclaim-log-tab".into(), "reclaim-log-engine".into()).unwrap();
+        let admission = supervisor
+            .admit_for_launch(key, "reclaim-log-engine".into(), engine.id.clone())
+            .await
+            .unwrap();
+        crate::infra::fs::set_test_removal_injector(Some(Arc::new(
+            crate::infra::fs::RemovalFault(crate::infra::fs::RemovalFaultPoint::BeforeTopOpen),
+        )));
+        let capture = LogCaptureScope::start();
+        let result = resolve_launch(
+            authority,
+            engine,
+            PathOperation::EngineExecute,
+            &[],
+            &admission,
+        )
+        .await;
+        crate::infra::fs::set_test_removal_injector(None);
+        let (executable, _) = result.unwrap();
+        assert!(capture.messages().iter().any(|message| {
+            message.contains(
+                "engine launch leaf reclaim failed for key=stale-tab:stale-engine \
+engine_id=stale-engine category=I/O failure",
+            )
+        }));
+        drop(executable);
+        assert_eq!(launch_root.reclaim().removed, 2);
     }
 
     #[cfg(target_os = "macos")]
@@ -6240,7 +6634,7 @@ mod tests {
             .await
             .unwrap();
         set_engine_launch_value_failure(true);
-        let result = EngineActor::resolve_launch(
+        let result = resolve_launch(
             authority,
             engine,
             PathOperation::EngineExecute,
@@ -6291,7 +6685,7 @@ mod tests {
         set_engine_launch_post_pin_hook(Some(Box::new(move || {
             cancelled.store(true, AtomicOrdering::SeqCst);
         })));
-        let result = EngineActor::resolve_launch(
+        let result = resolve_launch(
             authority,
             engine,
             PathOperation::EngineExecute,
@@ -6405,9 +6799,22 @@ mod tests {
                 kill_reap: Duration::from_millis(30),
                 ..EngineDeadlines::default()
             };
+            let command_target = executable.command_target().to_path_buf();
+            let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+            set_spawn_child_observer(
+                Some(command_target),
+                Some(Box::new(move |pid| {
+                    let _ = pid_tx.send(pid);
+                })),
+            );
             set_terminate_failure(Some(failure));
             let mut runtime = EngineRuntime::spawn(executable, deadlines).await.unwrap();
             set_terminate_failure(None);
+            set_spawn_child_observer(None, None);
+            let pid = pid_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .expect("spawn observer must see a real child pid");
             let result = runtime.terminate().await;
             if expected_timeout {
                 assert!(matches!(result, Err(Error::EngineTimeout(_))));
@@ -6415,6 +6822,9 @@ mod tests {
                 assert!(matches!(result, Err(Error::OperationAndCleanup { .. })));
             }
             drop(runtime);
+            if !expected_timeout {
+                assert_child_is_reaped(pid);
+            }
         }
     }
 
@@ -6430,7 +6840,7 @@ mod tests {
                 std::fs::File::open(&tables).unwrap(),
             ),
         );
-        let value = lease.uci_value();
+        let value = lease.uci_value().unwrap();
         let (actor, writes) = EngineActor::recording_test_actor_with_resources(&[], vec![lease]);
         std::fs::rename(&tables, directory.path().join("tables-original")).unwrap();
         std::fs::create_dir(&tables).unwrap();
@@ -6472,7 +6882,7 @@ mod tests {
                     std::fs::File::open(&tables).unwrap(),
                 ),
             );
-            let value = resource.uci_value();
+            let value = resource.uci_value().unwrap();
             let root =
                 crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap();
             let mut executable = EngineExecutable::test_fixture(

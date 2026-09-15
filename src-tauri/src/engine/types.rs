@@ -7,6 +7,8 @@ use crate::{
     infra::path_authority::{EngineResourceHandle, EngineResourceHandleKind},
 };
 
+pub(crate) use super::process::{resolve_launch, resolve_option_leases, verify_option_resources};
+
 /// A stable, exact identity for one interactive engine process.  In
 /// particular, `tab == "a"` and `tab == "ab"` are different identities;
 /// callers must never implement cleanup with prefix matching.
@@ -166,11 +168,26 @@ impl EngineOption {
     }
 }
 
+pub(crate) fn effective_engine_options(options: &[EngineOption]) -> Vec<EngineOption> {
+    let mut effective: Vec<EngineOption> = Vec::new();
+    for option in options {
+        if let Some(previous) = effective
+            .iter_mut()
+            .find(|previous| previous.name() == option.name())
+        {
+            *previous = option.clone();
+        } else {
+            effective.push(option.clone());
+        }
+    }
+    effective
+}
+
 pub(crate) fn resolve_engine_option_leases(
     authority: &mut crate::infra::path_authority::PathAuthority,
     options: &[EngineOption],
 ) -> Result<Vec<ResolvedEngineOption>, Error> {
-    options
+    effective_engine_options(options)
         .iter()
         .map(|option| match option {
             EngineOption::String { name, value } => {
@@ -188,32 +205,17 @@ pub(crate) fn resolve_engine_option_leases(
                     .iter()
                     .map(|resource| authority.engine_resource(resource).map(std::sync::Arc::new))
                     .collect::<Result<Vec<_>, _>>()?;
-                let separator = if cfg!(windows) { ";" } else { ":" };
-                // Keep the individual values alongside the joined UCI value. The
-                // runtime must know their provenance explicitly so transcript
-                // redaction never has to infer whether a string is a path.
-                let resource_values = leases
-                    .iter()
-                    .map(|lease| lease.uci_value())
-                    .collect::<Vec<_>>();
-                let value = resource_values.join(separator);
+                // Keep the leases until the launch layer has pinned any file
+                // resources and can construct their values from those pins.
                 Ok(ResolvedEngineOption {
                     name: name.clone(),
-                    value,
+                    value: String::new(),
                     resources: leases,
-                    resource_values,
+                    resource_values: Vec::new(),
                 })
             }
         })
         .collect()
-}
-
-#[cfg(test)]
-pub(crate) fn resolve_engine_options(
-    authority: &mut crate::infra::path_authority::PathAuthority,
-    options: &[EngineOption],
-) -> Result<Vec<ResolvedEngineOption>, Error> {
-    resolve_engine_option_leases(authority, options)
 }
 
 /// Internal UCI option. This never crosses IPC or renderer persistence.
@@ -229,17 +231,26 @@ pub(crate) struct ResolvedEngineOption {
 }
 
 impl ResolvedEngineOption {
-    pub(crate) fn refresh_resource_values(&mut self) {
+    pub(crate) fn refresh_resource_values(&mut self) -> Result<(), Error> {
         if self.resources.is_empty() {
-            return;
+            return Ok(());
         }
-        self.resource_values = self
+        #[cfg(target_os = "macos")]
+        let values = self
             .resources
             .iter()
             .map(|resource| resource.uci_value())
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(not(target_os = "macos"))]
+        let values = self
+            .resources
+            .iter()
+            .map(|resource| resource.uci_value())
+            .collect::<Vec<_>>();
+        self.resource_values = values;
         let separator = if cfg!(windows) { ";" } else { ":" };
         self.value = self.resource_values.join(separator);
+        Ok(())
     }
 }
 
@@ -474,13 +485,18 @@ mod tests {
             resources: vec![first, second],
         }];
 
-        let resolved = resolve_engine_options(&mut authority, &options).unwrap();
+        let mut resolved = resolve_engine_option_leases(&mut authority, &options).unwrap();
+        #[cfg(target_os = "macos")]
+        for resource in &resolved[0].resources {
+            resource.pin_test_target_to_original().unwrap();
+        }
+        resolved[0].refresh_resource_values().unwrap();
         assert_eq!(resolved.len(), 1);
         let resolved = &resolved[0];
         assert_eq!(resolved.resources.len(), 2);
         assert_eq!(resolved.resource_values.len(), 2);
-        let first_value = resolved.resources[0].uci_value();
-        let second_value = resolved.resources[1].uci_value();
+        let first_value = resolved.resource_values[0].clone();
+        let second_value = resolved.resource_values[1].clone();
         assert_eq!(
             resolved.resource_values,
             vec![first_value.clone(), second_value.clone()]

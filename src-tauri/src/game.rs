@@ -28,17 +28,20 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     engine::{
-        parse_fen_to_position, spawn_registered, EngineActor, EngineDeadlines, EngineKey,
-        EngineLog, EngineOption, EngineSupervisor, GoMode, PlayersTime, MAX_ENGINE_LIMIT,
+        parse_fen_to_position, resolve_launch, spawn_registered, verify_option_resources,
+        AdmissionLease, EngineActor, EngineDeadlines, EngineKey, EngineLog, EngineOption,
+        EngineSupervisor, GoMode, PlayersTime, ResolvedEngineOption, MAX_ENGINE_LIMIT,
     },
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
     infra::keyed_locks::{KeyedLockLease, KeyedLocks},
-    infra::path_authority::{EngineHandle, OpeningBookHandle, PathAuthority, PathOperation},
+    infra::path_authority::{
+        EngineExecutable, EngineHandle, OpeningBookHandle, PathAuthority, PathOperation,
+    },
 };
 
 #[cfg(test)]
-use crate::{engine::resolve_engine_options, infra::path_authority::EngineExecutable};
+use crate::engine::resolve_engine_option_leases;
 
 pub type GameId = String;
 
@@ -1015,7 +1018,7 @@ async fn spawn_configured_game_engine(
     let admission = supervisor
         .admit_for_launch(key.clone(), engine_id.clone(), executable_ref.clone())
         .await?;
-    let (executable, resolved) = EngineActor::resolve_launch(
+    let (executable, resolved) = resolve_launch(
         authority,
         engine,
         PathOperation::EngineExecute,
@@ -1023,32 +1026,13 @@ async fn spawn_configured_game_engine(
         &admission,
     )
     .await?;
-    let (supervised, ()) = spawn_registered(
+    let supervised = spawn_configured_game_engine_with_resolved(
         supervisor,
-        key.clone(),
         executable,
+        resolved,
         admission,
-        move |engine| async move {
-            #[cfg(test)]
-            run_game_engine_after_spawn_hook();
-            engine.init_uci().await?;
-            EngineActor::verify_option_resources(&engine, &resolved, None).await?;
-            for option in resolved {
-                if option.name != "UCI_Chess960" {
-                    engine
-                        .set_option_with_resources(
-                            &option.name,
-                            &option.value,
-                            &option.resource_values,
-                        )
-                        .await?;
-                }
-            }
-            engine
-                .set_option("UCI_Chess960", if chess960 { "true" } else { "false" })
-                .await?;
-            engine.ensure_ready().await
-        },
+        key.clone(),
+        chess960,
     )
     .await?;
     Ok(RegisteredGameEngine {
@@ -1058,8 +1042,52 @@ async fn spawn_configured_game_engine(
     })
 }
 
-#[cfg(test)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+async fn initialize_configured_game_engine(
+    engine: Arc<EngineActor>,
+    resolved: Vec<ResolvedEngineOption>,
+    chess960: bool,
+) -> Result<(), Error> {
+    #[cfg(all(test, target_os = "macos"))]
+    run_game_engine_after_spawn_hook();
+    engine.init_uci().await?;
+    verify_option_resources(&engine, &resolved, None).await?;
+    for option in resolved {
+        if option.name != "UCI_Chess960" {
+            engine
+                .set_option_with_resources(&option.name, &option.value, &option.resource_values)
+                .await?;
+        }
+    }
+    engine
+        .set_option("UCI_Chess960", if chess960 { "true" } else { "false" })
+        .await?;
+    engine.ensure_ready().await
+}
+
+async fn spawn_configured_game_engine_with_resolved(
+    supervisor: Arc<EngineSupervisor>,
+    executable: EngineExecutable,
+    mut resolved: Vec<ResolvedEngineOption>,
+    admission: AdmissionLease,
+    key: EngineKey,
+    chess960: bool,
+) -> Result<crate::engine::SupervisedEngine, Error> {
+    let child_leases = resolved
+        .iter_mut()
+        .flat_map(|option| std::mem::take(&mut option.resources))
+        .collect();
+    spawn_registered(
+        supervisor,
+        key,
+        executable.with_resource_leases(child_leases),
+        admission,
+        move |engine| initialize_configured_game_engine(engine, resolved, chess960),
+    )
+    .await
+    .map(|(supervised, ())| supervised)
+}
+
+#[cfg(all(test, target_os = "macos"))]
 fn set_game_engine_after_spawn_hook(hook: Option<Box<dyn FnOnce() + Send>>) {
     *GAME_ENGINE_AFTER_SPAWN_HOOK
         .get_or_init(|| std::sync::Mutex::new(None))
@@ -1067,7 +1095,7 @@ fn set_game_engine_after_spawn_hook(hook: Option<Box<dyn FnOnce() + Send>>) {
         .unwrap() = hook;
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 fn run_game_engine_after_spawn_hook() {
     if let Ok(mut hook) = GAME_ENGINE_AFTER_SPAWN_HOOK
         .get_or_init(|| std::sync::Mutex::new(None))
@@ -1079,10 +1107,10 @@ fn run_game_engine_after_spawn_hook() {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 type GameEngineAfterSpawnHook = Box<dyn FnOnce() + Send>;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 static GAME_ENGINE_AFTER_SPAWN_HOOK: std::sync::OnceLock<
     std::sync::Mutex<Option<GameEngineAfterSpawnHook>>,
 > = std::sync::OnceLock::new();
@@ -1108,46 +1136,29 @@ async fn spawn_configured_game_engine_with_executable(
         let mut authority = authority
             .lock()
             .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-        resolve_engine_options(
+        resolve_engine_option_leases(
             authority
                 .as_mut()
                 .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?,
             options,
         )?
     };
-    // Every resource option of a game engine is resolved before spawn, so the
-    // leases move into the executable and stay alive for the process lifetime
-    // through the `EngineExecutable` that `ChildUciIo` owns. The controller
-    // therefore holds no leases of its own; `chess.rs` differs only because
-    // analysis re-resolves options on an already-running engine.
-    let child_leases = resolved
-        .iter_mut()
-        .flat_map(|option| std::mem::take(&mut option.resources))
-        .collect();
-    let (supervised, ()) = spawn_registered(
+    #[cfg(target_os = "macos")]
+    for option in &resolved {
+        for resource in &option.resources {
+            resource.pin_test_target_to_original()?;
+        }
+    }
+    for option in &mut resolved {
+        option.refresh_resource_values()?;
+    }
+    let supervised = spawn_configured_game_engine_with_resolved(
         supervisor,
-        key.clone(),
-        executable.with_resource_leases(child_leases),
+        executable,
+        resolved,
         admission,
-        move |engine| async move {
-            engine.init_uci().await?;
-            EngineActor::verify_option_resources(&engine, &resolved, None).await?;
-            for option in resolved {
-                if option.name != "UCI_Chess960" {
-                    engine
-                        .set_option_with_resources(
-                            &option.name,
-                            &option.value,
-                            &option.resource_values,
-                        )
-                        .await?;
-                }
-            }
-            engine
-                .set_option("UCI_Chess960", if chess960 { "true" } else { "false" })
-                .await?;
-            engine.ensure_ready().await
-        },
+        key.clone(),
+        chess960,
     )
     .await?;
     Ok(RegisteredGameEngine {

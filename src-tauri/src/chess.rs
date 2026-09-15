@@ -27,9 +27,9 @@ use vampirc_uci::{
 use crate::{
     db::{DatabaseRepository, GameQuery, PositionQueryJs},
     engine::{
-        parse_fen_and_apply_moves, spawn_registered, AdmissionLease, EngineActor, EngineDeadlines,
-        EngineKey, EngineLog, EngineOption, EngineRequestId, GoMode, ResolvedEngineOption,
-        SupervisedEngine,
+        parse_fen_and_apply_moves, resolve_launch, resolve_option_leases, spawn_registered,
+        verify_option_resources, AdmissionLease, EngineActor, EngineDeadlines, EngineKey,
+        EngineLog, EngineOption, EngineRequestId, GoMode, ResolvedEngineOption, SupervisedEngine,
     },
     error::Error,
     infra::{
@@ -44,8 +44,8 @@ use crate::{
 use tokio::sync::OwnedSemaphorePermit;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(test)]
-use crate::engine::resolve_engine_options;
+#[cfg(all(test, target_os = "linux"))]
+use crate::engine::resolve_engine_option_leases;
 
 pub struct EngineProcess {
     base: Arc<EngineActor>,
@@ -99,7 +99,13 @@ impl EngineProcess {
         resolved: Vec<ResolvedEngineOption>,
         operation: Option<CancellationToken>,
     ) -> Result<(), Error> {
-        EngineActor::verify_option_resources(&self.base, &resolved, operation.as_ref()).await?;
+        let effective_options = crate::engine::effective_engine_options(&options.extra_options);
+        if resolved.len() != effective_options.len() {
+            return Err(Error::Conflict(
+                "resolved engine options do not match requested options".into(),
+            ));
+        }
+        verify_option_resources(&self.base, &resolved, operation.as_ref()).await?;
         #[cfg(test)]
         run_after_resource_verification_hook().await;
         let fen_changed = options.fen != self.options.fen;
@@ -120,34 +126,10 @@ impl EngineProcess {
             }
         }
 
-        if resolved.len() != options.extra_options.len() {
-            return Err(Error::Conflict(
-                "resolved engine options do not match requested options".into(),
-            ));
-        }
-        let mut first_seen = Vec::new();
-        let mut last_index = HashMap::new();
-        for (index, option) in options.extra_options.iter().enumerate() {
-            let name = option.name().to_string();
-            if !last_index.contains_key(&name) {
-                first_seen.push(name.clone());
-            }
-            last_index.insert(name, index);
-        }
-        let mut resolved_by_index: Vec<_> = resolved.into_iter().map(Some).collect();
-        let mut to_send = Vec::with_capacity(first_seen.len());
+        let mut to_send = resolved;
         let mut next_resource_leases = Vec::new();
-        for name in first_seen {
-            let Some(index) = last_index.get(&name).copied() else {
-                continue;
-            };
-            let Some(mut resolved) = resolved_by_index[index].take() else {
-                return Err(Error::Conflict(
-                    "resolved engine option was consumed more than once".into(),
-                ));
-            };
-            next_resource_leases.append(&mut resolved.resources);
-            to_send.push(resolved);
+        for option in &mut to_send {
+            next_resource_leases.append(&mut option.resources);
         }
 
         let multipv = to_send
@@ -168,10 +150,8 @@ impl EngineProcess {
         self.real_multipv = multipv.min(pos.legal_moves().len() as u16);
 
         for option in &to_send {
-            let current = options
-                .extra_options
+            let current = effective_options
                 .iter()
-                .rev()
                 .find(|configured| configured.name() == option.name);
             let previous = self
                 .options
@@ -697,7 +677,7 @@ async fn get_best_moves_core<R: tauri::Runtime>(
         .engine_supervisor
         .consume_engine_search(key.clone(), id.clone(), executable_ref.clone(), &generation)
         .await?;
-    let (executable, resolved) = EngineActor::resolve_launch(
+    let (executable, resolved) = resolve_launch(
         state.pgn_path_authority.clone(),
         engine.clone(),
         PathOperation::EngineExecute,
@@ -1179,7 +1159,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
             .await);
         }
     };
-    let (executable, initial_resolved) = match EngineActor::resolve_launch(
+    let (executable, initial_resolved) = match resolve_launch(
         state.pgn_path_authority.clone(),
         engine,
         PathOperation::EngineExecute,
@@ -1265,7 +1245,7 @@ async fn analyze_game_core<R: tauri::Runtime>(
             moves: moves.clone(),
             extra_options: report_options.clone(),
         };
-        let mut resolved = match EngineActor::resolve_option_leases(
+        let mut resolved = match resolve_option_leases(
             state.pgn_path_authority.clone(),
             &configured_options.extra_options,
             cancellation.clone(),
@@ -2333,14 +2313,7 @@ done
         };
 
         process
-            .set_options(
-                options,
-                vec![
-                    resolved_option("MultiPV", "2"),
-                    resolved_option("MultiPV", "4"),
-                ],
-                None,
-            )
+            .set_options(options, vec![resolved_option("MultiPV", "4")], None)
             .await
             .unwrap();
 
@@ -2371,6 +2344,11 @@ done
                 std::fs::File::open(&resource_file).unwrap(),
             ),
         );
+        #[cfg(target_os = "macos")]
+        lease.pin_test_target_to_original().unwrap();
+        #[cfg(target_os = "macos")]
+        let resource = lease.uci_value().unwrap();
+        #[cfg(target_os = "linux")]
         let resource = lease.uci_value();
         let (actor, writes) = EngineActor::recording_test_actor_with_resources(
             &["readyok", &resource],
@@ -2451,22 +2429,30 @@ done
         // Each resolution owns a new descriptor. The report path must keep the
         // descriptor inherited by the already-running child when it re-resolves
         // the same opaque handle for a report position.
+        #[cfg(target_os = "linux")]
         let (initial, refreshed) = {
             let state = app.state::<AppState>();
             let mut authority = state.pgn_path_authority.lock().unwrap();
             let authority = authority.as_mut().unwrap();
-            let initial_option = resolve_engine_options(authority, std::slice::from_ref(&option))
-                .unwrap()
-                .pop()
-                .unwrap();
+            let initial_option =
+                resolve_engine_option_leases(authority, std::slice::from_ref(&option))
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+            let mut initial_option = initial_option;
+            initial_option.refresh_resource_values().unwrap();
             let initial = initial_option.resource_values[0].clone();
-            let refreshed_option = resolve_engine_options(authority, std::slice::from_ref(&option))
-                .unwrap()
-                .pop()
-                .unwrap();
+            let refreshed_option =
+                resolve_engine_option_leases(authority, std::slice::from_ref(&option))
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+            let mut refreshed_option = refreshed_option;
+            refreshed_option.refresh_resource_values().unwrap();
             let refreshed = refreshed_option.resource_values[0].clone();
             (initial, refreshed)
         };
+        #[cfg(target_os = "linux")]
         assert_ne!(initial, refreshed);
 
         let state = app.state::<AppState>().inner().clone();
@@ -2916,7 +2902,7 @@ done
     async fn report_resource_replacement_between_positions_fails_closed_without_second_setoption() {
         let (directory, app, engine, resource) = resource_engine_fixture();
         let state = app.state::<AppState>().inner().clone();
-        let core = tokio::spawn(async move {
+        let mut core = tokio::spawn(async move {
             analyze_game_core(
                 "report-resource-replacement".into(),
                 engine,
@@ -2945,7 +2931,7 @@ done
             )
             .await
         });
-        tokio::time::timeout(Duration::from_secs(2), async {
+        let ready = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let capture = std::fs::read_to_string(directory.path().join("capture.log"))
                     .unwrap_or_default();
@@ -2955,8 +2941,13 @@ done
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .unwrap();
+        .await;
+        if ready.is_err() {
+            let core_result = tokio::time::timeout(Duration::from_secs(1), &mut core).await;
+            let capture =
+                std::fs::read_to_string(directory.path().join("capture.log")).unwrap_or_default();
+            panic!("report core did not reach go-ready: core={core_result:?}, capture={capture:?}");
+        }
         let resource_path = directory.path().join("weights.nnue");
         std::fs::rename(
             &resource_path,
@@ -3426,7 +3417,7 @@ pub async fn get_engine_config(
         .engine_supervisor
         .admit_for_launch(key.clone(), probe_id.clone(), executable_ref.clone())
         .await?;
-    let (executable, _) = EngineActor::resolve_launch(
+    let (executable, _) = resolve_launch(
         state.pgn_path_authority.clone(),
         engine,
         PathOperation::EngineConfigure,

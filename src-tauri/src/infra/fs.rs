@@ -109,7 +109,7 @@ pub(crate) fn read_directory_entries_at(
     Ok(result)
 }
 
-#[cfg(any(target_vendor = "apple", all(test, unix)))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 pub(crate) fn held_matches_path(held: &File, path: &Path) -> Result<bool, Error> {
     use rustix::{fs, io::Errno};
 
@@ -516,14 +516,14 @@ mod unix {
     }
 
     pub(super) fn ensure_directory_not_removed(dir: &File) -> Result<(), Error> {
-        #[cfg(not(target_vendor = "apple"))]
+        #[cfg(not(target_os = "macos"))]
         {
             let directory_stat = fs::fstat(dir).map_err(|error| io(error.into()))?;
             if directory_stat.st_nlink == 0 {
                 return Err(directory_removed_error());
             }
         }
-        #[cfg(target_vendor = "apple")]
+        #[cfg(target_os = "macos")]
         {
             use std::os::unix::ffi::OsStrExt;
 
@@ -2458,7 +2458,7 @@ mod tests {
         assert!(matches!(result, Err(Error::Cancellation)));
     }
 
-    #[cfg(target_vendor = "apple")]
+    #[cfg(target_os = "macos")]
     #[test]
     fn read_directory_entries_at_maps_getpath_enotdir_to_removed_directory() {
         let root = tempfile::tempdir().unwrap();
@@ -3018,7 +3018,7 @@ mod tests {
         RenameAway {
             destination: PathBuf,
         },
-        #[cfg(target_vendor = "apple")]
+        #[cfg(target_os = "macos")]
         RemoveParentAndCreateFile {
             parent: PathBuf,
         },
@@ -3067,7 +3067,7 @@ mod tests {
                 PostWalkAction::RenameAway { destination } => {
                     std::fs::rename(&self.target, destination)?;
                 }
-                #[cfg(target_vendor = "apple")]
+                #[cfg(target_os = "macos")]
                 PostWalkAction::RemoveParentAndCreateFile { parent } => {
                     std::fs::remove_dir_all(&self.target)?;
                     std::fs::remove_dir_all(parent)?;
