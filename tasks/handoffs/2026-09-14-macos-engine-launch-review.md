@@ -476,3 +476,41 @@ Metrics: 16 completed rounds (rounds 1–9 before this session's compaction, 10�
 no split. `plan_adopted_per_round` (this session's rounds): r10=8 r11=8 r12=10 r13=8 r14=3 r15=1.
 Withdrawn: R13-01 (r15). Out-of-mandate re-reports settled against existing findings, not counted.
 
+## Diff review — round 1 (range origin/master..1e884b2b)
+
+Ten Codex lenses, all `--role sensitive`, over Phase 1 (`506891a8`), Phase 2 (`3878a6a9`) and the
+R9-06 reaping commit (`1e884b2b`). Raw verdicts: review-correctness REVISE · review-root-cause
+REVISE · review-tests REVISE · review-error-handling REVISE · review-minimalism REVISE ·
+review-code-quality REVISE · review-tauri-security REVISE · review-engine-protocol REVISE ·
+review-chess-semantics APPROVED · review-ipc-contract APPROVED. Early gates on the same tree:
+`pnpm gates:contract:check` green; `pnpm gate:ensure backend-coverage` red on one test (D1-05).
+
+Every blocker below was verified in source by the orchestrator before triage.
+
+| ID | Finding (witnesses) | Verdict | Reason |
+|---|---|---|---|
+| D1-01 | macOS file resources are never pinned: `pin_engine_launch` runs on the executable from `engine_executable()` before option leases are attached by `with_resource_leases`, so only the executable leaf exists and `uci_value` falls back to the original mutable path (root-cause 100, tauri-security 99, engine-protocol 99) | Fix | Core of `f-20260914-31`; pin the effective option leases in the same gateway job, test through `resolve_launch` |
+| D1-02 | Resource verification runs before last-wins duplicate collapse, and pinning counts every duplicate's leases (correctness 96, 94) | Fix | Collapse first; verify and pin only effective options |
+| D1-03 | A poisoned `pinned_target` mutex silently falls back to the unpinned path (error-handling 91) | Fix | Non-poisonable once-set targets; missing pin is a typed error |
+| D1-04 | A poisoned launch registry makes `reclaim` report success and `Drop` lose tracking (error-handling 94) | Fix | Poison recovery on every registry access, as `admission_coordination` does |
+| D1-05 | `launch_resolution_and_materialization_run_off_the_async_caller` fails under the instrumented coverage build: the trace hand-off is one process-global slot shared by parallel tests | Fix | Red gate; per-test deterministic trace |
+| D1-06 | Lock-race hook cannot catch a mkdir-before-lock reordering (tests 99) | Fix | Assert the instance directory is absent in the hook |
+| D1-07 | Exit reclaim untested: shutdown tests inject `ready(Ok(()))` (tests 99) | Fix | Test through the real shutdown path |
+| D1-08 | Real-child termination test checks error variants only, not reaping (tests 97) | Fix | Pid-reaped assertion |
+| D1-09 | Reclaim-failure log in `resolve_launch` untested (tests 95) | Fix | `LogCaptureScope`, current-thread runtime |
+| D1-10 | Unnamed leaf modes `0o700`/`0o600` (code-quality 97) | Fix | Named constants |
+| D1-11 | Unexplained `allow(unused_mut)` (code-quality 96) | Fix | Restructure or state the reason |
+| D1-12 | `allow(dead_code)` on platform-specific test helpers (code-quality 95) | Fix | `cfg` on the using target |
+| D1-13 | Dead `MaterializedFile::created` (code-quality 99, minimalism 99) | Fix | Remove |
+| D1-14 | `fs.rs` uses `target_vendor = "apple"` while the rest uses `target_os = "macos"` (code-quality 98) | Fix | Align on `target_os = "macos"` |
+| D1-15 | Three pass-through `EngineActor` methods (minimalism 99) | Fix | One canonical API |
+| D1-16 | Test-only game engine init duplicates production init (minimalism 99) | Fix | Shared initialisation with executable injection |
+| D1-17 | Test-only `resolve_engine_options` shim (minimalism 99) | Fix | Delete, update callers |
+| D1-18 | `cleanup_spawn_io_failure` repeats `terminate_child`'s reap-error mapping (minimalism 94; also seen by the orchestrator when inspecting `1e884b2b`) | Fix | Rule 11: one mapping, parameterised |
+| D1-19 | A trailing line of a finished search can be consumed as the next search's result (engine-protocol 94) | Defer | Pre-existing (blame `17fac36f`, `97c29add`, `e4e0f8d3`); filed as `f-20260915-01` |
+| D1-20 | A destroyed webview does not stop a silent report analysis search (engine-protocol 97) | Defer | Pre-existing (blame `d835ac77`, same at `origin/master`); filed as `f-20260915-02` |
+
+Correction: one Codex fix round resuming the Phase 2 session. Re-review after it: every lens whose
+findings drove a Fix (correctness, root-cause, tests, error-handling, minimalism, code-quality,
+tauri-security, engine-protocol).
+
