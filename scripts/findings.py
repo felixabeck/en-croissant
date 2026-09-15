@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 6b910194cd99c6ab16293638e5e96296cdbe8a932dc8aeb95e0538ab40bc5ecb
+# agent-kit-sha256: 896dc1cf70abbd7fa1bcc371fbc6c7f1102f21ac38c90049cc28ca33a732e03e
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -8017,7 +8017,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
     """Fold answers through the shared locked mutation pipeline."""
     spool: Path = args.answers
     claim = spool.with_name(f"{spool.name}.claim")
-    decisions = getattr(args, "decisions", args.ledger.parent / "decisions.md")
+    decisions = _args_decisions(args)
     mode = _claim_finalisation_mode(
         args.ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
     )
