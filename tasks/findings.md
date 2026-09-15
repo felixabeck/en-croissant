@@ -8636,3 +8636,15 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Why it matters:** `engine-lifecycle.md` forbids binding a response to the most recent request because it arrived after it; a result from G1 attributed to G2's position is the stale-result class of `4e8d10b0` and `03826167`.
 * **Related:** `f-20260914-37`, `f-20260831-09`, `f-20260903-01` (same root).
 * **Found by:** Codex `review-engine-protocol` diff lens (confidence 94) during the macOS engine-launch build run, 2026-09-15. The lines blame to `17fac36f`, `97c29add` and `e4e0f8d3`, before that run; source read by the orchestrator, not reproduced by a test.
+
+---
+
+## 2026-09-15 — filed through the inbox spool
+
+### A destroyed webview does not stop a silent report analysis search
+
+* **ID:** f-20260915-02 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/chess.rs`, `analyze_position_with_owner` (`proc.next_line_cancellable(&supervised.cancelled)`); `src-tauri/src/main.rs`, `cancel_destroyed_window_operations` (the `WindowEvent::Destroyed` handler).
+* **Defect:** report analysis reads search lines cancellably only against `SupervisedEngine::cancelled`. Destroying the webview cancels the report's operation ticket through `OperationRegistry::cancel_owner`, which cancels the operation token but never sets that flag. While the engine emits no line, the read keeps waiting, so the child keeps searching until the search deadline (ten minutes) with no `stop` and no reap. `cancel_analysis` is unaffected because it sets the flag through `cancel_exact`.
+* **Why it matters:** `async-resource-invariants.md` requires cleanup on every exit path, tab and window close included; an engine child that outlives its owner by up to ten minutes is the class of issue #723 (`e5422566`).
+* **Found by:** Codex `review-engine-protocol` diff lens (confidence 97) during the macOS engine-launch build run, 2026-09-15. The function blames entirely to `d835ac77` and reads the same at `origin/master`; source read by the orchestrator, not reproduced by a test.
