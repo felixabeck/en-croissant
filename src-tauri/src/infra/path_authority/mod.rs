@@ -15895,7 +15895,22 @@ mod workspace_directory_enumeration_tests {
             set_engine_launch_failure(Some(failure));
             let result = leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &cancelled);
             set_engine_launch_failure(None);
-            assert!(result.is_err());
+            match (failure, result) {
+                (EngineLaunchFailure::Copy, Err(Error::Io(error))) => assert!(error
+                    .to_string()
+                    .contains("injected engine launch copy failure")),
+                (EngineLaunchFailure::Fchmod, Err(Error::Io(error))) => assert!(error
+                    .to_string()
+                    .contains("injected engine launch fchmod failure")),
+                (EngineLaunchFailure::CloneExdev, Err(Error::Cancellation)) => {}
+                (failure, result) => {
+                    panic!("unexpected engine launch failure result for {failure:?}: {result:?}")
+                }
+            }
+            assert!(
+                leaf.path().exists(),
+                "the failed materialization must have created its leaf before cleanup"
+            );
             assert!(leaf.remove().is_ok());
             assert_eq!(root.registry_snapshot_for_test().0, 0);
             assert!(root.instance_path().read_dir().unwrap().next().is_none());
@@ -15985,21 +16000,35 @@ mod workspace_directory_enumeration_tests {
             let results = results.clone();
             threads.push(std::thread::spawn(move || {
                 start_barrier.wait();
-                let result = root.reserve_leaves(33, &format!("test:{index}"), "bounded");
-                let outcome = match &result {
-                    Ok(_) => Ok(()),
-                    Err(Error::ResourceLimit(message)) => Err(message.clone()),
-                    Err(error) => panic!("unexpected reservation failure: {error}"),
-                };
-                results.lock().unwrap().push(outcome);
-                attempted_barrier.wait();
-                drop(result);
+                let mut attempted_wait = false;
+                let worker_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let result = root.reserve_leaves(33, &format!("test:{index}"), "bounded");
+                    let outcome = match &result {
+                        Ok(_) => Ok(()),
+                        Err(Error::ResourceLimit(message)) => Err(message.clone()),
+                        Err(error) => Err(format!("unexpected: {error}")),
+                    };
+                    results.lock().unwrap().push(outcome);
+                    attempted_wait = true;
+                    attempted_barrier.wait();
+                    drop(result);
+                }));
+                if worker_result.is_err() && !attempted_wait {
+                    attempted_barrier.wait();
+                }
+                worker_result
             }));
         }
         start_barrier.wait();
         attempted_barrier.wait();
         for thread in threads {
-            thread.join().unwrap();
+            let worker_result = thread
+                .join()
+                .unwrap_or_else(|_| panic!("reservation worker panicked"));
+            assert!(
+                worker_result.is_ok(),
+                "reservation worker panicked before reaching the attempt barrier"
+            );
         }
         let results = results.lock().unwrap().clone();
         assert_eq!(results.iter().filter(|outcome| outcome.is_ok()).count(), 1);
