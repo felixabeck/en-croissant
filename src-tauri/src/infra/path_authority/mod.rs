@@ -344,16 +344,22 @@ impl DatabaseFileTarget {
         path.file_name()
             .filter(|name| !name.is_empty())
             .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?;
-        let file = fs::OpenOptions::new()
+        let _file = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(path)?;
-        let identity = opened_file_identity(&file)?;
-        let canonical = canonical_binding(path)?;
-        let (parent, leaf) = crate::infra::fs::open_verified_parent(&canonical, identity, false)?;
-        Ok(Self::assemble(parent, leaf, identity, canonical))
+        let acquired = acquire_target(path, AcquireShape::File)?;
+        let (parent, leaf) = acquired
+            .parent_and_leaf
+            .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?;
+        Ok(Self::assemble(
+            parent,
+            leaf,
+            (acquired.identity.a, acquired.identity.b),
+            acquired.path,
+        ))
     }
 }
 
@@ -505,8 +511,11 @@ std::thread_local! {
 std::thread_local! {
     static DATABASE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
-    static DATABASE_TARGET_POST_VALIDATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+    static ACQUIRE_TARGET_BEFORE_PROOF_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static PGN_EXPORT_POST_CREATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static ACQUIRE_TARGET_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static PUZZLE_CHILD_POST_RESOLVE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static DATABASE_CHILD_POST_CREATE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -2848,14 +2857,89 @@ fn validate_target(path: &Path, class: PathClass) -> Result<Identity, Error> {
     }
     identity(path)
 }
-fn validate_dialog_target(path: &Path) -> Result<Identity, Error> {
-    let meta = fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() || (!meta.is_file() && !meta.is_dir()) {
-        return Err(Error::InvalidInput(
-            "dialog selection must be a regular file or directory".into(),
-        ));
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AcquireShape {
+    Dialog,
+    File,
+    Root,
+}
+
+/// The result of one caller-supplied pathname acquisition. The canonical path is only a binding
+/// for display and legacy pathname consumers; Unix mutations use the retained parent and leaf.
+/// A PGN export caller also retains its proving parent itself, so it deliberately supplies no
+/// second descriptor here.
+struct AcquiredTarget {
+    path: PathBuf,
+    identity: Identity,
+    target_is_dir: bool,
+    parent_and_leaf: Option<(fs::File, OsString)>,
+}
+
+fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Error> {
+    #[cfg(all(test, unix))]
+    ACQUIRE_TARGET_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+
+    let (identity, target_is_dir) = match shape {
+        AcquireShape::Dialog => {
+            let meta = fs::symlink_metadata(path)?;
+            if meta.file_type().is_symlink() || (!meta.is_file() && !meta.is_dir()) {
+                return Err(Error::InvalidInput(
+                    "dialog selection must be a regular file or directory".into(),
+                ));
+            }
+            (identity(path)?, meta.is_dir())
+        }
+        AcquireShape::File => (validate_target(path, PathClass::PersistentFile)?, false),
+        AcquireShape::Root => (
+            validate_target(path, PathClass::PersistentCustomRoot)?,
+            true,
+        ),
+    };
+
+    let normal_leaf = path
+        .file_name()
+        .filter(|name| !name.is_empty() && *name != OsStr::new(".") && *name != OsStr::new(".."));
+    let Some(_) = normal_leaf else {
+        return Ok(AcquiredTarget {
+            path: path.to_path_buf(),
+            identity,
+            target_is_dir,
+            parent_and_leaf: None,
+        });
+    };
+
+    #[cfg(unix)]
+    {
+        let canonical = canonical_binding(path)?;
+        #[cfg(test)]
+        ACQUIRE_TARGET_BEFORE_PROOF_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        let parent_and_leaf = crate::infra::fs::open_verified_parent(
+            &canonical,
+            (identity.a, identity.b),
+            target_is_dir,
+        )?;
+        Ok(AcquiredTarget {
+            path: canonical,
+            identity,
+            target_is_dir,
+            parent_and_leaf: Some(parent_and_leaf),
+        })
     }
-    identity(path)
+
+    #[cfg(not(unix))]
+    {
+        Ok(AcquiredTarget {
+            path: path.to_path_buf(),
+            identity,
+            target_is_dir,
+            parent_and_leaf: None,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3111,12 +3195,30 @@ impl PathAuthority {
     /// receives only the resulting workspace handle; the selected native path never leaves this
     /// authority boundary. A new target is materialized before the dialog grant is promoted so
     /// the persisted identity is the object the subsequent atomic PGN write must replace.
+    #[cfg(not(unix))]
     pub(crate) fn create_pgn_export_destination(
         &mut self,
         path: &Path,
         display_name: impl Into<String>,
     ) -> Result<FileWorkspaceDescriptor, Error> {
-        crate::infra::platform_support::off_unix_refusal("PGN export destinations", cfg!(unix))?;
+        let _ = (path, display_name);
+        crate::infra::platform_support::off_unix_refusal("PGN export destinations", false)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn create_pgn_export_destination(
+        &mut self,
+        path: &Path,
+        display_name: impl Into<String>,
+    ) -> Result<FileWorkspaceDescriptor, Error> {
+        use rustix::fs::{self as rfs, AtFlags, FileType};
+        use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+
+        if path.as_os_str().as_bytes().last() == Some(&b'/') {
+            return Err(Error::InvalidInput(
+                "PGN export destination must have a .pgn filename".into(),
+            ));
+        }
         let extension_is_pgn = path
             .extension()
             .and_then(OsStr::to_str)
@@ -3127,46 +3229,81 @@ impl PathAuthority {
             ));
         }
 
-        let created = match fs::symlink_metadata(path) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_file() {
-                    return Err(Error::InvalidInput(
-                        "PGN export destination must be a regular file".into(),
-                    ));
-                }
-                false
+        let parent_path = parent_of(path);
+        let parent_metadata = fs::metadata(parent_path)?;
+        if !parent_metadata.is_dir() {
+            return Err(Error::InvalidInput(
+                "PGN export destination parent must be a directory".into(),
+            ));
+        }
+        let parent_identity = (parent_metadata.dev(), parent_metadata.ino());
+        #[cfg(test)]
+        ACQUIRE_TARGET_BEFORE_PROOF_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let parent = path.parent().ok_or_else(|| {
-                    Error::InvalidInput("PGN export destination has no parent directory".into())
-                })?;
-                let parent_metadata = fs::symlink_metadata(parent)?;
-                if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
-                    return Err(Error::InvalidInput(
-                        "PGN export destination parent must be a directory".into(),
-                    ));
-                }
-                let created = fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(path)?;
-                created.sync_all()?;
-                true
-            }
-            Err(error) => return Err(Error::from(error)),
-        };
+        });
+        let canonical = canonical_binding(path)?;
+        let parent = crate::infra::fs::open_parent_no_follow(&canonical)?;
+        if opened_file_identity(&parent)? != parent_identity {
+            return Err(Error::Conflict(
+                "PGN export destination changed before creation".into(),
+            ));
+        }
+        let leaf = canonical
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                Error::InvalidInput("PGN export destination must have a .pgn filename".into())
+            })?
+            .to_os_string();
 
+        let mut created_identity = None;
+        let mut inserted_grant = None;
         let display_name = display_name.into();
         let operations = canonical_operations(EntryPurpose::PgnFile);
         let result = (|| {
-            let grant = self.grant_dialog_operations(
-                path,
+            let identity = match rfs::statat(&parent, &leaf, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(stat) => {
+                    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+                        return Err(Error::InvalidInput(
+                            "PGN export destination must be a regular file".into(),
+                        ));
+                    }
+                    crate::infra::fs::raw_stat_identity(&stat)
+                }
+                Err(error) if error == rustix::io::Errno::NOENT => {
+                    let (file, identity) = crate::infra::fs::create_regular_at(&parent, &leaf)?;
+                    created_identity = Some(identity);
+                    file.sync_all()?;
+                    parent.sync_all()?;
+                    #[cfg(test)]
+                    PGN_EXPORT_POST_CREATE_HOOK.with(|slot| {
+                        if let Some(hook) = slot.borrow_mut().take() {
+                            hook();
+                        }
+                    });
+                    identity
+                }
+                Err(error) => return Err(Error::Io(Box::new(error.into()))),
+            };
+            let grant = self.grant_acquired(
+                AcquiredTarget {
+                    path: canonical.clone(),
+                    identity: Identity {
+                        a: identity.0,
+                        b: identity.1,
+                    },
+                    target_is_dir: false,
+                    parent_and_leaf: None,
+                },
                 display_name.clone(),
                 PathClass::BoundedDialogGrant,
                 operations.clone(),
                 Duration::from_secs(30 * 60),
                 128,
             )?;
+            inserted_grant = Some(grant.clone());
             let commit = self.promote_dialog(
                 &grant,
                 PathClass::PersistentFile,
@@ -3180,12 +3317,17 @@ impl PathAuthority {
                 availability: PathAvailability::Available,
             })
         })();
+
         if result
             .as_ref()
             .is_err_and(|error| !matches!(error, Error::CommittedDurabilityUncertain(_)))
-            && created
         {
-            let _ = fs::remove_file(path);
+            if let Some(grant) = inserted_grant {
+                self.dialogs.remove(&grant.id);
+            }
+            if let Some(identity) = created_identity {
+                let _ = crate::infra::fs::remove_entry_at(&parent, &leaf, identity, false);
+            }
         }
         result
     }
@@ -3514,15 +3656,12 @@ impl PathAuthority {
     ) -> Result<PathRef, Error> {
         self.grant_dialog_operations(path, display_name, class, vec![operation], ttl, uses_left)
     }
-    pub fn grant_dialog_operations(
-        &mut self,
-        path: &Path,
-        display_name: impl Into<String>,
+
+    fn check_dialog_grant_shape(
         class: PathClass,
-        operations: Vec<PathOperation>,
-        ttl: Duration,
+        operations: &[PathOperation],
         uses_left: u32,
-    ) -> Result<PathRef, Error> {
+    ) -> Result<(), Error> {
         if !matches!(
             class,
             PathClass::SingleDialogGrant | PathClass::BoundedDialogGrant
@@ -3532,8 +3671,19 @@ impl PathAuthority {
         {
             return Err(Error::InvalidInput("invalid dialog grant shape".into()));
         }
-        let identity = validate_dialog_target(path)?;
-        let target_is_dir = fs::symlink_metadata(path)?.is_dir();
+        Ok(())
+    }
+
+    fn grant_acquired(
+        &mut self,
+        acquired: AcquiredTarget,
+        display_name: String,
+        class: PathClass,
+        operations: Vec<PathOperation>,
+        ttl: Duration,
+        uses_left: u32,
+    ) -> Result<PathRef, Error> {
+        Self::check_dialog_grant_shape(class, &operations, uses_left)?;
         // Validate before evicting: malformed dialog input must not affect live grants.
         self.evict_dialogs();
         if self.dialogs.len() >= self.dialog_capacity {
@@ -3550,13 +3700,13 @@ impl PathAuthority {
         self.next_insertion += 1;
         let stored = StoredEntry {
             id: id.clone(),
-            display_name: display_name.into(),
+            display_name,
             class,
             purpose: None,
             operations,
-            path: NativePath::from_path(path),
-            identity,
-            target_is_dir,
+            path: NativePath::from_path(&acquired.path),
+            identity: acquired.identity,
+            target_is_dir: acquired.target_is_dir,
         };
         self.dialogs.insert(
             id.id.clone(),
@@ -3571,6 +3721,27 @@ impl PathAuthority {
             },
         );
         Ok(id)
+    }
+
+    pub fn grant_dialog_operations(
+        &mut self,
+        path: &Path,
+        display_name: impl Into<String>,
+        class: PathClass,
+        operations: Vec<PathOperation>,
+        ttl: Duration,
+        uses_left: u32,
+    ) -> Result<PathRef, Error> {
+        Self::check_dialog_grant_shape(class, &operations, uses_left)?;
+        let acquired = acquire_target(path, AcquireShape::Dialog)?;
+        self.grant_acquired(
+            acquired,
+            display_name.into(),
+            class,
+            operations,
+            ttl,
+            uses_left,
+        )
     }
     /// Consumes an exact live dialog grant and persists the same native object as a root or file.
     pub fn promote_dialog(
@@ -3618,12 +3789,18 @@ impl PathAuthority {
             ));
         }
         let path = grant.entry.stored.path.to_path()?;
-        let expected = validate_target(&path, persistent_class)?;
-        if expected != grant.entry.stored.identity {
+        let shape = if target_is_dir {
+            AcquireShape::Root
+        } else {
+            AcquireShape::File
+        };
+        let acquired = acquire_target(&path, shape)?;
+        if acquired.path != path || acquired.identity != grant.entry.stored.identity {
             return Err(Error::Conflict(
                 "dialog target changed before promotion".into(),
             ));
         }
+        let expected = acquired.identity.clone();
         if let Some(purpose) = purpose {
             if let Some(existing) = self.persistent.values().find(|entry| {
                 entry.stored.class == persistent_class
@@ -3653,7 +3830,7 @@ impl PathAuthority {
             class: persistent_class,
             purpose,
             operations,
-            path: grant.entry.stored.path,
+            path: NativePath::from_path(&acquired.path),
             identity: expected,
             target_is_dir,
         };
@@ -3695,6 +3872,30 @@ impl PathAuthority {
         self.migrate_legacy_os_path_inner(path, display_name.into(), class, operations, None)
     }
 
+    fn persist_entry(
+        &mut self,
+        path: &Path,
+        identity: Identity,
+        display_name: String,
+        class: PathClass,
+        operations: Vec<PathOperation>,
+    ) -> Result<PathCommit, Error> {
+        let target_is_dir = class == PathClass::PersistentCustomRoot;
+        let purpose = purpose_for_shape(class, target_is_dir, &operations);
+        let operations = purpose.map(canonical_operations).unwrap_or(operations);
+        let stored = StoredEntry {
+            id: PathRef::fresh(),
+            display_name,
+            class,
+            purpose,
+            operations,
+            path: NativePath::from_path(path),
+            identity,
+            target_is_dir,
+        };
+        self.persist_new_entry(stored)
+    }
+
     fn migrate_legacy_os_path_inner(
         &mut self,
         path: OsString,
@@ -3717,22 +3918,23 @@ impl PathAuthority {
             ));
         }
         let path = PathBuf::from(path);
-        let identity = validate_target(&path, class)?;
-        reject_disagreeing_expected_identity(&identity, expected_identity)?;
-        let target_is_dir = class == PathClass::PersistentCustomRoot;
-        let purpose = purpose_for_shape(class, target_is_dir, &operations);
-        let operations = purpose.map(canonical_operations).unwrap_or(operations);
-        let stored = StoredEntry {
-            id: PathRef::fresh(),
-            display_name,
-            class,
-            purpose,
-            operations,
-            path: NativePath::from_path(&path),
-            identity,
-            target_is_dir,
+        let (path, identity) = match expected_identity {
+            None => {
+                let shape = if class == PathClass::PersistentCustomRoot {
+                    AcquireShape::Root
+                } else {
+                    AcquireShape::File
+                };
+                let acquired = acquire_target(&path, shape)?;
+                (acquired.path, acquired.identity)
+            }
+            Some(expected) => {
+                let identity = validate_target(&path, class)?;
+                reject_disagreeing_expected_identity(&identity, Some(expected))?;
+                (path, identity)
+            }
         };
-        self.persist_new_entry(stored)
+        self.persist_entry(&path, identity, display_name, class, operations)
     }
     /// Backend discovery for bundled/app-owned files. Existing persistent
     /// entries retain their opaque ID across restarts; a replaced object is
@@ -3773,9 +3975,18 @@ impl PathAuthority {
                 "persistent operations cannot be empty".into(),
             ));
         }
-        let expected = validate_target(path, PathClass::PersistentFile)?;
-        reject_disagreeing_expected_identity(&expected, expected_identity)?;
-        self.get_or_create_persistent_file_from_identity(path, display_name, operations, expected)
+        let (path, expected) = match expected_identity {
+            None => {
+                let acquired = acquire_target(path, AcquireShape::File)?;
+                (acquired.path, acquired.identity)
+            }
+            Some(expected_identity) => {
+                let expected = validate_target(path, PathClass::PersistentFile)?;
+                reject_disagreeing_expected_identity(&expected, Some(expected_identity))?;
+                (path.to_path_buf(), expected)
+            }
+        };
+        self.get_or_create_persistent_file_from_identity(&path, display_name, operations, expected)
     }
 
     /// Common storage body for native paths whose file identity has already been established.
@@ -3940,6 +4151,17 @@ impl PathAuthority {
     ) -> Result<PathRef, Error> {
         let display_name = display_name.into();
         let purpose = purpose_for_shape(PathClass::PersistentCustomRoot, true, &operations);
+        let (path, identity) = match expected_identity {
+            None => {
+                let acquired = acquire_target(path, AcquireShape::Root)?;
+                (acquired.path, acquired.identity)
+            }
+            Some(expected) => {
+                let identity = validate_target(path, PathClass::PersistentCustomRoot)?;
+                reject_disagreeing_expected_identity(&identity, Some(expected))?;
+                (path.to_path_buf(), identity)
+            }
+        };
         if let Some(entry) = self
             .persistent
             .values()
@@ -3960,8 +4182,6 @@ impl PathAuthority {
             })
             .cloned()
         {
-            let identity = validate_target(path, PathClass::PersistentCustomRoot)?;
-            reject_disagreeing_expected_identity(&identity, expected_identity)?;
             if identity != entry.stored.identity {
                 if expected_identity.is_some() {
                     let stale_root = entry.stored.id.clone();
@@ -3981,7 +4201,7 @@ impl PathAuthority {
                         class: PathClass::PersistentCustomRoot,
                         purpose,
                         operations: purpose.map(canonical_operations).unwrap_or(operations),
-                        path: NativePath::from_path(path),
+                        path: NativePath::from_path(&path),
                         identity,
                         target_is_dir: true,
                     };
@@ -4029,12 +4249,12 @@ impl PathAuthority {
             return Ok(id);
         }
         let id = self
-            .migrate_legacy_os_path_inner(
-                path.as_os_str().to_os_string(),
+            .persist_entry(
+                &path,
+                identity,
                 display_name,
                 PathClass::PersistentCustomRoot,
                 operations,
-                expected_identity,
             )?
             .id;
         self.session_protected_ids.insert(id.id.clone());
@@ -4813,23 +5033,22 @@ impl PathAuthority {
         let stored = entry.stored;
         let path = stored.path.to_path()?;
         let expected = (stored.identity.a, stored.identity.b);
-        if validate_target(&path, PathClass::PersistentFile)? != stored.identity {
+        let acquired = acquire_target(&path, AcquireShape::File)?;
+        if acquired.identity != stored.identity {
             return Err(Error::Conflict(
                 "workspace entry is unavailable because its object changed".into(),
             ));
         }
-        #[cfg(test)]
-        DATABASE_TARGET_POST_VALIDATE_HOOK.with(|slot| {
-            if let Some(hook) = slot.borrow_mut().take() {
-                hook();
-            }
-        });
-        let canonical = canonical_binding(&path)?;
-        let (parent, leaf) = crate::infra::fs::open_verified_parent(&canonical, expected, false)?;
+        let (parent, leaf) = acquired
+            .parent_and_leaf
+            .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?;
         self.session_protected_ids
             .insert(handle.path_ref().id.clone());
         Ok(DatabaseFileTarget::assemble(
-            parent, leaf, expected, canonical,
+            parent,
+            leaf,
+            expected,
+            acquired.path,
         ))
     }
 
@@ -7827,7 +8046,7 @@ mod tests {
         let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
         let committed = authority
             .migrate_legacy_os_path(
-                path.into_os_string(),
+                path.clone().into_os_string(),
                 "x",
                 PathClass::PersistentFile,
                 vec![
@@ -7838,6 +8057,14 @@ mod tests {
                 ],
             )
             .unwrap();
+        assert_eq!(
+            authority.persistent[&committed.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("x.db3")
+        );
         let handle = DatabaseHandle::new(committed.id);
         let target = authority
             .database_file_target(&handle, PathOperation::DatabaseMutate)
@@ -7900,7 +8127,7 @@ mod tests {
         fs::hard_link(&path, &moved).unwrap();
         let hook_path = path.clone();
         let hook_moved = moved.clone();
-        DATABASE_TARGET_POST_VALIDATE_HOOK.with(|slot| {
+        ACQUIRE_TARGET_BEFORE_PROOF_HOOK.with(|slot| {
             assert!(slot
                 .replace(Some(Box::new(move || {
                     fs::remove_file(&hook_path).unwrap();
@@ -8068,6 +8295,204 @@ mod tests {
             assert!(!production.contains("DatabaseFileTarget {"));
             assert!(!production.contains("assemble("));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pgn_file_selected_through_symlinked_ancestor_is_stored_canonically_and_writable() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        let path = link.join("g.pgn");
+        fs::write(real.join("g.pgn"), b"1. e4 *").unwrap();
+        symlink(&real, &link).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let grant = authority
+            .grant_dialog_operations(
+                &path,
+                "g.pgn",
+                PathClass::BoundedDialogGrant,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            authority.dialogs[&grant.id]
+                .entry
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("g.pgn")
+        );
+        let committed = authority
+            .promote_dialog(
+                &grant,
+                PathClass::PersistentFile,
+                "g.pgn",
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            )
+            .unwrap();
+        assert_eq!(
+            authority.persistent[&committed.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("g.pgn")
+        );
+        let resolved = authority
+            .resolve(&committed.id, PathOperation::WritePgn, &[])
+            .unwrap();
+        let snapshot = resolved.pgn_snapshot().unwrap();
+        let _ = resolved
+            .replace_pgn_atomic(&snapshot, |_source, target| {
+                target.write_all(b"1. d4 *").map_err(Error::from)
+            })
+            .unwrap();
+        assert_eq!(fs::read(real.join("g.pgn")).unwrap(), b"1. d4 *");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn picker_root_opening_book_and_migration_store_canonical_spellings() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        symlink(&real, &link).unwrap();
+        fs::create_dir(real.join("db")).unwrap();
+        fs::write(real.join("book.bin"), b"book").unwrap();
+        fs::write(real.join("x.pgn"), b"*").unwrap();
+        fs::create_dir(real.join("pz")).unwrap();
+        fs::write(real.join("y.bin"), b"file").unwrap();
+
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let database = authority
+            .get_or_create_database_root(&link.join("db"), "Databases", None)
+            .unwrap();
+        assert_eq!(
+            authority.persistent[&database.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("db")
+        );
+        let same_database = authority
+            .get_or_create_database_root(&real.join("db"), "Databases", None)
+            .unwrap();
+        assert_eq!(same_database.id, database.id);
+        authority
+            .create_database_child(&database, OsStr::new("child.db3"))
+            .unwrap();
+
+        let opening_book = authority
+            .register_opening_book(&link.join("book.bin"), "book")
+            .unwrap();
+        assert_eq!(
+            authority.persistent[&opening_book.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("book.bin")
+        );
+        let same_book = authority
+            .get_or_create_persistent_file(
+                &real.join("book.bin"),
+                "book",
+                canonical_operations(EntryPurpose::OpeningBook),
+            )
+            .unwrap();
+        assert_eq!(same_book.id, opening_book.id);
+
+        let migrated = authority
+            .migrate_legacy_os_path(
+                link.join("x.pgn").into_os_string(),
+                "x.pgn",
+                PathClass::PersistentFile,
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        assert_eq!(
+            authority.persistent[&migrated.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("x.pgn")
+        );
+
+        let puzzle_real = authority
+            .get_or_create_puzzle_root(&real.join("pz"), "Puzzles", None)
+            .unwrap();
+        let puzzle_link = authority
+            .get_or_create_puzzle_root(&link.join("pz"), "Puzzles", None)
+            .unwrap();
+        assert_eq!(puzzle_link.id, puzzle_real.id);
+
+        let file_real = authority
+            .get_or_create_persistent_file(
+                &real.join("y.bin"),
+                "y.bin",
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        let file_link = authority
+            .get_or_create_persistent_file(
+                &link.join("y.bin"),
+                "y.bin",
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap();
+        assert_eq!(file_link.id, file_real.id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn promotion_refuses_an_ancestor_swapped_after_grant() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        let moved = dir.path().join("moved");
+        fs::create_dir(real.join("ws")).unwrap_or_else(|_| {
+            fs::create_dir(&real).unwrap();
+            fs::create_dir(real.join("ws")).unwrap();
+        });
+        symlink(&real, &link).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let grant = authority
+            .grant_dialog_operations(
+                &link.join("ws"),
+                "Workspace",
+                PathClass::BoundedDialogGrant,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+        fs::rename(&real, &moved).unwrap();
+        symlink(&moved, &real).unwrap();
+
+        assert!(matches!(
+            authority.promote_dialog(
+                &grant,
+                PathClass::PersistentCustomRoot,
+                "Workspace",
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            ),
+            Err(Error::Conflict(message)) if message == "dialog target changed before promotion"
+        ));
+        assert!(authority.persistent.is_empty());
     }
     #[test]
     fn dialog_grants_enforce_operation_expiry_and_uses() {
@@ -8861,6 +9286,540 @@ mod tests {
             authority.create_pgn_export_destination(&dir.path().join("export.txt"), "export.txt"),
             Err(Error::InvalidInput(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pgn_export_destination_through_symlinked_ancestor_is_stored_canonically() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        symlink(&real, &link).unwrap();
+        let path = link.join("new.pgn");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+
+        let destination = authority
+            .create_pgn_export_destination(&path, "new.pgn")
+            .unwrap();
+        assert_eq!(
+            authority.persistent[&destination.handle.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("new.pgn")
+        );
+        let resolved = authority
+            .resolve(&destination.handle.id, PathOperation::WritePgn, &[])
+            .unwrap();
+        let snapshot = resolved.pgn_snapshot().unwrap();
+        let _ = resolved
+            .replace_pgn_atomic(&snapshot, |_source, target| {
+                target.write_all(b"1. e4 *").map_err(Error::from)
+            })
+            .unwrap();
+        assert_eq!(fs::read(real.join("new.pgn")).unwrap(), b"1. e4 *");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pgn_export_destination_reuses_an_existing_file_under_its_canonical_spelling() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("old.pgn"), b"sentinel").unwrap();
+        symlink(&real, &link).unwrap();
+        let path = link.join("old.pgn");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+
+        let destination = authority
+            .create_pgn_export_destination(&path, "old.pgn")
+            .unwrap();
+        assert_eq!(fs::read(real.join("old.pgn")).unwrap(), b"sentinel");
+        assert_eq!(
+            authority.persistent[&destination.handle.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            real.join("old.pgn")
+        );
+        let resolved = authority
+            .resolve(&destination.handle.id, PathOperation::WritePgn, &[])
+            .unwrap();
+        let snapshot = resolved.pgn_snapshot().unwrap();
+        let _ = resolved
+            .replace_pgn_atomic(&snapshot, |_source, target| {
+                target.write_all(b"1. c4 *").map_err(Error::from)
+            })
+            .unwrap();
+        assert_eq!(fs::read(real.join("old.pgn")).unwrap(), b"1. c4 *");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_verified_registrations_keep_their_original_spelling_after_an_ancestor_swap() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let moved = dir.path().join("moved");
+        fs::create_dir(real.join("db2")).unwrap_or_else(|_| {
+            fs::create_dir(&real).unwrap();
+            fs::create_dir(real.join("db2")).unwrap();
+        });
+        let database = authorize_existing_dir(&real.join("db2")).unwrap();
+        ACQUIRE_TARGET_CALLS.with(|calls| calls.set(0));
+        fs::rename(&real, &moved).unwrap();
+        symlink(&moved, &real).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let root = authority
+            .get_or_create_database_root(database.path(), "Databases", Some(database.identity()))
+            .unwrap();
+        assert_eq!(
+            authority.persistent[&root.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            database.path()
+        );
+        assert_eq!(ACQUIRE_TARGET_CALLS.with(|calls| calls.get()), 0);
+
+        let image_dir_path = dir.path().join("image-real");
+        let image_moved = dir.path().join("image-moved");
+        fs::create_dir_all(&image_dir_path).unwrap();
+        let image_dir = authorize_existing_dir(&image_dir_path).unwrap();
+        let leaf = OsStr::new("uuid");
+        fs::write(image_dir_path.join(leaf), b"image").unwrap();
+        let installed = image_dir.open_leaf_identified(leaf).unwrap();
+        fs::rename(&image_dir_path, &image_moved).unwrap();
+        symlink(&image_moved, &image_dir_path).unwrap();
+        let image = authority
+            .register_engine_image(&image_dir, leaf, installed, "image".into())
+            .unwrap();
+        assert_eq!(
+            authority.persistent[&image.id.id]
+                .stored
+                .path
+                .to_path()
+                .unwrap(),
+            image_dir.path().join(leaf)
+        );
+        assert_eq!(ACQUIRE_TARGET_CALLS.with(|calls| calls.get()), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn leaf_symlinks_are_refused_for_dialog_grants() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_file = dir.path().join("real-file");
+        let real_dir = dir.path().join("real-dir");
+        fs::write(&real_file, b"file").unwrap();
+        fs::create_dir(&real_dir).unwrap();
+        let file_link = dir.path().join("file-link");
+        let dir_link = dir.path().join("dir-link");
+        symlink(&real_file, &file_link).unwrap();
+        symlink(&real_dir, &dir_link).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        for path in [&file_link, &dir_link] {
+            assert!(matches!(
+                authority.grant_dialog_operations(
+                    path,
+                    "selected",
+                    PathClass::BoundedDialogGrant,
+                    vec![PathOperation::ReadPgn],
+                    Duration::from_secs(60),
+                    1,
+                ),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn leafless_dialog_selections_keep_their_original_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        for path in [PathBuf::from("/"), real.join("..")] {
+            let grant = authority
+                .grant_dialog_operations(
+                    &path,
+                    "directory",
+                    PathClass::BoundedDialogGrant,
+                    vec![PathOperation::ReadPgn],
+                    Duration::from_secs(60),
+                    1,
+                )
+                .unwrap();
+            let stored = &authority.dialogs[&grant.id].entry.stored;
+            assert_eq!(stored.path.to_path().unwrap(), path);
+            assert!(stored.target_is_dir);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ancestor_swaps_during_acquisition_are_refused_before_registration() {
+        use std::os::unix::fs::symlink;
+
+        fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+            let dir = tempfile::tempdir().unwrap();
+            let real = dir.path().join("real");
+            let link = dir.path().join("link");
+            let moved = dir.path().join("moved");
+            fs::create_dir_all(real.join("ws")).unwrap();
+            fs::create_dir(real.join("db")).unwrap();
+            fs::write(real.join("x.pgn"), b"*").unwrap();
+            symlink(&real, &link).unwrap();
+            (dir, real, link, moved)
+        }
+
+        let (dir, real, link, moved) = fixture();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let hook_real = real.clone();
+        let hook_moved = moved.clone();
+        ACQUIRE_TARGET_BEFORE_PROOF_HOOK.with(|slot| {
+            slot.replace(Some(Box::new(move || {
+                fs::rename(&hook_real, &hook_moved).unwrap();
+                symlink(&hook_moved, &hook_real).unwrap();
+            })))
+        });
+        assert!(matches!(
+            path_authority.grant_dialog_operations(
+                &link.join("ws"),
+                "Workspace",
+                PathClass::BoundedDialogGrant,
+                vec![PathOperation::ReadPgn],
+                Duration::from_secs(60),
+                1,
+            ),
+            Err(Error::Io(_))
+        ));
+        assert!(path_authority.dialogs.is_empty());
+
+        let (dir, real, link, moved) = fixture();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let hook_real = real.clone();
+        let hook_moved = moved.clone();
+        ACQUIRE_TARGET_BEFORE_PROOF_HOOK.with(|slot| {
+            slot.replace(Some(Box::new(move || {
+                fs::rename(&hook_real, &hook_moved).unwrap();
+                symlink(&hook_moved, &hook_real).unwrap();
+            })))
+        });
+        let error = path_authority
+            .migrate_legacy_os_path(
+                link.join("x.pgn").into_os_string(),
+                "x.pgn",
+                PathClass::PersistentFile,
+                vec![PathOperation::ReadPgn],
+            )
+            .unwrap_err();
+        assert!(matches!(error, Error::Io(_)));
+        assert!(path_authority.persistent.is_empty());
+
+        let (dir, real, link, moved) = fixture();
+        let mut path_authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let hook_real = real.clone();
+        let hook_moved = moved.clone();
+        ACQUIRE_TARGET_BEFORE_PROOF_HOOK.with(|slot| {
+            slot.replace(Some(Box::new(move || {
+                fs::rename(&hook_real, &hook_moved).unwrap();
+                symlink(&hook_moved, &hook_real).unwrap();
+            })))
+        });
+        let error = path_authority
+            .get_or_create_database_root(&link.join("db"), "Databases", None)
+            .unwrap_err();
+        assert!(matches!(error, Error::Io(_)));
+        assert!(path_authority.persistent.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn promotion_refuses_a_different_leaf_inode_after_grant() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("g.pgn"), b"original").unwrap();
+        symlink(&real, &link).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        let grant = authority
+            .grant_dialog_operations(
+                &link.join("g.pgn"),
+                "g.pgn",
+                PathClass::BoundedDialogGrant,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+        // Create the replacement while the original still exists, so the filesystem cannot hand
+        // the freed inode number back to it; the rename then swaps in a guaranteed different inode.
+        let replacement = dir.path().join("replacement.pgn");
+        fs::write(&replacement, b"replacement").unwrap();
+        fs::rename(&replacement, real.join("g.pgn")).unwrap();
+        assert!(matches!(
+            authority.promote_dialog(
+                &grant,
+                PathClass::PersistentFile,
+                "g.pgn",
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+            ),
+            Err(Error::Conflict(message)) if message == "dialog target changed before promotion"
+        ));
+        assert!(authority.persistent.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pgn_export_destination_races_cleanup_and_leaf_shapes_are_descriptor_relative() {
+        use std::os::unix::fs::symlink;
+
+        fn setup() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+            let dir = tempfile::tempdir().unwrap();
+            let real = dir.path().join("real");
+            let link = dir.path().join("link");
+            let evil = dir.path().join("evil");
+            fs::create_dir(&real).unwrap();
+            fs::create_dir(&evil).unwrap();
+            symlink(&real, &link).unwrap();
+            (dir, real, link, evil)
+        }
+
+        let (dir, _real, link, evil) = setup();
+        let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
+        let hook_link = link.clone();
+        let hook_evil = evil.clone();
+        ACQUIRE_TARGET_BEFORE_PROOF_HOOK.with(|slot| {
+            slot.replace(Some(Box::new(move || {
+                fs::remove_file(&hook_link).unwrap();
+                symlink(&hook_evil, &hook_link).unwrap();
+            })))
+        });
+        assert!(matches!(
+            auth.create_pgn_export_destination(&link.join("new2.pgn"), "new2.pgn"),
+            Err(Error::Conflict(_))
+        ));
+        assert!(!evil.join("new2.pgn").exists());
+
+        let (dir, real, link, _evil) = setup();
+        let moved = dir.path().join("moved");
+        let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
+        let hook_real = real.clone();
+        let hook_moved = moved.clone();
+        ACQUIRE_TARGET_BEFORE_PROOF_HOOK.with(|slot| {
+            slot.replace(Some(Box::new(move || {
+                fs::rename(&hook_real, &hook_moved).unwrap();
+                fs::create_dir(&hook_real).unwrap();
+            })))
+        });
+        assert!(matches!(
+            auth.create_pgn_export_destination(&link.join("new3.pgn"), "new3.pgn"),
+            Err(Error::Conflict(_))
+        ));
+        assert!(!real.join("new3.pgn").exists());
+        assert!(!moved.join("new3.pgn").exists());
+
+        let (dir, real, link, _evil) = setup();
+        let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
+        let before = auth.dialogs.len();
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        let error = auth
+            .create_pgn_export_destination(&link.join("new4.pgn"), "new4.pgn")
+            .unwrap_err();
+        set_test_atomic_file_injector(None);
+        assert!(matches!(error, Error::Io(_)));
+        assert!(!real.join("new4.pgn").exists());
+        assert_eq!(auth.dialogs.len(), before);
+
+        let (dir, real, link, _evil) = setup();
+        let moved = dir.path().join("moved");
+        let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
+        let hook_real = real.clone();
+        let hook_moved = moved.clone();
+        let hook_path = real.join("new4b.pgn");
+        PGN_EXPORT_POST_CREATE_HOOK.with(|slot| {
+            slot.replace(Some(Box::new(move || {
+                fs::rename(&hook_real, &hook_moved).unwrap();
+                fs::create_dir(&hook_real).unwrap();
+                fs::write(hook_real.join("new4b.pgn"), b"sentinel").unwrap();
+            })))
+        });
+        assert!(auth
+            .create_pgn_export_destination(&link.join("new4b.pgn"), "new4b.pgn")
+            .is_err());
+        assert!(!moved.join("new4b.pgn").exists());
+        assert_eq!(fs::read(&hook_path).unwrap(), b"sentinel");
+
+        let (dir, real, link, _evil) = setup();
+        fs::write(real.join("keep.pgn"), b"sentinel").unwrap();
+        let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
+        let before = auth.dialogs.len();
+        set_test_atomic_file_injector(Some(Arc::new(AlwaysIo)));
+        assert!(auth
+            .create_pgn_export_destination(&link.join("keep.pgn"), "keep.pgn")
+            .is_err());
+        set_test_atomic_file_injector(None);
+        assert_eq!(fs::read(real.join("keep.pgn")).unwrap(), b"sentinel");
+        assert_eq!(auth.dialogs.len(), before);
+
+        let (dir, real, _link, _evil) = setup();
+        let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
+        assert!(matches!(
+            auth.create_pgn_export_destination(&real.join("export.pgn/"), "export.pgn"),
+            Err(Error::InvalidInput(message))
+                if message == "PGN export destination must have a .pgn filename"
+        ));
+        assert!(!real.join("export.pgn").exists());
+
+        let (dir, real, link, _evil) = setup();
+        let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
+        let hook_path = real.join("new5.pgn");
+        let replacement_path = hook_path.clone();
+        PGN_EXPORT_POST_CREATE_HOOK.with(|slot| {
+            slot.replace(Some(Box::new(move || {
+                fs::remove_file(&replacement_path).unwrap();
+                fs::write(&replacement_path, b"sentinel").unwrap();
+            })))
+        });
+        assert!(auth
+            .create_pgn_export_destination(&link.join("new5.pgn"), "new5.pgn")
+            .is_err());
+        assert_eq!(fs::read(&hook_path).unwrap(), b"sentinel");
+        assert!(auth.persistent.is_empty());
+        assert!(auth.dialogs.is_empty());
+
+        let (dir, real, link, _evil) = setup();
+        let target = real.join("target.pgn");
+        fs::write(&target, b"target").unwrap();
+        symlink(&target, real.join("sym.pgn")).unwrap();
+        fs::create_dir(real.join("dir.pgn")).unwrap();
+        let mut auth = authority(&dir, Arc::new(TestClock::new(0)));
+        for leaf in ["sym.pgn", "dir.pgn"] {
+            assert!(matches!(
+                auth.create_pgn_export_destination(&link.join(leaf), leaf),
+                Err(Error::InvalidInput(message))
+                    if message == "PGN export destination must be a regular file"
+            ));
+        }
+        assert_eq!(fs::read(&target).unwrap(), b"target");
+        assert!(auth.persistent.is_empty());
+        assert!(auth.dialogs.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_registration_acquires_once_per_fresh_spelling() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::create_dir(real.join("db3")).unwrap();
+        symlink(&real, &link).unwrap();
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        ACQUIRE_TARGET_CALLS.with(|calls| calls.set(0));
+        authority
+            .get_or_create_database_root(&link.join("db3"), "Databases", None)
+            .unwrap();
+        assert_eq!(ACQUIRE_TARGET_CALLS.with(|calls| calls.get()), 1);
+        authority
+            .get_or_create_database_root(&real.join("db3"), "Databases", None)
+            .unwrap();
+        assert_eq!(ACQUIRE_TARGET_CALLS.with(|calls| calls.get()), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shape_checks_precede_filesystem_access_for_all_acquisition_doors() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("g.pgn"), b"*").unwrap();
+        symlink(&real, &link).unwrap();
+        let missing = dir.path().join("missing");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(0)));
+        ACQUIRE_TARGET_CALLS.with(|calls| calls.set(0));
+        assert!(matches!(
+            authority.grant_dialog_operations(
+                &missing,
+                "missing",
+                PathClass::SingleDialogGrant,
+                vec![PathOperation::ReadPgn],
+                Duration::from_secs(60),
+                2,
+            ),
+            Err(Error::InvalidInput(message)) if message == "invalid dialog grant shape"
+        ));
+        assert!(matches!(
+            authority.migrate_legacy_os_path(
+                missing.clone().into_os_string(),
+                "missing",
+                PathClass::PersistentFile,
+                vec![],
+            ),
+            Err(Error::InvalidInput(message)) if message == "persistent operations cannot be empty"
+        ));
+        assert!(matches!(
+            authority.get_or_create_persistent_file(&missing, "missing", vec![]),
+            Err(Error::InvalidInput(message)) if message == "persistent operations cannot be empty"
+        ));
+        assert_eq!(ACQUIRE_TARGET_CALLS.with(|calls| calls.get()), 0);
+
+        let grant = authority
+            .grant_dialog_operations(
+                &link.join("g.pgn"),
+                "g.pgn",
+                PathClass::BoundedDialogGrant,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                Duration::from_secs(60),
+                1,
+            )
+            .unwrap();
+        let calls_before_promotion = ACQUIRE_TARGET_CALLS.with(|calls| calls.get());
+        fs::remove_file(real.join("g.pgn")).unwrap();
+        assert!(matches!(
+            authority.promote_dialog(
+                &grant,
+                PathClass::SingleDialogGrant,
+                "g.pgn",
+                vec![PathOperation::ReadPgn],
+            ),
+            Err(Error::InvalidInput(message)) if message == "promotion target must be persistent"
+        ));
+        assert!(matches!(
+            authority.promote_dialog(
+                &grant,
+                PathClass::PersistentFile,
+                "g.pgn",
+                vec![],
+            ),
+            Err(Error::InvalidInput(message)) if message == "persistent operations cannot be empty"
+        ));
+        assert_eq!(
+            ACQUIRE_TARGET_CALLS.with(|calls| calls.get()),
+            calls_before_promotion
+        );
     }
     #[test]
     fn capacity_evicts_oldest_not_every_grant() {

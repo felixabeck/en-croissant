@@ -1565,7 +1565,7 @@ pub(crate) fn open_verified_parent(
 ) -> Result<(File, std::ffi::OsString), Error> {
     use rustix::fs::{self as rfs, AtFlags, FileType, Mode, OFlags};
     use std::os::unix::ffi::OsStrExt;
-    let parent = unix::open_parent(path)?;
+    let parent = open_parent_no_follow(path)?;
     let leaf = path
         .file_name()
         .filter(|name| !name.as_bytes().is_empty())
@@ -1603,6 +1603,11 @@ pub(crate) fn open_verified_parent(
         }
     }
     Ok((parent, leaf))
+}
+
+#[cfg(unix)]
+pub(crate) fn open_parent_no_follow(path: &Path) -> Result<File, Error> {
+    unix::open_parent(path)
 }
 
 #[cfg(unix)]

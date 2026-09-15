@@ -1922,6 +1922,117 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn workspace_selected_through_symlinked_ancestor_accepts_a_real_write() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("temporary workspace parent");
+        let real = directory.path().join("real");
+        let link = directory.path().join("link");
+        let root = real.join("ws");
+        fs::create_dir_all(&root).expect("workspace root");
+        symlink(&real, &link).expect("workspace ancestor symlink");
+
+        let mut path_authority =
+            PathAuthority::open(directory.path().join("registry.json"), vec![]).expect("authority");
+        let grant = path_authority
+            .grant_dialog_operations(
+                &link.join("ws"),
+                "Workspace",
+                PathClass::BoundedDialogGrant,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                Duration::from_secs(60),
+                1,
+            )
+            .expect("workspace grant");
+        let workspace = FileWorkspaceHandle::new(
+            path_authority
+                .promote_dialog(
+                    &grant,
+                    PathClass::PersistentCustomRoot,
+                    "Workspace",
+                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                )
+                .expect("persistent workspace")
+                .id,
+        );
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().expect("authority lock") = Some(path_authority);
+
+        create_workspace_file_blocking(
+            workspace.clone(),
+            workspace,
+            "game.pgn".into(),
+            WorkspaceMetadata::default(),
+            "1. e4 *".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .expect("write through the canonical workspace");
+        assert_eq!(
+            fs::read_to_string(root.join("game.pgn")).unwrap(),
+            "1. e4 *"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_selected_through_symlinked_ancestor_refuses_an_ancestor_swap() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("temporary workspace parent");
+        let real = directory.path().join("real");
+        let link = directory.path().join("link");
+        let moved = directory.path().join("moved");
+        let root = real.join("ws");
+        fs::create_dir_all(&root).expect("workspace root");
+        symlink(&real, &link).expect("workspace ancestor symlink");
+
+        let mut path_authority =
+            PathAuthority::open(directory.path().join("registry.json"), vec![]).expect("authority");
+        let grant = path_authority
+            .grant_dialog_operations(
+                &link.join("ws"),
+                "Workspace",
+                PathClass::BoundedDialogGrant,
+                vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                Duration::from_secs(60),
+                1,
+            )
+            .expect("workspace grant");
+        let workspace = FileWorkspaceHandle::new(
+            path_authority
+                .promote_dialog(
+                    &grant,
+                    PathClass::PersistentCustomRoot,
+                    "Workspace",
+                    vec![PathOperation::ReadPgn, PathOperation::WritePgn],
+                )
+                .expect("persistent workspace")
+                .id,
+        );
+        let state = AppState::default();
+        *state.pgn_path_authority.lock().expect("authority lock") = Some(path_authority);
+
+        fs::rename(&real, &moved).expect("move real ancestor");
+        symlink(&moved, &real).expect("replace real ancestor");
+
+        let result = create_workspace_file_blocking(
+            workspace.clone(),
+            workspace,
+            "game.pgn".into(),
+            WorkspaceMetadata::default(),
+            "1. e4 *".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        );
+        assert!(result.is_err());
+        assert!(!moved.join("ws/game.pgn").exists());
+    }
+
+    #[cfg(unix)]
     fn registered_child_directory(
         state: &AppState,
         workspace: &FileWorkspaceHandle,
