@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    fmt::Display,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -28,9 +27,9 @@ use vampirc_uci::{
 use crate::{
     db::{DatabaseRepository, GameQuery, PositionQueryJs},
     engine::{
-        parse_fen_and_apply_moves, resolve_engine_options, spawn_registered, AdmissionLease,
-        EngineActor, EngineDeadlines, EngineKey, EngineLog, EngineOption, EngineRequestId, GoMode,
-        ResolvedEngineOption, SupervisedEngine,
+        parse_fen_and_apply_moves, spawn_registered, AdmissionLease, EngineActor, EngineDeadlines,
+        EngineKey, EngineLog, EngineOption, EngineRequestId, GoMode, ResolvedEngineOption,
+        SupervisedEngine,
     },
     error::Error,
     infra::{
@@ -45,6 +44,9 @@ use crate::{
 use tokio::sync::OwnedSemaphorePermit;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(test)]
+use crate::engine::resolve_engine_options;
+
 pub struct EngineProcess {
     base: Arc<EngineActor>,
     last_depth: u32,
@@ -52,7 +54,7 @@ pub struct EngineProcess {
     last_best_moves: Vec<BestMoves>,
     last_progress: f32,
     options: EngineOptions,
-    resource_leases: Vec<crate::infra::path_authority::EngineResourceLease>,
+    resource_leases: Vec<Arc<crate::infra::path_authority::EngineResourceLease>>,
     go_mode: GoMode,
     running: bool,
     request_id: Option<EngineRequestId>,
@@ -60,40 +62,18 @@ pub struct EngineProcess {
     start: Instant,
 }
 
-fn resolve_engine_executable(
-    state: &AppState,
-    engine: &EngineHandle,
-    operation: PathOperation,
-) -> Result<EngineExecutable, Error> {
-    let mut authority = state
-        .pgn_path_authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    authority
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .engine_executable(engine, operation)
-}
-
 impl EngineProcess {
     async fn new(
         supervisor: Arc<crate::engine::EngineSupervisor>,
         key: EngineKey,
         executable: EngineExecutable,
-        engine_id: String,
-        executable_ref: crate::infra::path_authority::PathRef,
-        prepared_admission: Option<AdmissionLease>,
+        admission: AdmissionLease,
     ) -> Result<(Self, crate::engine::SupervisedEngine), Error> {
-        let (supervised, ()) = spawn_registered(
-            supervisor,
-            key,
-            executable,
-            engine_id,
-            executable_ref,
-            prepared_admission,
-            |actor| async move { actor.init_uci().await },
-        )
-        .await?;
+        let (supervised, ()) =
+            spawn_registered(supervisor, key, executable, admission, |actor| async move {
+                actor.init_uci().await
+            })
+            .await?;
         Ok((
             Self {
                 base: supervised.actor.clone(),
@@ -113,18 +93,15 @@ impl EngineProcess {
         ))
     }
 
-    async fn set_option<T>(&mut self, name: &str, value: T) -> Result<(), Error>
-    where
-        T: Display,
-    {
-        self.base.set_option(name, &value.to_string()).await
-    }
-
     async fn set_options(
         &mut self,
         options: EngineOptions,
         resolved: Vec<ResolvedEngineOption>,
+        operation: Option<CancellationToken>,
     ) -> Result<(), Error> {
+        EngineActor::verify_option_resources(&self.base, &resolved, operation.as_ref()).await?;
+        #[cfg(test)]
+        run_after_resource_verification_hook().await;
         let fen_changed = options.fen != self.options.fen;
         let fen: Fen = options.fen.parse()?;
         let setup = fen.as_setup();
@@ -133,9 +110,13 @@ impl EngineProcess {
 
         if fen_changed {
             if castling_mode.is_chess960() {
-                self.set_option("UCI_Chess960", "true").await?;
+                self.base
+                    .set_option_with_operation("UCI_Chess960", "true", &[], operation.clone())
+                    .await?;
             } else {
-                self.set_option("UCI_Chess960", "false").await?;
+                self.base
+                    .set_option_with_operation("UCI_Chess960", "false", &[], operation.clone())
+                    .await?;
             }
         }
 
@@ -200,7 +181,12 @@ impl EngineProcess {
                 .find(|configured| configured.name() == option.name);
             if current != previous && option.name != "UCI_Chess960" {
                 self.base
-                    .set_option_with_resources(&option.name, &option.value, &option.resource_values)
+                    .set_option_with_operation(
+                        &option.name,
+                        &option.value,
+                        &option.resource_values,
+                        operation.clone(),
+                    )
                     .await?;
             }
         }
@@ -227,6 +213,8 @@ impl EngineProcess {
     }
 
     async fn go(&mut self, mode: &GoMode) -> Result<(), Error> {
+        #[cfg(test)]
+        observe_interactive_go_attempt();
         self.go_mode = mode.clone();
         self.request_id = Some(self.base.start_search(mode).await?);
         self.running = true;
@@ -495,7 +483,6 @@ pub async fn prepare_engine_search(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, Error> {
     let executable_ref = engine.id.clone();
-    resolve_engine_executable(&state, &engine, PathOperation::EngineExecute)?;
     let key = EngineKey::new(tab, id.clone())?;
     state
         .engine_supervisor
@@ -710,36 +697,27 @@ async fn get_best_moves_core<R: tauri::Runtime>(
         .engine_supervisor
         .consume_engine_search(key.clone(), id.clone(), executable_ref.clone(), &generation)
         .await?;
-    let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineExecute)?;
-    let mut resolved = {
-        let mut authority = state
-            .pgn_path_authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-        resolve_engine_options(
-            authority
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?,
-            &options.extra_options,
-        )?
-    };
-    let child_leases = resolved
-        .iter_mut()
-        .flat_map(|option| std::mem::take(&mut option.resources))
-        .collect();
+    let (executable, resolved) = EngineActor::resolve_launch(
+        state.pgn_path_authority.clone(),
+        engine.clone(),
+        PathOperation::EngineExecute,
+        &options.extra_options,
+        &admission,
+    )
+    .await?;
 
     let (mut process, supervised) = EngineProcess::new(
         state.engine_supervisor.clone(),
         key.clone(),
-        executable.with_resource_leases(child_leases),
-        id.clone(),
-        executable_ref,
-        Some(admission),
+        executable,
+        admission,
     )
     .await?;
 
     let run_result: Result<(), Error> = async {
-        process.set_options(options.clone(), resolved).await?;
+        process.set_options(options.clone(), resolved, None).await?;
+        #[cfg(test)]
+        run_interactive_before_go_hook().await;
         process.go(&go_mode).await?;
         process_interactive_search_output(&mut process, &id, &tab, &supervised, &app).await
     }
@@ -941,11 +919,63 @@ type AnalysisLineHook = Box<dyn FnMut(&str)>;
 type AnalysisReplayPlyHook = Box<dyn FnMut(usize)>;
 
 #[cfg(test)]
+type AsyncAnalysisHook =
+    Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send>;
+
+#[cfg(test)]
+type SyncAnalysisHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
 std::thread_local! {
     static ANALYSIS_LINE_DEQUEUED_HOOK: std::cell::RefCell<Option<AnalysisLineHook>> =
         const { std::cell::RefCell::new(None) };
     static ANALYSIS_REPLAY_PLY_HOOK: std::cell::RefCell<Option<AnalysisReplayPlyHook>> =
         const { std::cell::RefCell::new(None) };
+    static AFTER_RESOURCE_VERIFICATION_HOOK: std::cell::RefCell<Option<AsyncAnalysisHook>> =
+        const { std::cell::RefCell::new(None) };
+    static INTERACTIVE_BEFORE_GO_HOOK: std::cell::RefCell<Option<AsyncAnalysisHook>> =
+        const { std::cell::RefCell::new(None) };
+    static INTERACTIVE_GO_ATTEMPT_HOOK: std::cell::RefCell<Option<SyncAnalysisHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_after_resource_verification_hook(hook: Option<AsyncAnalysisHook>) {
+    AFTER_RESOURCE_VERIFICATION_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+async fn run_after_resource_verification_hook() {
+    let hook = AFTER_RESOURCE_VERIFICATION_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook().await;
+    }
+}
+
+#[cfg(test)]
+fn set_interactive_before_go_hook(hook: Option<AsyncAnalysisHook>) {
+    INTERACTIVE_BEFORE_GO_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+async fn run_interactive_before_go_hook() {
+    let hook = INTERACTIVE_BEFORE_GO_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook().await;
+    }
+}
+
+#[cfg(test)]
+fn set_interactive_go_attempt_hook(hook: Option<SyncAnalysisHook>) {
+    INTERACTIVE_GO_ATTEMPT_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+fn observe_interactive_go_attempt() {
+    let hook = INTERACTIVE_GO_ATTEMPT_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
 }
 
 #[cfg(test)]
@@ -1119,54 +1149,15 @@ async fn analyze_game_core<R: tauri::Runtime>(
 ) -> Result<Vec<MoveAnalysis>, Error> {
     ensure_analysis_not_cancelled(&cancellation)?;
     let executable_ref = engine.id.clone();
-    let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineExecute)?;
-    ensure_analysis_not_cancelled(&cancellation)?;
     let analysis_key = EngineKey::new("analysis".into(), id.clone())?;
     let mut analysis: Vec<MoveAnalysis> = Vec::new();
 
     let fen = Fen::from_ascii(options.fen.as_bytes())?;
     let mut fens = collect_report_positions(fen, &options.moves, options.reversed, &cancellation)?;
-
-    let mut initial_resolved = {
-        let mut authority = state
-            .pgn_path_authority
-            .lock()
-            .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-        resolve_engine_options(
-            authority
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?,
-            &uci_options,
-        )?
-    };
     ensure_analysis_not_cancelled(&cancellation)?;
     let progress_lease = begin_progress(&state.progress_state, &app, id.clone())?;
-    let inherited_values: HashMap<String, String> = initial_resolved
-        .iter()
-        .map(|option| (option.name.clone(), option.value.clone()))
-        .collect();
-    let inherited_resource_values: HashMap<String, Vec<String>> = initial_resolved
-        .iter()
-        .map(|option| (option.name.clone(), option.resource_values.clone()))
-        .collect();
-    let (report_options, inherited_values) =
-        prepare_report_options(&uci_options, &inherited_values);
-    let child_leases = initial_resolved
-        .iter_mut()
-        .flat_map(|option| std::mem::take(&mut option.resources))
-        .collect();
-
-    // Progress exists before a child. Failures here mark that lease cancelled or
-    // failed; the cleanup-aware macro below is only valid once an actor exists.
-    if let Err(error) = ensure_analysis_not_cancelled(&cancellation) {
-        return Err(fail_analysis_progress_before_child(
-            &state.progress_state,
-            &app,
-            &progress_lease,
-            error,
-        )
-        .await);
-    }
+    // Admission is deliberately before any descriptor resolution. A canceled report must not
+    // acquire the authority lock or create a launch leaf.
     let admission = match state
         .engine_supervisor
         .admit_for_operation(
@@ -1188,13 +1179,42 @@ async fn analyze_game_core<R: tauri::Runtime>(
             .await);
         }
     };
+    let (executable, initial_resolved) = match EngineActor::resolve_launch(
+        state.pgn_path_authority.clone(),
+        engine,
+        PathOperation::EngineExecute,
+        &uci_options,
+        &admission,
+    )
+    .await
+    {
+        Ok(launch) => launch,
+        Err(error) => {
+            return Err(fail_analysis_progress_before_child(
+                &state.progress_state,
+                &app,
+                &progress_lease,
+                error,
+            )
+            .await);
+        }
+    };
+    let inherited_values: HashMap<String, String> = initial_resolved
+        .iter()
+        .map(|option| (option.name.clone(), option.value.clone()))
+        .collect();
+    let inherited_resource_values: HashMap<String, Vec<String>> = initial_resolved
+        .iter()
+        .map(|option| (option.name.clone(), option.resource_values.clone()))
+        .collect();
+    let (report_options, inherited_values) =
+        prepare_report_options(&uci_options, &inherited_values);
+
     let (mut proc, supervised) = match EngineProcess::new(
         state.engine_supervisor.clone(),
         analysis_key.clone(),
-        executable.with_resource_leases(child_leases),
-        engine_id,
-        executable_ref,
-        Some(admission),
+        executable,
+        admission,
     )
     .await
     {
@@ -1245,23 +1265,15 @@ async fn analyze_game_core<R: tauri::Runtime>(
             moves: moves.clone(),
             extra_options: report_options.clone(),
         };
-        let mut resolved = {
-            let result = (|| {
-                let mut authority = state
-                    .pgn_path_authority
-                    .lock()
-                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-                resolve_engine_options(
-                    authority.as_mut().ok_or_else(|| {
-                        Error::Conflict("path authority is not initialized".into())
-                    })?,
-                    &configured_options.extra_options,
-                )
-            })();
-            match result {
-                Ok(resolved) => resolved,
-                Err(error) => fail_analysis_progress!(error),
-            }
+        let mut resolved = match EngineActor::resolve_option_leases(
+            state.pgn_path_authority.clone(),
+            &configured_options.extra_options,
+            cancellation.clone(),
+        )
+        .await
+        {
+            Ok(resolved) => resolved,
+            Err(error) => fail_analysis_progress!(error),
         };
         for option in &mut resolved {
             restore_inherited_resource_provenance(
@@ -1270,7 +1282,10 @@ async fn analyze_game_core<R: tauri::Runtime>(
                 &inherited_resource_values,
             );
         }
-        if let Err(error) = proc.set_options(configured_options, resolved).await {
+        if let Err(error) = proc
+            .set_options(configured_options, resolved, Some(cancellation.clone()))
+            .await
+        {
             fail_analysis_progress!(error);
         }
 
@@ -1683,6 +1698,7 @@ mod tests {
                     extra_options: Vec::new(),
                 },
                 Vec::new(),
+                None,
             )
             .await
             .unwrap();
@@ -1856,16 +1872,22 @@ while IFS= read -r line; do
                 printf 'read=unreadable\n' >> "$capture"
             fi
             child=
-            for fd in /proc/$$/fd/[0-9]*; do
-                if [ -f "$fd" ] && [ "$(cat "$fd" 2>/dev/null)" = "resource-bytes" ]; then
-                    child="/proc/self/fd/${fd##*/}"
-                    break
-                fi
-            done
+            case "$value" in
+                /proc/self/fd/*)
+                    for fd in /proc/$$/fd/[0-9]*; do
+                        if [ -f "$fd" ] && [ "$(cat "$fd" 2>/dev/null)" = "resource-bytes" ]; then
+                            child="/proc/self/fd/${fd##*/}"
+                            break
+                        fi
+                    done
+                    ;;
+                *) child="$value" ;;
+            esac
             printf 'child=%s\n' "$child" >> "$capture"
             echo "$line"
             ;;
         setoption*)
+            printf 'option=%s\n' "$line" >> "$capture"
             echo "$line"
             ;;
         go*)
@@ -1889,6 +1911,14 @@ done
         let resource_path = directory.path().join("weights.nnue");
         std::fs::write(&resource_path, b"resource-bytes").unwrap();
 
+        #[cfg(target_os = "macos")]
+        let mut authority = PathAuthority::open_with_launch_root(
+            directory.path().join("registry.json"),
+            Vec::new(),
+            crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap(),
+        )
+        .unwrap();
+        #[cfg(not(target_os = "macos"))]
         let mut authority =
             PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap();
         let engine = authority
@@ -1946,11 +1976,17 @@ done
             .lines()
             .find_map(|line| line.strip_prefix("read="))
             .expect("resource engine must capture the EvalFile read result");
+        #[cfg(target_os = "linux")]
         for value in [eval, child] {
             let descriptor = value
                 .strip_prefix("/proc/self/fd/")
                 .expect("resource option must use a procfs descriptor");
             assert!(!descriptor.is_empty() && descriptor.bytes().all(|byte| byte.is_ascii_digit()));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(eval, child);
+            assert!(eval.contains("engine-launch"));
         }
         assert_eq!(eval, child, "the wire value must be the inherited resource");
         assert_eq!(
@@ -2303,6 +2339,7 @@ done
                     resolved_option("MultiPV", "2"),
                     resolved_option("MultiPV", "4"),
                 ],
+                None,
             )
             .await
             .unwrap();
@@ -2323,10 +2360,22 @@ done
         process.base.terminate().await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn set_options_passes_resource_provenance_to_actor_logs() {
-        let resource = "/proc/self/fd/77".to_string();
-        let (actor, writes) = EngineActor::recording_test_actor(&["readyok", &resource]);
+        let directory = tempfile::tempdir().unwrap();
+        let resource_file = directory.path().join("resource.bin");
+        std::fs::write(&resource_file, b"resource").unwrap();
+        let lease = Arc::new(
+            crate::infra::path_authority::EngineResourceLease::test_file(
+                std::fs::File::open(&resource_file).unwrap(),
+            ),
+        );
+        let resource = lease.uci_value();
+        let (actor, writes) = EngineActor::recording_test_actor_with_resources(
+            &["readyok", &resource],
+            vec![lease.clone()],
+        );
         let mut process = EngineProcess {
             base: actor.clone(),
             last_depth: 0,
@@ -2352,9 +2401,10 @@ done
                 vec![ResolvedEngineOption {
                     name: "EvalFile".into(),
                     value: resource.clone(),
-                    resources: Vec::new(),
+                    resources: vec![lease],
                     resource_values: vec![resource.clone()],
                 }],
+                None,
             )
             .await
             .unwrap();
@@ -2492,7 +2542,7 @@ done
         )
         .await;
         assert!(result.is_err());
-        assert!(state.progress_state.get(id).unwrap().is_none());
+        assert!(state.progress_state.get(id).unwrap().is_some());
     }
 
     #[cfg(unix)]
@@ -2545,6 +2595,392 @@ done
         assert_safe_resource_logs(&logs);
         assert!(supervisor.get_exact(&key).is_none());
         assert_resource_wire_capture(&_directory, "resource-bytes");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn get_engine_config_launches_a_fixture_through_the_production_launch_helper() {
+        let (_directory, app, engine, _resource) = resource_engine_fixture();
+        let config = get_engine_config(engine, app.state()).await.unwrap();
+        assert!(config.options.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sealed_get_engine_config_refuses_before_resolution() {
+        let (directory, app, engine, _resource) = resource_engine_fixture();
+        let state = app.state::<AppState>();
+        state.engine_supervisor.terminate_all().await.unwrap();
+        let result = get_engine_config(engine, state).await;
+        assert!(matches!(
+            result,
+            Err(Error::Conflict(message)) if message == "application is shutting down"
+        ));
+        assert!(!directory.path().join("capture.log").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sealed_report_analysis_refuses_before_resolution() {
+        let (directory, app, engine, _resource) = resource_engine_fixture();
+        let state = app.state::<AppState>().inner().clone();
+        state.engine_supervisor.terminate_all().await.unwrap();
+        let result = analyze_game_core(
+            "sealed-report".into(),
+            engine,
+            "sealed-report-engine".into(),
+            GoMode::Depth(1),
+            AnalysisOptions {
+                fen: start_fen().to_string(),
+                moves: Vec::new(),
+                annotate_novelties: false,
+                reference_db: None,
+                reversed: false,
+            },
+            Vec::new(),
+            state,
+            app,
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(Error::Conflict(message)) if message == "application is shutting down"
+        ));
+        assert!(!directory.path().join("capture.log").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn removed_interactive_reservation_refuses_before_resolution() {
+        let (_directory, app, engine, _resource) = resource_engine_fixture();
+        let state = app.state::<AppState>();
+        let id = "removed-reservation-engine";
+        let tab = "removed-reservation";
+        let key = EngineKey::new(tab.into(), id.into()).unwrap();
+        let generation = state
+            .engine_supervisor
+            .prepare_engine_search(key, id.into(), engine.id.clone())
+            .await
+            .unwrap();
+        state.engine_supervisor.terminate_all().await.unwrap();
+        let result = get_best_moves_core(
+            id.into(),
+            engine,
+            tab.into(),
+            GoMode::Depth(1),
+            EngineOptions::default(),
+            generation,
+            app.clone(),
+            state.inner().clone(),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(Error::Conflict(message))
+                if message == "engine search reservation is invalid or expired"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn report_analysis_cancellation_after_resource_verification_sends_no_resource_option() {
+        let (directory, app, engine, resource) = resource_engine_fixture();
+        let cancellation = CancellationToken::new();
+        let cancellation_for_hook = cancellation.clone();
+        set_after_resource_verification_hook(Some(Box::new(move || {
+            Box::pin(async move {
+                cancellation_for_hook.cancel();
+            })
+        })));
+        let state = app.state::<AppState>().inner().clone();
+        let result = analyze_game_core(
+            "report-cancel-after-verify".into(),
+            engine,
+            "report-cancel-after-verify-engine".into(),
+            GoMode::Depth(1),
+            AnalysisOptions {
+                fen: start_fen().to_string(),
+                moves: Vec::new(),
+                annotate_novelties: false,
+                reference_db: None,
+                reversed: false,
+            },
+            vec![EngineOption::Resource {
+                name: "EvalFile".into(),
+                resources: vec![resource],
+            }],
+            state,
+            app.clone(),
+            cancellation,
+        )
+        .await;
+        set_after_resource_verification_hook(None);
+        assert!(matches!(
+            result,
+            Err(Error::Cancellation | Error::AnalysisCancelled)
+        ));
+        let capture =
+            std::fs::read_to_string(directory.path().join("capture.log")).unwrap_or_default();
+        assert!(!capture.contains("eval="));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn report_resource_cancellation_at_write_boundary_sends_no_resource_option() {
+        let (directory, app, engine, resource) = resource_engine_fixture();
+        let cancellation = CancellationToken::new();
+        let cancellation_for_hook = cancellation.clone();
+        EngineActor::set_test_option_before_send_hook(Some(Box::new(move || {
+            cancellation_for_hook.cancel();
+        })));
+        let state = app.state::<AppState>().inner().clone();
+        let result = analyze_game_core(
+            "report-cancel-at-write".into(),
+            engine,
+            "report-cancel-at-write-engine".into(),
+            GoMode::Depth(1),
+            AnalysisOptions {
+                fen: start_fen().to_string(),
+                moves: Vec::new(),
+                annotate_novelties: false,
+                reference_db: None,
+                reversed: false,
+            },
+            vec![EngineOption::Resource {
+                name: "EvalFile".into(),
+                resources: vec![resource],
+            }],
+            state,
+            app.clone(),
+            cancellation,
+        )
+        .await;
+        EngineActor::set_test_option_before_send_hook(None);
+        assert!(matches!(
+            result,
+            Err(Error::Cancellation | Error::AnalysisCancelled)
+        ));
+        let capture =
+            std::fs::read_to_string(directory.path().join("capture.log")).unwrap_or_default();
+        assert!(!capture.contains("eval="));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn interactive_stop_after_resource_verification_sends_no_option_or_go() {
+        let (directory, app, engine, resource) = resource_engine_fixture();
+        let state = app.state::<AppState>();
+        let id = "interactive-stop-after-verify-engine";
+        let tab = "interactive-stop-after-verify";
+        let key = EngineKey::new(tab.into(), id.into()).unwrap();
+        let generation = state
+            .engine_supervisor
+            .prepare_engine_search(key, id.into(), engine.id.clone())
+            .await
+            .unwrap();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        set_after_resource_verification_hook(Some(Box::new(move || {
+            Box::pin(async move {
+                let _ = entered_tx.send(());
+                let _ = release_rx.await;
+            })
+        })));
+        let state_for_core = state.inner().clone();
+        let app_for_core = app.clone();
+        let generation_for_core = generation.clone();
+        let core = tokio::spawn(async move {
+            get_best_moves_core(
+                id.into(),
+                engine,
+                tab.into(),
+                GoMode::Depth(1),
+                EngineOptions {
+                    fen: start_fen().to_string(),
+                    moves: Vec::new(),
+                    extra_options: vec![EngineOption::Resource {
+                        name: "EvalFile".into(),
+                        resources: vec![resource],
+                    }],
+                },
+                generation_for_core,
+                app_for_core,
+                state_for_core,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        stop_engine(
+            id.into(),
+            tab.into(),
+            Some(generation.to_string()),
+            app.state(),
+        )
+        .await
+        .unwrap();
+        release_tx.send(()).unwrap();
+        set_after_resource_verification_hook(None);
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), core)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(Error::Cancellation)
+        ));
+        let capture =
+            std::fs::read_to_string(directory.path().join("capture.log")).unwrap_or_default();
+        assert!(!capture.contains("eval=") && !capture.contains("go-ready"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn interactive_stop_between_options_and_go_rejects_go_after_termination() {
+        let (directory, app, engine, resource) = resource_engine_fixture();
+        let state = app.state::<AppState>();
+        let id = "interactive-stop-before-go-engine";
+        let tab = "interactive-stop-before-go";
+        let key = EngineKey::new(tab.into(), id.into()).unwrap();
+        let generation = state
+            .engine_supervisor
+            .prepare_engine_search(key, id.into(), engine.id.clone())
+            .await
+            .unwrap();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let attempted = Arc::new(AtomicBool::new(false));
+        let attempted_for_hook = attempted.clone();
+        set_interactive_go_attempt_hook(Some(Box::new(move || {
+            attempted_for_hook.store(true, Ordering::SeqCst);
+        })));
+        set_interactive_before_go_hook(Some(Box::new(move || {
+            Box::pin(async move {
+                let _ = entered_tx.send(());
+                let _ = release_rx.await;
+            })
+        })));
+        let state_for_core = state.inner().clone();
+        let app_for_core = app.clone();
+        let generation_for_core = generation.clone();
+        let core = tokio::spawn(async move {
+            get_best_moves_core(
+                id.into(),
+                engine,
+                tab.into(),
+                GoMode::Depth(1),
+                EngineOptions {
+                    fen: start_fen().to_string(),
+                    moves: Vec::new(),
+                    extra_options: vec![EngineOption::Resource {
+                        name: "EvalFile".into(),
+                        resources: vec![resource],
+                    }],
+                },
+                generation_for_core,
+                app_for_core,
+                state_for_core,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        stop_engine(
+            id.into(),
+            tab.into(),
+            Some(generation.to_string()),
+            app.state(),
+        )
+        .await
+        .unwrap();
+        release_tx.send(()).unwrap();
+        set_interactive_before_go_hook(None);
+        let result = tokio::time::timeout(Duration::from_secs(2), core)
+            .await
+            .unwrap()
+            .unwrap();
+        set_interactive_go_attempt_hook(None);
+        assert!(attempted.load(Ordering::SeqCst));
+        assert!(matches!(result, Err(Error::Cancellation)));
+        let capture =
+            std::fs::read_to_string(directory.path().join("capture.log")).unwrap_or_default();
+        assert!(capture.contains("eval=") && !capture.contains("go-ready"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn report_resource_replacement_between_positions_fails_closed_without_second_setoption() {
+        let (directory, app, engine, resource) = resource_engine_fixture();
+        let state = app.state::<AppState>().inner().clone();
+        let core = tokio::spawn(async move {
+            analyze_game_core(
+                "report-resource-replacement".into(),
+                engine,
+                "report-resource-replacement-engine".into(),
+                GoMode::Depth(1),
+                AnalysisOptions {
+                    fen: start_fen().to_string(),
+                    moves: vec!["e2e4".into()],
+                    annotate_novelties: false,
+                    reference_db: None,
+                    reversed: false,
+                },
+                vec![
+                    EngineOption::String {
+                        name: "Threads".into(),
+                        value: "2".into(),
+                    },
+                    EngineOption::Resource {
+                        name: "EvalFile".into(),
+                        resources: vec![resource],
+                    },
+                ],
+                state,
+                app.clone(),
+                CancellationToken::new(),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let capture = std::fs::read_to_string(directory.path().join("capture.log"))
+                    .unwrap_or_default();
+                if capture.contains("go-ready") {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let resource_path = directory.path().join("weights.nnue");
+        std::fs::rename(
+            &resource_path,
+            directory.path().join("weights-original.nnue"),
+        )
+        .unwrap();
+        std::fs::write(&resource_path, b"replacement").unwrap();
+        std::fs::write(directory.path().join("release"), b"").unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), core)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_err());
+        let capture = std::fs::read_to_string(directory.path().join("capture.log")).unwrap();
+        assert_eq!(capture.matches("option=setoption name Threads").count(), 1);
+        assert_eq!(capture.matches("option=setoption name MultiPV").count(), 1);
+        assert_eq!(
+            capture
+                .matches("option=setoption name UCI_Chess960")
+                .count(),
+            1
+        );
+        assert_eq!(capture.matches("eval=").count(), 1);
+        assert!(!capture.contains("read=replacement"));
     }
 
     #[tokio::test]
@@ -2984,16 +3420,25 @@ pub async fn get_engine_config(
     state: tauri::State<'_, AppState>,
 ) -> Result<EngineConfig, Error> {
     let executable_ref = engine.id.clone();
-    let executable = resolve_engine_executable(&state, &engine, PathOperation::EngineConfigure)?;
     let probe_id = uuid::Uuid::new_v4().to_string();
     let key = EngineKey::new("engine-config".into(), probe_id.clone())?;
+    let admission = state
+        .engine_supervisor
+        .admit_for_launch(key.clone(), probe_id.clone(), executable_ref.clone())
+        .await?;
+    let (executable, _) = EngineActor::resolve_launch(
+        state.pgn_path_authority.clone(),
+        engine,
+        PathOperation::EngineConfigure,
+        &[],
+        &admission,
+    )
+    .await?;
     let (supervised, config) = spawn_registered(
         state.engine_supervisor.clone(),
         key.clone(),
         executable,
-        probe_id,
-        executable_ref,
-        None,
+        admission,
         collect_engine_configuration,
     )
     .await?;

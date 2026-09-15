@@ -16,6 +16,7 @@ pub static BLOCKING_GATEWAY: Lazy<BlockingGateway> = Lazy::new(|| BlockingGatewa
 /// (`pgn.rs:336`), which takes a permit — that is a legal sequential acquisition and must not
 /// become a nested one. The semaphore has 4 permits, so four nested acquisitions hang the
 /// process with no error.
+#[derive(Clone)]
 pub struct BlockingGateway {
     semaphore: Arc<tokio::sync::Semaphore>,
 }
@@ -456,6 +457,11 @@ impl BlockingGateway {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn available_permits(&self) -> usize {
+        self.semaphore.available_permits()
+    }
+
     /// Runs admitted work to completion even if the awaiting future is dropped. The blocking
     /// worker owns the capacity permit until the closure actually exits.
     pub async fn spawn<F, R>(&self, f: F) -> Result<R, Error>
@@ -596,7 +602,7 @@ mod tests {
         .await
         .expect("spawn panic must return");
         assert!(matches!(spawn_panic, Err(Error::Conflict(_))));
-        assert_eq!(gateway.semaphore.available_permits(), 1);
+        assert_eq!(gateway.available_permits(), 1);
 
         let spawn_error = tokio::time::timeout(
             TEST_DEADLINE,

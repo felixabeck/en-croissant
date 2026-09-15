@@ -44,6 +44,9 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+compile_error!("ChessFable supports Linux, macOS and Windows");
+
 mod resolved;
 pub use resolved::ResolvedPath;
 pub(crate) use resolved::{PgnSnapshot, PgnSnapshotIdentity};
@@ -562,6 +565,11 @@ impl AuthorizedDir {
         &self.path
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn try_clone(&self) -> Result<fs::File, Error> {
+        self.directory.as_file().try_clone().map_err(Error::from)
+    }
+
     pub(crate) fn remove_leaf_identified(
         &self,
         leaf: &OsStr,
@@ -808,6 +816,12 @@ impl EngineResourceHandle {
 pub(crate) struct EngineResourceLease {
     #[cfg(unix)]
     file: fs::File,
+    #[cfg(target_os = "macos")]
+    target: std::sync::Mutex<PathBuf>,
+    #[cfg(target_os = "macos")]
+    pinned_target: std::sync::Mutex<Option<PathBuf>>,
+    #[cfg(target_os = "macos")]
+    is_directory: bool,
     #[cfg(windows)]
     /// Holds the no-delete handle until the lease is dropped.
     _file: fs::File,
@@ -815,20 +829,102 @@ pub(crate) struct EngineResourceLease {
     target: PathBuf,
 }
 impl EngineResourceLease {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn uci_value(&self) -> String {
         use std::os::fd::AsRawFd;
         format!("/proc/self/fd/{}", self.file.as_raw_fd())
+    }
+    #[cfg(target_os = "macos")]
+    pub(crate) fn uci_value(&self) -> String {
+        let target = self
+            .pinned_target
+            .lock()
+            .ok()
+            .and_then(|target| target.clone())
+            .or_else(|| self.target.lock().ok().map(|target| target.clone()));
+        target.map_or_else(String::new, |path| path.to_string_lossy().into_owned())
     }
     #[cfg(windows)]
     pub(crate) fn uci_value(&self) -> String {
         self.target.to_string_lossy().into_owned()
     }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn file(&self) -> &fs::File {
+        &self.file
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn verify_current(&self) -> Result<(), Error> {
+        if !self.is_directory {
+            return Ok(());
+        }
+        let path = self
+            .target
+            .lock()
+            .map_err(|_| Error::Conflict("engine resource lock was poisoned".into()))?
+            .clone();
+        if crate::infra::fs::held_matches_path(&self.file, &path)? {
+            Ok(())
+        } else {
+            Err(Error::Conflict(
+                "engine resource changed after authorization".into(),
+            ))
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) fn verify_current(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn set_pinned_target(&self, target: PathBuf) -> Result<(), Error> {
+        *self
+            .pinned_target
+            .lock()
+            .map_err(|_| Error::Conflict("engine resource lock was poisoned".into()))? =
+            Some(target);
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn is_directory(&self) -> bool {
+        self.is_directory
+    }
 }
 #[cfg(all(test, unix))]
 impl EngineResourceLease {
     pub(crate) fn test_file(file: fs::File) -> Self {
-        Self { file }
+        #[cfg(target_os = "macos")]
+        use std::os::unix::ffi::OsStrExt;
+        #[cfg(target_os = "macos")]
+        let target = rustix::fs::getpath(&file)
+            .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
+            .unwrap_or_else(|_| PathBuf::new());
+        Self {
+            file,
+            #[cfg(target_os = "macos")]
+            target: std::sync::Mutex::new(target),
+            #[cfg(target_os = "macos")]
+            pinned_target: std::sync::Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            is_directory: false,
+        }
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn test_directory(file: fs::File) -> Self {
+        use std::os::unix::ffi::OsStrExt;
+        let target = rustix::fs::getpath(&file)
+            .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
+            .unwrap_or_default();
+        Self {
+            file,
+            target: std::sync::Mutex::new(target),
+            pinned_target: std::sync::Mutex::new(None),
+            is_directory: true,
+        }
     }
 }
 #[cfg(all(test, unix))]
@@ -838,10 +934,22 @@ impl EngineExecutable {
         working_directory: PathBuf,
         resource_leases: Vec<EngineResourceLease>,
     ) -> Self {
+        #[cfg(target_os = "macos")]
+        use std::os::unix::ffi::OsStrExt;
+        #[cfg(target_os = "macos")]
+        let command_path = rustix::fs::getpath(&file)
+            .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
+            .unwrap_or_else(|_| working_directory.join("engine"));
         Self {
             file,
             working_directory,
-            resource_leases,
+            resource_leases: resource_leases.into_iter().map(Arc::new).collect(),
+            #[cfg(target_os = "macos")]
+            command_path,
+            #[cfg(target_os = "macos")]
+            launch_root: None,
+            #[cfg(target_os = "macos")]
+            materialized_files: Vec::new(),
         }
     }
 }
@@ -1033,7 +1141,13 @@ pub(crate) struct EngineExecutable {
     #[cfg(unix)]
     file: fs::File,
     working_directory: PathBuf,
-    resource_leases: Vec<EngineResourceLease>,
+    resource_leases: Vec<Arc<EngineResourceLease>>,
+    #[cfg(target_os = "macos")]
+    command_path: PathBuf,
+    #[cfg(target_os = "macos")]
+    launch_root: Option<EngineLaunchRoot>,
+    #[cfg(target_os = "macos")]
+    materialized_files: Vec<MaterializedFile>,
     #[cfg(windows)]
     /// Holds the no-delete handle until the executable is dropped.
     _file: fs::File,
@@ -1043,10 +1157,14 @@ pub(crate) struct EngineExecutable {
 impl EngineExecutable {
     /// Linux executes the already-opened inode through its stable procfs descriptor. This avoids
     /// a second pathname lookup between authority validation and process creation.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn command_target(&self) -> PathBuf {
         use std::os::fd::AsRawFd;
         PathBuf::from(format!("/proc/self/fd/{}", self.file.as_raw_fd()))
+    }
+    #[cfg(target_os = "macos")]
+    pub(crate) fn command_target(&self) -> &Path {
+        &self.command_path
     }
     /// Windows CreateProcess accepts a path, not an opened executable handle.
     /// The kept no-delete handle seals that exact file until spawn completes,
@@ -1075,7 +1193,7 @@ impl EngineExecutable {
     /// these descriptors too. That has always been true of resource leases; the
     /// engine image joins the same set, and it is no more sensitive than the
     /// leases, being the program the engine is already running.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn inherited_fds(&self) -> Vec<std::os::fd::RawFd> {
         use std::os::fd::AsRawFd;
         self.resource_leases
@@ -1086,10 +1204,39 @@ impl EngineExecutable {
     }
     pub(crate) fn with_resource_leases(
         mut self,
-        resource_leases: Vec<EngineResourceLease>,
+        resource_leases: Vec<Arc<EngineResourceLease>>,
     ) -> Self {
         self.resource_leases = resource_leases;
         self
+    }
+
+    pub(crate) fn resource_leases(&self) -> &[Arc<EngineResourceLease>] {
+        &self.resource_leases
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn launch_root(&self) -> Option<&EngineLaunchRoot> {
+        self.launch_root.as_ref()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn image_file(&self) -> &fs::File {
+        &self.file
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn set_launch_materialization(
+        &mut self,
+        command_path: PathBuf,
+        materialized_files: Vec<MaterializedFile>,
+    ) {
+        self.command_path = command_path;
+        self.materialized_files = materialized_files;
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn set_test_launch_root(&mut self, launch_root: EngineLaunchRoot) {
+        self.launch_root = Some(launch_root);
     }
 }
 impl EngineHandle {
@@ -1490,6 +1637,7 @@ pub struct AppOwnedRoot {
     pub operations: Vec<PathOperation>,
 }
 impl AppOwnedRoot {
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn new(
         display_name: impl Into<String>,
         path: PathBuf,
@@ -1515,6 +1663,8 @@ pub(crate) enum AppOwnedDefaultRoot {
     EngineImages,
     Puzzles,
     Credentials,
+    #[cfg(target_os = "macos")]
+    EngineLaunch,
 }
 
 impl AppOwnedDefaultRoot {
@@ -1525,6 +1675,8 @@ impl AppOwnedDefaultRoot {
             Self::EngineImages => "engine-images",
             Self::Puzzles => "puzzles",
             Self::Credentials => "credentials",
+            #[cfg(target_os = "macos")]
+            Self::EngineLaunch => "engine-launch",
         }
     }
 
@@ -1532,6 +1684,8 @@ impl AppOwnedDefaultRoot {
     fn private_mode(self) -> Option<rustix::fs::RawMode> {
         match self {
             Self::Credentials => Some(0o700),
+            #[cfg(target_os = "macos")]
+            Self::EngineLaunch => Some(0o700),
             Self::Databases | Self::Engines | Self::EngineImages | Self::Puzzles => None,
         }
     }
@@ -1671,6 +1825,612 @@ pub(crate) fn ensure_app_owned_default_dir(
         .map_err(|error| Error::Io(Box::new(error.into())))?;
     }
     Ok(directory)
+}
+
+#[cfg(target_os = "macos")]
+const MAX_ENGINE_LAUNCH_LEAVES: usize = 64;
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+pub(crate) struct EngineLaunchRoot {
+    inner: Arc<EngineLaunchRootInner>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct EngineLaunchRootInner {
+    _root: fs::File,
+    _lock: fs::File,
+    instance: fs::File,
+    instance_path: PathBuf,
+    registry: std::sync::Mutex<LaunchLeafRegistry>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Default)]
+struct LaunchLeafRegistry {
+    live: usize,
+    released: Vec<ReleasedLeaf>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReleasedLeaf {
+    pub(crate) leaf: OsString,
+    pub(crate) engine_key: String,
+    pub(crate) engine_id: String,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Default)]
+pub(crate) struct ReclaimReport {
+    pub(crate) removed: usize,
+    pub(crate) failed: Vec<(ReleasedLeaf, Error)>,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) struct MaterializedFile {
+    root: Arc<EngineLaunchRootInner>,
+    leaf: OsString,
+    engine_key: String,
+    engine_id: String,
+    attempted: bool,
+    created: bool,
+    active: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl std::fmt::Debug for MaterializedFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MaterializedFile")
+            .field("leaf", &self.leaf)
+            .field("engine_key", &self.engine_key)
+            .field("engine_id", &self.engine_id)
+            .field("attempted", &self.attempted)
+            .field("created", &self.created)
+            .field("active", &self.active)
+            .finish()
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for MaterializedFile {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if self.attempted {
+            if let Ok(mut registry) = self.root.registry.lock() {
+                registry.released.push(ReleasedLeaf {
+                    leaf: self.leaf.clone(),
+                    engine_key: self.engine_key.clone(),
+                    engine_id: self.engine_id.clone(),
+                });
+            }
+        } else if let Ok(mut registry) = self.root.registry.lock() {
+            registry.live = registry.live.saturating_sub(1);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl MaterializedFile {
+    pub(crate) fn path(&self) -> PathBuf {
+        self.root.instance_path.join(&self.leaf)
+    }
+
+    pub(crate) fn create_from(
+        &mut self,
+        source: &fs::File,
+        mode: u32,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), Error> {
+        self.attempted = true;
+        #[cfg(test)]
+        observe_engine_resolution("leaf");
+        if is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        #[cfg(test)]
+        if let Ok(mut slot) = ENGINE_LAUNCH_BEFORE_CLONE_HOOK
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+        {
+            if let Some(hook) = slot.take() {
+                hook();
+            }
+        }
+
+        use rustix::fs::{self as rfs, CloneFlags, Mode};
+        use rustix::io::Errno;
+        #[cfg(test)]
+        let forced_failure = take_engine_launch_failure();
+        #[cfg(test)]
+        let cloned = match forced_failure {
+            Some(EngineLaunchFailure::CloneExdev) => Err(Errno::XDEV),
+            Some(EngineLaunchFailure::CloneEnotsup) => Err(Errno::NOTSUP),
+            _ => rfs::fclonefileat(source, &self.root.instance, &self.leaf, CloneFlags::empty()),
+        };
+        #[cfg(not(test))]
+        let cloned =
+            rfs::fclonefileat(source, &self.root.instance, &self.leaf, CloneFlags::empty());
+        match cloned {
+            Ok(()) => {}
+            Err(error) if error == Errno::XDEV || error == Errno::NOTSUP => {
+                let (mut target, _) =
+                    crate::infra::fs::create_regular_at(&self.root.instance, &self.leaf)?;
+                #[cfg(test)]
+                if forced_failure == Some(EngineLaunchFailure::Copy) {
+                    return Err(Error::Io(Box::new(std::io::Error::other(
+                        "injected engine launch copy failure",
+                    ))));
+                }
+                let stat = rfs::fstat(source)
+                    .map_err(|error| Error::Io(Box::new(std::io::Error::from(error))))?;
+                let size = u64::try_from(stat.st_size).map_err(|_| {
+                    Error::InvalidInput("engine launch source has an invalid size".into())
+                })?;
+                let mut offset = 0_u64;
+                let mut buffer = [0_u8; 64 * 1024];
+                while offset < size {
+                    if is_cancelled() {
+                        return Err(Error::Cancellation);
+                    }
+                    let wanted = usize::try_from((size - offset).min(buffer.len() as u64))
+                        .map_err(|_| {
+                            Error::ResourceLimit("engine launch file is too large".into())
+                        })?;
+                    let read = rustix::io::pread(source, &mut buffer[..wanted], offset)
+                        .map_err(|error| Error::Io(Box::new(std::io::Error::from(error))))?;
+                    if read == 0 {
+                        return Err(Error::Io(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "engine launch source ended before its descriptor size",
+                        ))));
+                    }
+                    target.write_all(&buffer[..read])?;
+                    offset = offset.checked_add(read as u64).ok_or_else(|| {
+                        Error::ResourceLimit("engine launch file is too large".into())
+                    })?;
+                }
+            }
+            Err(error) => return Err(Error::Io(Box::new(std::io::Error::from(error)))),
+        }
+        if is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let target = crate::infra::fs::open_regular_at(
+            &self.root.instance,
+            &self.leaf,
+            crate::infra::fs::RegularFileAccess::ReadWrite,
+        )?;
+        let mode = u16::try_from(mode)
+            .map_err(|_| Error::InvalidInput("engine launch mode is invalid".into()))?;
+        #[cfg(test)]
+        if forced_failure == Some(EngineLaunchFailure::Fchmod) {
+            return Err(Error::Io(Box::new(std::io::Error::other(
+                "injected engine launch fchmod failure",
+            ))));
+        }
+        rfs::fchmod(&target, Mode::from_raw_mode(mode))
+            .map_err(|error| Error::Io(Box::new(std::io::Error::from(error))))?;
+        self.created = true;
+        if is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remove(mut self) -> Result<(), Error> {
+        if !self.active {
+            return Ok(());
+        }
+        let result = match rustix::fs::statat(
+            &self.root.instance,
+            &self.leaf,
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        ) {
+            Err(rustix::io::Errno::NOENT) => Ok(()),
+            Err(error) => Err(Error::Io(Box::new(std::io::Error::from(error)))),
+            Ok(stat) => crate::infra::fs::remove_entry_at(
+                &self.root.instance,
+                &self.leaf,
+                crate::infra::fs::raw_stat_identity(&stat),
+                false,
+            ),
+        };
+        if result.is_ok() {
+            self.active = false;
+            if let Ok(mut registry) = self.root.registry.lock() {
+                registry.live = registry.live.saturating_sub(1);
+            }
+        }
+        result
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl EngineLaunchRoot {
+    #[cfg(test)]
+    pub(crate) fn instance_path(&self) -> PathBuf {
+        self.inner.instance_path.clone()
+    }
+
+    pub(crate) fn reserve_leaves(
+        &self,
+        count: usize,
+        engine_key: &str,
+        engine_id: &str,
+    ) -> Result<Vec<MaterializedFile>, Error> {
+        let mut registry = self
+            .inner
+            .registry
+            .lock()
+            .map_err(|_| Error::Conflict("engine launch registry lock was poisoned".into()))?;
+        if registry.live.saturating_add(count) > MAX_ENGINE_LAUNCH_LEAVES {
+            return Err(Error::ResourceLimit(
+                "engine launch leaf limit reached".into(),
+            ));
+        }
+        registry.live += count;
+        Ok((0..count)
+            .map(|_| MaterializedFile {
+                root: self.inner.clone(),
+                leaf: OsString::from(format!("{}.leaf", Uuid::new_v4())),
+                engine_key: engine_key.into(),
+                engine_id: engine_id.into(),
+                attempted: false,
+                created: false,
+                active: true,
+            })
+            .collect())
+    }
+
+    pub(crate) fn reclaim(&self) -> ReclaimReport {
+        let released = match self.inner.registry.lock() {
+            Ok(mut registry) => std::mem::take(&mut registry.released),
+            Err(_) => return ReclaimReport::default(),
+        };
+        let mut report = ReclaimReport::default();
+        for leaf in released {
+            let result = match rustix::fs::statat(
+                &self.inner.instance,
+                &leaf.leaf,
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            ) {
+                Err(rustix::io::Errno::NOENT) => Ok(()),
+                Err(error) => Err(Error::Io(Box::new(std::io::Error::from(error)))),
+                Ok(stat) => crate::infra::fs::remove_entry_at(
+                    &self.inner.instance,
+                    &leaf.leaf,
+                    crate::infra::fs::raw_stat_identity(&stat),
+                    false,
+                ),
+            };
+            match result {
+                Ok(()) => {
+                    report.removed += 1;
+                    if let Ok(mut registry) = self.inner.registry.lock() {
+                        registry.live = registry.live.saturating_sub(1);
+                    }
+                }
+                Err(error) => {
+                    if let Ok(mut registry) = self.inner.registry.lock() {
+                        registry.released.push(leaf.clone());
+                    }
+                    report.failed.push((leaf, error));
+                }
+            }
+        }
+        report
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registry_snapshot_for_test(&self) -> (usize, Vec<ReleasedLeaf>) {
+        self.inner
+            .registry
+            .lock()
+            .map(|registry| (registry.live, registry.released.clone()))
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(temp_dir: &Path) -> Result<Self, Error> {
+        initialize_engine_launch_root(&AppDataDir::for_test(temp_dir))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sibling_id(name: &OsStr) -> Option<String> {
+    name.to_str()
+        .and_then(|name| name.strip_suffix(".lock"))
+        .map(str::to_owned)
+}
+
+#[cfg(target_os = "macos")]
+fn log_launch_sibling_failure(id: &str, error: &Error) {
+    log::error!(
+        "engine launch sibling cleanup failed for {id}: category={}",
+        error.category()
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn sweep_engine_launch_root(
+    root: &AuthorizedDir,
+    own_lock: &OsStr,
+    own_instance: &OsStr,
+) -> Result<(), Error> {
+    use rustix::fs::{self as rfs, FlockOperation};
+    use rustix::io::Errno;
+    let entries = read_directory_entries_at(
+        root.directory.as_file(),
+        &CancellationToken::new(),
+        &mut |_| true,
+    )?;
+    let lock_ids = entries
+        .iter()
+        .filter_map(|entry| sibling_id(&entry.name))
+        .collect::<std::collections::HashSet<_>>();
+    for entry in &entries {
+        if entry.name == own_lock || entry.name == own_instance {
+            continue;
+        }
+        let Some(id) = sibling_id(&entry.name) else {
+            continue;
+        };
+        if entry.kind != DirectoryEntryKind::RegularFile {
+            let error = root
+                .open_regular_relative(Path::new(&entry.name))
+                .err()
+                .unwrap_or_else(|| Error::InvalidInput("engine launch lock is not a file".into()));
+            log_launch_sibling_failure(&id, &error);
+            continue;
+        }
+        let lock = match crate::infra::fs::open_regular_at(
+            root.directory.as_file(),
+            &entry.name,
+            RegularFileAccess::ReadOnly,
+        ) {
+            Ok(lock) => lock,
+            Err(error) => {
+                log_launch_sibling_failure(&id, &error);
+                continue;
+            }
+        };
+        match rfs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
+            Err(error) if error == Errno::AGAIN || error == Errno::WOULDBLOCK => continue,
+            Err(error) => {
+                log_launch_sibling_failure(&id, &Error::Io(Box::new(error.into())));
+                continue;
+            }
+            Ok(()) => {}
+        }
+        let instance_name = OsStr::new(&id);
+        if let Some(instance) = entries
+            .iter()
+            .find(|candidate| candidate.name == instance_name)
+        {
+            if instance.kind != DirectoryEntryKind::Directory {
+                let error = Error::InvalidInput("engine launch instance is not a directory".into());
+                log_launch_sibling_failure(&id, &error);
+                continue;
+            }
+            if let Err(error) = crate::infra::fs::remove_entry_at(
+                root.directory.as_file(),
+                &instance.name,
+                instance.identity,
+                true,
+            ) {
+                log_launch_sibling_failure(&id, &error);
+                continue;
+            }
+        }
+        if let Err(error) = crate::infra::fs::remove_entry_at(
+            root.directory.as_file(),
+            &entry.name,
+            entry.identity,
+            false,
+        ) {
+            log_launch_sibling_failure(&id, &error);
+        }
+    }
+    for entry in &entries {
+        if entry.name == own_lock || entry.name == own_instance {
+            continue;
+        }
+        if entry.kind == DirectoryEntryKind::Directory
+            && entry
+                .name
+                .to_str()
+                .is_none_or(|name| !lock_ids.contains(name))
+        {
+            if let Err(error) = crate::infra::fs::remove_entry_at(
+                root.directory.as_file(),
+                &entry.name,
+                entry.identity,
+                true,
+            ) {
+                log_launch_sibling_failure(&entry.name.to_string_lossy(), &error);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn initialize_engine_launch_root(
+    app_data: &AppDataDir,
+) -> Result<EngineLaunchRoot, Error> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    let root = ensure_app_owned_default_dir(app_data, AppOwnedDefaultRoot::EngineLaunch)?;
+    let id = Uuid::new_v4().to_string();
+    let lock_name = OsString::from(format!("{id}.lock"));
+    let lock_name_c = std::ffi::CString::new(lock_name.as_os_str().as_bytes())
+        .map_err(|_| Error::InvalidInput("engine launch lock name contains NUL".into()))?;
+    let raw_lock = unsafe {
+        // SAFETY: root is an open directory descriptor, and lock_name_c is a live NUL-terminated
+        // string for the duration of this single call.
+        libc::openat(
+            root.directory.as_file().as_raw_fd(),
+            lock_name_c.as_ptr(),
+            libc::O_CREAT
+                | libc::O_EXCL
+                | libc::O_NOFOLLOW
+                | libc::O_CLOEXEC
+                | libc::O_EXLOCK
+                | libc::O_NONBLOCK,
+            0o600,
+        )
+    };
+    if raw_lock < 0 {
+        return Err(Error::Io(Box::new(std::io::Error::last_os_error())));
+    }
+    // SAFETY: openat returned a uniquely owned descriptor on success.
+    let lock = unsafe { fs::File::from_raw_fd(raw_lock) };
+    #[cfg(test)]
+    ENGINE_LAUNCH_LOCK_CREATED_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+    let instance_name = OsString::from(id.clone());
+    crate::infra::fs::create_dir_at(root.directory.as_file(), &instance_name)?;
+    let instance = crate::infra::fs::open_directory_at(root.directory.as_file(), &instance_name)?;
+    sweep_engine_launch_root(&root, &lock_name, &instance_name)?;
+    Ok(EngineLaunchRoot {
+        inner: Arc::new(EngineLaunchRootInner {
+            _root: root.try_clone()?,
+            _lock: lock,
+            instance,
+            instance_path: root.path().join(instance_name),
+            registry: std::sync::Mutex::new(LaunchLeafRegistry::default()),
+        }),
+    })
+}
+
+#[cfg(all(test, target_os = "macos"))]
+std::thread_local! {
+    static ENGINE_LAUNCH_LOCK_CREATED_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, target_os = "macos"))]
+type EngineLaunchCloneHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(all(test, target_os = "macos"))]
+static ENGINE_LAUNCH_BEFORE_CLONE_HOOK: std::sync::OnceLock<
+    std::sync::Mutex<Option<EngineLaunchCloneHook>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn set_engine_launch_lock_created_hook(hook: Option<Box<dyn FnOnce()>>) {
+    ENGINE_LAUNCH_LOCK_CREATED_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn set_engine_launch_before_clone_hook(hook: Option<Box<dyn FnOnce() + Send>>) {
+    let mut slot = ENGINE_LAUNCH_BEFORE_CLONE_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap();
+    *slot = hook;
+}
+
+#[cfg(test)]
+pub(crate) type EngineResolutionTrace =
+    Arc<std::sync::Mutex<Vec<(&'static str, std::thread::ThreadId)>>>;
+
+#[cfg(test)]
+static ENGINE_RESOLUTION_TRACE: std::sync::OnceLock<
+    std::sync::Mutex<Option<EngineResolutionTrace>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+std::thread_local! {
+    static ENGINE_RESOLUTION_TRACE_LOCAL: std::cell::RefCell<Option<EngineResolutionTrace>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_engine_resolution_trace(trace: Option<EngineResolutionTrace>) {
+    ENGINE_RESOLUTION_TRACE_LOCAL.with(|slot| *slot.borrow_mut() = trace.clone());
+    *ENGINE_RESOLUTION_TRACE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = trace;
+}
+
+#[cfg(test)]
+pub(crate) fn take_engine_resolution_trace_for_worker() -> Option<EngineResolutionTrace> {
+    ENGINE_RESOLUTION_TRACE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap()
+        .take()
+}
+
+#[cfg(test)]
+pub(crate) struct EngineResolutionTraceGuard(Option<EngineResolutionTrace>);
+
+#[cfg(test)]
+pub(crate) fn install_engine_resolution_trace_for_worker(
+    trace: Option<EngineResolutionTrace>,
+) -> EngineResolutionTraceGuard {
+    let previous = ENGINE_RESOLUTION_TRACE_LOCAL.with(|slot| slot.replace(trace));
+    EngineResolutionTraceGuard(previous)
+}
+
+#[cfg(test)]
+impl Drop for EngineResolutionTraceGuard {
+    fn drop(&mut self) {
+        ENGINE_RESOLUTION_TRACE_LOCAL.with(|slot| {
+            slot.replace(self.0.take());
+        });
+    }
+}
+
+#[cfg(test)]
+fn observe_engine_resolution(kind: &'static str) {
+    let trace = ENGINE_RESOLUTION_TRACE_LOCAL.with(|slot| slot.borrow().clone());
+    if let Some(trace) = trace {
+        trace
+            .lock()
+            .unwrap()
+            .push((kind, std::thread::current().id()));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EngineLaunchFailure {
+    CloneExdev,
+    CloneEnotsup,
+    Copy,
+    Fchmod,
+}
+
+#[cfg(all(test, target_os = "macos"))]
+static ENGINE_LAUNCH_FAILURE: std::sync::OnceLock<std::sync::Mutex<Option<EngineLaunchFailure>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn set_engine_launch_failure(failure: Option<EngineLaunchFailure>) {
+    *ENGINE_LAUNCH_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = failure;
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn take_engine_launch_failure() -> Option<EngineLaunchFailure> {
+    ENGINE_LAUNCH_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap()
+        .take()
 }
 
 const SOUND_ROOT_LEAF: &str = "sound";
@@ -2277,6 +3037,8 @@ pub struct PathAuthority {
     active_image_issuances: Arc<ActiveImageIssuances>,
     #[cfg(test)]
     activation_observer: Option<Arc<dyn ActivationObserver + Send + Sync>>,
+    #[cfg(target_os = "macos")]
+    engine_launch_root: Option<EngineLaunchRoot>,
 }
 fn validate_components(components: &[OsString]) -> Result<(), Error> {
     for name in components {
@@ -2309,6 +3071,11 @@ pub(crate) fn workspace_sidecar_leaf(leaf: &OsStr) -> Result<OsString, Error> {
         .ok_or_else(|| Error::InvalidInput("PGN has no filename".into()))?;
     Ok(OsString::from(format!("{}.info", stem.to_string_lossy())))
 }
+
+#[cfg(target_os = "macos")]
+type LaunchRootArgument = Option<EngineLaunchRoot>;
+#[cfg(not(target_os = "macos"))]
+type LaunchRootArgument = ();
 
 impl PathAuthority {
     #[cfg(all(test, unix))]
@@ -2433,14 +3200,51 @@ impl PathAuthority {
         result
     }
 
+    #[cfg(any(test, not(target_os = "macos")))]
     pub fn open(registry_path: PathBuf, app_roots: Vec<AppOwnedRoot>) -> Result<Self, Error> {
         Self::open_with_clock(registry_path, app_roots, Arc::new(SystemClock), 256)
     }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn open_with_launch_root(
+        registry_path: PathBuf,
+        app_roots: Vec<AppOwnedRoot>,
+        launch_root: EngineLaunchRoot,
+    ) -> Result<Self, Error> {
+        Self::open_with_clock_inner(
+            registry_path,
+            app_roots,
+            Arc::new(SystemClock),
+            256,
+            Some(launch_root),
+        )
+    }
+
+    #[cfg(any(test, not(target_os = "macos")))]
     pub fn open_with_clock(
         registry_path: PathBuf,
         app_roots: Vec<AppOwnedRoot>,
         clock: Arc<dyn Clock>,
         dialog_capacity: usize,
+    ) -> Result<Self, Error> {
+        Self::open_with_clock_inner(
+            registry_path,
+            app_roots,
+            clock,
+            dialog_capacity,
+            #[cfg(target_os = "macos")]
+            None,
+            #[cfg(not(target_os = "macos"))]
+            (),
+        )
+    }
+
+    fn open_with_clock_inner(
+        registry_path: PathBuf,
+        app_roots: Vec<AppOwnedRoot>,
+        clock: Arc<dyn Clock>,
+        dialog_capacity: usize,
+        _launch_root: LaunchRootArgument,
     ) -> Result<Self, Error> {
         if dialog_capacity == 0 {
             return Err(Error::InvalidInput(
@@ -2619,6 +3423,8 @@ impl PathAuthority {
             active_image_issuances: Arc::new(ActiveImageIssuances::new()),
             #[cfg(test)]
             activation_observer: None,
+            #[cfg(target_os = "macos")]
+            engine_launch_root: _launch_root,
         };
         authority.recover_pending_artifacts()?;
         Ok(authority)
@@ -3411,6 +4217,8 @@ impl PathAuthority {
                 cfg!(unix),
             )?;
         }
+        #[cfg(test)]
+        observe_engine_resolution("resource");
         let mut resolved =
             self.resolve(resource.path_ref(), PathOperation::EngineResourceRead, &[])?;
         match resource.kind {
@@ -3423,9 +4231,22 @@ impl PathAuthority {
                 let _file = resolved
                     .take_file()
                     .ok_or_else(|| Error::InvalidInput("engine resource must be a file".into()))?;
+                #[cfg(target_os = "macos")]
+                let target = {
+                    use std::os::unix::ffi::OsStrExt;
+                    rustix::fs::getpath(&file)
+                        .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
+                        .map_err(|error| Error::Io(Box::new(std::io::Error::from(error))))?
+                };
                 Ok(EngineResourceLease {
                     #[cfg(unix)]
                     file,
+                    #[cfg(target_os = "macos")]
+                    target: std::sync::Mutex::new(target),
+                    #[cfg(target_os = "macos")]
+                    pinned_target: std::sync::Mutex::new(None),
+                    #[cfg(target_os = "macos")]
+                    is_directory: false,
                     #[cfg(windows)]
                     _file,
                     #[cfg(windows)]
@@ -3440,7 +4261,22 @@ impl PathAuthority {
                     let file = resolved.take_directory().ok_or_else(|| {
                         Error::InvalidInput("engine resource must be a directory".into())
                     })?;
-                    Ok(EngineResourceLease { file })
+                    #[cfg(target_os = "macos")]
+                    let target = {
+                        use std::os::unix::ffi::OsStrExt;
+                        rustix::fs::getpath(&file)
+                            .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
+                            .map_err(|error| Error::Io(Box::new(std::io::Error::from(error))))?
+                    };
+                    Ok(EngineResourceLease {
+                        file,
+                        #[cfg(target_os = "macos")]
+                        target: std::sync::Mutex::new(target),
+                        #[cfg(target_os = "macos")]
+                        pinned_target: std::sync::Mutex::new(None),
+                        #[cfg(target_os = "macos")]
+                        is_directory: true,
+                    })
                 }
                 #[cfg(windows)]
                 {
@@ -3574,6 +4410,8 @@ impl PathAuthority {
         engine: &EngineHandle,
         operation: PathOperation,
     ) -> Result<EngineExecutable, Error> {
+        #[cfg(test)]
+        observe_engine_resolution("executable");
         if !matches!(
             operation,
             PathOperation::EngineExecute | PathOperation::EngineConfigure
@@ -3597,16 +4435,36 @@ impl PathAuthority {
             .parent()
             .ok_or_else(|| Error::InvalidInput("engine executable has no parent directory".into()))?
             .to_path_buf();
+        #[cfg(target_os = "macos")]
+        let command_path = {
+            use std::os::unix::ffi::OsStrExt;
+            rustix::fs::getpath(&file)
+                .map(|path| PathBuf::from(OsStr::from_bytes(path.as_bytes())))
+                .map_err(|error| Error::Io(Box::new(std::io::Error::from(error))))?
+        };
         Ok(EngineExecutable {
             #[cfg(unix)]
             file,
             working_directory,
             resource_leases: Vec::new(),
+            #[cfg(target_os = "macos")]
+            command_path,
+            #[cfg(target_os = "macos")]
+            launch_root: self.engine_launch_root.clone(),
+            #[cfg(target_os = "macos")]
+            materialized_files: Vec::new(),
             #[cfg(windows)]
             _file,
             #[cfg(windows)]
             command_path: verified_path,
         })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn engine_launch_root(&self) -> Result<EngineLaunchRoot, Error> {
+        self.engine_launch_root
+            .clone()
+            .ok_or_else(|| Error::Conflict("engine launch root is not initialized".into()))
     }
 
     pub(crate) fn active_database_root(&mut self) -> Result<Option<DatabaseRootHandle>, Error> {
@@ -7874,10 +8732,17 @@ mod tests {
         let file_lease = authority.engine_resource(&file_handle).unwrap();
         fs::rename(&file, dir.path().join("network-original.nnue")).unwrap();
         fs::write(&file, b"attacker network").unwrap();
+        #[cfg(target_os = "linux")]
         assert_eq!(
             fs::read(file_lease.uci_value()).unwrap(),
             b"original network"
         );
+        #[cfg(target_os = "macos")]
+        assert!(matches!(
+            file_lease.verify_current(),
+            Err(Error::Conflict(message))
+                if message == "engine resource changed after authorization"
+        ));
         assert!(matches!(
             authority.engine_resource(&file_handle),
             Err(Error::Conflict(_))
@@ -7892,10 +8757,17 @@ mod tests {
         fs::rename(&tables, dir.path().join("tables-original")).unwrap();
         fs::create_dir(&tables).unwrap();
         fs::write(tables.join("tablebase"), b"attacker table").unwrap();
+        #[cfg(target_os = "linux")]
         assert_eq!(
             fs::read(PathBuf::from(directory_lease.uci_value()).join("tablebase")).unwrap(),
             b"original table"
         );
+        #[cfg(target_os = "macos")]
+        assert!(matches!(
+            directory_lease.verify_current(),
+            Err(Error::Conflict(message))
+                if message == "engine resource changed after authorization"
+        ));
         assert!(matches!(
             authority.engine_resource(&directory_handle),
             Err(Error::Conflict(_))
@@ -7907,7 +8779,7 @@ mod tests {
     /// image descriptor is what makes a wrapper-script engine fail to launch;
     /// dropping a resource descriptor silently redirects the engine to whatever
     /// the visible path now resolves to.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn inherited_descriptors_cover_every_resource_lease_and_the_engine_image() {
         use std::os::fd::AsRawFd;
@@ -7934,7 +8806,8 @@ mod tests {
             EngineResourceLease::test_file(fs::File::open(&second).unwrap()),
         ];
         let lease_fds: Vec<_> = leases.iter().map(|lease| lease.file.as_raw_fd()).collect();
-        let executable = executable.with_resource_leases(leases);
+        let executable =
+            executable.with_resource_leases(leases.into_iter().map(Arc::new).collect());
 
         let inherited = executable.inherited_fds();
         assert_eq!(inherited, [lease_fds.as_slice(), &[image_fd]].concat());
@@ -9545,12 +10418,23 @@ mod tests {
         assert_eq!(reloaded.active_database_root().unwrap(), None);
     }
 
+    #[cfg(not(target_os = "macos"))]
     const APP_OWNED_DEFAULT_ROOT_LEAVES: [(AppOwnedDefaultRoot, &str); 5] = [
         (AppOwnedDefaultRoot::Databases, "db"),
         (AppOwnedDefaultRoot::Engines, "engines"),
         (AppOwnedDefaultRoot::EngineImages, "engine-images"),
         (AppOwnedDefaultRoot::Puzzles, "puzzles"),
         (AppOwnedDefaultRoot::Credentials, "credentials"),
+    ];
+    #[cfg(target_os = "macos")]
+    const APP_OWNED_DEFAULT_ROOT_LEAVES: [(AppOwnedDefaultRoot, &str); 6] = [
+        (AppOwnedDefaultRoot::Databases, "db"),
+        (AppOwnedDefaultRoot::Engines, "engines"),
+        (AppOwnedDefaultRoot::EngineImages, "engine-images"),
+        (AppOwnedDefaultRoot::Puzzles, "puzzles"),
+        (AppOwnedDefaultRoot::Credentials, "credentials"),
+        #[cfg(target_os = "macos")]
+        (AppOwnedDefaultRoot::EngineLaunch, "engine-launch"),
     ];
 
     /// The leaves are written out verbatim rather than read back from the enum. A leaf is the
@@ -9993,6 +10877,10 @@ mod tests {
             AppOwnedDefaultRoot::EngineImages | AppOwnedDefaultRoot::Credentials => {
                 panic!("engine images and credentials do not have a persistent root entry")
             }
+            #[cfg(target_os = "macos")]
+            AppOwnedDefaultRoot::EngineLaunch => {
+                panic!("engine launch does not have a persistent root entry")
+            }
         }
     }
 
@@ -10014,6 +10902,10 @@ mod tests {
             AppOwnedDefaultRoot::EngineImages | AppOwnedDefaultRoot::Credentials => {
                 panic!("engine images and credentials do not have a persistent root entry")
             }
+            #[cfg(target_os = "macos")]
+            AppOwnedDefaultRoot::EngineLaunch => {
+                panic!("engine launch does not have a persistent root entry")
+            }
         }
     }
 
@@ -10033,6 +10925,10 @@ mod tests {
             }
             AppOwnedDefaultRoot::EngineImages | AppOwnedDefaultRoot::Credentials => {
                 panic!("engine images and credentials do not have a persistent root entry")
+            }
+            #[cfg(target_os = "macos")]
+            AppOwnedDefaultRoot::EngineLaunch => {
+                panic!("engine launch does not have a persistent root entry")
             }
         }
     }
@@ -14779,5 +15675,344 @@ mod workspace_directory_enumeration_tests {
             ));
         }
         assert_eq!(fs::read(sibling).unwrap(), b"untouched");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apple_engine_launch_root_initialization_holds_a_private_locked_instance() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let instance = root.instance_path();
+        let launch_dir = instance.parent().unwrap();
+        let lock = launch_dir
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "lock")
+            })
+            .unwrap();
+        assert_eq!(
+            launch_dir.metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            instance.metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(lock.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+
+        let competing = std::fs::File::open(lock).unwrap();
+        assert!(matches!(
+            rustix::fs::flock(
+                &competing,
+                rustix::fs::FlockOperation::NonBlockingLockExclusive
+            ),
+            Err(error)
+                if error == rustix::io::Errno::AGAIN
+                    || error == rustix::io::Errno::WOULDBLOCK
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apple_engine_launch_lock_is_locked_before_a_competing_sweep() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = AppDataDir::for_test(directory.path());
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_in_hook = ran.clone();
+        set_engine_launch_lock_created_hook(Some(Box::new(move || {
+            ran_in_hook.store(true, Ordering::SeqCst);
+            let root =
+                ensure_app_owned_default_dir(&app_data, AppOwnedDefaultRoot::EngineLaunch).unwrap();
+            sweep_engine_launch_root(&root, OsStr::new("not-own.lock"), OsStr::new("not-own"))
+                .unwrap();
+        })));
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        set_engine_launch_lock_created_hook(None);
+
+        assert!(ran.load(Ordering::SeqCst));
+        assert!(root.instance_path().is_dir());
+        assert!(root
+            .instance_path()
+            .parent()
+            .unwrap()
+            .read_dir()
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "lock")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apple_engine_launch_sweep_reclaims_only_unowned_siblings() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let instance = root.instance_path();
+        let launch_dir = instance.parent().unwrap();
+        let own_id = instance.file_name().unwrap().to_os_string();
+        let own_lock = OsString::from(format!("{}.lock", own_id.to_string_lossy()));
+
+        let free_id = OsString::from("free-sibling");
+        fs::create_dir(launch_dir.join(&free_id)).unwrap();
+        fs::write(launch_dir.join(&free_id).join("payload"), b"payload").unwrap();
+        fs::write(
+            launch_dir.join(format!("{}.lock", free_id.to_string_lossy())),
+            b"",
+        )
+        .unwrap();
+
+        let held_id = OsString::from("held-sibling");
+        fs::create_dir(launch_dir.join(&held_id)).unwrap();
+        let held_lock_path = launch_dir.join(format!("{}.lock", held_id.to_string_lossy()));
+        fs::write(&held_lock_path, b"").unwrap();
+        let held_lock = std::fs::File::open(&held_lock_path).unwrap();
+        rustix::fs::flock(&held_lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
+
+        let orphan_dir = OsString::from("orphan-directory");
+        fs::create_dir(launch_dir.join(&orphan_dir)).unwrap();
+        let orphan_lock = OsString::from("orphan-lock");
+        fs::write(
+            launch_dir.join(format!("{}.lock", orphan_lock.to_string_lossy())),
+            b"",
+        )
+        .unwrap();
+
+        let root_dir = ensure_app_owned_default_dir(
+            &AppDataDir::for_test(directory.path()),
+            AppOwnedDefaultRoot::EngineLaunch,
+        )
+        .unwrap();
+        sweep_engine_launch_root(&root_dir, &own_lock, &own_id).unwrap();
+
+        assert!(!launch_dir.join(&free_id).exists());
+        assert!(!launch_dir
+            .join(format!("{}.lock", free_id.to_string_lossy()))
+            .exists());
+        assert!(launch_dir.join(&held_id).exists());
+        assert!(held_lock_path.exists());
+        assert!(!launch_dir.join(&orphan_dir).exists());
+        assert!(!launch_dir
+            .join(format!("{}.lock", orphan_lock.to_string_lossy()))
+            .exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apple_engine_launch_materialization_uses_the_held_source_descriptor() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source");
+        fs::write(&source_path, b"authorized").unwrap();
+        let source = fs::File::open(&source_path).unwrap();
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut leaf = root
+            .reserve_leaves(1, "test:engine", "engine-id")
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        fs::rename(&source_path, directory.path().join("source-original")).unwrap();
+        fs::write(&source_path, b"replacement").unwrap();
+        leaf.create_from(&source, 0o600, &|| false).unwrap();
+        assert_eq!(fs::read(leaf.path()).unwrap(), b"authorized");
+        drop(leaf);
+        let report = root.reclaim();
+        assert_eq!(report.removed, 1);
+        assert!(report.failed.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apple_engine_launch_clone_seam_runs_after_descriptor_acquisition() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source");
+        fs::write(&source_path, b"authorized").unwrap();
+        let source = fs::File::open(&source_path).unwrap();
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut leaf = root
+            .reserve_leaves(1, "test:engine", "engine-id")
+            .unwrap()
+            .pop()
+            .unwrap();
+        let replacement = source_path.clone();
+        set_engine_launch_before_clone_hook(Some(Box::new(move || {
+            fs::rename(&replacement, replacement.with_extension("original")).unwrap();
+            fs::write(&replacement, b"replacement").unwrap();
+        })));
+        leaf.create_from(&source, 0o600, &|| false).unwrap();
+        set_engine_launch_before_clone_hook(None);
+        assert_eq!(fs::read(leaf.path()).unwrap(), b"authorized");
+        drop(leaf);
+        assert_eq!(root.reclaim().removed, 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apple_engine_launch_reservation_counts_overlapping_leaves() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let first = root.reserve_leaves(64, "test:first", "first").unwrap();
+        assert!(matches!(
+            root.reserve_leaves(1, "test:second", "second"),
+            Err(Error::ResourceLimit(message)) if message == "engine launch leaf limit reached"
+        ));
+        assert_eq!(root.registry_snapshot_for_test().0, 64);
+        drop(first);
+        assert_eq!(root.registry_snapshot_for_test().0, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apple_engine_launch_clone_fallback_exdev_and_enotsup_preserve_authorized_bytes() {
+        for failure in [
+            EngineLaunchFailure::CloneExdev,
+            EngineLaunchFailure::CloneEnotsup,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let source_path = directory.path().join("source");
+            fs::write(&source_path, b"authorized-fallback-bytes").unwrap();
+            let source = fs::File::open(&source_path).unwrap();
+            let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+            let mut leaf = root
+                .reserve_leaves(1, "test:fallback", "fallback-engine")
+                .unwrap()
+                .pop()
+                .unwrap();
+            set_engine_launch_failure(Some(failure));
+            leaf.create_from(&source, 0o600, &|| false).unwrap();
+            set_engine_launch_failure(None);
+            assert_eq!(fs::read(leaf.path()).unwrap(), b"authorized-fallback-bytes");
+            drop(leaf);
+            assert_eq!(root.reclaim().removed, 1);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apple_engine_launch_removes_entries_after_copy_fchmod_and_cancellation_failures() {
+        fn run_failure(failure: EngineLaunchFailure, cancelled: impl Fn() -> bool) {
+            let directory = tempfile::tempdir().unwrap();
+            let source_path = directory.path().join("source");
+            fs::write(&source_path, vec![b'x'; 128 * 1024]).unwrap();
+            let source = fs::File::open(&source_path).unwrap();
+            let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+            let mut leaf = root
+                .reserve_leaves(1, "test:failure", "failure-engine")
+                .unwrap()
+                .pop()
+                .unwrap();
+            set_engine_launch_failure(Some(failure));
+            let result = leaf.create_from(&source, 0o600, &cancelled);
+            set_engine_launch_failure(None);
+            assert!(result.is_err());
+            assert!(leaf.remove().is_ok());
+            assert_eq!(root.registry_snapshot_for_test().0, 0);
+            assert!(root.instance_path().read_dir().unwrap().next().is_none());
+        }
+
+        run_failure(EngineLaunchFailure::Copy, || false);
+        run_failure(EngineLaunchFailure::Fchmod, || false);
+        let checks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let checks_for_cancel = checks.clone();
+        run_failure(EngineLaunchFailure::CloneExdev, move || {
+            checks_for_cancel.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 2
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dropping_an_engine_launch_leaf_only_registers_it_for_later_reclaim() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source");
+        fs::write(&source_path, b"bytes").unwrap();
+        let source = fs::File::open(&source_path).unwrap();
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut leaf = root
+            .reserve_leaves(1, "test:drop", "drop-engine")
+            .unwrap()
+            .pop()
+            .unwrap();
+        leaf.create_from(&source, 0o600, &|| false).unwrap();
+        let path = leaf.path();
+        drop(leaf);
+        assert!(path.exists());
+        let (live, released) = root.registry_snapshot_for_test();
+        assert_eq!(live, 1);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].engine_key, "test:drop");
+        assert_eq!(released[0].engine_id, "drop-engine");
+        assert_eq!(root.reclaim().removed, 1);
+        assert!(!path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn apple_engine_launch_retries_failed_reclaim_and_keeps_the_cap() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source");
+        fs::write(&source_path, b"bytes").unwrap();
+        let source = fs::File::open(&source_path).unwrap();
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut leaf = root
+            .reserve_leaves(1, "test:retry", "retry-engine")
+            .unwrap()
+            .pop()
+            .unwrap();
+        leaf.create_from(&source, 0o600, &|| false).unwrap();
+        drop(leaf);
+        crate::infra::fs::set_test_removal_injector(Some(Arc::new(
+            crate::infra::fs::RemovalFault(crate::infra::fs::RemovalFaultPoint::BeforeTopOpen),
+        )));
+        let report = root.reclaim();
+        crate::infra::fs::set_test_removal_injector(None);
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(root.registry_snapshot_for_test().0, 1);
+        assert!(matches!(
+            root.reserve_leaves(64, "test:overflow", "overflow-engine"),
+            Err(Error::ResourceLimit(message)) if message == "engine launch leaf limit reached"
+        ));
+        assert_eq!(root.reclaim().removed, 1);
+        assert_eq!(root.registry_snapshot_for_test().0, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn two_overlapping_engine_launches_are_bounded_to_one_success() {
+        use std::sync::{Arc, Barrier};
+        let directory = tempfile::tempdir().unwrap();
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut threads = Vec::new();
+        for index in 0..2 {
+            let root = root.clone();
+            let barrier = barrier.clone();
+            let results = results.clone();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                let result = root.reserve_leaves(33, &format!("test:{index}"), "bounded");
+                results.lock().unwrap().push(result.is_ok());
+                drop(result);
+            }));
+        }
+        barrier.wait();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let results = results.lock().unwrap().clone();
+        assert_eq!(results.iter().filter(|success| **success).count(), 1);
+        assert_eq!(results.iter().filter(|success| !**success).count(), 1);
+        assert_eq!(root.registry_snapshot_for_test().0, 0);
     }
 }

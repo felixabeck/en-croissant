@@ -1713,16 +1713,18 @@ impl SoundServerLifecycle {
 /// Every teardown the process owns. Awaited before the event loop is allowed to
 /// exit, because tao exits the process from inside `run()` — no `Drop` runs
 /// afterwards and any child that was not reaped here is re-parented to init.
-async fn shutdown_backend_with_attachments<F>(
+async fn shutdown_backend_with_attachments<F, L>(
     supervisor: &EngineSupervisor,
     games: &GameManager,
     sound: Option<&SoundServerLifecycle>,
     operations: &OperationRegistry,
     attachments: F,
+    launch_reclaim: L,
     budget: Duration,
 ) -> bool
 where
     F: std::future::Future<Output = Result<(), String>>,
+    L: std::future::Future<Output = Result<(), String>>,
 {
     log::info!("Shutdown requested: terminating engines and live games");
     let seal_failure = operations
@@ -1765,6 +1767,9 @@ where
             Ok(Err(error)) => failures.push(format!("native operation drain failed: {error}")),
             Err(error) => failures.push(format!("native operation drain task failed: {error}")),
         }
+        if let Err(error) = launch_reclaim.await {
+            failures.push(format!("engine launch-root teardown failed: {error}"));
+        }
         failures
     };
     match tokio::time::timeout(budget, cleanup).await {
@@ -1785,6 +1790,48 @@ where
             );
             false
         }
+    }
+}
+
+async fn shutdown_engine_launch_root(
+    authority: std::sync::Arc<
+        std::sync::Mutex<Option<crate::infra::path_authority::PathAuthority>>,
+    >,
+) -> Result<(), Error> {
+    #[cfg(target_os = "macos")]
+    {
+        let report = BLOCKING_GATEWAY
+            .spawn(move || {
+                let guard = authority
+                    .lock()
+                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+                let authority = guard
+                    .as_ref()
+                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+                Ok(authority.engine_launch_root()?.reclaim())
+            })
+            .await?;
+        for (leaf, error) in &report.failed {
+            log::error!(
+                "engine launch leaf reclaim failed at exit for key={} engine_id={} category={}",
+                leaf.engine_key,
+                leaf.engine_id,
+                error.category()
+            );
+        }
+        if report.failed.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Conflict(format!(
+                "{} engine launch leaves could not be reclaimed",
+                report.failed.len()
+            )))
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = authority;
+        Ok(())
     }
 }
 
@@ -2060,6 +2107,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "native credential storage could not be initialized"
                 })?;
             let authority_registry = app.path().app_config_dir()?.join("path-authority.json");
+            #[cfg(target_os = "macos")]
+            let authority = {
+                let app_data = crate::infra::path_authority::AppDataDir::for_app(app.handle())?;
+                let launch_root =
+                    crate::infra::path_authority::initialize_engine_launch_root(&app_data)
+                        .map_err(|error| {
+                            format!("engine launch root initialization failed: {error}")
+                        })?;
+                crate::infra::path_authority::PathAuthority::open_with_launch_root(
+                    authority_registry,
+                    vec![],
+                    launch_root,
+                )
+                .map_err(|error| format!("path authority initialization failed: {error}"))?
+            };
+            #[cfg(not(target_os = "macos"))]
             let authority =
                 crate::infra::path_authority::PathAuthority::open(authority_registry, vec![])
                     .map_err(|error| format!("path authority initialization failed: {error}"))?;
@@ -2201,6 +2264,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 shutdown_engine_attachments(app_handle.clone())
                                     .await
                                     .map_err(|error| error.to_string())
+                            },
+                            {
+                                let authority = std::sync::Arc::clone(&state.pgn_path_authority);
+                                async move {
+                                    shutdown_engine_launch_root(authority)
+                                        .await
+                                        .map_err(|error| error.to_string())
+                                }
                             },
                             SHUTDOWN_BUDGET,
                         )
@@ -2662,6 +2733,7 @@ mod tests {
                 None,
                 &operations,
                 std::future::ready(Ok(())),
+                std::future::ready(Ok(())),
                 Duration::from_secs(30),
             )
             .await
@@ -2672,6 +2744,7 @@ mod tests {
                 &games,
                 None,
                 &operations,
+                std::future::ready(Ok(())),
                 std::future::ready(Ok(())),
                 Duration::from_secs(30),
             )
@@ -2721,6 +2794,7 @@ mod tests {
                 None,
                 &operations,
                 std::future::ready(Ok(())),
+                std::future::ready(Ok(())),
                 Duration::from_secs(2),
             )
             .await
@@ -2754,6 +2828,7 @@ mod tests {
                 Some(&sound),
                 &operations,
                 std::future::ready(Err("cleanup failed".into())),
+                std::future::ready(Ok(())),
                 Duration::from_secs(30),
             )
             .await
@@ -2801,6 +2876,7 @@ mod tests {
                     attachments_ran_clone.store(true, std::sync::atomic::Ordering::SeqCst);
                     Ok(())
                 },
+                std::future::ready(Ok(())),
                 Duration::from_secs(2),
             )
             .await
@@ -2833,6 +2909,7 @@ mod tests {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     Err("attachment cleanup remained pending".into())
                 },
+                std::future::ready(Ok(())),
                 Duration::from_millis(5),
             )
             .await

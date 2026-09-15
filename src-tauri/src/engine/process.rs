@@ -22,15 +22,22 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use vampirc_uci::UciMessage;
 
+#[cfg(test)]
+use std::collections::HashMap;
+
 use crate::error::Error;
 use crate::infra::{
+    blocking::{BlockingGateway, BLOCKING_GATEWAY},
     keyed_locks::{KeyedLockLease, KeyedLocks},
-    path_authority::{EngineExecutable, PathRef},
+    path_authority::{EngineExecutable, EngineHandle, PathAuthority, PathOperation, PathRef},
 };
 
 use super::{
     normalize_uci_moves_for_fen,
-    types::{validate_uci_text, EngineDeadlines, EngineKey, EngineRequestId, EngineState, GoMode},
+    types::{
+        resolve_engine_option_leases, validate_uci_text, EngineDeadlines, EngineKey, EngineOption,
+        EngineRequestId, EngineState, GoMode, ResolvedEngineOption,
+    },
 };
 
 #[cfg(target_os = "windows")]
@@ -266,6 +273,8 @@ struct ChildUciIo {
 struct ProcessChildControl {
     stdin: ChildStdin,
     child: Child,
+    #[cfg(test)]
+    terminate_failure: Option<TerminateFailure>,
 }
 
 #[async_trait]
@@ -278,16 +287,32 @@ trait ChildControl: Send {
 #[async_trait]
 impl ChildControl for ProcessChildControl {
     async fn write_quit(&mut self) -> Result<(), Error> {
+        #[cfg(test)]
+        if matches!(self.terminate_failure, Some(TerminateFailure::QuitKillReap)) {
+            return Err(Error::Conflict("injected engine quit failure".into()));
+        }
         self.stdin.write_all(b"quit\n").await?;
         self.stdin.flush().await?;
         Ok(())
     }
 
     fn start_kill(&mut self) -> Result<(), Error> {
+        #[cfg(test)]
+        if matches!(self.terminate_failure, Some(TerminateFailure::QuitKillReap)) {
+            return Err(std::io::Error::other("injected engine kill failure").into());
+        }
         self.child.start_kill().map_err(Into::into)
     }
 
     async fn wait(&mut self) -> Result<(), Error> {
+        #[cfg(test)]
+        if self.terminate_failure == Some(TerminateFailure::ReapTimeout) {
+            std::future::pending::<()>().await;
+        }
+        #[cfg(test)]
+        if self.terminate_failure == Some(TerminateFailure::QuitKillReap) {
+            return Err(Error::Conflict("injected engine reap failure".into()));
+        }
         self.child.wait().await?;
         Ok(())
     }
@@ -526,6 +551,8 @@ pub struct EngineActor {
     // completion instead of detaching it after `Terminate`.
     task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     interrupt: CancellationToken,
+    pub(crate) resources: Arc<[Arc<crate::infra::path_authority::EngineResourceLease>]>,
+    resource_verify: Duration,
 }
 
 enum EngineCommand {
@@ -536,6 +563,7 @@ enum EngineCommand {
         name: String,
         value: String,
         resource_values: Vec<String>,
+        operation: Option<CancellationToken>,
         reply: oneshot::Sender<Result<(), Error>>,
     },
     SetPosition {
@@ -706,6 +734,13 @@ impl AdmissionLease {
     fn operation_cancellation(&self) -> Option<CancellationToken> {
         self.operation_cancellation.clone()
     }
+
+    fn cancellation_probe(&self) -> (Arc<AtomicBool>, Option<CancellationToken>) {
+        (
+            self.admission.cancelled.clone(),
+            self.operation_cancellation.clone(),
+        )
+    }
 }
 
 impl Drop for AdmissionLease {
@@ -860,6 +895,15 @@ impl EngineSupervisor {
             return Err(error);
         }
         Ok(admission)
+    }
+
+    pub(crate) async fn admit_for_launch(
+        &self,
+        key: EngineKey,
+        engine_id: String,
+        executable: PathRef,
+    ) -> Result<AdmissionLease, Error> {
+        self.admit(key, engine_id, executable, false).await
     }
 
     pub async fn prepare_engine_search(
@@ -1427,6 +1471,250 @@ impl Drop for RegistrationGuard {
     }
 }
 
+#[derive(Debug)]
+enum PinFailure {
+    Primary(Error),
+    #[cfg(target_os = "macos")]
+    OperationAndCleanup {
+        primary: Error,
+        cleanup: Error,
+    },
+}
+
+impl PinFailure {
+    fn into_error(self, key: &EngineKey, engine_id: &str) -> Error {
+        #[cfg(not(target_os = "macos"))]
+        let _ = (key, engine_id);
+        match self {
+            Self::Primary(error) => error,
+            #[cfg(target_os = "macos")]
+            Self::OperationAndCleanup { primary, cleanup } => {
+                error!(
+                    "engine launch pin failed for key={}:{} engine_id={} primary_category={} cleanup_category={}",
+                    key.tab,
+                    key.engine,
+                    engine_id,
+                    primary.category(),
+                    cleanup.category()
+                );
+                Error::OperationAndCleanup {
+                    primary: primary.to_string(),
+                    cleanup: cleanup.to_string(),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cleanup_materialized_files(
+    files: Vec<crate::infra::path_authority::MaterializedFile>,
+) -> Option<Error> {
+    let mut first = None;
+    for file in files {
+        if let Err(error) = file.remove() {
+            if first.is_none() {
+                first = Some(error);
+            }
+        }
+    }
+    first
+}
+
+#[cfg(target_os = "macos")]
+fn pin_engine_launch(
+    executable: &mut EngineExecutable,
+    key: &EngineKey,
+    engine_id: &str,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<(String, String, Error)>, PinFailure> {
+    let root = executable.launch_root().cloned().ok_or_else(|| {
+        PinFailure::Primary(Error::Conflict(
+            "engine launch root is not initialized".into(),
+        ))
+    })?;
+    let reclaim = root.reclaim();
+    let reclaim_failures = reclaim
+        .failed
+        .into_iter()
+        .map(|(leaf, error)| (leaf.engine_key, leaf.engine_id, error))
+        .collect::<Vec<_>>();
+    let count = executable
+        .resource_leases()
+        .iter()
+        .filter(|lease| !lease.is_directory())
+        .count()
+        + 1;
+    let mut files =
+        match root.reserve_leaves(count, &format!("{}:{}", key.tab, key.engine), engine_id) {
+            Ok(files) => files,
+            Err(error) => return Err(PinFailure::Primary(error)),
+        };
+    let result = (|| {
+        files[0].create_from(executable.image_file(), 0o700, is_cancelled)?;
+        let mut file_index = 1;
+        for lease in executable.resource_leases() {
+            if lease.is_directory() {
+                continue;
+            }
+            lease.file().metadata().map_err(Error::from)?;
+            files[file_index].create_from(lease.file(), 0o600, is_cancelled)?;
+            lease.set_pinned_target(files[file_index].path())?;
+            file_index += 1;
+        }
+        if is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let command_path = files[0].path();
+        let retained = std::mem::take(&mut files);
+        executable.set_launch_materialization(command_path, retained);
+        Ok(())
+    })();
+    if let Err(primary) = result {
+        if let Some(cleanup) = cleanup_materialized_files(files) {
+            return Err(PinFailure::OperationAndCleanup { primary, cleanup });
+        }
+        return Err(PinFailure::Primary(primary));
+    }
+    Ok(reclaim_failures)
+}
+
+struct LaunchResult {
+    executable: EngineExecutable,
+    resolved: Vec<ResolvedEngineOption>,
+    reclaim_failures: Vec<(String, String, Error)>,
+}
+
+pub(crate) async fn resolve_launch(
+    authority: Arc<std::sync::Mutex<Option<PathAuthority>>>,
+    engine: EngineHandle,
+    operation: PathOperation,
+    options: &[EngineOption],
+    admission: &AdmissionLease,
+) -> Result<(EngineExecutable, Vec<ResolvedEngineOption>), Error> {
+    let (admission_cancelled, operation_cancellation) = admission.cancellation_probe();
+    let engine_id = admission.admission.engine_id.clone();
+    let key = admission.key.clone();
+    let error_key = key.clone();
+    let error_engine_id = engine_id.clone();
+    let options = options.to_vec();
+    #[cfg(test)]
+    let resolution_trace = crate::infra::path_authority::take_engine_resolution_trace_for_worker();
+    let result = BLOCKING_GATEWAY
+        .spawn(move || {
+            #[cfg(test)]
+            let _resolution_trace_guard =
+                crate::infra::path_authority::install_engine_resolution_trace_for_worker(
+                    resolution_trace,
+                );
+            let is_cancelled = || {
+                admission_cancelled.load(Ordering::SeqCst)
+                    || operation_cancellation
+                        .as_ref()
+                        .is_some_and(CancellationToken::is_cancelled)
+            };
+            if is_cancelled() {
+                return Ok(Err(PinFailure::Primary(Error::Cancellation)));
+            }
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+            let (mut executable, mut resolved) = {
+                let mut guard = authority
+                    .lock()
+                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+                let authority = guard
+                    .as_mut()
+                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+                let executable = authority.engine_executable(&engine, operation)?;
+                let resolved = resolve_engine_option_leases(authority, &options)?;
+                (executable, resolved)
+            };
+            if is_cancelled() {
+                return Ok(Err(PinFailure::Primary(Error::Cancellation)));
+            }
+            #[cfg(test)]
+            if let Ok(mut hook) = ENGINE_LAUNCH_RESOLUTION_HOOK
+                .get_or_init(|| std::sync::Mutex::new(None))
+                .lock()
+            {
+                if let Some(hook) = hook.take() {
+                    hook();
+                }
+            }
+            #[cfg(target_os = "macos")]
+            let reclaim_failures =
+                match pin_engine_launch(&mut executable, &key, &engine_id, &is_cancelled) {
+                    Ok(reclaim_failures) => reclaim_failures,
+                    Err(failure) => return Ok(Err(failure)),
+                };
+            #[cfg(test)]
+            if take_engine_launch_value_failure() {
+                return Ok(Err(PinFailure::Primary(Error::Conflict(
+                    "injected engine launch value construction failure".into(),
+                ))));
+            }
+            #[cfg(test)]
+            if let Ok(mut hook) = ENGINE_LAUNCH_POST_PIN_HOOK
+                .get_or_init(|| std::sync::Mutex::new(None))
+                .lock()
+            {
+                if let Some(hook) = hook.take() {
+                    hook();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let reclaim_failures = Vec::new();
+            for option in &mut resolved {
+                option.refresh_resource_values();
+            }
+            Ok(Ok(LaunchResult {
+                executable: executable.with_resource_leases(
+                    resolved
+                        .iter()
+                        .flat_map(|option| option.resources.iter().cloned())
+                        .collect(),
+                ),
+                resolved,
+                reclaim_failures,
+            }))
+        })
+        .await?;
+    let result = result.map_err(|failure| failure.into_error(&error_key, &error_engine_id))?;
+    for (reclaim_key, reclaim_id, error) in result.reclaim_failures {
+        error!(
+            "engine launch leaf reclaim failed for key={} engine_id={} category={}",
+            reclaim_key,
+            reclaim_id,
+            error.category()
+        );
+    }
+    if let Some(error) = admission.cancel_error() {
+        return Err(error);
+    }
+    Ok((result.executable, result.resolved))
+}
+
+pub(crate) async fn resolve_option_leases(
+    authority: Arc<std::sync::Mutex<Option<PathAuthority>>>,
+    options: &[EngineOption],
+    cancellation: CancellationToken,
+) -> Result<Vec<ResolvedEngineOption>, Error> {
+    let options = options.to_vec();
+    BLOCKING_GATEWAY
+        .spawn(move || {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            let mut guard = authority
+                .lock()
+                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+            let authority = guard
+                .as_mut()
+                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+            resolve_engine_option_leases(authority, &options)
+        })
+        .await
+}
+
 /// Spawns and publishes an actor before any protocol initialization begins.
 /// The registration guard owns cancellation cleanup until initialization has
 /// either completed or synchronously removed the exact generation.
@@ -1434,28 +1722,16 @@ pub(crate) async fn spawn_registered<T, F, Fut>(
     supervisor: Arc<EngineSupervisor>,
     key: EngineKey,
     executable: EngineExecutable,
-    engine_id: String,
-    executable_ref: PathRef,
-    prepared_admission: Option<AdmissionLease>,
+    admission: AdmissionLease,
     initialize: F,
 ) -> Result<(SupervisedEngine, T), Error>
 where
     F: FnOnce(Arc<EngineActor>) -> Fut,
     Fut: std::future::Future<Output = Result<T, Error>>,
 {
-    let admission = match prepared_admission {
-        Some(admission) => admission,
-        None => {
-            supervisor
-                .admit(
-                    key.clone(),
-                    engine_id.clone(),
-                    executable_ref.clone(),
-                    false,
-                )
-                .await?
-        }
-    };
+    if let Some(error) = admission.cancel_error() {
+        return Err(error);
+    }
     let actor = Arc::new(EngineActor::spawn(executable, EngineDeadlines::default()).await?);
     initialize_admitted_actor(supervisor, key, actor, admission, initialize).await
 }
@@ -1606,7 +1882,7 @@ impl EngineRuntime {
             // where nothing is dropped at all — that is what the bounded
             // shutdown in `main` is for.
             .kill_on_drop(true);
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         {
             let inherited_fds = executable.inherited_fds();
             // Tokio closes inherited descriptors by default. Clear CLOEXEC only
@@ -1632,7 +1908,17 @@ impl EngineRuntime {
         let mut child = timeout(deadlines.spawn, async { command.spawn() })
             .await
             .map_err(|_| Error::EngineTimeout("spawning engine".into()))??;
+        #[cfg(test)]
+        let forced_io_failure = take_spawn_io_failure();
+        #[cfg(test)]
+        if forced_io_failure == Some(SpawnIoFailure::NoStdin) {
+            return Err(Error::NoStdin);
+        }
         let stdin = child.stdin.take().ok_or(Error::NoStdin)?;
+        #[cfg(test)]
+        if forced_io_failure == Some(SpawnIoFailure::NoStdout) {
+            return Err(Error::NoStdout);
+        }
         let stdout = child.stdout.take().ok_or(Error::NoStdout)?;
         let stderr_drain_task = child.stderr.take().map(|stderr| {
             tokio::spawn(async move {
@@ -1642,7 +1928,12 @@ impl EngineRuntime {
         });
         let mut runtime = Self::new(
             Box::new(ChildUciIo {
-                control: Some(ProcessChildControl { stdin, child }),
+                control: Some(ProcessChildControl {
+                    stdin,
+                    child,
+                    #[cfg(test)]
+                    terminate_failure: take_terminate_failure(),
+                }),
                 reader: BufReader::new(stdout),
                 _executable: executable,
             }),
@@ -1690,11 +1981,22 @@ impl EngineRuntime {
         name: &str,
         value: &str,
         resource_values: &[String],
+        operation: Option<&CancellationToken>,
     ) -> Result<(), Error> {
         validate_uci_text("option name", name)?;
         validate_uci_text("option value", value)?;
         self.resource_redactions
             .register(resource_values, &mut self.logs)?;
+        #[cfg(test)]
+        if !resource_values.is_empty() {
+            let hook = SET_OPTION_BEFORE_SEND_HOOK.with(|slot| slot.borrow_mut().take());
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        if operation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(Error::Cancellation);
+        }
         self.send(&format!("setoption name {name} value {value}"))
             .await
     }
@@ -1887,6 +2189,11 @@ impl Drop for EngineRuntime {
 
 impl EngineActor {
     #[cfg(test)]
+    pub(crate) fn set_test_option_before_send_hook(hook: Option<Box<dyn FnOnce() + Send>>) {
+        set_option_before_send_hook(hook);
+    }
+
+    #[cfg(test)]
     pub fn new(io: Box<dyn UciIo>, deadlines: EngineDeadlines) -> Self {
         Self::from_runtime(EngineRuntime::new(io, deadlines))
     }
@@ -1904,7 +2211,48 @@ impl EngineActor {
         )
     }
 
+    #[cfg(test)]
+    pub fn recording_test_actor_with_resources(
+        lines: &[&str],
+        resources: Vec<Arc<crate::infra::path_authority::EngineResourceLease>>,
+    ) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
+        Self::recording_test_actor_with_resources_and_deadlines(
+            lines,
+            resources,
+            EngineDeadlines::default(),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn recording_test_actor_with_resources_and_deadlines(
+        lines: &[&str],
+        resources: Vec<Arc<crate::infra::path_authority::EngineResourceLease>>,
+        deadlines: EngineDeadlines,
+    ) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let io = RecordingUciIo {
+            writes: writes.clone(),
+            lines: lines.iter().map(|line| Some((*line).into())).collect(),
+        };
+        (
+            Arc::new(Self::from_runtime_with_resources(
+                EngineRuntime::new(Box::new(io), deadlines),
+                Arc::from(resources),
+            )),
+            writes,
+        )
+    }
+
+    #[cfg(test)]
     fn from_runtime(runtime: EngineRuntime) -> Self {
+        Self::from_runtime_with_resources(runtime, Arc::from([]))
+    }
+
+    fn from_runtime_with_resources(
+        runtime: EngineRuntime,
+        resources: Arc<[Arc<crate::infra::path_authority::EngineResourceLease>]>,
+    ) -> Self {
+        let resource_verify = runtime.deadlines.resource_verify;
         let (tx, rx) = mpsc::channel(32);
         // Lifecycle and observability controls never sit behind bulk analysis
         // work. A flooded normal queue therefore cannot delay stop, kill or
@@ -1922,6 +2270,8 @@ impl EngineActor {
             control_tx,
             task: Arc::new(Mutex::new(Some(task))),
             interrupt,
+            resources,
+            resource_verify,
         }
     }
 
@@ -1929,8 +2279,10 @@ impl EngineActor {
         executable: EngineExecutable,
         deadlines: EngineDeadlines,
     ) -> Result<Self, Error> {
-        Ok(Self::from_runtime(
+        let resources = Arc::from(executable.resource_leases().to_vec());
+        Ok(Self::from_runtime_with_resources(
             EngineRuntime::spawn(executable, deadlines).await?,
+            resources,
         ))
     }
 
@@ -1991,7 +2343,7 @@ impl EngineActor {
             .await?
     }
     pub async fn set_option(&self, name: &str, value: &str) -> Result<(), Error> {
-        self.set_option_with_resources(name, value, &[]).await
+        self.set_option_with_operation(name, value, &[], None).await
     }
     pub(crate) async fn set_option_with_resources(
         &self,
@@ -1999,12 +2351,23 @@ impl EngineActor {
         value: &str,
         resource_values: &[String],
     ) -> Result<(), Error> {
+        self.set_option_with_operation(name, value, resource_values, None)
+            .await
+    }
+    pub(crate) async fn set_option_with_operation(
+        &self,
+        name: &str,
+        value: &str,
+        resource_values: &[String],
+        operation: Option<CancellationToken>,
+    ) -> Result<(), Error> {
         let (reply_tx, reply) = oneshot::channel();
         self.request(
             EngineCommand::SetOption {
                 name: name.into(),
                 value: value.into(),
                 resource_values: resource_values.to_vec(),
+                operation,
                 reply: reply_tx,
             },
             reply,
@@ -2134,6 +2497,238 @@ impl EngineActor {
     }
 }
 
+pub(crate) async fn verify_option_resources(
+    actor: &EngineActor,
+    options: &[ResolvedEngineOption],
+    operation: Option<&CancellationToken>,
+) -> Result<(), Error> {
+    verify_option_resources_in(&BLOCKING_GATEWAY, actor, options, operation).await
+}
+
+pub(crate) async fn verify_option_resources_in(
+    gateway: &BlockingGateway,
+    actor: &EngineActor,
+    options: &[ResolvedEngineOption],
+    operation: Option<&CancellationToken>,
+) -> Result<(), Error> {
+    let resources = actor.resources.clone();
+    let values = options
+        .iter()
+        .flat_map(|option| option.resource_values.iter().cloned())
+        .collect::<Vec<_>>();
+    #[cfg(test)]
+    let verify_hook_key = values.first().cloned();
+    let verify = gateway.spawn(move || {
+        #[cfg(test)]
+        if let Some(key) = verify_hook_key {
+            if let Ok(mut hooks) = RESOURCE_VERIFY_HOOKS
+                .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+                .lock()
+            {
+                if let Some(hook) = hooks.remove(&key) {
+                    hook();
+                }
+            }
+        }
+        for value in values {
+            let Some(resource) = resources
+                .iter()
+                .find(|resource| resource.uci_value() == value)
+            else {
+                return Err(Error::Conflict(
+                    "engine option resource was not produced by the launched engine".into(),
+                ));
+            };
+            resource.verify_current()?;
+        }
+        Ok(())
+    });
+    let operation = operation.cloned();
+    tokio::pin!(verify);
+    tokio::select! {
+        biased;
+        _ = actor.interrupt.cancelled() => Err(Error::Cancellation),
+        _ = async {
+            if let Some(operation) = &operation {
+                operation.cancelled().await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        } => Err(Error::Cancellation),
+        result = tokio::time::timeout(actor.resource_verify, &mut verify) => {
+            result.map_err(|_| Error::EngineTimeout("verifying engine option resources".into()))?
+        }
+    }
+}
+
+#[cfg(test)]
+type ResourceVerifyHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+type ResourceVerifyHooks = std::sync::Mutex<HashMap<String, ResourceVerifyHook>>;
+
+#[cfg(test)]
+static RESOURCE_VERIFY_HOOKS: std::sync::OnceLock<ResourceVerifyHooks> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn set_resource_verify_hook(key: String, hook: Option<Box<dyn FnOnce() + Send>>) {
+    let mut hooks = RESOURCE_VERIFY_HOOKS
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    if let Some(hook) = hook {
+        hooks.insert(key, hook);
+    } else {
+        hooks.remove(&key);
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static SET_OPTION_BEFORE_SEND_HOOK: std::cell::RefCell<Option<ResourceVerifyHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_option_before_send_hook(hook: Option<Box<dyn FnOnce() + Send>>) {
+    SET_OPTION_BEFORE_SEND_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+type EngineLaunchResolutionHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+static ENGINE_LAUNCH_RESOLUTION_HOOK: std::sync::OnceLock<
+    std::sync::Mutex<Option<EngineLaunchResolutionHook>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn set_engine_launch_resolution_hook(hook: Option<EngineLaunchResolutionHook>) {
+    *ENGINE_LAUNCH_RESOLUTION_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = hook;
+}
+
+#[cfg(test)]
+type EngineLaunchPostPinHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+static ENGINE_LAUNCH_POST_PIN_HOOK: std::sync::OnceLock<
+    std::sync::Mutex<Option<EngineLaunchPostPinHook>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn set_engine_launch_post_pin_hook(hook: Option<EngineLaunchPostPinHook>) {
+    *ENGINE_LAUNCH_POST_PIN_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = hook;
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpawnIoFailure {
+    NoStdin,
+    NoStdout,
+}
+
+#[cfg(test)]
+static SPAWN_IO_FAILURE: std::sync::OnceLock<std::sync::Mutex<Option<SpawnIoFailure>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn set_spawn_io_failure(failure: Option<SpawnIoFailure>) {
+    *SPAWN_IO_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = failure;
+}
+
+#[cfg(test)]
+fn take_spawn_io_failure() -> Option<SpawnIoFailure> {
+    SPAWN_IO_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap()
+        .take()
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminateFailure {
+    QuitKillReap,
+    ReapTimeout,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TERMINATE_FAILURE: std::cell::RefCell<Option<TerminateFailure>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_terminate_failure(failure: Option<TerminateFailure>) {
+    TERMINATE_FAILURE.with(|slot| *slot.borrow_mut() = failure);
+}
+
+#[cfg(test)]
+fn take_terminate_failure() -> Option<TerminateFailure> {
+    TERMINATE_FAILURE.with(|slot| slot.borrow_mut().take())
+}
+
+#[cfg(test)]
+static ENGINE_LAUNCH_VALUE_FAILURE: std::sync::OnceLock<std::sync::Mutex<bool>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn set_engine_launch_value_failure(failure: bool) {
+    *ENGINE_LAUNCH_VALUE_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(false))
+        .lock()
+        .unwrap() = failure;
+}
+
+#[cfg(test)]
+fn take_engine_launch_value_failure() -> bool {
+    ENGINE_LAUNCH_VALUE_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(false))
+        .lock()
+        .map(|mut failure| std::mem::take(&mut *failure))
+        .unwrap_or(false)
+}
+
+impl EngineActor {
+    pub(crate) async fn resolve_launch(
+        authority: Arc<std::sync::Mutex<Option<PathAuthority>>>,
+        engine: EngineHandle,
+        operation: PathOperation,
+        options: &[EngineOption],
+        admission: &AdmissionLease,
+    ) -> Result<(EngineExecutable, Vec<ResolvedEngineOption>), Error> {
+        resolve_launch(authority, engine, operation, options, admission).await
+    }
+
+    pub(crate) async fn resolve_option_leases(
+        authority: Arc<std::sync::Mutex<Option<PathAuthority>>>,
+        options: &[EngineOption],
+        cancellation: CancellationToken,
+    ) -> Result<Vec<ResolvedEngineOption>, Error> {
+        resolve_option_leases(authority, options, cancellation).await
+    }
+
+    pub(crate) async fn verify_option_resources(
+        actor: &Arc<Self>,
+        options: &[ResolvedEngineOption],
+        operation: Option<&CancellationToken>,
+    ) -> Result<(), Error> {
+        verify_option_resources(actor, options, operation).await
+    }
+}
+
 async fn engine_actor_loop(
     mut runtime: EngineRuntime,
     mut rx: mpsc::Receiver<EngineCommand>,
@@ -2164,11 +2759,17 @@ async fn engine_actor_loop(
                 name,
                 value,
                 resource_values,
+                operation,
                 reply,
             } => {
                 let _ = reply.send(
                     runtime
-                        .set_option_with_resources(&name, &value, &resource_values)
+                        .set_option_with_resources(
+                            &name,
+                            &value,
+                            &resource_values,
+                            operation.as_ref(),
+                        )
                         .await,
                 );
             }
@@ -2386,7 +2987,7 @@ mod tests {
     /// how users install wrapper-script engines.
     #[cfg(unix)]
     #[tokio::test]
-    async fn inherited_resource_fd_survives_path_replacement_for_uci_child() {
+    async fn authorized_resource_survives_path_replacement_for_uci_child() {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("uci-child.sh");
@@ -2405,14 +3006,24 @@ mod tests {
         let lease = crate::infra::path_authority::EngineResourceLease::test_file(
             std::fs::File::open(&resource).unwrap(),
         );
-        // The production UCI value, not a hand-built path: this is what
-        // `resolve_engine_options` hands to `setoption`.
-        let uci_value = lease.uci_value();
-        let executable = crate::infra::path_authority::EngineExecutable::test_fixture(
+        #[allow(unused_mut)]
+        #[allow(unused_mut)]
+        let mut executable = crate::infra::path_authority::EngineExecutable::test_fixture(
             std::fs::File::open(&script).unwrap(),
             directory.path().to_path_buf(),
             vec![lease],
         );
+        #[cfg(target_os = "macos")]
+        {
+            let root =
+                crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap();
+            executable.set_test_launch_root(root);
+            let key = EngineKey::new("resource-test".into(), "engine".into()).unwrap();
+            pin_engine_launch(&mut executable, &key, "engine", &|| false).unwrap();
+        }
+        // The production UCI value, not a hand-built path: this is what
+        // `resolve_engine_options` hands to `setoption`.
+        let uci_value = executable.resource_leases()[0].uci_value();
         let actor = EngineActor::spawn_initialized(executable, EngineDeadlines::default())
             .await
             .unwrap();
@@ -2453,6 +3064,75 @@ mod tests {
             EngineLog::Gui(line) | EngineLog::Engine(line) => !line.contains(&uci_value),
             EngineLog::Truncated { .. } => true,
         }));
+        actor.terminate().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawned_engine_reads_a_directory_resource_through_the_authorized_value() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("directory-child.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) value=${line#*value }; cat \"$value/authorized\";; quit) exit 0;; esac; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let resource_path = directory.path().join("tables");
+        std::fs::create_dir(&resource_path).unwrap();
+        std::fs::write(resource_path.join("authorized"), b"directory-authorized\n").unwrap();
+        let resource_file = std::fs::File::open(&resource_path).unwrap();
+        #[cfg(target_os = "macos")]
+        let resource =
+            crate::infra::path_authority::EngineResourceLease::test_directory(resource_file);
+        #[cfg(target_os = "linux")]
+        let resource = crate::infra::path_authority::EngineResourceLease::test_file(resource_file);
+        let resource = Arc::new(resource);
+        let value = resource.uci_value();
+        let image = std::fs::File::open(&script).unwrap();
+        #[allow(unused_mut)]
+        let mut executable = crate::infra::path_authority::EngineExecutable::test_fixture(
+            image,
+            directory.path().to_path_buf(),
+            vec![],
+        )
+        .with_resource_leases(vec![resource.clone()]);
+        #[cfg(target_os = "macos")]
+        {
+            executable.set_test_launch_root(
+                crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap(),
+            );
+            let key = EngineKey::new("directory-test".into(), "engine".into()).unwrap();
+            pin_engine_launch(&mut executable, &key, "engine", &|| false).unwrap();
+        }
+        let actor = EngineActor::spawn_initialized(executable, EngineDeadlines::default())
+            .await
+            .unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::rename(&resource_path, directory.path().join("tables-original")).unwrap();
+            std::fs::create_dir(&resource_path).unwrap();
+            std::fs::write(resource_path.join("replacement"), b"replacement\n").unwrap();
+        }
+        let options = [ResolvedEngineOption {
+            name: "SyzygyPath".into(),
+            value: value.clone(),
+            resources: vec![resource],
+            resource_values: vec![value.clone()],
+        }];
+        verify_option_resources(&actor, &options, None)
+            .await
+            .unwrap();
+        actor
+            .set_option_with_resources("SyzygyPath", &value, std::slice::from_ref(&value))
+            .await
+            .unwrap();
+        assert_eq!(
+            actor.next_configuration_line().await.unwrap(),
+            Some("directory-authorized".into())
+        );
         actor.terminate().await.unwrap();
     }
 
@@ -3191,6 +3871,25 @@ mod tests {
         assert_eq!(redactions.redact(multi), "[redacted]:[redacted]");
     }
 
+    #[test]
+    fn resource_redaction_uses_registered_provenance_not_path_shape() {
+        let registered = "/launch/root/authorized.leaf".to_string();
+        let unregistered = "/launch/root/unregistered.leaf".to_string();
+        let mut logs = BoundedLogs::default();
+        logs.push(EngineLog::Gui(format!(
+            "setoption name Book value {registered}:{unregistered}\n"
+        )));
+        let mut redactions = ResourceRedactions::default();
+        redactions
+            .register(std::slice::from_ref(&registered), &mut logs)
+            .unwrap();
+        assert!(logs.entries().iter().any(|entry| matches!(
+            entry,
+            EngineLog::Gui(line)
+                if line == "setoption name Book value [redacted]:/launch/root/unregistered.leaf\n"
+        )));
+    }
+
     #[tokio::test]
     async fn resource_option_redacts_both_transcript_directions_after_a_swap() {
         let old_unix = "/proc/self/fd/17".to_string();
@@ -3262,14 +3961,19 @@ mod tests {
         for index in 0..MAX_RESOURCE_REDACTIONS {
             let value = format!("/resource/{index}");
             runtime
-                .set_option_with_resources("Book", &value, std::slice::from_ref(&value))
+                .set_option_with_resources("Book", &value, std::slice::from_ref(&value), None)
                 .await
                 .unwrap();
         }
         let overflow = "/resource/overflow".to_string();
         assert!(matches!(
             runtime
-                .set_option_with_resources("Book", &overflow, std::slice::from_ref(&overflow))
+                .set_option_with_resources(
+                    "Book",
+                    &overflow,
+                    std::slice::from_ref(&overflow),
+                    None,
+                )
                 .await,
             Err(Error::ResourceLimit(_))
         ));
@@ -4870,6 +5574,677 @@ mod tests {
         ));
         for task in queued {
             let _ = task.await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn resource_verification_isolated_gateway_keeps_actor_control_responsive() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("resource");
+        std::fs::write(&path, b"resource").unwrap();
+        let lease = Arc::new(
+            crate::infra::path_authority::EngineResourceLease::test_file(
+                std::fs::File::open(&path).unwrap(),
+            ),
+        );
+        let value = lease.uci_value();
+        let (actor, writes) = EngineActor::recording_test_actor_with_resources(&[], vec![lease]);
+        let options = vec![ResolvedEngineOption {
+            name: "EvalFile".into(),
+            value: value.clone(),
+            resources: Vec::new(),
+            resource_values: vec![value.clone()],
+        }];
+        let gateway = BlockingGateway::new(1);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        set_resource_verify_hook(
+            value.clone(),
+            Some(Box::new(move || {
+                let _ = entered_tx.send(());
+                release_rx.recv().unwrap();
+            })),
+        );
+        let task_gateway = gateway.clone();
+        let verification = tokio::spawn({
+            let actor = actor.clone();
+            async move { verify_option_resources_in(&task_gateway, &actor, &options, None).await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(gateway.available_permits(), 0);
+        tokio::time::timeout(std::time::Duration::from_millis(100), actor.terminate())
+            .await
+            .unwrap()
+            .unwrap();
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            verification.await.unwrap(),
+            Err(Error::Cancellation)
+        ));
+        assert!(writes.lock().await.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn resource_verification_timeout_returns_without_sending_setoption() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("resource");
+        std::fs::write(&path, b"resource").unwrap();
+        let lease = Arc::new(
+            crate::infra::path_authority::EngineResourceLease::test_file(
+                std::fs::File::open(&path).unwrap(),
+            ),
+        );
+        let value = lease.uci_value();
+        let deadlines = EngineDeadlines {
+            resource_verify: std::time::Duration::from_millis(500),
+            ..EngineDeadlines::default()
+        };
+        let (actor, writes) = EngineActor::recording_test_actor_with_resources_and_deadlines(
+            &[],
+            vec![lease],
+            deadlines,
+        );
+        let options = vec![ResolvedEngineOption {
+            name: "EvalFile".into(),
+            value: value.clone(),
+            resources: Vec::new(),
+            resource_values: vec![value.clone()],
+        }];
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        set_resource_verify_hook(
+            value.clone(),
+            Some(Box::new(move || {
+                let _ = entered_tx.send(());
+                release_rx.recv().unwrap();
+            })),
+        );
+        let gateway = BlockingGateway::new(1);
+        let task_gateway = gateway.clone();
+        let verification = tokio::spawn({
+            let actor = actor.clone();
+            async move { verify_option_resources_in(&task_gateway, &actor, &options, None).await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            verification.await.unwrap(),
+            Err(Error::EngineTimeout(message)) if message == "verifying engine option resources"
+        ));
+        release_tx.send(()).unwrap();
+        assert!(writes.lock().await.is_empty());
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unheld_resource_values_are_refused_before_the_first_setoption() {
+        let (actor, writes) = EngineActor::recording_test_actor(&[]);
+        let options = [ResolvedEngineOption {
+            name: "EvalFile".into(),
+            value: "/unheld/resource".into(),
+            resources: Vec::new(),
+            resource_values: vec!["/unheld/resource".into()],
+        }];
+        assert!(matches!(
+            verify_option_resources(&actor, &options, None).await,
+            Err(Error::Conflict(message))
+                if message == "engine option resource was not produced by the launched engine"
+        ));
+        assert!(writes.lock().await.is_empty());
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_second_unheld_resource_is_refused_without_partial_option_writes() {
+        let (actor, writes) = EngineActor::recording_test_actor(&[]);
+        let options = [ResolvedEngineOption {
+            name: "Tablebases".into(),
+            value: "/first:/second".into(),
+            resources: Vec::new(),
+            resource_values: vec!["/first".into(), "/second".into()],
+        }];
+        assert!(matches!(
+            verify_option_resources(&actor, &options, None).await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(writes.lock().await.is_empty());
+        actor.terminate().await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_replaced_second_resource_is_refused_without_partial_option_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let first_path = directory.path().join("first");
+        let second_path = directory.path().join("second");
+        std::fs::write(&first_path, b"first").unwrap();
+        std::fs::write(&second_path, b"second").unwrap();
+        let first = Arc::new(
+            crate::infra::path_authority::EngineResourceLease::test_file(
+                std::fs::File::open(&first_path).unwrap(),
+            ),
+        );
+        let second = Arc::new(
+            crate::infra::path_authority::EngineResourceLease::test_file(
+                std::fs::File::open(&second_path).unwrap(),
+            ),
+        );
+        let first_value = first.uci_value();
+        let second_value = second.uci_value();
+        let (actor, writes) = EngineActor::recording_test_actor_with_resources(
+            &[],
+            vec![first.clone(), second.clone()],
+        );
+        std::fs::rename(&second_path, directory.path().join("second-original")).unwrap();
+        std::fs::write(&second_path, b"replacement").unwrap();
+        let options = [ResolvedEngineOption {
+            name: "Tablebases".into(),
+            value: format!("{first_value}:{second_value}"),
+            resources: vec![first, second],
+            resource_values: vec![first_value, second_value],
+        }];
+        assert!(matches!(
+            verify_option_resources(&actor, &options, None).await,
+            Err(Error::Conflict(message))
+                if message == "engine resource changed after authorization"
+        ));
+        assert!(writes.lock().await.is_empty());
+        actor.terminate().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolved_executable_stays_authorized_after_source_replacement_before_spawn() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("authorized-engine.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let replacement = script.clone();
+        let authority = {
+            #[cfg(target_os = "macos")]
+            {
+                PathAuthority::open_with_launch_root(
+                    directory.path().join("registry.json"),
+                    Vec::new(),
+                    crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path())
+                        .unwrap(),
+                )
+                .unwrap()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap()
+            }
+        };
+        let mut authority = authority;
+        let engine = authority
+            .register_engine_file(&script, "authorized-engine")
+            .unwrap();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("replacement".into(), "authorized-engine".into()).unwrap();
+        let admission = supervisor
+            .admit_for_launch(key, "authorized-engine".into(), engine.id.clone())
+            .await
+            .unwrap();
+        set_engine_launch_resolution_hook(Some(Box::new(move || {
+            std::fs::rename(&replacement, replacement.with_extension("replaced")).unwrap();
+            std::fs::write(&replacement, "#!/bin/sh\nexit 22\n").unwrap();
+        })));
+        let (executable, _) = EngineActor::resolve_launch(
+            authority,
+            engine,
+            PathOperation::EngineExecute,
+            &[],
+            &admission,
+        )
+        .await
+        .unwrap();
+        set_engine_launch_resolution_hook(None);
+
+        let actor = EngineActor::spawn_initialized(executable, EngineDeadlines::default())
+            .await
+            .unwrap();
+        actor.terminate().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn launch_resolution_and_materialization_run_off_the_async_caller() {
+        use crate::infra::path_authority::{EngineResourceHandleKind, PathAuthority, PathClass};
+        use std::thread::ThreadId;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("thread-engine.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let resource_path = directory.path().join("thread-resource.bin");
+        std::fs::write(&resource_path, b"resource").unwrap();
+        let root = std::thread::current().id();
+        let trace = Arc::new(std::sync::Mutex::new(Vec::<(&'static str, ThreadId)>::new()));
+        crate::infra::path_authority::set_engine_resolution_trace(Some(trace.clone()));
+        let mut authority = {
+            #[cfg(target_os = "macos")]
+            {
+                PathAuthority::open_with_launch_root(
+                    directory.path().join("registry.json"),
+                    Vec::new(),
+                    crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path())
+                        .unwrap(),
+                )
+                .unwrap()
+            }
+            #[cfg(target_os = "linux")]
+            {
+                PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap()
+            }
+        };
+        let engine = authority
+            .register_engine_file(&script, "thread-engine")
+            .unwrap();
+        let grant = authority
+            .grant_dialog(
+                &resource_path,
+                "thread-resource",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let resource = authority
+            .promote_engine_resource(&grant, EngineResourceHandleKind::File, "thread-resource")
+            .unwrap();
+        #[cfg(target_os = "macos")]
+        let launch_root = authority.engine_launch_root().unwrap();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("thread-test".into(), "thread-engine".into()).unwrap();
+        let admission = supervisor
+            .admit_for_launch(key, "thread-engine".into(), engine.id.clone())
+            .await
+            .unwrap();
+        let result = EngineActor::resolve_launch(
+            authority,
+            engine,
+            PathOperation::EngineExecute,
+            &[EngineOption::Resource {
+                name: "EvalFile".into(),
+                resources: vec![resource],
+            }],
+            &admission,
+        )
+        .await;
+        crate::infra::path_authority::set_engine_resolution_trace(None);
+        let (executable, _) = result.unwrap();
+        let trace = trace.lock().unwrap().clone();
+        #[cfg(target_os = "linux")]
+        let expected = vec!["executable", "resource"];
+        #[cfg(target_os = "macos")]
+        let expected = vec!["executable", "resource", "leaf", "leaf"];
+        assert_eq!(
+            trace.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+            expected
+        );
+        assert!(trace.iter().all(|(_, thread)| *thread != root));
+        #[cfg(target_os = "macos")]
+        {
+            drop(executable);
+            assert!(launch_root.reclaim().removed >= 1);
+        }
+        #[cfg(target_os = "linux")]
+        drop(executable);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn launch_without_an_initialized_root_is_refused_before_spawn() {
+        use crate::infra::path_authority::PathAuthority;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("missing-launch-root-engine.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut authority =
+            PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap();
+        let engine = authority
+            .register_engine_file(&script, "missing-root-engine")
+            .unwrap();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("missing-root".into(), "missing-root-engine".into()).unwrap();
+        let admission = supervisor
+            .admit_for_launch(key, "missing-root-engine".into(), engine.id.clone())
+            .await
+            .unwrap();
+        assert!(matches!(
+            EngineActor::resolve_launch(
+                authority,
+                engine,
+                PathOperation::EngineExecute,
+                &[],
+                &admission,
+            )
+            .await,
+            Err(Error::Conflict(message))
+                if message == "engine launch root is not initialized"
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn launch_value_construction_failure_releases_pinned_leaves() {
+        use crate::infra::path_authority::PathAuthority;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("value-failure-engine.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root =
+            crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut authority = PathAuthority::open_with_launch_root(
+            directory.path().join("registry.json"),
+            Vec::new(),
+            root.clone(),
+        )
+        .unwrap();
+        let engine = authority
+            .register_engine_file(&script, "value-failure-engine")
+            .unwrap();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("value-failure".into(), "value-failure-engine".into()).unwrap();
+        let admission = supervisor
+            .admit_for_launch(key, "value-failure-engine".into(), engine.id.clone())
+            .await
+            .unwrap();
+        set_engine_launch_value_failure(true);
+        let result = EngineActor::resolve_launch(
+            authority,
+            engine,
+            PathOperation::EngineExecute,
+            &[],
+            &admission,
+        )
+        .await;
+        set_engine_launch_value_failure(false);
+        assert!(matches!(
+            result,
+            Err(Error::Conflict(message))
+                if message == "injected engine launch value construction failure"
+        ));
+        assert_eq!(root.registry_snapshot_for_test().0, 1);
+        assert_eq!(root.reclaim().removed, 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn cancellation_after_pinning_releases_leaves_before_spawn() {
+        use crate::infra::path_authority::PathAuthority;
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("post-pin-cancel-engine.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root =
+            crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut authority = PathAuthority::open_with_launch_root(
+            directory.path().join("registry.json"),
+            Vec::new(),
+            root.clone(),
+        )
+        .unwrap();
+        let engine = authority
+            .register_engine_file(&script, "post-pin-cancel-engine")
+            .unwrap();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key =
+            EngineKey::new("post-pin-cancel".into(), "post-pin-cancel-engine".into()).unwrap();
+        let admission = supervisor
+            .admit_for_launch(key, "post-pin-cancel-engine".into(), engine.id.clone())
+            .await
+            .unwrap();
+        let cancelled = admission.admission.cancelled.clone();
+        set_engine_launch_post_pin_hook(Some(Box::new(move || {
+            cancelled.store(true, AtomicOrdering::SeqCst);
+        })));
+        let result = EngineActor::resolve_launch(
+            authority,
+            engine,
+            PathOperation::EngineExecute,
+            &[],
+            &admission,
+        )
+        .await;
+        set_engine_launch_post_pin_hook(None);
+        assert!(matches!(result, Err(Error::Cancellation)));
+        assert_eq!(root.registry_snapshot_for_test().0, 1);
+        assert_eq!(root.reclaim().removed, 1);
+        assert!(supervisor
+            .get_exact(
+                &EngineKey::new("post-pin-cancel".into(), "post-pin-cancel-engine".into()).unwrap()
+            )
+            .is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn child_io_take_failures_release_pinned_leaves_after_spawn() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for failure in [SpawnIoFailure::NoStdin, SpawnIoFailure::NoStdout] {
+            let directory = tempfile::tempdir().unwrap();
+            let script = directory.path().join("io-failure-engine.sh");
+            std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let root =
+                crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap();
+            let mut executable = EngineExecutable::test_fixture(
+                std::fs::File::open(&script).unwrap(),
+                directory.path().to_path_buf(),
+                Vec::new(),
+            );
+            executable.set_test_launch_root(root.clone());
+            let key = EngineKey::new("io-failure".into(), "io-failure-engine".into()).unwrap();
+            pin_engine_launch(&mut executable, &key, "io-failure-engine", &|| false).unwrap();
+            set_spawn_io_failure(Some(failure));
+            let result = EngineActor::spawn(executable, EngineDeadlines::default()).await;
+            match failure {
+                SpawnIoFailure::NoStdin => assert!(matches!(result, Err(Error::NoStdin))),
+                SpawnIoFailure::NoStdout => assert!(matches!(result, Err(Error::NoStdout))),
+            }
+            set_spawn_io_failure(None);
+            assert_eq!(root.registry_snapshot_for_test().0, 1);
+            assert_eq!(root.reclaim().removed, 1);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn apple_fallback_materializes_and_runs_the_authorized_engine_image() {
+        use crate::infra::path_authority::EngineLaunchFailure;
+        use std::os::unix::fs::PermissionsExt;
+
+        for failure in [
+            EngineLaunchFailure::CloneExdev,
+            EngineLaunchFailure::CloneEnotsup,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let script = directory.path().join("fallback-engine.sh");
+            std::fs::write(
+                &script,
+                "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let root =
+                crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap();
+            let mut executable = EngineExecutable::test_fixture(
+                std::fs::File::open(&script).unwrap(),
+                directory.path().to_path_buf(),
+                Vec::new(),
+            );
+            executable.set_test_launch_root(root.clone());
+            let key = EngineKey::new("fallback".into(), "fallback-engine".into()).unwrap();
+            crate::infra::path_authority::set_engine_launch_failure(Some(failure));
+            pin_engine_launch(&mut executable, &key, "fallback-engine", &|| false).unwrap();
+            crate::infra::path_authority::set_engine_launch_failure(None);
+            std::fs::rename(&script, directory.path().join("authorized-original.sh")).unwrap();
+            std::fs::write(&script, "#!/bin/sh\nexit 22\n").unwrap();
+            let actor = EngineActor::spawn_initialized(executable, EngineDeadlines::default())
+                .await
+                .unwrap();
+            actor.terminate().await.unwrap();
+            assert_eq!(root.reclaim().removed, 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn real_child_termination_failures_cover_error_and_timeout_reap_branches() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for (failure, expected_timeout) in [
+            (TerminateFailure::QuitKillReap, false),
+            (TerminateFailure::ReapTimeout, true),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let script = directory.path().join("termination-failure-engine.sh");
+            std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let executable = EngineExecutable::test_fixture(
+                std::fs::File::open(&script).unwrap(),
+                directory.path().to_path_buf(),
+                Vec::new(),
+            );
+            let deadlines = EngineDeadlines {
+                quit: Duration::from_millis(20),
+                kill_reap: Duration::from_millis(30),
+                ..EngineDeadlines::default()
+            };
+            set_terminate_failure(Some(failure));
+            let mut runtime = EngineRuntime::spawn(executable, deadlines).await.unwrap();
+            set_terminate_failure(None);
+            let result = runtime.terminate().await;
+            if expected_timeout {
+                assert!(matches!(result, Err(Error::EngineTimeout(_))));
+            } else {
+                assert!(matches!(result, Err(Error::OperationAndCleanup { .. })));
+            }
+            drop(runtime);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn apple_directory_resource_replacement_is_refused_before_setoption() {
+        let directory = tempfile::tempdir().unwrap();
+        let tables = directory.path().join("tables");
+        std::fs::create_dir(&tables).unwrap();
+        std::fs::write(tables.join("authorized"), b"authorized").unwrap();
+        let lease = Arc::new(
+            crate::infra::path_authority::EngineResourceLease::test_directory(
+                std::fs::File::open(&tables).unwrap(),
+            ),
+        );
+        let value = lease.uci_value();
+        let (actor, writes) = EngineActor::recording_test_actor_with_resources(&[], vec![lease]);
+        std::fs::rename(&tables, directory.path().join("tables-original")).unwrap();
+        std::fs::create_dir(&tables).unwrap();
+        std::fs::write(tables.join("replacement"), b"replacement").unwrap();
+        let options = [ResolvedEngineOption {
+            name: "SyzygyPath".into(),
+            value: value.clone(),
+            resources: Vec::new(),
+            resource_values: vec![value],
+        }];
+        assert!(matches!(
+            verify_option_resources(&actor, &options, None).await,
+            Err(Error::Conflict(message))
+                if message == "engine resource changed after authorization"
+        ));
+        assert!(writes.lock().await.is_empty());
+        actor.terminate().await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn apple_directory_resource_removal_and_file_swap_are_refused_before_setoption() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for replacement in ["remove", "file"] {
+            let directory = tempfile::tempdir().unwrap();
+            let script = directory.path().join("directory-check-engine.sh");
+            std::fs::write(
+                &script,
+                "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; setoption*) echo setoption-unexpected;; quit) exit 0;; esac; done\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let tables = directory.path().join("tables");
+            std::fs::create_dir(&tables).unwrap();
+            std::fs::write(tables.join("authorized"), b"authorized").unwrap();
+            let resource = Arc::new(
+                crate::infra::path_authority::EngineResourceLease::test_directory(
+                    std::fs::File::open(&tables).unwrap(),
+                ),
+            );
+            let value = resource.uci_value();
+            let root =
+                crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap();
+            let mut executable = EngineExecutable::test_fixture(
+                std::fs::File::open(&script).unwrap(),
+                directory.path().to_path_buf(),
+                Vec::new(),
+            )
+            .with_resource_leases(vec![resource.clone()]);
+            executable.set_test_launch_root(root);
+            let key =
+                EngineKey::new("directory-check".into(), "directory-check-engine".into()).unwrap();
+            pin_engine_launch(&mut executable, &key, "directory-check-engine", &|| false).unwrap();
+            let actor = EngineActor::spawn_initialized(executable, EngineDeadlines::default())
+                .await
+                .unwrap();
+            if replacement == "remove" {
+                std::fs::remove_dir_all(&tables).unwrap();
+            } else {
+                std::fs::remove_dir_all(&tables).unwrap();
+                std::fs::write(&tables, b"replacement-file").unwrap();
+            }
+            let options = [ResolvedEngineOption {
+                name: "SyzygyPath".into(),
+                value: value.clone(),
+                resources: vec![resource],
+                resource_values: vec![value],
+            }];
+            assert!(matches!(
+                verify_option_resources(&actor, &options, None).await,
+                Err(Error::Conflict(message))
+                    if message == "engine resource changed after authorization"
+            ));
+            assert!(actor.logs().await.unwrap().iter().all(|entry| match entry {
+                EngineLog::Gui(line) | EngineLog::Engine(line) => {
+                    !line.contains("setoption")
+                }
+                EngineLog::Truncated { .. } => true,
+            }));
+            actor.terminate().await.unwrap();
         }
     }
 }

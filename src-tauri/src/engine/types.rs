@@ -50,6 +50,7 @@ pub struct EngineDeadlines {
     /// triggers `kill_on_drop`; an uninterruptible process may remain until
     /// the operating system can reap it or the application exits.
     pub kill_reap: Duration,
+    pub resource_verify: Duration,
 }
 
 impl Default for EngineDeadlines {
@@ -62,6 +63,7 @@ impl Default for EngineDeadlines {
             stop: Duration::from_secs(5),
             quit: Duration::from_secs(3),
             kill_reap: Duration::from_secs(2),
+            resource_verify: Duration::from_secs(2),
         }
     }
 }
@@ -164,7 +166,7 @@ impl EngineOption {
     }
 }
 
-pub(crate) fn resolve_engine_options(
+pub(crate) fn resolve_engine_option_leases(
     authority: &mut crate::infra::path_authority::PathAuthority,
     options: &[EngineOption],
 ) -> Result<Vec<ResolvedEngineOption>, Error> {
@@ -184,7 +186,7 @@ pub(crate) fn resolve_engine_options(
                 validate_engine_option(option)?;
                 let leases = resources
                     .iter()
-                    .map(|resource| authority.engine_resource(resource))
+                    .map(|resource| authority.engine_resource(resource).map(std::sync::Arc::new))
                     .collect::<Result<Vec<_>, _>>()?;
                 let separator = if cfg!(windows) { ";" } else { ":" };
                 // Keep the individual values alongside the joined UCI value. The
@@ -192,7 +194,7 @@ pub(crate) fn resolve_engine_options(
                 // redaction never has to infer whether a string is a path.
                 let resource_values = leases
                     .iter()
-                    .map(crate::infra::path_authority::EngineResourceLease::uci_value)
+                    .map(|lease| lease.uci_value())
                     .collect::<Vec<_>>();
                 let value = resource_values.join(separator);
                 Ok(ResolvedEngineOption {
@@ -206,16 +208,39 @@ pub(crate) fn resolve_engine_options(
         .collect()
 }
 
+#[cfg(test)]
+pub(crate) fn resolve_engine_options(
+    authority: &mut crate::infra::path_authority::PathAuthority,
+    options: &[EngineOption],
+) -> Result<Vec<ResolvedEngineOption>, Error> {
+    resolve_engine_option_leases(authority, options)
+}
+
 /// Internal UCI option. This never crosses IPC or renderer persistence.
 #[derive(Debug)]
 pub(crate) struct ResolvedEngineOption {
     pub(crate) name: String,
     pub(crate) value: String,
-    pub(crate) resources: Vec<crate::infra::path_authority::EngineResourceLease>,
+    pub(crate) resources: Vec<std::sync::Arc<crate::infra::path_authority::EngineResourceLease>>,
     /// The individual native values that make up `value`. These are retained
     /// as provenance for transcript redaction even after leases move to the
     /// child executable.
     pub(crate) resource_values: Vec<String>,
+}
+
+impl ResolvedEngineOption {
+    pub(crate) fn refresh_resource_values(&mut self) {
+        if self.resources.is_empty() {
+            return;
+        }
+        self.resource_values = self
+            .resources
+            .iter()
+            .map(|resource| resource.uci_value())
+            .collect();
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        self.value = self.resource_values.join(separator);
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Type, PartialEq, Eq)]

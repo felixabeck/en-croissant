@@ -28,17 +28,17 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     engine::{
-        parse_fen_to_position, resolve_engine_options, spawn_registered, EngineActor,
-        EngineDeadlines, EngineKey, EngineLog, EngineOption, EngineSupervisor, GoMode, PlayersTime,
-        MAX_ENGINE_LIMIT,
+        parse_fen_to_position, spawn_registered, EngineActor, EngineDeadlines, EngineKey,
+        EngineLog, EngineOption, EngineSupervisor, GoMode, PlayersTime, MAX_ENGINE_LIMIT,
     },
     error::Error,
     infra::blocking::BLOCKING_GATEWAY,
     infra::keyed_locks::{KeyedLockLease, KeyedLocks},
-    infra::path_authority::{
-        EngineExecutable, EngineHandle, OpeningBookHandle, PathAuthority, PathOperation,
-    },
+    infra::path_authority::{EngineHandle, OpeningBookHandle, PathAuthority, PathOperation},
 };
+
+#[cfg(test)]
+use crate::{engine::resolve_engine_options, infra::path_authority::EngineExecutable};
 
 pub type GameId = String;
 
@@ -1001,6 +1001,95 @@ pub struct GameManager {
 
 async fn spawn_configured_game_engine(
     registration: GameEngineRegistration,
+    engine: EngineHandle,
+    options: &[EngineOption],
+    authority: std::sync::Arc<std::sync::Mutex<Option<PathAuthority>>>,
+    chess960: bool,
+) -> Result<RegisteredGameEngine, Error> {
+    let GameEngineRegistration {
+        supervisor,
+        key,
+        engine_id,
+        executable_ref,
+    } = registration;
+    let admission = supervisor
+        .admit_for_launch(key.clone(), engine_id.clone(), executable_ref.clone())
+        .await?;
+    let (executable, resolved) = EngineActor::resolve_launch(
+        authority,
+        engine,
+        PathOperation::EngineExecute,
+        options,
+        &admission,
+    )
+    .await?;
+    let (supervised, ()) = spawn_registered(
+        supervisor,
+        key.clone(),
+        executable,
+        admission,
+        move |engine| async move {
+            #[cfg(test)]
+            run_game_engine_after_spawn_hook();
+            engine.init_uci().await?;
+            EngineActor::verify_option_resources(&engine, &resolved, None).await?;
+            for option in resolved {
+                if option.name != "UCI_Chess960" {
+                    engine
+                        .set_option_with_resources(
+                            &option.name,
+                            &option.value,
+                            &option.resource_values,
+                        )
+                        .await?;
+                }
+            }
+            engine
+                .set_option("UCI_Chess960", if chess960 { "true" } else { "false" })
+                .await?;
+            engine.ensure_ready().await
+        },
+    )
+    .await?;
+    Ok(RegisteredGameEngine {
+        actor: supervised.actor,
+        key,
+        generation: supervised.generation,
+    })
+}
+
+#[cfg(test)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn set_game_engine_after_spawn_hook(hook: Option<Box<dyn FnOnce() + Send>>) {
+    *GAME_ENGINE_AFTER_SPAWN_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = hook;
+}
+
+#[cfg(test)]
+fn run_game_engine_after_spawn_hook() {
+    if let Ok(mut hook) = GAME_ENGINE_AFTER_SPAWN_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
+        if let Some(hook) = hook.take() {
+            hook();
+        }
+    }
+}
+
+#[cfg(test)]
+type GameEngineAfterSpawnHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+static GAME_ENGINE_AFTER_SPAWN_HOOK: std::sync::OnceLock<
+    std::sync::Mutex<Option<GameEngineAfterSpawnHook>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+async fn spawn_configured_game_engine_with_executable(
+    registration: GameEngineRegistration,
     executable: EngineExecutable,
     options: &[EngineOption],
     authority: &std::sync::Mutex<Option<PathAuthority>>,
@@ -1012,6 +1101,9 @@ async fn spawn_configured_game_engine(
         engine_id,
         executable_ref,
     } = registration;
+    let admission = supervisor
+        .admit_for_launch(key.clone(), engine_id.clone(), executable_ref.clone())
+        .await?;
     let mut resolved = {
         let mut authority = authority
             .lock()
@@ -1036,11 +1128,10 @@ async fn spawn_configured_game_engine(
         supervisor,
         key.clone(),
         executable.with_resource_leases(child_leases),
-        engine_id,
-        executable_ref,
-        None,
+        admission,
         move |engine| async move {
             engine.init_uci().await?;
+            EngineActor::verify_option_resources(&engine, &resolved, None).await?;
             for option in resolved {
                 if option.name != "UCI_Chess960" {
                     engine
@@ -1076,19 +1167,6 @@ fn game_side_engine_key(
     // application id. Using `"white"`/`"black"` as the engine field would reap
     // every white-side game if a user ever stored that string as an engine id.
     EngineKey::new(format!("game:{game_id}:{session}:{side}"), engine_id.into())
-}
-
-fn resolve_game_engine_executable(
-    authority: &std::sync::Mutex<Option<PathAuthority>>,
-    handle: &EngineHandle,
-) -> Result<EngineExecutable, Error> {
-    let mut authority = authority
-        .lock()
-        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-    authority
-        .as_mut()
-        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
-        .engine_executable(handle, PathOperation::EngineExecute)
 }
 
 async fn terminate_game_engines(
@@ -1266,7 +1344,7 @@ impl GameManager {
         game_id: GameId,
         config: GameConfig,
         app: AppHandle,
-        authority: &std::sync::Mutex<Option<PathAuthority>>,
+        authority: std::sync::Arc<std::sync::Mutex<Option<PathAuthority>>>,
         engine_supervisor: Arc<EngineSupervisor>,
     ) -> Result<GameState, Error> {
         self.ensure_accepting_starts()?;
@@ -1277,7 +1355,7 @@ impl GameManager {
             config,
             polyglot_book,
             polyglot_max_ply,
-        } = apply_opening_book(config, authority).await?;
+        } = apply_opening_book(config, &authority).await?;
         let castling_mode = CastlingMode::detect(
             config
                 .clone()
@@ -1299,7 +1377,6 @@ impl GameManager {
             ..
         } = &config.white
         {
-            let executable = resolve_game_engine_executable(authority, handle)?;
             controller.white_engine = Some(
                 spawn_configured_game_engine(
                     GameEngineRegistration {
@@ -1308,9 +1385,9 @@ impl GameManager {
                         engine_id: engine_id.clone(),
                         executable_ref: handle.id.clone(),
                     },
-                    executable,
+                    handle.clone(),
                     options,
-                    authority,
+                    authority.clone(),
                     castling_mode.is_chess960(),
                 )
                 .await?,
@@ -1324,21 +1401,6 @@ impl GameManager {
             ..
         } = &config.black
         {
-            let executable = match resolve_game_engine_executable(authority, handle) {
-                Ok(executable) => executable,
-                Err(primary) => {
-                    let cleanup =
-                        terminate_game_engines(&engine_supervisor, controller.white_engine.take())
-                            .await;
-                    return match cleanup {
-                        Ok(()) => Err(primary),
-                        Err(cleanup) => Err(Error::OperationAndCleanup {
-                            primary: primary.to_string(),
-                            cleanup: cleanup.to_string(),
-                        }),
-                    };
-                }
-            };
             match spawn_configured_game_engine(
                 GameEngineRegistration {
                     supervisor: engine_supervisor.clone(),
@@ -1346,9 +1408,9 @@ impl GameManager {
                     engine_id: engine_id.clone(),
                     executable_ref: handle.id.clone(),
                 },
-                executable,
+                handle.clone(),
                 options,
-                authority,
+                authority.clone(),
                 castling_mode.is_chess960(),
             )
             .await
@@ -3038,7 +3100,7 @@ pub async fn start_game(
             game_id,
             config,
             app,
-            &state.pgn_path_authority,
+            state.pgn_path_authority.clone(),
             state.engine_supervisor.clone(),
         )
         .await
@@ -3309,7 +3371,7 @@ mod tests {
             let supervisor = supervisor.clone();
             let key = key.clone();
             async move {
-                spawn_configured_game_engine(
+                spawn_configured_game_engine_with_executable(
                     GameEngineRegistration {
                         supervisor,
                         key,
@@ -3347,6 +3409,208 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn production_game_engine_start_uses_the_shared_launch_resolution_helper() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("production-game-engine.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in uci) echo uciok;; isready) echo readyok;; quit) exit 0;; esac; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut authority = {
+            #[cfg(target_os = "macos")]
+            {
+                PathAuthority::open_with_launch_root(
+                    directory.path().join("registry.json"),
+                    Vec::new(),
+                    crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path())
+                        .unwrap(),
+                )
+                .unwrap()
+            }
+            #[cfg(target_os = "linux")]
+            {
+                PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap()
+            }
+        };
+        let engine = authority
+            .register_engine_file(&script, "production-game-engine")
+            .unwrap();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key =
+            game_side_engine_key("production-game", 1, "white", "production-game-engine").unwrap();
+        let registered = spawn_configured_game_engine(
+            GameEngineRegistration {
+                supervisor: supervisor.clone(),
+                key: key.clone(),
+                engine_id: "production-game-engine".into(),
+                executable_ref: engine.id.clone(),
+            },
+            engine,
+            &[],
+            authority,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(supervisor.get_exact(&key).is_some());
+        supervisor
+            .terminate_exact(&registered.key, registered.generation)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn production_game_engine_directory_replacement_is_refused_before_any_option() {
+        use crate::infra::path_authority::{EngineResourceHandleKind, PathClass};
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("production-game-directory-engine.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+capture="$PWD/capture.log"
+while IFS= read -r line; do
+    case "$line" in
+        uci) echo uciok ;;
+        isready) echo readyok ;;
+        setoption*) printf 'setoption=%s\n' "$line" >> "$capture"; echo "$line" ;;
+        quit) exit 0 ;;
+    esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let tables = directory.path().join("tables");
+        std::fs::create_dir(&tables).unwrap();
+        std::fs::write(tables.join("authorized"), b"authorized").unwrap();
+        let mut authority = PathAuthority::open_with_launch_root(
+            directory.path().join("registry.json"),
+            Vec::new(),
+            crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path()).unwrap(),
+        )
+        .unwrap();
+        let engine = authority
+            .register_engine_file(&script, "production-game-directory-engine")
+            .unwrap();
+        let grant = authority
+            .grant_dialog(
+                &tables,
+                "tables",
+                PathClass::SingleDialogGrant,
+                PathOperation::EngineResourceRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let resource = authority
+            .promote_engine_resource(&grant, EngineResourceHandleKind::Directory, "tables")
+            .unwrap();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let replaced = Arc::new(AtomicBool::new(false));
+        let replaced_for_hook = replaced.clone();
+        let tables_for_hook = tables.clone();
+        set_game_engine_after_spawn_hook(Some(Box::new(move || {
+            std::fs::remove_dir_all(&tables_for_hook).unwrap();
+            std::fs::write(&tables_for_hook, b"replacement").unwrap();
+            replaced_for_hook.store(true, Ordering::SeqCst);
+        })));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = game_side_engine_key(
+            "production-game-directory",
+            1,
+            "white",
+            "production-game-directory-engine",
+        )
+        .unwrap();
+        let result = spawn_configured_game_engine(
+            GameEngineRegistration {
+                supervisor,
+                key,
+                engine_id: "production-game-directory-engine".into(),
+                executable_ref: engine.id.clone(),
+            },
+            engine,
+            &[EngineOption::Resource {
+                name: "SyzygyPath".into(),
+                resources: vec![resource],
+            }],
+            authority,
+            false,
+        )
+        .await;
+        set_game_engine_after_spawn_hook(None);
+        assert!(replaced.load(Ordering::SeqCst));
+        assert!(matches!(
+            result,
+            Err(Error::Conflict(message))
+                if message == "engine resource changed after authorization"
+        ));
+        let capture =
+            std::fs::read_to_string(directory.path().join("capture.log")).unwrap_or_default();
+        assert!(!capture.contains("setoption"));
+        assert!(!capture.contains("UCI_Chess960"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sealed_game_engine_start_refuses_before_resolution() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("sealed-game-engine.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut authority = {
+            #[cfg(target_os = "macos")]
+            {
+                PathAuthority::open_with_launch_root(
+                    directory.path().join("registry.json"),
+                    Vec::new(),
+                    crate::infra::path_authority::EngineLaunchRoot::for_test(directory.path())
+                        .unwrap(),
+                )
+                .unwrap()
+            }
+            #[cfg(target_os = "linux")]
+            {
+                PathAuthority::open(directory.path().join("registry.json"), Vec::new()).unwrap()
+            }
+        };
+        let engine = authority
+            .register_engine_file(&script, "sealed-game-engine")
+            .unwrap();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        supervisor.terminate_all().await.unwrap();
+        let key = game_side_engine_key("sealed-game", 1, "white", "sealed-game-engine").unwrap();
+        assert!(matches!(
+            spawn_configured_game_engine(
+                GameEngineRegistration {
+                    supervisor,
+                    key,
+                    engine_id: "sealed-game-engine".into(),
+                    executable_ref: engine.id.clone(),
+                },
+                engine,
+                &[],
+                authority,
+                false,
+            )
+            .await,
+            Err(Error::Conflict(message)) if message == "application is shutting down"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn game_engine_initialization_passes_resource_provenance_to_actor_logs() {
         use crate::infra::path_authority::{EngineResourceHandleKind, PathClass};
         use std::os::unix::fs::PermissionsExt;
@@ -3374,12 +3638,17 @@ while IFS= read -r line; do
                 printf 'read=unreadable\n' >> "$capture"
             fi
             child=
-            for fd in /proc/$$/fd/[0-9]*; do
-                if [ -f "$fd" ] && [ "$(cat "$fd" 2>/dev/null)" = "weights" ]; then
-                    child="/proc/self/fd/${fd##*/}"
-                    break
-                fi
-            done
+            case "$value" in
+                /proc/self/fd/*)
+                    for fd in /proc/$$/fd/[0-9]*; do
+                        if [ -f "$fd" ] && [ "$(cat "$fd" 2>/dev/null)" = "weights" ]; then
+                            child="/proc/self/fd/${fd##*/}"
+                            break
+                        fi
+                    done
+                    ;;
+                *) child="$value" ;;
+            esac
             printf 'child=%s\n' "$child" >> "$capture"
             echo "$line"
             ;;
@@ -3424,7 +3693,7 @@ done
         );
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = game_side_engine_key("resource-game", 1, "white", "resource-engine").unwrap();
-        let registered = spawn_configured_game_engine(
+        let registered = spawn_configured_game_engine_with_executable(
             GameEngineRegistration {
                 supervisor: supervisor.clone(),
                 key: key.clone(),
@@ -3485,11 +3754,17 @@ done
             .lines()
             .find_map(|line| line.strip_prefix("read="))
             .expect("resource engine must capture the EvalFile read result");
+        #[cfg(target_os = "linux")]
         for value in [eval, child] {
             let descriptor = value
                 .strip_prefix("/proc/self/fd/")
                 .expect("resource option must use a procfs descriptor");
             assert!(!descriptor.is_empty() && descriptor.bytes().all(|byte| byte.is_ascii_digit()));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(eval, child);
+            assert!(!eval.contains("/proc/self/fd/"));
         }
         assert_eq!(eval, child, "the wire value must be the inherited resource");
         assert_eq!(
