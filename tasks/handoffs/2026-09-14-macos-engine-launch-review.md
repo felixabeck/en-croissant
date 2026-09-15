@@ -683,3 +683,35 @@ Correction: one Codex fix round resuming the Phase 2 session for D6-01 to D6-07.
 reviews have run with severity falling to naming and comment polish, so the closure check after it
 (minimalism D6-01..D6-04, code-quality D6-03 and D6-05..D6-07, on Codex) covers those closures and the D6
 correction diff only.
+
+## Diff review — round 7 (range origin/master..dbcabea6)
+
+Correction commit `dbcabea6` (Codex resume of the Phase 2 session for D6-01 to D6-07). Orchestrator
+verification on that tree before commit: `cargo fmt --check`; clippy `--all-targets -D warnings` for the
+native, aarch64-apple-darwin and x86_64-pc-windows-gnu targets; three full test runs (1152 passed,
+1 ignored each); `pnpm gate:ensure backend-coverage` (ratchet and floors passed).
+
+Scope: after six full-range fresh reviews with severity falling to naming and comment polish, this round
+checks the D6 closures and reviews only the D6 correction commit. Lenses on Codex, `--role sensitive`:
+review-minimalism (D6-01..D6-04) and review-code-quality (D6-03, D6-05..D6-07). One design point was left
+to them deliberately: `EngineResourceLease::from_file` carries a `target_override` parameter used only by
+the test constructors, with `let _ =` for the arguments unused off macOS.
+
+Raw verdicts: review-minimalism APPROVED · review-code-quality APPROVED.
+
+Round-6 closure results (raw): D6-01, D6-02, D6-03, D6-04 closed (minimalism) · D6-03, D6-05, D6-06,
+D6-07 closed (code-quality). Fresh review of `dbcabea6`: no finding from either lens; minimalism judged
+`target_override` justified by its four concrete callers and the preserved test-constructor behaviour.
+
+### Closure (diff review)
+
+Every diff-review issue D1-01 … D6-07 carries an explicit disposition above. Every adopted Fix received a
+lens closure check (D1 in round 2, D2 and D2-11 in round 3, D3 in round 4, D4 in round 5, D5 with the
+D5-02b correction in round 6, D6 in round 7). Deferred: D1-19 (`f-20260915-01`) and D1-20
+(`f-20260915-02`). Skipped with evidence: D2-10 (settled R2-12/R2-01) and D3-09 (not a defect). No `Fix`
+is open. macOS-only runtime proof for the new tests is the `rust-macos-test` job after push.
+
+Metrics (diff review, this range): 7 rounds; unique issues D1 20, D2 11, D3 9, D4 3, D5 5 (with D5-02b),
+D6 7; adopted Fix per round r1=18 r2=10 r3=8 r4=3 r5=5 r6=7 r7=0; lens relaunches: two agy failures
+(empty response, provider 503) and two identified agy quota failures moved to Codex, one Codex capacity
+error relaunched.
