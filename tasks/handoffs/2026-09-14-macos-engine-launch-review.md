@@ -646,3 +646,40 @@ code-quality reports the mandate closure evidence for `f-20260914-31` and `f-202
 
 Correction: one Codex fix round resuming the Phase 2 session for D5-01 to D5-04. Closure check after it:
 minimalism (D5-01 to D5-04) and code-quality (D5-02), on Codex.
+
+## Diff review — round 6 (range origin/master..638839dc)
+
+Correction commit `638839dc` (Codex resumes of the Phase 2 session for D5-01 to D5-04, then D5-02b).
+
+| ID | Finding (witnesses) | Verdict | Reason |
+|---|---|---|---|
+| D5-02b | D5-02's premise was incomplete. `BlockingGateway::available_permits` had two callers, not one: `blocking.rs`'s own test and `resource_verification_isolated_gateway_keeps_actor_control_responsive` in `engine/process.rs`, which cannot reach the private `semaphore`. The orchestrator's source check grepped only `blocking.rs`. With the accessor deleted, the leaf replaced the exact `available_permits() == 0` assertion with a 10 ms spawn-timeout probe, which can pass on a slow runner even when the permit is free, weakening a plan obligation (R11-08, R12-04). Found by the orchestrator while reading the D5 diff before verification | Fix (correction of D5-02) | Restore the test-only accessor for the cross-module caller and the exact permit assertion; in-module `blocking.rs` tests keep direct semaphore access. The verification run on the uncorrected tree was stopped and discarded |
+
+D5-01, D5-03 and D5-04 were accepted from the first D5 leaf as they were. The D5-02b leaf restored the accessor under `#[cfg(all(test, unix))]` with a comment naming its cross-module caller and restored the exact assertion; its revert proof dropped the permit early in `dispatch` (red, `left: 1, right: 0`) and restored it (green). Orchestrator verification on that tree before commit: `cargo fmt --check`; clippy `--all-targets -D warnings` for the native, aarch64-apple-darwin and x86_64-pc-windows-gnu targets; three full test runs (1152 passed, 1 ignored each); `pnpm gate:ensure backend-coverage` (ratchet and floors passed).
+
+Closure check by the two lenses whose findings drove round-5 Fixes, launched directly on Codex (agy
+quota exhausted), `--role sensitive`. review-code-quality's first launch failed before any tool call with
+"Selected model is at capacity" (a provider capacity error, not a usage limit) and was relaunched once on
+Codex with the same prompt as `lens6d-code-quality-r2`.
+
+Raw verdicts: review-minimalism REVISE · review-code-quality (relaunch) APPROVED.
+
+Round-5 closure results (raw): D5-01, D5-02b, D5-03, D5-04 closed (minimalism) · D5-01..D5-04 closed
+(code-quality). code-quality also re-swept every earlier issue: D1-02, D2-02..D2-11, D3-01..D3-09 and
+D4-01..D4-03 closed (D2-10 and D3-09 as settled skips; D2-01's copy-fallback note is the D3-09 skip), and
+reports the mandate evidence for `f-20260914-31` and `f-20260914-32` intact.
+
+| ID | Finding (witnesses) | Verdict | Reason |
+|---|---|---|---|
+| D6-01 | `resolve_launch` and `resolve_option_leases` repeat the authority lock, initialisation check and option-lease resolution (minimalism 96) | Fix | Verified in `engine/process.rs`; both are new in this range. Rule 11, one helper |
+| D6-02 | `engine_resource` builds near-identical Unix `EngineResourceLease` literals for files and directories, and `test_file`/`test_directory` repeat them (minimalism 98) | Fix | Verified in `path_authority/mod.rs`; one Unix constructor parameterised by `is_directory`, Windows arms unchanged |
+| D6-03 | `APP_OWNED_DEFAULT_ROOT_LEAVES` is written twice, once per platform, only to add `EngineLaunch`, and the macOS copy repeats a redundant element-level cfg (minimalism 99, code-quality 95) | Fix | Verified; one list with a cfg-gated sixth entry |
+| D6-04 | `MaterializedFile::drop` and `EngineLaunchRoot::reclaim` reacquire the same registry guard in each branch arm (minimalism 99) | Fix | Verified; acquire once per method or per iteration |
+| D6-05 | Cancellation tokens are named `operation` (`SetOption`, four `engine/process.rs` signatures, `chess.rs` `set_options`) while `operation` means `PathOperation` elsewhere and the established name is `operation_cancellation` (code-quality 93) | Fix | Verified; `origin/master` has only `operation_cancellation`, so every `operation` token name is new in this range |
+| D6-06 | The macOS-enabled resource tests still describe the wire value as an inherited descriptor: the `engine/process.rs` fixture doc, and the Unix-wide `expect`/`assert_eq!` messages in `chess.rs` and `game.rs`; the macOS blocks also repeat `assert_eq!(eval, child)` before the shared assertion (code-quality 97) | Fix | Verified: those messages are in `#[cfg(unix)]` code that runs on macOS with a materialised leaf path. The procfs expectations inside `#[cfg(target_os = "linux")]` stay |
+| D6-07 | The `main.rs` setup scan comment calls `AppDataDir` a descriptor; it is an application-data path value (code-quality 96) | Fix | Verified; comment added in this range |
+
+Correction: one Codex fix round resuming the Phase 2 session for D6-01 to D6-07. Six full-range fresh
+reviews have run with severity falling to naming and comment polish, so the closure check after it
+(minimalism D6-01..D6-04, code-quality D6-03 and D6-05..D6-07, on Codex) covers those closures and the D6
+correction diff only.
