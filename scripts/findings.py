@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: e6192b12687c5d36d372800c52ee3f97d23b11c6feaa7c96a06df1094a05d18a
+# agent-kit-sha256: f4ca986ea2c93a9bc7cee829aad42d7e0f87fb7a3446354a55918e106f9635c9
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -32,7 +32,8 @@ Subcommands
                  and separately the ones merely touching its files
 ``related``      print findings sharing an area or naming the same files
 ``file``         publish one new finding entry through the inbox spool
-``merge-inbox``  fold findings filed during a drain into the ledger
+``merge-inbox``  fold published findings from the inbox into the ledger
+``finalize-claims`` release prepared claims whose entries are proven in ``HEAD``
 ``decisions``    print Felix-facing blockers waiting on Felix
 ``apply-answers`` fold his answers back in and unblock what he decided
 ``drain-status`` exit 0 if a drain holds this repo's lock, 1 otherwise
@@ -63,7 +64,7 @@ import tempfile
 import time
 from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
@@ -1254,6 +1255,52 @@ class LedgerCommitIntent:
     postcondition: Callable[[Path, Path], bool] | None = None
     replaced: bool = False
     written_bytes: bytes | None = None
+    companion: Path | None = None
+    companion_bytes: bytes | None = None
+    claim: Path | None = None
+    finalize: Callable[[], str] | None = None
+    provisional: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class LedgerCommitResult:
+    """Whether a ledger commit obligation was proven durable."""
+
+    durable: bool
+    cause: str = ""
+
+
+@dataclass(frozen=True)
+class ClaimIntent:
+    """The validated durable state describing one findings claim."""
+
+    phase: str
+    ids: list[str]
+    receipt_ids: dict[str, str | dict[str, str]]
+    has_receipt_ids: bool
+    fixed: set[str]
+    has_fixed: bool
+    claimed: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class HeadSnapshot:
+    """The committed ledger blobs and validation result from one HEAD."""
+
+    findings_text: str | None
+    valid: bool
+    detail: str
+    tasks_dir: Path
+
+
+@dataclass(frozen=True)
+class Reconciliation:
+    """The outcome of classifying a prepared findings claim."""
+
+    absent: list[Path]
+    receipt_names: dict[str, str]
+    fixed: set[str]
+    released: bool
 
 
 _ACTIVE_LEDGER_COMMIT: LedgerCommitIntent | None = None
@@ -1320,12 +1367,21 @@ def _finding_matches_expectation(
 ) -> bool:
     return (
         finding.status == expected.status
-        and finding.area == expected.area
         and finding.root == expected.root
         and finding.entry == expected.entry
         and finding.blocked == expected.blocked
-        and finding.title == expected.title
+        and _finding_identity_preserved(expected, finding)
         and frozenset(finding.governed_by) == expected.governed_by
+    )
+
+
+def _finding_identity_preserved(
+    expected: FindingExpectation, finding: Finding
+) -> bool:
+    """Match the immutable identity of a claimed finding entry."""
+    return (
+        finding.title == expected.title
+        and finding.area == expected.area
         and _ordered_content_preserved(
             tuple(zip(expected.body, expected.body_fenced, strict=True)),
             tuple(zip(finding.body, finding.body_fenced, strict=True)),
@@ -2350,7 +2406,7 @@ def _warn_pending_inbox(inbox: Path) -> None:
     # The completeness flag belongs to the sweep, which reports it; here a
     # dropped part only weakens a duplicate warning that is advisory anyway.
     sources += _enumerate_orphan_parts(inbox)[0]
-    # A REFUSED batch sits in the claim, outside both the ledger and the spool.
+    # A prepared or refused batch sits in the claim, outside both the ledger and the spool.
     # Leaving it out here is the worst of the three: `related` would answer
     # "this looks new" about a finding that is already filed but unmergeable,
     # so the duplicate gets written AND the unresolved refusal stays quiet.
@@ -2387,11 +2443,24 @@ def _warn_pending_inbox(inbox: Path) -> None:
         file=sys.stderr,
     )
     if any(p.parent == claim for p in sources):
-        print(
-            f"NOTE a previously refused batch is unresolved in {claim}; "
-            "merging is blocked until it is fixed.",
-            file=sys.stderr,
-        )
+        try:
+            intent = _read_claim_intent(claim)
+        except LedgerError:
+            intent = None
+        if intent is not None and intent.phase == "prepared":
+            print(
+                f"NOTE a prepared claim at {claim} awaits proof that its ledger "
+                "write is durable; findings.py finalize-claims releases it once "
+                "it is committed, and the next merge replays whatever the commit "
+                "discarded",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"NOTE a previously refused batch is unresolved in {claim}; "
+                "merging is blocked until it is fixed.",
+                file=sys.stderr,
+            )
 
 
 def _split_markdown_row(line: str) -> list[str]:
@@ -4366,7 +4435,11 @@ def _locate_finding_header(text: str, identifier: str) -> tuple[list[str], int]:
 
 
 def claim_spool(
-    spool: Path, claim: Path, legacy: Path | None = None
+    spool: Path,
+    claim: Path,
+    legacy: Path | None = None,
+    *,
+    into_existing: bool = False,
 ) -> list[Path] | None:
     """Take exclusive ownership of a spool's published files, by rename.
 
@@ -4391,7 +4464,7 @@ def claim_spool(
     # batch INTO the claim, so the spool is normally empty afterwards. Testing
     # emptiness first would hide the leftover in exactly the situation it exists
     # to signal.
-    if claim.exists():
+    if claim.exists() and not into_existing:
         return None
 
     published = sorted(spool.glob("*.md"))
@@ -4400,19 +4473,29 @@ def claim_spool(
     if not published:
         return []
 
-    try:
-        os.mkdir(claim)
-    except FileExistsError:
-        # Lost the race between the check above and here. That check is only the
-        # cheap early report; this is the mutex.
-        return None
+    if into_existing:
+        for source in published:
+            destination = claim / source.name
+            if destination.exists():
+                raise LedgerError(
+                    f"cannot claim {source} into {destination}: the destination "
+                    "already exists; the claim and inbox are unchanged"
+                )
 
-    try:
-        _write_claim_intent(claim, "claimed")
-    except OSError:
-        with suppress(OSError):
-            claim.rmdir()
-        raise
+    if not into_existing:
+        try:
+            os.mkdir(claim)
+        except FileExistsError:
+            # Lost the race between the check above and here. That check is only the
+            # cheap early report; this is the mutex.
+            return None
+
+        try:
+            _write_claim_intent(claim, "claimed")
+        except OSError:
+            with suppress(OSError):
+                claim.rmdir()
+            raise
 
     claimed: list[Path] = []
     for source in published:
@@ -4424,7 +4507,7 @@ def claim_spool(
         _remove_consumed_published_twin(spool, source)
         claimed.append(destination)
 
-    if not claimed:
+    if not claimed and not into_existing:
         # Everything vanished under us between the glob and the rename. Drop the
         # claim rather than leaving an empty one: `claim.exists()` means "a batch
         # is sitting outside the queue", and an empty directory asserting that
@@ -4443,12 +4526,15 @@ def _write_claim_intent(
     phase: str,
     ids: set[str] | None = None,
     receipt_ids: dict[str, dict[str, str]] | None = None,
+    fixed: Collection[str] | None = None,
 ) -> None:
     payload: dict[str, object] = {"phase": phase}
     if ids is not None:
         payload["ids"] = sorted(ids)
     if receipt_ids is not None:
         payload["receipt_ids"] = dict(sorted(receipt_ids.items()))
+    if fixed is not None:
+        payload["fixed"] = sorted(fixed)
     intent = _claim_intent_path(claim)
     serialized = json.dumps(payload, sort_keys=True)
     _atomic_write(intent, serialized, durable_directory=True)
@@ -4506,6 +4592,22 @@ def _answer_ids_are_complete(
     return True
 
 
+def _complete_claim(
+    claim: Path,
+    spool: Path,
+    claimed: list[Path],
+    receipt_ids: dict[str, str | dict[str, str]],
+    *,
+    publish_locked: bool,
+) -> None:
+    """Write terminal receipts and release a claim after its entries are proven."""
+    if receipt_ids:
+        _write_merged_receipts(
+            spool, _receipt_records_from_intent(claim, receipt_ids)
+        )
+    release_spool(claim, spool, claimed, publish_locked=publish_locked)
+
+
 def _write_merged_receipts(inbox: Path, records: list[tuple[str, str, str]]) -> None:
     """Record the consumer outcome for each claimed filing."""
     for receipt_name, published, identifier in records:
@@ -4527,12 +4629,18 @@ def _write_merged_receipts(inbox: Path, records: list[tuple[str, str, str]]) -> 
 
 
 def _receipt_records_from_intent(
-    claim: Path, receipt_ids: dict[str, str | dict[str, str]]
+    claim: Path,
+    receipt_ids: dict[str, str | dict[str, str]],
+    *,
+    keys: Collection[str] | None = None,
 ) -> list[tuple[str, str, str]]:
     """Reconstruct merged receipts from the durable claim intent."""
     claimed = sorted(claim.glob("*.md"))
+    selected = set(keys) if keys is not None else set(receipt_ids)
     records: list[tuple[str, str, str]] = []
     for filing_key, receipt in receipt_ids.items():
+        if filing_key not in selected:
+            continue
         if isinstance(receipt, dict):
             receipt_name = receipt.get("receipt", f"{filing_key}.json")
             records.append((receipt_name, receipt["published"], receipt["id"]))
@@ -4578,6 +4686,121 @@ def _receipt_intent_key_is_valid(key: object) -> bool:
     )
 
 
+def _read_claim_intent(
+    claim: Path, *, strict: bool = True
+) -> ClaimIntent | None:
+    """Read one claim intent and preserve whether it uses a legacy shape."""
+    if not claim.exists():
+        return None
+    intent_path = _claim_intent_path(claim)
+    claimed = tuple(sorted(claim.glob("*.md")))
+    if not intent_path.exists():
+        if not claimed:
+            return None
+        raise LedgerError(
+            f"a claim at {claim} has no {MERGE_INTENT_NAME}; it predates durable "
+            "claim recovery. Restore or inspect it before retrying."
+        )
+    try:
+        record = json.loads(intent_path.read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            raise TypeError("expected a JSON object")
+        phase = record["phase"]
+        if phase not in {"claimed", "prepared"}:
+            raise ValueError(f"unknown phase {phase!r}")
+
+        raw_receipts = record.get("receipt_ids")
+        receipt_ids: dict[str, str | dict[str, str]] = {}
+        if raw_receipts is not None:
+            if not isinstance(raw_receipts, dict):
+                raise TypeError("receipt_ids must be an object")
+            for filing_key, receipt in raw_receipts.items():
+                if not _receipt_intent_key_is_valid(filing_key):
+                    raise ValueError("invalid receipt_ids key")
+                if isinstance(receipt, str):
+                    if ID_RE.fullmatch(receipt) is None:
+                        raise ValueError("invalid receipt id")
+                    receipt_ids[filing_key] = receipt
+                    continue
+                if not isinstance(receipt, dict):
+                    raise TypeError("receipt_ids values must be objects")
+                if set(receipt) not in (
+                    {"id", "published"},
+                    {"id", "published", "receipt"},
+                ):
+                    raise ValueError("invalid receipt record")
+                identifier = receipt.get("id")
+                published = receipt.get("published")
+                receipt_name = receipt.get("receipt")
+                if (
+                    not isinstance(identifier, str)
+                    or ID_RE.fullmatch(identifier) is None
+                    or not isinstance(published, str)
+                    or not published
+                    or Path(published).name != published
+                    or (
+                        receipt_name is not None
+                        and (
+                            not isinstance(receipt_name, str)
+                            or not receipt_name.endswith(".json")
+                            or Path(receipt_name).name != receipt_name
+                        )
+                    )
+                ):
+                    raise ValueError("invalid receipt record")
+                receipt_ids[filing_key] = {
+                    "id": identifier,
+                    "published": published,
+                    **({"receipt": receipt_name} if receipt_name is not None else {}),
+                }
+
+        raw_ids = record.get("ids")
+        if raw_ids is None:
+            ids = [
+                receipt["id"] if isinstance(receipt, dict) else receipt
+                for receipt in receipt_ids.values()
+            ]
+        elif not strict:
+            ids = (
+                list(raw_ids)
+                if isinstance(raw_ids, list)
+                and all(isinstance(identifier, str) for identifier in raw_ids)
+                else []
+            )
+        else:
+            if not isinstance(raw_ids, list) or not all(
+                isinstance(identifier, str) and ID_RE.fullmatch(identifier) is not None
+                for identifier in raw_ids
+            ):
+                raise ValueError("invalid ids")
+            ids = list(raw_ids)
+
+        raw_fixed = record.get("fixed")
+        if raw_fixed is None:
+            fixed: set[str] = set()
+        elif not strict:
+            fixed = set()
+        else:
+            if not isinstance(raw_fixed, list) or not all(
+                isinstance(identifier, str)
+                and ID_RE.fullmatch(identifier) is not None
+                for identifier in raw_fixed
+            ):
+                raise ValueError("invalid fixed ids")
+            fixed = set(raw_fixed)
+        return ClaimIntent(
+            phase,
+            ids,
+            receipt_ids,
+            raw_receipts is not None,
+            fixed,
+            raw_fixed is not None,
+            claimed,
+        )
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+        raise LedgerError(f"could not read {intent_path}: {exc}") from exc
+
+
 def _recover_claim(
     claim: Path,
     spool: Path,
@@ -4590,71 +4813,15 @@ def _recover_claim(
     if not claim.exists():
         return
 
-    intent_path = _claim_intent_path(claim)
-    claimed = sorted(claim.glob("*.md"))
-    if not intent_path.exists() and not claimed:
+    intent = _read_claim_intent(claim, strict=False)
+    if intent is None:
         _remove_claim_intent(claim)
         claim.rmdir()
         return
-    if not intent_path.exists():
-        raise LedgerError(
-            f"a claim at {claim} has no {MERGE_INTENT_NAME}; it predates durable "
-            "claim recovery. Restore or inspect it before retrying."
-        )
-    try:
-        record = json.loads(intent_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise LedgerError(f"could not read claim intent {intent_path}: {exc}") from exc
-
-    phase = record.get("phase") if isinstance(record, dict) else None
-    if phase not in {"claimed", "prepared"}:
-        raise LedgerError(
-            f"claim intent {intent_path} has unknown phase {phase!r}; refusing recovery"
-        )
-    if phase == "prepared":
-        ids = record.get("ids") if isinstance(record, dict) else None
-        receipt_ids = record.get("receipt_ids") if isinstance(record, dict) else None
-        if receipt_ids is not None:
-            if not isinstance(receipt_ids, dict) or not all(
-                _receipt_intent_key_is_valid(filing_key)
-                and (
-                    (isinstance(receipt, str) and ID_RE.fullmatch(receipt) is not None)
-                    or (
-                        isinstance(receipt, dict)
-                        and set(receipt)
-                        in (
-                            {"id", "published"},
-                            {"id", "published", "receipt"},
-                        )
-                        and isinstance(receipt.get("id"), str)
-                        and ID_RE.fullmatch(receipt["id"]) is not None
-                        and isinstance(receipt.get("published"), str)
-                        and bool(receipt["published"])
-                        and Path(receipt["published"]).name == receipt["published"]
-                        and (
-                            "receipt" not in receipt
-                            or (
-                                isinstance(receipt["receipt"], str)
-                                and receipt["receipt"].endswith(".json")
-                                and Path(receipt["receipt"]).name == receipt["receipt"]
-                            )
-                        )
-                    )
-                )
-                for filing_key, receipt in receipt_ids.items()
-            ):
-                raise LedgerError(
-                    f"claim intent {intent_path} has an invalid receipt_ids mapping"
-                )
-            ids = [
-                receipt["id"] if isinstance(receipt, dict) else receipt
-                for receipt in receipt_ids.values()
-            ]
-        if (
-            isinstance(ids, list)
-            and ids
-            and all(isinstance(identifier, str) for identifier in ids)
-        ):
+    claimed = list(intent.claimed)
+    if intent.phase == "prepared":
+        ids = intent.ids
+        if ids:
             try:
                 ledger_text = ledger.read_text(encoding="utf-8")
             except (OSError, UnicodeError) as exc:
@@ -4668,11 +4835,13 @@ def _recover_claim(
                     ledger_text, ids, claimed
                 )
             if complete:
-                if receipt_ids is not None:
-                    _write_merged_receipts(
-                        spool, _receipt_records_from_intent(claim, receipt_ids)
-                    )
-                release_spool(claim, spool, claimed, publish_locked=publish_locked)
+                _complete_claim(
+                    claim,
+                    spool,
+                    claimed,
+                    intent.receipt_ids,
+                    publish_locked=publish_locked,
+                )
                 print(
                     f"NOTE completed stranded batch from {claim}; the ledger already "
                     "contains every recorded id",
@@ -4857,17 +5026,694 @@ def _allocate_receipt_path(
     return _receipt_path(inbox, entry_text, filing_token=_unique_suffix())
 
 
-def merge_inbox(inbox: Path, ledger: Path) -> MergeResult:
-    """Run one ledger-locked merge with one nested publication fence."""
+def _resolved_repo_path(path: Path) -> Path:
+    """Resolve a caller path before comparing it with the repository root."""
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise LedgerError(f"could not resolve path {path}: {exc}") from exc
+
+
+def _repo_relative(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def _resolve_head(root: Path) -> str:
+    result = _git_for_ledger(root, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+    if result.returncode != 0:
+        raise LedgerError(f"could not resolve HEAD: {_git_failure_detail(result)}")
+    commit = result.stdout.strip()
+    if not commit:
+        raise LedgerError("could not resolve HEAD: git returned an empty commit id")
+    return commit
+
+
+@contextmanager
+def _head_ledger_snapshot(
+    findings: Path, decisions: Path, *, strict_decisions: bool = True
+) -> Iterator[HeadSnapshot]:
+    """Materialise and validate the findings and decisions blobs in HEAD."""
+    root = cast(Path, REPO_ROOT).resolve()
+    findings = _resolved_repo_path(findings)
+    decisions = _resolved_repo_path(decisions)
+    commit = _resolve_head(root)
+    with tempfile.TemporaryDirectory(prefix="findings-ledger-head-") as directory:
+        tasks = Path(directory) / "tasks"
+        tasks.mkdir()
+        listed: dict[Path, bool] = {}
+        for source in (findings, decisions):
+            relative = _repo_relative(source, root)
+            listed_result = _git_for_ledger(
+                root, "ls-tree", "-r", "--name-only", commit, "--", relative
+            )
+            if listed_result.returncode != 0:
+                raise LedgerError(
+                    f"could not inspect HEAD for {relative}: "
+                    f"{_git_failure_detail(listed_result)}"
+                )
+            listed[source] = relative in listed_result.stdout.splitlines()
+
+        findings_text: str | None = None
+        targets = {
+            findings: tasks / "findings.md",
+            decisions: tasks / "decisions.md",
+        }
+        for source, is_listed in listed.items():
+            if not is_listed:
+                continue
+            relative = _repo_relative(source, root)
+            shown = _git_for_ledger(root, "show", f"{commit}:{relative}")
+            if shown.returncode != 0:
+                if source == decisions and not strict_decisions:
+                    continue
+                raise LedgerError(
+                    f"could not read {commit}:{relative}: "
+                    f"{_git_failure_detail(shown)}"
+                )
+            target = targets[source]
+            target.write_text(shown.stdout, encoding="utf-8")
+            if source == findings:
+                findings_text = shown.stdout
+
+        if not listed[findings]:
+            yield HeadSnapshot(None, False, "findings ledger is not in HEAD", tasks)
+            return
+
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        try:
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                valid = (
+                    cmd_check(
+                        argparse.Namespace(
+                            ledger=tasks / "findings.md",
+                            decisions=tasks / "decisions.md",
+                        )
+                    )
+                    == 0
+                )
+        except (LedgerError, OSError, UnicodeError, ValueError) as exc:
+            valid = False
+            detail = str(exc)
+        else:
+            detail = stderr.getvalue().strip().replace("\n", "; ")
+        if valid:
+            detail = ""
+        elif not detail:
+            detail = "HEAD ledger validation failed"
+        yield HeadSnapshot(findings_text, valid, detail, tasks)
+
+
+def _validate_ledger_paths(findings: Path, decisions: Path) -> tuple[bool, str]:
+    """Validate the working findings/decisions pair through the normal checker."""
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    try:
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            result = cmd_check(
+                argparse.Namespace(ledger=findings, decisions=decisions)
+            )
+    except (LedgerError, OSError, UnicodeError, ValueError) as exc:
+        return False, str(exc)
+    if result == 0:
+        return True, ""
+    detail = stderr.getvalue().strip().replace("\n", "; ")
+    return False, detail or "ledger validation failed"
+
+
+def _validate_candidate_pair(
+    candidate: str, near: Path, decisions: Path
+) -> tuple[bool, str]:
+    """Validate a merged findings candidate against its selected decisions ledger."""
+    try:
+        with _candidate_scratch(candidate, near) as scratch:
+            return _validate_ledger_paths(scratch, decisions)
+    except (LedgerError, OSError, UnicodeError, ValueError) as exc:
+        return False, str(exc)
+
+
+def _candidate_citation_issues(
+    candidate: str, near: Path, decisions: Path
+) -> list[str]:
+    """Check pending entry citations before a file can publish them."""
+    try:
+        with _candidate_scratch(candidate, near) as scratch:
+            _resolved, issues = _citation_resolution(scratch, decisions)
+            return issues
+    except (LedgerError, OSError, UnicodeError, ValueError) as exc:
+        return [str(exc)]
+
+
+def _deferred_preconditions(ledger: Path, decisions: Path) -> None:
+    """Refuse every non-ordinary deferred claim state before mutation."""
+    root = cast(Path, REPO_ROOT).resolve()
+    findings = _resolved_repo_path(ledger)
+    decisions = _resolved_repo_path(decisions)
+    try:
+        _resolve_head(root)
+    except LedgerError as exc:
+        probe = _git_for_ledger(root, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+        if probe.returncode == 1:
+            raise LedgerError(
+                "the findings ledger is tracked but HEAD does not resolve; commit it first"
+            ) from exc
+        raise
+
+    if not decisions.is_relative_to(root):
+        raise LedgerError(
+            f"{decisions} must be a tracked file inside the repository, or absent and "
+            "untracked, while claims are finalised after the commit; commit, restore "
+            "or move it"
+        )
+    relative_decisions = _repo_relative(decisions, root)
+    tracked = _git_for_ledger(
+        root, "ls-files", "--error-unmatch", "--", relative_decisions
+    )
+    if tracked.returncode == 0:
+        if not decisions.exists():
+            raise LedgerError(
+                f"{decisions} must be a tracked file inside the repository, or absent "
+                "and untracked, while claims are finalised after the commit; commit, "
+                "restore or move it"
+            )
+    elif tracked.returncode == 1:
+        if decisions.exists():
+            raise LedgerError(
+                f"{decisions} must be a tracked file inside the repository, or absent "
+                "and untracked, while claims are finalised after the commit; commit, "
+                "restore or move it"
+            )
+    else:
+        raise LedgerError(f"fatal tracked-file probe: {_git_failure_detail(tracked)}")
+
+    with _head_ledger_snapshot(findings, decisions) as snapshot:
+        if snapshot.findings_text is None:
+            raise LedgerError(f"{findings} is not in HEAD; commit it first")
+        if not snapshot.valid:
+            raise LedgerError(
+                f"HEAD does not validate: {snapshot.detail}; repair and commit the "
+                "ledgers first"
+            )
+
+    valid, detail = _validate_ledger_paths(findings, decisions)
+    if not valid:
+        raise LedgerError(
+            f"the working ledgers do not validate: {detail}; repair them first"
+        )
+
+
+def _require_deferred_ledger_tracked(ledger: Path) -> None:
+    """Refuse deferred finalisation if its ledger stopped being commit-backed."""
+    root = cast(Path, REPO_ROOT).resolve()
+    resolved = _resolved_repo_path(ledger)
+    if not resolved.is_relative_to(root):
+        raise LedgerError(
+            f"{resolved} is no longer inside the repository; the deferred claim "
+            "is kept"
+        )
+    relative = _repo_relative(resolved, root)
+    tracked = _git_for_ledger(root, "ls-files", "--error-unmatch", "--", relative)
+    if tracked.returncode == 1:
+        raise LedgerError(
+            f"{resolved} is no longer tracked; the deferred claim is kept"
+        )
+    if tracked.returncode != 0:
+        raise LedgerError(
+            f"fatal tracked-file probe: {_git_failure_detail(tracked)}"
+        )
+
+
+def _claim_finalisation_mode(
+    ledger: Path, *, merge_without_intent: bool
+) -> str:
+    """Choose immediate compatibility or deferred durable claim finalisation."""
+    if (
+        os.environ.get(LEDGER_COMMIT_ENV) == "0"
+        and os.environ.get("FINDINGS_CLAIM_FINALIZE") != "after-commit"
+    ):
+        return "immediate"
+    if merge_without_intent:
+        return "immediate"
+    root = cast(Path, REPO_ROOT).resolve()
+    resolved = _resolved_repo_path(ledger)
+    if not resolved.is_relative_to(root):
+        return "immediate"
+    relative = _repo_relative(resolved, root)
+    tracked = _git_for_ledger(root, "ls-files", "--error-unmatch", "--", relative)
+    if tracked.returncode == 1:
+        return "immediate"
+    if tracked.returncode != 0:
+        raise LedgerError(f"fatal tracked-file probe: {_git_failure_detail(tracked)}")
+    return "deferred"
+
+
+def _claim_entry_expectations(
+    claim: Path, ledger: Path, intent: ClaimIntent
+) -> dict[str, tuple[Path, FindingExpectation]]:
+    """Parse every claimed entry and map it to exactly one intent record."""
+    records_by_file: dict[str, list[str]] = {}
+    for filing_key, record in intent.receipt_ids.items():
+        if not isinstance(record, dict):
+            raise LedgerError(
+                f"claim intent {_claim_intent_path(claim)} predates deferred "
+                "finalisation; finish it with env -u FINDINGS_CLAIM_FINALIZE "
+                "FINDINGS_LEDGER_COMMIT=0 findings.py merge-inbox (today's recovery), "
+                "or inspect it by hand"
+            )
+        records_by_file.setdefault(record["published"], []).append(filing_key)
+
+    ids: set[str] = set()
+    receipts: set[str] = set()
+    for filing_key, record in intent.receipt_ids.items():
+        identifier = record["id"]
+        receipt_name = record.get("receipt", f"{filing_key}.json")
+        if identifier in ids:
+            raise LedgerError(
+                f"claim intent {_claim_intent_path(claim)} records {identifier} twice; "
+                "the claim is kept — inspect it by hand"
+            )
+        if receipt_name in receipts:
+            raise LedgerError(
+                f"claim intent {_claim_intent_path(claim)} records {receipt_name} twice; "
+                "the claim is kept — inspect it by hand"
+            )
+        ids.add(identifier)
+        receipts.add(receipt_name)
+
+    claimed_by_name = {path.name: path for path in intent.claimed}
+    for published, keys in records_by_file.items():
+        if published not in claimed_by_name:
+            raise LedgerError(
+                f"recorded filing {published} is missing from {claim}; the claim is "
+                "kept — if its receipt reads merged and HEAD holds that filing, "
+                "remove the record by hand, otherwise restore the file"
+            )
+
+    result: dict[str, tuple[Path, FindingExpectation]] = {}
+    ledger_text = ledger.read_text(encoding="utf-8")
+    for path in intent.claimed:
+        if path.name not in records_by_file:
+            raise LedgerError(
+                f"{path} is in {claim} but not in its intent; move it back to "
+                f"{claim.parent / claim.name.removesuffix('.claim')} by hand, then retry"
+            )
+        try:
+            merged = _merge_sources([path], ledger)
+            text = merged[0] if merged else ""
+            entries = _receipt_entry_texts(text)
+        except (OSError, UnicodeError, LedgerError) as exc:
+            raise LedgerError(f"could not read {path} while reconciling {claim}: {exc}") from exc
+        expected_keys = [
+            path.name if len(entries) == 1 else f"{path.name}#{index}"
+            for index in range(len(entries))
+        ]
+        actual_keys = sorted(records_by_file.get(path.name, []))
+        if sorted(expected_keys) != actual_keys:
+            raise LedgerError(
+                f"{path} in {claim} holds entries its intent does not record; the "
+                "claim is kept — inspect it by hand"
+            )
+        for filing_key, entry_text in zip(expected_keys, entries, strict=True):
+            record = intent.receipt_ids[filing_key]
+            assert isinstance(record, dict)
+            parsed, problems, vocabulary = _parse_text(
+                _entry_candidate_text(entry_text, ledger_text), ledger
+            )
+            if (
+                len(parsed) != 1
+                or problems
+                or validate(parsed, problems, vocabulary, allow_pending=True)
+            ):
+                raise LedgerError(
+                    f"{path} in {claim} holds entries its intent does not record; the "
+                    "claim is kept — inspect it by hand"
+                )
+            if parsed[0].id not in {PENDING_ID, record["id"]}:
+                raise LedgerError(
+                    f"{path} in {claim} holds entries its intent does not record; "
+                    "the claim is kept — inspect it by hand"
+                )
+            expected = _finding_expectation(parsed[0])
+            if parsed[0].id == PENDING_ID:
+                # The intent is durable before a rewritten claim file. A crash in
+                # that window leaves the placeholder behind with the allocated
+                # id already recorded in the intent.
+                expected = replace(expected, identifier=record["id"])
+            result[filing_key] = (path, expected)
+
+    if set(result) != set(intent.receipt_ids):
+        raise LedgerError(
+            f"{claim} holds entries its intent does not record; the claim is kept — "
+            "inspect it by hand"
+        )
+    return result
+
+
+def _reset_nonfixed_ids(text: str, fixed: Collection[str]) -> str:
+    """Return an adopted filing with provisional allocated ids pending again."""
+    fixed_ids = set(fixed)
+    lines, headers, _orphans = _unfenced_header_matches(text)
+    for _heading_index, index, match in headers:
+        identifier = match.group("id")
+        if identifier != PENDING_ID and identifier not in fixed_ids:
+            lines[index] = lines[index].replace(identifier, PENDING_ID, 1)
+    return "\n".join(lines)
+
+
+def _reconcile_inbox_claim(
+    claim: Path, inbox: Path, ledger: Path, decisions: Path
+) -> Reconciliation:
+    """Classify and, once safe, finalise a prepared findings claim."""
+    intent = _read_claim_intent(claim)
+    if intent is None:
+        return Reconciliation([], {}, set(), False)
+    if intent.phase != "prepared":
+        raise LedgerError(
+            f"claim intent {_claim_intent_path(claim)} has phase {intent.phase!r}; "
+            "the claim is kept — inspect it by hand"
+        )
+    if not intent.has_receipt_ids or not intent.has_fixed or any(
+        not isinstance(record, dict) for record in intent.receipt_ids.values()
+    ):
+        raise LedgerError(
+            f"claim intent {_claim_intent_path(claim)} predates deferred finalisation; "
+            "finish it with env -u FINDINGS_CLAIM_FINALIZE "
+            "FINDINGS_LEDGER_COMMIT=0 findings.py merge-inbox (today's recovery), "
+            "or inspect it by hand"
+        )
+
+    entry_expectations = _claim_entry_expectations(claim, ledger, intent)
+    working_text = ledger.read_text(encoding="utf-8")
+    working_findings, _problems, _vocabulary = _parse_text(working_text, ledger)
+    with _head_ledger_snapshot(ledger, decisions) as snapshot:
+        if snapshot.findings_text is None:
+            raise LedgerError(f"{ledger} is not in HEAD; commit it first")
+        if not snapshot.valid:
+            raise LedgerError(
+                f"HEAD does not validate: {snapshot.detail}; repair and commit the "
+                "ledgers first"
+            )
+        head_findings, _head_problems, _head_vocabulary = _parse_text(
+            snapshot.findings_text, ledger
+        )
+
+    head_by_id = {finding.id: finding for finding in head_findings}
+    working_by_id = {finding.id: finding for finding in working_findings}
+    file_buckets: dict[Path, set[str]] = {}
+    absent: list[Path] = []
+    present_keys: list[str] = []
+    receipt_names: dict[str, str] = {}
+    for filing_key, (path, expected) in entry_expectations.items():
+        head = head_by_id.get(expected.identifier)
+        working = working_by_id.get(expected.identifier)
+        if head is not None:
+            if not _finding_identity_preserved(expected, head):
+                raise LedgerError(
+                    f"entry {expected.identifier} in HEAD is not the claimed filing "
+                    f"{path.name}; the claim is kept — inspect it by hand"
+                )
+            bucket = "present"
+        elif working is not None:
+            if not _finding_identity_preserved(expected, working):
+                raise LedgerError(
+                    f"entry {expected.identifier} in the working ledger is not the "
+                    f"claimed filing {path.name}; the claim is kept — inspect it by hand"
+                )
+            bucket = "waiting"
+        else:
+            bucket = "absent"
+        file_buckets.setdefault(path, set()).add(bucket)
+        if bucket == "present":
+            present_keys.append(filing_key)
+        elif bucket == "absent" and path not in absent:
+            absent.append(path)
+        record = intent.receipt_ids[filing_key]
+        assert isinstance(record, dict)
+        receipt_names[filing_key] = record.get("receipt", f"{filing_key}.json")
+
+    for path, path_buckets in file_buckets.items():
+        if len(path_buckets) > 1:
+            raise LedgerError(
+                f"{path} in {claim} holds entries in different durability states; "
+                "the claim is kept — inspect it by hand"
+            )
+        if "waiting" in path_buckets:
+            decisions_hint = f" [{decisions}]" if decisions.exists() else ""
+            raise LedgerError(
+                f"a merged batch in {claim} is not durable yet (the entries are in "
+                f"the working ledger but not in HEAD); commit it first: git commit -- "
+                f"{ledger}{decisions_hint}"
+            )
+
+    present_paths = [path for path, path_buckets in file_buckets.items() if path_buckets == {"present"}]
+    if present_paths:
+        _write_merged_receipts(
+            inbox,
+            _receipt_records_from_intent(
+                claim, intent.receipt_ids, keys=present_keys
+            ),
+        )
+        remaining = {
+            key: value
+            for key, value in intent.receipt_ids.items()
+            if key not in present_keys
+        }
+        remaining_ids = {
+            value["id"] if isinstance(value, dict) else value
+            for value in remaining.values()
+        }
+        _write_claim_intent(
+            claim,
+            "prepared",
+            remaining_ids,
+            cast(dict[str, dict[str, str]], remaining),
+            fixed=intent.fixed,
+        )
+        for path in present_paths:
+            path.unlink(missing_ok=True)
+
+    remaining_paths = [
+        path for path in intent.claimed if path.exists() and path not in present_paths
+    ]
+    if not remaining_paths:
+        release_spool(claim, inbox, [], publish_locked=True)
+        return Reconciliation(absent, receipt_names, set(intent.fixed), not claim.exists())
+    return Reconciliation(absent, receipt_names, set(intent.fixed), False)
+
+
+def _ledger_bytes_postcondition(
+    findings_bytes: bytes | None, decisions_bytes: bytes | None
+) -> Callable[[Path, Path], bool]:
+    def holds(findings_path: Path, decisions_path: Path) -> bool:
+        try:
+            return (
+                (findings_bytes is None or findings_path.read_bytes() == findings_bytes)
+                and (
+                    decisions_bytes is None
+                    or decisions_path.read_bytes() == decisions_bytes
+                )
+            )
+        except OSError:
+            return False
+
+    return holds
+
+
+def _settle_pending_ledger_dirt(intent: LedgerCommitIntent) -> None:
+    """Commit valid pending ledger dirt before a deferred consumer mutation."""
+    root = cast(Path, REPO_ROOT).resolve()
+    findings = _resolved_repo_path(intent.findings)
+    decisions = _resolved_repo_path(intent.decisions)
+    dirty_paths: list[Path] = []
+    for path in (findings, decisions):
+        if path == decisions and not path.exists():
+            continue
+        relative = _repo_relative(path, root)
+        result = _git_for_ledger(root, "diff", "--quiet", "HEAD", "--", relative)
+        if result.returncode == 0:
+            continue
+        if result.returncode == 1:
+            dirty_paths.append(path)
+            continue
+        raise LedgerError(
+            f"pending ledger dirt could not be inspected ({_git_failure_detail(result)})"
+        )
+    if not dirty_paths:
+        return
+
+    valid, detail = _validate_ledger_paths(findings, decisions)
+    if not valid:
+        raise LedgerError(f"pending ledger dirt does not validate ({detail}); repair it before merging")
+
+    findings_bytes = findings.read_bytes() if findings in dirty_paths else None
+    decisions_bytes = decisions.read_bytes() if decisions in dirty_paths else None
+    primary = findings if findings in dirty_paths else decisions
+    companion = decisions if findings in dirty_paths and decisions in dirty_paths else None
+    settle_intent = LedgerCommitIntent(
+        command=intent.command,
+        ledger=primary,
+        findings=findings,
+        decisions=decisions,
+        subject=f"docs(findings): commit pending ledger dirt before {intent.command}",
+        postcondition=_ledger_bytes_postcondition(findings_bytes, decisions_bytes),
+        replaced=True,
+        written_bytes=findings_bytes if findings_bytes is not None else decisions_bytes,
+        companion=companion,
+        companion_bytes=decisions_bytes if companion is not None else None,
+    )
+    result = _attempt_ledger_commit(settle_intent)
+    if not result.durable:
+        paths = " ".join(str(path) for path in dirty_paths)
+        raise LedgerError(
+            f"pending ledger dirt could not be committed ({result.cause}); check git "
+            f"status and git log, then commit it: git commit -- {paths}"
+        )
+
+
+def _finalize_inbox_claim_locked(
+    claim: Path,
+    inbox: Path,
+    ledger: Path,
+    decisions: Path,
+    mode: str,
+) -> str:
+    if mode == "deferred":
+        _require_deferred_ledger_tracked(ledger)
+    intent = _read_claim_intent(claim, strict=mode == "deferred")
+    if intent is None:
+        if claim.exists():
+            raise LedgerError(
+                f"claim {claim} has no durable intent; remove it by hand before "
+                "finalizing"
+            )
+        return "none"
+    if intent.phase == "claimed":
+        return "replay"
+    if mode == "deferred":
+        reconciliation = _reconcile_inbox_claim(claim, inbox, ledger, decisions)
+        if reconciliation.released:
+            return "finalized"
+        if not reconciliation.absent and not list(claim.glob("*.md")):
+            return "cleanup-failed"
+        return "replay"
+
+    try:
+        ledger_text = ledger.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise LedgerError(f"could not read ledger {ledger} while finalising {claim}: {exc}") from exc
+    if not intent.ids or not all(identifier in header_ids(ledger_text) for identifier in intent.ids):
+        return "replay"
+    _complete_claim(
+        claim,
+        inbox,
+        list(intent.claimed),
+        intent.receipt_ids,
+        publish_locked=True,
+    )
+    if claim.exists():
+        return "cleanup-failed"
+    return "finalized"
+
+
+def _finalize_inbox_claim(
+    claim: Path, inbox: Path, ledger: Path, decisions: Path, mode: str
+) -> str:
+    """Finalise a durable claim while holding the merge lock order."""
     lock = ledger_lock_path(ledger)
-    acquired, waited_seconds = acquire_ledger_lock(lock)
+    try:
+        acquired, waited_seconds = acquire_ledger_lock(lock)
+    except (LedgerError, OSError) as exc:
+        return f"busy: {exc}"
+    if not acquired:
+        return f"busy: ledger lock {lock} remained busy after {waited_seconds:.2f}s"
+    try:
+        with _publish_lock(publish_lock_path(inbox)):
+            return _finalize_inbox_claim_locked(
+                claim, inbox, ledger, decisions, mode
+            )
+    finally:
+        release_ledger_lock(lock)
+
+
+def cmd_finalize_claims(args: argparse.Namespace) -> int:
+    """Release only claims whose entries are proven in HEAD."""
+    claim = args.inbox.with_name(f"{args.inbox.name}.claim")
+    try:
+        mode = _claim_finalisation_mode(args.ledger, merge_without_intent=False)
+        if mode == "deferred":
+            _deferred_preconditions(args.ledger, args.decisions)
+    except LedgerError as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 1
+
+    lock = ledger_lock_path(args.ledger)
+    try:
+        acquired, waited_seconds = acquire_ledger_lock(lock)
+    except (LedgerError, OSError) as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 1
+    if not acquired:
+        return _report_ledger_lock_busy(lock, waited_seconds)
+    try:
+        with _publish_lock(publish_lock_path(args.inbox)):
+            try:
+                outcome = _finalize_inbox_claim_locked(
+                    claim, args.inbox, args.ledger, args.decisions, mode
+                )
+            except LedgerError as exc:
+                print(f"FAIL {exc}", file=sys.stderr)
+                return 1
+    finally:
+        release_ledger_lock(lock)
+
+    if outcome == "none":
+        print(f"none {claim}")
+        return 0
+    if outcome == "finalized":
+        print(f"finalized {claim}")
+        return 0
+    if outcome == "cleanup-failed":
+        print(
+            f"cleanup failed {claim}: remove it by hand once its receipts read merged"
+        )
+        return 1
+    print(f"will be replayed by the next merge {claim}")
+    return 1
+
+
+def merge_inbox(
+    inbox: Path, ledger: Path, *, decisions: Path | None = None
+) -> MergeResult:
+    """Run one ledger-locked merge with one nested publication fence."""
+    decisions = decisions or ledger.parent / "decisions.md"
+    try:
+        mode = _claim_finalisation_mode(
+            ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
+        )
+        if mode == "deferred":
+            _deferred_preconditions(ledger, decisions)
+            intent = _ACTIVE_LEDGER_COMMIT
+            if intent is not None and os.environ.get(LEDGER_COMMIT_ENV) != "0":
+                _settle_pending_ledger_dirt(intent)
+    except LedgerError as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return MergeResult(1)
+
+    lock = ledger_lock_path(ledger)
+    try:
+        acquired, waited_seconds = acquire_ledger_lock(lock)
+    except (LedgerError, OSError) as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return MergeResult(1)
     if not acquired:
         return MergeResult(_report_ledger_lock_busy(lock, waited_seconds))
 
     try:
         with _publish_lock(publish_lock_path(inbox)):
             try:
-                return _merge_inbox_publish_locked(inbox, ledger)
+                return _merge_inbox_publish_locked(
+                    inbox, ledger, decisions=decisions, mode=mode
+                )
             except LedgerError as exc:
                 print(f"FAIL {exc}", file=sys.stderr)
                 return MergeResult(1)
@@ -4875,7 +5721,13 @@ def merge_inbox(inbox: Path, ledger: Path) -> MergeResult:
         release_ledger_lock(lock)
 
 
-def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
+def _merge_inbox_publish_locked(
+    inbox: Path,
+    ledger: Path,
+    *,
+    decisions: Path | None = None,
+    mode: str | None = None,
+) -> MergeResult:
     """Fold anything filed in the inbox into the ledger.
 
     **Each entry is published under a receipt and claimed before it is read.** A
@@ -4898,6 +5750,13 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
     Validation reuses the normal validator on a merged candidate rather than a
     second parser that could drift from the one deciding what gets worked on.
     """
+    decisions = decisions or ledger.parent / "decisions.md"
+    if mode is None:
+        mode = _claim_finalisation_mode(
+            ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
+        )
+        if mode == "deferred":
+            _deferred_preconditions(ledger, decisions)
     legacy = inbox.with_suffix(".md")
     claim = inbox.with_name(f"{inbox.name}.claim")
 
@@ -4905,7 +5764,15 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
     _sweep_scratch(
         inbox, lambda target: _GENERATED_INBOX_PART_RE.fullmatch(target) is not None
     )
-    _recover_claim(claim, inbox, ledger, publish_locked=True)
+    reconciliation: Reconciliation | None = None
+    if mode == "deferred":
+        existing = _read_claim_intent(claim)
+        if existing is not None and existing.phase == "prepared":
+            reconciliation = _reconcile_inbox_claim(claim, inbox, ledger, decisions)
+        elif existing is not None:
+            _recover_claim(claim, inbox, ledger, publish_locked=True)
+    else:
+        _recover_claim(claim, inbox, ledger, publish_locked=True)
     try:
         receipt_index = _receipt_index(inbox, _merge_receipt_digests(inbox, legacy))
     except LedgerError as exc:
@@ -4924,7 +5791,22 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
             file=sys.stderr,
         )
         return MergeResult(1)
-    claimed = claim_spool(inbox, claim, legacy=legacy)
+    if reconciliation is not None and claim.exists():
+        adopted = list(reconciliation.absent)
+        newly_claimed = claim_spool(
+            inbox, claim, legacy=legacy, into_existing=True
+        )
+        if newly_claimed is None:
+            return MergeResult(
+                _report_refused_claim(
+                    claim, batch="", action="merging", stranded="a filed finding"
+                )
+            )
+        claimed = adopted + newly_claimed
+        adopted_paths = set(adopted)
+    else:
+        claimed = claim_spool(inbox, claim, legacy=legacy)
+        adopted_paths = set()
     if claimed is None:
         return MergeResult(
             _report_refused_claim(
@@ -4945,6 +5827,13 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
         raw_sources = [
             claimed_path.read_text(encoding="utf-8") for claimed_path in claimed
         ]
+        if adopted_paths:
+            sources = [
+                _reset_nonfixed_ids(text, reconciliation.fixed)
+                if path in adopted_paths
+                else text
+                for path, text in zip(claimed, sources, strict=True)
+            ]
     except (OSError, UnicodeDecodeError, LedgerError) as exc:
         print(
             f"FAIL could not read {claim} while merging: {exc}. The ledger is "
@@ -4993,6 +5882,11 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
         return MergeResult(1)
     body = "\n\n".join(parts).strip()
     if not body:
+        if mode == "deferred":
+            raise LedgerError(
+                f"{claim} contains no findings; its published filing and receipt "
+                "are preserved for inspection"
+            )
         release_spool(claim, inbox, claimed, publish_locked=True)
         return MergeResult(0)
 
@@ -5020,13 +5914,25 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
             for index, entry_text in enumerate(raw_entries)
         ]
         for entry_index, (entry_text, identifier) in enumerate(entry_records):
-            receipt_path = _allocate_receipt_path(
-                inbox,
-                receipt_index,
-                entry_text,
-                path.name,
-                identifier,
-                allocated_receipt_names,
+            filing_key = (
+                path.name if len(entry_records) == 1 else f"{path.name}#{entry_index}"
+            )
+            reused_receipt = (
+                reconciliation.receipt_names.get(filing_key)
+                if reconciliation is not None
+                else None
+            )
+            receipt_path = (
+                receipt_directory(inbox) / reused_receipt
+                if reused_receipt is not None
+                else _allocate_receipt_path(
+                    inbox,
+                    receipt_index,
+                    entry_text,
+                    path.name,
+                    identifier,
+                    allocated_receipt_names,
+                )
             )
             if receipt_path.name in allocated_receipt_names:
                 raise LedgerError(
@@ -5034,9 +5940,6 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
                     "to more than one claimed entry"
                 )
             allocated_receipt_names.add(receipt_path.name)
-            filing_key = (
-                path.name if len(entry_records) == 1 else f"{path.name}#{entry_index}"
-            )
             receipt = {
                 "id": identifier,
                 "published": path.name,
@@ -5049,11 +5952,18 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
     candidate = ledger_text.rstrip() + section + body + "\n"
 
     try:
+        fixed = None
+        if mode == "deferred":
+            fixed = set(reconciliation.fixed if reconciliation is not None else ())
+            for path, raw in zip(claimed, raw_sources, strict=True):
+                if path not in adopted_paths:
+                    fixed.update(header_ids(raw))
         _write_claim_intent(
             claim,
             "prepared",
             header_ids(body),
             receipt_ids,
+            fixed=fixed,
         )
     except (LedgerError, OSError) as exc:
         print(
@@ -5075,6 +5985,12 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
             return MergeResult(1)
 
     issues = _validate_text(candidate, ledger)
+    if not issues and mode == "deferred":
+        valid_pair, pair_detail = _validate_candidate_pair(
+            candidate, ledger, decisions
+        )
+        if not valid_pair:
+            issues.append(f"merged candidate does not validate: {pair_detail}")
     if issues:
         for issue in issues:
             print(f"FAIL {issue}", file=sys.stderr)
@@ -5127,6 +6043,18 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
         )
         return MergeResult(1)
 
+    if mode == "deferred":
+        active = _ACTIVE_LEDGER_COMMIT
+        if active is not None:
+            active.claim = claim
+            active.finalize = lambda: _finalize_inbox_claim(
+                claim, inbox, ledger, decisions, "deferred"
+            )
+            active.provisional = tuple(assigned)
+        allocation = f": {' '.join(assigned)}" if assigned else ""
+        print(f"merged {merged} finding(s) from the inbox{allocation}")
+        return MergeResult(0, assigned_by_file)
+
     # Receipt finalisation and claim release are one publish transaction. A
     # concurrent `cmd_file` takes this same lock; without it, it can publish
     # after the receipt is written and then rewrite `merged` back to
@@ -5142,7 +6070,7 @@ def _merge_inbox_publish_locked(inbox: Path, ledger: Path) -> MergeResult:
 
 def cmd_merge_inbox(args: argparse.Namespace) -> int:
     """CLI entry point over the shared inbox merge implementation."""
-    return merge_inbox(args.inbox, args.ledger).returncode
+    return merge_inbox(args.inbox, args.ledger, decisions=args.decisions).returncode
 
 
 def _drain_lock_marker_reason(contents: bytes) -> str | None:
@@ -5213,6 +6141,33 @@ def cmd_file(args: argparse.Namespace) -> int:
     assert entry is not None
 
     inbox: Path = args.inbox
+    deferred_preflight = False
+    if not bool(getattr(args, "spool_only", False)):
+        drain_held, _reason, _unreadable = _drain_lock_state(drain_lock_path())
+        if not drain_held:
+            decisions = getattr(args, "decisions", args.ledger.parent / "decisions.md")
+            mode = _claim_finalisation_mode(
+                args.ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
+            )
+            if mode == "deferred":
+                _deferred_preconditions(args.ledger, decisions)
+                deferred_preflight = True
+    if deferred_preflight:
+        citation_issues = _candidate_citation_issues(
+            args.ledger.read_text(encoding="utf-8").rstrip()
+            + "\n\n"
+            + entry
+            + "\n",
+            args.ledger,
+            decisions,
+        )
+        if citation_issues:
+            print(
+                f"FAIL {args.entry} does not validate with {decisions}: "
+                + "; ".join(citation_issues),
+                file=sys.stderr,
+            )
+            return 1
     receipt_path = _receipt_path(inbox, entry)
     claim = inbox.with_name(f"{inbox.name}.claim")
     again = bool(getattr(args, "again", False))
@@ -5432,7 +6387,7 @@ def cmd_file(args: argparse.Namespace) -> int:
                 print(f"WARNING STALE drain lock {lock}: {reason}; proceeding to merge")
 
     try:
-        result = merge_inbox(inbox, args.ledger)
+        result = merge_inbox(inbox, args.ledger, decisions=args.decisions)
     finally:
         if lock_fd is not None:
             with suppress(OSError):
@@ -6853,8 +7808,16 @@ def _git_failure_detail(result: subprocess.CompletedProcess[str]) -> str:
     return detail or f"git exited {result.returncode} without a diagnostic"
 
 
-def _save_ledger_commit_scratch(intent: LedgerCommitIntent) -> Path | None:
-    """Save the published bytes outside the checkout; never gate the commit."""
+def _save_ledger_commit_scratch(
+    intent: LedgerCommitIntent,
+    *,
+    path: Path | None = None,
+    content: bytes | None = None,
+    suffix: str = "",
+) -> Path | None:
+    """Save ledger bytes outside the checkout; never gate the commit."""
+    path = path or intent.ledger
+    content = intent.written_bytes if content is None else content
     try:
         directory = Path(tempfile.gettempdir()).resolve()
         root = cast(Path, REPO_ROOT).resolve()
@@ -6862,11 +7825,11 @@ def _save_ledger_commit_scratch(intent: LedgerCommitIntent) -> Path | None:
             directory = Path("/tmp")
         fd, name = tempfile.mkstemp(
             prefix=f"findings-ledger-{intent.command}-",
-            suffix=f"-{intent.ledger.name}",
+            suffix=f"-{suffix}{path.name}",
             dir=directory,
         )
         with os.fdopen(fd, "wb") as handle:
-            handle.write(intent.written_bytes or b"")
+            handle.write(content or b"")
             handle.flush()
             os.fsync(handle.fileno())
         return Path(name)
@@ -6874,47 +7837,33 @@ def _save_ledger_commit_scratch(intent: LedgerCommitIntent) -> Path | None:
         return None
 
 
+def _discard_scratch(path: Path | None) -> None:
+    if path is not None:
+        with suppress(OSError):
+            path.unlink()
+
+
+def _safe_discard_scratch(path: Path | None) -> None:
+    with suppress(OSError):
+        _discard_scratch(path)
+
+
 def _head_postcondition(intent: LedgerCommitIntent) -> tuple[bool, str]:
     """Validate HEAD and prove this command's semantic postcondition there."""
-    root = cast(Path, REPO_ROOT)
     try:
-        resolved_head = _git_for_ledger(root, "rev-parse", "--verify", "HEAD^{commit}")
-        if resolved_head.returncode != 0:
-            return False, f"could not resolve HEAD: {_git_failure_detail(resolved_head)}"
-        commit = resolved_head.stdout.strip()
-        if not commit:
-            return False, "could not resolve HEAD: git returned an empty commit id"
-        with tempfile.TemporaryDirectory(prefix="findings-ledger-head-") as directory:
-            tasks = Path(directory) / "tasks"
-            tasks.mkdir()
-            for source, target in (
-                (intent.findings, tasks / "findings.md"),
-                (intent.decisions, tasks / "decisions.md"),
-            ):
-                relative = source.relative_to(root).as_posix()
-                shown = _git_for_ledger(root, "show", f"{commit}:{relative}")
-                if shown.returncode == 0:
-                    target.write_text(shown.stdout, encoding="utf-8")
-                elif source == intent.ledger or source == intent.findings:
-                    return False, (
-                        f"could not read {commit}:{relative}: "
-                        f"{_git_failure_detail(shown)}"
-                    )
-            stderr = io.StringIO()
-            stdout = io.StringIO()
-            with redirect_stdout(stdout), redirect_stderr(stderr):
-                valid = cmd_check(
-                    argparse.Namespace(
-                        ledger=tasks / "findings.md",
-                        decisions=tasks / "decisions.md",
-                    )
-                )
-            if valid != 0:
-                detail = stderr.getvalue().strip().replace("\n", "; ")
-                return False, f"HEAD ledger validation failed: {detail}"
+        with _head_ledger_snapshot(
+            intent.findings, intent.decisions, strict_decisions=False
+        ) as snapshot:
+            if snapshot.findings_text is None:
+                return False, "the findings ledger is not in HEAD"
+            if not snapshot.valid:
+                return False, f"HEAD ledger validation failed: {snapshot.detail}"
             if intent.postcondition is None:
                 return False, "no semantic postcondition was registered"
-            if not intent.postcondition(tasks / "findings.md", tasks / "decisions.md"):
+            if not intent.postcondition(
+                snapshot.tasks_dir / "findings.md",
+                snapshot.tasks_dir / "decisions.md",
+            ):
                 return False, "the command's write is not in HEAD"
             return True, ""
     except (LedgerError, OSError, UnicodeError, ValueError) as exc:
@@ -6922,10 +7871,26 @@ def _head_postcondition(intent: LedgerCommitIntent) -> tuple[bool, str]:
 
 
 def _warn_ledger_commit(
-    intent: LedgerCommitIntent, cause: str, scratch: Path | None
+    intent: LedgerCommitIntent,
+    cause: str,
+    scratch: Path | None,
+    companion_scratch: Path | None = None,
 ) -> None:
     identifiers = " ".join(intent.identifiers) or "(unknown ids)"
     recovery = f"; written bytes: {scratch}" if scratch is not None else ""
+    if companion_scratch is not None:
+        recovery += f"; companion bytes: {companion_scratch}"
+    if intent.claim is not None:
+        recovery += (
+            f"; the claim at {intent.claim} keeps the batch for the next merge "
+            "or finalize-claims"
+        )
+    if intent.provisional:
+        recovery += (
+            "; the id(s) "
+            + " ".join(intent.provisional)
+            + " printed above are provisional — a replay re-mints any that were used meanwhile"
+        )
     print(
         f"WARNING ledger commit for {intent.ledger} after {intent.command} "
         f"({identifiers}) did not preserve the write in HEAD: {cause}{recovery}",
@@ -6934,64 +7899,69 @@ def _warn_ledger_commit(
 
 
 def _validate_worktree_for_commit(intent: LedgerCommitIntent) -> tuple[bool, str]:
-    stdout = io.StringIO()
-    stderr = io.StringIO()
-    try:
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            result = cmd_check(
-                argparse.Namespace(ledger=intent.findings, decisions=intent.decisions)
-            )
-    except (LedgerError, OSError, UnicodeError) as exc:
-        return False, str(exc)
-    if result == 0:
-        return True, ""
-    detail = stderr.getvalue().strip().replace("\n", "; ")
-    return False, detail or "ledger validation failed"
+    return _validate_ledger_paths(intent.findings, intent.decisions)
 
 
-def _attempt_ledger_commit(intent: LedgerCommitIntent) -> None:
+def _attempt_ledger_commit(intent: LedgerCommitIntent) -> LedgerCommitResult:
     """Best-effort isolated commit that can never change command status."""
     if not intent.replaced or os.environ.get(LEDGER_COMMIT_ENV) == "0":
-        return
+        return LedgerCommitResult(False)
     scratch = _save_ledger_commit_scratch(intent)
-    try:
-        root = cast(Path, REPO_ROOT)
-        relative = intent.ledger.relative_to(root).as_posix()
-        tracked = _git_for_ledger(root, "ls-files", "--error-unmatch", "--", relative)
-        if tracked.returncode == 1:
-            if scratch is not None:
-                scratch.unlink(missing_ok=True)
-            return
-        if tracked.returncode != 0:
-            _warn_ledger_commit(
-                intent,
-                f"fatal tracked-file probe: {_git_failure_detail(tracked)}",
-                scratch,
-            )
-            return
+    companion_scratch = (
+        _save_ledger_commit_scratch(
+            intent,
+            path=intent.companion,
+            content=intent.companion_bytes,
+            suffix="companion-",
+        )
+        if intent.companion is not None
+        else None
+    )
 
-        dirty = _git_for_ledger(root, "diff", "--quiet", "HEAD", "--", relative)
+    def failed(cause: str) -> LedgerCommitResult:
+        _warn_ledger_commit(intent, cause, scratch, companion_scratch)
+        return LedgerCommitResult(False, cause)
+
+    try:
+        root = cast(Path, REPO_ROOT).resolve()
+        paths = [intent.ledger]
+        if intent.companion is not None:
+            paths.append(intent.companion)
+        relatives = [_repo_relative(_resolved_repo_path(path), root) for path in paths]
+        tracked = _git_for_ledger(root, "ls-files", "--error-unmatch", "--", relatives[0])
+        if tracked.returncode == 1:
+            _safe_discard_scratch(scratch)
+            _safe_discard_scratch(companion_scratch)
+            return LedgerCommitResult(True)
+        if tracked.returncode != 0:
+            return failed(f"fatal tracked-file probe: {_git_failure_detail(tracked)}")
+        if intent.companion is not None:
+            companion_tracked = _git_for_ledger(
+                root, "ls-files", "--error-unmatch", "--", relatives[1]
+            )
+            if companion_tracked.returncode != 0:
+                if companion_tracked.returncode == 1:
+                    return failed(
+                        f"companion ledger is untracked: {relatives[1]}"
+                    )
+                return failed(
+                    f"fatal tracked-file probe: {_git_failure_detail(companion_tracked)}"
+                )
+
+        dirty = _git_for_ledger(root, "diff", "--quiet", "HEAD", "--", *relatives)
         if dirty.returncode == 0:
             holds, detail = _head_postcondition(intent)
             if not holds:
-                _warn_ledger_commit(intent, detail, scratch)
-            elif scratch is not None:
-                scratch.unlink(missing_ok=True)
-            return
+                return failed(detail)
+            _safe_discard_scratch(scratch)
+            _safe_discard_scratch(companion_scratch)
+            return LedgerCommitResult(True)
         if dirty.returncode != 1:
-            _warn_ledger_commit(
-                intent,
-                f"fatal HEAD dirtiness probe: {_git_failure_detail(dirty)}",
-                scratch,
-            )
-            return
+            return failed(f"fatal HEAD dirtiness probe: {_git_failure_detail(dirty)}")
 
         valid, validation_detail = _validate_worktree_for_commit(intent)
         if not valid:
-            _warn_ledger_commit(
-                intent, f"ledger validation refused the commit: {validation_detail}", scratch
-            )
-            return
+            return failed(f"ledger validation refused the commit: {validation_detail}")
 
         committed = subprocess.CompletedProcess[str]([], 1, "", "commit not attempted")
         for attempt in range(2):
@@ -7002,7 +7972,7 @@ def _attempt_ledger_commit(intent: LedgerCommitIntent) -> None:
                 "-F",
                 "-",
                 "--",
-                relative,
+                *relatives,
                 stdin=intent.subject + "\n",
             )
             if committed.returncode == 0:
@@ -7011,33 +7981,31 @@ def _attempt_ledger_commit(intent: LedgerCommitIntent) -> None:
                 break
             time.sleep(LEDGER_COMMIT_RETRY_SECONDS)
         if committed.returncode != 0:
-            reprobe = _git_for_ledger(root, "diff", "--quiet", "HEAD", "--", relative)
+            reprobe = _git_for_ledger(
+                root, "diff", "--quiet", "HEAD", "--", *relatives
+            )
             if reprobe.returncode == 0:
                 holds, detail = _head_postcondition(intent)
                 if holds:
-                    if scratch is not None:
-                        scratch.unlink(missing_ok=True)
-                    return
-                _warn_ledger_commit(
-                    intent,
-                    f"{detail}; git commit reported: {_git_failure_detail(committed)}",
-                    scratch,
+                    _safe_discard_scratch(scratch)
+                    _safe_discard_scratch(companion_scratch)
+                    return LedgerCommitResult(True)
+                return failed(
+                    f"{detail}; git commit reported: {_git_failure_detail(committed)}"
                 )
-                return
             cause = _git_failure_detail(committed)
             if reprobe.returncode not in {0, 1}:
                 cause += f"; fatal post-commit probe: {_git_failure_detail(reprobe)}"
-            _warn_ledger_commit(intent, f"git commit failed: {cause}", scratch)
-            return
+            return failed(f"git commit failed: {cause}")
 
         holds, detail = _head_postcondition(intent)
         if not holds:
-            _warn_ledger_commit(intent, detail, scratch)
-            return
-        if scratch is not None:
-            scratch.unlink(missing_ok=True)
+            return failed(detail)
+        _safe_discard_scratch(scratch)
+        _safe_discard_scratch(companion_scratch)
+        return LedgerCommitResult(True)
     except (LedgerError, OSError, UnicodeError, ValueError) as exc:
-        _warn_ledger_commit(intent, f"commit helper failed: {exc}", scratch)
+        return failed(f"commit helper failed: {exc}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -7105,6 +8073,12 @@ def main(argv: list[str] | None = None) -> int:
     p_merge = sub.add_parser("merge-inbox", help="fold the inbox into the ledger")
     p_merge.add_argument("--inbox", type=Path, default=None, help=argparse.SUPPRESS)
     p_merge.set_defaults(func=cmd_merge_inbox)
+
+    p_finalize = sub.add_parser(
+        "finalize-claims", help="release prepared claims proven durable in HEAD"
+    )
+    p_finalize.add_argument("--inbox", type=Path, default=None, help=argparse.SUPPRESS)
+    p_finalize.set_defaults(func=cmd_finalize_claims)
 
     p_dec = sub.add_parser(
         "decisions", help="print Felix-facing blockers waiting on Felix"
@@ -7207,7 +8181,27 @@ def main(argv: list[str] | None = None) -> int:
         _ACTIVE_LEDGER_COMMIT = None
         if intent is not None:
             try:
-                _attempt_ledger_commit(intent)
+                commit_result = _attempt_ledger_commit(intent)
+                if (
+                    commit_result.durable
+                    and intent.finalize is not None
+                ):
+                    try:
+                        finalization = intent.finalize()
+                    except Exception as exc:  # noqa: BLE001
+                        finalization = f"exception: {exc}"
+                    if finalization not in {"finalized", "none"}:
+                        claim = _resolved_repo_path(intent.claim) if intent.claim else "(unknown claim)"
+                        ledger = _resolved_repo_path(intent.ledger)
+                        decisions = _resolved_repo_path(intent.decisions)
+                        inbox = claim.parent / intent.claim.name.removesuffix(".claim") if intent.claim else "(unknown inbox)"
+                        print(
+                            f"WARNING the ledger write for {ledger} after {intent.command} "
+                            f"is durable, but the claim at {claim} was not finalised: "
+                            f"{finalization}; run findings.py --ledger {ledger} "
+                            f"--decisions {decisions} finalize-claims --inbox {inbox}",
+                            file=sys.stderr,
+                        )
             except Exception as exc:  # noqa: BLE001
                 # This is the final status-transparency boundary: arbitrary
                 # consumer hooks and diagnostics must never replace the command's
