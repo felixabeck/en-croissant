@@ -261,9 +261,31 @@ impl UciIo for RecordingUciIo {
     }
 }
 
+struct ResumableLineReader<R> {
+    reader: R,
+    pending_line: Vec<u8>,
+}
+
+impl<R: AsyncBufRead + Unpin> ResumableLineReader<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            pending_line: Vec::new(),
+        }
+    }
+
+    async fn read_line(&mut self) -> Result<Option<String>, Error> {
+        read_bounded_engine_line(&mut self.reader, &mut self.pending_line).await
+    }
+
+    async fn discard_line_remainder(&mut self) -> std::io::Result<()> {
+        discard_engine_line_remainder(&mut self.reader).await
+    }
+}
+
 struct ChildUciIo {
     control: Option<ProcessChildControl>,
-    reader: BufReader<ChildStdout>,
+    line_reader: ResumableLineReader<BufReader<ChildStdout>>,
     // Keep the validated descriptor open for the complete child lifetime.
     // Linux executes `/proc/self/fd/N`, so dropping it would invalidate the
     // sealed command target after process creation.
@@ -514,16 +536,22 @@ async fn cleanup_spawn_io_failure(
 
 async fn read_bounded_engine_line<R: AsyncBufRead + Unpin>(
     reader: &mut R,
+    pending_line: &mut Vec<u8>,
 ) -> Result<Option<String>, Error> {
-    let mut line = Vec::new();
     loop {
         let (take, ended) = {
-            let available = reader.fill_buf().await?;
+            let available = match reader.fill_buf().await {
+                Ok(available) => available,
+                Err(error) => {
+                    pending_line.clear();
+                    return Err(error.into());
+                }
+            };
             if available.is_empty() {
-                return if line.is_empty() {
+                return if pending_line.is_empty() {
                     Ok(None)
                 } else {
-                    String::from_utf8(line)
+                    String::from_utf8(std::mem::take(pending_line))
                         .map(Some)
                         .map_err(|_| Error::InvalidInput("engine emitted non-UTF-8 output".into()))
                 };
@@ -534,25 +562,26 @@ async fn read_bounded_engine_line<R: AsyncBufRead + Unpin>(
                 .position(|byte| *byte == b'\n')
                 .map(|index| index + 1)
                 .unwrap_or(available.len());
-            if line.len().saturating_add(take) > MAX_ENGINE_LINE_BYTES {
+            if pending_line.len().saturating_add(take) > MAX_ENGINE_LINE_BYTES {
                 // The caller treats this as a protocol failure and terminates
                 // the child; do not consume an unbounded remainder first.
+                pending_line.clear();
                 return Err(Error::ResourceLimit(format!(
                     "engine emitted a line larger than {MAX_ENGINE_LINE_BYTES} bytes"
                 )));
             }
-            line.extend_from_slice(&available[..take]);
+            pending_line.extend_from_slice(&available[..take]);
             (take, available[take - 1] == b'\n')
         };
         reader.consume(take);
         if ended {
-            if line.last() == Some(&b'\n') {
-                line.pop();
+            if pending_line.last() == Some(&b'\n') {
+                pending_line.pop();
             }
-            if line.last() == Some(&b'\r') {
-                line.pop();
+            if pending_line.last() == Some(&b'\r') {
+                pending_line.pop();
             }
-            return String::from_utf8(line)
+            return String::from_utf8(std::mem::take(pending_line))
                 .map(Some)
                 .map_err(|_| Error::InvalidInput("engine emitted non-UTF-8 output".into()));
         }
@@ -580,11 +609,11 @@ async fn discard_engine_line_remainder<R: AsyncBufRead + Unpin>(
     }
 }
 
-async fn drain_engine_stderr<R: AsyncBufRead + Unpin>(reader: &mut R) {
+async fn drain_engine_stderr<R: AsyncBufRead + Unpin>(reader: &mut ResumableLineReader<R>) {
     let mut total = 0usize;
     let mut truncated = false;
     loop {
-        match read_bounded_engine_line(reader).await {
+        match reader.read_line().await {
             Ok(Some(line)) => {
                 let next_total = total.saturating_add(line.len());
                 if next_total > MAX_ENGINE_STDERR_BYTES {
@@ -603,7 +632,7 @@ async fn drain_engine_stderr<R: AsyncBufRead + Unpin>(reader: &mut R) {
             }
             Err(Error::ResourceLimit(reason)) => {
                 error!("Engine stderr discarded oversized line: {reason}");
-                if let Err(error) = discard_engine_line_remainder(reader).await {
+                if let Err(error) = reader.discard_line_remainder().await {
                     error!("Engine stderr drain ended while discarding oversized line: {error}");
                     return;
                 }
@@ -651,7 +680,7 @@ impl UciIo for ChildUciIo {
     }
 
     async fn read_line(&mut self) -> Result<Option<String>, Error> {
-        read_bounded_engine_line(&mut self.reader).await
+        self.line_reader.read_line().await
     }
 
     async fn terminate(
@@ -2112,7 +2141,7 @@ impl EngineRuntime {
         };
         let stderr_drain_task = child.stderr.take().map(|stderr| {
             tokio::spawn(async move {
-                let mut reader = BufReader::new(stderr);
+                let mut reader = ResumableLineReader::new(BufReader::new(stderr));
                 drain_engine_stderr(&mut reader).await;
             })
         });
@@ -2126,7 +2155,7 @@ impl EngineRuntime {
                     #[cfg(all(test, unix))]
                     force_kill_started: false,
                 }),
-                reader: BufReader::new(stdout),
+                line_reader: ResumableLineReader::new(BufReader::new(stdout)),
                 _executable: executable,
             }),
             deadlines,
@@ -2641,10 +2670,17 @@ impl EngineActor {
             self.stop_current().await?;
             return Err(Error::AnalysisCancelled);
         }
+        let next_line = self.next_search_line(id);
+        tokio::pin!(next_line);
+        let mut cancellation_poll = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_millis(25),
+            Duration::from_millis(25),
+        );
+        cancellation_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
-                result = self.next_search_line(id) => return result,
-                _ = tokio::time::sleep(Duration::from_millis(25)) => {
+                result = &mut next_line => return result,
+                _ = cancellation_poll.tick() => {
                     if cancelled.load(Ordering::SeqCst) {
                         self.stop_current().await?;
                         return Err(Error::AnalysisCancelled);
@@ -2841,14 +2877,14 @@ std::thread_local! {
 type SpawnChildObserver = Box<dyn FnOnce(Option<u32>) + Send>;
 
 #[cfg(all(test, unix))]
-struct SpawnChildObservation {
+struct SpawnChildObserverGuard {
     command_target: std::path::PathBuf,
-    observer: SpawnChildObserver,
 }
 
 #[cfg(all(test, unix))]
-static SPAWN_CHILD_OBSERVER: std::sync::OnceLock<std::sync::Mutex<Option<SpawnChildObservation>>> =
-    std::sync::OnceLock::new();
+static SPAWN_CHILD_OBSERVERS: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<std::path::PathBuf, SpawnChildObserver>>,
+> = std::sync::OnceLock::new();
 
 #[cfg(all(test, unix))]
 fn set_spawn_io_failure(failure: Option<SpawnIoFailure>) {
@@ -2862,33 +2898,35 @@ fn take_spawn_io_failure() -> Option<SpawnIoFailure> {
 
 #[cfg(all(test, unix))]
 fn set_spawn_child_observer(
-    command_target: Option<std::path::PathBuf>,
-    observer: Option<SpawnChildObserver>,
-) {
-    *SPAWN_CHILD_OBSERVER
-        .get_or_init(|| std::sync::Mutex::new(None))
+    command_target: std::path::PathBuf,
+    observer: SpawnChildObserver,
+) -> SpawnChildObserverGuard {
+    let mut observers = SPAWN_CHILD_OBSERVERS
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
         .lock()
-        .unwrap() = command_target
-        .zip(observer)
-        .map(|(command_target, observer)| SpawnChildObservation {
-            command_target,
-            observer,
-        });
+        .unwrap();
+    observers.insert(command_target.clone(), observer);
+    SpawnChildObserverGuard { command_target }
+}
+
+#[cfg(all(test, unix))]
+impl Drop for SpawnChildObserverGuard {
+    fn drop(&mut self) {
+        SPAWN_CHILD_OBSERVERS
+            .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .remove(&self.command_target);
+    }
 }
 
 #[cfg(all(test, unix))]
 fn observe_spawned_child(child: &Child, command_target: &std::path::Path) {
-    let mut registration = SPAWN_CHILD_OBSERVER
-        .get_or_init(|| std::sync::Mutex::new(None))
+    let observer = SPAWN_CHILD_OBSERVERS
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
         .lock()
-        .unwrap();
-    let observer = registration
-        .as_ref()
-        .filter(|observation| observation.command_target == command_target)
-        .is_some()
-        .then(|| registration.take())
-        .flatten()
-        .map(|observation| observation.observer);
+        .unwrap()
+        .remove(command_target);
     if let Some(observer) = observer {
         observer(child.id());
     }
@@ -3059,7 +3097,7 @@ async fn stop_at_protocol_boundary(runtime: &mut EngineRuntime) -> Result<(), Er
 async fn service_search_read(
     runtime: &mut EngineRuntime,
     id: EngineRequestId,
-    reply: oneshot::Sender<Result<Option<String>, Error>>,
+    mut reply: oneshot::Sender<Result<Option<String>, Error>>,
     rx: &mut mpsc::Receiver<EngineCommand>,
     control_rx: &mut mpsc::Receiver<EngineCommand>,
 ) -> bool {
@@ -3072,7 +3110,8 @@ async fn service_search_read(
     loop {
         tokio::select! {
             biased;
-            control = control_rx.recv() => if let Some(control) = control { match control {
+            control = control_rx.recv() => match control {
+                Some(control) => match control {
                     EngineCommand::Terminate(control_reply) => {
                         let result = runtime.terminate().await;
                         let _ = control_reply.send(result);
@@ -3094,7 +3133,16 @@ async fn service_search_read(
                         let _ = control_reply.send(runtime.logs.entries());
                     }
                     other => reject_command_during_search(other),
-                } },
+                },
+                None => {
+                    let _ = runtime.terminate().await;
+                    let _ = reply.send(Err(Error::EngineDisconnected));
+                    return false;
+                }
+            },
+            _ = reply.closed() => {
+                return true;
+            }
             result = timeout(runtime.deadlines.search, runtime.read_line()) => {
                 let result = match result {
                     Ok(Ok(Some(line))) => {
@@ -3187,7 +3235,10 @@ mod tests {
             Arc,
         },
     };
-    use tokio::{io::AsyncBufReadExt, sync::Mutex};
+    use tokio::{
+        io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, ReadBuf},
+        sync::Mutex,
+    };
 
     /// A real child process, spawned exactly the way production spawns an engine,
     /// must read the authorized executable/resource pinned for this launch — not whatever
@@ -3276,6 +3327,74 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn child_uci_io_preserves_a_partial_line_across_a_dropped_runtime_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("partial-line-engine.sh");
+        let marker = directory.path().join("partial-ready");
+        let release = directory.path().join("release");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nwhile IFS= read -r line; do case \"$line\" in go*) printf 'partial '; : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; printf 'line\\n';; quit) exit 0;; esac; done\n",
+                marker.display(),
+                release.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = EngineExecutable::test_fixture(
+            std::fs::File::open(&script).unwrap(),
+            directory.path().to_path_buf(),
+            Vec::new(),
+        );
+        let mut runtime = EngineRuntime::spawn(executable, EngineDeadlines::default())
+            .await
+            .unwrap();
+        if let Err(error) = runtime.start_search(&GoMode::Depth(1)).await {
+            let _ = runtime.terminate().await;
+            panic!("partial-line engine search failed to start: {error}");
+        }
+
+        let outcome = async {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !marker.exists() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|_| "the child did not publish its partial-line marker".to_owned())?;
+
+            let completed_before_release = {
+                let read = runtime.read_line();
+                tokio::pin!(read);
+                tokio::time::timeout(Duration::from_millis(200), &mut read)
+                    .await
+                    .is_ok()
+            };
+            if completed_before_release {
+                return Err("the first runtime read completed before release".to_owned());
+            }
+            std::fs::write(&release, b"release\n")
+                .map_err(|error| format!("failed to release the child: {error}"))?;
+            let line = tokio::time::timeout(Duration::from_secs(1), runtime.read_line())
+                .await
+                .map_err(|_| "the resumed runtime read timed out".to_owned())?
+                .map_err(|error| format!("the resumed runtime read failed: {error}"))?;
+            if line.as_deref() != Some("partial line") {
+                return Err(format!("unexpected resumed line: {line:?}"));
+            }
+            Ok::<(), String>(())
+        }
+        .await;
+        let termination = runtime.terminate().await;
+        assert!(termination.is_ok(), "partial-line child must be reaped");
+        outcome.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn spawned_engine_reads_a_directory_resource_through_the_authorized_value() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -3344,6 +3463,11 @@ mod tests {
         actor.terminate().await.unwrap();
     }
 
+    struct ReadObservation {
+        started: Option<Arc<AtomicBool>>,
+        attempts: Option<Arc<AtomicUsize>>,
+    }
+
     struct FakeIo {
         writes: Arc<Mutex<Vec<String>>>,
         lines: VecDeque<Option<String>>,
@@ -3351,6 +3475,7 @@ mod tests {
         fail_write: bool,
         fail_stop: bool,
         read_delay: Option<Duration>,
+        read_observation: Option<ReadObservation>,
         terminate_delay: Option<Duration>,
     }
     type RecordedWrites = Arc<Mutex<Vec<String>>>;
@@ -3367,6 +3492,14 @@ mod tests {
             Ok(())
         }
         async fn read_line(&mut self) -> Result<Option<String>, Error> {
+            if let Some(observation) = &self.read_observation {
+                if let Some(started) = &observation.started {
+                    started.store(true, AtomicOrdering::SeqCst);
+                }
+                if let Some(attempts) = &observation.attempts {
+                    attempts.fetch_add(1, AtomicOrdering::SeqCst);
+                }
+            }
             if let Some(delay) = self.read_delay.take() {
                 tokio::time::sleep(delay).await;
             }
@@ -3517,10 +3650,14 @@ mod tests {
         actor_with(lines, false, None).0
     }
 
-    fn actor_with(
+    fn fake_actor_with_config(
         lines: &[&str],
         fail_write: bool,
+        fail_stop: bool,
         read_delay: Option<Duration>,
+        read_observation: Option<ReadObservation>,
+        terminate_delay: Option<Duration>,
+        deadlines: EngineDeadlines,
     ) -> FakeActorWithTermination {
         let writes = Arc::new(Mutex::new(Vec::new()));
         let terminate_calls = Arc::new(AtomicUsize::new(0));
@@ -3529,14 +3666,10 @@ mod tests {
             lines: lines.iter().map(|line| Some((*line).into())).collect(),
             terminate_calls: terminate_calls.clone(),
             fail_write,
-            fail_stop: false,
+            fail_stop,
             read_delay,
-            terminate_delay: None,
-        };
-        let deadlines = EngineDeadlines {
-            search: Duration::from_millis(20),
-            stop: Duration::from_millis(20),
-            ..EngineDeadlines::default()
+            read_observation,
+            terminate_delay,
         };
         (
             (EngineActor::new(Box::new(io), deadlines), writes),
@@ -3544,45 +3677,101 @@ mod tests {
         )
     }
 
-    fn actor_with_terminate_delay(delay: Duration) -> FakeActorWithTermination {
-        let writes = Arc::new(Mutex::new(Vec::new()));
-        let terminate_calls = Arc::new(AtomicUsize::new(0));
-        let io = FakeIo {
-            writes: writes.clone(),
-            lines: VecDeque::new(),
-            terminate_calls: terminate_calls.clone(),
-            fail_write: false,
-            fail_stop: false,
-            read_delay: None,
-            terminate_delay: Some(delay),
+    fn actor_with(
+        lines: &[&str],
+        fail_write: bool,
+        read_delay: Option<Duration>,
+    ) -> FakeActorWithTermination {
+        let deadlines = EngineDeadlines {
+            search: Duration::from_millis(20),
+            stop: Duration::from_millis(20),
+            ..EngineDeadlines::default()
         };
-        (
-            (
-                EngineActor::new(Box::new(io), EngineDeadlines::default()),
-                writes,
-            ),
-            terminate_calls,
+        fake_actor_with_config(lines, fail_write, false, read_delay, None, None, deadlines)
+    }
+
+    fn delayed_search_actor(
+        lines: &[&str],
+        read_delay: Duration,
+        read_started: Option<Arc<AtomicBool>>,
+    ) -> FakeActor {
+        delayed_search_actor_with_attempts(lines, read_delay, read_started, None)
+    }
+
+    fn delayed_search_actor_with_attempts(
+        lines: &[&str],
+        read_delay: Duration,
+        read_started: Option<Arc<AtomicBool>>,
+        read_attempts: Option<Arc<AtomicUsize>>,
+    ) -> FakeActor {
+        let deadlines = EngineDeadlines {
+            search: Duration::from_millis(500),
+            stop: Duration::from_millis(500),
+            ..EngineDeadlines::default()
+        };
+        fake_actor_with_config(
+            lines,
+            false,
+            false,
+            Some(read_delay),
+            read_observation(read_started, read_attempts),
+            None,
+            deadlines,
+        )
+        .0
+    }
+
+    fn read_observation(
+        started: Option<Arc<AtomicBool>>,
+        attempts: Option<Arc<AtomicUsize>>,
+    ) -> Option<ReadObservation> {
+        if started.is_none() && attempts.is_none() {
+            None
+        } else {
+            Some(ReadObservation { started, attempts })
+        }
+    }
+
+    fn actor_with_terminate_delay(delay: Duration) -> FakeActorWithTermination {
+        fake_actor_with_config(
+            &[],
+            false,
+            false,
+            None,
+            None,
+            Some(delay),
+            EngineDeadlines::default(),
         )
     }
 
     fn actor_with_stop_failure(lines: &[&str]) -> FakeActorWithTermination {
-        let writes = Arc::new(Mutex::new(Vec::new()));
-        let terminate_calls = Arc::new(AtomicUsize::new(0));
-        let io = FakeIo {
-            writes: writes.clone(),
-            lines: lines.iter().map(|line| Some((*line).into())).collect(),
-            terminate_calls: terminate_calls.clone(),
-            fail_write: false,
-            fail_stop: true,
-            read_delay: None,
-            terminate_delay: None,
-        };
-        (
-            (
-                EngineActor::new(Box::new(io), EngineDeadlines::default()),
-                writes,
-            ),
-            terminate_calls,
+        fake_actor_with_config(
+            lines,
+            false,
+            true,
+            None,
+            None,
+            None,
+            EngineDeadlines::default(),
+        )
+    }
+
+    fn actor_with_stop_failure_and_pending_read(
+        read_delay: Duration,
+        read_started: Option<Arc<AtomicBool>>,
+    ) -> FakeActorWithTermination {
+        fake_actor_with_config(
+            &["bestmove e2e4"],
+            false,
+            true,
+            Some(read_delay),
+            read_observation(read_started, None),
+            None,
+            EngineDeadlines {
+                search: Duration::from_millis(500),
+                stop: Duration::from_millis(500),
+                ..EngineDeadlines::default()
+            },
         )
     }
 
@@ -4010,6 +4199,394 @@ mod tests {
             Err(Error::AnalysisCancelled)
         ));
         assert_eq!(*writes.lock().await, vec!["go depth 1", "stop"]);
+    }
+
+    #[tokio::test]
+    async fn cancellable_search_read_keeps_one_pending_request_across_poll_ticks() {
+        let read_attempts = Arc::new(AtomicUsize::new(0));
+        let (actor, writes) = delayed_search_actor_with_attempts(
+            &["info depth 1", "bestmove e2e4"],
+            Duration::from_millis(120),
+            None,
+            Some(read_attempts.clone()),
+        );
+        let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+
+        assert_eq!(
+            actor
+                .next_search_line_cancellable(id, &cancelled)
+                .await
+                .unwrap(),
+            Some("info depth 1".into())
+        );
+        assert_eq!(
+            actor
+                .next_search_line_cancellable(id, &cancelled)
+                .await
+                .unwrap(),
+            Some("bestmove e2e4".into())
+        );
+        assert_eq!(*writes.lock().await, vec!["go depth 1"]);
+        assert_eq!(read_attempts.load(AtomicOrdering::SeqCst), 2);
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_live_concurrent_search_read_is_rejected_without_disturbing_the_first() {
+        let read_started = Arc::new(AtomicBool::new(false));
+        let (actor, _) = delayed_search_actor(
+            &["info depth 1"],
+            Duration::from_millis(120),
+            Some(read_started.clone()),
+        );
+        let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        let first = tokio::spawn({
+            let actor = actor.clone();
+            async move { actor.next_search_line(id).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !read_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first read must be pending before the concurrent request");
+
+        assert!(matches!(
+            actor.next_search_line(id).await,
+            Err(Error::Conflict(message))
+                if message == "engine is busy searching; stop or terminate it first"
+        ));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), first)
+                .await
+                .expect("the first read must remain live")
+                .unwrap()
+                .unwrap(),
+            Some("info depth 1".into())
+        );
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_closed_queued_search_read_does_not_consume_a_line() {
+        let read_started = Arc::new(AtomicBool::new(false));
+        let (actor, _) = delayed_search_actor(
+            &["info depth 1", "bestmove e2e4"],
+            Duration::from_millis(120),
+            Some(read_started.clone()),
+        );
+        let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        let first = tokio::spawn({
+            let actor = actor.clone();
+            async move { actor.next_search_line(id).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !read_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first read must be pending before the queued request");
+
+        let (reply_tx, reply) = oneshot::channel();
+        actor
+            .tx
+            .send(EngineCommand::NextSearch {
+                id,
+                reply: reply_tx,
+            })
+            .await
+            .unwrap();
+        drop(reply);
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), first)
+                .await
+                .expect("the first read must complete")
+                .unwrap()
+                .unwrap(),
+            Some("info depth 1".into())
+        );
+        assert_eq!(
+            actor.next_search_line(id).await.unwrap(),
+            Some("bestmove e2e4".into())
+        );
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_a_pending_search_read_stops_and_allows_a_new_search() {
+        let read_started = Arc::new(AtomicBool::new(false));
+        let (actor, writes) = delayed_search_actor(
+            &["bestmove e2e4", "bestmove d2d4"],
+            Duration::from_millis(300),
+            Some(read_started.clone()),
+        );
+        let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let pending = tokio::spawn({
+            let actor = actor.clone();
+            let cancelled = cancelled.clone();
+            async move {
+                actor
+                    .next_search_line_cancellable(id, cancelled.as_ref())
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !read_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the delayed read must start before cancellation");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cancelled.store(true, Ordering::SeqCst);
+
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), pending)
+                .await
+                .expect("cancellation must finish the pending read")
+                .unwrap(),
+            Err(Error::AnalysisCancelled)
+        ));
+        assert_eq!(*writes.lock().await, vec!["go depth 1", "stop"]);
+
+        let new_id = actor.start_search(&GoMode::Depth(2)).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), actor.next_search_line(new_id))
+                .await
+                .expect("the new search read must complete")
+                .unwrap(),
+            Some("bestmove d2d4".into())
+        );
+        assert_eq!(
+            *writes.lock().await,
+            vec!["go depth 1", "stop", "go depth 2"]
+        );
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dropped_search_reader_does_not_consume_the_next_engine_line() {
+        let read_started = Arc::new(AtomicBool::new(false));
+        let (actor, _) = delayed_search_actor(
+            &["info depth 1"],
+            Duration::from_millis(200),
+            Some(read_started.clone()),
+        );
+        let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        let pending = tokio::spawn({
+            let actor = actor.clone();
+            let cancelled = AtomicBool::new(false);
+            async move { actor.next_search_line_cancellable(id, &cancelled).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !read_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the delayed read must start before the caller is dropped");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        pending.abort();
+        assert!(pending.await.unwrap_err().is_cancelled());
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), actor.next_search_line(id))
+                .await
+                .expect("the fresh read must complete")
+                .unwrap(),
+            Some("info depth 1".into())
+        );
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dropping_every_actor_handle_terminates_a_pending_search_read() {
+        let read_started = Arc::new(AtomicBool::new(false));
+        let ((actor, _), terminated) = fake_actor_with_config(
+            &["info depth 1"],
+            false,
+            false,
+            Some(Duration::from_secs(5)),
+            read_observation(Some(read_started.clone()), None),
+            None,
+            EngineDeadlines {
+                search: Duration::from_secs(1),
+                stop: Duration::from_secs(1),
+                ..EngineDeadlines::default()
+            },
+        );
+        let actor_task = actor.task.clone();
+        let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        let (reply_tx, reply) = oneshot::channel();
+        actor
+            .tx
+            .send(EngineCommand::NextSearch {
+                id,
+                reply: reply_tx,
+            })
+            .await
+            .unwrap();
+        let reading_task = tokio::spawn({
+            let actor = actor.clone();
+            async move {
+                let _actor = actor;
+                std::future::pending::<()>().await;
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !read_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the delayed read must start before the handles are dropped");
+        reading_task.abort();
+        let _ = reading_task.await;
+        drop(actor);
+
+        let terminated_in_time = tokio::time::timeout(Duration::from_millis(500), async {
+            while terminated.load(AtomicOrdering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        if !terminated_in_time {
+            if let Some(task) = actor_task.lock().await.take() {
+                task.abort();
+                let _ = task.await;
+            }
+            panic!("actor did not terminate after every handle was dropped");
+        }
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        let task = actor_task
+            .lock()
+            .await
+            .take()
+            .expect("the actor task must remain available for reaping");
+        tokio::time::timeout(Duration::from_millis(500), task)
+            .await
+            .expect("the actor task must finish after channel closure")
+            .expect("the actor task must not panic");
+        assert!(matches!(reply.await, Ok(Err(Error::EngineDisconnected))));
+    }
+
+    #[tokio::test]
+    async fn cancellation_returns_a_stop_error_and_reaps_the_actor() {
+        let read_started = Arc::new(AtomicBool::new(false));
+        let ((actor, _), terminated) = actor_with_stop_failure_and_pending_read(
+            Duration::from_secs(1),
+            Some(read_started.clone()),
+        );
+        let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let pending = tokio::spawn({
+            let actor = actor.clone();
+            let cancelled = cancelled.clone();
+            async move {
+                actor
+                    .next_search_line_cancellable(id, cancelled.as_ref())
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !read_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the delayed read must start before cancellation");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        cancelled.store(true, Ordering::SeqCst);
+
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), pending)
+                .await
+                .expect("stop failure must finish the pending read")
+                .unwrap(),
+            Err(Error::Io(_))
+        ));
+        assert_eq!(terminated.load(AtomicOrdering::SeqCst), 1);
+        assert!(matches!(
+            actor.start_search(&GoMode::Depth(2)).await,
+            Err(Error::EngineDisconnected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn pending_search_read_honors_cancellation_within_the_poll_bound() {
+        let read_started = Arc::new(AtomicBool::new(false));
+        let (actor, _) = delayed_search_actor(
+            &["bestmove e2e4"],
+            Duration::from_secs(5),
+            Some(read_started.clone()),
+        );
+        let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let pending = tokio::spawn({
+            let actor = actor.clone();
+            let cancelled = cancelled.clone();
+            async move {
+                actor
+                    .next_search_line_cancellable(id, cancelled.as_ref())
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !read_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the delayed read must start before cancellation");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        cancelled.store(true, Ordering::SeqCst);
+
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_millis(500), pending)
+                .await
+                .expect("cancellation must stay within the poll bound")
+                .unwrap(),
+            Err(Error::AnalysisCancelled)
+        ));
+        actor.terminate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn terminating_actor_preempts_a_pending_cancellable_search_read() {
+        let read_started = Arc::new(AtomicBool::new(false));
+        let (actor, _) = delayed_search_actor(
+            &["bestmove e2e4"],
+            Duration::from_secs(5),
+            Some(read_started.clone()),
+        );
+        let id = actor.start_search(&GoMode::Depth(1)).await.unwrap();
+        let cancelled = AtomicBool::new(false);
+        let pending = tokio::spawn({
+            let actor = actor.clone();
+            async move { actor.next_search_line_cancellable(id, &cancelled).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !read_started.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the delayed read must start before termination");
+
+        tokio::time::timeout(Duration::from_millis(500), actor.terminate())
+            .await
+            .expect("termination must preempt the pending read")
+            .unwrap();
+        assert!(matches!(
+            pending.await.unwrap(),
+            Err(Error::EngineDisconnected)
+        ));
     }
 
     #[tokio::test]
@@ -5378,6 +5955,79 @@ mod tests {
         ));
     }
 
+    struct PendingChunkReader {
+        chunks: VecDeque<Vec<u8>>,
+        current: Vec<u8>,
+        first_chunk_consumed: Arc<AtomicBool>,
+        release: Arc<AtomicBool>,
+    }
+
+    impl PendingChunkReader {
+        fn new(
+            chunks: impl IntoIterator<Item = Vec<u8>>,
+            first_chunk_consumed: Arc<AtomicBool>,
+            release: Arc<AtomicBool>,
+        ) -> Self {
+            Self {
+                chunks: chunks.into_iter().collect(),
+                current: Vec::new(),
+                first_chunk_consumed,
+                release,
+            }
+        }
+    }
+
+    impl AsyncRead for PendingChunkReader {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let this = self.as_mut().get_mut();
+            let available = match std::pin::Pin::new(&mut *this).poll_fill_buf(cx) {
+                std::task::Poll::Ready(Ok(available)) => available,
+                std::task::Poll::Ready(Err(error)) => return std::task::Poll::Ready(Err(error)),
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            };
+            let take = available.len().min(buffer.remaining());
+            buffer.put_slice(&available[..take]);
+            std::pin::Pin::new(this).consume(take);
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncBufRead for PendingChunkReader {
+        fn poll_fill_buf(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<&[u8]>> {
+            let this = self.get_mut();
+            if this.current.is_empty() {
+                if !this.first_chunk_consumed.load(Ordering::SeqCst) {
+                    if let Some(chunk) = this.chunks.pop_front() {
+                        this.current = chunk;
+                    }
+                } else if !this.release.load(Ordering::SeqCst) {
+                    return std::task::Poll::Pending;
+                } else if let Some(chunk) = this.chunks.pop_front() {
+                    this.current = chunk;
+                } else {
+                    return std::task::Poll::Ready(Ok(&[]));
+                }
+            }
+            std::task::Poll::Ready(Ok(&this.current))
+        }
+
+        fn consume(self: std::pin::Pin<&mut Self>, amount: usize) {
+            let this = self.get_mut();
+            let amount = amount.min(this.current.len());
+            this.current.drain(..amount);
+            if this.current.is_empty() {
+                this.first_chunk_consumed.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn oversized_engine_output_is_rejected_before_log_growth() {
         let oversized = "x".repeat(MAX_ENGINE_LINE_BYTES + 1);
@@ -5390,6 +6040,7 @@ mod tests {
             fail_write: false,
             fail_stop: false,
             read_delay: None,
+            read_observation: None,
             terminate_delay: None,
         };
         let actor = EngineActor::new(Box::new(io), EngineDeadlines::default());
@@ -5402,12 +6053,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bounded_reader_retains_a_partial_line_across_a_dropped_read() {
+        let first_chunk_consumed = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let mut reader = ResumableLineReader::new(PendingChunkReader::new(
+            [b"partial ".to_vec(), b"line\n".to_vec()],
+            first_chunk_consumed.clone(),
+            release.clone(),
+        ));
+        {
+            let read = reader.read_line();
+            tokio::pin!(read);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                tokio::select! {
+                    result = &mut read => panic!("read unexpectedly completed: {result:?}"),
+                    _ = async {
+                        while !first_chunk_consumed.load(Ordering::SeqCst) {
+                            tokio::task::yield_now().await;
+                        }
+                    } => {}
+                }
+            })
+            .await
+            .expect("the first chunk must be consumed before the read is dropped");
+        }
+        assert_eq!(reader.pending_line, b"partial ");
+
+        release.store(true, Ordering::SeqCst);
+        assert_eq!(
+            reader.read_line().await.unwrap(),
+            Some("partial line".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_reader_enforces_the_size_bound_across_resumed_reads() {
+        let first_chunk_consumed = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let mut reader = ResumableLineReader::new(PendingChunkReader::new(
+            [vec![b'x'; MAX_ENGINE_LINE_BYTES - 1], vec![b'x'; 2]],
+            first_chunk_consumed.clone(),
+            release.clone(),
+        ));
+        {
+            let read = reader.read_line();
+            tokio::pin!(read);
+            tokio::time::timeout(Duration::from_secs(1), async {
+                tokio::select! {
+                    result = &mut read => panic!("read unexpectedly completed: {result:?}"),
+                    _ = async {
+                        while !first_chunk_consumed.load(Ordering::SeqCst) {
+                            tokio::task::yield_now().await;
+                        }
+                    } => {}
+                }
+            })
+            .await
+            .expect("the first chunk must be consumed before the read is dropped");
+        }
+        assert_eq!(reader.pending_line.len(), MAX_ENGINE_LINE_BYTES - 1);
+
+        release.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            reader.read_line().await,
+            Err(Error::ResourceLimit(_))
+        ));
+        assert!(reader.pending_line.is_empty());
+    }
+
+    #[tokio::test]
     async fn child_reader_enforces_the_line_limit_before_allocating_the_payload() {
         let (mut writer, reader) = tokio::io::duplex(1024);
         let payload = vec![b'x'; MAX_ENGINE_LINE_BYTES + 1];
         let writer = tokio::spawn(async move { writer.write_all(&payload).await });
-        let mut reader = BufReader::new(reader);
-        let result = read_bounded_engine_line(&mut reader).await;
+        let mut reader = ResumableLineReader::new(BufReader::new(reader));
+        let result = reader.read_line().await;
         assert!(matches!(result, Err(Error::ResourceLimit(_))));
         drop(reader);
         // Closing the hostile stream is expected to interrupt its writer.
@@ -5418,11 +6138,8 @@ mod tests {
     async fn child_reader_normalizes_line_endings() {
         let (mut writer, reader) = tokio::io::duplex(64);
         let writer = tokio::spawn(async move { writer.write_all(b"readyok\r\n").await.unwrap() });
-        let mut reader = BufReader::new(reader);
-        assert_eq!(
-            read_bounded_engine_line(&mut reader).await.unwrap(),
-            Some("readyok".into())
-        );
+        let mut reader = ResumableLineReader::new(BufReader::new(reader));
+        assert_eq!(reader.read_line().await.unwrap(), Some("readyok".into()));
         writer.await.unwrap();
     }
 
@@ -5492,6 +6209,7 @@ mod tests {
             fail_write: false,
             fail_stop: false,
             read_delay: None,
+            read_observation: None,
             terminate_delay: None,
         }
     }
@@ -5551,12 +6269,12 @@ mod tests {
             input.push(b'\n');
         }
         input.extend_from_slice(b"still-alive\n");
-        let mut reader = BufReader::new(std::io::Cursor::new(input));
+        let mut reader = ResumableLineReader::new(BufReader::new(std::io::Cursor::new(input)));
 
         drain_engine_stderr(&mut reader).await;
 
         assert!(
-            reader.fill_buf().await.unwrap().is_empty(),
+            reader.reader.fill_buf().await.unwrap().is_empty(),
             "stderr drain must continue through EOF"
         );
     }
@@ -5565,12 +6283,12 @@ mod tests {
     async fn stderr_drain_discards_an_oversized_line_and_consumes_the_next_line() {
         let mut input = vec![b'x'; MAX_ENGINE_LINE_BYTES + 1];
         input.extend_from_slice(b"\nstill-alive\n");
-        let mut reader = BufReader::new(std::io::Cursor::new(input));
+        let mut reader = ResumableLineReader::new(BufReader::new(std::io::Cursor::new(input)));
 
         drain_engine_stderr(&mut reader).await;
 
         assert!(
-            reader.fill_buf().await.unwrap().is_empty(),
+            reader.reader.fill_buf().await.unwrap().is_empty(),
             "oversized stderr lines must not stop or spin the drain"
         );
     }
@@ -5767,11 +6485,11 @@ mod tests {
             );
             let command_target = executable.command_target().to_path_buf();
             let (pid_tx, pid_rx) = std::sync::mpsc::channel();
-            set_spawn_child_observer(
-                Some(command_target),
-                Some(Box::new(move |pid| {
+            let _observer = set_spawn_child_observer(
+                command_target,
+                Box::new(move |pid| {
                     let _ = pid_tx.send(pid);
-                })),
+                }),
             );
             set_spawn_io_failure(Some(failure));
             let result = EngineRuntime::spawn(
@@ -5783,7 +6501,6 @@ mod tests {
             )
             .await;
             set_spawn_io_failure(None);
-            set_spawn_child_observer(None, None);
 
             let pid = pid_rx
                 .recv_timeout(Duration::from_secs(1))
@@ -5807,11 +6524,11 @@ mod tests {
         );
         let command_target = executable.command_target().to_path_buf();
         let (pid_tx, pid_rx) = std::sync::mpsc::channel();
-        set_spawn_child_observer(
-            Some(command_target),
-            Some(Box::new(move |pid| {
+        let _observer = set_spawn_child_observer(
+            command_target,
+            Box::new(move |pid| {
                 let _ = pid_tx.send(pid);
-            })),
+            }),
         );
         set_spawn_io_failure(Some(SpawnIoFailure::NoStdin));
         set_terminate_failure(Some(TerminateFailure::ReapError));
@@ -5825,7 +6542,6 @@ mod tests {
         .await;
         set_spawn_io_failure(None);
         set_terminate_failure(None);
-        set_spawn_child_observer(None, None);
 
         let pid = pid_rx
             .recv_timeout(Duration::from_secs(1))
@@ -5833,6 +6549,100 @@ mod tests {
             .expect("spawn observer must see a real child pid");
         assert!(matches!(result, Err(Error::OperationAndCleanup { .. })));
         assert_child_is_reaped(pid);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_child_observers_are_isolated_by_command_target() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script_a = directory.path().join("observer-a.sh");
+        let script_b = directory.path().join("observer-b.sh");
+        let marker_a = directory.path().join("observer-a.pid");
+        let marker_b = directory.path().join("observer-b.pid");
+        for (script, marker) in [(&script_a, &marker_a), (&script_b, &marker_b)] {
+            std::fs::write(
+                script,
+                format!(
+                    "#!/bin/sh\necho $$ > '{}'\nwhile IFS= read -r line; do [ \"$line\" = quit ] && exit 0; done\n",
+                    marker.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let executable_a = EngineExecutable::test_fixture(
+            std::fs::File::open(&script_a).unwrap(),
+            directory.path().to_path_buf(),
+            Vec::new(),
+        );
+        let executable_b = EngineExecutable::test_fixture(
+            std::fs::File::open(&script_b).unwrap(),
+            directory.path().to_path_buf(),
+            Vec::new(),
+        );
+        let target_a = executable_a.command_target().to_path_buf();
+        let target_b = executable_b.command_target().to_path_buf();
+        let (pid_a_tx, pid_a_rx) = std::sync::mpsc::channel();
+        let (pid_b_tx, pid_b_rx) = std::sync::mpsc::channel();
+        let _observer_a = set_spawn_child_observer(
+            target_a,
+            Box::new(move |pid| {
+                let _ = pid_a_tx.send(pid);
+            }),
+        );
+        let _observer_b = set_spawn_child_observer(
+            target_b,
+            Box::new(move |pid| {
+                let _ = pid_b_tx.send(pid);
+            }),
+        );
+
+        let (result_a, result_b) = tokio::join!(
+            EngineRuntime::spawn(executable_a, EngineDeadlines::default()),
+            EngineRuntime::spawn(executable_b, EngineDeadlines::default()),
+        );
+        let mut runtime_a = match result_a {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                if let Ok(mut runtime) = result_b {
+                    let _ = runtime.terminate().await;
+                }
+                panic!("observer A runtime failed to spawn: {error}");
+            }
+        };
+        let mut runtime_b = match result_b {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                let _ = runtime_a.terminate().await;
+                panic!("observer B runtime failed to spawn: {error}");
+            }
+        };
+
+        let marker_ready = tokio::time::timeout(Duration::from_secs(1), async {
+            while !marker_a.exists() || !marker_b.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        let observed_a = pid_a_rx.recv_timeout(Duration::from_secs(1));
+        let observed_b = pid_b_rx.recv_timeout(Duration::from_secs(1));
+        let actual_a = std::fs::read_to_string(&marker_a)
+            .ok()
+            .and_then(|pid| pid.trim().parse::<u32>().ok());
+        let actual_b = std::fs::read_to_string(&marker_b)
+            .ok()
+            .and_then(|pid| pid.trim().parse::<u32>().ok());
+        let termination_a = runtime_a.terminate().await;
+        let termination_b = runtime_b.terminate().await;
+
+        assert!(marker_ready, "both observer child markers must be written");
+        assert!(termination_a.is_ok(), "observer A child must terminate");
+        assert!(termination_b.is_ok(), "observer B child must terminate");
+        assert_eq!(observed_a.ok().flatten(), actual_a);
+        assert_eq!(observed_b.ok().flatten(), actual_b);
     }
 
     #[tokio::test]
@@ -6879,16 +7689,15 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
             };
             let command_target = executable.command_target().to_path_buf();
             let (pid_tx, pid_rx) = std::sync::mpsc::channel();
-            set_spawn_child_observer(
-                Some(command_target),
-                Some(Box::new(move |pid| {
+            let _observer = set_spawn_child_observer(
+                command_target,
+                Box::new(move |pid| {
                     let _ = pid_tx.send(pid);
-                })),
+                }),
             );
             set_terminate_failure(Some(failure));
             let mut runtime = EngineRuntime::spawn(executable, deadlines).await.unwrap();
             set_terminate_failure(None);
-            set_spawn_child_observer(None, None);
             let pid = pid_rx
                 .recv_timeout(Duration::from_secs(1))
                 .unwrap()
