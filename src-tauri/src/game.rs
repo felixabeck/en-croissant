@@ -1067,22 +1067,14 @@ async fn initialize_configured_game_engine(
 async fn spawn_configured_game_engine_with_resolved(
     supervisor: Arc<EngineSupervisor>,
     executable: EngineExecutable,
-    mut resolved: Vec<ResolvedEngineOption>,
+    resolved: Vec<ResolvedEngineOption>,
     admission: AdmissionLease,
     key: EngineKey,
     chess960: bool,
 ) -> Result<crate::engine::SupervisedEngine, Error> {
-    let child_leases = resolved
-        .iter_mut()
-        .flat_map(|option| std::mem::take(&mut option.resources))
-        .collect();
-    spawn_registered(
-        supervisor,
-        key,
-        executable.with_resource_leases(child_leases),
-        admission,
-        move |engine| initialize_configured_game_engine(engine, resolved, chess960),
-    )
+    spawn_registered(supervisor, key, executable, admission, move |engine| {
+        initialize_configured_game_engine(engine, resolved, chess960)
+    })
     .await
     .map(|(supervised, ())| supervised)
 }
@@ -1152,6 +1144,11 @@ async fn spawn_configured_game_engine_with_executable(
     for option in &mut resolved {
         option.refresh_resource_values()?;
     }
+    let child_leases = resolved
+        .iter_mut()
+        .flat_map(|option| std::mem::take(&mut option.resources))
+        .collect();
+    let executable = executable.with_resource_leases(child_leases);
     let supervised = spawn_configured_game_engine_with_resolved(
         supervisor,
         executable,

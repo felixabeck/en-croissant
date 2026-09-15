@@ -1844,6 +1844,8 @@ const MAX_ENGINE_LAUNCH_LEAVES: usize = 64;
 pub(crate) const ENGINE_EXECUTABLE_LEAF_MODE: u32 = 0o700;
 #[cfg(target_os = "macos")]
 pub(crate) const ENGINE_RESOURCE_LEAF_MODE: u32 = 0o600;
+#[cfg(target_os = "macos")]
+pub(crate) const ENGINE_LAUNCH_LOCK_MODE: u32 = 0o600;
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone)]
@@ -2267,7 +2269,7 @@ pub(crate) fn initialize_engine_launch_root(
                 | libc::O_CLOEXEC
                 | libc::O_EXLOCK
                 | libc::O_NONBLOCK,
-            0o600,
+            ENGINE_LAUNCH_LOCK_MODE,
         )
     };
     if raw_lock < 0 {
@@ -8710,11 +8712,24 @@ mod tests {
             b"original network"
         );
         #[cfg(target_os = "macos")]
-        assert!(matches!(
-            file_lease.verify_current(),
-            Err(Error::Conflict(message))
-                if message == "engine resource changed after authorization"
-        ));
+        {
+            let launch_root = EngineLaunchRoot::for_test(dir.path()).unwrap();
+            let mut leaf = launch_root
+                .reserve_leaves(1, "resource-test", "resource")
+                .unwrap()
+                .pop()
+                .unwrap();
+            leaf.create_from(file_lease.file(), ENGINE_RESOURCE_LEAF_MODE, &|| false)
+                .unwrap();
+            file_lease.set_pinned_target(leaf.path()).unwrap();
+            assert!(file_lease.verify_current().is_ok());
+            let pinned_value = file_lease.uci_value().unwrap();
+            let instance_path = launch_root.instance_path();
+            assert!(Path::new(&pinned_value).starts_with(instance_path));
+            assert_eq!(fs::read(pinned_value).unwrap(), b"original network");
+            drop(leaf);
+            assert_eq!(launch_root.reclaim().removed, 1);
+        }
         assert!(matches!(
             authority.engine_resource(&file_handle),
             Err(Error::Conflict(_))
@@ -15676,7 +15691,10 @@ mod workspace_directory_enumeration_tests {
             instance.metadata().unwrap().permissions().mode() & 0o777,
             0o700
         );
-        assert_eq!(lock.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            lock.metadata().unwrap().permissions().mode() & 0o777,
+            ENGINE_LAUNCH_LOCK_MODE
+        );
 
         let competing = std::fs::File::open(lock).unwrap();
         assert!(matches!(

@@ -1675,12 +1675,13 @@ fn pin_engine_launch(
         .into_iter()
         .map(|(leaf, error)| (leaf.engine_key, leaf.engine_id, error))
         .collect::<Vec<_>>();
+    let executable_leaf_count = 1;
     let count = executable
         .resource_leases()
         .iter()
         .filter(|lease| !lease.is_directory())
         .count()
-        + 1;
+        + executable_leaf_count;
     let mut files =
         match root.reserve_leaves(count, &format!("{}:{}", key.tab, key.engine), engine_id) {
             Ok(files) => files,
@@ -2061,13 +2062,17 @@ impl EngineRuntime {
         observe_spawned_child(&child, &command_target_for_observer);
         #[cfg(all(test, unix))]
         let forced_io_failure = take_spawn_io_failure();
-        let stdin = child.stdin.take();
         #[cfg(all(test, unix))]
-        let stdin = if forced_io_failure == Some(SpawnIoFailure::NoStdin) {
-            None
-        } else {
-            stdin
+        let stdin = {
+            let stdin = child.stdin.take();
+            if forced_io_failure == Some(SpawnIoFailure::NoStdin) {
+                None
+            } else {
+                stdin
+            }
         };
+        #[cfg(any(not(test), all(test, not(unix))))]
+        let stdin = child.stdin.take();
         let stdin = match stdin {
             Some(stdin) => stdin,
             None => {
@@ -6004,19 +6009,40 @@ mod tests {
         actor.terminate().await.unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_second_unheld_resource_is_refused_without_partial_option_writes() {
-        let (actor, writes) = EngineActor::recording_test_actor(&[]);
+        let directory = tempfile::tempdir().unwrap();
+        let first_path = directory.path().join("first");
+        std::fs::write(&first_path, b"first").unwrap();
+        let first = Arc::new(
+            crate::infra::path_authority::EngineResourceLease::test_file(
+                std::fs::File::open(&first_path).unwrap(),
+            ),
+        );
+        #[cfg(target_os = "macos")]
+        first.pin_test_target_to_original().unwrap();
+        let first_value = first.uci_value().unwrap();
+        let (actor, writes) = EngineActor::recording_test_actor_with_resources(&[], vec![first]);
+        assert_eq!(actor.resources.len(), 1);
+        let first_verified = Arc::new(AtomicBool::new(false));
+        let first_verified_for_hook = first_verified.clone();
+        set_resource_verify_hook(
+            first_value.clone(),
+            Some(Box::new(move || {
+                first_verified_for_hook.store(true, Ordering::SeqCst);
+            })),
+        );
         let options = [ResolvedEngineOption {
             name: "Tablebases".into(),
-            value: "/first:/second".into(),
+            value: format!("{first_value}:/second"),
             resources: Vec::new(),
-            resource_values: vec!["/first".into(), "/second".into()],
+            resource_values: vec![first_value.clone(), "/second".into()],
         }];
-        assert!(matches!(
-            verify_option_resources(&actor, &options, None).await,
-            Err(Error::Conflict(_))
-        ));
+        let result = verify_option_resources(&actor, &options, None).await;
+        set_resource_verify_hook(first_value, None);
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert!(first_verified.load(Ordering::SeqCst));
         assert!(writes.lock().await.is_empty());
         actor.terminate().await.unwrap();
     }
@@ -6027,23 +6053,20 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let first_path = directory.path().join("first");
         let second_path = directory.path().join("second");
-        std::fs::write(&first_path, b"first").unwrap();
-        std::fs::write(&second_path, b"second").unwrap();
+        std::fs::create_dir(&first_path).unwrap();
+        std::fs::create_dir(&second_path).unwrap();
         let first = Arc::new(
-            crate::infra::path_authority::EngineResourceLease::test_file(
+            crate::infra::path_authority::EngineResourceLease::test_directory(
                 std::fs::File::open(&first_path).unwrap(),
             ),
         );
         let second = Arc::new(
-            crate::infra::path_authority::EngineResourceLease::test_file(
+            crate::infra::path_authority::EngineResourceLease::test_directory(
                 std::fs::File::open(&second_path).unwrap(),
             ),
         );
-        #[cfg(target_os = "macos")]
-        {
-            first.pin_test_target_to_original().unwrap();
-            second.pin_test_target_to_original().unwrap();
-        }
+        first.pin_test_target_to_original().unwrap();
+        second.pin_test_target_to_original().unwrap();
         let first_value = first.uci_value().unwrap();
         let second_value = second.uci_value().unwrap();
         let (actor, writes) = EngineActor::recording_test_actor_with_resources(
@@ -6051,7 +6074,7 @@ mod tests {
             vec![first.clone(), second.clone()],
         );
         std::fs::rename(&second_path, directory.path().join("second-original")).unwrap();
-        std::fs::write(&second_path, b"replacement").unwrap();
+        std::fs::create_dir(&second_path).unwrap();
         let options = [ResolvedEngineOption {
             name: "Tablebases".into(),
             value: format!("{first_value}:{second_value}"),
@@ -6635,6 +6658,66 @@ engine_id=stale-engine category=I/O failure",
         ));
         assert_eq!(root.registry_snapshot_for_test().0, 1);
         assert_eq!(root.reclaim().removed, 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn launch_pin_operation_and_cleanup_failure_logs_both_categories() {
+        use crate::error::LogCaptureScope;
+        use crate::infra::fs::{RemovalFault, RemovalFaultPoint};
+        use crate::infra::path_authority::{EngineLaunchFailure, EngineLaunchRoot, PathAuthority};
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("pin-failure-engine.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
+        let mut authority = PathAuthority::open_with_launch_root(
+            directory.path().join("registry.json"),
+            Vec::new(),
+            root.clone(),
+        )
+        .unwrap();
+        let engine = authority
+            .register_engine_file(&script, "pin-failure-engine")
+            .unwrap();
+        let authority = Arc::new(std::sync::Mutex::new(Some(authority)));
+        let supervisor = Arc::new(EngineSupervisor::default());
+        let key = EngineKey::new("pin-failure".into(), "pin-failure-engine".into()).unwrap();
+        let admission = supervisor
+            .admit_for_launch(key.clone(), "pin-failure-engine".into(), engine.id.clone())
+            .await
+            .unwrap();
+
+        crate::infra::path_authority::set_engine_launch_failure(Some(EngineLaunchFailure::Fchmod));
+        crate::infra::fs::set_test_removal_injector(Some(Arc::new(RemovalFault(
+            RemovalFaultPoint::BeforeTopOpen,
+        ))));
+        let capture = LogCaptureScope::start();
+        let result = resolve_launch(
+            authority,
+            engine,
+            PathOperation::EngineExecute,
+            &[],
+            &admission,
+        )
+        .await;
+        crate::infra::path_authority::set_engine_launch_failure(None);
+        crate::infra::fs::set_test_removal_injector(None);
+
+        assert!(matches!(result, Err(Error::OperationAndCleanup { .. })));
+        assert!(capture.messages().iter().any(|message| {
+            message.contains(
+                "engine launch pin failed for key=pin-failure:pin-failure-engine \
+engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O failure",
+            )
+        }));
+        let (live, released) = root.registry_snapshot_for_test();
+        assert_eq!(live, 1);
+        assert_eq!(released.len(), 1);
+        assert_eq!(root.reclaim().removed, 1);
+        assert_eq!(root.registry_snapshot_for_test().0, 0);
     }
 
     #[cfg(target_os = "macos")]
