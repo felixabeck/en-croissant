@@ -54,6 +54,7 @@ pub struct EngineProcess {
     last_best_moves: Vec<BestMoves>,
     last_progress: f32,
     options: EngineOptions,
+    /// Keeps option resource leases alive for the engine process lifetime.
     resource_leases: Vec<Arc<crate::infra::path_authority::EngineResourceLease>>,
     go_mode: GoMode,
     running: bool,
@@ -106,7 +107,7 @@ impl EngineProcess {
             ));
         }
         verify_option_resources(&self.base, &resolved, operation.as_ref()).await?;
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         run_after_resource_verification_hook().await;
         let fen_changed = options.fen != self.options.fen;
         let fen: Fen = options.fen.parse()?;
@@ -193,7 +194,7 @@ impl EngineProcess {
     }
 
     async fn go(&mut self, mode: &GoMode) -> Result<(), Error> {
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         observe_interactive_go_attempt();
         self.go_mode = mode.clone();
         self.request_id = Some(self.base.start_search(mode).await?);
@@ -696,7 +697,7 @@ async fn get_best_moves_core<R: tauri::Runtime>(
 
     let run_result: Result<(), Error> = async {
         process.set_options(options.clone(), resolved, None).await?;
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         run_interactive_before_go_hook().await;
         process.go(&go_mode).await?;
         process_interactive_search_output(&mut process, &id, &tab, &supervised, &app).await
@@ -764,19 +765,7 @@ fn prepare_report_options(
     uci_options: &[EngineOption],
     inherited_values: &HashMap<String, String>,
 ) -> (Vec<EngineOption>, HashMap<String, String>) {
-    let mut order = Vec::new();
-    let mut effective = HashMap::new();
-    for option in uci_options {
-        let name = option.name().to_string();
-        if !effective.contains_key(&name) {
-            order.push(name.clone());
-        }
-        effective.insert(name, option.clone());
-    }
-    let mut report_options = order
-        .into_iter()
-        .filter_map(|name| effective.remove(&name))
-        .collect::<Vec<_>>();
+    let mut report_options = crate::engine::effective_engine_options(uci_options);
     let report_multipv = REPORT_MULTIPV.to_string();
     if let Some(option) = report_options
         .iter_mut()
@@ -898,11 +887,11 @@ type AnalysisLineHook = Box<dyn FnMut(&str)>;
 #[cfg(test)]
 type AnalysisReplayPlyHook = Box<dyn FnMut(usize)>;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 type AsyncAnalysisHook =
     Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send>;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 type SyncAnalysisHook = Box<dyn FnOnce() + Send>;
 
 #[cfg(test)]
@@ -911,6 +900,10 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
     static ANALYSIS_REPLAY_PLY_HOOK: std::cell::RefCell<Option<AnalysisReplayPlyHook>> =
         const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, unix))]
+std::thread_local! {
     static AFTER_RESOURCE_VERIFICATION_HOOK: std::cell::RefCell<Option<AsyncAnalysisHook>> =
         const { std::cell::RefCell::new(None) };
     static INTERACTIVE_BEFORE_GO_HOOK: std::cell::RefCell<Option<AsyncAnalysisHook>> =
@@ -919,12 +912,12 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn set_after_resource_verification_hook(hook: Option<AsyncAnalysisHook>) {
     AFTER_RESOURCE_VERIFICATION_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn run_after_resource_verification_hook() {
     let hook = AFTER_RESOURCE_VERIFICATION_HOOK.with(|slot| slot.borrow_mut().take());
     if let Some(hook) = hook {
@@ -932,12 +925,12 @@ async fn run_after_resource_verification_hook() {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn set_interactive_before_go_hook(hook: Option<AsyncAnalysisHook>) {
     INTERACTIVE_BEFORE_GO_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn run_interactive_before_go_hook() {
     let hook = INTERACTIVE_BEFORE_GO_HOOK.with(|slot| slot.borrow_mut().take());
     if let Some(hook) = hook {
@@ -945,12 +938,12 @@ async fn run_interactive_before_go_hook() {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn set_interactive_go_attempt_hook(hook: Option<SyncAnalysisHook>) {
     INTERACTIVE_GO_ATTEMPT_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn observe_interactive_go_attempt() {
     let hook = INTERACTIVE_GO_ATTEMPT_HOOK.with(|slot| slot.borrow_mut().take());
     if let Some(hook) = hook {
@@ -2346,10 +2339,7 @@ done
         );
         #[cfg(target_os = "macos")]
         lease.pin_test_target_to_original().unwrap();
-        #[cfg(target_os = "macos")]
         let resource = lease.uci_value().unwrap();
-        #[cfg(target_os = "linux")]
-        let resource = lease.uci_value();
         let (actor, writes) = EngineActor::recording_test_actor_with_resources(
             &["readyok", &resource],
             vec![lease.clone()],

@@ -2766,8 +2766,12 @@ mod tests {
             .unwrap()
             .pop()
             .unwrap();
-        leaf.create_from(&std::fs::File::open(&source).unwrap(), 0o600, &|| false)
-            .unwrap();
+        leaf.create_from(
+            &std::fs::File::open(&source).unwrap(),
+            crate::infra::path_authority::ENGINE_RESOURCE_LEAF_MODE,
+            &|| false,
+        )
+        .unwrap();
         let leaf_path = leaf.path();
         drop(leaf);
         let authority = Arc::new(Mutex::new(Some(
@@ -2811,7 +2815,7 @@ mod tests {
         failure_leaf
             .create_from(
                 &std::fs::File::open(&failure_source).unwrap(),
-                0o600,
+                crate::infra::path_authority::ENGINE_RESOURCE_LEAF_MODE,
                 &|| false,
             )
             .unwrap();

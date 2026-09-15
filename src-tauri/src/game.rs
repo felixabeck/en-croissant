@@ -40,7 +40,7 @@ use crate::{
     },
 };
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use crate::engine::resolve_engine_option_leases;
 
 pub type GameId = String;
@@ -1115,7 +1115,7 @@ static GAME_ENGINE_AFTER_SPAWN_HOOK: std::sync::OnceLock<
     std::sync::Mutex<Option<GameEngineAfterSpawnHook>>,
 > = std::sync::OnceLock::new();
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn spawn_configured_game_engine_with_executable(
     registration: GameEngineRegistration,
     executable: EngineExecutable,

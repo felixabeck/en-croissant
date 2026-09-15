@@ -235,18 +235,11 @@ impl ResolvedEngineOption {
         if self.resources.is_empty() {
             return Ok(());
         }
-        #[cfg(target_os = "macos")]
         let values = self
             .resources
             .iter()
             .map(|resource| resource.uci_value())
             .collect::<Result<Vec<_>, _>>()?;
-        #[cfg(not(target_os = "macos"))]
-        let values = self
-            .resources
-            .iter()
-            .map(|resource| resource.uci_value())
-            .collect::<Vec<_>>();
         self.resource_values = values;
         let separator = if cfg!(windows) { ";" } else { ":" };
         self.value = self.resource_values.join(separator);

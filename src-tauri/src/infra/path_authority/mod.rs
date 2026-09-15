@@ -830,9 +830,9 @@ pub(crate) struct EngineResourceLease {
 }
 impl EngineResourceLease {
     #[cfg(target_os = "linux")]
-    pub(crate) fn uci_value(&self) -> String {
+    pub(crate) fn uci_value(&self) -> Result<String, Error> {
         use std::os::fd::AsRawFd;
-        format!("/proc/self/fd/{}", self.file.as_raw_fd())
+        Ok(format!("/proc/self/fd/{}", self.file.as_raw_fd()))
     }
     #[cfg(target_os = "macos")]
     pub(crate) fn uci_value(&self) -> Result<String, Error> {
@@ -850,8 +850,8 @@ impl EngineResourceLease {
         Ok(target.to_string_lossy().into_owned())
     }
     #[cfg(windows)]
-    pub(crate) fn uci_value(&self) -> String {
-        self.target.to_string_lossy().into_owned()
+    pub(crate) fn uci_value(&self) -> Result<String, Error> {
+        Ok(self.target.to_string_lossy().into_owned())
     }
 
     #[cfg(target_os = "macos")]
@@ -1648,7 +1648,7 @@ pub struct AppOwnedRoot {
     pub operations: Vec<PathOperation>,
 }
 impl AppOwnedRoot {
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg(test)]
     pub fn new(
         display_name: impl Into<String>,
         path: PathBuf,
@@ -1936,7 +1936,7 @@ impl MaterializedFile {
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<(), Error> {
         self.attempted = true;
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         observe_engine_resolution("leaf");
         if is_cancelled() {
             return Err(Error::Cancellation);
@@ -2012,7 +2012,7 @@ impl MaterializedFile {
         let target = crate::infra::fs::open_regular_at(
             &self.root.instance,
             &self.leaf,
-            crate::infra::fs::RegularFileAccess::ReadWrite,
+            crate::infra::fs::RegularFileAccess::ReadOnly,
         )?;
         let mode = u16::try_from(mode)
             .map_err(|_| Error::InvalidInput("engine launch mode is invalid".into()))?;
@@ -2034,26 +2034,27 @@ impl MaterializedFile {
         if !self.active {
             return Ok(());
         }
-        let result = match rustix::fs::statat(
-            &self.root.instance,
-            &self.leaf,
-            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-        ) {
-            Err(rustix::io::Errno::NOENT) => Ok(()),
-            Err(error) => Err(Error::Io(Box::new(std::io::Error::from(error)))),
-            Ok(stat) => crate::infra::fs::remove_entry_at(
-                &self.root.instance,
-                &self.leaf,
-                crate::infra::fs::raw_stat_identity(&stat),
-                false,
-            ),
-        };
+        let result = remove_instance_leaf(&self.root.instance, &self.leaf);
         if result.is_ok() {
             self.active = false;
             let mut registry = self.root.registry();
             registry.live = registry.live.saturating_sub(1);
         }
         result
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn remove_instance_leaf(instance: &fs::File, leaf: &OsStr) -> Result<(), Error> {
+    match rustix::fs::statat(instance, leaf, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+        Err(rustix::io::Errno::NOENT) => Ok(()),
+        Err(error) => Err(Error::Io(Box::new(std::io::Error::from(error)))),
+        Ok(stat) => crate::infra::fs::remove_entry_at(
+            instance,
+            leaf,
+            crate::infra::fs::raw_stat_identity(&stat),
+            false,
+        ),
     }
 }
 
@@ -2096,20 +2097,7 @@ impl EngineLaunchRoot {
         };
         let mut report = ReclaimReport::default();
         for leaf in released {
-            let result = match rustix::fs::statat(
-                &self.inner.instance,
-                &leaf.leaf,
-                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
-            ) {
-                Err(rustix::io::Errno::NOENT) => Ok(()),
-                Err(error) => Err(Error::Io(Box::new(std::io::Error::from(error)))),
-                Ok(stat) => crate::infra::fs::remove_entry_at(
-                    &self.inner.instance,
-                    &leaf.leaf,
-                    crate::infra::fs::raw_stat_identity(&stat),
-                    false,
-                ),
-            };
+            let result = remove_instance_leaf(&self.inner.instance, &leaf.leaf);
             match result {
                 Ok(()) => {
                     report.removed += 1;
@@ -2336,30 +2324,30 @@ pub(crate) fn set_engine_launch_before_clone_hook(hook: Option<Box<dyn FnOnce() 
     *slot = hook;
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) type EngineResolutionTrace =
     Arc<std::sync::Mutex<Vec<(&'static str, std::thread::ThreadId)>>>;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 std::thread_local! {
     static ENGINE_RESOLUTION_TRACE_LOCAL: std::cell::RefCell<Option<EngineResolutionTrace>> =
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn set_engine_resolution_trace(trace: Option<EngineResolutionTrace>) {
     ENGINE_RESOLUTION_TRACE_LOCAL.with(|slot| *slot.borrow_mut() = trace);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn take_engine_resolution_trace_for_worker() -> Option<EngineResolutionTrace> {
     ENGINE_RESOLUTION_TRACE_LOCAL.with(|slot| slot.borrow_mut().take())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) struct EngineResolutionTraceGuard(Option<EngineResolutionTrace>);
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn install_engine_resolution_trace_for_worker(
     trace: Option<EngineResolutionTrace>,
 ) -> EngineResolutionTraceGuard {
@@ -2367,7 +2355,7 @@ pub(crate) fn install_engine_resolution_trace_for_worker(
     EngineResolutionTraceGuard(previous)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl Drop for EngineResolutionTraceGuard {
     fn drop(&mut self) {
         ENGINE_RESOLUTION_TRACE_LOCAL.with(|slot| {
@@ -2376,7 +2364,7 @@ impl Drop for EngineResolutionTraceGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn observe_engine_resolution(kind: &'static str) {
     let trace = ENGINE_RESOLUTION_TRACE_LOCAL.with(|slot| slot.borrow().clone());
     if let Some(trace) = trace {
@@ -4201,7 +4189,7 @@ impl PathAuthority {
                 cfg!(unix),
             )?;
         }
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         observe_engine_resolution("resource");
         let mut resolved =
             self.resolve(resource.path_ref(), PathOperation::EngineResourceRead, &[])?;
@@ -4394,7 +4382,7 @@ impl PathAuthority {
         engine: &EngineHandle,
         operation: PathOperation,
     ) -> Result<EngineExecutable, Error> {
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         observe_engine_resolution("executable");
         if !matches!(
             operation,
@@ -8718,7 +8706,7 @@ mod tests {
         fs::write(&file, b"attacker network").unwrap();
         #[cfg(target_os = "linux")]
         assert_eq!(
-            fs::read(file_lease.uci_value()).unwrap(),
+            fs::read(file_lease.uci_value().unwrap()).unwrap(),
             b"original network"
         );
         #[cfg(target_os = "macos")]
@@ -8743,7 +8731,8 @@ mod tests {
         fs::write(tables.join("tablebase"), b"attacker table").unwrap();
         #[cfg(target_os = "linux")]
         assert_eq!(
-            fs::read(PathBuf::from(directory_lease.uci_value()).join("tablebase")).unwrap(),
+            fs::read(PathBuf::from(directory_lease.uci_value().unwrap()).join("tablebase"))
+                .unwrap(),
             b"original table"
         );
         #[cfg(target_os = "macos")]
@@ -15813,7 +15802,8 @@ mod workspace_directory_enumeration_tests {
 
         fs::rename(&source_path, directory.path().join("source-original")).unwrap();
         fs::write(&source_path, b"replacement").unwrap();
-        leaf.create_from(&source, 0o600, &|| false).unwrap();
+        leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &|| false)
+            .unwrap();
         assert_eq!(fs::read(leaf.path()).unwrap(), b"authorized");
         drop(leaf);
         let report = root.reclaim();
@@ -15839,7 +15829,8 @@ mod workspace_directory_enumeration_tests {
             fs::rename(&replacement, replacement.with_extension("original")).unwrap();
             fs::write(&replacement, b"replacement").unwrap();
         })));
-        leaf.create_from(&source, 0o600, &|| false).unwrap();
+        leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &|| false)
+            .unwrap();
         set_engine_launch_before_clone_hook(None);
         assert_eq!(fs::read(leaf.path()).unwrap(), b"authorized");
         drop(leaf);
@@ -15864,6 +15855,8 @@ mod workspace_directory_enumeration_tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn apple_engine_launch_clone_fallback_exdev_and_enotsup_preserve_authorized_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+
         for failure in [
             EngineLaunchFailure::CloneExdev,
             EngineLaunchFailure::CloneEnotsup,
@@ -15871,6 +15864,7 @@ mod workspace_directory_enumeration_tests {
             let directory = tempfile::tempdir().unwrap();
             let source_path = directory.path().join("source");
             fs::write(&source_path, b"authorized-fallback-bytes").unwrap();
+            fs::set_permissions(&source_path, fs::Permissions::from_mode(0o444)).unwrap();
             let source = fs::File::open(&source_path).unwrap();
             let root = EngineLaunchRoot::for_test(directory.path()).unwrap();
             let mut leaf = root
@@ -15879,9 +15873,14 @@ mod workspace_directory_enumeration_tests {
                 .pop()
                 .unwrap();
             set_engine_launch_failure(Some(failure));
-            leaf.create_from(&source, 0o600, &|| false).unwrap();
+            leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &|| false)
+                .unwrap();
             set_engine_launch_failure(None);
             assert_eq!(fs::read(leaf.path()).unwrap(), b"authorized-fallback-bytes");
+            assert_eq!(
+                fs::metadata(leaf.path()).unwrap().permissions().mode() & 0o777,
+                ENGINE_RESOURCE_LEAF_MODE
+            );
             drop(leaf);
             assert_eq!(root.reclaim().removed, 1);
         }
@@ -15902,7 +15901,7 @@ mod workspace_directory_enumeration_tests {
                 .pop()
                 .unwrap();
             set_engine_launch_failure(Some(failure));
-            let result = leaf.create_from(&source, 0o600, &cancelled);
+            let result = leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &cancelled);
             set_engine_launch_failure(None);
             assert!(result.is_err());
             assert!(leaf.remove().is_ok());
@@ -15932,7 +15931,8 @@ mod workspace_directory_enumeration_tests {
             .unwrap()
             .pop()
             .unwrap();
-        leaf.create_from(&source, 0o600, &|| false).unwrap();
+        leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &|| false)
+            .unwrap();
         let path = leaf.path();
         drop(leaf);
         assert!(path.exists());
@@ -15958,7 +15958,8 @@ mod workspace_directory_enumeration_tests {
             .unwrap()
             .pop()
             .unwrap();
-        leaf.create_from(&source, 0o600, &|| false).unwrap();
+        leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &|| false)
+            .unwrap();
         drop(leaf);
         crate::infra::fs::set_test_removal_injector(Some(Arc::new(
             crate::infra::fs::RemovalFault(crate::infra::fs::RemovalFaultPoint::BeforeTopOpen),
