@@ -908,3 +908,41 @@ no new defect.
 D8-01..D8-08 and D8-10..D8-14 closed by both lenses; D8-09 closed, its reopening skipped on the orchestrator's
 revert measurement. No `Fix` is open. Runtime proof is the `rust-macos-test` job of the next push, including
 `report_core_restores_child_resource_provenance_after_fresh_resolution`.
+
+## Post-push CI — round 10 (range 6b5b4dc3..6ae152e2)
+
+The range `6ecd1ac8`, `705299b4` and `a02cd329` was pushed after the final gates. The first final-gate run was
+red only on `findings:kit:check`, again because a sibling agent-kit session held unpushed `findings.py` commits
+in the local kit checkout; ChessFable's copy equalled the published kit. After agent-kit-89 pushed `222a242`,
+ChessFable synced it (`a02cd329`); agent-kit-9a then published `9d0db09` and ChessFable synced again
+(`b7fc9aab`).
+
+Test run 34971966513 on `a02cd329`: `test` and all three `rust-platform` jobs green; `rust-macos-test` red, 1181
+passed, 1 failed. All 68 tracked names reported `ok`, including
+`report_core_restores_child_resource_provenance_after_fresh_resolution`, so the D8 fix held on the runner. The
+failure was the new D8-14 test `spawn_child_observers_are_isolated_by_command_target` (`process.rs:6645`,
+left `Some(11978)`, right `None`).
+
+| ID | Finding (witness) | Verdict | Reason |
+|---|---|---|---|
+| D8-15 | The observer isolation test waited only for its marker files to exist, but `echo $$ > marker` creates the file before writing the pid, so a slow runner read an empty marker (CI) | Fix | Verified in source; the observer received the right pid, the test's own barrier was wrong |
+
+Correction (Codex resume of the Phase 2 session): the child writes its pid to a temporary name and renames it
+into place, and the test polls every 10 ms for up to 5 s until both markers parse as complete pids; the
+isolation assertions compare against those parsed pids. The leaf swept every child-written marker barrier in
+`src-tauri/src` and found no other exists-only barrier whose content is asserted later. It ran the
+`engine::process` tests five times (107 passed each). Orchestrator verification: fmt, clippy for native, aarch64-apple-darwin and x86_64-pc-windows-gnu, three full test runs (1165 passed, 1 ignored each), backend coverage passed. Commit `6ae152e2`.
+
+Review: review-tests on Codex, `--role sensitive`, on the working-tree diff.
+
+Raw verdict: review-tests REVISE.
+
+| ID | Finding (witness) | Verdict | Reason |
+|---|---|---|---|
+| D8-15b | Reverting the poll to the old exists-only barrier still passes, because the atomic rename alone already publishes complete pids, so the barrier change is not revert-distinguished; `parse::<u32>()` would accept a numeric prefix if direct writes returned (tests 99) | Skip | Same class as D7-03c: the two halves each remove the race, rename(2) within one directory publishes the complete file by construction, and proving the barrier would mean a meta-test of the test's own scaffolding with no product or verification invariant behind it. The invariant the test exists for, per-target observer isolation, stays revert-distinguished (the D8-14 single-slot revert failed) |
+
+### Closure (post-push CI round 10)
+
+D8-15 closed by the correction; D8-15b skipped with evidence. No `Fix` is open. Runtime proof is the
+`rust-macos-test` job of the next push.
+
