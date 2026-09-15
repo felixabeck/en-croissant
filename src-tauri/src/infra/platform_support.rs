@@ -192,13 +192,6 @@ mod tests {
                 nested: false,
             },
             GuardRow {
-                file: "infra/path_authority/mod.rs",
-                signature: "pub(crate) fn create_pgn_export_destination(",
-                operation: "PGN export destinations",
-                effects: &["fs::symlink_metadata(path)", ".create_new(true)"],
-                nested: false,
-            },
-            GuardRow {
                 file: "fs.rs",
                 signature: "pub async fn download_file(",
                 operation: "file downloads",
@@ -420,6 +413,11 @@ mod tests {
             },
             CounterpartRow {
                 file: "infra/path_authority/mod.rs",
+                signature: "pub(crate) fn create_pgn_export_destination(",
+                operation: "PGN export destinations",
+            },
+            CounterpartRow {
+                file: "infra/path_authority/mod.rs",
                 signature: "pub(crate) fn open_current(",
                 operation: "database file reopening",
             },
@@ -574,6 +572,11 @@ mod tests {
             (
                 "infra/path_authority/mod.rs",
                 "fd-relative directory enumeration",
+                "unsupported",
+            ),
+            (
+                "infra/path_authority/mod.rs",
+                "PGN export destinations",
                 "unsupported",
             ),
             (
