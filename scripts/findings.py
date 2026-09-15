@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: f4ca986ea2c93a9bc7cee829aad42d7e0f87fb7a3446354a55918e106f9635c9
+# agent-kit-sha256: 6b910194cd99c6ab16293638e5e96296cdbe8a932dc8aeb95e0538ab40bc5ecb
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -68,7 +68,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import Literal, cast
 
 # Named so the formatter cannot rewrite them. `ruff format` at target-version py314
 # strips redundant parentheses from an explicit `except (A, B):` tuple literal, and
@@ -1236,6 +1236,8 @@ class AnswerExpectation:
     blocked: str
     evidence: tuple[str, ...]
     previous_occurrences: int
+    previous_line_occurrences: dict[str, int]
+    kind: str = "decision"
 
 
 class LedgerError(Exception):
@@ -1281,6 +1283,7 @@ class ClaimIntent:
     fixed: set[str]
     has_fixed: bool
     claimed: tuple[Path, ...]
+    files: dict[str, dict[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -1301,6 +1304,7 @@ class Reconciliation:
     receipt_names: dict[str, str]
     fixed: set[str]
     released: bool
+    replay: bool = False
 
 
 _ACTIVE_LEDGER_COMMIT: LedgerCommitIntent | None = None
@@ -1788,30 +1792,76 @@ def _answers_postcondition(
     expected: dict[str, AnswerExpectation],
 ) -> Callable[[Path, Path], bool]:
     def holds(findings_path: Path, _decisions_path: Path) -> bool:
-        findings, problems, vocabulary = parse(findings_path)
-        if validate(findings, problems, vocabulary):
-            return False
-        by_id = {finding.id: finding for finding in findings}
+        text = findings_path.read_text(encoding="utf-8")
         for identifier, answer in expected.items():
-            finding = by_id.get(identifier)
-            if (
-                finding is None
-                or finding.status != answer.status
-                or finding.blocked != answer.blocked
-            ):
-                return False
-            body = tuple(
-                line
-                for index, line in enumerate(finding.body)
-                if not finding.body_fenced[index]
-            )
-            if _contiguous_occurrences(body, answer.evidence) < (
-                answer.previous_occurrences + 1
-            ):
+            record = {
+                "id": identifier,
+                "status": answer.status,
+                "blocked": answer.blocked,
+                "evidence": list(answer.evidence),
+                "previous_occurrences": answer.previous_occurrences,
+                "previous_line_occurrences": answer.previous_line_occurrences,
+                "kind": answer.kind,
+            }
+            if _answer_effect_state(text, record) != "complete":
                 return False
         return True
 
     return holds
+
+
+def _answer_effect_state(
+    text: str, record: dict[str, object]
+) -> Literal["complete", "untouched", "inconsistent", "missing"]:
+    """Classify one recorded answer effect in a ledger text."""
+    identifier = cast(str, record["id"])
+    lines = text.splitlines()
+    fence_states = _fence_mask(lines)
+    target = _answer_target_spans(lines, fence_states, {identifier}).get(identifier)
+    if target is None:
+        return "missing"
+    header_index, end, header_match = target
+    status = cast(str, record["status"])
+    blocked = cast(str, record["blocked"])
+    kind = cast(str, record["kind"])
+    current_status = header_match.group("status")
+    current_blocked = header_match.group("blocked")
+    done_status = "rejected" if kind == "reject" else status
+    header_done = current_blocked == BLOCKER_NONE and current_status == done_status
+    header_untouched = current_blocked == blocked and current_status == status
+
+    evidence = tuple(cast(list[str], record["evidence"]))
+    previous_occurrences = cast(int, record["previous_occurrences"])
+    previous_lines = cast(dict[str, int], record["previous_line_occurrences"])
+    body = tuple(
+        lines[index]
+        for index in range(header_index + 1, end)
+        if fence_states[index] is FenceState.OUTSIDE
+    )
+    block_count = _contiguous_occurrences(body, evidence)
+    line_counts: dict[str, int] = {}
+    for line in body:
+        line_counts[line] = line_counts.get(line, 0) + 1
+    evidence_line_counts: dict[str, int] = {}
+    for line in evidence:
+        evidence_line_counts[line] = evidence_line_counts.get(line, 0) + 1
+    lines_done = all(
+        line_counts.get(line, 0) == previous_lines[line] + count
+        for line, count in evidence_line_counts.items()
+    )
+    lines_untouched = all(
+        line_counts.get(line, 0) == previous_lines[line]
+        for line in evidence_line_counts
+    )
+    evidence_done = (
+        block_count == previous_occurrences + 1 and lines_done
+    )
+    evidence_untouched = block_count == previous_occurrences and lines_untouched
+    if header_done and evidence_done:
+        return "complete"
+    if header_untouched and evidence_untouched:
+        return "untouched"
+    return "inconsistent"
 
 
 _READ_ERRORS_LEDGER = (OSError, UnicodeError, LedgerError)
@@ -4527,6 +4577,8 @@ def _write_claim_intent(
     ids: set[str] | None = None,
     receipt_ids: dict[str, dict[str, str]] | None = None,
     fixed: Collection[str] | None = None,
+    *,
+    files: dict[str, dict[str, object]] | None = None,
 ) -> None:
     payload: dict[str, object] = {"phase": phase}
     if ids is not None:
@@ -4535,6 +4587,8 @@ def _write_claim_intent(
         payload["receipt_ids"] = dict(sorted(receipt_ids.items()))
     if fixed is not None:
         payload["fixed"] = sorted(fixed)
+    if files is not None:
+        payload["files"] = dict(sorted(files.items()))
     intent = _claim_intent_path(claim)
     serialized = json.dumps(payload, sort_keys=True)
     _atomic_write(intent, serialized, durable_directory=True)
@@ -4544,52 +4598,6 @@ def _remove_claim_intent(claim: Path) -> None:
     _claim_intent_path(claim).unlink(missing_ok=True)
     for scratch in claim.glob(f"{MERGE_INTENT_NAME}.tmp-*"):
         scratch.unlink(missing_ok=True)
-
-
-def _answer_ids_are_complete(
-    ledger_text: str, ids: list[str], claimed: list[Path]
-) -> bool:
-    """Return whether every claimed answer payload is already in its entry."""
-    if len(ids) != len(claimed) or len(set(ids)) != len(ids):
-        return False
-
-    answer_bullets: dict[str, list[str]] = {}
-    for answer_path in claimed:
-        try:
-            record = _parse_answer_file(answer_path)
-        except (OSError, UnicodeError) as _exc:
-            return False
-        if record is None:
-            return False
-        identifier, bullet = record
-        if identifier not in ids or identifier in answer_bullets:
-            return False
-        answer_bullets[identifier] = bullet
-    if set(answer_bullets) != set(ids):
-        return False
-
-    lines = ledger_text.splitlines()
-    fence_states = _fence_mask(lines)
-    _, headers, _ = _unfenced_header_matches(ledger_text, fence_states)
-    header_indexes = {
-        match.group("id"): header_index
-        for _heading_index, header_index, match in headers
-    }
-    for identifier in ids:
-        header_index = header_indexes.get(identifier)
-        if header_index is None:
-            return False
-        match = HEADER_RE.match(lines[header_index])
-        if (
-            match is None
-            or classify_blocker(match.group("blocked")) == BLOCKER_ANSWERABLE
-        ):
-            return False
-        end = _find_entry_span(lines, fence_states, header_index)
-        entry_bullets = _decision_bullets(lines, fence_states, header_index + 1, end)
-        if answer_bullets[identifier] not in entry_bullets:
-            return False
-    return True
 
 
 def _complete_claim(
@@ -4686,6 +4694,115 @@ def _receipt_intent_key_is_valid(key: object) -> bool:
     )
 
 
+def _validate_answers_files(
+    claim: Path,
+    files: object,
+    ids: list[str],
+) -> dict[str, dict[str, object]]:
+    """Validate and authenticate the recorded effect of an answers claim."""
+    if not isinstance(files, dict):
+        raise ValueError("files must be an object")
+    if len(ids) != len(set(ids)) or set(ids) != {
+        value.get("id")
+        for value in files.values()
+        if isinstance(value, dict) and isinstance(value.get("id"), str)
+    }:
+        raise ValueError("files ids do not match ids")
+    result: dict[str, dict[str, object]] = {}
+    for name, value in files.items():
+        if (
+            not isinstance(name, str)
+            or not name.endswith(".md")
+            or name in {".", ".."}
+            or Path(name).name != name
+        ):
+            raise ValueError("invalid answers file name")
+        if not isinstance(value, dict):
+            raise ValueError("answers file records must be objects")
+        identifier = value.get("id")
+        blocked = value.get("blocked")
+        status = value.get("status")
+        kind = value.get("kind")
+        evidence = value.get("evidence")
+        previous_occurrences = value.get("previous_occurrences")
+        previous_line_occurrences = value.get("previous_line_occurrences")
+        if not isinstance(identifier, str) or ID_RE.fullmatch(identifier) is None:
+            raise ValueError("invalid answers file id")
+        if not isinstance(blocked, str) or blocked not in ANSWERABLE_BLOCKERS:
+            raise ValueError("answers file blocker is not answerable")
+        if not isinstance(status, str) or status not in STATUSES:
+            raise ValueError("invalid answers file status")
+        if kind not in {"decision", "approve", "reject"}:
+            raise ValueError("invalid answers file kind")
+        if (kind == "decision") != (blocked == FELIX_DECISION):
+            raise ValueError("answers file kind does not match blocker")
+        if (
+            not isinstance(evidence, list)
+            or not evidence
+            or not all(isinstance(line, str) for line in evidence)
+        ):
+            raise ValueError("invalid answers file evidence")
+        if (
+            not isinstance(previous_occurrences, int)
+            or isinstance(previous_occurrences, bool)
+            or previous_occurrences < 0
+        ):
+            raise ValueError("invalid previous evidence occurrence count")
+        if not isinstance(previous_line_occurrences, dict):
+            raise ValueError("invalid previous evidence line counts")
+        distinct_evidence = set(evidence)
+        if set(previous_line_occurrences) != distinct_evidence:
+            raise ValueError("previous evidence line counts do not match evidence")
+        if any(
+            not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 0
+            for count in previous_line_occurrences.values()
+        ):
+            raise ValueError("invalid previous evidence line count")
+        result[name] = value
+
+    if len({cast(str, value["id"]) for value in result.values()}) != len(result):
+        raise ValueError("duplicate answers file ids")
+
+    for name, value in result.items():
+        path = claim / name
+        if not path.exists():
+            continue
+        try:
+            parsed = _parse_answer_file(path)
+        except (OSError, UnicodeError) as exc:
+            raise LedgerError(f"could not read {path}: {exc}") from exc
+        if parsed is None:
+            raise LedgerError(f"could not read {path}: invalid answer file")
+        identifier, bullet = parsed
+        if identifier != value["id"]:
+            raise LedgerError(
+                f"could not read {path}: answer id {identifier} does not match "
+                f"recorded id {value['id']}"
+            )
+        kind = cast(str, value["kind"])
+        if kind != "decision":
+            try:
+                parsed_kind = _sentry_answer_kind(bullet)
+            except LedgerError as exc:
+                raise LedgerError(f"could not read {path}: {exc}") from exc
+            if parsed_kind != kind:
+                raise LedgerError(
+                    f"could not read {path}: answer kind {parsed_kind} does not "
+                    f"match recorded kind {kind}"
+                )
+            derived = bullet + _sentry_answer_evidence(bullet, kind)
+        else:
+            derived = bullet
+        if derived != value["evidence"]:
+            raise LedgerError(
+                f"could not read {path}: recorded evidence does not match the "
+                "answer file"
+            )
+    return result
+
+
 def _read_claim_intent(
     claim: Path, *, strict: bool = True
 ) -> ClaimIntent | None:
@@ -4774,6 +4891,8 @@ def _read_claim_intent(
             ):
                 raise ValueError("invalid ids")
             ids = list(raw_ids)
+            if len(ids) != len(set(ids)):
+                raise ValueError("duplicate ids")
 
         raw_fixed = record.get("fixed")
         if raw_fixed is None:
@@ -4788,6 +4907,9 @@ def _read_claim_intent(
             ):
                 raise ValueError("invalid fixed ids")
             fixed = set(raw_fixed)
+        files = None
+        if "files" in record:
+            files = _validate_answers_files(claim, record["files"], ids)
         return ClaimIntent(
             phase,
             ids,
@@ -4796,6 +4918,7 @@ def _read_claim_intent(
             fixed,
             raw_fixed is not None,
             claimed,
+            files,
         )
     except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
         raise LedgerError(f"could not read {intent_path}: {exc}") from exc
@@ -4819,7 +4942,7 @@ def _recover_claim(
         claim.rmdir()
         return
     claimed = list(intent.claimed)
-    if intent.phase == "prepared":
+    if intent.phase == "prepared" and not answers:
         ids = intent.ids
         if ids:
             try:
@@ -4830,10 +4953,6 @@ def _recover_claim(
                 ) from exc
             current_ids = header_ids(ledger_text)
             complete = all(identifier in current_ids for identifier in ids)
-            if answers:
-                complete = complete and _answer_ids_are_complete(
-                    ledger_text, ids, claimed
-                )
             if complete:
                 _complete_claim(
                     claim,
@@ -5301,7 +5420,7 @@ def _claim_entry_expectations(
         receipts.add(receipt_name)
 
     claimed_by_name = {path.name: path for path in intent.claimed}
-    for published, keys in records_by_file.items():
+    for published in records_by_file:
         if published not in claimed_by_name:
             raise LedgerError(
                 f"recorded filing {published} is missing from {claim}; the claim is "
@@ -5380,6 +5499,133 @@ def _reset_nonfixed_ids(text: str, fixed: Collection[str]) -> str:
     return "\n".join(lines)
 
 
+def _reconcile_prepared_claim(
+    claim: Path,
+    spool: Path,
+    snapshot: HeadSnapshot | None,
+    working_text: str,
+    *,
+    records: dict[str, tuple[Path, object]],
+    classify: Callable[[object, str | None, str], str],
+    finish_present: Callable[[Collection[str]], None],
+    waiting_message: Callable[[Path, str], str],
+    missing_message: Callable[[Path, str], str],
+) -> Reconciliation:
+    """Run the crash-safe lifecycle shared by inbox and answers claims."""
+    intent = _read_claim_intent(claim)
+    if intent is None:
+        return Reconciliation([], {}, set(), False)
+    if intent.phase != "prepared":
+        raise LedgerError(
+            f"claim intent {_claim_intent_path(claim)} has phase {intent.phase!r}; "
+            "the claim is kept — inspect it by hand"
+        )
+
+    keys_by_path: dict[Path, list[str]] = {}
+    for key, (path, _record) in records.items():
+        keys_by_path.setdefault(path, []).append(key)
+        if path not in intent.claimed:
+            raise LedgerError(missing_message(path, key))
+    for path in intent.claimed:
+        if path not in keys_by_path:
+            raise LedgerError(
+                f"{path} is in {claim} but not in its intent; move it back to "
+                f"{spool} by hand, then retry"
+            )
+
+    head_text = snapshot.findings_text if snapshot is not None else None
+    states: dict[str, str] = {}
+    path_states: dict[Path, set[str]] = {}
+    for key, (path, record) in records.items():
+        state = classify(record, head_text, working_text)
+        states[key] = state
+        path_states.setdefault(path, set()).add(state)
+
+    for path, path_state in path_states.items():
+        if len(path_state) != 1:
+            raise LedgerError(
+                f"{path} in {claim} holds entries in different durability states; "
+                "the claim is kept — inspect it by hand"
+            )
+        state = next(iter(path_state))
+        if state == "waiting":
+            raise LedgerError(waiting_message(path, keys_by_path[path][0]))
+
+    present_keys = [key for key, state in states.items() if state == "present"]
+    absent = [
+        path
+        for path, path_state in path_states.items()
+        if path_state == {"absent"}
+    ]
+    receipt_names: dict[str, str] = {}
+    for key in records:
+        receipt = intent.receipt_ids.get(key)
+        receipt_names[key] = (
+            receipt.get("receipt", f"{key}.json")
+            if isinstance(receipt, dict)
+            else f"{key}.json"
+        )
+
+    if present_keys:
+        finish_present(present_keys)
+        remaining_keys = set(records) - set(present_keys)
+        present_ids = {
+            (
+                intent.receipt_ids[key]["id"]
+                if isinstance(intent.receipt_ids.get(key), dict)
+                else cast(dict[str, object], records[key][1])["id"]
+            )
+            for key in present_keys
+            if (
+                isinstance(intent.receipt_ids.get(key), dict)
+                or (
+                    isinstance(records[key][1], dict)
+                    and isinstance(records[key][1].get("id"), str)
+                )
+            )
+        }
+        remaining_ids = set(intent.ids) - cast(set[str], present_ids)
+        remaining_receipts = {
+            key: value
+            for key, value in intent.receipt_ids.items()
+            if key in remaining_keys
+        }
+        remaining_files = None
+        if intent.files is not None:
+            remaining_files = {
+                name: value
+                for name, value in intent.files.items()
+                if any(path.name == name for path in absent)
+            }
+        intent_kwargs: dict[str, object] = {}
+        if remaining_files is not None:
+            intent_kwargs["files"] = remaining_files
+        _write_claim_intent(
+            claim,
+            "prepared",
+            cast(set[str], remaining_ids),
+            cast(dict[str, dict[str, str]], remaining_receipts)
+            if remaining_receipts
+            else None,
+            fixed=intent.fixed,
+            **intent_kwargs,
+        )
+        for path, path_state in path_states.items():
+            if path_state == {"present"}:
+                path.unlink()
+
+    present_paths = {
+        path for path, path_state in path_states.items() if path_state == {"present"}
+    }
+    remaining_paths = [
+        path for path in intent.claimed if path.exists() and path not in present_paths
+    ]
+    if not remaining_paths:
+        release_spool(claim, spool, [], publish_locked=True)
+        return Reconciliation([], receipt_names, set(intent.fixed), not claim.exists())
+    return Reconciliation(absent, receipt_names, set(intent.fixed), False)
+
+
 def _reconcile_inbox_claim(
     claim: Path, inbox: Path, ledger: Path, decisions: Path
 ) -> Reconciliation:
@@ -5419,86 +5665,64 @@ def _reconcile_inbox_claim(
 
     head_by_id = {finding.id: finding for finding in head_findings}
     working_by_id = {finding.id: finding for finding in working_findings}
-    file_buckets: dict[Path, set[str]] = {}
-    absent: list[Path] = []
-    present_keys: list[str] = []
-    receipt_names: dict[str, str] = {}
     for filing_key, (path, expected) in entry_expectations.items():
+        if filing_key not in intent.receipt_ids:
+            raise LedgerError(
+                f"{path} in {claim} holds entries its intent does not record; the "
+                "claim is kept — inspect it by hand"
+            )
+
+    def classify(
+        expected_object: object, _head_text: str | None, _working: str
+    ) -> str:
+        # The parsed expectation maps above are the source of truth for this callback.
+        expected = cast(FindingExpectation, expected_object)
         head = head_by_id.get(expected.identifier)
-        working = working_by_id.get(expected.identifier)
+        working_finding = working_by_id.get(expected.identifier)
+        path = next(
+            path
+            for path, candidate in entry_expectations.values()
+            if candidate.identifier == expected.identifier
+        )
         if head is not None:
             if not _finding_identity_preserved(expected, head):
                 raise LedgerError(
                     f"entry {expected.identifier} in HEAD is not the claimed filing "
                     f"{path.name}; the claim is kept — inspect it by hand"
                 )
-            bucket = "present"
-        elif working is not None:
-            if not _finding_identity_preserved(expected, working):
+            return "present"
+        if working_finding is not None:
+            if not _finding_identity_preserved(expected, working_finding):
                 raise LedgerError(
                     f"entry {expected.identifier} in the working ledger is not the "
                     f"claimed filing {path.name}; the claim is kept — inspect it by hand"
                 )
-            bucket = "waiting"
-        else:
-            bucket = "absent"
-        file_buckets.setdefault(path, set()).add(bucket)
-        if bucket == "present":
-            present_keys.append(filing_key)
-        elif bucket == "absent" and path not in absent:
-            absent.append(path)
-        record = intent.receipt_ids[filing_key]
-        assert isinstance(record, dict)
-        receipt_names[filing_key] = record.get("receipt", f"{filing_key}.json")
+            return "waiting"
+        return "absent"
 
-    for path, path_buckets in file_buckets.items():
-        if len(path_buckets) > 1:
-            raise LedgerError(
-                f"{path} in {claim} holds entries in different durability states; "
-                "the claim is kept — inspect it by hand"
-            )
-        if "waiting" in path_buckets:
-            decisions_hint = f" [{decisions}]" if decisions.exists() else ""
-            raise LedgerError(
-                f"a merged batch in {claim} is not durable yet (the entries are in "
-                f"the working ledger but not in HEAD); commit it first: git commit -- "
-                f"{ledger}{decisions_hint}"
-            )
-
-    present_paths = [path for path, path_buckets in file_buckets.items() if path_buckets == {"present"}]
-    if present_paths:
-        _write_merged_receipts(
+    decisions_hint = f" [{decisions}]" if decisions.exists() else ""
+    return _reconcile_prepared_claim(
+        claim,
+        inbox,
+        snapshot,
+        working_text,
+        records=entry_expectations,
+        classify=classify,
+        finish_present=lambda keys: _write_merged_receipts(
             inbox,
-            _receipt_records_from_intent(
-                claim, intent.receipt_ids, keys=present_keys
-            ),
-        )
-        remaining = {
-            key: value
-            for key, value in intent.receipt_ids.items()
-            if key not in present_keys
-        }
-        remaining_ids = {
-            value["id"] if isinstance(value, dict) else value
-            for value in remaining.values()
-        }
-        _write_claim_intent(
-            claim,
-            "prepared",
-            remaining_ids,
-            cast(dict[str, dict[str, str]], remaining),
-            fixed=intent.fixed,
-        )
-        for path in present_paths:
-            path.unlink(missing_ok=True)
-
-    remaining_paths = [
-        path for path in intent.claimed if path.exists() and path not in present_paths
-    ]
-    if not remaining_paths:
-        release_spool(claim, inbox, [], publish_locked=True)
-        return Reconciliation(absent, receipt_names, set(intent.fixed), not claim.exists())
-    return Reconciliation(absent, receipt_names, set(intent.fixed), False)
+            _receipt_records_from_intent(claim, intent.receipt_ids, keys=keys),
+        ),
+        waiting_message=lambda _path, _key: (
+            f"a merged batch in {claim} is not durable yet (the entries are in "
+            f"the working ledger but not in HEAD); commit it first: git commit -- "
+            f"{ledger}{decisions_hint}"
+        ),
+        missing_message=lambda path, _key: (
+            f"recorded filing {path.name} is missing from {claim}; the claim is "
+            "kept — if its receipt reads merged and HEAD holds that filing, "
+            "remove the record by hand, otherwise restore the file"
+        ),
+    )
 
 
 def _ledger_bytes_postcondition(
@@ -5570,6 +5794,148 @@ def _settle_pending_ledger_dirt(intent: LedgerCommitIntent) -> None:
         )
 
 
+def _answers_legacy_intent_message(
+    claim: Path, answers: Path, ledger: Path, mode: str
+) -> str:
+    basis = (
+        f"as committed in HEAD, after committing any pending ledger changes"
+        if mode == "deferred"
+        else f"in the working {ledger}"
+    )
+    return (
+        f"answers claim intent {_claim_intent_path(claim)} was written before answer "
+        "effects were recorded, so no answer in it can be judged automatically; "
+        f"for each answer file in {claim} compare its entry {basis} with the complete "
+        "effect the answer grammar in references/findings-ledger-contract.md "
+        "prescribes (the header transition — Status: rejected for a Sentry reject — "
+        "and every evidence line: the Decision made bullet, plus Approved: or Why "
+        "rejected: for a Sentry answer): delete the file only if the entry holds that "
+        "complete effect exactly once; move it back to "
+        f"{answers} only if the entry holds none of it (still parked on its blocker, "
+        "no copy of any evidence line); repair every other state by hand first; every "
+        "id in the intent's ids must be accounted for — an id with no answer file in "
+        f"{claim} needs its answer restored or its entry resolved by hand; only then "
+        f"remove {claim}"
+    )
+
+
+def _reconcile_answers_claim(
+    claim: Path,
+    answers: Path,
+    ledger: Path,
+    decisions: Path,
+    mode: str,
+) -> Reconciliation:
+    """Classify a prepared answers claim by its recorded effect."""
+    intent = _read_claim_intent(claim)
+    if intent is None:
+        return Reconciliation([], {}, set(), False)
+    if intent.files is None:
+        raise LedgerError(_answers_legacy_intent_message(claim, answers, ledger, mode))
+    records = {
+        name: (claim / name, value) for name, value in intent.files.items()
+    }
+    working_text = ledger.read_text(encoding="utf-8")
+
+    def missing(path: Path, name: str) -> str:
+        if (answers / name).exists():
+            return (
+                f"recorded answer {name} is missing from {claim} but present in "
+                f"{answers}: a replay was interrupted — move the remaining files of "
+                f"{claim} back to {answers}, remove {claim}, then re-run apply-answers"
+            )
+        return (
+            f"recorded answer {name} is missing from {claim}; restore it from "
+            f"{answers} history or inspect {ledger} by hand"
+        )
+
+    if mode != "deferred":
+        claimed_by_name = {path.name: path for path in intent.claimed}
+        for name, (path, _record) in records.items():
+            if path not in intent.claimed:
+                raise LedgerError(missing(path, name))
+
+        states: dict[str, str] = {}
+        for name, (_path, record) in records.items():
+            state = _answer_effect_state(working_text, record)
+            states[name] = state
+            if state not in {"complete", "untouched"}:
+                identifier = cast(str, record["id"])
+                raise LedgerError(
+                    f"answer {name} for {identifier} is {state} in the working "
+                    "ledger; the claim is kept — inspect the entry and the answer "
+                    "by hand"
+                )
+
+        every_claimed_recorded = all(
+            name in records for name in claimed_by_name
+        )
+        if every_claimed_recorded and all(
+            state == "complete" for state in states.values()
+        ):
+            for path in intent.claimed:
+                path.unlink(missing_ok=True)
+            release_spool(claim, answers, [], publish_locked=True)
+            return Reconciliation([], {}, set(), not claim.exists())
+        return Reconciliation([], {}, set(), False, replay=True)
+
+    def classify(record_object: object, head_text: str | None, working: str) -> str:
+        record = cast(dict[str, object], record_object)
+        identifier = cast(str, record["id"])
+        if head_text is not None:
+            head_state = _answer_effect_state(head_text, record)
+            if head_state == "complete":
+                return "present"
+            if head_state != "untouched":
+                raise LedgerError(
+                    f"answer {next(name for name, value in records.items() if value[1] is record)} "
+                    f"for {identifier} is {head_state} in HEAD; the claim is kept — "
+                    "inspect the entry and the answer by hand"
+                )
+        working_state = _answer_effect_state(working, record)
+        if working_state == "complete":
+            return "waiting" if head_text is not None else "present"
+        if working_state == "untouched":
+            return "absent"
+        name = next(name for name, value in records.items() if value[1] is record)
+        raise LedgerError(
+            f"answer {name} for {identifier} is {working_state} in the working ledger; "
+            "the claim is kept — inspect the entry and the answer by hand"
+        )
+
+    def waiting(_path: Path, _name: str) -> str:
+        return (
+            f"an applied answer batch in {claim} is not durable yet (the answers are "
+            f"in the working ledger but not in HEAD); commit it first: git commit -- "
+            f"{ledger}"
+        )
+
+    def run(snapshot: HeadSnapshot | None) -> Reconciliation:
+        return _reconcile_prepared_claim(
+            claim,
+            answers,
+            snapshot,
+            working_text,
+            records=records,
+            classify=classify,
+            finish_present=lambda _keys: None,
+            waiting_message=waiting,
+            missing_message=missing,
+        )
+
+    if mode == "deferred":
+        with _head_ledger_snapshot(ledger, decisions) as snapshot:
+            if snapshot.findings_text is None:
+                raise LedgerError(f"{ledger} is not in HEAD; commit it first")
+            if not snapshot.valid:
+                raise LedgerError(
+                    f"HEAD does not validate: {snapshot.detail}; repair and commit the "
+                    "ledgers first"
+                )
+            return run(snapshot)
+    return run(None)
+
+
 def _finalize_inbox_claim_locked(
     claim: Path,
     inbox: Path,
@@ -5615,10 +5981,46 @@ def _finalize_inbox_claim_locked(
     return "finalized"
 
 
-def _finalize_inbox_claim(
-    claim: Path, inbox: Path, ledger: Path, decisions: Path, mode: str
+def _finalize_answers_claim_locked(
+    claim: Path,
+    answers: Path,
+    ledger: Path,
+    decisions: Path,
+    mode: str,
 ) -> str:
-    """Finalise a durable claim while holding the merge lock order."""
+    if mode == "deferred":
+        _require_deferred_ledger_tracked(ledger)
+    intent = _read_claim_intent(claim, strict=mode == "deferred")
+    if intent is None:
+        if claim.exists():
+            raise LedgerError(
+                f"claim {claim} has no durable intent; remove it by hand before "
+                "finalizing"
+            )
+        return "none"
+    if intent.phase == "claimed":
+        return "replay"
+    reconciliation = _reconcile_answers_claim(
+        claim, answers, ledger, decisions, mode
+    )
+    if reconciliation.released:
+        return "finalized"
+    if reconciliation.replay:
+        return "replay"
+    if not reconciliation.absent and not list(claim.glob("*.md")):
+        return "cleanup-failed"
+    return "replay"
+
+
+def _finalize_claim(
+    claim: Path,
+    spool: Path,
+    ledger: Path,
+    decisions: Path,
+    mode: str,
+    locked_finalizer: Callable[[Path, Path, Path, Path, str], str],
+) -> str:
+    """Finalise one claim while holding the canonical ledger/publish lock order."""
     lock = ledger_lock_path(ledger)
     try:
         acquired, waited_seconds = acquire_ledger_lock(lock)
@@ -5627,21 +6029,49 @@ def _finalize_inbox_claim(
     if not acquired:
         return f"busy: ledger lock {lock} remained busy after {waited_seconds:.2f}s"
     try:
-        with _publish_lock(publish_lock_path(inbox)):
-            return _finalize_inbox_claim_locked(
-                claim, inbox, ledger, decisions, mode
-            )
+        with _publish_lock(publish_lock_path(spool)):
+            return locked_finalizer(claim, spool, ledger, decisions, mode)
     finally:
         release_ledger_lock(lock)
 
 
+def _finalize_answers_claim(
+    claim: Path, answers: Path, ledger: Path, decisions: Path, mode: str
+) -> str:
+    """Finalise an answers claim while holding the canonical lock order."""
+    return _finalize_claim(
+        claim,
+        answers,
+        ledger,
+        decisions,
+        mode,
+        _finalize_answers_claim_locked,
+    )
+
+
+def _finalize_inbox_claim(
+    claim: Path, inbox: Path, ledger: Path, decisions: Path, mode: str
+) -> str:
+    """Finalise a durable claim while holding the merge lock order."""
+    return _finalize_claim(
+        claim,
+        inbox,
+        ledger,
+        decisions,
+        mode,
+        _finalize_inbox_claim_locked,
+    )
+
+
 def cmd_finalize_claims(args: argparse.Namespace) -> int:
     """Release only claims whose entries are proven in HEAD."""
-    claim = args.inbox.with_name(f"{args.inbox.name}.claim")
+    decisions = _args_decisions(args)
+    inbox_claim = args.inbox.with_name(f"{args.inbox.name}.claim")
+    answers_claim = args.answers.with_name(f"{args.answers.name}.claim")
     try:
         mode = _claim_finalisation_mode(args.ledger, merge_without_intent=False)
         if mode == "deferred":
-            _deferred_preconditions(args.ledger, args.decisions)
+            _deferred_preconditions(args.ledger, decisions)
     except LedgerError as exc:
         print(f"FAIL {exc}", file=sys.stderr)
         return 1
@@ -5654,31 +6084,65 @@ def cmd_finalize_claims(args: argparse.Namespace) -> int:
         return 1
     if not acquired:
         return _report_ledger_lock_busy(lock, waited_seconds)
+    outcomes: list[tuple[Path, str | None]] = []
     try:
-        with _publish_lock(publish_lock_path(args.inbox)):
+        if mode == "immediate":
             try:
-                outcome = _finalize_inbox_claim_locked(
-                    claim, args.inbox, args.ledger, args.decisions, mode
+                original = args.ledger.read_text(encoding="utf-8")
+                issues = _validate_text(original, args.ledger)
+            except (OSError, UnicodeError) as exc:
+                print(
+                    f"FAIL could not read ledger {args.ledger}: {exc}",
+                    file=sys.stderr,
                 )
-            except LedgerError as exc:
-                print(f"FAIL {exc}", file=sys.stderr)
                 return 1
+            if issues:
+                print(
+                    f"FAIL the working ledger does not validate: {'; '.join(issues)}",
+                    file=sys.stderr,
+                )
+                return 1
+        for claim, spool, finalizer in (
+            (
+                inbox_claim,
+                args.inbox,
+                _finalize_inbox_claim_locked,
+            ),
+            (
+                answers_claim,
+                args.answers,
+                _finalize_answers_claim_locked,
+            ),
+        ):
+            try:
+                with _publish_lock(publish_lock_path(spool)):
+                    outcome = finalizer(
+                        claim, spool, args.ledger, decisions, mode
+                    )
+            except (LedgerError, OSError, UnicodeError) as exc:
+                print(f"FAIL {claim}: {exc}", file=sys.stderr)
+                outcomes.append((claim, None))
+                continue
+            outcomes.append((claim, outcome))
     finally:
         release_ledger_lock(lock)
 
-    if outcome == "none":
-        print(f"none {claim}")
-        return 0
-    if outcome == "finalized":
-        print(f"finalized {claim}")
-        return 0
-    if outcome == "cleanup-failed":
-        print(
-            f"cleanup failed {claim}: remove it by hand once its receipts read merged"
-        )
-        return 1
-    print(f"will be replayed by the next merge {claim}")
-    return 1
+    return_code = 0
+    for claim, outcome in outcomes:
+        if outcome is None:
+            return_code = 1
+        elif outcome == "none":
+            print(f"none {claim}")
+        elif outcome == "finalized":
+            print(f"finalized {claim}")
+        elif outcome == "cleanup-failed":
+            print(f"cleanup failed {claim}: remove it by hand")
+            return_code = 1
+        else:
+            next_command = "apply-answers" if claim == answers_claim else "merge"
+            print(f"will be replayed by the next {next_command} {claim}")
+            return_code = 1
+    return return_code
 
 
 def merge_inbox(
@@ -6068,9 +6532,18 @@ def _merge_inbox_publish_locked(
     return MergeResult(0, assigned_by_file)
 
 
+def _args_decisions(args: argparse.Namespace) -> Path:
+    """Return the decisions ledger a command names, defaulting beside the findings ledger.
+
+    Direct in-process callers pass namespaces without ``decisions``; the parser always sets it.
+    """
+    decisions = getattr(args, "decisions", None)
+    return decisions if decisions is not None else args.ledger.parent / "decisions.md"
+
+
 def cmd_merge_inbox(args: argparse.Namespace) -> int:
     """CLI entry point over the shared inbox merge implementation."""
-    return merge_inbox(args.inbox, args.ledger, decisions=args.decisions).returncode
+    return merge_inbox(args.inbox, args.ledger, decisions=_args_decisions(args)).returncode
 
 
 def _drain_lock_marker_reason(contents: bytes) -> str | None:
@@ -6145,7 +6618,7 @@ def cmd_file(args: argparse.Namespace) -> int:
     if not bool(getattr(args, "spool_only", False)):
         drain_held, _reason, _unreadable = _drain_lock_state(drain_lock_path())
         if not drain_held:
-            decisions = getattr(args, "decisions", args.ledger.parent / "decisions.md")
+            decisions = _args_decisions(args)
             mode = _claim_finalisation_mode(
                 args.ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
             )
@@ -6387,7 +6860,7 @@ def cmd_file(args: argparse.Namespace) -> int:
                 print(f"WARNING STALE drain lock {lock}: {reason}; proceeding to merge")
 
     try:
-        result = merge_inbox(inbox, args.ledger, decisions=args.decisions)
+        result = merge_inbox(inbox, args.ledger, decisions=_args_decisions(args))
     finally:
         if lock_fd is not None:
             with suppress(OSError):
@@ -6838,6 +7311,27 @@ def _find_entry_span(
     while end > header_index + 1 and not lines[end - 1].strip():
         end -= 1
     return end
+
+
+def _answer_target_spans(
+    lines: list[str],
+    fence_states: list[FenceState],
+    ids: Collection[str],
+) -> dict[str, tuple[int, int, re.Match[str]]]:
+    """Locate answer targets with the same parser boundaries as the ledger."""
+    wanted = set(ids)
+    text = "\n".join(lines)
+    _source, headers, _orphans = _unfenced_header_matches(text, fence_states)
+    spans: dict[str, tuple[int, int, re.Match[str]]] = {}
+    for _heading_index, header_index, match in headers:
+        identifier = match.group("id")
+        if identifier in wanted and identifier not in spans:
+            spans[identifier] = (
+                header_index,
+                _find_entry_span(lines, fence_states, header_index),
+                match,
+            )
+    return spans
 
 
 def _decision_heading_matches(
@@ -7523,6 +8017,17 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
     """Fold answers through the shared locked mutation pipeline."""
     spool: Path = args.answers
     claim = spool.with_name(f"{spool.name}.claim")
+    decisions = getattr(args, "decisions", args.ledger.parent / "decisions.md")
+    mode = _claim_finalisation_mode(
+        args.ledger, merge_without_intent=_ACTIVE_LEDGER_COMMIT is None
+    )
+    if mode == "deferred":
+        _deferred_preconditions(args.ledger, decisions)
+        if (
+            _ACTIVE_LEDGER_COMMIT is not None
+            and os.environ.get(LEDGER_COMMIT_ENV) != "0"
+        ):
+            _settle_pending_ledger_dirt(_ACTIVE_LEDGER_COMMIT)
     # Check the leftover claim first. A refused batch normally leaves the spool
     # empty, so testing for an empty or absent spool first would hide the stop
     # signal that says answers are stranded outside the ledger.
@@ -7535,14 +8040,67 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
 
     def build(text: str) -> str:
         nonlocal claimed
+        issues = _validate_text(text, args.ledger)
+        if issues:
+            raise LedgerError(
+                f"the working ledger does not validate: {'; '.join(issues)}; "
+                f"nothing in {spool} or {claim} was touched — repair it first"
+            )
         with _publish_lock(publish_lock_path(spool)):
             _refuse_unapplied_answers(spool)
             if not _adopt_orphan_parts(spool):
                 raise LedgerError(
                     f"could not adopt every orphan in answers spool {spool}"
                 )
-            _recover_claim(claim, spool, args.ledger, answers=True, publish_locked=True)
-            claimed = claim_spool(spool, claim)
+            if claim.exists():
+                existing_intent = _read_claim_intent(
+                    claim, strict=mode == "deferred"
+                )
+                if (
+                    existing_intent is not None
+                    and existing_intent.phase == "prepared"
+                ):
+                    if existing_intent.files is None:
+                        raise LedgerError(
+                            _answers_legacy_intent_message(
+                                claim.resolve(),
+                                spool.resolve(),
+                                args.ledger.resolve(),
+                                mode,
+                            )
+                        )
+                    reconciliation = _reconcile_answers_claim(
+                        claim, spool, args.ledger, decisions, mode
+                    )
+                    if mode != "deferred" and reconciliation.replay:
+                        _recover_claim(
+                            claim,
+                            spool,
+                            args.ledger,
+                            answers=True,
+                            publish_locked=True,
+                        )
+                else:
+                    _recover_claim(
+                        claim,
+                        spool,
+                        args.ledger,
+                        answers=True,
+                        publish_locked=True,
+                    )
+            existing_claimed = (
+                sorted(claim.glob("*.md")) if claim.exists() else []
+            )
+            newly_claimed = claim_spool(
+                spool,
+                claim,
+                into_existing=claim.exists(),
+            )
+            claimed = (
+                sorted(existing_claimed + newly_claimed)
+                if newly_claimed is not None
+                else None
+            )
         if claimed is None:
             raise LedgerError(
                 f"a previously refused answers batch is still unresolved: {claim}"
@@ -7584,52 +8142,13 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             finding_id: (answer_path, bullet)
             for answer_path, finding_id, bullet in answer_records
         }
-        target_spans: dict[str, tuple[int, int, re.Match[str]]] = {}
-        active_header: tuple[int, re.Match[str]] | None = None
-        pending_heading = False
-
-        def record_active_entry_end(boundary: int) -> None:
-            """Record a target's header and insertion point at its boundary."""
-            if active_header is None:
-                return
-            header_index, header_match = active_header
-            finding_id = header_match.group("id")
-            if finding_id not in answer_by_id or finding_id in target_spans:
-                return
-            end = boundary
-            while end > header_index + 1 and not lines[end - 1].strip():
-                end -= 1
-            target_spans[finding_id] = (header_index, end, header_match)
-
-        for index, line in enumerate(lines):
-            fence_state = ledger_fence_states[index]
-            if fence_state is not FenceState.OUTSIDE:
-                continue
-            if pending_heading:
-                if not line.strip():
-                    continue
-                pending_heading = False
-                header_match = HEADER_RE.match(line)
-                if header_match is not None:
-                    active_header = (index, header_match)
-                    continue
-            if line.startswith(ENTRY_MARKER):
-                record_active_entry_end(index)
-                active_header = None
-                pending_heading = True
-            elif (
-                line.startswith("# ")
-                or line.startswith("## ")
-                or HRULE_RE.match(line) is not None
-            ):
-                record_active_entry_end(index)
-                active_header = None
-
-        record_active_entry_end(len(lines))
+        target_spans = _answer_target_spans(
+            lines, ledger_fence_states, answer_by_id
+        )
 
         header_updates: dict[int, str] = {}
         insertions: dict[int, list[str]] = {}
-        waiting_records: list[tuple[Path, str, list[str]]] = []
+        waiting_records: list[dict[str, object]] = []
         already_applied: list[tuple[Path, str]] = []
         to_quarantine: list[tuple[Path, str, Path]] = []
         for answer_path, finding_id, bullet in answer_records:
@@ -7641,7 +8160,42 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             header_index, end, header_match = target
             blocked = header_match.group("blocked")
             if classify_blocker(blocked) == BLOCKER_ANSWERABLE:
-                waiting_records.append((answer_path, finding_id, bullet))
+                kind = "decision"
+                evidence = list(bullet)
+                if blocked == FELIX_SENTRY_ORIGIN:
+                    try:
+                        kind = _sentry_answer_kind(bullet)
+                    except LedgerError as exc:
+                        raise LedgerError(
+                            f"{answer_path.name} answers {finding_id}: {exc}"
+                        ) from exc
+                    evidence += _sentry_answer_evidence(bullet, kind)
+                body = tuple(
+                    lines[index]
+                    for index in range(header_index + 1, end)
+                    if ledger_fence_states[index] is FenceState.OUTSIDE
+                )
+                line_counts: dict[str, int] = {}
+                for line in body:
+                    line_counts[line] = line_counts.get(line, 0) + 1
+                previous_line_occurrences = {
+                    line: line_counts.get(line, 0) for line in set(evidence)
+                }
+                waiting_records.append(
+                    {
+                        "path": answer_path,
+                        "id": finding_id,
+                        "bullet": bullet,
+                        "blocked": blocked,
+                        "status": header_match.group("status"),
+                        "kind": kind,
+                        "evidence": evidence,
+                        "previous_occurrences": _contiguous_occurrences(
+                            body, tuple(evidence)
+                        ),
+                        "previous_line_occurrences": previous_line_occurrences,
+                    }
+                )
                 continue
             entry_bullets = _decision_bullets(
                 lines, ledger_fence_states, header_index + 1, end
@@ -7670,20 +8224,15 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                 f"{destination.name})"
             )
 
-        for answer_path, finding_id, bullet in waiting_records:
+        for record in waiting_records:
+            finding_id = cast(str, record["id"])
+            bullet = cast(list[str], record["bullet"])
+            blocked = cast(str, record["blocked"])
+            kind = cast(str, record["kind"])
             target = target_spans[finding_id]
             header_index, end, header_match = target
-            blocked = header_match.group("blocked")
-            evidence: list[str] = []
             updated_header = lines[header_index]
             if blocked == FELIX_SENTRY_ORIGIN:
-                try:
-                    kind = _sentry_answer_kind(bullet)
-                except LedgerError as exc:
-                    raise LedgerError(
-                        f"{answer_path.name} answers {finding_id}: {exc}"
-                    ) from exc
-                evidence = _sentry_answer_evidence(bullet, kind)
                 if kind == "reject":
                     updated_header = re.sub(
                         r"(\*\*Status:\*\* )\S+",
@@ -7695,31 +8244,38 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                 f"**Blocked:** {blocked}", "**Blocked:** none"
             )
             header_updates[header_index] = updated_header
-            insertions[end] = bullet + evidence
+            evidence = cast(list[str], record["evidence"])
+            insertions[end] = evidence
             applied.append(finding_id)
 
         expected_answers: dict[str, AnswerExpectation] = {}
-        for _answer_path, finding_id, _bullet in waiting_records:
+        answer_files: dict[str, dict[str, object]] = {}
+        for record in waiting_records:
+            answer_path = cast(Path, record["path"])
+            finding_id = cast(str, record["id"])
             header_index, end, _header_match = target_spans[finding_id]
             updated = HEADER_RE.match(header_updates[header_index])
             assert updated is not None
             expected_evidence = tuple(insertions[end])
-            existing_body = tuple(
-                line
-                for index, line in enumerate(lines[header_index + 1 : end])
-                if ledger_fence_states[header_index + 1 + index]
-                is FenceState.OUTSIDE
-                and line.strip()
-                and not HRULE_RE.fullmatch(line)
-            )
             expected_answers[finding_id] = AnswerExpectation(
                 status=updated.group("status"),
                 blocked=updated.group("blocked"),
                 evidence=expected_evidence,
-                previous_occurrences=_contiguous_occurrences(
-                    existing_body, expected_evidence
+                previous_occurrences=cast(int, record["previous_occurrences"]),
+                previous_line_occurrences=cast(
+                    dict[str, int], record["previous_line_occurrences"]
                 ),
+                kind=cast(str, record["kind"]),
             )
+            answer_files[answer_path.name] = {
+                "id": finding_id,
+                "blocked": record["blocked"],
+                "status": record["status"],
+                "kind": record["kind"],
+                "evidence": record["evidence"],
+                "previous_occurrences": record["previous_occurrences"],
+                "previous_line_occurrences": record["previous_line_occurrences"],
+            }
         if expected_answers:
             _register_ledger_commit(
                 f"docs(findings): apply answers for {' '.join(expected_answers)}",
@@ -7735,15 +8291,29 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                 result_lines.append(header_updates.get(index, lines[index]))
 
         if waiting_records:
+            existing_intent = _read_claim_intent(claim, strict=mode == "deferred")
+            if existing_intent is not None and existing_intent.files is not None:
+                existing_files = dict(existing_intent.files)
+                existing_files.update(answer_files)
+                answer_files = existing_files
             _write_claim_intent(
                 claim,
                 "prepared",
-                {finding_id for _path, finding_id, _bullet in waiting_records},
+                {
+                    cast(str, record["id"])
+                    for record in answer_files.values()
+                },
+                files=answer_files,
             )
+            if mode == "deferred" and _ACTIVE_LEDGER_COMMIT is not None:
+                _ACTIVE_LEDGER_COMMIT.claim = claim
+                _ACTIVE_LEDGER_COMMIT.finalize = lambda: _finalize_answers_claim(
+                    claim, spool, args.ledger, decisions, "deferred"
+                )
         return _with_final_newline(text, result_lines)
 
     def clean_committed_claim() -> None:
-        if claimed:
+        if claimed and (mode != "deferred" or not applied):
             release_spool(claim, spool, claimed)
 
     _locked_ledger_mutation(
@@ -7881,9 +8451,28 @@ def _warn_ledger_commit(
     if companion_scratch is not None:
         recovery += f"; companion bytes: {companion_scratch}"
     if intent.claim is not None:
+        if intent.command == "apply-answers":
+            recovery += (
+                f"; the claim at {intent.claim} keeps the answers for the next "
+                "apply-answers or finalize-claims"
+            )
+        else:
+            recovery += (
+                f"; the claim at {intent.claim} keeps the batch for the next merge "
+                "or finalize-claims"
+            )
+        writer = Path(__file__).resolve()
+        answers = intent.claim.parent / intent.claim.name.removesuffix(".claim")
+        inbox = INBOX if intent.command == "apply-answers" else answers
+        answers_option = (
+            f" --answers {_resolved_repo_path(answers)}"
+            if intent.command == "apply-answers"
+            else ""
+        )
         recovery += (
-            f"; the claim at {intent.claim} keeps the batch for the next merge "
-            "or finalize-claims"
+            f"; run {writer} --ledger {_resolved_repo_path(intent.ledger)} "
+            f"--decisions {_resolved_repo_path(intent.decisions)} finalize-claims "
+            f"--inbox {_resolved_repo_path(inbox)}{answers_option}"
         )
     if intent.provisional:
         recovery += (
@@ -8078,6 +8667,7 @@ def main(argv: list[str] | None = None) -> int:
         "finalize-claims", help="release prepared claims proven durable in HEAD"
     )
     p_finalize.add_argument("--inbox", type=Path, default=None, help=argparse.SUPPRESS)
+    p_finalize.add_argument("--answers", type=Path, default=None, help=argparse.SUPPRESS)
     p_finalize.set_defaults(func=cmd_finalize_claims)
 
     p_dec = sub.add_parser(
@@ -8194,12 +8784,24 @@ def main(argv: list[str] | None = None) -> int:
                         claim = _resolved_repo_path(intent.claim) if intent.claim else "(unknown claim)"
                         ledger = _resolved_repo_path(intent.ledger)
                         decisions = _resolved_repo_path(intent.decisions)
-                        inbox = claim.parent / intent.claim.name.removesuffix(".claim") if intent.claim else "(unknown inbox)"
+                        spool = (
+                            claim.parent / intent.claim.name.removesuffix(".claim")
+                            if intent.claim
+                            else "(unknown spool)"
+                        )
+                        inbox = INBOX if intent.command == "apply-answers" else spool
+                        writer = Path(__file__).resolve()
+                        answers_option = (
+                            f" --answers {_resolved_repo_path(spool)}"
+                            if intent.command == "apply-answers"
+                            else ""
+                        )
                         print(
                             f"WARNING the ledger write for {ledger} after {intent.command} "
                             f"is durable, but the claim at {claim} was not finalised: "
-                            f"{finalization}; run findings.py --ledger {ledger} "
-                            f"--decisions {decisions} finalize-claims --inbox {inbox}",
+                            f"{finalization}; run {writer} --ledger {ledger} "
+                            f"--decisions {decisions} finalize-claims --inbox {inbox}"
+                            f"{answers_option}",
                             file=sys.stderr,
                         )
             except Exception as exc:  # noqa: BLE001
