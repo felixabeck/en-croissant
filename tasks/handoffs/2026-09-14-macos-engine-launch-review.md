@@ -715,3 +715,75 @@ Metrics (diff review, this range): 7 rounds; unique issues D1 20, D2 11, D3 9, D
 D6 7; adopted Fix per round r1=18 r2=10 r3=8 r4=3 r5=5 r6=7 r7=0; lens relaunches: two agy failures
 (empty response, provider 503) and two identified agy quota failures moved to Codex, one Codex capacity
 error relaunched.
+
+## Post-push CI — round 8 (range origin/master..98124bf1)
+
+The range was pushed as `0f24aeb1` after the diff-review closure, the final gates (contract, fmt, check,
+clippy, backend-test, backend-coverage, kit check) and a sync of `scripts/findings.py` from agent-kit
+`e6d5eea` (`0f24aeb1`). The first final-gate run had been red only on `findings:kit:check`, because a
+sibling agent-kit session held unpushed `findings.py` commits and the check compares against the local
+kit checkout; ChessFable's copy equalled the published kit, the sibling pushed, and ChessFable synced the
+published bytes.
+
+Test run 34943952442 on `0f24aeb1`: `test`, `rust-platform` (windows x86_64-pc-windows-msvc,
+macOS x86_64-apple-darwin, macOS aarch64-apple-darwin) green; `rust-macos-test` red, 1166 passed, 3 failed.
+Of the 68 names checked in its log (59 new macOS-runnable tests plus the nine Unix tests of
+`f-20260914-31`'s original failure list and `f-20260914-32`'s), 66 reported `ok`. The three failures were
+macOS-only test code executing on a real macOS runner for the first time; locally it only compiles.
+
+| ID | Finding (witness) | Verdict | Reason |
+|---|---|---|---|
+| D7-01 | `ensure_app_owned_default_dir_applies_only_declared_private_mode`: "unexpected mode for EngineLaunch", 0o700 vs expected 0o755 (CI) | Fix | `AppOwnedDefaultRoot::EngineLaunch` is declared 0o700 on macOS; the test named only `Credentials` as private |
+| D7-02 | `apple_engine_launch_removes_entries_after_copy_fchmod_and_cancellation_failures`: `assert!(result.is_err())` (CI) | Fix | Verified in `MaterializedFile::create_from`: the `Copy` fault was injected only inside the `EXDEV`/`ENOTSUP` fallback, but `fclonefileat` succeeds on the runner's APFS temp directory, so the copy path never ran |
+| D7-03 | `two_overlapping_engine_launches_are_bounded_to_one_success`: both 33-leaf reservations succeeded (CI) | Fix | Each thread dropped its reservation immediately after reserving; the start barrier did not keep them overlapping, so both fit under the 64-leaf cap one after the other |
+
+Correction commit `c8aaef6c` (Codex resume of the Phase 2 session): EngineLaunch named as a private root on
+macOS; the test-only `Copy` injection forces the fallback; a second barrier keeps both reservations alive
+until both have tried, and the refusal must be `ResourceLimit("engine launch leaf limit reached")`.
+Orchestrator verification on that tree before commit: `cargo fmt --check`; clippy `--all-targets -D warnings`
+for native, aarch64-apple-darwin and x86_64-pc-windows-gnu; three full test runs (1152 passed, 1 ignored
+each); `pnpm gate:ensure backend-coverage` (ratchet and floors passed). Runtime proof of the three corrected
+tests is the next `rust-macos-test` run.
+
+Review: review-tests on Codex, `--role sensitive`, scoped to `c8aaef6c`, with closure of D7-01..D7-03, a
+check that D7-03 cannot hang instead of failing when a worker panics before its second barrier, and a sweep
+of the other macOS-only tests for the same two defect shapes.
+
+Raw verdict: review-tests REVISE.
+
+Closure results (raw): D7-01 closed · D7-02 partial (the APFS bypass is fixed, but cleanup can still pass
+vacuously) · D7-03 partial (reservations now overlap, but a worker panic hangs the test). The lens found no
+other macOS-only test with a fault injection bypassed by a successful `fclonefileat` or with the same
+reservation/barrier pattern.
+
+| ID | Finding (witness) | Verdict | Reason |
+|---|---|---|---|
+| D7-03b | A worker that hits the `panic!` arm for an unexpected reservation error never reaches `attempted_barrier`, so the main thread blocks forever and `rust-macos-test` hangs instead of failing (tests 100) | Fix | Verified in source: the three-party barrier waits on both workers. Record unexpected errors as outcomes and make every worker reach the barrier |
+| D7-02b | `result.is_err()` plus `leaf.remove()` passes even if `create_from` fails before any leaf exists, because `remove_instance_leaf` maps `NOENT` to `Ok` (tests 96) | Fix | Verified in source; assert the exact injected failure per case and that the leaf exists before cleanup |
+
+Correction: one Codex fix round resuming the Phase 2 session for D7-03b and D7-02b; closure check by
+review-tests scoped to that commit.
+
+Correction commit `98124bf1` (Codex resume of the Phase 2 session for D7-03b and D7-02b): an unexpected
+reservation error is recorded as an outcome, each worker runs under `catch_unwind` and still reaches the
+attempt barrier if it panics first, and the main thread asserts no worker panicked; each fault case asserts
+its specific injected error or cancellation and that the leaf exists before cleanup. Orchestrator
+verification on that tree before commit: `cargo fmt --check`; clippy `--all-targets -D warnings` for native,
+aarch64-apple-darwin and x86_64-pc-windows-gnu; three full test runs (1152 passed, 1 ignored each);
+`pnpm gate:ensure backend-coverage` (ratchet and floors passed).
+
+Closure check: review-tests on Codex, `--role sensitive`, scoped to `98124bf1`.
+
+Raw verdict: review-tests REVISE.
+
+Closure results (raw): D7-02b closed · D7-03b partial.
+
+| ID | Finding (witness) | Verdict | Reason |
+|---|---|---|---|
+| D7-03c | No test induces a worker panic or an unexpected reservation error, so reverting D7-03b's no-hang handling would still pass (tests 97) | Skip | The invariant the test exists for is revert-distinguished: dropping the reservation overlap yields two successes and fails the exact one-success, one-`ResourceLimit` assertions. The no-hang handling guards only the test's own failure diagnostics, which matter only when the test is already failing; `reserve_leaves` returns only `Ok` or the leaf-limit `ResourceLimit` (verified in source, and cited by the lens), so no production path reaches it. Proving it would mean injecting a panic into the test's own worker thread, a test of test scaffolding with no product or verification invariant behind it |
+
+### Closure (post-push CI round)
+
+D7-01 closed (review-tests on `c8aaef6c`), D7-02b and D7-02 closed (review-tests on `98124bf1`), D7-03 and
+D7-03b closed in substance with D7-03c skipped with evidence. No `Fix` is open. Runtime proof of the corrected
+macOS tests is the `rust-macos-test` job of the next push.
