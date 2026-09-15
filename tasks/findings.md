@@ -8711,3 +8711,15 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Defect (reported, not verified):** cancelling the command after the engine actor is published skips its only `terminate_exact`, and a still-open tab may never clean the actor up.
 * **Why it matters:** `.claude/rules/async-resource-invariants.md` — cleanup on every exit path, not only the happy path. Same class as `f-20260914-35` (configuration probe) and `f-20260908-02` (game construction), which name different commands; no shared `Root` is asserted because a common cause is not evidenced.
 * **Found by:** `review-engine-protocol` plan lens (Codex retry), 2026-09-15, confidence 90, during the `f-20260914-07` plan review. Outside that run's mandate and area; not read line by line — verify the drop path before fixing.
+
+---
+
+## 2026-09-15 — filed through the inbox spool
+
+### `terminate_tab` releases admission coordination without a closed-tab marker, so an in-flight admission can publish an engine for a closed tab
+
+* **ID:** f-20260915-07 · **Status:** open · **Area:** engine-uci · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `src-tauri/src/engine/process.rs:1373` (reported; `terminate_tab`).
+* **Defect (reported, not verified):** `terminate_tab` releases admission coordination without recording that the tab is closed; a new admission can insert while registration is held, then publish after the close scan and create an engine for the closed tab.
+* **Why it matters:** `.claude/rules/engine-lifecycle.md` — a result and a process must stay bound to the tab that asked; a process for a closed tab has no owner to reap it. Related to `f-20260914-23` (`kill_engine` and a reserved generation), which concerns a different entry point.
+* **Found by:** `review-engine-protocol` plan lens (Codex retry), 2026-09-15, confidence 88, during the `f-20260914-07` plan review. Outside that run's mandate and area; not read line by line — reproduce the interleaving before fixing.
