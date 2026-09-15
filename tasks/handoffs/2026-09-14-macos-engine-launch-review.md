@@ -787,3 +787,124 @@ Closure results (raw): D7-02b closed · D7-03b partial.
 D7-01 closed (review-tests on `c8aaef6c`), D7-02b and D7-02 closed (review-tests on `98124bf1`), D7-03 and
 D7-03b closed in substance with D7-03c skipped with evidence. No `Fix` is open. Runtime proof of the corrected
 macOS tests is the `rust-macos-test` job of the next push.
+
+## Post-push CI — round 9 (range 6b5b4dc3..6ecd1ac8)
+
+Test run 34948563548 on `6b5b4dc3`: `test` and all three `rust-platform` jobs green; `rust-macos-test` red,
+1168 passed, 1 failed. Of the 68 checked names, 67 reported `ok`; D7-01..D7-03 all passed on the runner. The
+failure was `chess::tests::report_core_restores_child_resource_provenance_after_fresh_resolution`
+(`src/chess.rs:2486`, `Conflict("engine is busy searching; stop or terminate it first")`), which had passed
+in run 34943952442.
+
+The orchestrator traced it to a production defect, not a flaky test. `EngineActor::next_search_line_cancellable`
+raced `next_search_line(id)` against a fresh 25 ms sleep in a loop. When the sleep won and the flag was not set,
+the dropped future's `NextSearch` was already queued, and the next iteration sent a second one. While serving the
+first, `service_search_read` received the second on `rx` and answered it through `reject_command_during_search`
+with `Conflict`, and the first read's line went to a dropped receiver. Any search silent on stdout for longer than
+one poll tick (the resource fixture blocks until its `release` file exists; a real engine at depth with sparse
+info output) could fail a report or lose an info or `bestmove` line. The macOS runner's timing made the silent
+window exceed 25 ms; the Linux runs did not.
+
+| ID | Finding (witness) | Verdict | Reason |
+|---|---|---|---|
+| D8-01 | Drop-and-resend of `NextSearch` in `next_search_line_cancellable` (CI, orchestrator trace) | Fix | Verified in source (`process.rs` select loop and `service_search_read`'s `rx` branch) |
+
+Correction (Codex resume of the Phase 2 session): the request future is created once and pinned, and the
+cancellation flag is polled on a delayed 25 ms interval. New test
+`cancellable_search_read_keeps_one_pending_request_across_poll_ticks`; the leaf ran it against the unfixed
+loop and it failed with the CI `Conflict`. Orchestrator verification: `cargo fmt --check`; clippy for native,
+aarch64-apple-darwin and x86_64-pc-windows-gnu; three full test runs (1154 passed, 1 ignored each);
+`pnpm gate:ensure backend-coverage` passed.
+
+Review: review-engine-protocol and review-tests on Codex, `--role sensitive`, on the working-tree diff.
+
+Raw verdicts: review-engine-protocol REVISE · review-tests APPROVED (with should-fixes).
+
+| ID | Finding (witness) | Verdict | Reason |
+|---|---|---|---|
+| D8-02 | A caller dropping the whole read future leaves the queued `NextSearch` owned by the actor, which consumes the next line into a dropped receiver or rejects the caller's next read with `Conflict`; same for `next_search_line` and `wait_bestmove_cancellable` (engine-protocol 98) | Fix | Verified in source; the actor owns the request, so the fix belongs in `service_search_read` |
+| D8-03 | The cancellation test sets the flag before the first tick, so the old loop also passes (engine-protocol 99, tests 99) | Fix | Verified in the test |
+| D8-04 | No test drops the cancellable read after it started (tests 97) | Fix | Anchor for D8-02 |
+| D8-05 | The stop-error branch of the cancellable read is untested (tests 95) | Fix | Verified: the existing failed-stop test calls `stop_current` directly |
+| D8-06 | A 1 s timeout proves no cancellation latency bound; termination is untested with a pending cancellable read (tests 96, 91) | Fix | A 500 ms bound against a 25 ms poll keeps a 20x margin for slow runners |
+
+Correction (same session): `service_search_read` returns without reading when the reply receiver is already
+closed and races `reply.closed()` ahead of the read, so a departed caller never consumes a line. This relies on
+`read_bounded_engine_line` being cancel-safe; it awaits only in `fill_buf` and consumes synchronously, the same
+property the existing Stop and Logs preemption already relied on. Tests
+`cancellation_during_a_pending_search_read_stops_and_allows_a_new_search` (cancel after 100 ms pending, then the
+new search reads its own `bestmove`), `dropped_search_reader_does_not_consume_the_next_engine_line`,
+`cancellation_returns_a_stop_error_and_reaps_the_actor`,
+`pending_search_read_honors_cancellation_within_the_poll_bound` and
+`terminating_actor_preempts_a_pending_cancellable_search_read`; the fake engine construction is routed through
+one helper. The leaf reported D8-03 red on the pre-D8-01 loop and D8-04 red with the `Conflict` on D8-01-only
+code.
+Orchestrator verification: fmt, three clippy targets, three full test runs (1158 passed, 1 ignored each),
+backend coverage passed.
+
+Closure check: review-engine-protocol and review-tests on Codex. The tests lens failed on "Selected model is at
+capacity" and was relaunched on the next revision.
+
+Raw verdict: review-engine-protocol REVISE. Closure (raw): D8-01, D8-03, D8-05, D8-06 closed · D8-02 and D8-04
+partial.
+
+| ID | Finding (witness) | Verdict | Reason |
+|---|---|---|---|
+| D8-07 | `read_bounded_engine_line` kept the partial line in a local `Vec` and consumed each refill before awaiting the next, so a read dropped between refills lost the prefix and the next read returned the suffix as a UCI line. The new `reply.closed()` branch drops reads mid-line, and so did the existing Logs and Stop preemption and the search timeout (engine-protocol 99) | Fix | Verified in source; the leaf's cancel-safety claim was wrong. Pre-existing for Logs/Stop, same function and area |
+
+Correction (same session): the partial line lives in persistent `pending_line` state owned by `ChildUciIo`,
+cleared only on a complete line, EOF or error, bounded across resumed calls, and fresh for every new child. Tests
+`bounded_reader_retains_a_partial_line_across_a_dropped_read` (the leaf ran it red on the local buffer) and
+`bounded_reader_enforces_the_size_bound_across_resumed_reads`. Orchestrator verification: fmt, three clippy
+targets, three full test runs (1160 passed, 1 ignored each), backend coverage passed.
+
+Closure check: review-engine-protocol and review-tests on Codex.
+
+Raw verdicts: review-engine-protocol REVISE · review-tests APPROVED (with should-fixes). Closure (raw):
+engine-protocol D8-02..D8-07 closed, D8-01 partial; tests D8-01, D8-03..D8-06 closed, D8-02 and D8-07 partial.
+
+| ID | Finding (witness) | Verdict | Reason |
+|---|---|---|---|
+| D8-08 | Once every actor handle is dropped, `service_search_read`'s biased `control_rx.recv()` branch is ready with `None` forever and ignored, so the actor busy-spins and never terminates the child (engine-protocol 98) | Fix | Verified in source; pre-existing, same function |
+| D8-09 | With D8-02 in place, reverting D8-01's pinning still passes its test, because the dropped read ends via `reply.closed()` and the resent read gets the line (engine-protocol 97) | Fix | Needs an IO-boundary read-attempt count |
+| D8-10 | D8-07's tests call the helper directly; a fresh per-call buffer at `ChildUciIo::read_line` would pass (tests 96) | Fix | Make the resumable reader its own tested type |
+| D8-11 | No test asserts the concurrent live-read `Conflict` (tests 91) | Fix | Contract kept by D8-02 must stay anchored |
+
+Correction (same session): a closed control channel inside `service_search_read` terminates the runtime,
+answers `EngineDisconnected` and ends the actor, like the `rx` `None` arm; a read-attempt count at the fake IO
+boundary; `ResumableLineReader` extracted and owned by `ChildUciIo` and stderr draining, with the chunked and
+size-bound tests pointed at it; tests for the concurrent live-read `Conflict` and a closed queued read. The
+leaf ran D8-08, D8-09 and D8-10 red before the fix. Orchestrator verification: fmt, three clippy targets, three
+full test runs (1163 passed, 1 ignored each), backend coverage passed. The leaf saw one intermittent
+`spawn_io_take_failures_force_kill_and_reap_child` failure (`Disconnected`) in an intermediate run.
+
+Closure check: review-engine-protocol and review-tests on Codex.
+
+Raw verdicts: review-engine-protocol APPROVED (D8-01..D8-11 closed, no new defect) · review-tests APPROVED
+(with should-fixes; D8-09 open, D8-02 and D8-10 partial).
+
+| ID | Finding (witness) | Verdict | Reason |
+|---|---|---|---|
+| D8-09 (reopened) | The read-attempt test still passes with the pinning reverted (tests 99) | Skip | Measured by the orchestrator: with the old drop-and-resend loop restored and D8-02 kept, the test fails at `process.rs:4157` with `left: 3, right: 2`; engine-protocol reached the same conclusion from source |
+| D8-12 | No test reaches the pre-dispatch `reply.is_closed()` branch (tests 98) | Fix | The branch is redundant: the biased `reply.closed()` arm is immediately ready for a closed receiver; remove it instead of testing it |
+| D8-13 | No behavioural test proves `ChildUciIo::read_line` delegates to `line_reader` (tests 91) | Fix | Real-child split-line test through the production path |
+| D8-14 | Intermittent `Disconnected` in `spawn_io_take_failures_force_kill_and_reap_child` (leaf run) | Fix | Verified in source: `SPAWN_CHILD_OBSERVER` is one global slot that parallel tests overwrite, dropping the other test's `pid_tx`; the test came in with `1e884b2b`, inside this range |
+
+Correction (same session): the pre-dispatch `reply.is_closed()` check is removed; a `#[cfg(unix)]` real-child
+test drives a split line through `EngineRuntime` and `ChildUciIo`; the spawn-child observer registry is keyed by
+command target with an RAII guard, plus a concurrent-observers test. The leaf ran D8-13 and D8-14 red against
+their reverts and ran the `engine::process` tests five times (107 passed each). Orchestrator verification: fmt,
+three clippy targets, three full test runs (1165 passed, 1 ignored each), backend coverage passed.
+
+Commit `6ecd1ac8` carries D8-01..D8-14.
+
+Closure check: review-engine-protocol and review-tests on Codex, `--role sensitive`.
+
+Raw verdicts: review-engine-protocol APPROVED · review-tests APPROVED. Closure (raw): D8-01..D8-14 closed in both,
+no new defect.
+
+### Closure (post-push CI round 9)
+
+D8-01..D8-08 and D8-10..D8-14 closed by both lenses; D8-09 closed, its reopening skipped on the orchestrator's
+revert measurement. No `Fix` is open. Runtime proof is the `rust-macos-test` job of the next push, including
+`report_core_restores_child_resource_provenance_after_fresh_resolution`.
