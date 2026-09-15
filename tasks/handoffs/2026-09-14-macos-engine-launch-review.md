@@ -552,3 +552,42 @@ error-handling) · D1-05 closed (tests, root-cause) · D1-06..D1-09 closed (test
 | D2-10 | The `EngineLaunch` root is created by pathname `create_dir_all`, so an ancestor symlink can redirect it, and spawn reopens the materialised executable by path (root-cause 98) | Skip (settled) | Both halves are settled with no new evidence: the ancestor-symlink window is R2-12, owned by open `f-20260905-10` and annotated to include `EngineLaunch`; the by-path leaf reopen is R2-01, outside the defended boundary per the focused judgment (APPROVED) |
 
 Correction: one Codex fix round resuming the Phase 2 session for D2-01 to D2-09. Re-review after it: correctness (D2-01), minimalism (D2-02 to D2-05), code-quality (D2-03, D2-05 to D2-09), tests (D2-01).
+
+## Diff review — round 3 (range origin/master..20d69da4)
+
+Correction for D2-01 to D2-09 plus one red gate found by the orchestrator while verifying that
+correction:
+
+| ID | Finding (witnesses) | Verdict | Reason |
+|---|---|---|---|
+| D2-11 | On `x86_64-pc-windows-*` the test target fails `clippy --all-targets -D warnings` with 11 dead-code errors: test-only hooks and fixtures (`set_after_resource_verification_hook`, `set_interactive_before_go_hook`, `set_interactive_go_attempt_hook`, the `EngineActor` recording fixtures and option hook, `set_resource_verify_hook`, `set_option_before_send_hook`, `set_engine_launch_resolution_hook`, `set_engine_resolution_trace`, `set_spawn_child_observer`, `set_terminate_failure`, `spawn_configured_game_engine_with_executable`) whose only users are Unix-gated tests (orchestrator, Windows cross clippy with check-only CC/AR/windres stubs) | Fix | Red gate: CI `rust-platform` runs exactly that clippy on `x86_64-pc-windows-msvc`; all 12 helpers are new in this range (`git grep` on `origin/master` finds none). Gate each on the cfg of its real users, never `allow(dead_code)` |
+
+Orchestrator verification of the D2 tree before D2-11: `cargo fmt --check`, native clippy, three full
+test runs (1152 passed, 1 ignored each), aarch64-apple-darwin clippy, `pnpm gate:ensure
+backend-coverage` (ratchet and floors passed).
+
+Correction commit `20d69da4` (Codex resumes of the Phase 2 session for D2-01 to D2-09, then D2-11). Orchestrator verification on that tree before commit: `cargo fmt --check`, native clippy, three full test runs (1152 passed, 1 ignored each), aarch64-apple-darwin clippy, x86_64-pc-windows-gnu clippy `--all-targets -D warnings` with check-only CC/AR/windres stubs, `pnpm gate:ensure backend-coverage` (ratchet and floors passed). The D2-01 read-only launch tests are macOS-only; their runtime proof is the `rust-macos-test` job.
+
+Lenses under executor `gemini` (agy), all `--role sensitive`: the four lenses whose findings drove
+round-2 Fixes. Raw verdicts: review-correctness APPROVED · review-minimalism APPROVED ·
+review-code-quality APPROVED · review-tests REVISE.
+
+Round-2 closure results (raw): D2-01 closed (correctness) / partial (tests: clone path closed, copy
+fallback cannot distinguish) · D2-02, D2-04 closed (minimalism) · D2-03, D2-05 closed (minimalism,
+code-quality) · D2-06..D2-09 closed (code-quality) · D2-11 closed (correctness, code-quality) · D1-02
+carried, closed (correctness).
+
+| ID | Finding (witnesses) | Verdict | Reason |
+|---|---|---|---|
+| D3-01 | macOS branch of `engine_resource_leases_pin_files_and_directories` asserts `verify_current` refuses a replaced FILE lease, but macOS `verify_current` returns `Ok` for every non-directory lease because files are pinned; the test panics on the macOS runner (tests 100) | Fix | Verified in source (`path_authority/mod.rs` `verify_current` short-circuit; assertion at the macOS file branch). Red on `rust-macos-test`; this test was one of the ten original `f-20260914-31` failures. Assert the pinned leaf keeps the authorised bytes instead, plus a sweep of every macOS test for the same file-vs-directory contradiction |
+| D3-02 | macOS-only `a_replaced_second_resource_is_refused_without_partial_option_writes` builds FILE leases and expects a path-change refusal (tests 100) | Fix | Verified: `test_file` sets `is_directory: false`; red on `rust-macos-test`. Use directory leases, the only kind path-checked on macOS |
+| D3-03 | `a_second_unheld_resource_is_refused_without_partial_option_writes` fails on the first value and never reaches the second (tests 95) | Fix | Verified: the actor holds no resources. Hold the first, leave the second unheld |
+| D3-04 | No test reaches `PinFailure::OperationAndCleanup` or its caller diagnostic (tests 92) | Fix | Verified by grep: the log line and variant have no test |
+| D3-05 | `spawn_configured_game_engine_with_resolved` strips and re-attaches leases that production `resolve_launch` already attached, only for the test helper (minimalism 86) | Fix | Verified in `game.rs`; attach in the test helper |
+| D3-06 | `stdin` extraction in `EngineRuntime::spawn` shadows under cfg while `stdout` uses disjoint cfgs (code-quality 85) | Fix | Local symmetry |
+| D3-07 | Bare `+ 1` executable slot in the leaf count (code-quality 85) | Fix | |
+| D3-08 | Lock-file mode `0o600` literal beside the named leaf-mode constants (code-quality 82) | Fix | |
+| D3-09 | D2-01 copy fallback cannot be revert-distinguished (tests 98, closure note) | Skip | Not a defect: `create_regular_at` creates the copy leaf `0o600`, so reopening it `O_RDWR` cannot fail with `EACCES`; the defect exists only on the clone path, which `resolve_launch_pins_file_resource_before_value_construction` covers with 0o555/0o444 sources |
+
+Correction: one Codex fix round resuming the Phase 2 session for D3-01 to D3-08. Re-review after it:
+tests (D3-01 to D3-04, D2-01 carried), minimalism (D3-05), code-quality (D3-06 to D3-08).
