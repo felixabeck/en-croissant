@@ -839,6 +839,32 @@ fn descriptor_path(file: &fs::File) -> Result<PathBuf, Error> {
 }
 
 impl EngineResourceLease {
+    #[cfg(unix)]
+    fn from_file(
+        file: fs::File,
+        is_directory: bool,
+        target_override: Option<PathBuf>,
+    ) -> Result<Self, Error> {
+        #[cfg(target_os = "macos")]
+        let target = match target_override {
+            Some(target) => target,
+            None => descriptor_path(&file)?,
+        };
+        #[cfg(not(target_os = "macos"))]
+        let _ = is_directory;
+        #[cfg(not(target_os = "macos"))]
+        let _ = target_override;
+        Ok(Self {
+            file,
+            #[cfg(target_os = "macos")]
+            target: std::sync::OnceLock::from(target),
+            #[cfg(target_os = "macos")]
+            pinned_target: std::sync::OnceLock::new(),
+            #[cfg(target_os = "macos")]
+            is_directory,
+        })
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn uci_value(&self) -> Result<String, Error> {
         use std::os::fd::AsRawFd;
@@ -918,27 +944,18 @@ impl EngineResourceLease {
 
     pub(crate) fn test_file(file: fs::File) -> Self {
         #[cfg(target_os = "macos")]
-        let target = descriptor_path(&file).unwrap_or_else(|_| PathBuf::new());
-        Self {
-            file,
-            #[cfg(target_os = "macos")]
-            target: std::sync::OnceLock::from(target),
-            #[cfg(target_os = "macos")]
-            pinned_target: std::sync::OnceLock::new(),
-            #[cfg(target_os = "macos")]
-            is_directory: false,
-        }
+        let fallback_target = Some(descriptor_path(&file).unwrap_or_else(|_| PathBuf::new()));
+        #[cfg(not(target_os = "macos"))]
+        let fallback_target = None;
+        Self::from_file(file, false, fallback_target)
+            .expect("test file lease must be constructible")
     }
 
     #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn test_directory(file: fs::File) -> Self {
-        let target = descriptor_path(&file).unwrap_or_default();
-        Self {
-            file,
-            target: std::sync::OnceLock::from(target),
-            pinned_target: std::sync::OnceLock::new(),
-            is_directory: true,
-        }
+        let fallback_target = Some(descriptor_path(&file).unwrap_or_default());
+        Self::from_file(file, true, fallback_target)
+            .expect("test directory lease must be constructible")
     }
 }
 #[cfg(all(test, unix))]
@@ -1911,15 +1928,14 @@ impl Drop for MaterializedFile {
         if !self.active {
             return;
         }
+        let mut registry = self.root.registry();
         if self.attempted {
-            let mut registry = self.root.registry();
             registry.released.push(ReleasedLeaf {
                 leaf: self.leaf.clone(),
                 engine_key: self.engine_key.clone(),
                 engine_id: self.engine_id.clone(),
             });
         } else {
-            let mut registry = self.root.registry();
             registry.live = registry.live.saturating_sub(1);
         }
     }
@@ -2100,14 +2116,13 @@ impl EngineLaunchRoot {
         let mut report = ReclaimReport::default();
         for leaf in released {
             let result = remove_instance_leaf(&self.inner.instance, &leaf.leaf);
+            let mut registry = self.inner.registry();
             match result {
                 Ok(()) => {
                     report.removed += 1;
-                    let mut registry = self.inner.registry();
                     registry.live = registry.live.saturating_sub(1);
                 }
                 Err(error) => {
-                    let mut registry = self.inner.registry();
                     registry.released.push(leaf.clone());
                     report.failed.push((leaf, error));
                 }
@@ -4205,20 +4220,11 @@ impl PathAuthority {
                 let _file = resolved
                     .take_file()
                     .ok_or_else(|| Error::InvalidInput("engine resource must be a file".into()))?;
-                #[cfg(target_os = "macos")]
-                let target = descriptor_path(&file)?;
+                #[cfg(unix)]
+                return EngineResourceLease::from_file(file, false, None);
+                #[cfg(windows)]
                 Ok(EngineResourceLease {
-                    #[cfg(unix)]
-                    file,
-                    #[cfg(target_os = "macos")]
-                    target: std::sync::OnceLock::from(target),
-                    #[cfg(target_os = "macos")]
-                    pinned_target: std::sync::OnceLock::new(),
-                    #[cfg(target_os = "macos")]
-                    is_directory: false,
-                    #[cfg(windows)]
                     _file,
-                    #[cfg(windows)]
                     target: resolved.take_target().ok_or_else(|| {
                         Error::Conflict("engine resource target is unavailable".into())
                     })?,
@@ -4230,17 +4236,7 @@ impl PathAuthority {
                     let file = resolved.take_directory().ok_or_else(|| {
                         Error::InvalidInput("engine resource must be a directory".into())
                     })?;
-                    #[cfg(target_os = "macos")]
-                    let target = descriptor_path(&file)?;
-                    Ok(EngineResourceLease {
-                        file,
-                        #[cfg(target_os = "macos")]
-                        target: std::sync::OnceLock::from(target),
-                        #[cfg(target_os = "macos")]
-                        pinned_target: std::sync::OnceLock::new(),
-                        #[cfg(target_os = "macos")]
-                        is_directory: true,
-                    })
+                    EngineResourceLease::from_file(file, true, None)
                 }
                 #[cfg(windows)]
                 {
@@ -10391,16 +10387,7 @@ mod tests {
         assert_eq!(reloaded.active_database_root().unwrap(), None);
     }
 
-    #[cfg(not(target_os = "macos"))]
-    const APP_OWNED_DEFAULT_ROOT_LEAVES: [(AppOwnedDefaultRoot, &str); 5] = [
-        (AppOwnedDefaultRoot::Databases, "db"),
-        (AppOwnedDefaultRoot::Engines, "engines"),
-        (AppOwnedDefaultRoot::EngineImages, "engine-images"),
-        (AppOwnedDefaultRoot::Puzzles, "puzzles"),
-        (AppOwnedDefaultRoot::Credentials, "credentials"),
-    ];
-    #[cfg(target_os = "macos")]
-    const APP_OWNED_DEFAULT_ROOT_LEAVES: [(AppOwnedDefaultRoot, &str); 6] = [
+    const APP_OWNED_DEFAULT_ROOT_LEAVES: &[(AppOwnedDefaultRoot, &str)] = &[
         (AppOwnedDefaultRoot::Databases, "db"),
         (AppOwnedDefaultRoot::Engines, "engines"),
         (AppOwnedDefaultRoot::EngineImages, "engine-images"),
@@ -10416,7 +10403,7 @@ mod tests {
     #[test]
     fn ensure_app_owned_default_dir_creates_each_root_under_its_own_leaf() {
         let dir = tempfile::tempdir().unwrap();
-        for (root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+        for &(root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
             let created =
                 ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
             assert_eq!(created.path(), dir.path().join(leaf));
@@ -10433,13 +10420,13 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        for (_, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+        for &(_, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
             let path = dir.path().join(leaf);
             fs::create_dir(&path).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        for (root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+        for &(root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
             let directory =
                 ensure_app_owned_default_dir(&AppDataDir::for_test(dir.path()), root).unwrap();
             let mode = fs::metadata(directory.path()).unwrap().permissions().mode() & 0o7777;
@@ -10491,7 +10478,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ensure_app_owned_default_dir_refuses_a_symlinked_leaf_for_every_root() {
-        for (root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
+        for &(root, leaf) in APP_OWNED_DEFAULT_ROOT_LEAVES {
             let dir = tempfile::tempdir().unwrap();
             let app_data = dir.path().join("app-data");
             let elsewhere = dir.path().join("elsewhere");

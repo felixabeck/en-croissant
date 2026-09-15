@@ -703,7 +703,7 @@ enum EngineCommand {
         name: String,
         value: String,
         resource_values: Vec<String>,
-        operation: Option<CancellationToken>,
+        operation_cancellation: Option<CancellationToken>,
         reply: oneshot::Sender<Result<(), Error>>,
     },
     SetPosition {
@@ -1765,17 +1765,11 @@ pub(crate) async fn resolve_launch(
             if is_cancelled() {
                 return Ok(Err(PinFailure::Primary(Error::Cancellation)));
             }
-            let (executable, mut resolved) = {
-                let mut guard = authority
-                    .lock()
-                    .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-                let authority = guard
-                    .as_mut()
-                    .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+            let (executable, mut resolved) = with_path_authority(&authority, |authority| {
                 let executable = authority.engine_executable(&engine, operation)?;
                 let resolved = resolve_engine_option_leases(authority, &options)?;
-                (executable, resolved)
-            };
+                Ok((executable, resolved))
+            })?;
             if is_cancelled() {
                 return Ok(Err(PinFailure::Primary(Error::Cancellation)));
             }
@@ -1856,15 +1850,24 @@ pub(crate) async fn resolve_option_leases(
             if cancellation.is_cancelled() {
                 return Err(Error::Cancellation);
             }
-            let mut guard = authority
-                .lock()
-                .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
-            let authority = guard
-                .as_mut()
-                .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
-            resolve_engine_option_leases(authority, &options)
+            with_path_authority(&authority, |authority| {
+                resolve_engine_option_leases(authority, &options)
+            })
         })
         .await
+}
+
+fn with_path_authority<T>(
+    authority: &std::sync::Arc<std::sync::Mutex<Option<PathAuthority>>>,
+    access: impl FnOnce(&mut PathAuthority) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let mut guard = authority
+        .lock()
+        .map_err(|_| Error::Conflict("path authority lock was poisoned".into()))?;
+    let authority = guard
+        .as_mut()
+        .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?;
+    access(authority)
 }
 
 /// Spawns and publishes an actor before any protocol initialization begins.
@@ -2170,7 +2173,7 @@ impl EngineRuntime {
         name: &str,
         value: &str,
         resource_values: &[String],
-        operation: Option<&CancellationToken>,
+        operation_cancellation: Option<&CancellationToken>,
     ) -> Result<(), Error> {
         validate_uci_text("option name", name)?;
         validate_uci_text("option value", value)?;
@@ -2183,7 +2186,7 @@ impl EngineRuntime {
                 hook();
             }
         }
-        if operation.is_some_and(CancellationToken::is_cancelled) {
+        if operation_cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Err(Error::Cancellation);
         }
         self.send(&format!("setoption name {name} value {value}"))
@@ -2553,7 +2556,7 @@ impl EngineActor {
         name: &str,
         value: &str,
         resource_values: &[String],
-        operation: Option<CancellationToken>,
+        operation_cancellation: Option<CancellationToken>,
     ) -> Result<(), Error> {
         let (reply_tx, reply) = oneshot::channel();
         self.request(
@@ -2561,7 +2564,7 @@ impl EngineActor {
                 name: name.into(),
                 value: value.into(),
                 resource_values: resource_values.to_vec(),
-                operation,
+                operation_cancellation,
                 reply: reply_tx,
             },
             reply,
@@ -2694,16 +2697,16 @@ impl EngineActor {
 pub(crate) async fn verify_option_resources(
     actor: &EngineActor,
     options: &[ResolvedEngineOption],
-    operation: Option<&CancellationToken>,
+    operation_cancellation: Option<&CancellationToken>,
 ) -> Result<(), Error> {
-    verify_option_resources_in(&BLOCKING_GATEWAY, actor, options, operation).await
+    verify_option_resources_in(&BLOCKING_GATEWAY, actor, options, operation_cancellation).await
 }
 
 pub(crate) async fn verify_option_resources_in(
     gateway: &BlockingGateway,
     actor: &EngineActor,
     options: &[ResolvedEngineOption],
-    operation: Option<&CancellationToken>,
+    operation_cancellation: Option<&CancellationToken>,
 ) -> Result<(), Error> {
     let resources = actor.resources.clone();
     let values = options
@@ -2738,14 +2741,14 @@ pub(crate) async fn verify_option_resources_in(
         }
         Ok(())
     });
-    let operation = operation.cloned();
+    let operation_cancellation = operation_cancellation.cloned();
     tokio::pin!(verify);
     tokio::select! {
         biased;
         _ = actor.interrupt.cancelled() => Err(Error::Cancellation),
         _ = async {
-            if let Some(operation) = &operation {
-                operation.cancelled().await;
+            if let Some(operation_cancellation) = &operation_cancellation {
+                operation_cancellation.cancelled().await;
             } else {
                 std::future::pending::<()>().await;
             }
@@ -2966,7 +2969,7 @@ async fn engine_actor_loop(
                 name,
                 value,
                 resource_values,
-                operation,
+                operation_cancellation,
                 reply,
             } => {
                 let _ = reply.send(
@@ -2975,7 +2978,7 @@ async fn engine_actor_loop(
                             &name,
                             &value,
                             &resource_values,
-                            operation.as_ref(),
+                            operation_cancellation.as_ref(),
                         )
                         .await,
                 );
@@ -3187,11 +3190,9 @@ mod tests {
     use tokio::{io::AsyncBufReadExt, sync::Mutex};
 
     /// A real child process, spawned exactly the way production spawns an engine,
-    /// must read the inode that was authorized at spawn time — not whatever the
-    /// visible path resolves to once the option is applied. The fixture is a
-    /// shebang script on purpose: it is the case that forces the interpreter to
-    /// reopen the engine image through its inherited descriptor, and it is also
-    /// how users install wrapper-script engines.
+    /// must read the authorized executable/resource pinned for this launch — not whatever
+    /// visible path resolves to once the option is applied. The fixture is a shebang script on
+    /// purpose: it exercises the child-visible launch target, including wrapper-script engines.
     #[cfg(unix)]
     #[tokio::test]
     async fn authorized_resource_survives_path_replacement_for_uci_child() {

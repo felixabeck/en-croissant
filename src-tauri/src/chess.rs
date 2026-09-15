@@ -98,7 +98,7 @@ impl EngineProcess {
         &mut self,
         options: EngineOptions,
         resolved: Vec<ResolvedEngineOption>,
-        operation: Option<CancellationToken>,
+        operation_cancellation: Option<CancellationToken>,
     ) -> Result<(), Error> {
         let effective_options = crate::engine::effective_engine_options(&options.extra_options);
         if resolved.len() != effective_options.len() {
@@ -106,7 +106,7 @@ impl EngineProcess {
                 "resolved engine options do not match requested options".into(),
             ));
         }
-        verify_option_resources(&self.base, &resolved, operation.as_ref()).await?;
+        verify_option_resources(&self.base, &resolved, operation_cancellation.as_ref()).await?;
         #[cfg(all(test, unix))]
         run_after_resource_verification_hook().await;
         let fen_changed = options.fen != self.options.fen;
@@ -118,11 +118,21 @@ impl EngineProcess {
         if fen_changed {
             if castling_mode.is_chess960() {
                 self.base
-                    .set_option_with_operation("UCI_Chess960", "true", &[], operation.clone())
+                    .set_option_with_operation(
+                        "UCI_Chess960",
+                        "true",
+                        &[],
+                        operation_cancellation.clone(),
+                    )
                     .await?;
             } else {
                 self.base
-                    .set_option_with_operation("UCI_Chess960", "false", &[], operation.clone())
+                    .set_option_with_operation(
+                        "UCI_Chess960",
+                        "false",
+                        &[],
+                        operation_cancellation.clone(),
+                    )
                     .await?;
             }
         }
@@ -166,7 +176,7 @@ impl EngineProcess {
                         &option.name,
                         &option.value,
                         &option.resource_values,
-                        operation.clone(),
+                        operation_cancellation.clone(),
                     )
                     .await?;
             }
@@ -1944,7 +1954,7 @@ done
         let child = capture
             .lines()
             .find_map(|line| line.strip_prefix("child="))
-            .expect("resource engine must capture its inherited resource descriptor");
+            .expect("resource engine must capture the child-visible resource value");
         let read = capture
             .lines()
             .find_map(|line| line.strip_prefix("read="))
@@ -1958,10 +1968,12 @@ done
         }
         #[cfg(target_os = "macos")]
         {
-            assert_eq!(eval, child);
             assert!(eval.contains("engine-launch"));
         }
-        assert_eq!(eval, child, "the wire value must be the inherited resource");
+        assert_eq!(
+            eval, child,
+            "the wire value must be the authorized resource value"
+        );
         assert_eq!(
             read, expected,
             "the child must read bytes through the wire value"

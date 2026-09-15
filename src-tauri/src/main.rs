@@ -3472,7 +3472,7 @@ mod blocking_offload_scans {
             .expect("path authority initialization call");
         assert!(app_data < credential, "{setup}");
         assert!(credential < authority, "{setup}");
-        // The application-data descriptor is constructed once and shared by credential
+        // The application-data path is constructed once and shared by credential
         // initialization and the macOS launch-root setup.
         let call = &setup[app_data..authority];
         assert_eq!(call.matches("AppDataDir::for_app(").count(), 1, "{call}");

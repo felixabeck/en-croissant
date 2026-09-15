@@ -3757,7 +3757,7 @@ done
         let child = capture
             .lines()
             .find_map(|line| line.strip_prefix("child="))
-            .expect("resource engine must capture its inherited resource descriptor");
+            .expect("resource engine must capture the child-visible resource value");
         let read = capture
             .lines()
             .find_map(|line| line.strip_prefix("read="))
@@ -3771,10 +3771,12 @@ done
         }
         #[cfg(target_os = "macos")]
         {
-            assert_eq!(eval, child);
             assert!(!eval.contains("/proc/self/fd/"));
         }
-        assert_eq!(eval, child, "the wire value must be the inherited resource");
+        assert_eq!(
+            eval, child,
+            "the wire value must be the authorized resource value"
+        );
         assert_eq!(
             read, "weights",
             "the child must read bytes through the wire value"
