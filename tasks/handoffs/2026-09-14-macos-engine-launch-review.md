@@ -514,3 +514,41 @@ Correction: one Codex fix round resuming the Phase 2 session. Re-review after it
 findings drove a Fix (correctness, root-cause, tests, error-handling, minimalism, code-quality,
 tauri-security, engine-protocol).
 
+
+## Diff review — round 2 (range origin/master..ba539255)
+
+Correction commit `ba539255` (Codex resume of the Phase 2 session, finished after an orchestrator
+stop at the start of its proof). Orchestrator verification on that tree before commit: `cargo fmt
+--check`, native clippy `-D warnings`, `cargo test --all-targets` three times (1152 passed, 1 ignored
+each), aarch64-apple-darwin clippy with check-only CC/AR stubs, `pnpm gate:ensure backend-coverage`
+(ratchet and floors passed). After commit: `pnpm gates:contract:check`, `cargo check`,
+`pnpm gate:ensure backend-test` and `backend-coverage` (receipts recorded), `findings:kit:check`,
+all green. macOS-only tests (D1-01, D1-03, D1-04, D1-06, D1-07, D1-09) compile under the Apple target
+here; their runtime proof is the `rust-macos-test` job.
+
+Lenses run under executor `gemini` (agy for read-only leaves), all `--role sensitive`.
+Raw verdicts: review-correctness REVISE · review-tests APPROVED · review-error-handling APPROVED ·
+review-minimalism REVISE · review-code-quality REVISE · review-engine-protocol APPROVED ·
+review-root-cause (agy: empty final response, relaunched on Codex) REVISE ·
+review-tauri-security (agy: status ERROR, provider 503, not a quota failure; relaunched on Codex)
+APPROVED.
+
+Round-1 closure results (raw): D1-01 closed (tests, engine-protocol, root-cause, tauri-security) · D1-02 closed
+(correctness, tests, engine-protocol) · D1-03 closed (error-handling, tauri-security) · D1-04 closed (tests,
+error-handling) · D1-05 closed (tests, root-cause) · D1-06..D1-09 closed (tests) · D1-10..D1-14 closed
+(code-quality; D1-13 also minimalism) · D1-15..D1-18 closed (minimalism). tauri-security also reports f-20260914-32 closed.
+
+| ID | Finding (witnesses) | Verdict | Reason |
+|---|---|---|---|
+| D2-01 | `MaterializedFile::create_from` reopens the cloned leaf `O_RDWR` only to `fchmod` it; `fclonefileat` keeps a read-only source mode, so a 0o555 engine or 0o444 resource fails with `EACCES` and never launches (correctness 98) | Fix | Measured here as uid 1000: `open(O_RDWR)` of an owned 0o555 file → `EACCES`; `fchmod` via `O_RDONLY` → ok. Open read-only; macOS test with read-only sources on the clone and copy paths |
+| D2-02 | `MaterializedFile::remove` and `EngineLaunchRoot::reclaim` repeat the statat/NOENT/remove_entry_at block (minimalism 93) | Fix | Rule 11, one helper |
+| D2-03 | `prepare_report_options` reimplements last-wins collapse beside `effective_engine_options` (minimalism 95, code-quality 93) | Fix | Rule 11; identical semantics verified in source |
+| D2-04 | `resolve_launch` attaches option leases to the executable twice (minimalism 90) | Fix | Attach once before pinning |
+| D2-05 | `EngineResourceLease::uci_value` is `Result` on macOS and `String` elsewhere, forcing cfg-split call sites and Linux-only test branches (minimalism 88, code-quality 92, 90) | Fix | One signature on every platform removes the scaffolding |
+| D2-06 | Unexplained `cfg_attr(macos, allow(dead_code))` on `AppOwnedRoot::new` from `3878a6a9` (code-quality 96) | Fix | Gate on its real callers or state the reason |
+| D2-07 | Garbled test comment in process.rs (code-quality 95) | Fix | |
+| D2-08 | Test literals `0o600` beside `ENGINE_RESOURCE_LEAF_MODE` (code-quality 88) | Fix | |
+| D2-09 | Write-only `EngineProcess.resource_leases` has no retention comment (code-quality 87) | Fix | |
+| D2-10 | The `EngineLaunch` root is created by pathname `create_dir_all`, so an ancestor symlink can redirect it, and spawn reopens the materialised executable by path (root-cause 98) | Skip (settled) | Both halves are settled with no new evidence: the ancestor-symlink window is R2-12, owned by open `f-20260905-10` and annotated to include `EngineLaunch`; the by-path leaf reopen is R2-01, outside the defended boundary per the focused judgment (APPROVED) |
+
+Correction: one Codex fix round resuming the Phase 2 session for D2-01 to D2-09. Re-review after it: correctness (D2-01), minimalism (D2-02 to D2-05), code-quality (D2-03, D2-05 to D2-09), tests (D2-01).
