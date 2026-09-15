@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 896dc1cf70abbd7fa1bcc371fbc6c7f1102f21ac38c90049cc28ca33a732e03e
+# agent-kit-sha256: 2854f90b68eeff1fdf7c881f44ddb3f6ead874430a19e2e70a70600b764206bb
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -5665,7 +5665,7 @@ def _reconcile_inbox_claim(
 
     head_by_id = {finding.id: finding for finding in head_findings}
     working_by_id = {finding.id: finding for finding in working_findings}
-    for filing_key, (path, expected) in entry_expectations.items():
+    for filing_key, (path, _expected) in entry_expectations.items():
         if filing_key not in intent.receipt_ids:
             raise LedgerError(
                 f"{path} in {claim} holds entries its intent does not record; the "
@@ -5798,7 +5798,7 @@ def _answers_legacy_intent_message(
     claim: Path, answers: Path, ledger: Path, mode: str
 ) -> str:
     basis = (
-        f"as committed in HEAD, after committing any pending ledger changes"
+        "as committed in HEAD, after committing any pending ledger changes"
         if mode == "deferred"
         else f"in the working {ledger}"
     )
@@ -8232,14 +8232,13 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             target = target_spans[finding_id]
             header_index, end, header_match = target
             updated_header = lines[header_index]
-            if blocked == FELIX_SENTRY_ORIGIN:
-                if kind == "reject":
-                    updated_header = re.sub(
-                        r"(\*\*Status:\*\* )\S+",
-                        r"\g<1>rejected",
-                        updated_header,
-                        count=1,
-                    )
+            if blocked == FELIX_SENTRY_ORIGIN and kind == "reject":
+                updated_header = re.sub(
+                    r"(\*\*Status:\*\* )\S+",
+                    r"\g<1>rejected",
+                    updated_header,
+                    count=1,
+                )
             updated_header = updated_header.replace(
                 f"**Blocked:** {blocked}", "**Blocked:** none"
             )
