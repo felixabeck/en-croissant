@@ -8723,3 +8723,16 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Defect (reported, not verified):** `terminate_tab` releases admission coordination without recording that the tab is closed; a new admission can insert while registration is held, then publish after the close scan and create an engine for the closed tab.
 * **Why it matters:** `.claude/rules/engine-lifecycle.md` — a result and a process must stay bound to the tab that asked; a process for a closed tab has no owner to reap it. Related to `f-20260914-23` (`kill_engine` and a reserved generation), which concerns a different entry point.
 * **Found by:** `review-engine-protocol` plan lens (Codex retry), 2026-09-15, confidence 88, during the `f-20260914-07` plan review. Outside that run's mandate and area; not read line by line — reproduce the interleaving before fixing.
+
+---
+
+## 2026-09-15 — filed through the inbox spool
+
+### The test workflow's branch filter `"*"` skips every branch whose name contains a slash
+
+* **ID:** f-20260915-08 · **Status:** open · **Area:** ci-workflows · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `.github/workflows/test.yml:3-8` — `push: branches: ["*"]` and `pull_request: branches: ["*"]`.
+* **Defect:** GitHub's `*` branch pattern does not match `/`, so a push or pull request on a branch such as `feature/foo` runs no job of the test workflow at all — no linter, no boundary checks, no coverage ratchets, no Rust platform jobs. Measured indirectly on 2026-09-15: the throwaway branch `probe/windows-rust-test` ran only because its own copy of the workflow named it explicitly (GitHub run 34995837526); the `f-20260914-07` plan-review lenses (review-plan 99, review-root-cause 99, review-tests 99) confirmed the pattern semantics. No checker in `scripts/` reads the value, so a change to it is unguarded either way.
+* **Why it matters:** every gate the repository documents as running "on every push" silently does not for slash-named branches; `d-20260830-20` forbids a gate that reports success without checking, and here the gate does not report at all.
+* **Fix shape:** use `"**"` for both filters (or drop the filters), and add a clause to an existing workflow-contract checker (`check-gate-routing.mjs` or `check-tool-version-parity.mjs`) that pins the trigger, with its staged failure recorded; decide whether pull requests from every branch are wanted.
+* **Found by:** `review-plan` and `review-root-cause` plan lenses (Codex), 2026-09-15, rounds 3-4 of the `f-20260914-07` plan review; cut from that plan as outside its mandate (review-plan 90, review-tauri-security 96).
