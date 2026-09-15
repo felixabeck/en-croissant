@@ -8572,6 +8572,9 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Related:** `f-20260830-06` (parent port), `f-20260905-10` (ancestor-symlink window in app-data bootstrap — a different door), `f-20260912-11` (canonical pathname carried by `DatabaseFileTarget`).
 * **Found by:** Claude Code orchestrator source trace of CI run 34862122222, 2026-09-14, during the macOS runtime build run. Reproducible on Linux with a symlinked ancestor; not yet reproduced by a test.
 
+* **Handled 2026-09-15 (build run, session a680a996):** every caller-supplied acquisition door now stores a symlink-free spelling proven by a no-follow descriptor walk (`acquire_target`, shared with `database_file_target`); promotion re-proves; PGN export creation is descriptor-relative and bound to the named parent's identity; descriptor-verified registrations keep their spelling (`d-20260915-03`). A failed promotion consumes its dialog grant (`d-20260915-04`). Code: `2b640767`, `50db4e10`, `ffddee3e`, `86ab3738`, `78287a7c`, `5cd3b559`; records `bd0b725a` (`f-20260915-03`), `9e342f6f`, `f3553c86`. Review record: `tasks/handoffs/2026-09-14-f-20260914-33-review.md` (7 plan-review rounds, 65 issues; 4 diff-review rounds). Successors: `f-20260914-36` (R1-06, R3-05, R3-06), `f-20260915-03` (D1-01).
+<!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"69fb773f757b07eda4cee08e1b5297f052b72ac51ea8a93d6d033b327b843d87","input_sha256":"04d9e79cf8c390977f5ee70860bc7828dc47f17bb7925524b6ba63cfe03bf724","kind":"mutation-receipt","operation":"8f1ba3100b9d085df9cf5b1455e7a23863346237b943a1caf26c9daad195ab12","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-33"],"target":"f-20260914-33","v":1} -->
+
 ---
 
 ## 2026-09-14 — filed through the inbox spool
