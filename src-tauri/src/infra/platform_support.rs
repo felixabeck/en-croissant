@@ -410,11 +410,6 @@ mod tests {
             },
             CounterpartRow {
                 file: "infra/fs.rs",
-                signature: "pub(crate) fn remove_regular_at(",
-                operation: "fd-relative regular-file removal",
-            },
-            CounterpartRow {
-                file: "infra/fs.rs",
                 signature: "pub(crate) fn remove_optional_regular_at(",
                 operation: "fd-relative optional-file removal",
             },
@@ -539,11 +534,6 @@ mod tests {
             (
                 "infra/fs.rs",
                 "fd-relative optional-file removal",
-                "unsupported",
-            ),
-            (
-                "infra/fs.rs",
-                "fd-relative regular-file removal",
                 "unsupported",
             ),
             (

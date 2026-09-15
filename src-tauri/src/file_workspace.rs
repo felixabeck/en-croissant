@@ -794,7 +794,14 @@ fn create_workspace_file_blocking(
     ) {
         Ok(outcome) => outcome,
         Err(error) => {
-            let rollback = crate::infra::fs::remove_regular_at(parent_dir, &target_leaf);
+            // Only the file this call installed may be rolled back; a concurrent replacement of
+            // the leaf is left in place and reported as a failed cleanup.
+            let rollback = crate::infra::fs::remove_entry_at(
+                parent_dir,
+                &target_leaf,
+                installed.identity,
+                false,
+            );
             return match rollback {
                 Ok(()) => Err(error),
                 Err(rollback) => {
@@ -3230,6 +3237,84 @@ mod tests {
         set_test_atomic_file_injector(None);
         assert!(matches!(error, Error::CommittedDurabilityUncertain(_)));
         assert!(root.path().join("created").is_dir());
+    }
+
+    /// Fails the sidecar's rename, the second atomic rename of a workspace file creation; when
+    /// `replace_pgn` is set it first swaps the just-installed PGN for a different regular file.
+    #[cfg(unix)]
+    struct SidecarRenameFault {
+        renames: std::sync::atomic::AtomicUsize,
+        replace_pgn: Option<PathBuf>,
+    }
+
+    #[cfg(unix)]
+    impl AtomicWriterInjector for SidecarRenameFault {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point != AtomicFileFaultPoint::Rename
+                || self
+                    .renames
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    == 0
+            {
+                return Ok(());
+            }
+            if let Some(pgn) = &self.replace_pgn {
+                let replacement = pgn.with_extension("replacement");
+                fs::write(&replacement, b"replacement")?;
+                fs::rename(&replacement, pgn)?;
+            }
+            Err(std::io::Error::other("sidecar rename failed"))
+        }
+    }
+
+    #[cfg(unix)]
+    fn create_game_under_sidecar_fault(
+        replace_pgn: bool,
+    ) -> (TempDir, PathBuf, Result<WorkspaceEntry, Error>) {
+        let (directory, state, workspace) = workspace_state();
+        let root = mutation_target(&state.pgn_path_authority, &workspace)
+            .expect("workspace target")
+            .path()
+            .to_path_buf();
+        set_test_atomic_file_injector(Some(Arc::new(SidecarRenameFault {
+            renames: std::sync::atomic::AtomicUsize::new(0),
+            replace_pgn: replace_pgn.then(|| root.join("game.pgn")),
+        })));
+        let result = create_workspace_file_blocking(
+            workspace.clone(),
+            workspace,
+            "game".into(),
+            WorkspaceMetadata {
+                file_type: WorkspaceFileType::Game,
+                tags: vec![],
+            },
+            "1. e4 *".into(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        );
+        set_test_atomic_file_injector(None);
+        (directory, root, result)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_workspace_file_rolls_back_its_pgn_when_the_sidecar_fails() {
+        let (_directory, root, result) = create_game_under_sidecar_fault(false);
+        assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+        assert!(!root.join("game.pgn").exists());
+        assert!(!root.join("game.info").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_workspace_file_rollback_leaves_a_replaced_pgn_in_place() {
+        let (_directory, root, result) = create_game_under_sidecar_fault(true);
+        assert!(
+            matches!(result, Err(Error::OperationAndCleanup { .. })),
+            "{result:?}"
+        );
+        assert_eq!(fs::read(root.join("game.pgn")).unwrap(), b"replacement");
     }
 
     #[cfg(unix)]

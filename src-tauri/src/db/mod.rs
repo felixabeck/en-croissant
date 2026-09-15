@@ -2416,7 +2416,7 @@ fn unlink_database_files(
     }
     // Same residual POSIX window as delete_puzzle_database: there is no
     // compare-and-unlink. The inode check is the last userspace observation
-    // before unlinkat; remove_regular_at would re-stat without the identity.
+    // before unlinkat.
     rfs::unlinkat(target.parent(), target.leaf(), AtFlags::empty())
         .map_err(|error| Error::Io(Box::new(error.into())))?;
     Ok(unlinked + 1)

@@ -1937,28 +1937,6 @@ pub(crate) fn remove_optional_regular_at(_parent: &File, _name: &OsStr) -> Resul
     ))
 }
 
-#[cfg(unix)]
-pub(crate) fn remove_regular_at(parent: &File, name: &OsStr) -> Result<(), Error> {
-    use rustix::fs::{self as rfs, AtFlags, FileType};
-    let stat = rfs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)
-        .map_err(|error| Error::Io(Box::new(error.into())))?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-        return Err(Error::InvalidInput(
-            "workspace entry must be a regular file".into(),
-        ));
-    }
-    rfs::unlinkat(parent, name, AtFlags::empty())
-        .map_err(|error| Error::Io(Box::new(error.into())))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-pub(crate) fn remove_regular_at(_parent: &File, _name: &OsStr) -> Result<(), Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "fd-relative regular-file removal",
-    ))
-}
-
 pub fn atomic_replace_at_with_precommit<F, P>(
     parent: &File,
     leaf: &OsStr,
