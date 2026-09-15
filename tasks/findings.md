@@ -8654,3 +8654,17 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Defect:** report analysis reads search lines cancellably only against `SupervisedEngine::cancelled`. Destroying the webview cancels the report's operation ticket through `OperationRegistry::cancel_owner`, which cancels the operation token but never sets that flag. While the engine emits no line, the read keeps waiting, so the child keeps searching until the search deadline (ten minutes) with no `stop` and no reap. `cancel_analysis` is unaffected because it sets the flag through `cancel_exact`.
 * **Why it matters:** `async-resource-invariants.md` requires cleanup on every exit path, tab and window close included; an engine child that outlives its owner by up to ten minutes is the class of issue #723 (`e5422566`).
 * **Found by:** Codex `review-engine-protocol` diff lens (confidence 97) during the macOS engine-launch build run, 2026-09-15. The function blames entirely to `d835ac77` and reads the same at `origin/master`; source read by the orchestrator, not reproduced by a test.
+
+---
+
+## 2026-09-15 — filed through the inbox spool
+
+### Resolution proves a persisted entry's leaf identity but not its parent's, so a replaced parent holding a hard link passes
+
+* **ID:** f-20260915-03 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/infra/path_authority/mod.rs` `retained_workspace_target` (and the other use-time resolutions built on `open_verified_parent` / `open_verified_directory`: `workspace_mutation_target`, `database_file_target`, `resolve`), which walk the stored spelling no-follow and compare only the leaf `(dev, ino)` with `StoredEntry.identity`; the registry stores no parent identity.
+* **Defect:** after an entry for `dir/ws/game.pgn` is persisted, replacing `dir/ws` with a different real directory that contains a hard link to the same `game.pgn` inode passes every use-time check (no symlink is met, the leaf identity matches). Descriptor-relative writes that create siblings — the `.info` sidecar, atomic-replacement temporaries, SQLite `-wal`/`-journal` files — then land in the replacement directory, not the one the user selected.
+* **Why it matters:** the no-follow walk exists so a persisted capability names the selected location; a parent swap with a hard link keeps the leaf object but redirects every sibling write. Requires write access to the parent's parent, so it is a same-user or shared-directory attacker, not a remote one.
+* **Open question:** should the registry persist the parent directory identity at acquisition (a `StoredEntry` schema change with a migration for existing entries, which cannot be recovered for entries persisted before it) and have every use-time resolution compare it, or is the leaf identity plus the no-follow walk the accepted boundary, documented as such?
+* **Related:** `f-20260914-33` (acquisition-time canonical binding; review record `tasks/handoffs/2026-09-14-f-20260914-33-review.md`, diff-review issue D1-01), `f-20260914-36` (use-time validations of persisted entries that compare identity only — R3-05 is the same identity-only comparison in `database_file_target`), `f-20260830-09` (unlink by name).
+* **Found by:** Codex `review-tauri-security` diff lens (confidence 98) during the `f-20260914-33` build run, 2026-09-15. Source read by the orchestrator; not reproduced by a test.
