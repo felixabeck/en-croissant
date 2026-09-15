@@ -2876,7 +2876,8 @@ impl AcquireShape {
 }
 
 /// On Unix, a path with a normal leaf stores the proven canonical `(path, identity)` pair.
-/// Leafless paths and non-Unix targets keep the caller's spelling and carry no descriptor.
+/// Leafless paths and non-Unix targets keep the caller's spelling and carry no descriptor (the
+/// descriptor field exists only on Unix).
 /// `parent_and_leaf` is the proving descriptor consumed by `database_file_target`/`for_test_path`
 /// and dropped by registration doors, whose later use re-walks the stored path no-follow. The PGN
 /// export door keeps its own proving parent and passes `None`.
@@ -2884,6 +2885,7 @@ struct AcquiredTarget {
     path: PathBuf,
     identity: Identity,
     target_is_dir: bool,
+    #[cfg(unix)]
     parent_and_leaf: Option<(fs::File, OsString)>,
 }
 
@@ -2916,6 +2918,7 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
             path: path.to_path_buf(),
             identity,
             target_is_dir,
+            #[cfg(unix)]
             parent_and_leaf: None,
         });
     };
@@ -2948,7 +2951,6 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
             path: path.to_path_buf(),
             identity,
             target_is_dir,
-            parent_and_leaf: None,
         })
     }
 }
