@@ -25,13 +25,9 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-#[cfg(unix)]
 use crate::infra::fs::DirectoryEntry;
-#[cfg(unix)]
 use crate::infra::fs::DirectoryEntryKind;
-#[cfg(unix)]
 use crate::infra::path_authority::CapabilityDirectory;
-#[cfg(unix)]
 use std::ffi::OsStr;
 
 const TRASH_DIRECTORY: &str = ".en-croissant-trash";
@@ -103,6 +99,15 @@ fn validate_name(name: &str) -> Result<&str, Error> {
     {
         return Err(Error::InvalidInput("invalid workspace basename".into()));
     }
+    // On NTFS a colon opens an alternate data stream on ANOTHER file: `existing.pgn:secret`
+    // reaches the filesystem as a stream of `existing.pgn`, and `pgn_name` only appends `.pgn`
+    // to it. The check is Windows-only because a colon is a legal filename byte on unix and
+    // rejecting it unconditionally would change the Linux invoke contract; the same precedent
+    // governs `validate_components`' `#[cfg(unix)]` separator-and-NUL check.
+    #[cfg(windows)]
+    if name.contains(':') {
+        return Err(Error::InvalidInput("invalid workspace basename".into()));
+    }
     Ok(name)
 }
 
@@ -132,7 +137,6 @@ fn serialize_metadata(metadata: &WorkspaceMetadata) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-#[cfg(unix)]
 fn metadata_from(
     directory: &CapabilityDirectory,
     pgn: &DirectoryEntry,
@@ -153,7 +157,6 @@ fn metadata_from(
         .map_err(|error| Error::InvalidInput(format!("invalid PGN metadata: {error}")))
 }
 
-#[cfg(unix)]
 fn listed_mtime(entry: &DirectoryEntry) -> Result<i64, Error> {
     if entry.modified_seconds < 0 {
         return Err(Error::InvalidInput(format!(
@@ -172,7 +175,6 @@ fn timestamp(path: &Path) -> Result<i64, Error> {
         .as_secs() as i64)
 }
 
-#[cfg(unix)]
 fn workspace_root(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
@@ -183,7 +185,6 @@ fn workspace_root(
         .workspace_root(workspace, PathOperation::ReadPgn)
 }
 
-#[cfg(unix)]
 fn mutation_target(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     entry: &FileWorkspaceHandle,
@@ -192,16 +193,6 @@ fn mutation_target(
         .as_mut()
         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
         .workspace_mutation_target(entry)
-}
-
-#[cfg(not(unix))]
-fn mutation_target(
-    _pgn_path_authority: &Mutex<Option<PathAuthority>>,
-    _entry: &FileWorkspaceHandle,
-) -> Result<WorkspaceMutationTarget, Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "workspace mutations",
-    ))
 }
 
 fn durability_uncertainty(
@@ -224,7 +215,6 @@ fn ensure_registered_descendant(
     Ok(())
 }
 
-#[cfg(unix)]
 fn workspace_components(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
@@ -240,7 +230,6 @@ fn workspace_components(
         .collect())
 }
 
-#[cfg(unix)]
 fn register_created_entry(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
@@ -261,20 +250,6 @@ fn register_created_entry(
             is_dir,
             PathOperation::WritePgn,
         )
-}
-
-#[cfg(not(unix))]
-fn register_created_entry(
-    _pgn_path_authority: &Mutex<Option<PathAuthority>>,
-    _workspace: &FileWorkspaceHandle,
-    _path: &Path,
-    _display_name: String,
-    _identity: (u64, u64),
-    _is_dir: bool,
-) -> Result<FileWorkspaceHandle, Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "workspace mutations",
-    ))
 }
 
 pub(crate) fn map_picker_join(error: tokio::task::JoinError) -> Error {
@@ -306,21 +281,17 @@ pub(crate) fn set_workspace_listing_pre_confirm_hook(hook: Option<WorkspaceListi
     WORKSPACE_LISTING_PRE_CONFIRM_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
-#[cfg(unix)]
 const MAX_WORKSPACE_LISTING_DEPTH: usize = 64;
 
 // A pre-existing synchronous helper is the blocking body and gets no pass-through
 // wrapper, so the command holds the spawn. Same keep-name rule as puzzle.rs:
 // `collect_tree_entries`, `create_workspace_directory_inner`, `trash_entry`,
 // `restore_entry`.
-#[cfg(unix)]
 fn collect_tree_entries(
     pgn_path_authority: &Mutex<Option<PathAuthority>>,
     workspace: &FileWorkspaceHandle,
     token: &CancellationToken,
 ) -> Result<(Vec<WorkspaceEntry>, Vec<FileWorkspaceHandle>), Error> {
-    use std::os::unix::ffi::OsStrExt;
-
     struct Staged {
         components: Vec<std::ffi::OsString>,
         name: String,
@@ -362,11 +333,13 @@ fn collect_tree_entries(
         if token.is_cancelled() {
             return Err(Error::Cancellation);
         }
+        // `OsStrExt::as_bytes` does not exist on Windows; `as_encoded_bytes` yields the
+        // identical sequence on unix, so the listing order and every snapshot are preserved.
         entries.sort_by(|left, right| {
             left.name
                 .as_os_str()
-                .as_bytes()
-                .cmp(right.name.as_os_str().as_bytes())
+                .as_encoded_bytes()
+                .cmp(right.name.as_os_str().as_encoded_bytes())
         });
         let mut staged = Vec::new();
         for entry in entries {
@@ -484,17 +457,6 @@ fn collect_tree_entries(
     let mut missing = Vec::new();
     let entries = register(staged, pgn_path_authority, workspace, token, &mut missing)?;
     Ok((entries, missing))
-}
-
-#[cfg(not(unix))]
-fn collect_tree_entries(
-    _pgn_path_authority: &Mutex<Option<PathAuthority>>,
-    _workspace: &FileWorkspaceHandle,
-    _token: &CancellationToken,
-) -> Result<(Vec<WorkspaceEntry>, Vec<FileWorkspaceHandle>), Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "workspace listing",
-    ))
 }
 
 fn set_workspace_game_count(
@@ -625,7 +587,6 @@ pub async fn list_file_workspace(
     .await
 }
 
-#[cfg(unix)]
 fn paired_rename(
     source: &WorkspaceMutationTarget,
     target_parent: &fs::File,
@@ -666,17 +627,6 @@ fn paired_rename(
         };
     }
     Ok(())
-}
-
-#[cfg(not(unix))]
-fn paired_rename(
-    _source: &WorkspaceMutationTarget,
-    _target_parent: &fs::File,
-    _target_leaf: &std::ffi::OsStr,
-) -> Result<(), Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "workspace mutations",
-    ))
 }
 
 fn rebind_after_move(
@@ -1399,28 +1349,25 @@ mod tests {
     #[cfg(unix)]
     use crate::engine::EngineKey;
     #[cfg(unix)]
+    use crate::infra::fs::AtomicFileFaultPoint;
+    #[cfg(unix)]
     use crate::infra::fs::{set_test_removal_injector, RemovalFault, RemovalFaultPoint};
     #[cfg(unix)]
     use crate::infra::path_authority::{
         set_workspace_metadata_post_open_hook, set_workspace_metadata_pre_open_hook,
     };
-    #[cfg(unix)]
     use crate::infra::{
-        fs::{set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector},
+        fs::{set_test_atomic_file_injector, AtomicWriterInjector},
         path_authority::PathAuthority,
     };
     #[cfg(unix)]
     use std::io::{Seek, Write};
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
-    #[cfg(unix)]
     use std::sync::{Arc, Mutex as StdMutex};
-    #[cfg(unix)]
     use tauri::Manager;
-    #[cfg(unix)]
     use tempfile::TempDir;
 
-    #[cfg(unix)]
     #[derive(Clone, Copy, Debug)]
     enum QueuedWorkspaceCommand {
         CreateFile,
@@ -1434,13 +1381,11 @@ mod tests {
 
     /// Owns the contended standard mutex on a bounded worker thread so async tests never retain
     /// a `MutexGuard` across `.await`. Drop always releases and joins the holder.
-    #[cfg(unix)]
     struct HeldWorkspaceMutation {
         release: Option<std::sync::mpsc::SyncSender<()>>,
         worker: Option<std::thread::JoinHandle<()>>,
     }
 
-    #[cfg(unix)]
     impl HeldWorkspaceMutation {
         fn new(mutation: Arc<StdMutex<()>>) -> Self {
             let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
@@ -1469,7 +1414,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     impl Drop for HeldWorkspaceMutation {
         fn drop(&mut self) {
             if let Some(release) = self.release.take() {
@@ -1661,7 +1605,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn every_workspace_command_finishes_its_tail_after_caller_abort() {
         for command in [
@@ -1897,7 +1840,6 @@ mod tests {
 
     /// Grants and promotes `selected` as a persistent PGN workspace in a fresh authority whose
     /// registry lives in `directory`.
-    #[cfg(unix)]
     fn promoted_workspace_state(
         directory: &TempDir,
         selected: &Path,
@@ -1931,7 +1873,6 @@ mod tests {
         (state, workspace)
     }
 
-    #[cfg(unix)]
     fn workspace_state() -> (TempDir, AppState, FileWorkspaceHandle) {
         let directory = tempfile::tempdir().expect("temporary workspace parent");
         let root = directory.path().join("workspace");
@@ -2002,7 +1943,6 @@ mod tests {
         assert!(!moved.join("ws/game.pgn").exists());
     }
 
-    #[cfg(unix)]
     fn registered_child_directory(
         state: &AppState,
         workspace: &FileWorkspaceHandle,
@@ -2067,14 +2007,21 @@ mod tests {
         metadata_from(&directory, &entry)
     }
 
-    #[cfg(unix)]
+    /// Reads the identity from a retained, no-follow parent descriptor through
+    /// `entry_identity_at` — the same call its `registered_child_directory` sibling makes —
+    /// rather than through `MetadataExt::dev`/`ino`, which exist only on unix.
     fn registered_child_file(
         state: &AppState,
         workspace: &FileWorkspaceHandle,
         path: &Path,
     ) -> FileWorkspaceHandle {
-        let metadata = fs::symlink_metadata(path).expect("file metadata");
-        let identity = (metadata.dev(), metadata.ino());
+        let parent = crate::infra::fs::open_parent_no_follow(path).expect("retained file parent");
+        let identity = crate::infra::fs::entry_identity_at(
+            &parent,
+            path.file_name().expect("file leaf"),
+            false,
+        )
+        .expect("file identity");
         let components = workspace_components(&state.pgn_path_authority, workspace, path)
             .expect("workspace components");
         authority(&state.pgn_path_authority)
@@ -2607,7 +2554,6 @@ mod tests {
         assert!(state.engine_supervisor.get_exact(&key).is_none());
     }
 
-    #[cfg(unix)]
     #[test]
     fn trash_and_restore_directory_keep_descendant_records() {
         let (_directory, state, workspace) = workspace_state();
@@ -2658,6 +2604,19 @@ mod tests {
         assert_eq!(validate_name("  Study  ").unwrap(), "Study");
         assert_eq!(pgn_name("Study").unwrap(), "Study.pgn");
         assert_eq!(pgn_name("Study.PGN").unwrap(), "Study.PGN");
+        // On NTFS `existing.pgn:secret` is an alternate data stream on `existing.pgn`, and
+        // `pgn_name` would hand NT `existing.pgn:secret.pgn`. A colon is a legal filename byte
+        // on unix, so the rejection — and this case — are Windows-only.
+        #[cfg(windows)]
+        {
+            assert!(validate_name("existing.pgn:secret").is_err());
+            assert!(pgn_name("existing.pgn:secret").is_err());
+        }
+        #[cfg(unix)]
+        assert_eq!(
+            validate_name("existing.pgn:secret").unwrap(),
+            "existing.pgn:secret"
+        );
     }
 
     #[cfg(unix)]
@@ -3032,7 +2991,6 @@ mod tests {
     /// Creates `before.pgn` with an empty tag list, renames it to `after.pgn` with the tag
     /// `renamed` under `injector`, and returns the workspace root, the entry handle and the
     /// rename result.
-    #[cfg(unix)]
     fn rename_under_injector(
         injector: Option<Arc<dyn AtomicWriterInjector + Send + Sync>>,
     ) -> (
@@ -3079,7 +3037,6 @@ mod tests {
     }
 
     /// The rename, the sidecar rewrite and the registry rebind all landed, whatever the result.
-    #[cfg(unix)]
     fn assert_rename_landed(state: &AppState, root: &Path, handle: &FileWorkspaceHandle) {
         assert!(root.join("after.pgn").is_file());
         assert!(!root.join("before.pgn").exists());
@@ -3093,7 +3050,118 @@ mod tests {
         assert_eq!(rebound.path(), root.join("after.pgn"));
     }
 
-    #[cfg(unix)]
+    /// The listing's shape, asserted on every platform. The existing shape assertion,
+    /// `collect_tree_entries_matches_the_workspace_shape`, lives in a module that needs
+    /// `symlink`, `mkfifo`, `OsStrExt` and `FileExt`, none of which Windows has; this one uses
+    /// only ordinary file operations, so a Windows arm that returned `Ok(vec![])` fails here.
+    #[test]
+    fn collect_tree_entries_lists_the_workspace_shape_on_every_platform() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        fs::write(root.join("b.pgn"), b"*").expect("b.pgn");
+        fs::write(root.join("a.pgn"), b"*").expect("a.pgn");
+        fs::write(
+            root.join("a.info"),
+            br#"{"type":"game","tags":["trusted"]}"#,
+        )
+        .expect("a.info");
+        fs::write(root.join("notes.txt"), b"notes").expect("notes.txt");
+        let nested = root.join("nested");
+        fs::create_dir(&nested).expect("nested");
+        fs::write(nested.join("inner.pgn"), b"*").expect("inner.pgn");
+        fs::create_dir(root.join(TRASH_DIRECTORY)).expect("trash bucket");
+
+        let (entries, missing) = collect_tree_entries(
+            &state.pgn_path_authority,
+            &workspace,
+            &CancellationToken::new(),
+        )
+        .expect("workspace listing");
+
+        // Sorted by raw name bytes, sidecars and non-PGN files dropped, the trash bucket hidden.
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b", "nested"]
+        );
+        let a = &entries[0];
+        assert_eq!(a.kind, WorkspaceEntryKind::File);
+        assert_eq!(a.metadata.as_ref().expect("a metadata").tags, ["trusted"]);
+        assert_eq!(
+            a.last_modified,
+            timestamp(&root.join("a.pgn")).expect("a mtime")
+        );
+        let b = &entries[1];
+        assert_eq!(b.kind, WorkspaceEntryKind::File);
+        assert_eq!(
+            b.metadata.as_ref().expect("b metadata").tags,
+            Vec::<String>::new()
+        );
+        let nested_entry = &entries[2];
+        assert_eq!(nested_entry.kind, WorkspaceEntryKind::Directory);
+        assert_eq!(
+            nested_entry
+                .children
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["inner"]
+        );
+        assert_eq!(nested_entry.children[0].kind, WorkspaceEntryKind::File);
+        assert_eq!(
+            nested_entry.last_modified,
+            timestamp(&nested).expect("nested mtime")
+        );
+        // One game-count handle per listed PGN, directories excluded.
+        assert_eq!(missing.len(), 3);
+        for handle in &missing {
+            mutation_target(&state.pgn_path_authority, handle).expect("listed PGN is registered");
+        }
+    }
+
+    /// A2b: a PGN that has no `.info` sidecar renames and deletes cleanly. The optional-sidecar
+    /// helpers must report a missing leaf as success; mapping it to an error would report a
+    /// fully successful delete to the user as an uncertain one.
+    #[test]
+    fn sidecar_less_pgn_renames_and_deletes_cleanly() {
+        let (_directory, state, workspace) = workspace_state();
+        let root = workspace_root(&state.pgn_path_authority, &workspace).expect("workspace root");
+        let source_path = root.join("bare.pgn");
+        fs::write(&source_path, b"*").expect("bare PGN");
+        let bare = registered_child_file(&state, &workspace, &source_path);
+        assert!(!root.join("bare.info").exists());
+
+        rename_workspace_file_blocking(
+            workspace.clone(),
+            bare.clone(),
+            "renamed".into(),
+            WorkspaceMetadata::default(),
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &CancellationToken::new(),
+        )
+        .expect("rename a PGN that has no sidecar");
+        assert!(!source_path.exists());
+        assert!(root.join("renamed.pgn").is_file());
+
+        // The rename writes the sidecar the caller supplied; remove it again so the delete also
+        // runs against a PGN with no `.info` beside it.
+        fs::remove_file(root.join("renamed.info")).expect("drop the written sidecar");
+        let (dropped, result) = permanently_delete_entry_blocking(
+            &state.pgn_path_authority,
+            &state.workspace_mutation,
+            &workspace,
+            &bare,
+            &CancellationToken::new(),
+        );
+        result.expect("delete a PGN that has no sidecar");
+        assert!(dropped.is_empty());
+        assert!(!root.join("renamed.pgn").exists());
+        assert!(mutation_target(&state.pgn_path_authority, &bare).is_err());
+    }
+
     #[test]
     fn rename_workspace_file_moves_pgn_sidecar_and_registry_entry() {
         let (_directory, state, root, handle, result) = rename_under_injector(None);

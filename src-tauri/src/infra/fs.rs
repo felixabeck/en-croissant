@@ -57,8 +57,6 @@ pub(crate) struct DirectoryEntry {
     /// Seconds since the Unix epoch. On Windows the enumerated `LastWriteTime` is a FILETIME —
     /// 100-nanosecond ticks since 1601-01-01 — and is converted here, because the renderer reads
     /// `WorkspaceEntry.lastModified` as Unix seconds.
-    // `collect_tree_entries`, the only reader, is still unix-gated; phase D un-gates it.
-    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) modified_seconds: i64,
 }
 

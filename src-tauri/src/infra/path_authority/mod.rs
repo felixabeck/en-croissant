@@ -322,8 +322,6 @@ impl CapabilityDirectory {
     /// open is a retry rather than a hard failure. Unix sees `LOOP`/`NOTDIR`/`NOENT`; Windows sees
     /// the NT counterparts, plus `open_windows_child`'s reparse refusal, because an entry that was
     /// a directory at enumeration time and is a junction when it is opened is the same swap.
-    // No Windows caller until phase D; see the note on `entries`.
-    #[cfg_attr(not(unix), allow(dead_code))]
     fn child_open_swap(error: Error) -> Error {
         #[cfg(unix)]
         {
@@ -365,8 +363,6 @@ impl CapabilityDirectory {
         }
     }
 
-    // No Windows caller until phase D; see the note on `entries`.
-    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn open_child_directory(
         &self,
         entry: &DirectoryEntry,
@@ -390,8 +386,6 @@ impl CapabilityDirectory {
         })
     }
 
-    // No Windows caller until phase D; see the note on `entries`.
-    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn confirm_entry(&self, entry: &DirectoryEntry) -> Result<(), Error> {
         crate::infra::fs::single_leaf(&entry.name)?;
         assert_entry_identity(
@@ -402,8 +396,6 @@ impl CapabilityDirectory {
         )
     }
 
-    // No Windows caller until phase D; see the note on `entries`.
-    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn open_metadata_sidecar(
         &self,
         pgn: &DirectoryEntry,
@@ -854,8 +846,6 @@ impl AuthorizedDir {
     }
 }
 
-// Windows callers arrive with `file_workspace.rs`, whose counterpart refusals are phase D.
-#[cfg_attr(not(unix), allow(dead_code))]
 struct RetainedWorkspaceTarget {
     parent: fs::File,
     leaf: OsString,
@@ -6018,8 +6008,6 @@ impl PathAuthority {
 
     /// Persists an opaque child handle for an entry observed through a retained directory
     /// descriptor. The supplied identity is the one captured during enumeration.
-    // Windows callers arrive with `file_workspace.rs`, whose counterpart refusals are phase D.
-    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn register_workspace_child_observed(
         &mut self,
         workspace: &FileWorkspaceHandle,
@@ -6064,8 +6052,6 @@ impl PathAuthority {
         )
     }
 
-    // Windows callers arrive with `file_workspace.rs`, whose counterpart refusals are phase D.
-    #[cfg_attr(not(unix), allow(dead_code))]
     fn persist_workspace_child(
         &mut self,
         root_entry: Entry,
@@ -6509,8 +6495,6 @@ impl PathAuthority {
 
     /// Resolves an opaque workspace capability into retained no-follow descriptors.  This is the
     /// mutation boundary: callers must not reopen `path()` for filesystem changes.
-    // Windows callers arrive with `file_workspace.rs`, whose counterpart refusals are phase D.
-    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn workspace_mutation_target(
         &mut self,
         handle: &FileWorkspaceHandle,
@@ -6534,8 +6518,6 @@ impl PathAuthority {
         })
     }
 
-    // Windows callers arrive with `file_workspace.rs`, whose counterpart refusals are phase D.
-    #[cfg_attr(not(unix), allow(dead_code))]
     fn retained_workspace_target(
         &mut self,
         handle: &FileWorkspaceHandle,

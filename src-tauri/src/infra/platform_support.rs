@@ -20,9 +20,11 @@ G rows (each staged message names the listed file and signature):
 `fs.rs::set_file_as_executable_blocking`,
 `puzzle.rs::delete_puzzle_database`, `puzzle.rs::get_puzzle`.
 
-B rows (each staged message names the listed file and signature):
-`file_workspace.rs::mutation_target`, `file_workspace.rs::register_created_entry`,
-`file_workspace.rs::collect_tree_entries`, `file_workspace.rs::paired_rename`,
+B rows (each staged message names the listed file and signature).
+`file_workspace.rs`'s four rows — `mutation_target`, `register_created_entry`,
+`collect_tree_entries` and `paired_rename` — were retired when `f-20260914-08`
+ported them; `workspace_bodies_are_single_ungated_delegations` replaced them,
+because a deleted row can no longer notice its refusal coming back:
 `infra/fs.rs::entry_identity_at`, `infra/fs.rs::create_dir_at`,
 `infra/fs.rs::open_directory_at`, `infra/fs.rs::rename_entry_at`,
 `infra/fs.rs::remove_entry_at`, `infra/fs.rs::remove_optional_regular_at`,
@@ -747,6 +749,34 @@ mod tests {
         );
     }
 
+    /// D1a/D6. The colon rejection is `#[cfg(windows)]`, so its only runtime assertion is a
+    /// `#[cfg(windows)]` case inside `workspace_names_reject_paths_reserved_sidecars_and_empty_values`
+    /// and nothing on Linux would notice it being dropped. On NTFS `existing.pgn:secret` names an
+    /// alternate data stream on `existing.pgn`, and `pgn_name` only appends `.pgn` to whatever
+    /// `validate_name` returned.
+    #[test]
+    fn windows_workspace_basenames_reject_the_alternate_data_stream_colon() {
+        let source = source_for("file_workspace.rs");
+        let body = compact(&source[braced_body(source, "fn validate_name(")]);
+        assert!(
+            body.contains(
+                r#"#[cfg(windows)]ifname.contains(':'){returnErr(Error::InvalidInput("invalid workspace basename".into()));}"#
+            ),
+            "{body}"
+        );
+        // The unconditional form would change the Linux invoke contract, where a colon is a
+        // legal filename byte; `validate_components` sets the same precedent the other way.
+        assert!(
+            !body.contains(r#"name.contains(['/','\\','\0',':'])"#),
+            "the colon rejection must stay Windows-only: {body}"
+        );
+        let pgn_name = compact(&source[braced_body(source, "fn pgn_name(")]);
+        assert!(
+            pgn_name.contains("letname=validate_name(name)?;"),
+            "pgn_name must keep routing through validate_name: {pgn_name}"
+        );
+    }
+
     #[test]
     fn post_rename_identity_uses_the_retained_handle() {
         let source = source_for("infra/fs.rs");
@@ -769,6 +799,7 @@ mod tests {
             "db/search.rs" => include_str!("../db/search.rs"),
             "db/mod.rs" => include_str!("../db/mod.rs"),
             "file_workspace.rs" => include_str!("../file_workspace.rs"),
+            "pgn.rs" => include_str!("../pgn.rs"),
             other => panic!("unknown source-test file {other}"),
         }
     }
@@ -1064,30 +1095,6 @@ mod tests {
 
     fn body_rows() -> &'static [BodyRow] {
         &[
-            BodyRow {
-                file: "file_workspace.rs",
-                signature: "fn mutation_target(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("workspace mutations"),
-            },
-            BodyRow {
-                file: "file_workspace.rs",
-                signature: "fn register_created_entry(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("workspace mutations"),
-            },
-            BodyRow {
-                file: "file_workspace.rs",
-                signature: "fn collect_tree_entries(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("workspace listing"),
-            },
-            BodyRow {
-                file: "file_workspace.rs",
-                signature: "fn paired_rename(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("workspace mutations"),
-            },
             BodyRow {
                 file: "infra/fs.rs",
                 signature: "pub fn atomic_install_dir(",
@@ -1508,21 +1515,26 @@ mod tests {
         );
     }
 
-    fn check_helper(
+    /// The half of `check_helper` that pins the *shape* of a helper: exactly one declaration of
+    /// this signature in the file, carrying no `cfg` of its own, spelled exactly as recorded.
+    /// Returns the body range so a caller can pin the body as well. Extracted because
+    /// `workspace_bodies_are_single_ungated_delegations` needs precisely these three checks —
+    /// a reappearing `#[cfg(not(unix))]` counterpart is a second declaration, and gating the
+    /// survivor is a `cfg` on the one that is left — for bodies far too large to pin verbatim.
+    fn check_declaration(
         file: &str,
         source: &str,
         signature: &str,
         declaration: &str,
-        expected_body: &str,
         errors: &mut Vec<String>,
-    ) {
+    ) -> Option<Range<usize>> {
         let starts = function_starts(source, signature);
         if starts.len() != 1 {
             errors.push(format!(
                 "{file}: {signature}: expected one declaration, found {}",
                 starts.len()
             ));
-            return;
+            return None;
         }
         let start = starts[0];
         if attribute_lines_before(source, start)
@@ -1538,10 +1550,127 @@ mod tests {
                 "{file}: {signature}: declaration changed: {actual_declaration}"
             ));
         }
+        Some(body)
+    }
+
+    fn check_helper(
+        file: &str,
+        source: &str,
+        signature: &str,
+        declaration: &str,
+        expected_body: &str,
+        errors: &mut Vec<String>,
+    ) {
+        let Some(body) = check_declaration(file, source, signature, declaration, errors) else {
+            return;
+        };
         let actual_body = compact(&source[body]);
         if actual_body != expected_body {
             errors.push(format!("{file}: {signature}: body changed: {actual_body}"));
         }
+    }
+
+    /// D5a. Once `f-20260914-08` deleted the four `file_workspace.rs` rows from `body_rows()`,
+    /// `non_unix_counterparts_have_only_typed_refusal_bodies` stopped being able to notice their
+    /// return: it checks listed rows and explicitly disclaims closed-world completeness
+    /// (`f-20260916-01`). This is the replacement, and it executes on Linux: each of the four
+    /// workspace entry points must be ONE declaration, un-gated, delegating to the
+    /// path-authority or descriptor-relative call that does the work. Restoring a
+    /// `#[cfg(not(unix))]` counterpart makes it two declarations and gates the survivor, so this
+    /// reddens the Linux run rather than only `rust-windows-test`.
+    #[test]
+    fn workspace_bodies_are_single_ungated_delegations() {
+        // `collect_tree_entries` and `paired_rename` have bodies of 180 and 45 lines, so the
+        // pinned property is the delegation call each one may not lose, not the whole body.
+        let rows: &[(&str, &str, &[&str])] = &[
+            (
+                "fn mutation_target(",
+                "fnmutation_target(pgn_path_authority:&Mutex<Option<PathAuthority>>,entry:&FileWorkspaceHandle,)->Result<WorkspaceMutationTarget,Error>",
+                &[".workspace_mutation_target(entry)"],
+            ),
+            (
+                "fn register_created_entry(",
+                "fnregister_created_entry(pgn_path_authority:&Mutex<Option<PathAuthority>>,workspace:&FileWorkspaceHandle,path:&Path,display_name:String,identity:(u64,u64),is_dir:bool,)->Result<FileWorkspaceHandle,Error>",
+                &[".register_workspace_child_observed("],
+            ),
+            (
+                "fn collect_tree_entries(",
+                "fncollect_tree_entries(pgn_path_authority:&Mutex<Option<PathAuthority>>,workspace:&FileWorkspaceHandle,token:&CancellationToken,)->Result<(Vec<WorkspaceEntry>,Vec<FileWorkspaceHandle>),Error>",
+                &[
+                    ".capability_directory(workspace.path_ref(),PathOperation::ReadPgn)?",
+                    "dir.entries(token,&mut|name|",
+                    "dir.open_child_directory(&entry)?",
+                    "dir.confirm_entry(entry)",
+                ],
+            ),
+            (
+                "fn paired_rename(",
+                "fnpaired_rename(source:&WorkspaceMutationTarget,target_parent:&fs::File,target_leaf:&std::ffi::OsStr,)->Result<(),Error>",
+                &["rename_entry_at(", "rename_optional_regular_at("],
+            ),
+        ];
+        let source = source_for("file_workspace.rs");
+        let mut errors = Vec::new();
+        for (signature, declaration, delegations) in rows {
+            let Some(body) = check_declaration(
+                "file_workspace.rs",
+                source,
+                signature,
+                declaration,
+                &mut errors,
+            ) else {
+                continue;
+            };
+            let compacted = compact(&source[body]);
+            for delegation in *delegations {
+                if !compacted.contains(delegation) {
+                    errors.push(format!(
+                        "file_workspace.rs: {signature}: lost delegation {delegation}"
+                    ));
+                }
+            }
+            if compacted.contains("platform_support::") {
+                errors.push(format!(
+                    "file_workspace.rs: {signature}: a platform refusal came back"
+                ));
+            }
+            if compacted.contains("#[cfg(not(unix))]") || compacted.contains("#[cfg(unix)]") {
+                errors.push(format!(
+                    "file_workspace.rs: {signature}: body split by a platform cfg"
+                ));
+            }
+        }
+        assert!(
+            errors.is_empty(),
+            "workspace delegation pins failed:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    /// D5b. `#[cfg_attr(not(unix), ignore)]` makes `rust-windows-test` print `ignored` and still
+    /// exit 0, and the Linux run executes the test either way, so nothing goes red if a marker
+    /// stays. This is the assertion that the eleven `f-20260914-08` markers are gone — and that
+    /// the four `f-20260914-10` ones, whose tests still reach the refusing `replace_pgn_atomic`,
+    /// were not removed with them.
+    #[test]
+    fn pgn_tests_carry_no_unported_marker_for_this_finding() {
+        let source = source_for("pgn.rs");
+        let marker = |finding: &str| {
+            format!(
+                "#[cfg_attr(not(unix), ignore = \"unported on this {}: {finding}\")]",
+                "platform"
+            )
+        };
+        assert_eq!(
+            source.matches(&marker("f-20260914-08")).count(),
+            0,
+            "the workspace-mutation port removes every f-20260914-08 marker in pgn.rs"
+        );
+        assert_eq!(
+            source.matches(&marker("f-20260914-10")).count(),
+            4,
+            "replace_pgn_atomic still refuses, so its four markers stay"
+        );
     }
 
     #[test]
@@ -1747,10 +1876,6 @@ mod tests {
                 "fd-relative search index loading",
                 "unsupported",
             ),
-            ("file_workspace.rs", "workspace mutations", "unsupported"),
-            ("file_workspace.rs", "workspace mutations", "unsupported"),
-            ("file_workspace.rs", "workspace listing", "unsupported"),
-            ("file_workspace.rs", "workspace mutations", "unsupported"),
         ];
         let mut errors = Vec::new();
         for (file, operation, function) in expected {
