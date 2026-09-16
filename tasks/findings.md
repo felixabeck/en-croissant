@@ -8324,6 +8324,37 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Related:** `f-20260830-06` (parent; slice 1 filed this). Root `non-linux-platform-port` is the shared cause: the filesystem authority layer was designed on Linux-only/Unix-only primitives.
 * **Found by:** `review-tests` plan lens (Codex, confidence 99, rounds 1 and 2) during the `f-20260830-06` slice-1 plan review, 2026-09-14; deferred because running the suite on Windows exercises the unported areas themselves.
 
+Handled. The Rust suite now runs on Windows, and every Windows refusal has an assertion that executes there.
+
+Commits: `aadc4dd5` (81 owner-tagged `#[cfg_attr(not(unix), ignore = ...)]` attributes, the portable leaf fixture for
+the four O2 tests, and exact source pins for all 40 Windows refusal sites — 29 body rows, 11 guard rows, the
+`UNSUPPORTED_DIRECTORY_ENUMERATION` declaration and the two callees on the effective path, reported by row rather than
+fail-fast); `56e4600b` (`.gitattributes` = `* text=auto eol=lf`, the `rust-windows-test` job, and the parity checker
+rebuilt around one `RUST_TEST_JOBS` table with clauses (7a), (7b), (7c) and derived job registrations).
+
+Proof: run **35049284019**, job `rust-windows-test` (104645937289), green — `462 passed; 0 failed; 81 ignored`, all 81
+ignores printing their owner (63 `f-20260914-10`, 18 `f-20260914-11`), the four O2 tests `ok`, and eight
+`infra::platform_support::tests::` lines `ok`, equal to the Linux count, so no pin is compiled out on Windows. Locally:
+`cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --all-targets` (1190 passed), `node --test
+scripts/check-tool-version-parity-tests.mjs` (125 passed) and `pnpm gates:contract:check` all green.
+
+Every pinned class was staged and seen to fail with its own message, including the three independently messaged O1
+assertions; the six staged Rust classes, the O1 observations and the O5 CLI observations are recorded in
+`tasks/handoffs/2026-09-16-f-20260914-07-review.md`.
+
+Rejected alternatives: runtime Windows refusal tests (a runtime test cannot observe a refusal for an arbitrary
+pathname — the r3 focused architecture judgment, `d-20260914-05`); skipping the whole suite on Windows behind an `if:`
+(a gate that checks nothing, and `check-gate-routing.mjs` rejects it — measured); leaving the 81 tests failing on
+Windows (the job would be red for reasons nobody owns).
+
+Named limitations, not closed here: the four shared-helper pins (`refusal`, `unsupported`, `unsupported_plural`,
+`off_unix_refusal`) are argued rather than staged, because staging them would mean editing the verifier's own source,
+which push-review-policy section 2 forbids as a staging route; and nothing yet ties the row tables to the set of
+refusals that actually exist, so a newly added or alias-spelled refusal site stays unpinned. Both, with the inherited
+issue IDs R4-02, R11-01 and R15-01, are the successor finding `f-20260916-01`, split out under rule 12a after the
+question did not converge in fifteen plan-review rounds.
+<!-- ledger-meta {"command":"annotate","effect_lines":29,"effect_sha256":"5b7454c56cef128b45eb88f63e1c7489f578d054c3f50a3411c08e52199a7342","input_sha256":"66f2883780221b9ecad64ae1bdee8af6151c144afcf2f31afb72ab6755b0f299","kind":"mutation-receipt","operation":"8198b06a401979d7a71eb264fdf2349c54298b3c4b3ca5ff4c6a40e1786768c0","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-07"],"target":"f-20260914-07","v":1} -->
+
 ### Workspace create, move, rename, trash, restore and delete are refused on Windows
 
 * **ID:** f-20260914-08 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
