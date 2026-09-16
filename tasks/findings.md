@@ -8401,6 +8401,44 @@ Related: `f-20260914-07` added the Windows job (`rust-windows-test`, commit `56e
 visible in the first place.
 <!-- ledger-meta {"command":"annotate","effect_lines":11,"effect_sha256":"8f99930e14874607b780a1e2d9596f40bc745396dff9f860674228211b21c661","input_sha256":"0aff7570c3257046addd47a178931d51399fde7a40ee221260d0a6df58c8b0bf","kind":"mutation-receipt","operation":"0c290d99decc8a31b036d42483d6368817e26257ad26c343a2d8b8a37aebc0f1","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-10"],"target":"f-20260914-10","v":1} -->
 
+**Ported 2026-09-16 (status stays open — the PGN remainder is not delivered).** The atomic-replace
+primitive, downloads and registry persistence now work on Windows. Five commits: `772d4558` Phase A
+(Windows helper surface: `open_windows_child` gains disposition/access/security-descriptor
+parameters, component-wise no-follow identity walk, typed NT statuses, the `replace_pgn_atomic`
+refusal with its guard row), `68f1f065` Phase B (the primitive: one shared driver parameterised by
+an adapter, `NtCreateFile` + `FILE_CREATE` relative to the retained parent, commit through
+`NtSetInformationFile(FileRenameInformationEx, RootDirectory = parent)`, `FlushFileBuffers` on the
+parent, restrictive creation descriptor with `FILE_SHARE_READ` withheld until the DACL is applied,
+DACL capture/apply fail-closed), `e32d8f46` Phase C (the three download refusals removed),
+`97e8db57` the writable-parent fix, `400b7f7b` Phase D (registry tests, the PGN re-owning, the
+search-index fixture).
+
+**Not delivered, deliberately:** PGN edit-existing stays refused on Windows — `replace_pgn_atomic`
+gained its own `#[cfg(not(unix))]` refusal and guard row in Phase A, so the port cannot silently
+unblock it; `atomic_install_dir` stays refusing (O3), so archive installation and gzip extraction as
+a product capability are still `f-20260914-12`'s; `download_engine_archive` keeps its guard.
+
+**Marker accounting:** 48 remain, 19 `f-20260914-10` + 18 `f-20260914-11` + 11 `f-20260914-08`, down
+from 81. Eleven `pgn.rs` markers were re-owned to `f-20260914-08` because those tests never reach
+`replace_pgn_atomic` — they are blocked at fixture construction by `create_pgn_export_destination`.
+The four that do reach a write path through `writable_for` keep this finding's id, because once
+`f-20260914-08` lands they are blocked next by the refusal added here. The remaining nineteen are
+those four plus the fifteen new Windows tests Phase B authored.
+
+**The honest limitation: no Windows runner has executed any of this.** Every Windows test added here
+is `#[cfg(windows)]` and nothing on the development machine compiles it — the MinGW cross toolchain
+is not installed, so even `cargo check --target x86_64-pc-windows-gnu` could not run. What is proven
+locally is that the tree compiles, clippy is clean, the full suite passes (1198), and the exact
+source pins hold: the creation descriptor and share mask, the real durability calls with their
+receivers, post-rename identity from the retained handle, and the two-predicate parent acquisition.
+Those pins execute on every platform by design (`d-20260916-01`), which is why they carry the
+Windows claims that a Linux runtime test cannot. The first real verification is the
+`rust-windows-test` job on this push.
+
+**Why it stays open:** the PGN remainder. Closing it needs `f-20260914-08` first, then the four
+mutation tests un-ignored and proven on a Windows runner.
+<!-- ledger-meta {"command":"annotate","effect_lines":36,"effect_sha256":"2bb2602bd0cd56f85acb59bca5f66a7f13c49c03e4195f7c86ef65e5aca497f8","input_sha256":"22a36ca6c8854259adaed9c84e519a41fbd0eebb1f0ed2fb6c5382f5323e9e0b","kind":"mutation-receipt","operation":"7468b5c8de11811c372f1ebee187aaeb6e9622bd0068a355e5adc5f11c2d5f58","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-10"],"target":"f-20260914-10","v":1} -->
+
 ### Windows startup cannot persist the path-authority and credential registries or create app-owned roots
 
 * **ID:** f-20260914-11 · **Status:** open · **Area:** app-startup · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
