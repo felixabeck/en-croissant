@@ -1842,7 +1842,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn lichess_prefixed_id_cannot_skip_signature() {
         let dir = tempdir().unwrap();
         let (authority, destination) = database_destination(&dir);
@@ -1873,7 +1872,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn lichess_games_reject_database_destination() {
         let dir = tempdir().unwrap();
         let (authority, destination) = database_destination(&dir);
@@ -1898,7 +1896,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn download_engine_archive_rejects_database_destination() {
         let dir = tempdir().unwrap();
         let (authority, destination) = database_destination(&dir);
@@ -1938,7 +1935,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn file_exists_rejects_a_capability_without_engine_inspection_authority() {
         let dir = tempdir().unwrap();
         let executable = dir.path().join("private-engine");
@@ -1966,7 +1962,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn file_exists_returns_false_only_after_the_registered_file_is_deleted() {
         let dir = tempdir().unwrap();
         let executable = dir.path().join("engine");
@@ -1982,7 +1977,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn get_file_metadata_rejects_a_capability_without_engine_inspection_authority() {
         let dir = tempdir().unwrap();
         let executable = dir.path().join("private-engine");
@@ -2010,7 +2004,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn get_file_metadata_redacts_a_deleted_engine_path_and_os_error() {
         let dir = tempdir().unwrap();
         let executable = dir.path().join("private-engine");
@@ -2225,7 +2218,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn test_download_file_cross_origin_token_stripping() {
         let dir = tempdir().unwrap();
         let target = dir.path().join("out.txt");
@@ -2456,7 +2448,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn gzip_extraction_keeps_the_installed_file_and_reports_uncertain_durability() {
         let root = tempdir().unwrap();
         let gzip_archive = root.path().join("archive.gz");
@@ -2924,7 +2915,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn staged_artifact_cancels_at_real_install_precommit_without_publication() {
         let _guard = ResetAtomicInjectorGuard;
         let dir = tempdir().unwrap();
@@ -3541,7 +3531,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn staging_deadline_keeps_accepted_lease_until_real_extractor_cleanup() {
         let dir = tempdir().unwrap();
         let archive_path = dir.path().join("held.gz");

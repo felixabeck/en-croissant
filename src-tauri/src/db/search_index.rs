@@ -1010,7 +1010,6 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn test_roundtrip() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.ecsi");
@@ -1095,7 +1094,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn test_large_index() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("large.ecsi");
@@ -1148,7 +1146,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn test_parallel_iteration() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("parallel.ecsi");
@@ -1197,7 +1194,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn chunked_roundtrip_preserves_sequential_and_parallel_order() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("chunks.ecsi");
@@ -1283,7 +1279,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn oversized_entry_gets_its_own_chunk() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("oversized.ecsi");
@@ -1306,7 +1301,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn empty_archive_has_source_without_chunks() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("empty.ecsi");
@@ -1318,7 +1312,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn framing_rejects_corrupt_counts_lengths_alignment_and_trailing_bytes() {
         fn mutate_valid(mutator: impl FnOnce(&mut Vec<u8>)) -> io::Error {
             let dir = tempdir().unwrap();
@@ -1393,7 +1386,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn rejects_misaligned_source_length_from_an_emitted_archive() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("source-alignment.ecsi");
@@ -1413,7 +1405,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn rejects_nonzero_chunk_padding_from_an_emitted_archive() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("chunk-padding.ecsi");
@@ -1526,7 +1517,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn atomic_write_never_leaves_a_partial_replacement() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("atomic.ecsi");
@@ -1645,7 +1635,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn search_index_write_to_reports_uncertain_parent_sync() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("uncertain.ecsi");
@@ -1737,7 +1726,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn archive_source_roundtrips_with_the_index() {
         let dir = tempdir().unwrap();
         let database = dir.path().join("source.db3");
@@ -1780,7 +1768,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn version_7_header_is_rejected() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("v7.ecsi");
@@ -1795,7 +1782,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn v8_archive_contains_no_pathname_bytes() {
         let dir = tempdir().unwrap();
         let database = dir.path().join("PATHMARK-v8-test.db3");

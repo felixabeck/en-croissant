@@ -207,13 +207,6 @@ pub(crate) use verified_directory::VerifiedDir;
 
 #[derive(Debug)]
 #[must_use = "the rename may have landed without a durable parent; decide what CommittedDurabilityUncertain means at this site"]
-#[cfg_attr(
-    all(not(unix), not(test)),
-    expect(
-        dead_code,
-        reason = "atomic replacement refuses off Unix until the Windows port constructs an outcome (f-20260830-06 follow-up (d))"
-    )
-)]
 pub enum AtomicFileOutcome {
     DurableCommit,
     CommittedDurabilityUncertain(std::io::Error),
@@ -269,6 +262,7 @@ pub struct AtomicInstalledFile {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AtomicFileFaultPoint {
     ParentOpen,
@@ -279,8 +273,11 @@ pub(crate) enum AtomicFileFaultPoint {
     PermissionCopy,
     PreCommitRevalidate,
     Rename,
-    #[cfg(unix)]
     PostRenameMetadata,
+    TargetStat,
+    TempMetadata,
+    DaclCapture,
+    DaclApply,
     ParentSync,
     Cleanup,
 }
@@ -288,6 +285,11 @@ pub(crate) enum AtomicFileFaultPoint {
 #[cfg(test)]
 pub(crate) trait AtomicWriterInjector {
     fn inject(&self, _: AtomicFileFaultPoint) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn inspect_temp(&self, _: &File) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -328,7 +330,7 @@ pub(crate) fn current_test_atomic_file_injector(
     TEST_ATOMIC_FILE_INJECTOR.with(|current| current.borrow().clone())
 }
 
-#[cfg(any(test, unix))]
+#[cfg(any(test, unix, windows))]
 fn io(err: std::io::Error) -> Error {
     Error::Io(Box::new(err))
 }
@@ -336,6 +338,323 @@ fn io(err: std::io::Error) -> Error {
 pub(crate) fn inject_atomic_file(point: AtomicFileFaultPoint) -> Result<(), Error> {
     current_test_atomic_file_injector()
         .map_or(Ok(()), |injector| injector.inject(point).map_err(io))
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static DURABILITY_LOG: std::cell::RefCell<Vec<&'static str>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn record_durability(label: &'static str) {
+    DURABILITY_LOG.with(|log| log.borrow_mut().push(label));
+}
+
+#[cfg(not(test))]
+fn record_durability(_: &'static str) {}
+
+#[cfg(all(test, windows))]
+fn inspect_test_atomic_temp(temp: &File) -> Result<(), Error> {
+    current_test_atomic_file_injector()
+        .map_or(Ok(()), |injector| injector.inspect_temp(temp).map_err(io))
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+fn durability_log() -> Vec<&'static str> {
+    DURABILITY_LOG.with(|log| log.borrow().clone())
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+fn clear_durability_log() {
+    DURABILITY_LOG.with(|log| log.borrow_mut().clear());
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TempMetadata {
+    identity: (u64, u64),
+    ctime_nanos: i128,
+}
+
+trait AtomicReplaceAdapter {
+    type Target;
+
+    fn target_stat(&self, dir: &File, target: &OsStr) -> Result<Option<Self::Target>, Error>;
+    fn is_regular(&self, target: &Self::Target) -> bool;
+    fn target_identity(&self, target: &Self::Target) -> (u64, u64);
+    fn create_temp(
+        &self,
+        dir: &File,
+        original: Option<&Self::Target>,
+    ) -> Result<(OsString, File), Error>;
+    fn before_write(
+        &self,
+        dir: &File,
+        temp: &File,
+        original: Option<&Self::Target>,
+    ) -> Result<(), Error>;
+    fn finalize_metadata(
+        &self,
+        temp: &mut File,
+        original: Option<&Self::Target>,
+    ) -> Result<(), Error>;
+    fn rename(
+        &self,
+        dir: &File,
+        temp: &mut File,
+        temp_name: &OsStr,
+        target: &OsStr,
+        replace: bool,
+    ) -> Result<(), Error>;
+    fn metadata(&self, temp: &File) -> Result<TempMetadata, std::io::Error>;
+    fn cleanup(&self, dir: &File, temp_name: &OsStr, temp: &mut File, primary: Error) -> Error;
+}
+
+fn cleanup_with_adapter<A: AtomicReplaceAdapter>(
+    adapter: &A,
+    dir: &File,
+    temp_name: &OsStr,
+    temp: &mut File,
+    primary: Error,
+) -> Error {
+    adapter.cleanup(dir, temp_name, temp, primary)
+}
+
+fn replace_at_driver<A, F, P>(
+    adapter: A,
+    dir: File,
+    target_name: OsString,
+    precommit: P,
+    write_fn: F,
+) -> Result<AtomicInstalledFile, Error>
+where
+    A: AtomicReplaceAdapter,
+    F: FnOnce(&mut File) -> Result<(), Error>,
+    P: FnOnce() -> Result<(), Error>,
+{
+    let target_name_ref = target_name.as_os_str();
+    let original = {
+        let result = adapter.target_stat(&dir, target_name_ref);
+        record_durability("target_stat:initial");
+        match result? {
+            Some(target) if !adapter.is_regular(&target) => {
+                return Err(Error::InvalidInput(
+                    "target must be a regular file, not a link or special file".into(),
+                ));
+            }
+            target => target,
+        }
+    };
+
+    #[cfg(test)]
+    inject_atomic_file(AtomicFileFaultPoint::TempfileCreate)?;
+    let (temp_name, mut temp) = adapter.create_temp(&dir, original.as_ref())?;
+
+    if let Err(error) = adapter.before_write(&dir, &temp, original.as_ref()) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    #[cfg(test)]
+    if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::Write) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    #[cfg(all(test, windows))]
+    if let Err(error) = inspect_test_atomic_temp(&temp) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    if let Err(error) = write_fn(&mut temp) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    #[cfg(test)]
+    if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::Flush) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    let result = temp.flush().map_err(io);
+    record_durability("temp.flush");
+    if let Err(error) = result {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    #[cfg(test)]
+    if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::FileSync) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    let result = temp.sync_all().map_err(io);
+    record_durability("temp.sync_all:content");
+    if let Err(error) = result {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    #[cfg(test)]
+    if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::PermissionCopy) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    if let Err(error) = adapter.finalize_metadata(&mut temp, original.as_ref()) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+
+    #[cfg(test)]
+    if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::PreCommitRevalidate) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    #[cfg(test)]
+    if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::TargetStat) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    let current = adapter.target_stat(&dir, target_name_ref);
+    record_durability("target_stat:revalidation");
+    let current = match current {
+        Ok(current) => current,
+        Err(error) => {
+            return Err(cleanup_with_adapter(
+                &adapter, &dir, &temp_name, &mut temp, error,
+            ))
+        }
+    };
+    match (original.as_ref(), current) {
+        (None, None) => {}
+        (None, Some(_)) => {
+            return Err(cleanup_with_adapter(
+                &adapter,
+                &dir,
+                &temp_name,
+                &mut temp,
+                Error::Conflict("target was created concurrently".into()),
+            ))
+        }
+        (Some(_), None) => {
+            return Err(cleanup_with_adapter(
+                &adapter,
+                &dir,
+                &temp_name,
+                &mut temp,
+                Error::Conflict("target was deleted concurrently".into()),
+            ))
+        }
+        (Some(expected), Some(actual))
+            if adapter.is_regular(&actual)
+                && target_identity(&adapter, expected) == target_identity(&adapter, &actual) => {}
+        (Some(_), Some(_)) => {
+            return Err(cleanup_with_adapter(
+                &adapter,
+                &dir,
+                &temp_name,
+                &mut temp,
+                Error::Conflict("target changed concurrently".into()),
+            ))
+        }
+    }
+    if let Err(error) = precommit() {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+
+    #[cfg(test)]
+    if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::TempMetadata) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    let fallback_metadata = match adapter.metadata(&temp) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return Err(cleanup_with_adapter(
+                &adapter,
+                &dir,
+                &temp_name,
+                &mut temp,
+                io(error),
+            ))
+        }
+    };
+    #[cfg(test)]
+    if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::Rename) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+    if let Err(error) = adapter.rename(
+        &dir,
+        &mut temp,
+        &temp_name,
+        target_name_ref,
+        original.is_some(),
+    ) {
+        return Err(cleanup_with_adapter(
+            &adapter, &dir, &temp_name, &mut temp, error,
+        ));
+    }
+
+    #[cfg(test)]
+    let metadata = match inject_atomic_file(AtomicFileFaultPoint::PostRenameMetadata) {
+        Ok(()) => adapter.metadata(&temp),
+        Err(Error::Io(error)) => Err(*error),
+        Err(_) => unreachable!("atomic file injectors only produce I/O errors"),
+    };
+    #[cfg(not(test))]
+    let metadata = adapter.metadata(&temp);
+    let metadata = match metadata {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            drop(temp);
+            return Ok(AtomicInstalledFile {
+                outcome: AtomicFileOutcome::CommittedDurabilityUncertain(error),
+                identity: fallback_metadata.identity,
+                ctime_nanos: fallback_metadata.ctime_nanos,
+            });
+        }
+    };
+    drop(temp);
+    #[cfg(test)]
+    if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::ParentSync) {
+        let Error::Io(error) = error else {
+            unreachable!("atomic file injectors only produce I/O errors")
+        };
+        return Ok(AtomicInstalledFile {
+            outcome: AtomicFileOutcome::CommittedDurabilityUncertain(*error),
+            identity: metadata.identity,
+            ctime_nanos: metadata.ctime_nanos,
+        });
+    }
+    let parent_sync = dir.sync_all();
+    record_durability("dir.sync_all");
+    let outcome = match parent_sync {
+        Ok(()) => AtomicFileOutcome::DurableCommit,
+        Err(error) => AtomicFileOutcome::CommittedDurabilityUncertain(error),
+    };
+    Ok(AtomicInstalledFile {
+        outcome,
+        identity: metadata.identity,
+        ctime_nanos: metadata.ctime_nanos,
+    })
+}
+
+fn target_identity<A: AtomicReplaceAdapter>(adapter: &A, target: &A::Target) -> (u64, u64) {
+    adapter.target_identity(target)
 }
 
 #[cfg(unix)]
@@ -357,12 +676,6 @@ mod unix {
         },
         path::Component,
     };
-    pub(super) struct Installed {
-        pub outcome: AtomicFileOutcome,
-        pub identity: (u64, u64),
-        pub ctime_nanos: i128,
-    }
-
     /// Directory levels `remove_tree_at` and `sync_tree` will descend before refusing.
     ///
     /// Each open level holds two descriptors (the level's `File` and the one `Dir` owns), so one
@@ -961,11 +1274,121 @@ mod unix {
         }
     }
 
+    struct UnixAdapter;
+
+    impl AtomicReplaceAdapter for UnixAdapter {
+        type Target = fs::Stat;
+
+        fn target_stat(&self, dir: &File, target: &OsStr) -> Result<Option<Self::Target>, Error> {
+            target_stat(dir, target)
+        }
+
+        fn is_regular(&self, target: &Self::Target) -> bool {
+            regular(target)
+        }
+
+        fn target_identity(&self, target: &Self::Target) -> (u64, u64) {
+            raw_stat_identity(target)
+        }
+
+        fn create_temp(
+            &self,
+            dir: &File,
+            _original: Option<&Self::Target>,
+        ) -> Result<(OsString, File), Error> {
+            let created = (0..16)
+                .find_map(|_| {
+                    let candidate = temp_name();
+                    match fs::openat(
+                        dir,
+                        &candidate,
+                        OFlags::CREATE
+                            | OFlags::EXCL
+                            | OFlags::WRONLY
+                            | OFlags::NOFOLLOW
+                            | OFlags::CLOEXEC,
+                        Mode::from_raw_mode(0o600),
+                    ) {
+                        Ok(fd) => Some(Ok((candidate, File::from(fd)))),
+                        Err(error) if error == Errno::EXIST => None,
+                        Err(error) => Some(Err(io(error.into()))),
+                    }
+                })
+                .transpose()?
+                .ok_or_else(|| {
+                    Error::Conflict(
+                        "could not allocate a unique private temporary file after 16 attempts"
+                            .into(),
+                    )
+                })?;
+            Ok(created)
+        }
+
+        fn before_write(
+            &self,
+            _dir: &File,
+            _temp: &File,
+            _original: Option<&Self::Target>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn finalize_metadata(
+            &self,
+            temp: &mut File,
+            original: Option<&Self::Target>,
+        ) -> Result<(), Error> {
+            let final_mode = original.map_or(0o600, |stat| stat.st_mode & 0o7777);
+            fs::fchmod(&mut *temp, Mode::from_raw_mode(final_mode))
+                .map_err(|error| io(error.into()))?;
+            let result = temp.sync_all().map_err(io);
+            record_durability("temp.sync_all:metadata");
+            result
+        }
+
+        fn rename(
+            &self,
+            dir: &File,
+            _temp: &mut File,
+            temp_name: &OsStr,
+            target: &OsStr,
+            replace: bool,
+        ) -> Result<(), Error> {
+            if replace {
+                fs::renameat(dir, temp_name, dir, target).map_err(|error| io(error.into()))
+            } else {
+                fs::renameat_with(dir, temp_name, dir, target, RenameFlags::NOREPLACE)
+                    .map_err(|error| io(error.into()))
+            }
+        }
+
+        fn metadata(&self, temp: &File) -> Result<TempMetadata, std::io::Error> {
+            let stat = fs::fstat(temp)
+                .map_err(|error| std::io::Error::from_raw_os_error(error.raw_os_error()))?;
+            record_durability("temp.metadata");
+            Ok(TempMetadata {
+                identity: raw_stat_identity(&stat),
+                ctime_nanos: i128::from(stat.st_ctime) * 1_000_000_000
+                    + i128::from(stat.st_ctime_nsec),
+            })
+        }
+
+        fn cleanup(
+            &self,
+            dir: &File,
+            temp_name: &OsStr,
+            _temp: &mut File,
+            primary: Error,
+        ) -> Error {
+            cleanup(dir, temp_name, primary)
+        }
+    }
+
     pub(super) fn replace<F, P>(
         target: &Path,
         precommit: P,
         write_fn: F,
-    ) -> Result<Installed, Error>
+    ) -> Result<AtomicInstalledFile, Error>
     where
         F: FnOnce(&mut File) -> Result<(), Error>,
         P: FnOnce() -> Result<(), Error>,
@@ -976,7 +1399,8 @@ mod unix {
         let dir_identity = dir.metadata().map_err(io)?;
         let logical_parent = parent(target).to_path_buf();
         let target_name = name(target)?.to_os_string();
-        replace_at(
+        replace_at_driver(
+            UnixAdapter,
             dir,
             target_name,
             move || {
@@ -995,193 +1419,15 @@ mod unix {
 
     pub(super) fn replace_at<F, P>(
         dir: File,
-        target_name: std::ffi::OsString,
+        target_name: OsString,
         precommit: P,
         write_fn: F,
-    ) -> Result<Installed, Error>
+    ) -> Result<AtomicInstalledFile, Error>
     where
         F: FnOnce(&mut File) -> Result<(), Error>,
         P: FnOnce() -> Result<(), Error>,
     {
-        let target_name = target_name.as_os_str();
-        let original = match target_stat(&dir, target_name)? {
-            Some(stat) if !regular(&stat) => {
-                return Err(Error::InvalidInput(
-                    "target must be a regular file, not a link or special file".into(),
-                ))
-            }
-            Some(stat) => Some(stat),
-            None => None,
-        };
-
-        #[cfg(test)]
-        inject_atomic_file(AtomicFileFaultPoint::TempfileCreate)?;
-        let (temp_name, fd) = (0..16)
-            .find_map(|_| {
-                let candidate = temp_name();
-                match fs::openat(
-                    &dir,
-                    &candidate,
-                    OFlags::CREATE
-                        | OFlags::EXCL
-                        | OFlags::WRONLY
-                        | OFlags::NOFOLLOW
-                        | OFlags::CLOEXEC,
-                    Mode::from_raw_mode(0o600),
-                ) {
-                    Ok(fd) => Some(Ok((candidate, fd))),
-                    Err(error) if error == Errno::EXIST => None,
-                    Err(error) => Some(Err(io(error.into()))),
-                }
-            })
-            .transpose()?
-            .ok_or_else(|| {
-                Error::Conflict(
-                    "could not allocate a unique private temporary file after 16 attempts".into(),
-                )
-            })?;
-        let mut temp = File::from(fd);
-        let fail = |error| cleanup(&dir, &temp_name, error);
-
-        #[cfg(test)]
-        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::Write) {
-            return Err(fail(error));
-        }
-        if let Err(error) = write_fn(&mut temp) {
-            return Err(fail(error));
-        }
-        #[cfg(test)]
-        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::Flush) {
-            return Err(fail(error));
-        }
-        if let Err(error) = temp.flush().map_err(io) {
-            return Err(fail(error));
-        }
-        #[cfg(test)]
-        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::FileSync) {
-            return Err(fail(error));
-        }
-        if let Err(error) = temp.sync_all().map_err(io) {
-            return Err(fail(error));
-        }
-        // The temporary inode stays 0600 until content and metadata are complete.
-        let final_mode = original
-            .as_ref()
-            .map_or(0o600, |stat| stat.st_mode & 0o7777);
-        #[cfg(test)]
-        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::PermissionCopy) {
-            return Err(fail(error));
-        }
-        if let Err(error) =
-            fs::fchmod(&temp, Mode::from_raw_mode(final_mode)).map_err(|e| io(e.into()))
-        {
-            return Err(fail(error));
-        }
-        if let Err(error) = temp.sync_all().map_err(io) {
-            return Err(fail(error));
-        }
-        #[cfg(test)]
-        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::PreCommitRevalidate) {
-            return Err(fail(error));
-        }
-        match (original.as_ref(), target_stat(&dir, target_name)?) {
-            (None, None) => {}
-            (None, Some(_)) => {
-                return Err(fail(Error::Conflict(
-                    "target was created concurrently".into(),
-                )))
-            }
-            (Some(_), None) => {
-                return Err(fail(Error::Conflict(
-                    "target was deleted concurrently".into(),
-                )))
-            }
-            (Some(expected), Some(actual)) if regular(&actual) && same_inode(expected, &actual) => {
-            }
-            (Some(_), Some(_)) => {
-                return Err(fail(Error::Conflict("target changed concurrently".into())))
-            }
-        }
-        if let Err(error) = precommit() {
-            return Err(fail(error));
-        }
-        let fallback_metadata = temp.metadata().map_err(io)?;
-        let commit = || {
-            if original.is_none() {
-                fs::renameat_with(&dir, &temp_name, &dir, target_name, RenameFlags::NOREPLACE)
-            } else {
-                fs::renameat(&dir, &temp_name, &dir, target_name)
-            }
-            .map_err(|e| io(e.into()))
-        };
-        #[cfg(test)]
-        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::Rename) {
-            return Err(fail(error));
-        }
-        if let Err(error) = commit() {
-            return Err(fail(error));
-        }
-        #[cfg(test)]
-        let metadata = match inject_atomic_file(AtomicFileFaultPoint::PostRenameMetadata) {
-            Ok(()) => temp.metadata(),
-            Err(Error::Io(error)) => Err(*error),
-            Err(_) => unreachable!("atomic file injectors only produce I/O errors"),
-        };
-        #[cfg(not(test))]
-        let metadata = temp.metadata();
-        let metadata = match metadata {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                let (installed_identity, installed_ctime_nanos) = fs::fstat(&temp)
-                    .map(|stat| {
-                        (
-                            raw_stat_identity(&stat),
-                            i128::from(stat.st_ctime) * 1_000_000_000
-                                + i128::from(stat.st_ctime_nsec),
-                        )
-                    })
-                    .unwrap_or_else(|_| {
-                        (
-                            (fallback_metadata.dev(), fallback_metadata.ino()),
-                            i128::from(fallback_metadata.ctime()) * 1_000_000_000
-                                + i128::from(fallback_metadata.ctime_nsec()),
-                        )
-                    });
-                drop(temp);
-                return Ok(Installed {
-                    outcome: AtomicFileOutcome::CommittedDurabilityUncertain(error),
-                    identity: installed_identity,
-                    ctime_nanos: installed_ctime_nanos,
-                });
-            }
-        };
-        let installed_identity = (metadata.dev(), metadata.ino());
-        let installed_ctime_nanos =
-            i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec());
-        drop(temp);
-        #[cfg(test)]
-        if let Err(error) = inject_atomic_file(AtomicFileFaultPoint::ParentSync) {
-            let Error::Io(error) = error else {
-                unreachable!("atomic file injectors only produce I/O errors")
-            };
-            return Ok(Installed {
-                outcome: AtomicFileOutcome::CommittedDurabilityUncertain(*error),
-                identity: installed_identity,
-                ctime_nanos: installed_ctime_nanos,
-            });
-        }
-        match dir.sync_all() {
-            Ok(()) => Ok(Installed {
-                outcome: AtomicFileOutcome::DurableCommit,
-                identity: installed_identity,
-                ctime_nanos: installed_ctime_nanos,
-            }),
-            Err(error) => Ok(Installed {
-                outcome: AtomicFileOutcome::CommittedDurabilityUncertain(error),
-                identity: installed_identity,
-                ctime_nanos: installed_ctime_nanos,
-            }),
-        }
+        replace_at_driver(UnixAdapter, dir, target_name, precommit, write_fn)
     }
 
     fn sync_tree(dir: &File, depth: usize) -> Result<(), Error> {
@@ -1497,6 +1743,649 @@ mod unix {
     }
 }
 
+#[cfg(windows)]
+mod win {
+    use super::*;
+    use crate::infra::path_authority::{open_windows_child, opened_file_identity};
+    use std::{
+        ffi::OsStr,
+        fs::{File, OpenOptions},
+        os::windows::{
+            ffi::OsStrExt,
+            fs::OpenOptionsExt,
+            io::{AsRawHandle, FromRawHandle, RawHandle},
+        },
+        path::{Component, Path, PathBuf},
+        ptr::{null, null_mut},
+    };
+    use windows_sys::{
+        Wdk::{
+            Foundation::OBJECT_ATTRIBUTES,
+            Storage::FileSystem::{
+                FileRenameInformationEx, NtCreateFile, NtSetInformationFile, FILE_CREATE,
+                FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_RENAME_IGNORE_READONLY_ATTRIBUTE,
+                FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
+                FILE_SYNCHRONOUS_IO_NONALERT,
+            },
+        },
+        Win32::{
+            Foundation::{
+                RtlNtStatusToDosError, HANDLE, STATUS_NO_SUCH_FILE, STATUS_OBJECT_NAME_COLLISION,
+                STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
+                STATUS_SHARING_VIOLATION, UNICODE_STRING,
+            },
+            Security::{
+                AddAccessAllowedAce, CreateWellKnownSid, EqualSid, GetAce, GetKernelObjectSecurity,
+                GetSecurityDescriptorDacl, InitializeAcl, InitializeSecurityDescriptor,
+                SetKernelObjectSecurity, SetSecurityDescriptorDacl, WinCreatorOwnerSid,
+                ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, DACL_SECURITY_INFORMATION, PSID,
+                SECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_REVISION, SECURITY_MAX_SID_SIZE,
+            },
+            Storage::FileSystem::{
+                DELETE, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+                READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
+            },
+            System::IO::IO_STATUS_BLOCK,
+        },
+    };
+
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    const OBJ_DONT_REPARSE: u32 = 0x1000;
+    const FILE_DISPOSITION_INFORMATION: i32 = 13;
+    const FILE_SHARE_PRIVATE_TEMP: u32 = FILE_SHARE_WRITE;
+    const TEMP_ACCESS: u32 = DELETE
+        | SYNCHRONIZE
+        | windows_sys::Win32::Foundation::GENERIC_READ
+        | windows_sys::Win32::Foundation::GENERIC_WRITE
+        | READ_CONTROL
+        | WRITE_DAC;
+    pub(super) const TARGET_ACCESS: u32 =
+        DELETE | SYNCHRONIZE | windows_sys::Win32::Foundation::GENERIC_READ | READ_CONTROL;
+    const DIRECTORY_ACCESS: u32 = SYNCHRONIZE
+        | windows_sys::Win32::Foundation::GENERIC_READ
+        | windows_sys::Win32::Foundation::GENERIC_WRITE
+        | READ_CONTROL;
+
+    struct Target {
+        handle: File,
+        identity: (u64, u64),
+    }
+
+    struct PrivateSecurityDescriptor {
+        descriptor: SECURITY_DESCRIPTOR,
+        _acl: Vec<u8>,
+    }
+
+    impl PrivateSecurityDescriptor {
+        fn new(access: u32) -> Result<Self, Error> {
+            let mut sid = vec![0_u8; SECURITY_MAX_SID_SIZE as usize];
+            let mut sid_length = sid.len() as u32;
+            let created = unsafe {
+                CreateWellKnownSid(
+                    WinCreatorOwnerSid,
+                    null_mut(),
+                    sid.as_mut_ptr() as PSID,
+                    &mut sid_length,
+                )
+            };
+            if created == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+
+            let acl_length = std::mem::size_of::<ACL>() + std::mem::size_of::<ACCESS_ALLOWED_ACE>()
+                - std::mem::size_of::<u32>()
+                + sid_length as usize;
+            let mut acl = vec![0_u8; acl_length];
+            let acl_ptr = acl.as_mut_ptr() as *mut ACL;
+            if unsafe { InitializeAcl(acl_ptr, acl_length as u32, ACL_REVISION) } == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            if unsafe {
+                AddAccessAllowedAce(acl_ptr, ACL_REVISION, access, sid.as_mut_ptr() as PSID)
+            } == 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+
+            let mut descriptor = SECURITY_DESCRIPTOR::default();
+            if unsafe {
+                InitializeSecurityDescriptor(&mut descriptor, SECURITY_DESCRIPTOR_REVISION)
+            } == 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            if unsafe { SetSecurityDescriptorDacl(&mut descriptor, 1, acl_ptr, 0) } == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            Ok(Self {
+                descriptor,
+                _acl: acl,
+            })
+        }
+
+        fn as_ptr(&self) -> *const SECURITY_DESCRIPTOR {
+            &self.descriptor
+        }
+    }
+
+    pub(super) struct WindowsAdapter;
+
+    fn status_error(status: i32) -> Error {
+        match status {
+            STATUS_OBJECT_NAME_NOT_FOUND | STATUS_NO_SUCH_FILE => {
+                Error::Io(Box::new(std::io::Error::from_raw_os_error(2)))
+            }
+            STATUS_OBJECT_PATH_NOT_FOUND => {
+                Error::Io(Box::new(std::io::Error::from_raw_os_error(3)))
+            }
+            STATUS_OBJECT_NAME_COLLISION => Error::Conflict("Windows object name collision".into()),
+            STATUS_SHARING_VIOLATION => Error::Conflict("Windows sharing violation".into()),
+            _ => Error::Io(Box::new(std::io::Error::from_raw_os_error(unsafe {
+                RtlNtStatusToDosError(status) as i32
+            }))),
+        }
+    }
+
+    fn as_io(error: Error) -> std::io::Error {
+        match error {
+            Error::Io(error) => *error,
+            other => std::io::Error::other(other.to_string()),
+        }
+    }
+
+    fn missing(error: &Error) -> bool {
+        matches!(
+            error,
+            Error::Io(error) if matches!(error.raw_os_error(), Some(2 | 3))
+        )
+    }
+
+    fn open_target(dir: &File, name: &OsStr) -> Result<File, Error> {
+        open_windows_child(dir, name, FILE_OPEN, TARGET_ACCESS, null(), false, true)
+    }
+
+    fn target_stat(dir: &File, name: &OsStr) -> Result<Option<Target>, Error> {
+        let handle = match open_target(dir, name) {
+            Ok(handle) => handle,
+            Err(error) if missing(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let identity = opened_file_identity(&handle)?;
+        Ok(Some(Target { handle, identity }))
+    }
+
+    fn target_regular(_: &Target) -> bool {
+        true
+    }
+
+    fn temp_name() -> OsString {
+        #[cfg(test)]
+        if let Some(name) = TEST_TEMP_NAMES.with(|names| names.borrow_mut().pop()) {
+            return name;
+        }
+        format!(".atomic-{}", uuid::Uuid::new_v4()).into()
+    }
+
+    #[cfg(test)]
+    std::thread_local! {
+        static TEST_TEMP_NAMES: std::cell::RefCell<Vec<OsString>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    #[cfg(test)]
+    pub(super) struct TestTempNamesGuard(Vec<OsString>);
+
+    #[cfg(test)]
+    impl Drop for TestTempNamesGuard {
+        fn drop(&mut self) {
+            let previous = std::mem::take(&mut self.0);
+            TEST_TEMP_NAMES.with(|names| *names.borrow_mut() = previous);
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn scoped_test_temp_names(names: Vec<OsString>) -> TestTempNamesGuard {
+        let previous = TEST_TEMP_NAMES.with(|current| current.replace(names));
+        TestTempNamesGuard(previous)
+    }
+
+    fn capture_security_descriptor(file: &File) -> Result<Vec<u8>, Error> {
+        let mut required = 0_u32;
+        unsafe {
+            GetKernelObjectSecurity(
+                file.as_raw_handle() as HANDLE,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                0,
+                &mut required,
+            );
+        }
+        if required == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let mut descriptor = vec![0_u8; required as usize];
+        let result = unsafe {
+            GetKernelObjectSecurity(
+                file.as_raw_handle() as HANDLE,
+                DACL_SECURITY_INFORMATION,
+                descriptor.as_mut_ptr() as *mut SECURITY_DESCRIPTOR,
+                required,
+                &mut required,
+            )
+        };
+        if result == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(descriptor)
+    }
+
+    fn apply_security_descriptor(file: &File, descriptor: &[u8]) -> Result<(), Error> {
+        let result = unsafe {
+            SetKernelObjectSecurity(
+                file.as_raw_handle() as HANDLE,
+                DACL_SECURITY_INFORMATION,
+                descriptor.as_ptr() as *mut SECURITY_DESCRIPTOR,
+            )
+        };
+        if result == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+
+    fn open_temp_child(
+        dir: &File,
+        name: &OsStr,
+        security_descriptor: &PrivateSecurityDescriptor,
+    ) -> Result<File, Error> {
+        let mut wide: Vec<u16> = name.encode_wide().collect();
+        let unicode = UNICODE_STRING {
+            Length: (wide.len() * 2) as u16,
+            MaximumLength: (wide.len() * 2) as u16,
+            Buffer: wide.as_mut_ptr(),
+        };
+        let attributes = OBJECT_ATTRIBUTES {
+            Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+            RootDirectory: dir.as_raw_handle() as HANDLE,
+            ObjectName: &unicode,
+            Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+            SecurityDescriptor: security_descriptor.as_ptr() as *const SECURITY_DESCRIPTOR,
+            SecurityQualityOfService: null(),
+        };
+        let mut handle: HANDLE = null_mut();
+        let mut status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+        let status = unsafe {
+            NtCreateFile(
+                &mut handle,
+                TEMP_ACCESS,
+                &attributes,
+                &mut status,
+                null_mut(),
+                FILE_ATTRIBUTE_NORMAL,
+                FILE_SHARE_PRIVATE_TEMP,
+                FILE_CREATE,
+                FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                null(),
+                0,
+            )
+        };
+        if status != 0 {
+            return Err(status_error(status));
+        }
+        Ok(unsafe { File::from_raw_handle(handle as RawHandle) })
+    }
+
+    fn create_temp(dir: &File, _original: Option<&Target>) -> Result<(OsString, File), Error> {
+        let security_descriptor = PrivateSecurityDescriptor::new(FILE_ALL_ACCESS)?;
+        (0..16)
+            .find_map(|_| {
+                let candidate = temp_name();
+                match open_temp_child(dir, &candidate, &security_descriptor) {
+                    Ok(file) => Some(Ok((candidate, file))),
+                    Err(Error::Conflict(message)) if message == "Windows object name collision" => {
+                        None
+                    }
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .transpose()?
+            .ok_or_else(|| {
+                Error::Conflict(
+                    "could not allocate a unique private temporary file after 16 attempts".into(),
+                )
+            })
+    }
+
+    fn rename(
+        dir: &File,
+        temp: &mut File,
+        _temp_name: &OsStr,
+        target: &OsStr,
+        replace: bool,
+    ) -> Result<(), Error> {
+        let wide: Vec<u16> = target.encode_wide().collect();
+        let buffer_len = 20 + wide.len() * std::mem::size_of::<u16>();
+        let mut buffer = vec![0_u8; buffer_len];
+        let flags = if replace {
+            FILE_RENAME_REPLACE_IF_EXISTS
+                | FILE_RENAME_POSIX_SEMANTICS
+                | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE
+        } else {
+            FILE_RENAME_POSIX_SEMANTICS
+        };
+        unsafe {
+            std::ptr::write_unaligned(buffer.as_mut_ptr().cast::<u32>(), flags);
+            std::ptr::write_unaligned(
+                buffer.as_mut_ptr().add(8).cast::<HANDLE>(),
+                dir.as_raw_handle() as HANDLE,
+            );
+            std::ptr::write_unaligned(
+                buffer.as_mut_ptr().add(16).cast::<u32>(),
+                (wide.len() * 2) as u32,
+            );
+            std::ptr::copy_nonoverlapping(
+                wide.as_ptr().cast::<u8>(),
+                buffer.as_mut_ptr().add(20),
+                wide.len() * 2,
+            );
+        }
+        let mut status_block: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+        let status = unsafe {
+            NtSetInformationFile(
+                temp.as_raw_handle() as HANDLE,
+                &mut status_block,
+                buffer.as_ptr().cast(),
+                buffer.len() as u32,
+                FileRenameInformationEx,
+            )
+        };
+        if status != 0 {
+            return Err(status_error(status));
+        }
+        Ok(())
+    }
+
+    fn delete_temp(temp: &File) -> Result<(), Error> {
+        let disposition = [1_u8];
+        let mut status_block: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+        let status = unsafe {
+            NtSetInformationFile(
+                temp.as_raw_handle() as HANDLE,
+                &mut status_block,
+                disposition.as_ptr().cast(),
+                disposition.len() as u32,
+                FILE_DISPOSITION_INFORMATION,
+            )
+        };
+        if status != 0 {
+            return Err(status_error(status));
+        }
+        Ok(())
+    }
+
+    fn cleanup(temp: &mut File, primary: Error) -> Error {
+        #[cfg(test)]
+        let injected = inject_atomic_file(AtomicFileFaultPoint::Cleanup).err();
+        #[cfg(not(test))]
+        let injected: Option<Error> = None;
+        let removal = injected.or_else(|| delete_temp(temp).err());
+        match removal {
+            None => primary,
+            Some(cleanup) => {
+                log::error!(
+                    "atomic replacement failed: {primary}; temporary cleanup failed: {cleanup}"
+                );
+                Error::OperationAndCleanup {
+                    primary: primary.to_string(),
+                    cleanup: cleanup.to_string(),
+                }
+            }
+        }
+    }
+
+    fn metadata(temp: &File) -> Result<TempMetadata, std::io::Error> {
+        use std::os::windows::fs::MetadataExt;
+        let identity = opened_file_identity(temp).map_err(as_io)?;
+        let stamp = temp.metadata()?.last_write_time();
+        record_durability("temp.metadata");
+        Ok(TempMetadata {
+            identity,
+            ctime_nanos: i128::from(stamp),
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_security_descriptor(file: &File) -> Result<Vec<u8>, Error> {
+        capture_security_descriptor(file)
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_security_descriptor_is_creator_only(file: &File) -> Result<bool, Error> {
+        let descriptor = capture_security_descriptor(file)?;
+        let mut dacl_present = 0;
+        let mut dacl: *mut ACL = null_mut();
+        let mut ace: *mut std::ffi::c_void = null_mut();
+        let mut creator_sid = vec![0_u8; SECURITY_MAX_SID_SIZE as usize];
+        let mut creator_sid_length = creator_sid.len() as u32;
+        let result = unsafe {
+            GetSecurityDescriptorDacl(
+                descriptor.as_ptr() as *mut SECURITY_DESCRIPTOR as *mut std::ffi::c_void,
+                &mut dacl_present,
+                &mut dacl,
+                null_mut(),
+            )
+        };
+        if result == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if dacl_present == 0 || dacl.is_null() || unsafe { (*dacl).AceCount } != 1 {
+            return Ok(false);
+        }
+        if unsafe { GetAce(dacl, 0, &mut ace) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let ace = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
+        let created = unsafe {
+            CreateWellKnownSid(
+                WinCreatorOwnerSid,
+                null_mut(),
+                creator_sid.as_mut_ptr() as PSID,
+                &mut creator_sid_length,
+            )
+        };
+        if created == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let ace_sid = &ace.SidStart as *const u32 as *mut std::ffi::c_void;
+        Ok(ace.Header.AceType == 0
+            && ace.Mask == FILE_ALL_ACCESS
+            && unsafe { EqualSid(ace_sid, creator_sid.as_mut_ptr() as PSID) } != 0)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_target_security_descriptor(
+        path: &Path,
+        access: u32,
+    ) -> Result<(), Error> {
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .access_mode(
+                windows_sys::Win32::Foundation::GENERIC_READ
+                    | windows_sys::Win32::Foundation::GENERIC_WRITE
+                    | READ_CONTROL
+                    | WRITE_DAC,
+            )
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
+        let file = options.open(path).map_err(io)?;
+        let descriptor = PrivateSecurityDescriptor::new(access)?;
+        apply_security_descriptor(&file, &descriptor)
+    }
+
+    impl AtomicReplaceAdapter for WindowsAdapter {
+        type Target = Target;
+
+        fn target_stat(&self, dir: &File, target: &OsStr) -> Result<Option<Self::Target>, Error> {
+            target_stat(dir, target)
+        }
+
+        fn is_regular(&self, target: &Self::Target) -> bool {
+            target_regular(target)
+        }
+
+        fn target_identity(&self, target: &Self::Target) -> (u64, u64) {
+            target.identity
+        }
+
+        fn create_temp(
+            &self,
+            dir: &File,
+            original: Option<&Self::Target>,
+        ) -> Result<(OsString, File), Error> {
+            create_temp(dir, original)
+        }
+
+        fn before_write(
+            &self,
+            _dir: &File,
+            temp: &File,
+            original: Option<&Self::Target>,
+        ) -> Result<(), Error> {
+            let Some(original) = original else {
+                return Ok(());
+            };
+            #[cfg(test)]
+            inject_atomic_file(AtomicFileFaultPoint::DaclCapture)?;
+            let descriptor = capture_security_descriptor(&original.handle)?;
+            #[cfg(test)]
+            inject_atomic_file(AtomicFileFaultPoint::DaclApply)?;
+            apply_security_descriptor(temp, &descriptor)
+        }
+
+        fn finalize_metadata(
+            &self,
+            _temp: &mut File,
+            _original: Option<&Self::Target>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn rename(
+            &self,
+            dir: &File,
+            temp: &mut File,
+            temp_name: &OsStr,
+            target: &OsStr,
+            replace: bool,
+        ) -> Result<(), Error> {
+            rename(dir, temp, temp_name, target, replace)
+        }
+
+        fn metadata(&self, temp: &File) -> Result<TempMetadata, std::io::Error> {
+            metadata(temp)
+        }
+
+        fn cleanup(
+            &self,
+            _dir: &File,
+            _temp_name: &OsStr,
+            temp: &mut File,
+            primary: Error,
+        ) -> Error {
+            cleanup(temp, primary)
+        }
+    }
+
+    fn open_directory_path(path: &Path, writable: bool) -> Result<File, Error> {
+        let mut base = PathBuf::new();
+        let mut components = path.components().peekable();
+        if path.is_absolute() {
+            while let Some(component) = components.peek().copied() {
+                match component {
+                    Component::Prefix(_) | Component::RootDir => {
+                        base.push(component.as_os_str());
+                        components.next();
+                    }
+                    _ => break,
+                }
+            }
+        } else {
+            base.push(".");
+            while matches!(components.peek(), Some(Component::CurDir)) {
+                components.next();
+            }
+        }
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(writable)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
+        let mut dir = options.open(&base).map_err(io)?;
+        for component in components {
+            let Component::Normal(name) = component else {
+                return Err(Error::InvalidInput(
+                    "parent path may not contain traversal components".into(),
+                ));
+            };
+            dir = open_windows_child(&dir, name, FILE_OPEN, DIRECTORY_ACCESS, null(), true, true)?;
+        }
+        Ok(dir)
+    }
+
+    pub(super) fn replace<F, P>(
+        target: &Path,
+        precommit: P,
+        write_fn: F,
+    ) -> Result<AtomicInstalledFile, Error>
+    where
+        F: FnOnce(&mut File) -> Result<(), Error>,
+        P: FnOnce() -> Result<(), Error>,
+    {
+        #[cfg(test)]
+        inject_atomic_file(AtomicFileFaultPoint::ParentOpen)?;
+        let logical_parent = target.parent().unwrap_or_else(|| Path::new("."));
+        let dir = open_directory_path(logical_parent, true)?;
+        let parent_identity = opened_file_identity(&dir)?;
+        let target_name = target
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| Error::InvalidInput("target must name a file".into()))?
+            .to_os_string();
+        replace_at_driver(
+            WindowsAdapter,
+            dir,
+            target_name,
+            move || {
+                let current = open_directory_path(logical_parent, false)?;
+                if opened_file_identity(&current)? != parent_identity {
+                    return Err(Error::Conflict(
+                        "parent directory changed concurrently".into(),
+                    ));
+                }
+                precommit()
+            },
+            write_fn,
+        )
+    }
+
+    pub(super) fn replace_at<F, P>(
+        dir: File,
+        target_name: OsString,
+        precommit: P,
+        write_fn: F,
+    ) -> Result<AtomicInstalledFile, Error>
+    where
+        F: FnOnce(&mut File) -> Result<(), Error>,
+        P: FnOnce() -> Result<(), Error>,
+    {
+        replace_at_driver(WindowsAdapter, dir, target_name, precommit, write_fn)
+    }
+}
+
 #[cfg(all(test, unix))]
 pub(crate) use unix::{
     current_test_removal_injector, set_test_removal_injector, RemovalFault, RemovalFaultPoint,
@@ -1518,10 +2407,9 @@ where
     {
         unix::replace(target, precommit, write_fn).map(|installed| installed.outcome)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = (target, precommit, write_fn);
-        Err(Error::Conflict("atomic replacement is unsupported on this platform: parent-directory durability cannot be proven".into()))
+        win::replace(target, precommit, write_fn).map(|installed| installed.outcome)
     }
 }
 pub fn atomic_replace<F>(target: &Path, write_fn: F) -> Result<AtomicFileOutcome, Error>
@@ -1989,12 +2877,14 @@ where
             ctime_nanos: installed.ctime_nanos,
         })
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = (parent, leaf, precommit, write_fn);
-        Err(crate::infra::platform_support::unsupported(
-            "fd-relative atomic replacement",
-        ))
+        win::replace_at(
+            parent.try_clone()?,
+            leaf.to_os_string(),
+            precommit,
+            write_fn,
+        )
     }
 }
 
@@ -4105,8 +4995,24 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    struct PostRenameSwap {
+        target: PathBuf,
+        installed: PathBuf,
+    }
+
+    #[cfg(windows)]
+    impl AtomicWriterInjector for PostRenameSwap {
+        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == AtomicFileFaultPoint::PostRenameMetadata {
+                std::fs::rename(&self.target, &self.installed)?;
+                std::fs::write(&self.target, b"racer")?;
+            }
+            Ok(())
+        }
+    }
+
     struct PrivateTemp {
-        #[cfg(unix)]
         parent: PathBuf,
     }
 
@@ -4155,6 +5061,23 @@ mod tests {
     }
     impl AtomicWriterInjector for PrivateTemp {
         fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+            #[cfg(windows)]
+            if point == AtomicFileFaultPoint::Write {
+                let temp = std::fs::read_dir(&self.parent)?
+                    .find_map(|entry| {
+                        let entry = entry.ok()?;
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".atomic-")
+                            .then_some(entry.path())
+                    })
+                    .expect("private temporary file exists");
+                assert!(
+                    std::fs::File::open(temp).is_err(),
+                    "temporary must not share reads before its DACL is final"
+                );
+            }
             #[cfg(not(unix))]
             let _ = point;
             #[cfg(unix)]
@@ -4171,6 +5094,16 @@ mod tests {
                     .expect("private temporary file exists");
                 assert_eq!(std::fs::metadata(temp)?.permissions().mode() & 0o777, 0o600);
             }
+            Ok(())
+        }
+
+        #[cfg(windows)]
+        fn inspect_temp(&self, temp: &File) -> std::io::Result<()> {
+            assert!(
+                win::test_security_descriptor_is_creator_only(temp)
+                    .map_err(|error| std::io::Error::other(error.to_string()))?,
+                "temporary DACL must grant access only to its creator"
+            );
             Ok(())
         }
     }
@@ -4403,14 +5336,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn fresh_target_is_private_then_durable() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("new");
         let outcome = run_atomic_file_fault(
             &target,
             Arc::new(PrivateTemp {
-                #[cfg(unix)]
                 parent: dir.path().to_path_buf(),
             }),
             |f| f.write_all(b"new").map_err(io),
@@ -4420,17 +5351,25 @@ mod tests {
         assert_eq!(std::fs::read(&target).expect("read"), b"new");
     }
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn retained_parent_descriptor_installs_without_reopening_a_target_path() {
         let dir = tempfile::tempdir().expect("tempdir");
+        #[cfg(unix)]
         let parent = std::fs::File::open(dir.path()).expect("open parent");
+        #[cfg(windows)]
+        let parent = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.path())
+            .expect("open parent");
+        let moved = dir.path().with_extension("moved");
+        std::fs::rename(dir.path(), &moved).expect("rename parent");
         atomic_replace_at(&parent, std::ffi::OsStr::new("artifact.pgn"), |file| {
             file.write_all(b"exact").map_err(io)
         })
         .expect("fd-relative replace")
         .expect_durable();
         assert_eq!(
-            std::fs::read(dir.path().join("artifact.pgn")).expect("read"),
+            std::fs::read(moved.join("artifact.pgn")).expect("read"),
             b"exact"
         );
         assert!(
@@ -4545,7 +5484,6 @@ mod tests {
         );
     }
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn replacement_preserves_existing_target_and_mode() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("old");
@@ -4575,7 +5513,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn caller_precommit_runs_after_revalidation_before_rename_and_preserves_target_on_conflict() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("target");
@@ -4637,7 +5574,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn file_post_commit_and_cleanup_precedence_are_explicit() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("new");
@@ -4691,7 +5627,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn file_revalidation_races_are_conflicts_and_actual_rename_failure_is_preserved() {
         for (existing, action) in [(false, "create"), (true, "replace")] {
             let root = tempfile::tempdir().expect("tempdir");
@@ -4958,6 +5893,396 @@ mod tests {
             Err(Error::CommittedDurabilityUncertain(_))
         ));
         assert_eq!(std::fs::read(target.join("new")).expect("new"), b"new");
+    }
+
+    #[cfg(windows)]
+    fn windows_parent(path: &Path) -> File {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
+        options.open(path).expect("writable parent descriptor")
+    }
+
+    #[cfg(windows)]
+    fn run_atomic_at_fault<F>(
+        parent: &File,
+        leaf: &OsStr,
+        injector: Arc<dyn AtomicWriterInjector + Send + Sync>,
+        write_fn: F,
+    ) -> Result<AtomicInstalledFile, Error>
+    where
+        F: FnOnce(&mut File) -> Result<(), Error>,
+    {
+        set_test_atomic_file_injector(Some(injector));
+        let result = atomic_replace_at_identified(parent, leaf, write_fn);
+        set_test_atomic_file_injector(None);
+        result
+    }
+
+    #[cfg(windows)]
+    fn assert_no_windows_temporary_files(path: &Path) {
+        assert!(
+            std::fs::read_dir(path)
+                .expect("temporary directory")
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().starts_with(".atomic-")),
+            "temporary file survived cleanup"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_replace_at_installs_durably() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = windows_parent(dir.path());
+        atomic_replace_at(&parent, OsStr::new("target"), |file| {
+            file.write_all(b"new").map_err(io)
+        })
+        .expect("replace")
+        .expect_durable();
+        assert_eq!(
+            std::fs::read(dir.path().join("target")).expect("target"),
+            b"new"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_replace_at_records_real_durability_sequence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = windows_parent(dir.path());
+        clear_durability_log();
+        atomic_replace_at(&parent, OsStr::new("target"), |file| {
+            file.write_all(b"new").map_err(io)
+        })
+        .expect("replace")
+        .expect_durable();
+        let log = durability_log();
+        assert!(
+            log.iter().position(|entry| *entry == "temp.flush")
+                < log
+                    .iter()
+                    .position(|entry| *entry == "temp.sync_all:content")
+        );
+        assert!(
+            log.iter().position(|entry| *entry == "temp.metadata")
+                < log.iter().position(|entry| *entry == "dir.sync_all")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_precommit_logs_after_revalidation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = windows_parent(dir.path());
+        clear_durability_log();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_by_precommit = Arc::clone(&observed);
+        atomic_replace_at_with_precommit(
+            &parent,
+            OsStr::new("target"),
+            move || {
+                observed_by_precommit
+                    .lock()
+                    .expect("log")
+                    .extend(durability_log());
+                Ok(())
+            },
+            |file| file.write_all(b"new").map_err(io),
+        )
+        .expect("replace")
+        .expect_durable();
+        assert_eq!(
+            observed.lock().expect("log").last().copied(),
+            Some("target_stat:revalidation")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_post_rename_identity_query_is_performed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        let installed = dir.path().join("installed");
+        let parent = windows_parent(dir.path());
+        clear_durability_log();
+        let result = run_atomic_at_fault(
+            &parent,
+            OsStr::new("target"),
+            Arc::new(PostRenameSwap {
+                target: target.clone(),
+                installed: installed.clone(),
+            }),
+            |file| file.write_all(b"new").map_err(io),
+        )
+        .expect("replace")
+        .expect_durable();
+        assert!(durability_log().contains(&"temp.metadata"));
+        assert_eq!(
+            result.identity,
+            crate::infra::path_authority::opened_file_identity(
+                &File::open(&installed).expect("installed")
+            )
+            .expect("identity")
+        );
+        assert_eq!(std::fs::read(installed).expect("installed"), b"new");
+        assert_eq!(std::fs::read(target).expect("racer"), b"racer");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_post_rename_metadata_failure_reports_uncertain_with_target_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let parent = windows_parent(dir.path());
+        let result = run_atomic_at_fault(
+            &parent,
+            OsStr::new("target"),
+            Arc::new(Fault(
+                Some(AtomicFileFaultPoint::PostRenameMetadata),
+                None,
+                Arc::new(Mutex::new(Vec::new())),
+            )),
+            |file| file.write_all(b"new").map_err(io),
+        )
+        .expect("committed replacement retains its marker");
+        assert!(matches!(
+            result.outcome,
+            AtomicFileOutcome::CommittedDurabilityUncertain(_)
+        ));
+        let target = File::open(dir.path().join("target")).expect("target");
+        assert_eq!(
+            result.identity,
+            crate::infra::path_authority::opened_file_identity(&target).expect("identity")
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("target")).expect("read"),
+            b"new"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_dacl_is_preserved_across_replacement() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target_path = dir.path().join("target");
+        std::fs::write(&target_path, b"old").expect("old");
+        win::set_test_target_security_descriptor(&target_path, win::TARGET_ACCESS)
+            .expect("distinct target DACL");
+        let parent = windows_parent(dir.path());
+        let parent_dacl = win::test_security_descriptor(&parent).expect("parent DACL");
+        let before = win::test_security_descriptor(&File::open(&target_path).expect("target"))
+            .expect("target DACL");
+        assert_ne!(before, parent_dacl);
+        atomic_replace_at(&parent, OsStr::new("target"), |file| {
+            file.write_all(b"new").map_err(io)
+        })
+        .expect("replace")
+        .expect_durable();
+        let after = win::test_security_descriptor(&File::open(&target_path).expect("target"))
+            .expect("installed DACL");
+        assert_eq!(before, after);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_dacl_capture_failure_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"old").expect("old");
+        let result = run_atomic_file_fault(
+            &target,
+            Arc::new(Fault(
+                Some(AtomicFileFaultPoint::DaclCapture),
+                None,
+                Arc::new(Mutex::new(Vec::new())),
+            )),
+            |file| file.write_all(b"new").map_err(io),
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&target).expect("target"), b"old");
+        assert_no_windows_temporary_files(dir.path());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_dacl_apply_failure_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"old").expect("old");
+        let result = run_atomic_file_fault(
+            &target,
+            Arc::new(Fault(
+                Some(AtomicFileFaultPoint::DaclApply),
+                None,
+                Arc::new(Mutex::new(Vec::new())),
+            )),
+            |file| file.write_all(b"new").map_err(io),
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&target).expect("target"), b"old");
+        assert_no_windows_temporary_files(dir.path());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_target_stat_failure_cleans_up() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"old").expect("old");
+        let result = run_atomic_file_fault(
+            &target,
+            Arc::new(Fault(
+                Some(AtomicFileFaultPoint::TargetStat),
+                None,
+                Arc::new(Mutex::new(Vec::new())),
+            )),
+            |file| file.write_all(b"new").map_err(io),
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&target).expect("target"), b"old");
+        assert_no_windows_temporary_files(dir.path());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_temp_metadata_failure_cleans_up() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"old").expect("old");
+        let result = run_atomic_file_fault(
+            &target,
+            Arc::new(Fault(
+                Some(AtomicFileFaultPoint::TempMetadata),
+                None,
+                Arc::new(Mutex::new(Vec::new())),
+            )),
+            |file| file.write_all(b"new").map_err(io),
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&target).expect("target"), b"old");
+        assert_no_windows_temporary_files(dir.path());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_rename_collision_is_conflict_not_io() {
+        let root = tempfile::tempdir().expect("root");
+        let parent = root.path().join("parent");
+        std::fs::create_dir(&parent).expect("parent");
+        let target = parent.join("target");
+        let injector = Mutation {
+            point: AtomicFileFaultPoint::Rename,
+            target: target.clone(),
+            parent: parent.clone(),
+            action: "create",
+        };
+        let result = run_atomic_file_fault(&target, Arc::new(injector), |file| {
+            file.write_all(b"new").map_err(io)
+        });
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert_eq!(std::fs::read(target).expect("racer"), b"racer");
+        assert_no_windows_temporary_files(&parent);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_sharing_violation_is_conflict_not_io() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"old").expect("old");
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+        let _holder = options.open(&target).expect("sharing holder");
+        let parent = windows_parent(dir.path());
+        let result = atomic_replace_at(&parent, OsStr::new("target"), |file| {
+            file.write_all(b"new").map_err(io)
+        });
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert_eq!(std::fs::read(&target).expect("target"), b"old");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_temp_name_collision_drives_the_retry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("collision"), b"existing").expect("collision");
+        let _names = win::scoped_test_temp_names(vec!["available".into(), "collision".into()]);
+        let parent = windows_parent(dir.path());
+        atomic_replace_at(&parent, OsStr::new("target"), |file| {
+            file.write_all(b"new").map_err(io)
+        })
+        .expect("retry")
+        .expect_durable();
+        assert_eq!(
+            std::fs::read(dir.path().join("target")).expect("target"),
+            b"new"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("collision")).expect("collision"),
+            b"existing"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_readonly_target_is_replaced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"old").expect("old");
+        let mut permissions = std::fs::metadata(&target).expect("metadata").permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&target, permissions).expect("readonly");
+        let parent = windows_parent(dir.path());
+        atomic_replace_at(&parent, OsStr::new("target"), |file| {
+            file.write_all(b"new").map_err(io)
+        })
+        .expect("replace readonly target")
+        .expect_durable();
+        assert_eq!(std::fs::read(&target).expect("target"), b"new");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
+    fn windows_replace_succeeds_on_target_denying_generic_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"old").expect("old");
+        win::set_test_target_security_descriptor(&target, win::TARGET_ACCESS)
+            .expect("target DACL without generic write");
+        let parent = windows_parent(dir.path());
+        atomic_replace_at(&parent, OsStr::new("target"), |file| {
+            file.write_all(b"new").map_err(io)
+        })
+        .expect("replacement only needs delete/read-control access to target")
+        .expect_durable();
+        assert_eq!(std::fs::read(&target).expect("target"), b"new");
     }
 
     #[cfg(not(unix))]

@@ -1,7 +1,7 @@
 /*!
 Phase 1 refusal-pin proof record (2026-09-16).
 
-The 41 refusal sites are pinned by the G and B rows below. The O4d exclusion is
+The 39 refusal sites are pinned by the G and B rows below. The O4d exclusion is
 `opened_file_change_stamp`: its unconditional non-unix tail is not a refusal
 site and is intentionally not a row. Future closed-world completeness is not
 claimed here; that work is split to `f-20260916-01` (R15-01).
@@ -27,8 +27,6 @@ B rows (each staged message names the listed file and signature):
 `infra/fs.rs::entry_identity_at`, `infra/fs.rs::create_dir_at`,
 `infra/fs.rs::open_directory_at`, `infra/fs.rs::rename_entry_at`,
 `infra/fs.rs::remove_entry_at`, `infra/fs.rs::remove_optional_regular_at`,
-`infra/fs.rs::atomic_replace_with_precommit`,
-`infra/fs.rs::atomic_replace_at_identified_with_precommit`,
 `infra/fs.rs::atomic_install_dir`, `infra/path_authority/mod.rs::entries`,
 `infra/path_authority/mod.rs::open_current`,
 `infra/path_authority/mod.rs::remove_leaf_identified`,
@@ -50,7 +48,7 @@ from this phase, mutated production files only, and ran exactly:
 `cargo test --manifest-path src-tauri/Cargo.toml platform_support`.
 The worktree was removed afterwards. “G all” means every G row above; “B all”
 means every B row above, so the named row messages are recorded without
-repeating the 41 names six times.
+repeating the 39 names six times.
 
 1. S-insert — inserted
    `std::fs::create_dir_all("staged").ok();` as the first effective B
@@ -221,6 +219,47 @@ mod tests {
             ]
             .concat()
         );
+    }
+
+    #[test]
+    fn windows_temporary_creation_descriptor_and_share_mask_are_restrictive() {
+        let source = source_for("infra/fs.rs");
+        let body = braced_body(source, "fn open_temp_child(");
+        let body = compact(&source[body]);
+        assert!(body.contains("SecurityDescriptor:security_descriptor.as_ptr()"));
+        assert!(body.contains("FILE_CREATE"));
+        assert!(body.contains("FILE_SHARE_PRIVATE_TEMP"));
+        assert!(!body.contains("FILE_SHARE_READ"));
+        assert!(source.contains("const FILE_SHARE_PRIVATE_TEMP: u32 = FILE_SHARE_WRITE"));
+        assert!(source.contains("const TEMP_ACCESS: u32 = DELETE"));
+        assert!(source.contains("GENERIC_READ"));
+        assert!(source.contains("GENERIC_WRITE"));
+        assert!(source.contains("READ_CONTROL"));
+        assert!(source.contains("WRITE_DAC"));
+    }
+
+    #[test]
+    fn real_durability_calls_and_their_receivers_are_pinned() {
+        let source = compact(&normalise(source_for("infra/fs.rs"), Literals::Keep));
+        for call in [
+            "temp.flush()",
+            "temp.sync_all()",
+            "dir.sync_all()",
+            "record_durability(\"temp.flush\")",
+            "record_durability(\"temp.sync_all:content\")",
+            "record_durability(\"dir.sync_all\")",
+        ] {
+            assert!(source.contains(call), "missing durability call pin: {call}");
+        }
+    }
+
+    #[test]
+    fn post_rename_identity_uses_the_retained_handle() {
+        let source = source_for("infra/fs.rs");
+        let body = braced_body(source, "fn metadata(temp: &File)");
+        let body = compact(&source[body]);
+        assert!(body.contains("opened_file_identity(temp)"));
+        assert!(!body.contains("Path::new"));
     }
 
     fn source_for(file: &str) -> &'static str {
@@ -590,22 +629,6 @@ mod tests {
                 signature: "pub(crate) fn remove_optional_regular_at(",
                 form: BodyForm::Counterpart,
                 expected: ExpectedBody::Refusal("fd-relative optional-file removal"),
-            },
-            BodyRow {
-                file: "infra/fs.rs",
-                signature: "pub fn atomic_replace_with_precommit<F, P>(",
-                form: BodyForm::Block,
-                expected: ExpectedBody::Exact(
-                    r#"{let_=(target,precommit,write_fn);Err(Error::Conflict("atomic replacement is unsupported on this platform: parent-directory durability cannot be proven".into()))}"#,
-                ),
-            },
-            BodyRow {
-                file: "infra/fs.rs",
-                signature: "pub fn atomic_replace_at_identified_with_precommit<F, P>(",
-                form: BodyForm::Block,
-                expected: ExpectedBody::Exact(
-                    r#"{single_leaf(leaf)?;let_=(parent,leaf,precommit,write_fn);Err(crate::infra::platform_support::unsupported("fd-relative atomic replacement",))}"#,
-                ),
             },
             BodyRow {
                 file: "infra/fs.rs",
@@ -1205,6 +1228,7 @@ mod tests {
             for offset in normalised.match_indices(&needle).map(|(offset, _)| offset) {
                 if path.file_name().and_then(|name| name.to_str()) != Some("platform_support.rs") {
                     let allowed = path.ends_with("infra/fs.rs")
+                        && normalised[..offset].ends_with("atomic directory installation is ")
                         && normalised[offset + needle.len()..].starts_with(':');
                     if !allowed {
                         occurrences.push(format!(
@@ -1241,11 +1265,6 @@ mod tests {
             (
                 "infra/fs.rs",
                 "fd-relative optional-file removal",
-                "unsupported",
-            ),
-            (
-                "infra/fs.rs",
-                "fd-relative atomic replacement",
                 "unsupported",
             ),
             (
