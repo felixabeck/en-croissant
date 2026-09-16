@@ -21,7 +21,6 @@ use std::{
     io::Read,
     path::Path,
 };
-#[cfg(unix)]
 use tokio_util::sync::CancellationToken;
 
 #[cfg(all(test, windows))]
@@ -44,10 +43,8 @@ pub(crate) fn windows_test_parent(path: &Path) -> File {
 /// The file kind observed by descriptor-relative directory enumeration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DirectoryEntryKind {
-    #[cfg(unix)]
     Directory,
     RegularFile,
-    #[cfg(unix)]
     Other,
 }
 
@@ -57,7 +54,11 @@ pub(crate) struct DirectoryEntry {
     pub(crate) name: OsString,
     pub(crate) kind: DirectoryEntryKind,
     pub(crate) identity: (u64, u64),
-    #[cfg(unix)]
+    /// Seconds since the Unix epoch. On Windows the enumerated `LastWriteTime` is a FILETIME —
+    /// 100-nanosecond ticks since 1601-01-01 — and is converted here, because the renderer reads
+    /// `WorkspaceEntry.lastModified` as Unix seconds.
+    // `collect_tree_entries`, the only reader, is still unix-gated; phase D un-gates it.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) modified_seconds: i64,
 }
 
@@ -127,6 +128,16 @@ pub(crate) fn read_directory_entries_at(
     Ok(result)
 }
 
+/// Windows counterpart of the unix descriptor-relative read.
+#[cfg(windows)]
+pub(crate) fn read_directory_entries_at(
+    dir: &File,
+    cancellation: &CancellationToken,
+    keep: &mut dyn FnMut(&OsStr) -> bool,
+) -> Result<Vec<DirectoryEntry>, Error> {
+    win::read_directory_entries(dir, cancellation, keep)
+}
+
 #[cfg(any(target_os = "macos", all(test, unix)))]
 pub(crate) fn held_matches_path(held: &File, path: &Path) -> Result<bool, Error> {
     use rustix::{fs, io::Errno};
@@ -145,7 +156,6 @@ pub(crate) fn held_matches_path(held: &File, path: &Path) -> Result<bool, Error>
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(windows, allow(dead_code))]
 pub(crate) enum RegularFileAccess {
     ReadOnly,
     ReadWrite,
@@ -210,7 +220,6 @@ mod verified_directory {
         }
 
         #[cfg(windows)]
-        #[allow(dead_code)]
         pub(crate) fn new(opened: File, expected: (u64, u64)) -> Result<Self, Error> {
             let verified = Self(opened);
             if crate::infra::path_authority::opened_file_identity(verified.as_file())? != expected {
@@ -225,7 +234,6 @@ mod verified_directory {
             &self.0
         }
 
-        #[cfg_attr(windows, allow(dead_code))]
         pub(crate) fn into_file(self) -> File {
             self.0
         }
@@ -2274,7 +2282,18 @@ mod win {
                 }
                 Ok(file)
             }
-            Err(error) if is_reparse_refusal(&error) => Err(error),
+            // A directory that was identity-checked at capability issue and is a junction by the
+            // time the mutation opens it is a concurrent swap, not a bad argument: callers that
+            // asked for the conflict form (`open_verified_parent`, `assert_entry_identity`) get a
+            // retryable `Conflict`, matching the unix arm's non-directory leaf mapping. Identity
+            // probing keeps the `InvalidInput` form, as unix `entry_identity_at` does for a symlink.
+            Err(error) if is_reparse_refusal(&error) => {
+                if conflict {
+                    Err(type_mismatch(true))
+                } else {
+                    Err(error)
+                }
+            }
             Err(error) => match open_windows_child(
                 parent,
                 name,
@@ -2327,6 +2346,24 @@ mod win {
         pub name: OsString,
         pub identity: (u64, u64),
         pub kind: EnumeratedKind,
+        /// Raw `FILE_ID_BOTH_DIR_INFORMATION.LastWriteTime`: a FILETIME, i.e. 100-nanosecond
+        /// ticks since 1601-01-01 UTC. Converted by `filetime_to_unix_seconds` before it
+        /// reaches a `DirectoryEntry`; the renderer reads that value as Unix seconds.
+        pub last_write_time: i64,
+    }
+
+    /// Seconds between the FILETIME epoch (1601-01-01) and the Unix epoch (1970-01-01).
+    const FILETIME_EPOCH_OFFSET_SECONDS: i64 = 11_644_473_600;
+    const FILETIME_TICKS_PER_SECOND: i64 = 10_000_000;
+
+    /// Converts a FILETIME tick count to Unix epoch seconds. A tick count handed to the
+    /// renderer unconverted renders as a date centuries in the future, so this is the only
+    /// path from `LastWriteTime` into `DirectoryEntry::modified_seconds`. Nothing here can
+    /// panic: NT may report any `i64`, including a zero or negative timestamp.
+    pub(super) fn filetime_to_unix_seconds(ticks: i64) -> i64 {
+        ticks
+            .div_euclid(FILETIME_TICKS_PER_SECOND)
+            .saturating_sub(FILETIME_EPOCH_OFFSET_SECONDS)
     }
 
     fn enumerated_kind(attributes: u32) -> EnumeratedKind {
@@ -2388,6 +2425,7 @@ mod win {
                     name,
                     identity: (volume, header.FileId as u64),
                     kind: enumerated_kind(header.FileAttributes),
+                    last_write_time: header.LastWriteTime,
                 });
             }
             if header.NextEntryOffset == 0 {
@@ -2465,6 +2503,49 @@ mod win {
         Ok(entries)
     }
 
+    /// One directory read against a retained handle. The NT enumeration itself is
+    /// `enumerate_directory`, which recursive removal shares; this only applies `keep`,
+    /// observes cancellation between entries, and converts each entry into the
+    /// platform-neutral snapshot. The recursive depth bound belongs to the caller.
+    pub(super) fn read_directory_entries(
+        dir: &File,
+        cancellation: &CancellationToken,
+        keep: &mut dyn FnMut(&OsStr) -> bool,
+    ) -> Result<Vec<DirectoryEntry>, Error> {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        let enumerated = enumerate_directory(dir)?;
+        let mut result = Vec::with_capacity(enumerated.len());
+        for entry in enumerated {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
+            if !keep(&entry.name) {
+                continue;
+            }
+            result.push(DirectoryEntry {
+                name: entry.name,
+                // A junction carries FILE_ATTRIBUTE_DIRECTORY as well; `enumerated_kind`
+                // reads the reparse bit first, so it arrives here as `Other` and the listing
+                // skips it exactly as unix skips a symlink.
+                kind: match entry.kind {
+                    EnumeratedKind::Directory => DirectoryEntryKind::Directory,
+                    EnumeratedKind::RegularFile => DirectoryEntryKind::RegularFile,
+                    EnumeratedKind::Other => DirectoryEntryKind::Other,
+                },
+                // The composed (volume serial, FileId) tuple, not a raw FileId: it has to equal
+                // `opened_file_identity` on the same child or every later confirmation fails.
+                identity: entry.identity,
+                modified_seconds: filetime_to_unix_seconds(entry.last_write_time),
+            });
+        }
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancellation);
+        }
+        Ok(result)
+    }
+
     #[allow(dead_code)]
     pub(super) fn open_writable_parent(path: &Path) -> Result<File, Error> {
         open_directory_path(path.parent().unwrap_or_else(|| Path::new(".")), true)
@@ -2540,7 +2621,6 @@ mod win {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub(super) fn open_regular_at(
         parent: &File,
         name: &OsStr,
@@ -3303,7 +3383,6 @@ pub(crate) fn assert_entry_identity(
 }
 
 #[cfg(windows)]
-#[allow(dead_code)]
 pub(crate) fn assert_entry_identity(
     parent: &File,
     name: &OsStr,
@@ -3414,7 +3493,6 @@ pub(crate) fn open_regular_at(
 }
 
 #[cfg(windows)]
-#[allow(dead_code)]
 pub(crate) fn open_regular_at(
     parent: &File,
     name: &OsStr,
@@ -4164,19 +4242,63 @@ mod tests {
 
     #[test]
     fn directory_types_carry_no_pathname() {
+        // Both types cross from an enumeration to a later identity check, so what must stay true
+        // is the field set: a leaf name, a kind, an identity and a timestamp — never a pathname a
+        // caller could feed back, and never one the OS would re-walk. The fields are
+        // platform-neutral since the Windows listing arm landed, so the assertion is on the
+        // declared fields rather than on a `#[cfg(unix)]` shape; an added `Path`, `PathBuf`,
+        // `OsString` path or `String` path field reddens it on every target.
+        fn declared_fields(body: &str) -> Vec<(String, String)> {
+            body.lines()
+                .skip(1)
+                .map(str::trim)
+                .filter(|line| {
+                    !line.is_empty()
+                        && !line.starts_with("//")
+                        && !line.starts_with("#[")
+                        && !line.starts_with('}')
+                })
+                .map(|line| {
+                    let line = line.trim_end_matches(',');
+                    let (name, kind) = line.split_once(": ").unwrap_or((line, ""));
+                    (
+                        name.rsplit(' ').next().unwrap_or(name).to_owned(),
+                        kind.to_owned(),
+                    )
+                })
+                .collect()
+        }
+
         let source = include_str!("fs.rs");
         let directory = body_at_indent(source, "pub(crate) struct DirectoryEntry {");
         assert_eq!(
-            directory.trim(),
-            "pub(crate) struct DirectoryEntry {\n    pub(crate) name: OsString,\n    pub(crate) kind: DirectoryEntryKind,\n    pub(crate) identity: (u64, u64),\n    #[cfg(unix)]\n    pub(crate) modified_seconds: i64,"
+            declared_fields(directory),
+            vec![
+                ("name".to_owned(), "OsString".to_owned()),
+                ("kind".to_owned(), "DirectoryEntryKind".to_owned()),
+                ("identity".to_owned(), "(u64, u64)".to_owned()),
+                ("modified_seconds".to_owned(), "i64".to_owned()),
+            ],
+            "DirectoryEntry field set changed: {directory}"
         );
         let capability_source = include_str!("path_authority/mod.rs");
         let capability =
             body_at_indent(capability_source, "pub(crate) struct CapabilityDirectory {");
         assert_eq!(
-            capability.trim(),
-            "pub(crate) struct CapabilityDirectory {\n    #[cfg(unix)]\n    directory: fs::File,"
+            declared_fields(capability),
+            vec![("directory".to_owned(), "fs::File".to_owned())],
+            "CapabilityDirectory field set changed: {capability}"
         );
+        for (name, kind) in declared_fields(directory)
+            .into_iter()
+            .chain(declared_fields(capability))
+        {
+            let lowercase = format!("{name} {kind}").to_lowercase();
+            assert!(
+                !lowercase.contains("path"),
+                "directory types must carry identity, never a pathname: {name}: {kind}"
+            );
+        }
     }
 
     #[test]
@@ -6757,6 +6879,79 @@ mod tests {
                 .all(|entry| !entry.file_name().to_string_lossy().starts_with(".atomic-")),
             "temporary file survived cleanup"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_filetime_ticks_become_unix_seconds() {
+        // 1970-01-01T00:00:00Z expressed as a FILETIME.
+        assert_eq!(win::filetime_to_unix_seconds(116_444_736_000_000_000), 0);
+        // 2001-09-09T01:46:40Z, i.e. Unix second 1_000_000_000.
+        assert_eq!(
+            win::filetime_to_unix_seconds(126_444_736_000_000_000),
+            1_000_000_000
+        );
+        // Sub-second ticks truncate downwards rather than rounding into the next second.
+        assert_eq!(win::filetime_to_unix_seconds(116_444_736_009_999_999), 0);
+        // A zero or negative FILETIME is a pre-1970 instant, not a panic.
+        assert_eq!(win::filetime_to_unix_seconds(0), -11_644_473_600);
+        assert_eq!(win::filetime_to_unix_seconds(-1), -11_644_473_601);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_enumerated_identity_equals_the_opened_child_identity() {
+        // A raw `FileId` carries no volume serial and would fail every later confirmation, which
+        // opens the child and compares `opened_file_identity`. No Linux run can observe this.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("game.pgn"), b"pgn").expect("child file");
+        std::fs::create_dir(dir.path().join("folder")).expect("child directory");
+        let parent = windows_test_parent(dir.path());
+        let listed = read_directory_entries_at(&parent, &CancellationToken::new(), &mut |_| true)
+            .expect("listing");
+        for (name, is_dir) in [("game.pgn", false), ("folder", true)] {
+            let entry = listed
+                .iter()
+                .find(|entry| entry.name == OsStr::new(name))
+                .unwrap_or_else(|| panic!("{name} must be listed"));
+            assert_eq!(
+                entry.identity,
+                entry_identity_at(&parent, &entry.name, is_dir).expect("identity"),
+                "{name} enumeration identity must equal the opened-handle identity"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_listing_reports_a_junction_as_other() {
+        // A junction is FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT. Classified on
+        // the directory bit it would be descended, `open_child_directory` would refuse it, and
+        // the whole listing would fail where unix returns the tree minus the link.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("real")).expect("target directory");
+        let status = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(dir.path().join("link"))
+            .arg(dir.path().join("real"))
+            .status()
+            .expect("mklink must run");
+        assert!(status.success(), "mklink /J failed: {status}");
+        let parent = windows_test_parent(dir.path());
+        let listed = read_directory_entries_at(&parent, &CancellationToken::new(), &mut |_| true)
+            .expect("listing");
+        let link = listed
+            .iter()
+            .find(|entry| entry.name == OsStr::new("link"))
+            .expect("the junction must be listed");
+        assert_eq!(link.kind, DirectoryEntryKind::Other);
+        let real = listed
+            .iter()
+            .find(|entry| entry.name == OsStr::new("real"))
+            .expect("the real directory must be listed");
+        assert_eq!(real.kind, DirectoryEntryKind::Directory);
     }
 
     #[cfg(windows)]

@@ -9,11 +9,9 @@
 //! app-owned default root (`db` / `engines` / `puzzles`) recovered with a matching live
 //! `VerifiedIdentity`: that path re-registers the new inode rather than staying wedged.
 
-#[cfg(unix)]
-use crate::infra::fs::RegularFileAccess;
-#[cfg(unix)]
 use crate::infra::fs::{
     assert_entry_identity, open_directory_at, open_regular_at, read_directory_entries_at,
+    RegularFileAccess,
 };
 use crate::{
     error::Error,
@@ -295,37 +293,79 @@ mod windows_tests {
 
 /// A directory reached through a `PathRef` capability. It carries no pathname.
 pub(crate) struct CapabilityDirectory {
-    #[cfg(unix)]
     directory: fs::File,
 }
 
 impl CapabilityDirectory {
+    /// The one arm with a Windows caller today: `map_db3_children_cancellable`. The workspace
+    /// listing reaches the others through `capability_directory`, which stays refused on Windows
+    /// until the path-authority workspace API is ported, so they carry `allow(dead_code)` there
+    /// rather than an unimplemented body.
     pub(crate) fn entries(
         &self,
         cancellation: &CancellationToken,
         keep: &mut dyn FnMut(&OsStr) -> bool,
     ) -> Result<Vec<DirectoryEntry>, Error> {
+        let entries = read_directory_entries_at(&self.directory, cancellation, keep)?;
+        #[cfg(all(test, unix))]
+        CAPABILITY_DIRECTORY_POST_ENTRIES_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        Ok(entries)
+    }
+
+    /// Remaps the errors a concurrent swap of the child produces into the one retryable
+    /// `Conflict` the workspace listing reports, so a directory replaced between enumeration and
+    /// open is a retry rather than a hard failure. Unix sees `LOOP`/`NOTDIR`/`NOENT`; Windows sees
+    /// the NT counterparts, plus `open_windows_child`'s reparse refusal, because an entry that was
+    /// a directory at enumeration time and is a junction when it is opened is the same swap.
+    // No Windows caller yet; see the note on `entries`.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    fn child_open_swap(error: Error) -> Error {
         #[cfg(unix)]
         {
-            let entries = read_directory_entries_at(&self.directory, cancellation, keep)?;
-            #[cfg(all(test, unix))]
-            CAPABILITY_DIRECTORY_POST_ENTRIES_HOOK.with(|slot| {
-                if let Some(hook) = slot.borrow_mut().take() {
-                    hook();
+            if let Error::Io(io_error) = &error {
+                if matches!(
+                    io_error.raw_os_error(),
+                    Some(code)
+                        if code == rustix::io::Errno::LOOP.raw_os_error()
+                            || code == rustix::io::Errno::NOTDIR.raw_os_error()
+                            || code == rustix::io::Errno::NOENT.raw_os_error()
+                ) {
+                    return Error::Conflict("workspace directory changed concurrently".into());
                 }
-            });
-            Ok(entries)
+            }
+            error
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
-            let _ = (cancellation, keep);
-            Err(crate::infra::platform_support::unsupported(
-                UNSUPPORTED_DIRECTORY_ENUMERATION,
-            ))
+            use windows_sys::Win32::Foundation::{
+                ERROR_DIRECTORY, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
+            };
+
+            if matches!(&error, Error::InvalidInput(message) if message == "reparse points cannot be authorized")
+            {
+                return Error::Conflict("workspace directory changed concurrently".into());
+            }
+            if let Error::Io(io_error) = &error {
+                if matches!(
+                    io_error.raw_os_error(),
+                    Some(code)
+                        if code == ERROR_FILE_NOT_FOUND as i32
+                            || code == ERROR_PATH_NOT_FOUND as i32
+                            || code == ERROR_DIRECTORY as i32
+                ) {
+                    return Error::Conflict("workspace directory changed concurrently".into());
+                }
+            }
+            error
         }
     }
 
-    #[cfg(unix)]
+    // No Windows caller yet; see the note on `entries`.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn open_child_directory(
         &self,
         entry: &DirectoryEntry,
@@ -336,83 +376,60 @@ impl CapabilityDirectory {
             ));
         }
         crate::infra::fs::single_leaf(&entry.name)?;
-        #[cfg(unix)]
-        {
-            #[cfg(all(test, unix))]
-            CAPABILITY_CHILD_PRE_OPEN_HOOK.with(|slot| {
-                if let Some(hook) = slot.borrow_mut().take() {
-                    hook();
-                }
-            });
-            let opened =
-                open_directory_at(&self.directory, &entry.name, false).map_err(|error| {
-                    if let Error::Io(io_error) = &error {
-                        if matches!(
-                            io_error.raw_os_error(),
-                            Some(code)
-                                if code == rustix::io::Errno::LOOP.raw_os_error()
-                                    || code == rustix::io::Errno::NOTDIR.raw_os_error()
-                                    || code == rustix::io::Errno::NOENT.raw_os_error()
-                        ) {
-                            return Error::Conflict(
-                                "workspace directory changed concurrently".into(),
-                            );
-                        }
-                    }
-                    error
-                })?;
-            Ok(CapabilityDirectory {
-                directory: VerifiedDir::new(opened, entry.identity)?.into_file(),
-            })
-        }
+        #[cfg(all(test, unix))]
+        CAPABILITY_CHILD_PRE_OPEN_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        let opened = open_directory_at(&self.directory, &entry.name, false)
+            .map_err(Self::child_open_swap)?;
+        Ok(CapabilityDirectory {
+            directory: VerifiedDir::new(opened, entry.identity)?.into_file(),
+        })
     }
 
-    #[cfg(unix)]
+    // No Windows caller yet; see the note on `entries`.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn confirm_entry(&self, entry: &DirectoryEntry) -> Result<(), Error> {
         crate::infra::fs::single_leaf(&entry.name)?;
-        #[cfg(unix)]
-        {
-            assert_entry_identity(
-                &self.directory,
-                &entry.name,
-                entry.identity,
-                entry.kind == DirectoryEntryKind::Directory,
-            )
-        }
+        assert_entry_identity(
+            &self.directory,
+            &entry.name,
+            entry.identity,
+            entry.kind == DirectoryEntryKind::Directory,
+        )
     }
 
-    #[cfg(unix)]
+    // No Windows caller yet; see the note on `entries`.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn open_metadata_sidecar(
         &self,
         pgn: &DirectoryEntry,
     ) -> Result<Option<fs::File>, Error> {
         crate::infra::fs::single_leaf(&pgn.name)?;
-        #[cfg(unix)]
-        {
-            let sidecar = workspace_sidecar_leaf(&pgn.name)?;
-            #[cfg(all(test, unix))]
-            WORKSPACE_METADATA_PRE_OPEN_HOOK.with(|slot| {
-                if let Some(hook) = slot.borrow_mut().take() {
-                    hook();
-                }
-            });
-            let opened =
-                match open_regular_at(&self.directory, &sidecar, RegularFileAccess::ReadOnly) {
-                    Ok(file) => {
-                        #[cfg(all(test, unix))]
-                        WORKSPACE_METADATA_POST_OPEN_HOOK.with(|slot| {
-                            if let Some(hook) = slot.borrow_mut().take() {
-                                hook(&file);
-                            }
-                        });
-                        Some(file)
+        let sidecar = workspace_sidecar_leaf(&pgn.name)?;
+        #[cfg(all(test, unix))]
+        WORKSPACE_METADATA_PRE_OPEN_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        let opened = match open_regular_at(&self.directory, &sidecar, RegularFileAccess::ReadOnly) {
+            Ok(file) => {
+                #[cfg(all(test, unix))]
+                WORKSPACE_METADATA_POST_OPEN_HOOK.with(|slot| {
+                    if let Some(hook) = slot.borrow_mut().take() {
+                        hook(&file);
                     }
-                    Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(error) => return Err(error),
-                };
-            self.confirm_entry(pgn)?;
-            Ok(opened)
-        }
+                });
+                Some(file)
+            }
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        self.confirm_entry(pgn)?;
+        Ok(opened)
     }
 }
 

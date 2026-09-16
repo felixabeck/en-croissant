@@ -502,6 +502,161 @@ mod tests {
     }
 
     #[test]
+    fn windows_listing_identity_is_composed_not_a_raw_file_id() {
+        // `FILE_ID_BOTH_DIR_INFORMATION.FileId` carries no volume serial, while
+        // `opened_file_identity` is `(dwVolumeSerialNumber, nFileIndex)`. A raw `FileId` here
+        // type-checks and then fails every listing with `workspace entry changed concurrently`,
+        // because the listing confirms each kept entry against a freshly opened handle.
+        let source = source_for("infra/fs.rs");
+        let enumerate = compact(&source[braced_body(source, "pub(super) fn enumerate_directory(")]);
+        assert!(
+            enumerate.contains("letvolume=opened_file_identity(dir)?.0"),
+            "the volume serial must come from the retained directory handle: {enumerate}"
+        );
+        let page = compact(&source[braced_body(source, "fn parse_directory_page(")]);
+        assert!(
+            page.contains("identity:(volume,header.FileIdasu64)"),
+            "enumeration identity must be composed with the volume serial: {page}"
+        );
+        let read = compact(&source[braced_body(source, "pub(super) fn read_directory_entries(")]);
+        assert!(
+            read.contains("identity:entry.identity"),
+            "the listing must hand on the composed identity unchanged: {read}"
+        );
+    }
+
+    #[test]
+    fn windows_listing_classifies_reparse_entries_as_other_and_stays_cancellable() {
+        // A junction is `FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT`. If the listing
+        // mapped it to `Directory` the walk would descend it, `open_child_directory` would refuse,
+        // and the whole listing would fail where unix returns the tree minus the link. The
+        // reparse-before-directory order inside the enumerator is pinned separately; this pins
+        // that the listing keeps the `Other` classification instead of collapsing it.
+        let source = source_for("infra/fs.rs");
+        let read = compact(&source[braced_body(source, "pub(super) fn read_directory_entries(")]);
+        assert!(
+            read.contains("EnumeratedKind::Other=>DirectoryEntryKind::Other"),
+            "a reparse entry must stay `Other` in the listing: {read}"
+        );
+        assert!(
+            read.contains("EnumeratedKind::Directory=>DirectoryEntryKind::Directory")
+                && read.contains("EnumeratedKind::RegularFile=>DirectoryEntryKind::RegularFile"),
+            "{read}"
+        );
+        assert_eq!(
+            read.matches("ifcancellation.is_cancelled(){returnErr(Error::Cancellation);}")
+                .count(),
+            3,
+            "the single-directory read is cancellable before, during and after the walk: {read}"
+        );
+    }
+
+    #[test]
+    fn windows_enumeration_restart_terminal_and_exhaustion_are_handled() {
+        // `STATUS_NO_MORE_FILES` is informational and has no arm in `windows_open_status_error`,
+        // so falling through would turn the end of every directory into `Error::Io`. `RestartScan`
+        // is TRUE on the first call only, and must stay as it was across a `STATUS_BUFFER_OVERFLOW`
+        // retry. Returning `Ok` with a prefix when the retry bound is hit would be a truncated
+        // listing reported as a complete tree, so the bound fails closed.
+        let source = source_for("infra/fs.rs");
+        let body = compact(&source[braced_body(source, "pub(super) fn enumerate_directory(")]);
+        assert!(
+            body.contains("ifstatus==STATUS_NO_MORE_FILES{break;}"),
+            "end of stream must be success, not an error: {body}"
+        );
+        assert!(
+            body.contains("letmutrestart_scan=true;"),
+            "the first call must restart the scan: {body}"
+        );
+        assert!(
+            body.contains("restart_scan=false;"),
+            "later calls must not restart the scan: {body}"
+        );
+        let overflow_start = body
+            .find("ifstatus==STATUS_BUFFER_OVERFLOW")
+            .expect("buffer-overflow retry must exist");
+        let overflow_end = body[overflow_start..]
+            .find("continue;")
+            .map(|offset| overflow_start + offset)
+            .expect("the retry must continue the loop");
+        assert!(
+            !body[overflow_start..overflow_end].contains("restart_scan"),
+            "a buffer-overflow retry must preserve RestartScan as it was: {body}"
+        );
+        assert!(
+            body[overflow_start..overflow_end].contains(
+                "returnErr(Error::Io(Box::new(std::io::Error::other(\"directory enumeration buffer was exhausted\",))));"
+            ),
+            "the retry bound must fail closed, never return a prefix: {body}"
+        );
+        assert!(
+            body.contains("overflow_retries>DIRECTORY_ENUMERATION_OVERFLOW_RETRIES")
+                && body.contains("buffer_len>=DIRECTORY_ENUMERATION_MAX_BYTES"),
+            "the retry must be bounded: {body}"
+        );
+    }
+
+    #[test]
+    fn windows_listing_timestamps_are_converted_from_the_filetime_epoch() {
+        // `LastWriteTime` is a FILETIME: 100-nanosecond ticks since 1601-01-01. The renderer reads
+        // `WorkspaceEntry.lastModified` as Unix seconds, so a raw tick count type-checks, passes a
+        // names-only listing assertion, and renders dates centuries out.
+        let source = source_for("infra/fs.rs");
+        let conversion =
+            compact(&source[braced_body(source, "pub(super) fn filetime_to_unix_seconds(")]);
+        assert!(
+            conversion.contains("div_euclid(FILETIME_TICKS_PER_SECOND)")
+                && conversion.contains("saturating_sub(FILETIME_EPOCH_OFFSET_SECONDS)"),
+            "{conversion}"
+        );
+        let whole = compact(source);
+        assert!(
+            whole.contains("constFILETIME_EPOCH_OFFSET_SECONDS:i64=11_644_473_600;"),
+            "the 1601-to-1970 offset must stay exact"
+        );
+        assert!(
+            whole.contains("constFILETIME_TICKS_PER_SECOND:i64=10_000_000;"),
+            "a FILETIME tick is 100 nanoseconds"
+        );
+        let read = compact(&source[braced_body(source, "pub(super) fn read_directory_entries(")]);
+        assert!(
+            read.contains("modified_seconds:filetime_to_unix_seconds(entry.last_write_time)"),
+            "the listing must convert, never hand on raw ticks: {read}"
+        );
+    }
+
+    #[test]
+    fn windows_reparse_swap_is_a_conflict_in_listing_and_on_the_mutation_open() {
+        // An entry that was a directory when it was enumerated or when the capability was issued
+        // and is a junction by the time it is opened is a concurrent swap, which the renderer
+        // retries, not an `InvalidInput` about a bad argument, which it reports as a caller bug.
+        let authority = source_for("infra/path_authority/mod.rs");
+        let swap = compact(&authority[braced_body(authority, "fn child_open_swap(")]);
+        assert!(
+            swap.contains("\"reparse points cannot be authorized\""),
+            "the listing must remap the reparse refusal: {swap}"
+        );
+        assert_eq!(
+            swap.matches("Error::Conflict(\"workspace directory changed concurrently\".into())")
+                .count(),
+            3,
+            "both platforms map their swap statuses to the one retryable conflict: {swap}"
+        );
+        assert!(
+            swap.contains("ERROR_FILE_NOT_FOUNDasi32")
+                && swap.contains("ERROR_PATH_NOT_FOUNDasi32")
+                && swap.contains("ERROR_DIRECTORYasi32"),
+            "the NT counterparts of LOOP/NOTDIR/NOENT must be remapped too: {swap}"
+        );
+        let source = source_for("infra/fs.rs");
+        let expected = compact(&source[braced_body(source, "fn open_expected_child(")]);
+        assert!(
+            expected.contains("Err(error)ifis_reparse_refusal(&error)=>{ifconflict{Err(type_mismatch(true))}else{Err(error)}}"),
+            "the mutation open must surface a junction swap as a conflict: {expected}"
+        );
+    }
+
+    #[test]
     fn windows_optional_regular_missing_leaf_is_success() {
         let source = source_for("infra/fs.rs");
         let missing = compact(&source[braced_body(source, "fn missing_leaf(")]);
@@ -892,14 +1047,6 @@ mod tests {
                 form: BodyForm::Block,
                 expected: ExpectedBody::Exact(
                     r#"{let_=(temp_path,target_path);Err(Error::Conflict("atomic directory installation is unsupported on this platform: fd-relative no-follow and durable parent sync cannot be proven".into()))}"#,
-                ),
-            },
-            BodyRow {
-                file: "infra/path_authority/mod.rs",
-                signature: "pub(crate) fn entries(",
-                form: BodyForm::Block,
-                expected: ExpectedBody::Exact(
-                    r#"{let_=(cancellation,keep);Err(crate::infra::platform_support::unsupported(UNSUPPORTED_DIRECTORY_ENUMERATION,))}"#,
                 ),
             },
             BodyRow {
@@ -1484,11 +1631,6 @@ mod tests {
     #[test]
     fn routed_refusal_labels_are_unchanged() {
         let expected = [
-            (
-                "infra/path_authority/mod.rs",
-                "fd-relative directory enumeration",
-                "unsupported",
-            ),
             (
                 "infra/path_authority/mod.rs",
                 "database file reopening",
