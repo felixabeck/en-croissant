@@ -8951,3 +8951,34 @@ visible in the first place.
   Found by `review-error-handling` (99) and `review-root-cause` (98/97); precedence verified against
   the decision ledger and `9d450dc5` by the orchestrator.
 <!-- ledger-meta {"command":"annotate","effect_lines":19,"effect_sha256":"62a9cf08f83de9dd1e589ea15a698950ca8010889992add5608fef8098ac08a7","input_sha256":"4816c7243622edbcaea8c2bbf7c641c8718f58de1da83924ee3bda720159dab7","kind":"mutation-receipt","operation":"7eade7b6ab1e3e55cdb972b1533d220278413f0583d6e00ac9d38d1cdbeec3e1","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-07"],"target":"f-20260916-07","v":1} -->
+
+---
+
+## 2026-09-16 — filed through the inbox spool
+
+### Two argument-forwarding wrappers in the atomic-replace driver carry no contract
+
+* **ID:** f-20260916-08 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+
+`review-minimalism` raised this during the `$push` review of the f-20260914-10 Windows
+atomic-replacement port (confidence 95). Both functions forward their arguments unchanged and add
+no logic, branching or contract:
+
+* `src-tauri/src/infra/fs.rs` `cleanup_with_adapter` — body is `adapter.cleanup(dir, temp_name, temp, primary)`.
+* `src-tauri/src/infra/fs.rs` `target_identity` — body is `adapter.target_identity(target)`.
+
+The lens recommended inlining and deleting both. That is right for `target_identity`, which has
+exactly two call sites (both on one line of `replace_at_driver`). It is *not* obviously right for
+`cleanup_with_adapter`, which has **22 call sites**, all of them the same error-cleanup step on the
+failure path of `replace_at_driver`. Removing it replaces 22 uniform calls with 22 inlined
+`adapter.cleanup(...)` calls in a sensitive path and removes a named seam without removing a
+concept. Decide deliberately rather than applying the lens verdict mechanically.
+
+Deferred from the f-20260914-10 push because it is cosmetic, platform-neutral, and mixing it into
+a commit whose subject was a set of Windows compile blockers would have made that commit
+incoherent. It is not blocked on anything.
+
+**Proof:** `cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked` and
+`cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings`. Both
+functions are platform-neutral, so the host toolchain proves the change; no Windows target is
+required.
