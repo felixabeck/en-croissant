@@ -8892,3 +8892,24 @@ visible in the first place.
 * **Related:** `f-20260914-10` (the Windows port makes this path newly reachable there), `d-20260906-03` (the contract being broken).
 * **Open question:** which layer owns surfacing an uncertain durability, and what is its typed contract? Either the adapters return a discriminated result the callers must handle, so dropping it becomes a type error, or the platform facade raises it once as a distinct event that no adapter can swallow. `d-20260906-03` already settles *that* it must be reported, so this is the mechanism, not whether. The answer also decides whether the *record* and *combine* contracts need the same treatment.
 * **Found by:** `review-error-handling` (confidence 99) in round 6 of the `f-20260914-10` plan review, 2026-09-16, on Codex.
+
+* **Annotated 2026-09-16 (round 8 of the `f-20260914-10` plan review; status stays open):** the same
+  dropped-durability shape exists on **two backend sites**, not only in the renderer adapters, and
+  both are named here rather than folded into `f-20260914-10` under its A6 slice boundary.
+  (a) `download_to_destination_inner` (`src-tauri/src/fs.rs:936-944`) sets
+  `artifact.durability` only on the `Ok` arm of `activate_download_artifact_runtime`; the `Err` arm
+  reports and returns the activation error, discarding `target_durability`.
+  (b) `install_staged_pgn_artifact` (`src-tauri/src/fs.rs:1012-1021`) does
+  `activate_download_artifact_runtime(...).await?`, so the `?` discards `target_durability.outcome`
+  before the durability is attached at `:1021`. Its production caller is Chess.com export
+  (`src-tauri/src/chesscom.rs:379`).
+  **The precedence itself is correct and must not be changed:** `d-20260906-03` clause (3)
+  *combine* states that "a later non-uncertainty error outranks" the earlier uncertain stage, and
+  commit `9d450dc5` pins exactly that `(Some(stage), Err(other))` arm — "must report the hard error,
+  not the uncertainty". A round-8 proposal to surface both was **rejected** for that reason; it
+  would have reintroduced the defect `9d450dc5` fixed. What is missing is not precedence but
+  **observability**: the uncertain stage is dropped without being recorded anywhere, which is this
+  finding's open question ("whether the *record* and *combine* contracts need the same treatment").
+  Found by `review-error-handling` (99) and `review-root-cause` (98/97); precedence verified against
+  the decision ledger and `9d450dc5` by the orchestrator.
+<!-- ledger-meta {"command":"annotate","effect_lines":19,"effect_sha256":"62a9cf08f83de9dd1e589ea15a698950ca8010889992add5608fef8098ac08a7","input_sha256":"4816c7243622edbcaea8c2bbf7c641c8718f58de1da83924ee3bda720159dab7","kind":"mutation-receipt","operation":"7eade7b6ab1e3e55cdb972b1533d220278413f0583d6e00ac9d38d1cdbeec3e1","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-07"],"target":"f-20260916-07","v":1} -->
