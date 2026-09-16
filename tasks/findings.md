@@ -8357,6 +8357,19 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 * **Annotated 2026-09-15 (f-20260914-07 run; status stays open):** measured on a real `windows-latest` runner (`cargo test --all-targets --no-fail-fast` at `fd4589f6`, GitHub run 34995837526, throwaway branch `probe/windows-rust-test`): `resolve_windows` (`src-tauri/src/infra/path_authority/resolved.rs:771-846`) opens every name, the last included, through `open_windows_child`, and returns `file: None` only when all components are existing directories, so resolving a not-yet-existing download destination leaf fails with `ERROR_FILE_NOT_FOUND` (sanitised to `Io("I/O failure")`) before transport setup. Seven `fs::tests` download-core tests fail that way on Windows (`download_authority_unavailable_after_transport_setup_records_failed_progress`, `download_cancellation_reporting_with_valid_and_stale_lease`, `download_post_verification_stale_or_replaced_lease_preserves_published_artifact`, `download_verification_failure_primary_error_survives_stale_or_cleared_lease`, `download_verification_failure_records_failed_progress_and_quarantines_intent`, `production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop`, `runtime_callers_pin_download_target_replacement_durability_override`). No user reaches it today because the download commands refuse first (slice-1 guards S3-S5), but the downloads port must make a missing write leaf resolve to a parent-bound `ResolvedPath` with `file: None`. Diagnosis: Gemini locate probe (confidence 97-98), source-verified by the orchestrator. The f-20260914-07 run marks these tests ignored on non-unix with this finding's id; un-ignoring them is part of this port.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"8727bff54851a2d8c022872956b985f9d7e262737eaae414194897cb851681c8","input_sha256":"efc35aeec0819bf41775b4b74c2b6a8405047d314b129a5d43976bcd6888c398","kind":"mutation-receipt","operation":"aacb13c387ea4c3e263a710ed3ba8d4b091a8b8a0c92384cd097a40323bc56aa","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-10"],"target":"f-20260914-10","v":1} -->
 
+63 of these tests are now gated on Windows rather than silently absent: commit `aadc4dd5` marks each with
+`#[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]`, so a Windows run prints every one
+by name with this finding as the stated reason instead of failing the job or hiding the gap. The port that this
+finding tracks removes those attributes; nothing else about the tests changed.
+
+The full test-path -> owner table for all 81 gated tests (63 here, 18 on `f-20260914-11`) is in the tracked record
+`tasks/handoffs/2026-09-16-f-20260914-07-review.md`. Read it before starting the port — it is the durable copy,
+because the working TSV under `tasks/plans/` is gitignored and will not survive.
+
+Related: `f-20260914-07` added the Windows job (`rust-windows-test`, commit `56e4600b`) that makes these skips
+visible in the first place.
+<!-- ledger-meta {"command":"annotate","effect_lines":11,"effect_sha256":"8f99930e14874607b780a1e2d9596f40bc745396dff9f860674228211b21c661","input_sha256":"0aff7570c3257046addd47a178931d51399fde7a40ee221260d0a6df58c8b0bf","kind":"mutation-receipt","operation":"0c290d99decc8a31b036d42483d6368817e26257ad26c343a2d8b8a37aebc0f1","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-10"],"target":"f-20260914-10","v":1} -->
+
 ### Windows startup cannot persist the path-authority and credential registries or create app-owned roots
 
 * **ID:** f-20260914-11 · **Status:** open · **Area:** app-startup · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
