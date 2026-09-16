@@ -1136,11 +1136,11 @@ fn trash_entry(
         Err(error) => return Err(error),
     }
     let trash_path = root.path().join(TRASH_DIRECTORY);
-    let trash_dir = crate::infra::fs::open_directory_at(root_dir, &trash)?;
+    let trash_dir = crate::infra::fs::open_directory_at(root_dir, &trash, true)?;
     let bucket = std::ffi::OsString::from(uuid::Uuid::new_v4().to_string());
     crate::infra::fs::create_dir_at(&trash_dir, &bucket)?;
     let bucket_path = trash_path.join(&bucket);
-    let bucket_dir = crate::infra::fs::open_directory_at(&trash_dir, &bucket)?;
+    let bucket_dir = crate::infra::fs::open_directory_at(&trash_dir, &bucket, true)?;
     let target = bucket_path.join(&source.leaf);
     if source.is_dir {
         crate::infra::fs::rename_entry_at(

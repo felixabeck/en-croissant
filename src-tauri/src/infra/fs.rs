@@ -145,7 +145,7 @@ pub(crate) fn held_matches_path(held: &File, path: &Path) -> Result<bool, Error>
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(unix)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) enum RegularFileAccess {
     ReadOnly,
     ReadWrite,
@@ -189,7 +189,6 @@ pub(crate) fn read_bounded_bytes<R: Read>(
 }
 
 mod verified_directory {
-    #[cfg(unix)]
     use crate::error::Error;
     use std::fs::File;
 
@@ -210,11 +209,23 @@ mod verified_directory {
             Ok(verified)
         }
 
+        #[cfg(windows)]
+        #[allow(dead_code)]
+        pub(crate) fn new(opened: File, expected: (u64, u64)) -> Result<Self, Error> {
+            let verified = Self(opened);
+            if crate::infra::path_authority::opened_file_identity(verified.as_file())? != expected {
+                return Err(Error::Conflict(
+                    "workspace directory changed concurrently".into(),
+                ));
+            }
+            Ok(verified)
+        }
+
         pub(crate) fn as_file(&self) -> &File {
             &self.0
         }
 
-        #[cfg(unix)]
+        #[cfg_attr(windows, allow(dead_code))]
         pub(crate) fn into_file(self) -> File {
             self.0
         }
@@ -1775,7 +1786,7 @@ mod win {
         ffi::OsStr,
         fs::{File, OpenOptions},
         os::windows::{
-            ffi::OsStrExt,
+            ffi::{OsStrExt, OsStringExt},
             fs::OpenOptionsExt,
             io::{AsRawHandle, FromRawHandle, RawHandle},
         },
@@ -1786,18 +1797,21 @@ mod win {
         Wdk::{
             Foundation::OBJECT_ATTRIBUTES,
             Storage::FileSystem::{
-                FileDispositionInformation, FileRenameInformationEx, NtCreateFile,
-                NtSetInformationFile, FILE_CREATE, FILE_DISPOSITION_INFORMATION,
-                FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-                FILE_RENAME_IGNORE_READONLY_ATTRIBUTE, FILE_RENAME_INFORMATION,
-                FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
-                FILE_SYNCHRONOUS_IO_NONALERT,
+                FileDispositionInformation, FileDispositionInformationEx,
+                FileIdBothDirectoryInformation, FileRenameInformationEx, NtCreateFile,
+                NtQueryDirectoryFile, NtSetInformationFile, FILE_CREATE, FILE_DISPOSITION_DELETE,
+                FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_INFORMATION,
+                FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS,
+                FILE_ID_BOTH_DIR_INFORMATION, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
+                FILE_OPEN_REPARSE_POINT, FILE_RENAME_IGNORE_READONLY_ATTRIBUTE,
+                FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS,
+                FILE_RENAME_REPLACE_IF_EXISTS, FILE_SYNCHRONOUS_IO_NONALERT,
             },
         },
         Win32::{
             // The NTSTATUS constants and RtlNtStatusToDosError live with the single classifier
             // in path_authority::windows_open_status_error, which this module now routes to.
-            Foundation::{HANDLE, UNICODE_STRING},
+            Foundation::{HANDLE, STATUS_BUFFER_OVERFLOW, STATUS_NO_MORE_FILES, UNICODE_STRING},
             Security::{
                 AddAccessAllowedAce, CreateWellKnownSid, GetKernelObjectSecurity, InitializeAcl,
                 InitializeSecurityDescriptor, SetKernelObjectSecurity,
@@ -1807,10 +1821,10 @@ mod win {
                 SE_DACL_PROTECTED,
             },
             Storage::FileSystem::{
-                GetFileType, DELETE, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
-                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-                FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, READ_CONTROL, SYNCHRONIZE,
-                WRITE_DAC,
+                GetFileType, DELETE, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
+                FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+                FILE_TYPE_DISK, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
             },
             System::{SystemServices::SECURITY_DESCRIPTOR_REVISION, IO::IO_STATUS_BLOCK},
         },
@@ -1835,6 +1849,10 @@ mod win {
         SYNCHRONIZE | windows_sys::Win32::Foundation::GENERIC_READ | READ_CONTROL;
     const DIRECTORY_ACCESS: u32 =
         DIRECTORY_READ_ACCESS | windows_sys::Win32::Foundation::GENERIC_WRITE;
+    pub(crate) const MAX_REMOVE_TREE_DEPTH: usize = 64;
+    const DIRECTORY_ENUMERATION_START_BYTES: usize = 8192;
+    const DIRECTORY_ENUMERATION_MAX_BYTES: usize = 1024 * 1024;
+    const DIRECTORY_ENUMERATION_OVERFLOW_RETRIES: u8 = 8;
 
     // Exposed through `type Target = Target` in the pub(super) AtomicReplaceAdapter impl below,
     // so it may not be more private than that impl (E0446 on the Windows target).
@@ -2092,13 +2110,14 @@ mod win {
             })
     }
 
-    fn rename(
+    pub(super) fn rename_child(
         dir: &File,
         temp: &mut File,
         _temp_name: &OsStr,
         target: &OsStr,
         replace: bool,
     ) -> Result<(), Error> {
+        super::single_leaf(target)?;
         // FILE_RENAME_INFORMATION is a variable-length structure: FileName is declared [u16; 1]
         // but carries the whole leaf, so it cannot be written as a plain value and the buffer is
         // laid out by hand. The offsets are taken from the crate's own struct rather than spelled
@@ -2176,6 +2195,650 @@ mod win {
             return Err(windows_open_status_error(status));
         }
         Ok(())
+    }
+
+    fn map_create_collision(error: Error) -> Error {
+        match error {
+            Error::Conflict(message) if message == "Windows object name collision" => Error::Io(
+                Box::new(std::io::Error::from(std::io::ErrorKind::AlreadyExists)),
+            ),
+            other => other,
+        }
+    }
+
+    fn missing_leaf(error: &Error) -> bool {
+        matches!(
+            error,
+            Error::Io(error) if error.raw_os_error() == Some(2)
+        )
+    }
+
+    fn is_reparse_refusal(error: &Error) -> bool {
+        matches!(
+            error,
+            Error::InvalidInput(message) if message == "reparse points cannot be authorized"
+        )
+    }
+
+    fn child_delete_access(directory: bool) -> u32 {
+        if directory {
+            DIRECTORY_ACCESS | DELETE
+        } else {
+            TARGET_ACCESS
+        }
+    }
+
+    fn directory_open_access(writable: bool) -> u32 {
+        if writable {
+            DIRECTORY_ACCESS
+        } else {
+            DIRECTORY_READ_ACCESS
+        }
+    }
+
+    fn regular_file_access(access: RegularFileAccess) -> u32 {
+        let read = SYNCHRONIZE | READ_CONTROL | windows_sys::Win32::Foundation::GENERIC_READ;
+        match access {
+            RegularFileAccess::ReadOnly => read,
+            RegularFileAccess::ReadWrite => read | windows_sys::Win32::Foundation::GENERIC_WRITE,
+        }
+    }
+
+    fn type_mismatch(conflict: bool) -> Error {
+        if conflict {
+            Error::Conflict("workspace entry changed concurrently".into())
+        } else {
+            Error::InvalidInput("workspace entry has an unexpected file type".into())
+        }
+    }
+
+    fn opened_is_disk(file: &File) -> bool {
+        unsafe { GetFileType(file.as_raw_handle() as HANDLE) == FILE_TYPE_DISK }
+    }
+
+    fn open_expected_child(
+        parent: &File,
+        name: &OsStr,
+        directory: bool,
+        conflict: bool,
+    ) -> Result<File, Error> {
+        let access = if directory {
+            DIRECTORY_READ_ACCESS
+        } else {
+            SYNCHRONIZE | READ_CONTROL | windows_sys::Win32::Foundation::GENERIC_READ
+        };
+        match open_windows_child(parent, name, FILE_OPEN, access, null(), directory, true) {
+            Ok(file) => {
+                if !directory && !opened_is_disk(&file) {
+                    return Err(type_mismatch(conflict));
+                }
+                Ok(file)
+            }
+            Err(error) if is_reparse_refusal(&error) => Err(error),
+            Err(error) => match open_windows_child(
+                parent,
+                name,
+                FILE_OPEN,
+                if directory {
+                    SYNCHRONIZE | READ_CONTROL | windows_sys::Win32::Foundation::GENERIC_READ
+                } else {
+                    DIRECTORY_READ_ACCESS
+                },
+                null(),
+                !directory,
+                true,
+            ) {
+                Ok(_) => Err(type_mismatch(conflict)),
+                Err(_) => Err(error),
+            },
+        }
+    }
+
+    fn unlink_posix(file: &File) -> Result<(), Error> {
+        let disposition = FILE_DISPOSITION_INFORMATION_EX {
+            Flags: FILE_DISPOSITION_DELETE
+                | FILE_DISPOSITION_POSIX_SEMANTICS
+                | FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE,
+        };
+        let mut status_block: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+        let status = unsafe {
+            NtSetInformationFile(
+                file.as_raw_handle() as HANDLE,
+                &mut status_block,
+                std::ptr::addr_of!(disposition).cast(),
+                std::mem::size_of::<FILE_DISPOSITION_INFORMATION_EX>() as u32,
+                FileDispositionInformationEx,
+            )
+        };
+        if status != 0 {
+            return Err(windows_open_status_error(status));
+        }
+        Ok(())
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum EnumeratedKind {
+        Directory,
+        RegularFile,
+        Other,
+    }
+
+    pub(super) struct EnumeratedEntry {
+        pub name: OsString,
+        pub identity: (u64, u64),
+        pub kind: EnumeratedKind,
+    }
+
+    fn enumerated_kind(attributes: u32) -> EnumeratedKind {
+        if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            EnumeratedKind::Other
+        } else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            EnumeratedKind::Directory
+        } else {
+            EnumeratedKind::RegularFile
+        }
+    }
+
+    /// Parses one `NtQueryDirectoryFile` page. `buffer` must be 8-byte aligned, which
+    /// `enumerate_directory` guarantees by backing it with a `Vec<u64>`; the headers are
+    /// read as references and `FILE_ID_BOTH_DIR_INFORMATION` has 8-byte alignment.
+    fn parse_directory_page(
+        buffer: &[u8],
+        used: usize,
+        volume: u64,
+        entries: &mut Vec<EnumeratedEntry>,
+    ) -> Result<(), Error> {
+        const FILE_NAME_OFFSET: usize =
+            std::mem::offset_of!(FILE_ID_BOTH_DIR_INFORMATION, FileName);
+        let mut offset = 0usize;
+        if used == 0 {
+            return Ok(());
+        }
+        loop {
+            if offset
+                .checked_add(FILE_NAME_OFFSET)
+                .is_none_or(|end| end > used)
+            {
+                return Err(Error::Io(Box::new(std::io::Error::other(
+                    "directory enumeration entry is truncated",
+                ))));
+            }
+            let header =
+                unsafe { &*(buffer.as_ptr().add(offset) as *const FILE_ID_BOTH_DIR_INFORMATION) };
+            let name_bytes = header.FileNameLength as usize;
+            if !name_bytes.is_multiple_of(2)
+                || offset
+                    .checked_add(FILE_NAME_OFFSET)
+                    .and_then(|start| start.checked_add(name_bytes))
+                    .is_none_or(|end| end > used)
+            {
+                return Err(Error::Io(Box::new(std::io::Error::other(
+                    "directory enumeration file name is truncated",
+                ))));
+            }
+            let name_units = name_bytes / 2;
+            let name = OsString::from_wide(unsafe {
+                std::slice::from_raw_parts(
+                    buffer.as_ptr().add(offset + FILE_NAME_OFFSET).cast::<u16>(),
+                    name_units,
+                )
+            });
+            if name != OsStr::new(".") && name != OsStr::new("..") {
+                entries.push(EnumeratedEntry {
+                    name,
+                    identity: (volume, header.FileId as u64),
+                    kind: enumerated_kind(header.FileAttributes),
+                });
+            }
+            if header.NextEntryOffset == 0 {
+                return Ok(());
+            }
+            let next = match offset.checked_add(header.NextEntryOffset as usize) {
+                Some(next) if next > offset && next <= used => next,
+                _ => {
+                    return Err(Error::Io(Box::new(std::io::Error::other(
+                        "directory enumeration next-entry offset is invalid",
+                    ))));
+                }
+            };
+            offset = next;
+        }
+    }
+
+    pub(super) fn enumerate_directory(dir: &File) -> Result<Vec<EnumeratedEntry>, Error> {
+        let volume = opened_file_identity(dir)?.0;
+        let mut restart_scan = true;
+        let mut buffer_len = DIRECTORY_ENUMERATION_START_BYTES;
+        let mut overflow_retries = 0_u8;
+        let mut entries = Vec::new();
+        loop {
+            // `FILE_ID_BOTH_DIR_INFORMATION` has 8-byte alignment and NT lays every
+            // entry out 8-aligned relative to the buffer start, so the buffer itself
+            // must be 8-aligned: a `Vec<u8>` only guarantees alignment 1, and forming
+            // a reference to a header inside it would be undefined behaviour.
+            let mut buffer = vec![0_u64; buffer_len.div_ceil(8)];
+            let buffer_bytes = buffer.len() * 8;
+            let mut status_block: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+            let status = unsafe {
+                NtQueryDirectoryFile(
+                    dir.as_raw_handle() as HANDLE,
+                    null_mut(),
+                    None,
+                    null(),
+                    &mut status_block,
+                    buffer.as_mut_ptr().cast(),
+                    buffer_bytes as u32,
+                    FileIdBothDirectoryInformation,
+                    false,
+                    null(),
+                    restart_scan,
+                )
+            };
+            if status == STATUS_NO_MORE_FILES {
+                break;
+            }
+            if status == STATUS_BUFFER_OVERFLOW {
+                overflow_retries = overflow_retries.saturating_add(1);
+                if overflow_retries > DIRECTORY_ENUMERATION_OVERFLOW_RETRIES
+                    || buffer_len >= DIRECTORY_ENUMERATION_MAX_BYTES
+                {
+                    return Err(Error::Io(Box::new(std::io::Error::other(
+                        "directory enumeration buffer was exhausted",
+                    ))));
+                }
+                buffer_len = buffer_len
+                    .saturating_mul(2)
+                    .min(DIRECTORY_ENUMERATION_MAX_BYTES);
+                continue;
+            }
+            if status != 0 {
+                return Err(windows_open_status_error(status));
+            }
+            overflow_retries = 0;
+            let used = status_block.Information.min(buffer_bytes);
+            // SAFETY: `buffer` owns `buffer_bytes` initialised bytes at 8-byte alignment.
+            let page =
+                unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), buffer_bytes) };
+            parse_directory_page(page, used, volume, &mut entries)?;
+            restart_scan = false;
+        }
+        Ok(entries)
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn open_writable_parent(path: &Path) -> Result<File, Error> {
+        open_directory_path(path.parent().unwrap_or_else(|| Path::new(".")), true)
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn open_writable_leaf_directory(parent: &File, name: &OsStr) -> Result<File, Error> {
+        open_windows_child(
+            parent,
+            name,
+            FILE_OPEN,
+            DIRECTORY_ACCESS,
+            null(),
+            true,
+            true,
+        )
+    }
+
+    pub(super) fn open_directory_child(
+        parent: &File,
+        name: &OsStr,
+        writable: bool,
+    ) -> Result<File, Error> {
+        open_windows_child(
+            parent,
+            name,
+            FILE_OPEN,
+            directory_open_access(writable),
+            null(),
+            true,
+            true,
+        )
+    }
+
+    pub(super) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
+        drop(
+            open_windows_child(
+                parent,
+                name,
+                FILE_CREATE,
+                DIRECTORY_ACCESS,
+                null(),
+                true,
+                true,
+            )
+            .map_err(map_create_collision)?,
+        );
+        parent.sync_all()?;
+        Ok(())
+    }
+
+    pub(super) fn entry_identity_at(
+        parent: &File,
+        name: &OsStr,
+        dir: bool,
+    ) -> Result<(u64, u64), Error> {
+        let opened = open_expected_child(parent, name, dir, false)?;
+        opened_file_identity(&opened)
+    }
+
+    pub(super) fn assert_entry_identity(
+        parent: &File,
+        name: &OsStr,
+        expected: (u64, u64),
+        dir: bool,
+    ) -> Result<(), Error> {
+        let opened = open_expected_child(parent, name, dir, true)?;
+        if opened_file_identity(&opened)? != expected {
+            return Err(Error::Conflict(
+                "workspace entry changed concurrently".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn open_regular_at(
+        parent: &File,
+        name: &OsStr,
+        access: RegularFileAccess,
+    ) -> Result<File, Error> {
+        let opened = open_windows_child(
+            parent,
+            name,
+            FILE_OPEN,
+            regular_file_access(access),
+            null(),
+            false,
+            true,
+        )?;
+        if !opened_is_disk(&opened) {
+            return Err(Error::InvalidInput("target must be a regular file".into()));
+        }
+        Ok(opened)
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn create_regular_at(
+        parent: &File,
+        name: &OsStr,
+    ) -> Result<(File, (u64, u64)), Error> {
+        let created = open_windows_child(
+            parent,
+            name,
+            FILE_CREATE,
+            regular_file_access(RegularFileAccess::ReadWrite),
+            null(),
+            false,
+            true,
+        )
+        .map_err(map_create_collision)?;
+        if !opened_is_disk(&created) {
+            return Err(Error::InvalidInput(
+                "created database must be a regular file".into(),
+            ));
+        }
+        let identity = opened_file_identity(&created)?;
+        Ok((created, identity))
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn open_verified_parent(
+        path: &Path,
+        expected: (u64, u64),
+        directory: bool,
+    ) -> Result<(File, OsString), Error> {
+        let parent = open_writable_parent(path)?;
+        let leaf = path
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| Error::InvalidInput("workspace entry needs a leaf name".into()))?
+            .to_os_string();
+        let opened = open_expected_child(&parent, &leaf, directory, true)?;
+        if opened_file_identity(&opened)? != expected {
+            return Err(Error::Conflict(
+                "workspace entry changed concurrently".into(),
+            ));
+        }
+        Ok((parent, leaf))
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn open_writable_verified_directory(
+        path: &Path,
+        expected: (u64, u64),
+    ) -> Result<VerifiedDir, Error> {
+        let (parent, leaf) = open_verified_parent(path, expected, true)?;
+        let opened = open_writable_leaf_directory(&parent, &leaf)?;
+        VerifiedDir::new(opened, expected)
+    }
+
+    pub(super) fn rename_entry_at(
+        source_parent: &File,
+        source: &OsStr,
+        expected: (u64, u64),
+        source_is_dir: bool,
+        target_parent: &File,
+        target: &OsStr,
+    ) -> Result<(), Error> {
+        assert_entry_identity(source_parent, source, expected, source_is_dir)?;
+        let mut opened = open_windows_child(
+            source_parent,
+            source,
+            FILE_OPEN,
+            child_delete_access(source_is_dir),
+            null(),
+            source_is_dir,
+            true,
+        )?;
+        if opened_file_identity(&opened)? != expected {
+            return Err(Error::Conflict(
+                "workspace entry changed concurrently".into(),
+            ));
+        }
+        rename_child(target_parent, &mut opened, source, target, false)?;
+        source_parent.sync_all()?;
+        if opened_file_identity(source_parent)? != opened_file_identity(target_parent)? {
+            target_parent.sync_all()?;
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn rename_optional_regular_at(
+        source_parent: &File,
+        source: &OsStr,
+        target_parent: &File,
+        target: &OsStr,
+    ) -> Result<bool, Error> {
+        let mut opened = match open_windows_child(
+            source_parent,
+            source,
+            FILE_OPEN,
+            child_delete_access(false),
+            null(),
+            false,
+            true,
+        ) {
+            Ok(opened) => opened,
+            Err(error) if missing_leaf(&error) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        if !opened_is_disk(&opened) {
+            return Err(Error::InvalidInput(
+                "workspace sidecar must be a regular file".into(),
+            ));
+        }
+        rename_child(target_parent, &mut opened, source, target, false)?;
+        Ok(true)
+    }
+
+    fn remove_regular_child(
+        parent: &File,
+        entry: &EnumeratedEntry,
+        removed_entries: &mut usize,
+    ) -> Result<(), Error> {
+        let opened = open_windows_child(
+            parent,
+            &entry.name,
+            FILE_OPEN,
+            child_delete_access(false),
+            null(),
+            false,
+            true,
+        )?;
+        if opened_file_identity(&opened)? != entry.identity {
+            return Err(Error::Conflict(
+                "directory cleanup entry changed concurrently".into(),
+            ));
+        }
+        if !opened_is_disk(&opened) {
+            return Err(Error::InvalidInput(
+                "directory cleanup rejects links and special files".into(),
+            ));
+        }
+        unlink_posix(&opened)?;
+        *removed_entries += 1;
+        Ok(())
+    }
+
+    fn remove_windows_tree_at(
+        parent: &File,
+        name: &OsStr,
+        expected: (u64, u64),
+        depth: usize,
+        parent_volume: u64,
+        removed_entries: &mut usize,
+    ) -> Result<(), Error> {
+        if depth >= MAX_REMOVE_TREE_DEPTH {
+            return Err(Error::ResourceLimit(format!(
+                "directory cleanup exceeded {MAX_REMOVE_TREE_DEPTH} levels"
+            )));
+        }
+        let child = open_windows_child(
+            parent,
+            name,
+            FILE_OPEN,
+            child_delete_access(true),
+            null(),
+            true,
+            true,
+        )?;
+        let opened_identity = opened_file_identity(&child)?;
+        if opened_identity.0 != parent_volume {
+            log::warn!("recursive delete stopped at a mount point");
+            return Err(Error::InvalidInput(
+                "directory cleanup refuses to cross a mount".into(),
+            ));
+        }
+        if opened_identity != expected {
+            return Err(Error::Conflict(
+                "directory cleanup entry changed concurrently".into(),
+            ));
+        }
+        for entry in enumerate_directory(&child)? {
+            match entry.kind {
+                EnumeratedKind::Other => {
+                    return Err(Error::InvalidInput(
+                        "directory cleanup rejects links and special files".into(),
+                    ));
+                }
+                EnumeratedKind::RegularFile => {
+                    remove_regular_child(&child, &entry, removed_entries)?;
+                }
+                EnumeratedKind::Directory => {
+                    remove_windows_tree_at(
+                        &child,
+                        &entry.name,
+                        entry.identity,
+                        depth + 1,
+                        opened_identity.0,
+                        removed_entries,
+                    )?;
+                }
+            }
+        }
+        unlink_posix(&child)?;
+        *removed_entries += 1;
+        Ok(())
+    }
+
+    pub(super) fn remove_entry_at(
+        parent: &File,
+        name: &OsStr,
+        expected: (u64, u64),
+        is_dir: bool,
+    ) -> Result<(), Error> {
+        assert_entry_identity(parent, name, expected, is_dir)?;
+        if is_dir {
+            let parent_volume = opened_file_identity(parent)?.0;
+            let mut removed_entries = 0;
+            if let Err(cause) = remove_windows_tree_at(
+                parent,
+                name,
+                expected,
+                0,
+                parent_volume,
+                &mut removed_entries,
+            ) {
+                return if removed_entries == 0 {
+                    Err(cause)
+                } else {
+                    Err(Error::PartialRemoval {
+                        removed_entries,
+                        cause: Box::new(cause),
+                    })
+                };
+            }
+        } else {
+            let opened = open_windows_child(
+                parent,
+                name,
+                FILE_OPEN,
+                child_delete_access(false),
+                null(),
+                false,
+                true,
+            )?;
+            if opened_file_identity(&opened)? != expected {
+                return Err(Error::Conflict(
+                    "workspace entry changed concurrently".into(),
+                ));
+            }
+            unlink_posix(&opened)?;
+        }
+        if let Err(error) = parent.sync_all() {
+            log::warn!("workspace removal parent sync failed: {error}");
+            return Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceRemoval,
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn remove_optional_regular_at(parent: &File, name: &OsStr) -> Result<(), Error> {
+        let opened = match open_windows_child(
+            parent,
+            name,
+            FILE_OPEN,
+            child_delete_access(false),
+            null(),
+            false,
+            true,
+        ) {
+            Ok(opened) => opened,
+            Err(error) if missing_leaf(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if !opened_is_disk(&opened) {
+            return Err(Error::InvalidInput(
+                "workspace sidecar must be a regular file".into(),
+            ));
+        }
+        unlink_posix(&opened)
     }
 
     fn cleanup(temp: &mut File, primary: Error) -> Error {
@@ -2335,7 +2998,7 @@ mod win {
             target: &OsStr,
             replace: bool,
         ) -> Result<(), Error> {
-            rename(dir, temp, temp_name, target, replace)
+            rename_child(dir, temp, temp_name, target, replace)
         }
 
         fn metadata(&self, temp: &File) -> Result<TempMetadata, std::io::Error> {
@@ -2465,6 +3128,9 @@ pub(crate) use unix::{
 };
 #[cfg(unix)]
 pub(crate) use unix::{raw_mode_from, raw_stat_identity, MAX_REMOVE_TREE_DEPTH};
+#[cfg(windows)]
+#[allow(unused_imports)]
+pub(crate) use win::MAX_REMOVE_TREE_DEPTH;
 
 pub fn atomic_replace_with_precommit<F, P>(
     target: &Path,
@@ -2517,6 +3183,16 @@ where
 /// performs the final lookup relative to that descriptor with `NOFOLLOW`.  `expected`, when
 /// supplied, is checked immediately before the namespace mutation; it is the identity captured
 /// by the path authority when the opaque workspace capability was issued.
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn open_verified_parent(
+    path: &Path,
+    expected: (u64, u64),
+    directory: bool,
+) -> Result<(File, std::ffi::OsString), Error> {
+    win::open_verified_parent(path, expected, directory)
+}
+
 #[cfg(unix)]
 pub(crate) fn open_verified_parent(
     path: &Path,
@@ -2570,6 +3246,12 @@ pub(crate) fn open_parent_no_follow(path: &Path) -> Result<File, Error> {
     unix::open_parent(path)
 }
 
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn open_parent_no_follow(path: &Path) -> Result<File, Error> {
+    win::open_writable_parent(path)
+}
+
 #[cfg(unix)]
 pub(crate) fn open_verified_directory(
     path: &Path,
@@ -2587,6 +3269,15 @@ pub(crate) fn open_verified_directory(
         .map_err(|error| Error::Io(Box::new(error.into())))?,
     );
     VerifiedDir::new(opened, expected)
+}
+
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn open_verified_directory(
+    path: &Path,
+    expected: (u64, u64),
+) -> Result<VerifiedDir, Error> {
+    win::open_writable_verified_directory(path, expected)
 }
 
 #[cfg(unix)]
@@ -2611,6 +3302,17 @@ pub(crate) fn assert_entry_identity(
     Ok(())
 }
 
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn assert_entry_identity(
+    parent: &File,
+    name: &OsStr,
+    expected: (u64, u64),
+    dir: bool,
+) -> Result<(), Error> {
+    win::assert_entry_identity(parent, name, expected, dir)
+}
+
 #[cfg(unix)]
 pub(crate) fn entry_identity_at(
     parent: &File,
@@ -2629,15 +3331,13 @@ pub(crate) fn entry_identity_at(
     Ok(unix::raw_stat_identity(&stat))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 pub(crate) fn entry_identity_at(
-    _parent: &File,
-    _name: &OsStr,
-    _dir: bool,
+    parent: &File,
+    name: &OsStr,
+    dir: bool,
 ) -> Result<(u64, u64), Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "fd-relative entry identity",
-    ))
+    win::entry_identity_at(parent, name, dir)
 }
 
 #[cfg(unix)]
@@ -2649,15 +3349,17 @@ pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub(crate) fn create_dir_at(_parent: &File, _name: &OsStr) -> Result<(), Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "fd-relative directory creation",
-    ))
+#[cfg(windows)]
+pub(crate) fn create_dir_at(parent: &File, name: &OsStr) -> Result<(), Error> {
+    win::create_dir_at(parent, name)
 }
 
 #[cfg(unix)]
-pub(crate) fn open_directory_at(parent: &File, name: &OsStr) -> Result<File, Error> {
+pub(crate) fn open_directory_at(
+    parent: &File,
+    name: &OsStr,
+    _writable: bool,
+) -> Result<File, Error> {
     use rustix::fs::{self as rfs, Mode, OFlags};
     Ok(File::from(
         rfs::openat(
@@ -2670,11 +3372,13 @@ pub(crate) fn open_directory_at(parent: &File, name: &OsStr) -> Result<File, Err
     ))
 }
 
-#[cfg(not(unix))]
-pub(crate) fn open_directory_at(_parent: &File, _name: &OsStr) -> Result<File, Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "fd-relative directory opening",
-    ))
+#[cfg(windows)]
+pub(crate) fn open_directory_at(
+    parent: &File,
+    name: &OsStr,
+    writable: bool,
+) -> Result<File, Error> {
+    win::open_directory_child(parent, name, writable)
 }
 
 #[cfg(unix)]
@@ -2709,6 +3413,16 @@ pub(crate) fn open_regular_at(
     Ok(opened)
 }
 
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn open_regular_at(
+    parent: &File,
+    name: &OsStr,
+    access: RegularFileAccess,
+) -> Result<File, Error> {
+    win::open_regular_at(parent, name, access)
+}
+
 /// Creates one private regular-file leaf below a retained directory descriptor. The exclusive
 /// no-follow open is the namespace mutation; the returned inode identity is the only identity
 /// callers may use for later registration or cleanup.
@@ -2732,6 +3446,12 @@ pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u
         ));
     }
     Ok((created, unix::raw_stat_identity(&stat)))
+}
+
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u64, u64)), Error> {
+    win::create_regular_at(parent, name)
 }
 
 #[cfg(unix)]
@@ -2763,18 +3483,23 @@ pub(crate) fn rename_entry_at(
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 pub(crate) fn rename_entry_at(
-    _source_parent: &File,
-    _source: &OsStr,
-    _expected: (u64, u64),
-    _source_is_dir: bool,
-    _target_parent: &File,
-    _target: &OsStr,
+    source_parent: &File,
+    source: &OsStr,
+    expected: (u64, u64),
+    source_is_dir: bool,
+    target_parent: &File,
+    target: &OsStr,
 ) -> Result<(), Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "fd-relative renames",
-    ))
+    win::rename_entry_at(
+        source_parent,
+        source,
+        expected,
+        source_is_dir,
+        target_parent,
+        target,
+    )
 }
 
 #[cfg(unix)]
@@ -2807,6 +3532,17 @@ pub(crate) fn rename_optional_regular_at(
     )
     .map_err(|error| Error::Io(Box::new(error.into())))?;
     Ok(true)
+}
+
+#[cfg(windows)]
+#[allow(dead_code)]
+pub(crate) fn rename_optional_regular_at(
+    source_parent: &File,
+    source: &OsStr,
+    target_parent: &File,
+    target: &OsStr,
+) -> Result<bool, Error> {
+    win::rename_optional_regular_at(source_parent, source, target_parent, target)
 }
 
 #[cfg(unix)]
@@ -2861,16 +3597,14 @@ pub(crate) fn remove_entry_at(
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 pub(crate) fn remove_entry_at(
-    _parent: &File,
-    _name: &OsStr,
-    _expected: (u64, u64),
-    _is_dir: bool,
+    parent: &File,
+    name: &OsStr,
+    expected: (u64, u64),
+    is_dir: bool,
 ) -> Result<(), Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "fd-relative removals",
-    ))
+    win::remove_entry_at(parent, name, expected, is_dir)
 }
 
 #[cfg(unix)]
@@ -2890,11 +3624,9 @@ pub(crate) fn remove_optional_regular_at(parent: &File, name: &OsStr) -> Result<
     }
 }
 
-#[cfg(not(unix))]
-pub(crate) fn remove_optional_regular_at(_parent: &File, _name: &OsStr) -> Result<(), Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "fd-relative optional-file removal",
-    ))
+#[cfg(windows)]
+pub(crate) fn remove_optional_regular_at(parent: &File, name: &OsStr) -> Result<(), Error> {
+    win::remove_optional_regular_at(parent, name)
 }
 
 pub fn atomic_replace_at_with_precommit<F, P>(
@@ -3659,11 +4391,13 @@ mod tests {
         assert!(open_regular_at(&parent, OsStr::new(""), RegularFileAccess::ReadOnly).is_err());
     }
 
-    #[cfg(unix)]
     #[test]
     fn create_regular_at_is_exclusive_and_returns_the_created_identity() {
         let temp = tempfile::tempdir().expect("tempdir");
+        #[cfg(unix)]
         let parent = File::open(temp.path()).expect("open parent");
+        #[cfg(windows)]
+        let parent = windows_test_parent(temp.path());
         let (created, identity) =
             create_regular_at(&parent, OsStr::new("database.db3")).expect("create regular leaf");
         assert_eq!(created.metadata().expect("created metadata").len(), 0);
@@ -3671,10 +4405,43 @@ mod tests {
             entry_identity_at(&parent, OsStr::new("database.db3"), false).unwrap(),
             identity
         );
-        assert!(matches!(
-            create_regular_at(&parent, OsStr::new("database.db3")),
-            Err(Error::Io(_))
-        ));
+        match create_regular_at(&parent, OsStr::new("database.db3")) {
+            Err(Error::Io(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists)
+            }
+            other => panic!("expected AlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_dir_at_is_exclusive_and_reports_already_exists() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        #[cfg(unix)]
+        let parent = File::open(temp.path()).expect("open parent");
+        #[cfg(windows)]
+        let parent = windows_test_parent(temp.path());
+        create_dir_at(&parent, OsStr::new("folder")).expect("create directory");
+        match create_dir_at(&parent, OsStr::new("folder")) {
+            Err(Error::Io(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists)
+            }
+            other => panic!("expected AlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn optional_regular_missing_leaf_is_success() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        #[cfg(unix)]
+        let parent = File::open(temp.path()).expect("open parent");
+        #[cfg(windows)]
+        let parent = windows_test_parent(temp.path());
+        let missing = OsStr::new("sidecar.info");
+        assert!(
+            !rename_optional_regular_at(&parent, missing, &parent, OsStr::new("other.info"))
+                .expect("missing sidecar rename")
+        );
+        remove_optional_regular_at(&parent, missing).expect("missing sidecar removal");
     }
 
     #[cfg(unix)]

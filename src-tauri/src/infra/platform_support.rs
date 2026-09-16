@@ -324,6 +324,199 @@ mod tests {
     }
 
     #[test]
+    fn windows_mutation_directory_handles_are_acquired_writable() {
+        let source = source_for("infra/fs.rs");
+        let ancestor = compact(&source[braced_body(source, "pub(super) fn open_writable_parent(")]);
+        assert!(
+            ancestor.contains(
+                "open_directory_path(path.parent().unwrap_or_else(||Path::new(\".\")),true)"
+            ),
+            "{ancestor}"
+        );
+        let leaf =
+            compact(&source[braced_body(source, "pub(super) fn open_writable_leaf_directory(")]);
+        assert!(
+            leaf.contains(
+                "open_windows_child(parent,name,FILE_OPEN,DIRECTORY_ACCESS,null(),true,true,)"
+            ),
+            "{leaf}"
+        );
+        let directory = compact(&source[braced_body(source, "fn directory_open_access(")]);
+        assert!(
+            directory.contains("ifwritable{DIRECTORY_ACCESS}else{DIRECTORY_READ_ACCESS}"),
+            "{directory}"
+        );
+    }
+
+    #[test]
+    fn windows_rename_and_remove_children_carry_delete() {
+        let source = source_for("infra/fs.rs");
+        let access = compact(&source[braced_body(source, "fn child_delete_access(")]);
+        assert!(access.contains("DIRECTORY_ACCESS|DELETE"), "{access}");
+        assert!(access.contains("TARGET_ACCESS"), "{access}");
+        let whole = compact(source);
+        assert!(
+            whole.contains("pub(super)constTARGET_ACCESS:u32=DELETE|"),
+            "TARGET_ACCESS must keep DELETE"
+        );
+        let rename = compact(&source[braced_body(source, "pub(super) fn rename_entry_at(")]);
+        assert!(
+            rename.contains("child_delete_access(source_is_dir)"),
+            "{rename}"
+        );
+        let remove = compact(&source[braced_body(source, "pub(super) fn remove_entry_at(")]);
+        assert!(
+            remove.contains("child_delete_access(false)")
+                || remove.contains("child_delete_access(true)"),
+            "{remove}"
+        );
+    }
+
+    #[test]
+    fn windows_nt_name_interpreters_guard_a_single_leaf() {
+        let authority = source_for("infra/path_authority/mod.rs");
+        let opener =
+            compact(&authority[braced_body(authority, "pub(crate) fn open_windows_child(")]);
+        assert!(
+            opener.contains("crate::infra::fs::single_leaf(name)?"),
+            "{opener}"
+        );
+        let source = source_for("infra/fs.rs");
+        let rename = compact(&source[braced_body(source, "pub(super) fn rename_child(")]);
+        assert!(rename.contains("super::single_leaf(target)?"), "{rename}");
+    }
+
+    #[test]
+    fn windows_create_collision_is_already_exists() {
+        let source = source_for("infra/fs.rs");
+        let body = compact(&source[braced_body(source, "fn map_create_collision(")]);
+        assert!(body.contains("\"Windows object name collision\""), "{body}");
+        assert!(body.contains("AlreadyExists"), "{body}");
+        assert!(
+            !body.contains("windows_open_status_error"),
+            "collision translation must not edit the shared mapper: {body}"
+        );
+        let create_dir = compact(&source[braced_body(source, "pub(super) fn create_dir_at(")]);
+        assert!(create_dir.contains("map_create_collision"), "{create_dir}");
+        let create_regular =
+            compact(&source[braced_body(source, "pub(super) fn create_regular_at(")]);
+        assert!(
+            create_regular.contains("map_create_collision"),
+            "{create_regular}"
+        );
+    }
+
+    #[test]
+    fn windows_identity_is_read_from_the_retained_handle() {
+        let source = source_for("infra/fs.rs");
+        for signature in [
+            "pub(super) fn entry_identity_at(",
+            "pub(super) fn assert_entry_identity(",
+            "pub(super) fn open_verified_parent(",
+            "fn remove_regular_child(",
+            "fn remove_windows_tree_at(",
+        ] {
+            let body = compact(&source[braced_body(source, signature)]);
+            assert!(
+                body.contains("opened_file_identity"),
+                "{signature} lost the handle identity check: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_workspace_renames_do_not_replace() {
+        let source = source_for("infra/fs.rs");
+        let rename_entry = compact(&source[braced_body(source, "pub(super) fn rename_entry_at(")]);
+        assert!(
+            rename_entry.contains("rename_child(target_parent,&mutopened,source,target,false)"),
+            "{rename_entry}"
+        );
+        let rename_optional =
+            compact(&source[braced_body(source, "pub(super) fn rename_optional_regular_at(")]);
+        assert!(
+            rename_optional.contains("rename_child(target_parent,&mutopened,source,target,false)"),
+            "{rename_optional}"
+        );
+    }
+
+    #[test]
+    fn windows_unlink_uses_posix_disposition_ex() {
+        let source = source_for("infra/fs.rs");
+        let unlink = compact(&source[braced_body(source, "fn unlink_posix(")]);
+        assert!(unlink.contains("FileDispositionInformationEx"), "{unlink}");
+        assert!(unlink.contains("FILE_DISPOSITION_DELETE"), "{unlink}");
+        assert!(
+            unlink.contains("FILE_DISPOSITION_POSIX_SEMANTICS"),
+            "{unlink}"
+        );
+        assert!(
+            unlink.contains("FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE"),
+            "{unlink}"
+        );
+        assert!(
+            !unlink.contains("FileDispositionInformation)"),
+            "new unlink must not silently use the legacy class: {unlink}"
+        );
+        let delete_temp = compact(&source[braced_body(source, "fn delete_temp(")]);
+        assert!(
+            delete_temp.contains("FileDispositionInformation"),
+            "{delete_temp}"
+        );
+        assert!(
+            !delete_temp.contains("FileDispositionInformationEx"),
+            "delete_temp keeps the legacy form: {delete_temp}"
+        );
+    }
+
+    #[test]
+    fn windows_recursive_removal_keeps_unix_containment() {
+        let source = source_for("infra/fs.rs");
+        let tree = compact(&source[braced_body(source, "fn remove_windows_tree_at(")]);
+        assert!(tree.contains("MAX_REMOVE_TREE_DEPTH"), "{tree}");
+        assert!(
+            tree.contains("directory cleanup refuses to cross a mount"),
+            "{tree}"
+        );
+        assert!(
+            tree.contains("directory cleanup rejects links and special files"),
+            "{tree}"
+        );
+        assert!(
+            tree.contains("EnumeratedKind::Other"),
+            "reparse entries must be refused, not unlinked: {tree}"
+        );
+        let remove = compact(&source[braced_body(source, "pub(super) fn remove_entry_at(")]);
+        assert!(remove.contains("Error::PartialRemoval"), "{remove}");
+        assert!(
+            remove.contains("DurabilityStage::WorkspaceRemoval"),
+            "{remove}"
+        );
+        let enumerator = compact(&source[braced_body(source, "fn enumerated_kind(")]);
+        assert!(
+            enumerator.contains("FILE_ATTRIBUTE_REPARSE_POINT")
+                && enumerator.find("FILE_ATTRIBUTE_REPARSE_POINT")
+                    < enumerator.find("FILE_ATTRIBUTE_DIRECTORY"),
+            "reparse must be classified before the directory bit: {enumerator}"
+        );
+    }
+
+    #[test]
+    fn windows_optional_regular_missing_leaf_is_success() {
+        let source = source_for("infra/fs.rs");
+        let missing = compact(&source[braced_body(source, "fn missing_leaf(")]);
+        assert!(missing.contains("raw_os_error()==Some(2)"), "{missing}");
+        let rename =
+            compact(&source[braced_body(source, "pub(super) fn rename_optional_regular_at(")]);
+        assert!(rename.contains("missing_leaf(&error)"), "{rename}");
+        assert!(rename.contains("returnOk(false)"), "{rename}");
+        let remove =
+            compact(&source[braced_body(source, "pub(super) fn remove_optional_regular_at(")]);
+        assert!(remove.contains("missing_leaf(&error)"), "{remove}");
+        assert!(remove.contains("returnOk(())"), "{remove}");
+    }
+
+    #[test]
     fn windows_target_regularity_and_private_temp_dacl_are_enforced() {
         // Two properties a type-check can never hold, because the broken form compiles perfectly.
         // `fn target_regular(_: &Target) -> bool { true }` was the bug: FILE_NON_DIRECTORY_FILE
@@ -692,42 +885,6 @@ mod tests {
                 signature: "fn paired_rename(",
                 form: BodyForm::Counterpart,
                 expected: ExpectedBody::Refusal("workspace mutations"),
-            },
-            BodyRow {
-                file: "infra/fs.rs",
-                signature: "pub(crate) fn entry_identity_at(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("fd-relative entry identity"),
-            },
-            BodyRow {
-                file: "infra/fs.rs",
-                signature: "pub(crate) fn create_dir_at(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("fd-relative directory creation"),
-            },
-            BodyRow {
-                file: "infra/fs.rs",
-                signature: "pub(crate) fn open_directory_at(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("fd-relative directory opening"),
-            },
-            BodyRow {
-                file: "infra/fs.rs",
-                signature: "pub(crate) fn rename_entry_at(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("fd-relative renames"),
-            },
-            BodyRow {
-                file: "infra/fs.rs",
-                signature: "pub(crate) fn remove_entry_at(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("fd-relative removals"),
-            },
-            BodyRow {
-                file: "infra/fs.rs",
-                signature: "pub(crate) fn remove_optional_regular_at(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("fd-relative optional-file removal"),
             },
             BodyRow {
                 file: "infra/fs.rs",
@@ -1327,24 +1484,6 @@ mod tests {
     #[test]
     fn routed_refusal_labels_are_unchanged() {
         let expected = [
-            ("infra/fs.rs", "fd-relative entry identity", "unsupported"),
-            (
-                "infra/fs.rs",
-                "fd-relative directory creation",
-                "unsupported",
-            ),
-            (
-                "infra/fs.rs",
-                "fd-relative directory opening",
-                "unsupported",
-            ),
-            ("infra/fs.rs", "fd-relative renames", "unsupported"),
-            ("infra/fs.rs", "fd-relative removals", "unsupported"),
-            (
-                "infra/fs.rs",
-                "fd-relative optional-file removal",
-                "unsupported",
-            ),
             (
                 "infra/path_authority/mod.rs",
                 "fd-relative directory enumeration",

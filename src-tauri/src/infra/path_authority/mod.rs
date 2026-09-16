@@ -344,20 +344,23 @@ impl CapabilityDirectory {
                     hook();
                 }
             });
-            let opened = open_directory_at(&self.directory, &entry.name).map_err(|error| {
-                if let Error::Io(io_error) = &error {
-                    if matches!(
-                        io_error.raw_os_error(),
-                        Some(code)
-                            if code == rustix::io::Errno::LOOP.raw_os_error()
-                                || code == rustix::io::Errno::NOTDIR.raw_os_error()
-                                || code == rustix::io::Errno::NOENT.raw_os_error()
-                    ) {
-                        return Error::Conflict("workspace directory changed concurrently".into());
+            let opened =
+                open_directory_at(&self.directory, &entry.name, false).map_err(|error| {
+                    if let Error::Io(io_error) = &error {
+                        if matches!(
+                            io_error.raw_os_error(),
+                            Some(code)
+                                if code == rustix::io::Errno::LOOP.raw_os_error()
+                                    || code == rustix::io::Errno::NOTDIR.raw_os_error()
+                                    || code == rustix::io::Errno::NOENT.raw_os_error()
+                        ) {
+                            return Error::Conflict(
+                                "workspace directory changed concurrently".into(),
+                            );
+                        }
                     }
-                }
-                error
-            })?;
+                    error
+                })?;
             Ok(CapabilityDirectory {
                 directory: VerifiedDir::new(opened, entry.identity)?.into_file(),
             })
@@ -820,7 +823,7 @@ impl AuthorizedDir {
                 .ok_or_else(|| Error::InvalidInput("invalid relative path component".into()))?;
             let mut parent = self.directory.as_file().try_clone()?;
             for directory in directories {
-                parent = crate::infra::fs::open_directory_at(&parent, directory)?;
+                parent = crate::infra::fs::open_directory_at(&parent, directory, false)?;
             }
             crate::infra::fs::open_regular_at(&parent, leaf, RegularFileAccess::ReadOnly)
         }
@@ -1585,7 +1588,7 @@ fn is_database_file_operation(op: PathOperation) -> bool {
 
 /// Canonicalizes only the parent and appends the leaf name unchanged, so a leaf
 /// symlink is never followed.
-#[cfg(unix)]
+#[cfg_attr(not(unix), allow(dead_code))]
 fn canonical_binding(path: &Path) -> Result<PathBuf, Error> {
     let file_name = path
         .file_name()
@@ -1594,7 +1597,7 @@ fn canonical_binding(path: &Path) -> Result<PathBuf, Error> {
     Ok(fs::canonicalize(parent_of(path))?.join(file_name))
 }
 
-#[cfg(unix)]
+#[cfg_attr(not(unix), allow(dead_code))]
 fn parent_of(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -2511,7 +2514,8 @@ pub(crate) fn initialize_engine_launch_root(
     });
     let instance_name = OsString::from(id.clone());
     crate::infra::fs::create_dir_at(root.directory.as_file(), &instance_name)?;
-    let instance = crate::infra::fs::open_directory_at(root.directory.as_file(), &instance_name)?;
+    let instance =
+        crate::infra::fs::open_directory_at(root.directory.as_file(), &instance_name, false)?;
     sweep_engine_launch_root(&root, &lock_name, &instance_name)?;
     Ok(EngineLaunchRoot {
         inner: Arc::new(EngineLaunchRootInner {
@@ -2967,6 +2971,7 @@ pub(crate) fn open_windows_child(
     const FILE_DIRECTORY_FILE: u32 = 0x1;
     const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    crate::infra::fs::single_leaf(name)?;
     let mut wide: Vec<u16> = name.encode_wide().collect();
     let mut unicode = UNICODE_STRING {
         Length: (wide.len() * 2) as u16,
