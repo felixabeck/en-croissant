@@ -253,6 +253,35 @@ mod tests {
     }
 
     #[test]
+    fn windows_replacing_parent_descriptor_is_acquired_writable() {
+        // R1-03/E2: FlushFileBuffers fails with os error 5 on a read-only directory handle, and
+        // the retained parent also serves FILE_CREATE and the RootDirectory rename. R2-02: the
+        // child's access must NOT follow the same predicate. Nothing on Linux compiles
+        // resolve_windows, so this source pin is the only check that both predicates survive.
+        let source = source_for("infra/path_authority/resolved.rs");
+        let body = braced_body(source, "pub(super) fn resolve_windows(");
+        let body = compact(&source[body]);
+        assert!(
+            body.contains("letchild_writable=is_write_operation(operation);"),
+            "{body}"
+        );
+        assert!(
+            body.contains("letparent_writable=child_writable||allows_missing_leaf(operation);"),
+            "{body}"
+        );
+        assert!(
+            body.contains("super::open_windows_nofollow(root,parent_writable)"),
+            "{body}"
+        );
+        assert!(body.contains("iflast{access}else{parent_access}"), "{body}");
+        // The collapsed single-predicate form must not come back.
+        assert!(
+            !body.contains("super::open_windows_nofollow(root,writable)"),
+            "{body}"
+        );
+    }
+
+    #[test]
     fn post_rename_identity_uses_the_retained_handle() {
         let source = source_for("infra/fs.rs");
         let body = braced_body(source, "fn metadata(temp: &File)");

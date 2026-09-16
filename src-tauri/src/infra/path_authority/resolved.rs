@@ -891,10 +891,19 @@ pub(super) fn resolve_windows(
         )
     }
 
-    let writable = is_write_operation(operation);
-    let access = SYNCHRONIZE | GENERIC_READ | if writable { GENERIC_WRITE } else { 0 };
+    // R1-03/R2-02 - two predicates, not one. The PARENT of the final component must carry
+    // GENERIC_WRITE for any operation that creates or replaces the leaf, because the retained
+    // parent descriptor also serves FILE_CREATE for the temporary and the RootDirectory rename,
+    // and because FlushFileBuffers fails with os error 5 on a read-only directory handle (E2).
+    // The CHILD's access keeps is_write_operation's membership unchanged: opening an existing
+    // target writable would fail for a target whose DACL permits delete/replace but denies write.
+    let child_writable = is_write_operation(operation);
+    let parent_writable = child_writable || allows_missing_leaf(operation);
+    let access = SYNCHRONIZE | GENERIC_READ | if child_writable { GENERIC_WRITE } else { 0 };
+    let parent_access =
+        SYNCHRONIZE | GENERIC_READ | if parent_writable { GENERIC_WRITE } else { 0 };
     let mut handle = if root_is_dir {
-        let handle = super::open_windows_nofollow(root, writable)?;
+        let handle = super::open_windows_nofollow(root, parent_writable)?;
         if super::windows_file_identity(&handle)? != *expected_root {
             return Err(Error::Conflict("root changed concurrently".into()));
         }
@@ -907,7 +916,7 @@ pub(super) fn resolve_windows(
         super::open_windows_nofollow(
             root.parent()
                 .ok_or_else(|| Error::InvalidInput("file authority has no parent".into()))?,
-            writable,
+            parent_writable,
         )?
     };
     let names: Vec<OsString> = if root_is_dir {
@@ -936,7 +945,7 @@ pub(super) fn resolve_windows(
             &handle,
             name,
             FILE_OPEN,
-            access,
+            if last { access } else { parent_access },
             null(),
             !last,
             super::allows_delete_sharing_for_operation(operation, last),
