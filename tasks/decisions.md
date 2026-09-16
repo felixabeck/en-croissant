@@ -3044,3 +3044,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** rule 4a requires every section to end green and individually pushable. O5's "36" is the end state after all phases, which its own arithmetic (40 - 5 + 1) makes explicit.
 * **Decided by:** Claude Code, autonomously under `full auto` · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"04483a089b73b0b582a66bd539335777bf935c79b3a833d7263e3b2d3bc341c6","input_sha256":"38878efd1aa3d2c9f449711d195485011779c2c34355e8c55c96c78d83954a15","kind":"mutation-receipt","operation":"543b80631ef4ef2e8ff020dd128d56a04c953e1bfa7c6eb67564002e3fb763ba","options":{"section":null},"request_id_sha256":null,"results":["d-20260916-02"],"target":"decisions-ledger","v":1} -->
+
+### d-20260916-03 — Which phase owns the routed row and the refusal-text carve-out?
+
+* **Question:** O5 lists the routed-row deletion and the refusal_text_has_one_source carve-out narrowing "in the same commits" as the refusal removals. Phase A owns the replace_pgn_atomic refusal plus its guard row (R11-06). Do the routed row and carve-out go with Phase A as well?
+* **Governs:** f-20260914-10
+* **Chosen:** no. Both belong to Phase B, whose manifest names them explicitly ("two body rows, routed row, carve-out, counts"). They depend on infra/fs.rs refusals that only Phase B removes.
+* **Rejected:** doing them in Phase A, which was attempted and measured: `refusal_text_has_one_source` failed on fs.rs:1524 and `routed_refusal_labels_are_unchanged` failed 6-versus-7, because the fs.rs sites those rows pin were still present.
+* **Reason:** the orchestrator's Phase A assignment misread O5's "same commits" as attaching all of it to Phase A. The leaf reported it as a scope contradiction and stopped rather than improvising, which was correct. Reverted in Phase A, landed in Phase B.
+* **Decided by:** Claude Code, autonomously under `full auto` · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"b940c441aaf865a1360b358493258ace8e909c387282a0649a66735721673919","input_sha256":"b83eb8fd57899270a15ae44f9882a732f42ad964b5f42c9016472549f400cd64","kind":"mutation-receipt","operation":"421cc600b6240328498f2c6df456708fcf96068729e49ff54fdcf83b6a382167","options":{"section":null},"request_id_sha256":null,"results":["d-20260916-03"],"target":"decisions-ledger","v":1} -->
