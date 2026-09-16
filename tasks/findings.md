@@ -9069,3 +9069,51 @@ actually used; the second makes the name true and the values comparable across p
 **Proof:** `cargo test --manifest-path src-tauri/Cargo.toml`, plus
 `cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-gnu --all-targets`
 for the Windows producers (a cross toolchain is available locally; see the f-20260914-10 handoff).
+
+---
+
+## 2026-09-16 — filed through the inbox spool
+
+### Two NtCreateFile call sites encode the same open, and only one of them is the security boundary
+
+* **ID:** f-20260916-11 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+
+`review-minimalism` raised this during the `$push` review of the f-20260914-10 Windows
+atomic-replacement port (confidence 90). There are two hand-written `NtCreateFile` invocations
+with the same 40-line shape — `UNICODE_STRING`, `OBJECT_ATTRIBUTES` with a retained
+`RootDirectory`, `IO_STATUS_BLOCK`, status check, `File::from_raw_handle`:
+
+* `src-tauri/src/infra/path_authority/mod.rs` `open_windows_child` — the descriptor-relative
+  no-follow child open that path containment depends on. Eight call sites across `infra/`.
+* `src-tauri/src/infra/fs.rs` `open_temp_child` — added by f-20260914-10 for the private
+  temporary file.
+
+The lens recommended parameterising `share_access` on `open_windows_child` so `open_temp_child`
+can route through it. That is the right instinct and it is not obviously the right change, because
+the two opens differ in three dimensions simultaneously:
+
+* **Sharing.** `open_temp_child` passes `FILE_SHARE_PRIVATE_TEMP`, which is `FILE_SHARE_WRITE`
+  alone — deliberately *not* shareable for read or delete, because the temporary must stay private
+  until it is committed. `open_windows_child` hardcodes `FILE_SHARE_READ | FILE_SHARE_WRITE` plus
+  `FILE_SHARE_DELETE` under its `allow_delete_share` flag. These are opposite intentions.
+* **Disposition and descriptor.** `open_temp_child` uses `FILE_CREATE` with a real
+  `SecurityDescriptor` (creator-only DACL); every existing `open_windows_child` caller passes
+  `FILE_OPEN` and `null()`. The lens noted this too, as speculative parameters — they are only
+  unused because the one caller that needs them did not use this function.
+* **Create options.** `open_temp_child` adds `FILE_OPEN_REPARSE_POINT` to `CreateOptions`.
+
+* **Open question:** Should `open_windows_child` become the single NT open for this crate —
+  gaining a `share_access` parameter and admitting `FILE_CREATE` plus a non-null security
+  descriptor — or should the private-temporary open stay separate precisely because its sharing
+  and lifetime rules are the opposite of a traversal open? The answer decides whether the
+  path-containment boundary grows a parameter that can weaken sharing for all eight existing
+  callers, or whether the duplication is the price of keeping that boundary narrow.
+
+Deferred from the f-20260914-10 push rather than fixed there. The reason is verification, not
+effort: `open_windows_child` is on the path-containment security boundary, and a change to its
+sharing semantics cannot be proven on this machine. A Windows cross toolchain is now available so
+the code type-checks (`cargo check --target x86_64-pc-windows-gnu`), but there is no Windows
+*runtime* here, and sharing-mode behaviour is exactly what a type-check cannot observe.
+
+**Proof:** the existing Windows tests in `infra/fs.rs` plus a test that a second open of the
+private temporary is refused while it is held, run on a Windows runner — not on this machine.
