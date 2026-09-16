@@ -1,7 +1,7 @@
 /*!
 Phase 1 refusal-pin proof record (2026-09-16).
 
-The 40 refusal sites are pinned by the G and B rows below. The O4d exclusion is
+The 41 refusal sites are pinned by the G and B rows below. The O4d exclusion is
 `opened_file_change_stamp`: its unconditional non-unix tail is not a refusal
 site and is intentionally not a row. Future closed-world completeness is not
 claimed here; that work is split to `f-20260916-01` (R15-01).
@@ -50,7 +50,7 @@ from this phase, mutated production files only, and ran exactly:
 `cargo test --manifest-path src-tauri/Cargo.toml platform_support`.
 The worktree was removed afterwards. “G all” means every G row above; “B all”
 means every B row above, so the named row messages are recorded without
-repeating the 40 names six times.
+repeating the 41 names six times.
 
 1. S-insert — inserted
    `std::fs::create_dir_all("staged").ok();` as the first effective B
@@ -896,6 +896,13 @@ mod tests {
                 signature: "pub async fn get_puzzle(",
                 operation: "puzzle loading",
                 effects: &["resolve_puzzle("],
+                nested: false,
+            },
+            GuardRow {
+                file: "infra/path_authority/resolved.rs",
+                signature: "pub(crate) fn replace_pgn_atomic<F>(",
+                operation: "PGN atomic replacement",
+                effects: &["atomic_replace_at_with_precommit("],
                 nested: false,
             },
         ]

@@ -20,6 +20,77 @@ use tokio_util::sync::CancellationToken;
 use super::canonical_binding;
 use super::{is_write_operation, opened_file_identity, DatabaseFileTarget, PathOperation};
 
+#[cfg(windows)]
+fn windows_path_parts(path: &Path) -> Result<(PathBuf, Vec<OsString>), Error> {
+    use std::path::Component;
+
+    let mut components = path.components();
+    let mut base = PathBuf::new();
+    let mut names = Vec::new();
+    match components.next() {
+        None => base.push("."),
+        Some(Component::Prefix(prefix)) => {
+            base.push(prefix.as_os_str());
+            match components.next() {
+                Some(Component::RootDir) => base.push("\\"),
+                Some(Component::Normal(_)) => {
+                    return Err(Error::InvalidInput("Windows path must be absolute".into()));
+                }
+                Some(Component::ParentDir) | Some(Component::Prefix(_)) => {
+                    return Err(Error::InvalidInput(
+                        "Windows path contains traversal components".into(),
+                    ));
+                }
+                Some(Component::CurDir) | None => {}
+            }
+        }
+        Some(Component::RootDir) => base.push("\\"),
+        Some(Component::CurDir) => base.push("."),
+        Some(Component::Normal(name)) => {
+            base.push(".");
+            names.push(name.to_os_string());
+        }
+        Some(Component::ParentDir) => {
+            return Err(Error::InvalidInput(
+                "Windows path contains traversal components".into(),
+            ));
+        }
+    }
+
+    for component in components {
+        match component {
+            Component::Normal(name) => names.push(name.to_os_string()),
+            Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
+                return Err(Error::InvalidInput(
+                    "Windows path contains traversal components".into(),
+                ));
+            }
+        }
+    }
+    Ok((base, names))
+}
+
+#[cfg(windows)]
+fn open_windows_directory_walk(path: &Path, writable: bool) -> Result<fs::File, Error> {
+    use std::ptr::null;
+    use windows_sys::{
+        Wdk::Storage::FileSystem::FILE_OPEN,
+        Win32::{
+            Foundation::{GENERIC_READ, GENERIC_WRITE},
+            Storage::FileSystem::SYNCHRONIZE,
+        },
+    };
+
+    let (base, names) = windows_path_parts(path)?;
+    let mut handle = super::open_windows_nofollow(&base, writable)?;
+    let access = SYNCHRONIZE | GENERIC_READ | if writable { GENERIC_WRITE } else { 0 };
+    for name in names {
+        handle = super::open_windows_child(&handle, &name, FILE_OPEN, access, null(), true, true)?;
+    }
+    Ok(handle)
+}
+
 /// Result of a successful resolution. It retains the exact opened file when
 /// present, the verified directory handle for directory targets, and the
 /// parent handle plus authority-validated leaf needed for relative operations.
@@ -164,7 +235,20 @@ impl ResolvedPath {
         }
         #[cfg(windows)]
         {
-            Self::pgn_snapshot_file(super::open_windows_child(parent, leaf, false, false, true)?)
+            use std::ptr::null;
+            use windows_sys::{
+                Wdk::Storage::FileSystem::FILE_OPEN,
+                Win32::{Foundation::GENERIC_READ, Storage::FileSystem::SYNCHRONIZE},
+            };
+            Self::pgn_snapshot_file(super::open_windows_child(
+                parent,
+                leaf,
+                FILE_OPEN,
+                SYNCHRONIZE | GENERIC_READ,
+                null(),
+                false,
+                true,
+            )?)
         }
     }
 
@@ -325,6 +409,12 @@ impl ResolvedPath {
             .as_deref()
             .and_then(Path::parent)
             .ok_or_else(|| Error::Conflict("logical parent path is unavailable".into()))?;
+        #[cfg(windows)]
+        let current = {
+            let directory = open_windows_directory_walk(logical_parent, false)?;
+            super::windows_file_identity(&directory)?
+        };
+        #[cfg(not(windows))]
         let current = super::identity(logical_parent)?;
         if (current.a, current.b) != expected {
             return Err(Error::Conflict(
@@ -520,6 +610,7 @@ impl ResolvedPath {
     where
         F: FnOnce(&mut fs::File, &mut fs::File) -> Result<(), Error>,
     {
+        crate::infra::platform_support::off_unix_refusal("PGN atomic replacement", cfg!(unix))?;
         if self.operation != PathOperation::WritePgn {
             return Err(Error::InvalidInput(
                 "resolved capability is not writable PGN".into(),
@@ -775,8 +866,35 @@ pub(super) fn resolve_windows(
     components: &[OsString],
     operation: PathOperation,
 ) -> Result<ResolvedPath, Error> {
+    use std::ptr::null;
+    use windows_sys::{
+        Wdk::Storage::FileSystem::FILE_OPEN,
+        Win32::{
+            Foundation::{GENERIC_READ, GENERIC_WRITE},
+            Storage::FileSystem::SYNCHRONIZE,
+        },
+    };
+
+    fn allows_missing_leaf(operation: PathOperation) -> bool {
+        matches!(
+            operation,
+            PathOperation::DownloadFile
+                | PathOperation::DownloadArchive
+                | PathOperation::DatabaseCreate
+        )
+    }
+
+    fn is_missing_leaf_error(error: &Error) -> bool {
+        matches!(
+            error,
+            Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    }
+
+    let writable = is_write_operation(operation);
+    let access = SYNCHRONIZE | GENERIC_READ | if writable { GENERIC_WRITE } else { 0 };
     let mut handle = if root_is_dir {
-        let handle = super::open_windows_nofollow(root, false)?;
+        let handle = super::open_windows_nofollow(root, writable)?;
         if super::windows_file_identity(&handle)? != *expected_root {
             return Err(Error::Conflict("root changed concurrently".into()));
         }
@@ -789,7 +907,7 @@ pub(super) fn resolve_windows(
         super::open_windows_nofollow(
             root.parent()
                 .ok_or_else(|| Error::InvalidInput("file authority has no parent".into()))?,
-            false,
+            writable,
         )?
     };
     let names: Vec<OsString> = if root_is_dir {
@@ -800,19 +918,43 @@ pub(super) fn resolve_windows(
             .ok_or_else(|| Error::InvalidInput("invalid file authority".into()))?
             .to_os_string()]
     };
+    let target = if root_is_dir {
+        Some(names.iter().fold(root.to_path_buf(), |mut path, name| {
+            path.push(name);
+            path
+        }))
+    } else {
+        Some(root.to_path_buf())
+    };
     for (index, name) in names.iter().enumerate() {
         let last = index + 1 == names.len();
         // Every operation that can yield an EngineExecutable is kept open
         // without FILE_SHARE_DELETE until CreateProcess has opened it. This
         // seals the authority-validated path against replacement in the
         // otherwise unavoidable Windows path-based launch API.
-        let file = super::open_windows_child(
+        let file = match super::open_windows_child(
             &handle,
             name,
-            last && is_write_operation(operation),
+            FILE_OPEN,
+            access,
+            null(),
             !last,
             super::allows_delete_sharing_for_operation(operation, last),
-        )?;
+        ) {
+            Ok(file) => file,
+            Err(error)
+                if last && allows_missing_leaf(operation) && is_missing_leaf_error(&error) =>
+            {
+                return Ok(ResolvedPath {
+                    operation,
+                    file: None,
+                    parent: Some(handle.try_clone()?),
+                    leaf: Some(name.clone()),
+                    target: target.clone(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
         let meta = file.metadata()?;
         if super::is_reparse_point(&meta)
             || (!last && !meta.is_dir())
@@ -833,14 +975,7 @@ pub(super) fn resolve_windows(
                 file: Some(file),
                 parent: Some(handle.try_clone()?),
                 leaf: Some(name.clone()),
-                target: if root_is_dir {
-                    Some(names.iter().fold(root.to_path_buf(), |mut path, name| {
-                        path.push(name);
-                        path
-                    }))
-                } else {
-                    Some(root.to_path_buf())
-                },
+                target,
             });
         }
         handle = file;

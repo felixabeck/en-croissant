@@ -92,6 +92,82 @@ fn map_db3_children_cancellable<T>(
     Ok(mapped)
 }
 
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::{ffi::OsStr, ptr::null};
+    use windows_sys::{
+        Wdk::Storage::FileSystem::FILE_OPEN,
+        Win32::{
+            Foundation::{GENERIC_READ, GENERIC_WRITE},
+            Storage::FileSystem::SYNCHRONIZE,
+        },
+    };
+
+    #[test]
+    fn windows_child_open_maps_absence_and_refuses_wrong_target_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = open_windows_nofollow(dir.path(), false).unwrap();
+        let read_access = SYNCHRONIZE | GENERIC_READ;
+        let absent = open_windows_child(
+            &parent,
+            OsStr::new("missing"),
+            FILE_OPEN,
+            read_access,
+            null(),
+            false,
+            true,
+        )
+        .expect_err("an absent child must fail");
+        assert!(matches!(
+            absent,
+            Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+
+        fs::create_dir(dir.path().join("directory")).unwrap();
+        fs::write(dir.path().join("file"), b"file").unwrap();
+        assert!(open_windows_child(
+            &parent,
+            OsStr::new("directory"),
+            FILE_OPEN,
+            read_access,
+            null(),
+            false,
+            true,
+        )
+        .is_err());
+        assert!(open_windows_child(
+            &parent,
+            OsStr::new("file"),
+            FILE_OPEN,
+            read_access | GENERIC_WRITE,
+            null(),
+            true,
+            true,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn windows_missing_non_final_component_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = open_windows_nofollow(dir.path(), false).unwrap();
+        let expected = windows_file_identity(&parent).unwrap();
+        let components = vec![OsString::from("missing"), OsString::from("target")];
+        let result = resolved::resolve_windows(
+            dir.path(),
+            &expected,
+            true,
+            &components,
+            PathOperation::DownloadFile,
+        );
+        assert!(matches!(
+            result,
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+}
+
 /// A directory reached through a `PathRef` capability. It carries no pathname.
 pub(crate) struct CapabilityDirectory {
     #[cfg(unix)]
@@ -2693,7 +2769,7 @@ fn windows_identity(path: &Path) -> Result<Identity, Error> {
     windows_file_identity(&file)
 }
 #[cfg(windows)]
-fn windows_file_identity(file: &fs::File) -> Result<Identity, Error> {
+pub(crate) fn windows_file_identity(file: &fs::File) -> Result<Identity, Error> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
     let mut info = unsafe { std::mem::zeroed() };
@@ -2705,14 +2781,41 @@ fn windows_file_identity(file: &fs::File) -> Result<Identity, Error> {
         b: ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
     })
 }
+
+#[cfg(windows)]
+fn windows_open_status_error(status: i32) -> Error {
+    use windows_sys::Win32::Foundation::{
+        RtlNtStatusToDosError, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, STATUS_NO_SUCH_FILE,
+        STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
+        STATUS_SHARING_VIOLATION,
+    };
+
+    match status {
+        STATUS_OBJECT_NAME_NOT_FOUND | STATUS_NO_SUCH_FILE => Error::Io(Box::new(
+            std::io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND as i32),
+        )),
+        STATUS_OBJECT_PATH_NOT_FOUND => Error::Io(Box::new(std::io::Error::from_raw_os_error(
+            ERROR_PATH_NOT_FOUND as i32,
+        ))),
+        STATUS_OBJECT_NAME_COLLISION => Error::Conflict("Windows object name collision".into()),
+        STATUS_SHARING_VIOLATION => Error::Conflict("Windows sharing violation".into()),
+        _ => {
+            let error = unsafe { RtlNtStatusToDosError(status) };
+            Error::Io(Box::new(std::io::Error::from_raw_os_error(error as i32)))
+        }
+    }
+}
+
 /// Opens one child relative to an already-opened directory with `NtCreateFile`. The child name
 /// is a single component and the OS resolves it below `RootDirectory`; mutable ancestor strings
 /// are never concatenated or reopened during traversal.
 #[cfg(windows)]
-fn open_windows_child(
+pub(crate) fn open_windows_child(
     dir: &fs::File,
     name: &OsStr,
-    writable: bool,
+    disposition: u32,
+    access: u32,
+    security_descriptor: *const windows_sys::Win32::Security::SECURITY_DESCRIPTOR,
     directory: bool,
     allow_delete_share: bool,
 ) -> Result<fs::File, Error> {
@@ -2725,15 +2828,10 @@ fn open_windows_child(
         ptr::null_mut,
     };
     use windows_sys::{
-        Wdk::{
-            Foundation::OBJECT_ATTRIBUTES,
-            Storage::FileSystem::{NtCreateFile, FILE_OPEN},
-        },
+        Wdk::{Foundation::OBJECT_ATTRIBUTES, Storage::FileSystem::NtCreateFile},
         Win32::{
-            Foundation::{RtlNtStatusToDosError, HANDLE, UNICODE_STRING},
-            Storage::FileSystem::{
-                FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
-            },
+            Foundation::{HANDLE, UNICODE_STRING},
+            Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE},
             System::IO::IO_STATUS_BLOCK,
         },
     };
@@ -2742,8 +2840,6 @@ fn open_windows_child(
     const FILE_DIRECTORY_FILE: u32 = 0x1;
     const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    const GENERIC_READ: u32 = 0x8000_0000;
-    const GENERIC_WRITE: u32 = 0x4000_0000;
     let mut wide: Vec<u16> = name.encode_wide().collect();
     let mut unicode = UNICODE_STRING {
         Length: (wide.len() * 2) as u16,
@@ -2755,12 +2851,11 @@ fn open_windows_child(
         RootDirectory: dir.as_raw_handle() as _,
         ObjectName: &mut unicode,
         Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
-        SecurityDescriptor: null_mut(),
+        SecurityDescriptor: security_descriptor,
         SecurityQualityOfService: null_mut(),
     };
     let mut handle: HANDLE = null_mut();
     let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
-    let desired = SYNCHRONIZE | GENERIC_READ | if writable { GENERIC_WRITE } else { 0 };
     let options = FILE_OPEN_REPARSE_POINT
         | if directory {
             FILE_DIRECTORY_FILE
@@ -2770,7 +2865,7 @@ fn open_windows_child(
     let result = unsafe {
         NtCreateFile(
             &mut handle,
-            desired,
+            access,
             &attributes,
             &mut status,
             null_mut(),
@@ -2782,15 +2877,14 @@ fn open_windows_child(
                 } else {
                     0
                 },
-            FILE_OPEN,
+            disposition,
             options,
             null_mut(),
             0,
         )
     };
     if result != 0 {
-        let error = unsafe { RtlNtStatusToDosError(result) };
-        return Err(std::io::Error::from_raw_os_error(error as i32).into());
+        return Err(windows_open_status_error(result));
     }
     let file = unsafe { fs::File::from_raw_handle(handle as RawHandle) };
     if is_reparse_point(&file.metadata()?) {
@@ -2802,7 +2896,10 @@ fn open_windows_child(
 }
 
 #[cfg(any(windows, test))]
-fn allows_delete_sharing_for_operation(operation: PathOperation, is_final_leaf: bool) -> bool {
+pub(crate) fn allows_delete_sharing_for_operation(
+    operation: PathOperation,
+    is_final_leaf: bool,
+) -> bool {
     !is_final_leaf
         || !matches!(
             operation,
@@ -7035,24 +7132,6 @@ mod tests {
     }
     fn authority(dir: &tempfile::TempDir, clock: Arc<TestClock>) -> PathAuthority {
         PathAuthority::open_with_clock(dir.path().join("registry.json"), vec![], clock, 2).unwrap()
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_child_open_maps_absence_and_refuses_wrong_target_types() {
-        let dir = tempfile::tempdir().unwrap();
-        let parent = open_windows_nofollow(dir.path(), false).unwrap();
-        let absent = open_windows_child(&parent, OsStr::new("missing"), false, false, true)
-            .expect_err("an absent child must fail");
-        assert!(matches!(
-            absent,
-            Error::Io(error) if error.kind() == std::io::ErrorKind::NotFound
-        ));
-
-        fs::create_dir(dir.path().join("directory")).unwrap();
-        fs::write(dir.path().join("file"), b"file").unwrap();
-        assert!(open_windows_child(&parent, OsStr::new("directory"), false, false, true).is_err());
-        assert!(open_windows_child(&parent, OsStr::new("file"), false, true, true).is_err());
     }
 
     fn registered_engine_image(
@@ -13819,11 +13898,11 @@ mod tests {
                     && !line.contains("impl ResolvedPath")
             })
             .count();
-        assert_eq!(constructor_count, 4, "{resolved}");
+        assert_eq!(constructor_count, 5, "{resolved}");
         assert_eq!(
             unix_resolver.matches("ResolvedPath {").count()
                 + windows_resolver.matches("ResolvedPath {").count(),
-            4,
+            5,
             "{resolved}"
         );
         assert!(unix_resolver.contains("crate::infra::fs::open_regular_at"));
