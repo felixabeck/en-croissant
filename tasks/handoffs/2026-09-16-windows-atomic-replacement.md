@@ -366,6 +366,44 @@ the completion report says so rather than presenting the ending as a clean conve
 * **gzip extraction is not delivered** (R7-09); `download_engine_archive` keeps its guard.
 * `f-20260914-10` therefore stays **open** after this slice for the PGN remainder.
 
+## What was implemented, and what is still unproven
+
+Five commits, all after the review closed at r20:
+
+| Commit | Phase | Substance |
+|---|---|---|
+| `772d4558` | A | `open_windows_child` gains disposition/access/security-descriptor parameters; three helpers become `pub(crate)`; component-wise no-follow identity walk; typed NT statuses; the `replace_pgn_atomic` refusal **with** its guard row (R11-06); the relocated test moved into a real `#[cfg(all(test, windows))]` module. Counts 40 -> 41. |
+| `68f1f065` | B | The primitive: one shared `replace_at_driver` parameterised by an adapter, `NtCreateFile`/`FILE_CREATE` relative to the retained parent, commit via `NtSetInformationFile(FileRenameInformationEx, RootDirectory = parent)`, `FlushFileBuffers` on the parent. Restrictive creation descriptor with `FILE_SHARE_READ` withheld until the DACL is applied; DACL capture/apply fail-closed. 15 new tests, 3 source pins, 36 markers shed. Counts 41 -> 39. |
+| `e32d8f46` | C | The three download refusals removed with their guard rows; R2-03/R3-09 terminal reporting on the no-reservation uncertainty path; 11 markers shed. Counts 39 -> 36. |
+| `97e8db57` | — | **A defect Phase C surfaced in Phase A**: `resolve_windows` used one predicate where the design requires two, so a Windows download opened its parent without `GENERIC_WRITE`. Fixed and pinned. |
+| `400b7f7b` | D | Three Windows registry tests; eleven `pgn.rs` markers re-owned to `f-20260914-08`; the search-index fixture; `windows_test_parent` extracted rather than copied. |
+
+**End state.** Refusal pins **36** = 27 body + 9 guard, counted rather than copied. Markers **48** =
+19 `f-20260914-10` + 18 `f-20260914-11` + 11 `f-20260914-08`, down from 81, derived per marker.
+Decisions `d-20260916-02` (the per-phase count walk), `-03` (routed row and carve-out deferred from
+A to B), `-04` (the two-predicate parent), `-05` (source-scan tests carry no ignore attribute), `-06`
+(the counts, superseding two records of `d-20260916-01`, whose pin mechanism is reaffirmed).
+
+**The orchestrator's own errors this stage, recorded because the review record is worth nothing if
+it only lists the leaves' mistakes.** The Phase A assignment misread O5 and told the leaf to delete
+the routed row and narrow the carve-out, which turned the pins red; the leaf reported it as a scope
+contradiction and stopped rather than improvising, which was correct. Phase A's review passed the
+single-predicate parent acquisition, and only Phase C's leaf caught it. Two diffstat readings were
+misjudged as defects (`search_index.rs` shrinking, `infra/fs.rs` churn) and both turned out to be a
+correct helper extraction. Three verification greps were wrong in ways that read as absence.
+
+**Still unproven, and this is the honest limit of the run: no Windows runner has executed any of
+it.** Every Windows test added here is `#[cfg(windows)]` and nothing on the development machine
+compiles it; the MinGW cross toolchain is not installed, so even
+`cargo check --target x86_64-pc-windows-gnu` could not run, and the install was abandoned waiting on
+an unanswered sudo dialog. What holds locally: the tree compiles, clippy is clean, 1198 tests pass,
+and the exact source pins execute on every platform — creation descriptor and share mask, the real
+durability calls with their receivers, post-rename identity from the retained handle, and the
+two-predicate parent. Those pins carry the Windows claims precisely because a Linux runtime test
+cannot. **The first real verification is the `rust-windows-test` job on this push**, and a failure
+there is expected to be a compile or fixture error in the new `#[cfg(windows)]` code, not a design
+error in what the review settled.
+
 ## Raw artefacts retained for this run
 
 * Lens reports: `/tmp/build-88901a42-winatomic/codex-r{1..12,14,15,16,18}/lens-*.txt` and the
