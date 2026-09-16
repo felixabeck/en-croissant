@@ -8864,3 +8864,17 @@ visible in the first place.
 * **Why it matters:** this is the only operator-visible trace that a write may not have reached disk, and it is unattributable, so it cannot be acted on.
 * **Related:** the renderer-side finding filed alongside it in this round, where the same uncertainty is dropped before reaching the user; both concern the reporting half of `d-20260906-03`.
 * **Found by:** `review-error-handling` (confidence 90) in round 6 of the `f-20260914-10` plan review, 2026-09-16, on Codex.
+
+---
+
+## 2026-09-16 — filed through the inbox spool
+
+### Windows path resolution authenticates only the leaf, so a swapped parent directory passes
+
+* **ID:** f-20260916-06 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `resolve_windows` (`src-tauri/src/infra/path_authority/resolved.rs:779-839`); `StoredEntry` persists no parent identity (`src-tauri/src/infra/path_authority/mod.rs:2963-2969`).
+* **Defect:** resolution authenticates the identity of the final component but not of its parent. An attacker who replaces the parent directory with another real directory containing a hard link to the original file passes resolution, because pathname revalidation merely confirms the replacement directory exists. A descriptor-relative replacement then writes into the attacker-controlled directory.
+* **Why it matters:** this is the containment guarantee `d-20260915-03` exists to provide — canonical binding at acquisition. Leaving the parent unauthenticated keeps that defect reachable. It is latent on Windows today only because the write paths refuse first; the `f-20260914-10` port removes that refusal.
+* **Related:** `f-20260914-10` (the port that makes it reachable; cut from that slice under its A6 mandate boundary), `d-20260915-03` (the binding contract this weakens).
+* **Open question:** where does parent identity get captured and enforced - does `StoredEntry` gain a persisted parent `(volume, file-id)` captured at acquisition and re-checked on every use, or does resolution re-walk and authenticate each ancestor no-follow at use time? The first costs a schema change and a migration for existing entries but makes the check O(1); the second needs no persisted state but repeats a full walk per operation and must define what happens when an ancestor legitimately moves. Both must hold on Unix and Windows without weakening `d-20260915-03`'s no-follow discipline.
+* **Found by:** `review-tauri-security` (confidence 98) in round 6 of the `f-20260914-10` plan review, 2026-09-16, on Codex.
