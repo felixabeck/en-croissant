@@ -66,6 +66,14 @@ async function fixture() {
         run: bash scripts/setup-rust.sh
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+  rust-windows-test:
+    runs-on: windows-latest
+    steps:
+      - name: Install Rust toolchain
+        shell: bash
+        run: bash scripts/setup-rust.sh
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
   test:
     steps:
       - name: Install Rust toolchain
@@ -204,6 +212,15 @@ function replaceNamedJobSetup(workflow, jobName, replacement) {
   assert.ok(job, `missing ${jobName} job`);
   const changed = job.replace(sharedSetupBlock, replacement);
   assert.notEqual(changed, job, `missing setup block in ${jobName}`);
+  return workflow.replace(job, changed);
+}
+
+function replaceNamedJobText(workflow, jobName, from, to) {
+  const jobPattern = new RegExp(`(^  ${jobName}:\\n[\\s\\S]*?)(?=^  \\S|(?![\\s\\S]))`, "mu");
+  const job = workflow.match(jobPattern)?.[1];
+  assert.ok(job, `missing ${jobName} job`);
+  const changed = job.replace(from, to);
+  assert.notEqual(changed, job, `missing ${from} in ${jobName}`);
   return workflow.replace(job, changed);
 }
 
@@ -458,35 +475,61 @@ test("reports each rust-platform contract clause through the CLI", async (t) => 
   );
 });
 
-test("reports each macOS test-job contract clause through the CLI", async (t) => {
-  await t.test("(6a) wrong runner", (subtest) =>
-    mutateCheckedInFileAndRunCli(
-      subtest,
-      ".github/workflows/test.yml",
-      (text) =>
-        text.replace(
-          "rust-macos-test:\n    runs-on: macos-latest",
-          "rust-macos-test:\n    runs-on: ubuntu-latest",
-        ),
-      "(6a) rust-macos-test must use runs-on: macos-latest",
-    ),
-  );
-  await t.test("(6b) missing cargo test", (subtest) =>
-    mutateCheckedInFileAndRunCli(
-      subtest,
-      ".github/workflows/test.yml",
-      (text) =>
-        text.replace(
-          "run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets",
-          "run: :",
-        ),
-      "(6b) rust-macos-test is missing the receipt command",
-    ),
-  );
+const rustTestJobContracts = [
+  { job: "rust-macos-test", runner: "macos-latest", runnerClause: "6a", commandClause: "6b" },
+  {
+    job: "rust-windows-test",
+    runner: "windows-latest",
+    runnerClause: "7a",
+    commandClause: "7b",
+  },
+];
+
+test("reports each Rust test-job contract clause through the CLI", async (t) => {
+  for (const { job, runner, runnerClause, commandClause } of rustTestJobContracts) {
+    await t.test(`(${runnerClause}) wrong runner`, (subtest) =>
+      mutateCheckedInFileAndRunCli(
+        subtest,
+        ".github/workflows/test.yml",
+        (text) => replaceNamedJobText(text, job, `runs-on: ${runner}`, "runs-on: ubuntu-latest"),
+        `.github/workflows/test.yml: (${runnerClause}) ${job} must use runs-on: ${runner}`,
+      ),
+    );
+    await t.test(`(${commandClause}) missing cargo test`, (subtest) =>
+      mutateCheckedInFileAndRunCli(
+        subtest,
+        ".github/workflows/test.yml",
+        (text) =>
+          replaceNamedJobText(
+            text,
+            job,
+            "run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets",
+            "run: :",
+          ),
+        `.github/workflows/test.yml: (${commandClause}) ${job} is missing the receipt command: cargo test --manifest-path src-tauri/Cargo.toml --all-targets`,
+      ),
+    );
+  }
+  for (const key of ["strategy", "matrix"]) {
+    await t.test(`(7c) ${key} declaration`, (subtest) =>
+      mutateCheckedInFileAndRunCli(
+        subtest,
+        ".github/workflows/test.yml",
+        (text) =>
+          replaceNamedJobText(
+            text,
+            "rust-windows-test",
+            "runs-on: windows-latest",
+            `runs-on: windows-latest\n    strategy:\n      ${key}: {}`,
+          ),
+        ".github/workflows/test.yml: (7c) rust-windows-test must not declare strategy or matrix",
+      ),
+    );
+  }
 });
 
 test("registers each new Rust job's setup step in the CLI contract", async (t) => {
-  for (const jobName of ["rust-platform", "rust-macos-test"]) {
+  for (const jobName of ["rust-platform", "rust-macos-test", "rust-windows-test"]) {
     await t.test(jobName, (subtest) =>
       mutateCheckedInFileAndRunCli(
         subtest,
@@ -505,14 +548,16 @@ test("reports all pre-Phase-3 checker finding paths through CLI fixtures", async
     assertCliFailure(root, "rust-toolchain.toml: required Rust toolchain contract file is missing");
   });
 
-  await t.test("missing registered workflow job", (subtest) =>
-    mutateCheckedInFileAndRunCli(
-      subtest,
-      ".github/workflows/test.yml",
-      (text) => text.replace("\n  test:\n", "\n  test-missing:\n"),
-      ".github/workflows/test.yml: required Rust job test is missing",
-    ),
-  );
+  for (const jobName of ["test", "rust-windows-test"]) {
+    await t.test(`missing registered workflow job ${jobName}`, (subtest) =>
+      mutateCheckedInFileAndRunCli(
+        subtest,
+        ".github/workflows/test.yml",
+        (text) => text.replace(`\n  ${jobName}:\n`, `\n  ${jobName}-missing:\n`),
+        `.github/workflows/test.yml: required Rust job ${jobName} is missing`,
+      ),
+    );
+  }
 
   await t.test("invalid Rust channel", (subtest) =>
     mutateCheckedInFileAndRunCli(

@@ -17,7 +17,7 @@ the named message and status 1 in the same run. The test names are the node:test
     setup install command, setup active-toolchain report;
   workflow RUSTUP_TOOLCHAIN -> ... / workflow RUSTUP_TOOLCHAIN declaration;
   workflow setup contract -> ... / registered workflow setup contract and
-    registers each new Rust job's setup step / rust-platform, rust-macos-test;
+    registers each new Rust job's setup step / rust-platform, rust-macos-test, rust-windows-test;
   dtolnay action -> ... / forbidden floating Rust action;
   release target setup -> ... / release target setup contract;
   push-skill setup fence -> ... / push skill setup fence;
@@ -31,7 +31,9 @@ the named message and status 1 in the same run. The test names are the node:test
   rust-platform (2), three targets plus family -> reports each rust-platform contract clause /
     matching subtest;
   rust-platform (3)-(5b) -> ... / matching subtest;
-  rust-macos-test (6a)-(6b) -> reports each macOS test-job contract clause / matching subtest;
+  rust-macos-test (6a)-(6b) and rust-windows-test (7a)-(7c) -> reports each Rust test-job
+    contract clause / matching subtest;
+  requiredWorkflowJob -> ... / missing registered workflow job for test and rust-windows-test;
   main findings return 1 -> every status-1 fixture above;
   unexpected main error return 2 -> reports an unexpected checker error with status 2;
   unaltered fixture -> accepts the complete Phase 3 fixture through the CLI (status 0).
@@ -49,11 +51,15 @@ const RUST_PLATFORM_CHECK =
   "cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked";
 const RUST_PLATFORM_CLIPPY =
   "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings";
-const RUST_MACOS_TEST = "cargo test --manifest-path src-tauri/Cargo.toml --all-targets";
+const RUST_TEST_COMMAND = "cargo test --manifest-path src-tauri/Cargo.toml --all-targets";
+const RUST_TEST_JOBS = [
+  { job: "rust-macos-test", runner: "macos-latest", clauses: ["6a", "6b"] },
+  { job: "rust-windows-test", runner: "windows-latest", clauses: ["7a", "7b", "7c"] },
+];
 const RUST_WORKFLOW_JOBS = [
   [".github/workflows/test.yml", "test"],
   [".github/workflows/test.yml", "rust-platform"],
-  [".github/workflows/test.yml", "rust-macos-test"],
+  ...RUST_TEST_JOBS.map(({ job }) => [".github/workflows/test.yml", job]),
   [".github/workflows/mutation.yml", "backend"],
   [".github/workflows/release.yml", "release"],
 ];
@@ -146,6 +152,10 @@ function requiredWorkflowJob(jobs, path, jobName, findings) {
 
 function isFailureTolerant(value) {
   return value !== undefined && value !== "false";
+}
+
+function jobHasKey(body, key) {
+  return new RegExp(`^\\s*${key}:\\s*`, "mu").test(body);
 }
 
 function declaresRustupToolchain(workflow) {
@@ -375,19 +385,28 @@ function checkTargetCoverage(workflows, findings) {
     );
   }
 
-  const macosTest = workflows
-    .get(".github/workflows/test.yml")
-    ?.jobs.find((job) => job.name === "rust-macos-test");
-  if (macosTest === undefined) return;
-  if (topLevelJobValue(macosTest.body, "runs-on") !== "macos-latest") {
-    findings.push(
-      ".github/workflows/test.yml: (6a) rust-macos-test must use runs-on: macos-latest",
-    );
-  }
-  if (!workflowSteps(macosTest.body).some((step) => step.run === RUST_MACOS_TEST)) {
-    findings.push(
-      `.github/workflows/test.yml: (6b) rust-macos-test is missing the receipt command: ${RUST_MACOS_TEST}`,
-    );
+  const testWorkflow = workflows.get(".github/workflows/test.yml");
+  for (const { job: jobName, runner, clauses } of RUST_TEST_JOBS) {
+    const rustTestJob = testWorkflow?.jobs.find((job) => job.name === jobName);
+    if (rustTestJob === undefined) continue;
+    if (topLevelJobValue(rustTestJob.body, "runs-on") !== runner) {
+      findings.push(
+        `.github/workflows/test.yml: (${clauses[0]}) ${jobName} must use runs-on: ${runner}`,
+      );
+    }
+    if (!workflowSteps(rustTestJob.body).some((step) => step.run === RUST_TEST_COMMAND)) {
+      findings.push(
+        `.github/workflows/test.yml: (${clauses[1]}) ${jobName} is missing the receipt command: ${RUST_TEST_COMMAND}`,
+      );
+    }
+    if (
+      clauses.includes("7c") &&
+      (jobHasKey(rustTestJob.body, "strategy") || jobHasKey(rustTestJob.body, "matrix"))
+    ) {
+      findings.push(
+        `.github/workflows/test.yml: (7c) ${jobName} must not declare strategy or matrix`,
+      );
+    }
   }
 }
 
