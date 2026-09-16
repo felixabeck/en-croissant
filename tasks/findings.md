@@ -8316,7 +8316,7 @@ Closed by f8df0140, delivered and installed. The Linux encoding mutation child r
 
 ### No test job runs the Rust suite on Windows, so every Windows refusal branch is compile-verified only
 
-* **ID:** f-20260914-07 · **Status:** open · **Area:** ci-workflows · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **ID:** f-20260914-07 · **Status:** handled · **Area:** ci-workflows · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
 * **Where:** `.github/workflows/test.yml` (`rust-platform` runs check + clippy on `windows-latest`; `rust-macos-test` runs tests on macOS only); every `#[cfg(not(unix))]` refusal added for `f-20260830-06` slice 1 (workspace mutations, database targets, puzzle database, downloads, engine resources, executable mode, app-owned roots).
 * **Defect:** no assertion executes on Windows. Replacing any typed `Error::Conflict` refusal with a pathname operation, changing its variant, or moving it after a side effect still passes every gate.
 * **Why it matters:** Felix decided on 2026-09-12 that ChessFable ports Windows (`f-20260830-06`); a supported platform with no runtime test cannot claim anything about behaviour, and the refusals are the only thing keeping unported Windows paths from bypassing identity/no-follow invariants.
