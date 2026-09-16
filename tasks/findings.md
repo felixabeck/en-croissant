@@ -8380,6 +8380,19 @@ visible in the first place.
 * **Related:** `f-20260830-06` (parent), `f-20260905-10` (ancestor-symlink bootstrap, all platforms), and the Windows atomic-replacement finding filed alongside, which this depends on.
 * **Found by:** `f-20260830-06` slice-1 plan (Codex locate probe-2, review-tauri-security round 2), 2026-09-14.
 
+18 of these tests are now gated on Windows rather than silently absent: commit `aadc4dd5` marks each with
+`#[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]`, so a Windows run prints every one
+by name with this finding as the stated reason instead of failing the job or hiding the gap. The port that this
+finding tracks removes those attributes; nothing else about the tests changed.
+
+The full test-path -> owner table for all 81 gated tests (18 here, 63 on `f-20260914-10`) is in the tracked record
+`tasks/handoffs/2026-09-16-f-20260914-07-review.md`. Read it before starting the port — it is the durable copy,
+because the working TSV under `tasks/plans/` is gitignored and will not survive.
+
+Related: `f-20260914-07` added the Windows job (`rust-windows-test`, commit `56e4600b`) that makes these skips
+visible in the first place.
+<!-- ledger-meta {"command":"annotate","effect_lines":11,"effect_sha256":"43b0e01b213be4327776ed81cd1445aa52cebd5cb93dfa5070c3646bea647534","input_sha256":"221d22f63c1340849b86bb5c3f44e04e07c1465d438874f0a07cd4df58b44d81","kind":"mutation-receipt","operation":"5d90335b148df6bc3ac0e0bd8487391ed1ede6be4b500bf5f68b5633d334952c","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-11"],"target":"f-20260914-11","v":1} -->
+
 ### Windows engine directory resources, archive install and executable mode are refused
 
 * **ID:** f-20260914-12 · **Status:** open · **Area:** engine-uci · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
