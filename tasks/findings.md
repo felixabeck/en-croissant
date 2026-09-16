@@ -8825,3 +8825,16 @@ visible in the first place.
 * **Open question:** where is the colon rejected so that `resolve_windows` cannot open a stream first — in `validate_components`, in `single_leaf`, at the resolver, or a shared predicate used by all three — and how are the two `check_helper` pin strings updated in the same commit so the all-platform refusal assertions stay consistent (`d-20260916-01`)?
 * **Related:** `f-20260914-10` (the Windows atomic-replacement port, which makes this reachable and from whose plan this was cut as out-of-mandate). Raised by `review-root-cause` (95) and `review-tauri-security` (91/99) in rounds 3-4 of that plan review, which held that fixing it inside that slice violates its A6 slice boundary.
 * **Found by:** `f-20260914-10` plan review rounds 3-4 (review-tauri-security, review-root-cause, review-minimalism on Codex), 2026-09-16; source-verified by the orchestrator at the lines above.
+
+---
+
+## 2026-09-16 — filed through the inbox spool
+
+### `open_windows_child` truncates the NT component length to `u16`, so an over-long name opens a different file
+
+* **ID:** f-20260916-03 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** lens · **Blocked:** none
+* **Where:** `open_windows_child` (`src-tauri/src/infra/path_authority/mod.rs:2747-2751`), which builds `UNICODE_STRING { Length: (wide.len() * 2) as u16, MaximumLength: (wide.len() * 2) as u16, Buffer: … }`; the validator that lets the name through is `validate_components` (`:3130-3153`).
+* **Defect:** the byte length is cast to `u16` with no bound, while `validate_components` accepts a single component of arbitrary length. A component of 32,768 UTF-16 units or more wraps the cast, so `NtCreateFile` is handed a shorter length than the caller's name: `"victim"` followed by 32,768 characters presents to NT as `victim`. Every later descriptor-relative operation, including an atomic replacement, then acts on an object the caller never named.
+* **Why it matters:** the path authority exists so that a renderer-supplied name addresses exactly the object it was authorised for. This silently breaks that identity and can overwrite an unintended file. It is unreachable today only because the Windows filesystem paths refuse first; enabling them (`f-20260914-10`) makes it reachable.
+* **Related:** `f-20260914-10` (the Windows atomic-replacement port, which makes this reachable and from whose plan this was cut as out-of-mandate, exactly as the alternate-stream gap `f-20260916-02` was); `f-20260916-02` (same helper, same validator, same class of input validation).
+* **Found by:** `review-tauri-security` (confidence 98) in round 5 of the `f-20260914-10` plan review, 2026-09-16, on Codex; source-verified by the orchestrator at the lines above.
