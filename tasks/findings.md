@@ -8422,7 +8422,7 @@ question did not converge in fifteen plan-review rounds.
 
 ### Atomic replacement, downloads and PGN writes are refused on Windows
 
-* **ID:** f-20260914-10 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **ID:** f-20260914-10 · **Status:** handled · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/infra/fs.rs` `atomic_replace_with_precommit` / `atomic_replace_at_*` / `atomic_install_dir` non-unix refusals (`:1232`, `:1672`, `:1724`); download commands in `src-tauri/src/fs.rs` (ordinary download ~`:787`, `download_engine_archive` `:1162`), which slice 1 made refuse before any registry lease or staging.
 * **Defect:** every write that goes through the atomic-replace primitive — downloads, PGN edits, native export, registry persistence — is refused on Windows, because parent-directory durability "cannot be proven" there.
 * **Why it matters:** this primitive is the prerequisite for the Windows workspace, database and registry/startup ports filed alongside; Windows is a supported platform (Felix, 2026-09-12).
