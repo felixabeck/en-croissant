@@ -1540,6 +1540,51 @@ instrument.
 * **Annotated 2026-09-14 (slice 1 on real runners; status stays open):** after push the new jobs ran three times. Run 34862122222 (`8b98a870`): `rust-platform` green for aarch64-apple-darwin, x86_64-apple-darwin and x86_64-pc-windows-msvc; `rust-macos-test` failed 420/1113, almost all because macOS runner temp dirs live under the `/var` symlink, which the path authority's no-follow walk deliberately refuses; the Linux `test` job's backend coverage ratchet failed by one timing-dependent test branch record in `puzzle.rs`. Repairs `6544ca56` (canonical `TMPDIR` via `$RUNNER_TEMP`, shared `yield_until` polling helper, non-UTF-8 fixtures skipped only on macOS) and `6ac915bb` (two more APFS non-UTF-8 fixtures). Final run 34869067618 (`6ac915bb`): Linux `test` green, all three `rust-platform` legs green, `rust-macos-test` 1101 passed / 10 failed — the job stays red truthfully for two runtime gaps the slice surfaced and filed with Root `non-linux-platform-port` (inbox spool, ids allocated at merge): macOS engine launch and resource leases rely on `/proc/self/fd` (`20260914-182429-789151`, nine tests) and removed-directory detection by `st_nlink == 0` does not hold on APFS (`20260914-182429-789184`, one test). Also filed from the cumulative review: Windows PGN cache revision signal `20260914-170753-4126311` and 13 out-of-area findings. The slice's named macOS port tests (`macos_port_*`, `raw_device_is_read_once`, `raw_stat_identity_body_is_the_plain_call`, `read_directory_entries_at_classifies_without_following`) passed on the real runner.
 <!-- ledger-meta {"command":"annotate","effect_lines":1,"effect_sha256":"7edb0c30f737ff2219a8d835abd608210f32c2d32f16df73e6b805898d7d5657","input_sha256":"420710aea5f655f943cdbdcc925a92b78b3df73d0a613f081b3e253d9d9334af","kind":"mutation-receipt","operation":"b524546c565de293ed1c083fe85356846896df8a38fc5dd8f8e0d948840acf2d","options":{"section":null},"request_id_sha256":"747fc817126b20b75535cb0b78f164537b296e9fb0913b3d3f6b7fe569d31070","results":["f-20260830-06"],"target":"f-20260830-06","v":1} -->
 
+**Windows half advanced, not closed (2026-09-16, f-20260914-10 push).** The crate now
+type-checks and passes `clippy -D warnings` for `x86_64-pc-windows-gnu`, which nothing in this
+repository had ever done. It does **not** link or build a release artefact, and the macOS half is
+untouched, so this finding stays open.
+
+What made it possible is recorded as `d-20260916-07`: a MinGW cross toolchain installed
+unprivileged into `~/.local/opt/mingw` via `apt-get download` + `dpkg-deb -x`. Two facts are worth
+carrying forward, because both cost time here. `dpkg-deb -x` unpacks but never *configures*, so the
+`update-alternatives` symlinks are missing and the prefix ships only
+`x86_64-w64-mingw32-gcc-posix` / `-win32`; creating the unsuffixed `x86_64-w64-mingw32-gcc` symlink
+is what lets `cc-rs` find it. And `cargo check` does not link but *does* run build scripts, so
+`zstd-sys` needs a working C cross-compiler regardless — without one the check dies in `cc-rs`
+before reaching this crate's own code at all.
+
+Commands:
+
+```
+cargo check  --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-gnu --all-targets --locked
+cargo clippy --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-gnu --all-targets --locked -- -D warnings
+```
+
+Both exit 0 as of this push.
+
+**What the first run of that check found, and why this matters for the rest of this finding:**
+nine compile errors in `#[cfg(windows)]` code that a full plan review and nine review lenses had
+passed over. Five were the security-descriptor pointer types that four lenses did eventually
+report. The other four were found by nothing but the compiler: `SECURITY_DESCRIPTOR_REVISION`
+imported from `Win32::Security` instead of `Win32::System::SystemServices`; the NT
+`FILE_OPEN_REPARSE_POINT` create-option never imported; `use std::io::Write` gated `#[cfg(unix)]`
+while `temp.flush()` is platform-neutral; and `expect_durable()` called on `AtomicInstalledFile`
+where it is defined on `AtomicFileOutcome`. Two visibility errors (`E0446`) surfaced behind those,
+and a Windows-only `clippy` lint behind them again.
+
+The lesson for whoever picks up the macOS half: source pins in `infra/platform_support.rs` catch
+semantic regressions a type-check cannot see, such as an access mask silently losing
+`GENERIC_WRITE`, and they remain worth writing. They cannot catch a wrong winapi signature, and
+they did not. A target that is claimed to work needs a compiler pointed at it.
+
+Also fixed in that push, and relevant here: 15 `#[cfg(windows)]` tests in `infra/fs.rs` carried
+`#[cfg_attr(not(unix), ignore = "...")]`, so on Windows `not(unix)` held and they were skipped,
+while on unix the `cfg` removed them — they could not execute on any platform. The markers are
+removed, so those tests run on a Windows runner for the first time. Whether they pass is not yet
+known: this machine has a Windows cross-compiler but no Windows runtime.
+<!-- ledger-meta {"command":"annotate","effect_lines":43,"effect_sha256":"548ad473f9bab1c6fe7cb92724e7d9e0901658826ada3430aee22a72339b9745","input_sha256":"22902dfdc73aeb270534a419a84d99e79130dc8615ecc9a3a7638487914e6af3","kind":"mutation-receipt","operation":"ed08c26cb2a2e3861d887d389519c6a7d159a07522b054bedd237260730debef","options":{"section":null},"request_id_sha256":null,"results":["f-20260830-06"],"target":"f-20260830-06","v":1} -->
+
 ### Deleting a workspace directory leaves an authority record for every descendant behind
 
 * **ID:** f-20260830-07 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
