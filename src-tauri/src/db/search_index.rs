@@ -1439,7 +1439,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn iterator_failure_preserves_the_previous_index() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("atomic.ecsi");
@@ -1448,7 +1447,10 @@ mod tests {
         }
         .write_to(&path)
         .unwrap();
+        #[cfg(unix)]
         let parent = File::open(dir.path()).unwrap();
+        #[cfg(windows)]
+        let parent = crate::infra::fs::windows_test_parent(dir.path());
         let rows = vec![
             Ok(test_entry(8, vec![])),
             Err(Error::InvalidInput("injected row failure".into())),

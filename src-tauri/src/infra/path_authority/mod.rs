@@ -95,7 +95,17 @@ fn map_db3_children_cancellable<T>(
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
-    use std::{ffi::OsStr, ptr::null};
+    use crate::infra::fs::{
+        set_test_atomic_file_injector, AtomicFileFaultPoint, AtomicWriterInjector,
+    };
+    use std::{
+        ffi::OsStr,
+        ptr::null,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
     use windows_sys::{
         Wdk::Storage::FileSystem::FILE_OPEN,
         Win32::{
@@ -165,6 +175,121 @@ mod windows_tests {
             result,
             Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
         ));
+    }
+
+    #[test]
+    fn registry_save_entries_persists_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let file = dir.path().join("book.bin");
+        fs::write(&file, b"book").unwrap();
+        let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        authority
+            .migrate_legacy_os_path(
+                file.into_os_string(),
+                "book",
+                PathClass::PersistentFile,
+                vec![PathOperation::OpeningBookRead],
+            )
+            .unwrap();
+
+        let reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        assert_eq!(reloaded.persistent.len(), 1);
+    }
+
+    #[test]
+    fn registry_parent_sync_failure_reports_uncertain_without_retry() {
+        struct ParentSyncFailure(Arc<AtomicUsize>);
+
+        impl AtomicWriterInjector for ParentSyncFailure {
+            fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
+                if point == AtomicFileFaultPoint::ParentSync {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                    Err(std::io::Error::other("injected parent sync failure"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let authority = PathAuthority::open(registry, vec![]).unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        set_test_atomic_file_injector(Some(Arc::new(ParentSyncFailure(Arc::clone(&attempts)))));
+        let durability = authority
+            .save_entries(&authority.persistent, &None, &None, &None, &[])
+            .unwrap();
+        set_test_atomic_file_injector(None);
+
+        assert_eq!(
+            durability,
+            CommitDurability::DurabilityUncertain(
+                crate::error::DurabilityStage::RegistryReplacement
+            )
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn registry_uncertain_candidate_state_adoption() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("registry.json");
+        let file = dir.path().join("book.bin");
+        fs::write(&file, b"book").unwrap();
+        let mut authority = PathAuthority::open(registry.clone(), vec![]).unwrap();
+        let dialog = authority
+            .grant_dialog(
+                &file,
+                "book",
+                PathClass::SingleDialogGrant,
+                PathOperation::OpeningBookRead,
+                Duration::from_secs(30),
+                1,
+            )
+            .unwrap();
+        let id = PathRef::fresh();
+        let stored = StoredEntry {
+            id: id.clone(),
+            display_name: "book".into(),
+            class: PathClass::PersistentFile,
+            purpose: None,
+            operations: vec![PathOperation::OpeningBookRead],
+            path: NativePath::from_path(&file),
+            identity: identity(&file).unwrap(),
+            target_is_dir: false,
+        };
+        let mut candidate = authority.persistent.clone();
+        candidate.insert(
+            id.id.clone(),
+            Entry {
+                stored,
+                availability: PathAvailability::Available,
+            },
+        );
+
+        set_test_atomic_file_injector(Some(Arc::new(crate::infra::fs::ParentSyncFault(
+            "injected parent sync failure",
+        ))));
+        let durability = authority
+            .commit_candidate(candidate, Some(&dialog))
+            .unwrap();
+        set_test_atomic_file_injector(None);
+
+        assert_eq!(
+            durability,
+            CommitDurability::DurabilityUncertain(
+                crate::error::DurabilityStage::RegistryReplacement
+            )
+        );
+        assert!(authority.registry_durability_pending);
+        assert!(authority.persistent.contains_key(&id.id));
+        assert!(!authority.dialogs.contains_key(&dialog.id));
+        assert!(authority
+            .resolve(&dialog, PathOperation::OpeningBookRead, &[])
+            .is_err());
+        let reloaded = PathAuthority::open(registry, vec![]).unwrap();
+        assert!(reloaded.persistent.contains_key(&id.id));
     }
 }
 

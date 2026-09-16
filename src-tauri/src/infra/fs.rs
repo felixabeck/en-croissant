@@ -23,6 +23,23 @@ use std::{
 #[cfg(unix)]
 use tokio_util::sync::CancellationToken;
 
+#[cfg(all(test, windows))]
+pub(crate) fn windows_test_parent(path: &Path) -> File {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
+    options.open(path).expect("writable parent descriptor")
+}
+
 /// The file kind observed by descriptor-relative directory enumeration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DirectoryEntryKind {
@@ -2940,6 +2957,8 @@ pub fn atomic_install_dir(temp_path: &Path, target_path: &Path) -> Result<(), Er
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::windows_test_parent;
     use super::*;
     use crate::infra::blocking::source_scan::{body_at_indent, braced_body, normalise, Literals};
     use std::{
@@ -5896,22 +5915,6 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn windows_parent(path: &Path) -> File {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-            FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        let mut options = std::fs::OpenOptions::new();
-        options
-            .read(true)
-            .write(true)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
-        options.open(path).expect("writable parent descriptor")
-    }
-
-    #[cfg(windows)]
     fn run_atomic_at_fault<F>(
         parent: &File,
         leaf: &OsStr,
@@ -5943,7 +5946,7 @@ mod tests {
     #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_replace_at_installs_durably() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let parent = windows_parent(dir.path());
+        let parent = windows_test_parent(dir.path());
         atomic_replace_at(&parent, OsStr::new("target"), |file| {
             file.write_all(b"new").map_err(io)
         })
@@ -5960,7 +5963,7 @@ mod tests {
     #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_replace_at_records_real_durability_sequence() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let parent = windows_parent(dir.path());
+        let parent = windows_test_parent(dir.path());
         clear_durability_log();
         atomic_replace_at(&parent, OsStr::new("target"), |file| {
             file.write_all(b"new").map_err(io)
@@ -5985,7 +5988,7 @@ mod tests {
     #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_precommit_logs_after_revalidation() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let parent = windows_parent(dir.path());
+        let parent = windows_test_parent(dir.path());
         clear_durability_log();
         let observed = Arc::new(Mutex::new(Vec::new()));
         let observed_by_precommit = Arc::clone(&observed);
@@ -6016,7 +6019,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("target");
         let installed = dir.path().join("installed");
-        let parent = windows_parent(dir.path());
+        let parent = windows_test_parent(dir.path());
         clear_durability_log();
         let result = run_atomic_at_fault(
             &parent,
@@ -6046,7 +6049,7 @@ mod tests {
     #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_post_rename_metadata_failure_reports_uncertain_with_target_values() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let parent = windows_parent(dir.path());
+        let parent = windows_test_parent(dir.path());
         let result = run_atomic_at_fault(
             &parent,
             OsStr::new("target"),
@@ -6082,7 +6085,7 @@ mod tests {
         std::fs::write(&target_path, b"old").expect("old");
         win::set_test_target_security_descriptor(&target_path, win::TARGET_ACCESS)
             .expect("distinct target DACL");
-        let parent = windows_parent(dir.path());
+        let parent = windows_test_parent(dir.path());
         let parent_dacl = win::test_security_descriptor(&parent).expect("parent DACL");
         let before = win::test_security_descriptor(&File::open(&target_path).expect("target"))
             .expect("target DACL");
@@ -6217,7 +6220,7 @@ mod tests {
             .read(true)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
         let _holder = options.open(&target).expect("sharing holder");
-        let parent = windows_parent(dir.path());
+        let parent = windows_test_parent(dir.path());
         let result = atomic_replace_at(&parent, OsStr::new("target"), |file| {
             file.write_all(b"new").map_err(io)
         });
@@ -6232,7 +6235,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("collision"), b"existing").expect("collision");
         let _names = win::scoped_test_temp_names(vec!["available".into(), "collision".into()]);
-        let parent = windows_parent(dir.path());
+        let parent = windows_test_parent(dir.path());
         atomic_replace_at(&parent, OsStr::new("target"), |file| {
             file.write_all(b"new").map_err(io)
         })
@@ -6258,7 +6261,7 @@ mod tests {
         let mut permissions = std::fs::metadata(&target).expect("metadata").permissions();
         permissions.set_readonly(true);
         std::fs::set_permissions(&target, permissions).expect("readonly");
-        let parent = windows_parent(dir.path());
+        let parent = windows_test_parent(dir.path());
         atomic_replace_at(&parent, OsStr::new("target"), |file| {
             file.write_all(b"new").map_err(io)
         })
@@ -6276,7 +6279,7 @@ mod tests {
         std::fs::write(&target, b"old").expect("old");
         win::set_test_target_security_descriptor(&target, win::TARGET_ACCESS)
             .expect("target DACL without generic write");
-        let parent = windows_parent(dir.path());
+        let parent = windows_test_parent(dir.path());
         atomic_replace_at(&parent, OsStr::new("target"), |file| {
             file.write_all(b"new").map_err(io)
         })
