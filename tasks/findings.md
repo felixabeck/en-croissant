@@ -9162,3 +9162,53 @@ the code type-checks (`cargo check --target x86_64-pc-windows-gnu`), but there i
 
 **Proof:** the existing Windows tests in `infra/fs.rs` plus a test that a second open of the
 private temporary is refused while it is held, run on a Windows runner — not on this machine.
+
+---
+
+## 2026-09-16 — filed through the inbox spool
+
+### The Windows post-rename race injector cannot fire, because the temp handle forbids the rename it performs
+
+* **ID:** f-20260916-12 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+
+`review-correctness` raised this during the `$push` review of the f-20260914-10 Windows
+atomic-replacement port (confidence 95).
+
+`PostRenameSwap` in `src-tauri/src/infra/fs.rs` is the injector behind
+`windows_post_rename_identity_query_is_performed`. At the `PostRenameMetadata` fault point it does:
+
+```
+std::fs::rename(&self.target, &self.installed)?;
+std::fs::write(&self.target, b"racer")?;
+```
+
+The intent is to swap the just-installed file for a different one between the rename and the
+identity query, proving the post-rename identity is read from the retained handle rather than by
+re-opening the path. But at that point the driver still holds the temporary's handle — the same
+object, now carrying the target's name — and that handle was opened with
+`FILE_SHARE_PRIVATE_TEMP`, which is `FILE_SHARE_WRITE` alone: no `FILE_SHARE_READ`, and crucially
+no `FILE_SHARE_DELETE`. A rename needs DELETE access to the source, so the second opener is refused
+and `std::fs::rename` returns a sharing violation. The `?` turns that into an injector error, the
+replacement fails, and the test's `.expect("replace")` panics instead of exercising the race.
+
+This mattered less while the test could not run at all: every `#[cfg(windows)]` test in this file
+also carried `#[cfg_attr(not(unix), ignore)]`, so it was skipped on Windows and compiled out on
+unix. Those markers were removed in the f-20260914-10 push, so these tests execute on a Windows
+runner for the first time and this one is expected to fail there.
+
+* **Open question:** Should `FILE_SHARE_PRIVATE_TEMP` gain `FILE_SHARE_DELETE` so the temporary
+  can be renamed or deleted by another opener while held — or should the injection be redesigned
+  to produce the same race without renaming the held object, for example by swapping a
+  *different* path that the identity query would resolve to? The first changes a deliberate
+  security property of the private temporary (it is private precisely so nothing else can open,
+  replace or delete it before commit) and would need its own argument; the second keeps the
+  property and changes only the test.
+
+Filed rather than fixed in that push because both candidate answers are design choices about a
+Windows *runtime* behaviour, and this machine has a Windows cross-compiler but no Windows runtime:
+the sharing violation cannot be observed here, and neither can a fix be proven. Deciding it blind
+on a sharing mask that guards the temporary file is exactly the kind of change that should not be
+made without evidence.
+
+**Proof:** run `windows_post_rename_identity_query_is_performed` on a Windows runner — it should
+fail today for the reason above, and pass after whichever answer is chosen.
