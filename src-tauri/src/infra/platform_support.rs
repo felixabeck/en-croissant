@@ -1,7 +1,7 @@
 /*!
 Phase 1 refusal-pin proof record (2026-09-16).
 
-The 36 refusal sites are pinned by the G and B rows below. The O4d exclusion is
+The 35 refusal sites are pinned by the G and B rows below. The O4d exclusion is
 `opened_file_change_stamp`: its unconditional non-unix tail is not a refusal
 site and is intentionally not a row. Future closed-world completeness is not
 claimed here; that work is split to `f-20260916-01` (R15-01).
@@ -32,7 +32,6 @@ B rows (each staged message names the listed file and signature):
 `infra/path_authority/mod.rs::open_regular_relative`,
 `infra/path_authority/mod.rs::authorize_existing_dir`,
 `infra/path_authority/mod.rs::capability_directory`,
-`infra/path_authority/mod.rs::create_pgn_export_destination`,
 `infra/path_authority/mod.rs::create_database_child`,
 `infra/path_authority/mod.rs::database_file_target`,
 `infra/path_authority/resolved.rs::atomic_install_download_dir`,
@@ -47,7 +46,7 @@ from this phase, mutated production files only, and ran exactly:
 `cargo test --manifest-path src-tauri/Cargo.toml platform_support`.
 The worktree was removed afterwards. “G all” means every G row above; “B all”
 means every B row above, so the named row messages are recorded without
-repeating the 36 names six times.
+repeating the 35 names six times.
 
 1. S-insert — inserted
    `std::fs::create_dir_all("staged").ok();` as the first effective B
@@ -345,6 +344,54 @@ mod tests {
         assert!(
             directory.contains("ifwritable{DIRECTORY_ACCESS}else{DIRECTORY_READ_ACCESS}"),
             "{directory}"
+        );
+    }
+
+    /// Two review rounds rejected a draft that routed this through `atomic_replace_at_identified`.
+    /// It must not: every PGN export test writes its fixture first, and replacing here would hand
+    /// `scan_file` an empty file. Nothing executable on Linux can observe the Windows arm, so the
+    /// split — adopt an existing regular file, exclusively create only a missing one — is pinned
+    /// in source, together with the two flushes and the canonical-binding identity check that
+    /// `std::fs::canonicalize` on its own does not provide.
+    #[test]
+    fn windows_pgn_export_adopts_an_existing_file_and_creates_only_a_missing_one() {
+        let source = source_for("infra/path_authority/mod.rs");
+        let signature = "pub(crate) fn create_pgn_export_destination(";
+        let start = function_starts(source, signature)
+            .into_iter()
+            .find(|start| direct_attribute(source, *start, "#[cfg(windows)]"))
+            .expect("a Windows create_pgn_export_destination arm");
+        let body = compact(&source[body_at(source, start)]);
+        for forbidden in ["atomic_replace", "replace_pgn_atomic", "fs::canonicalize"] {
+            assert!(!body.contains(forbidden), "{forbidden}: {body}");
+        }
+        assert!(
+            body.contains("crate::infra::fs::entry_identity_at(&parent,&leaf,false)"),
+            "{body}"
+        );
+        assert!(
+            body.contains("crate::infra::fs::create_regular_at(&parent,&leaf)?"),
+            "{body}"
+        );
+        assert!(
+            body.contains("file.sync_all()?;parent.sync_all()?;"),
+            "{body}"
+        );
+        assert!(
+            body.contains("letcanonical=canonical_binding(path)?;"),
+            "{body}"
+        );
+        assert!(
+            body.contains("crate::infra::fs::open_parent_no_follow(&canonical)?"),
+            "{body}"
+        );
+        assert!(
+            body.contains("ifopened_file_identity(&parent)?!=parent_identity"),
+            "{body}"
+        );
+        assert!(
+            body.contains("open_windows_nofollow(parent_of(path),false)?"),
+            "{body}"
         );
     }
 
@@ -1079,19 +1126,17 @@ mod tests {
                     r#"{let_=path;Err(crate::infra::platform_support::unsupported_plural("authorized directories",))}"#,
                 ),
             },
+            // Off unix this one is a partial refusal, not a whole-body one: `ReadPgn` is served
+            // and every other operation is refused, because `list_database_children_cancellable`
+            // is still `f-20260914-09`. The pinned effective body therefore contains the served
+            // arm as well, so narrowing or widening the served set reddens the pin.
             BodyRow {
                 file: "infra/path_authority/mod.rs",
                 signature: "pub(crate) fn capability_directory(",
                 form: BodyForm::Block,
                 expected: ExpectedBody::Exact(
-                    r#"{let_=(id,operation);Err(crate::infra::platform_support::unsupported(UNSUPPORTED_DIRECTORY_ENUMERATION,))}"#,
+                    r#"{ifoperation!=PathOperation::ReadPgn{returnErr(crate::infra::platform_support::unsupported(UNSUPPORTED_DIRECTORY_ENUMERATION,));}letmutresolved=self.resolve(id,operation,&[])?;letdirectory=resolved.take_directory().ok_or_else(||Error::InvalidInput("path capability is not a directory".into()))?;Ok(CapabilityDirectory{directory})}"#,
                 ),
-            },
-            BodyRow {
-                file: "infra/path_authority/mod.rs",
-                signature: "pub(crate) fn create_pgn_export_destination(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("PGN export destinations"),
             },
             BodyRow {
                 file: "infra/path_authority/mod.rs",
@@ -1659,11 +1704,6 @@ mod tests {
             (
                 "infra/path_authority/mod.rs",
                 "fd-relative directory enumeration",
-                "unsupported",
-            ),
-            (
-                "infra/path_authority/mod.rs",
-                "PGN export destinations",
                 "unsupported",
             ),
             (

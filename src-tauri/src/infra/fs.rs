@@ -2551,7 +2551,6 @@ mod win {
         open_directory_path(path.parent().unwrap_or_else(|| Path::new(".")), true)
     }
 
-    #[allow(dead_code)]
     pub(super) fn open_writable_leaf_directory(parent: &File, name: &OsStr) -> Result<File, Error> {
         open_windows_child(
             parent,
@@ -2686,7 +2685,6 @@ mod win {
         Ok((parent, leaf))
     }
 
-    #[allow(dead_code)]
     pub(super) fn open_writable_verified_directory(
         path: &Path,
         expected: (u64, u64),
@@ -3327,7 +3325,6 @@ pub(crate) fn open_parent_no_follow(path: &Path) -> Result<File, Error> {
 }
 
 #[cfg(windows)]
-#[allow(dead_code)]
 pub(crate) fn open_parent_no_follow(path: &Path) -> Result<File, Error> {
     win::open_writable_parent(path)
 }
@@ -3352,7 +3349,6 @@ pub(crate) fn open_verified_directory(
 }
 
 #[cfg(windows)]
-#[allow(dead_code)]
 pub(crate) fn open_verified_directory(
     path: &Path,
     expected: (u64, u64),

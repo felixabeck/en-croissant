@@ -5,10 +5,8 @@ use crate::{
     infra::fs::{AtomicFileOutcome, AtomicInstalledFile},
 };
 use sha2::Digest;
-#[cfg(unix)]
-use std::ffi::OsStr;
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -98,12 +96,8 @@ fn open_windows_directory_walk(path: &Path, writable: bool) -> Result<fs::File, 
 /// resolution cannot be used to reach a sibling.
 pub struct ResolvedPath {
     operation: PathOperation,
-    #[cfg(unix)]
     file: Option<fs::File>,
-    #[cfg(unix)]
     directory: Option<fs::File>,
-    #[cfg(windows)]
-    file: Option<fs::File>,
     parent: Option<fs::File>,
     leaf: Option<OsString>,
     target: Option<PathBuf>,
@@ -118,22 +112,21 @@ impl ResolvedPath {
         self.file.take()
     }
 
-    #[cfg(unix)]
     pub(super) fn directory(&self) -> Option<&fs::File> {
         self.directory.as_ref()
     }
 
-    #[cfg(unix)]
     pub(super) fn take_directory(&mut self) -> Option<fs::File> {
         self.directory.take()
     }
 
-    #[cfg(unix)]
+    // Read only by the database-child boundary, which `f-20260914-09` still refuses off unix.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(super) fn parent(&self) -> Option<&fs::File> {
         self.parent.as_ref()
     }
 
-    #[cfg(unix)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(super) fn leaf(&self) -> Option<&OsStr> {
         self.leaf.as_deref()
     }
@@ -147,7 +140,7 @@ impl ResolvedPath {
         self.target.as_deref()
     }
 
-    #[cfg(unix)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(super) fn operation(&self) -> PathOperation {
         self.operation
     }
@@ -751,7 +744,6 @@ pub(super) fn resolve_unix(
                 return Ok(ResolvedPath {
                     operation,
                     file: None,
-                    #[cfg(unix)]
                     directory: None,
                     parent: Some(handle.try_clone()?),
                     leaf: Some(name.clone()),
@@ -843,7 +835,6 @@ pub(super) fn resolve_unix(
     Ok(ResolvedPath {
         operation,
         file: exact_file,
-        #[cfg(unix)]
         directory,
         parent,
         leaf,
@@ -957,6 +948,7 @@ pub(super) fn resolve_windows(
                 return Ok(ResolvedPath {
                     operation,
                     file: None,
+                    directory: None,
                     parent: Some(handle.try_clone()?),
                     leaf: Some(name.clone()),
                     target: target.clone(),
@@ -982,6 +974,7 @@ pub(super) fn resolve_windows(
             return Ok(ResolvedPath {
                 operation,
                 file: Some(file),
+                directory: None,
                 parent: Some(handle.try_clone()?),
                 leaf: Some(name.clone()),
                 target,
@@ -989,9 +982,13 @@ pub(super) fn resolve_windows(
         }
         handle = file;
     }
+    // The terminal component is a directory: the handle the walk opened and verified IS the
+    // capability. Dropping it would leave `capability_directory` with no descriptor to hand out
+    // and force a second, unpinned open by pathname.
     Ok(ResolvedPath {
         operation,
         file: None,
+        directory: Some(handle),
         parent: None,
         leaf: None,
         target: None,

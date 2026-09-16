@@ -297,10 +297,11 @@ pub(crate) struct CapabilityDirectory {
 }
 
 impl CapabilityDirectory {
-    /// The one arm with a Windows caller today: `map_db3_children_cancellable`. The workspace
-    /// listing reaches the others through `capability_directory`, which stays refused on Windows
-    /// until the path-authority workspace API is ported, so they carry `allow(dead_code)` there
-    /// rather than an unimplemented body.
+    /// The one arm with a Windows caller today: `map_db3_children_cancellable`.
+    /// `capability_directory` now issues this type on Windows for `PathOperation::ReadPgn`, but
+    /// the walk that consumes the other methods is `file_workspace.rs::collect_tree_entries`,
+    /// whose non-unix counterpart still refuses, so they keep `allow(dead_code)` there rather
+    /// than an unimplemented body.
     pub(crate) fn entries(
         &self,
         cancellation: &CancellationToken,
@@ -321,7 +322,7 @@ impl CapabilityDirectory {
     /// open is a retry rather than a hard failure. Unix sees `LOOP`/`NOTDIR`/`NOENT`; Windows sees
     /// the NT counterparts, plus `open_windows_child`'s reparse refusal, because an entry that was
     /// a directory at enumeration time and is a junction when it is opened is the same swap.
-    // No Windows caller yet; see the note on `entries`.
+    // No Windows caller until phase D; see the note on `entries`.
     #[cfg_attr(not(unix), allow(dead_code))]
     fn child_open_swap(error: Error) -> Error {
         #[cfg(unix)]
@@ -364,7 +365,7 @@ impl CapabilityDirectory {
         }
     }
 
-    // No Windows caller yet; see the note on `entries`.
+    // No Windows caller until phase D; see the note on `entries`.
     #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn open_child_directory(
         &self,
@@ -389,7 +390,7 @@ impl CapabilityDirectory {
         })
     }
 
-    // No Windows caller yet; see the note on `entries`.
+    // No Windows caller until phase D; see the note on `entries`.
     #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn confirm_entry(&self, entry: &DirectoryEntry) -> Result<(), Error> {
         crate::infra::fs::single_leaf(&entry.name)?;
@@ -401,7 +402,7 @@ impl CapabilityDirectory {
         )
     }
 
-    // No Windows caller yet; see the note on `entries`.
+    // No Windows caller until phase D; see the note on `entries`.
     #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn open_metadata_sidecar(
         &self,
@@ -648,7 +649,6 @@ mod verified_identity {
             if let Some(file) = self.file() {
                 return super::opened_file_identity(file).map(VerifiedIdentity);
             }
-            #[cfg(unix)]
             if let Some(directory) = self.directory() {
                 return super::opened_file_identity(directory).map(VerifiedIdentity);
             }
@@ -854,7 +854,8 @@ impl AuthorizedDir {
     }
 }
 
-#[cfg(unix)]
+// Windows callers arrive with `file_workspace.rs`, whose counterpart refusals are phase D.
+#[cfg_attr(not(unix), allow(dead_code))]
 struct RetainedWorkspaceTarget {
     parent: fs::File,
     leaf: OsString,
@@ -1605,7 +1606,6 @@ fn is_database_file_operation(op: PathOperation) -> bool {
 
 /// Canonicalizes only the parent and appends the leaf name unchanged, so a leaf
 /// symlink is never followed.
-#[cfg_attr(not(unix), allow(dead_code))]
 fn canonical_binding(path: &Path) -> Result<PathBuf, Error> {
     let file_name = path
         .file_name()
@@ -1614,7 +1614,6 @@ fn canonical_binding(path: &Path) -> Result<PathBuf, Error> {
     Ok(fs::canonicalize(parent_of(path))?.join(file_name))
 }
 
-#[cfg_attr(not(unix), allow(dead_code))]
 fn parent_of(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -3428,43 +3427,162 @@ impl PathAuthority {
         snapshot
     }
 
+    /// Off unix this serves the PGN workspace listing only. `list_database_children_cancellable`
+    /// is the other caller and belongs to `f-20260914-09`: enumerating and registering database
+    /// children while `database_file_target` and `open_current` still refuse to open them would
+    /// mint handles nothing can use, so every other operation keeps the refusal.
     pub(crate) fn capability_directory(
         &mut self,
         id: &PathRef,
         operation: PathOperation,
     ) -> Result<CapabilityDirectory, Error> {
-        #[cfg(unix)]
-        {
-            let mut resolved = self.resolve(id, operation, &[])?;
-            let directory = resolved
-                .take_directory()
-                .ok_or_else(|| Error::InvalidInput("path capability is not a directory".into()))?;
-            Ok(CapabilityDirectory { directory })
-        }
         #[cfg(not(unix))]
         {
-            let _ = (id, operation);
-            Err(crate::infra::platform_support::unsupported(
-                UNSUPPORTED_DIRECTORY_ENUMERATION,
-            ))
+            if operation != PathOperation::ReadPgn {
+                return Err(crate::infra::platform_support::unsupported(
+                    UNSUPPORTED_DIRECTORY_ENUMERATION,
+                ));
+            }
         }
+        let mut resolved = self.resolve(id, operation, &[])?;
+        let directory = resolved
+            .take_directory()
+            .ok_or_else(|| Error::InvalidInput("path capability is not a directory".into()))?;
+        Ok(CapabilityDirectory { directory })
+    }
+
+    /// Windows counterpart of the unix arm below, keeping its split exactly: an **existing**
+    /// regular file is identity-checked and its bytes are left untouched, and only a **missing**
+    /// one is created exclusively. It deliberately does not route through
+    /// `atomic_replace_at_identified` — the unix arm does not either, and replacing here would
+    /// destroy the very file the caller selected, before a single game had been written.
+    #[cfg(windows)]
+    pub(crate) fn create_pgn_export_destination(
+        &mut self,
+        path: &Path,
+        display_name: impl Into<String>,
+    ) -> Result<FileWorkspaceDescriptor, Error> {
+        if matches!(
+            path.as_os_str().as_encoded_bytes().last(),
+            Some(b'/') | Some(b'\\')
+        ) {
+            return Err(Error::InvalidInput(
+                "PGN export destination must have a .pgn filename".into(),
+            ));
+        }
+        let extension_is_pgn = path
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pgn"));
+        if !extension_is_pgn || path.file_stem().is_none_or(|stem| stem.is_empty()) {
+            return Err(Error::InvalidInput(
+                "PGN export destination must have a .pgn filename".into(),
+            ));
+        }
+
+        // The parent observed here is the one the identity check below pins the canonicalized
+        // open against, so a swap between the two is a `Conflict` rather than a create in a
+        // directory the caller never chose. Canonicalization on its own is not that pin.
+        let parent_probe = open_windows_nofollow(parent_of(path), false)?;
+        if !parent_probe.metadata()?.is_dir() {
+            return Err(Error::InvalidInput(
+                "PGN export destination parent must be a directory".into(),
+            ));
+        }
+        let parent_identity = opened_file_identity(&parent_probe)?;
+        drop(parent_probe);
+        #[cfg(test)]
+        ACQUIRE_TARGET_BEFORE_PROOF_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
+        let canonical = canonical_binding(path)?;
+        // A0: the parent is opened writable, because the create below flushes it.
+        let parent = crate::infra::fs::open_parent_no_follow(&canonical)?;
+        if opened_file_identity(&parent)? != parent_identity {
+            return Err(Error::Conflict(
+                "PGN export destination changed before creation".into(),
+            ));
+        }
+        let leaf = canonical
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                Error::InvalidInput("PGN export destination must have a .pgn filename".into())
+            })?
+            .to_os_string();
+
+        let mut created_identity = None;
+        let display_name = display_name.into();
+        let operations = canonical_operations(EntryPurpose::PgnFile);
+        let result = (|| {
+            let identity = match crate::infra::fs::entry_identity_at(&parent, &leaf, false) {
+                Ok(identity) => identity,
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let (file, identity) = crate::infra::fs::create_regular_at(&parent, &leaf)?;
+                    created_identity = Some(identity);
+                    file.sync_all()?;
+                    parent.sync_all()?;
+                    #[cfg(test)]
+                    PGN_EXPORT_POST_CREATE_HOOK.with(|slot| {
+                        if let Some(hook) = slot.borrow_mut().take() {
+                            hook();
+                        }
+                    });
+                    identity
+                }
+                Err(Error::InvalidInput(_)) => {
+                    return Err(Error::InvalidInput(
+                        "PGN export destination must be a regular file".into(),
+                    ))
+                }
+                Err(error) => return Err(error),
+            };
+            let grant = self.grant_acquired(
+                AcquiredTarget {
+                    path: canonical.clone(),
+                    identity: Identity {
+                        a: identity.0,
+                        b: identity.1,
+                    },
+                    target_is_dir: false,
+                },
+                display_name.clone(),
+                PathClass::BoundedDialogGrant,
+                operations.clone(),
+                Duration::from_secs(30 * 60),
+                128,
+            )?;
+            let commit = self.promote_dialog(
+                &grant,
+                PathClass::PersistentFile,
+                display_name.clone(),
+                operations,
+            )?;
+            require_durable(commit.durability)?;
+            Ok(FileWorkspaceDescriptor {
+                handle: FileWorkspaceHandle::new(commit.id),
+                display_name,
+                availability: PathAvailability::Available,
+            })
+        })();
+
+        if result
+            .as_ref()
+            .is_err_and(|error| !matches!(error, Error::CommittedDurabilityUncertain(_)))
+        {
+            if let Some(identity) = created_identity {
+                let _ = crate::infra::fs::remove_entry_at(&parent, &leaf, identity, false);
+            }
+        }
+        result
     }
 
     /// Turns a native save-dialog choice into one persistent, exact PGN destination. The renderer
     /// receives only the resulting workspace handle; the selected native path never leaves this
     /// authority boundary. A new target is materialized before the dialog grant is promoted so
     /// the persisted identity is the object the subsequent atomic PGN write must replace.
-    #[cfg(not(unix))]
-    pub(crate) fn create_pgn_export_destination(
-        &mut self,
-        _path: &Path,
-        _display_name: impl Into<String>,
-    ) -> Result<FileWorkspaceDescriptor, Error> {
-        Err(crate::infra::platform_support::unsupported(
-            "PGN export destinations",
-        ))
-    }
-
     #[cfg(unix)]
     pub(crate) fn create_pgn_export_destination(
         &mut self,
@@ -5900,7 +6018,8 @@ impl PathAuthority {
 
     /// Persists an opaque child handle for an entry observed through a retained directory
     /// descriptor. The supplied identity is the one captured during enumeration.
-    #[cfg(unix)]
+    // Windows callers arrive with `file_workspace.rs`, whose counterpart refusals are phase D.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn register_workspace_child_observed(
         &mut self,
         workspace: &FileWorkspaceHandle,
@@ -5945,7 +6064,8 @@ impl PathAuthority {
         )
     }
 
-    #[cfg(unix)]
+    // Windows callers arrive with `file_workspace.rs`, whose counterpart refusals are phase D.
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn persist_workspace_child(
         &mut self,
         root_entry: Entry,
@@ -6389,7 +6509,8 @@ impl PathAuthority {
 
     /// Resolves an opaque workspace capability into retained no-follow descriptors.  This is the
     /// mutation boundary: callers must not reopen `path()` for filesystem changes.
-    #[cfg(unix)]
+    // Windows callers arrive with `file_workspace.rs`, whose counterpart refusals are phase D.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn workspace_mutation_target(
         &mut self,
         handle: &FileWorkspaceHandle,
@@ -6413,7 +6534,8 @@ impl PathAuthority {
         })
     }
 
-    #[cfg(unix)]
+    // Windows callers arrive with `file_workspace.rs`, whose counterpart refusals are phase D.
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn retained_workspace_target(
         &mut self,
         handle: &FileWorkspaceHandle,
@@ -7170,9 +7292,67 @@ fn descriptor(stored: &StoredEntry, availability: PathAvailability) -> PathDescr
     }
 }
 
+/// Assertions that hold on every target. `mod tests` below is `#[cfg(unix)]` as a whole, so a
+/// platform-neutral property placed there would silently stop being proven off unix; these live
+/// here instead, and the shared `PathAuthority` constructor lives here with them.
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    };
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    pub(super) struct TestClock(AtomicU64);
+    impl TestClock {
+        pub(super) fn new(v: u64) -> Self {
+            Self(AtomicU64::new(v))
+        }
+        // Only the expiry tests advance the clock, and they are all unix-gated today.
+        #[cfg_attr(not(unix), allow(dead_code))]
+        pub(super) fn advance(&self, n: u64) {
+            self.0.fetch_add(n, Ordering::SeqCst);
+        }
+    }
+    impl Clock for TestClock {
+        fn now(&self) -> SystemTime {
+            UNIX_EPOCH + Duration::from_secs(self.0.load(Ordering::SeqCst))
+        }
+    }
+    pub(super) fn authority(dir: &tempfile::TempDir, clock: Arc<TestClock>) -> PathAuthority {
+        PathAuthority::open_with_clock(dir.path().join("registry.json"), vec![], clock, 2).unwrap()
+    }
+
+    /// The missing-file arm of `create_pgn_export_destination`: the eleven un-ignored PGN tests
+    /// all write their fixture first, so only this one drives the exclusive create, the two
+    /// `sync_all`s and the promotion to a persistent read/write capability.
+    #[test]
+    fn pgn_export_destination_is_persistent_writable_and_rejects_non_pgn_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("export.pgn");
+        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
+        let destination = authority
+            .create_pgn_export_destination(&path, "export.pgn")
+            .unwrap();
+        assert!(path.is_file());
+        assert!(authority
+            .resolve(destination.handle.path_ref(), PathOperation::ReadPgn, &[],)
+            .is_ok());
+        assert!(authority
+            .resolve(destination.handle.path_ref(), PathOperation::WritePgn, &[],)
+            .is_ok());
+        assert!(matches!(
+            authority.create_pgn_export_destination(&dir.path().join("export.txt"), "export.txt"),
+            Err(Error::InvalidInput(_))
+        ));
+    }
+}
+
 #[cfg(unix)]
 #[cfg(test)]
 mod tests {
+    use super::portable_tests::{authority, TestClock};
     use super::resolved::file_identity;
     use super::*;
     use crate::infra::blocking::source_scan::body_at_indent;
@@ -7184,11 +7364,7 @@ mod tests {
     use crate::infra::fs::{set_test_removal_injector, RemovalFault, RemovalFaultPoint};
     use std::{
         os::unix::ffi::OsStringExt,
-        sync::{
-            atomic::{AtomicU64, Ordering},
-            Mutex,
-        },
-        time::UNIX_EPOCH,
+        sync::{atomic::Ordering, Mutex},
     };
 
     static CURRENT_DIR_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -7265,24 +7441,6 @@ mod tests {
         let _: EngineImageReaderForFn = engine_image_reader_for;
         let _: RegisterEngineImageFn = PathAuthority::register_engine_image;
     }
-    struct TestClock(AtomicU64);
-    impl TestClock {
-        fn new(v: u64) -> Self {
-            Self(AtomicU64::new(v))
-        }
-        fn advance(&self, n: u64) {
-            self.0.fetch_add(n, Ordering::SeqCst);
-        }
-    }
-    impl Clock for TestClock {
-        fn now(&self) -> SystemTime {
-            UNIX_EPOCH + Duration::from_secs(self.0.load(Ordering::SeqCst))
-        }
-    }
-    fn authority(dir: &tempfile::TempDir, clock: Arc<TestClock>) -> PathAuthority {
-        PathAuthority::open_with_clock(dir.path().join("registry.json"), vec![], clock, 2).unwrap()
-    }
-
     fn registered_engine_image(
         dir: &tempfile::TempDir,
         contents: &[u8],
@@ -9524,27 +9682,6 @@ mod tests {
         assert!(matches!(
             authority.resolve(handle.path_ref(), PathOperation::ReadPgn, &[]),
             Err(Error::Conflict(_))
-        ));
-    }
-
-    #[test]
-    fn pgn_export_destination_is_persistent_writable_and_rejects_non_pgn_targets() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("export.pgn");
-        let mut authority = authority(&dir, Arc::new(TestClock::new(1)));
-        let destination = authority
-            .create_pgn_export_destination(&path, "export.pgn")
-            .unwrap();
-        assert!(path.is_file());
-        assert!(authority
-            .resolve(destination.handle.path_ref(), PathOperation::ReadPgn, &[],)
-            .is_ok());
-        assert!(authority
-            .resolve(destination.handle.path_ref(), PathOperation::WritePgn, &[],)
-            .is_ok());
-        assert!(matches!(
-            authority.create_pgn_export_destination(&dir.path().join("export.txt"), "export.txt"),
-            Err(Error::InvalidInput(_))
         ));
     }
 
