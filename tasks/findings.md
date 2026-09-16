@@ -9023,3 +9023,49 @@ fixed in the f-20260914-10 push itself; this entry is the semantic half that sur
 plus `cargo test --manifest-path src-tauri/Cargo.toml`. A Windows target check is available
 locally via `cargo check --target x86_64-pc-windows-gnu` (see the toolchain note in the
 f-20260914-10 handoff).
+
+---
+
+## 2026-09-16 — filed through the inbox spool
+
+### `ctime_nanos` names a unit and a timestamp that two of its three producers do not use
+
+* **ID:** f-20260916-10 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+
+`review-code-quality` raised this during the `$push` review of the f-20260914-10 Windows
+atomic-replacement port (confidence 98). The field `ctime_nanos: i128` is filled by three
+producers that do not agree on unit, epoch or which timestamp is meant:
+
+* `src-tauri/src/infra/fs.rs`, unix adapter: `st_ctime * 1_000_000_000 + st_ctime_nsec` —
+  nanoseconds since 1970, inode change time. The name is accurate here.
+* `src-tauri/src/infra/fs.rs`, windows adapter: `metadata.last_write_time()` — FILETIME, which is
+  100-nanosecond ticks since 1601, and is the *last write* time, not a change time.
+* `src-tauri/src/infra/path_authority/resolved.rs`: `meta.creation_time()` on Windows — FILETIME
+  again, and a third meaning (creation, not change or write).
+
+**This is a naming and documentation defect, not a wrong comparison.** The value is only ever
+compared against another value produced the same way on the same platform:
+`path_authority::opened_file_change_stamp` uses `last_write_time()` on Windows and carries a
+doc comment stating the convention outright ("Unix uses inode ctime; Windows uses the handle's
+last-write FILETIME"), and `verified.rs` compares `pending.installed_ctime_nanos` against exactly
+that function's output. So the durability marker check is like-for-like and correct today.
+
+What is wrong is that a reader of `AtomicInstalledFile.ctime_nanos` — a `pub` field — is told
+"nanoseconds" and "ctime" and gets neither on Windows. Anything that ever compares two of these
+across producers, persists one, renders one, or does arithmetic in nanoseconds on one will be
+wrong by a factor of 100 and by 369 years, and nothing in the type system says so.
+
+Filed rather than fixed in the f-20260914-10 push because the field is `pub` and read at roughly
+30 sites across `infra/fs.rs`, `infra/path_authority/{mod,resolved,verified}.rs`, `fs.rs` and
+`pgn.rs`, so renaming it is a mechanical change across six files that deserves its own diff rather
+than being buried in a commit about Windows compile blockers.
+
+Options worth weighing when it is picked up: rename to something honest about being an opaque
+same-platform comparison token (it is never interpreted as a duration), or keep a name that means
+"nanoseconds since the Unix epoch" and convert the Windows FILETIME at the boundary
+(`(ticks - 116444736000000000) * 100`). The first is cheaper and matches how the value is
+actually used; the second makes the name true and the values comparable across platforms.
+
+**Proof:** `cargo test --manifest-path src-tauri/Cargo.toml`, plus
+`cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-gnu --all-targets`
+for the Windows producers (a cross toolchain is available locally; see the f-20260914-10 handoff).
