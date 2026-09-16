@@ -1,7 +1,7 @@
 /*!
 Phase 1 refusal-pin proof record (2026-09-16).
 
-The 39 refusal sites are pinned by the G and B rows below. The O4d exclusion is
+The 36 refusal sites are pinned by the G and B rows below. The O4d exclusion is
 `opened_file_change_stamp`: its unconditional non-unix tail is not a refusal
 site and is intentionally not a row. Future closed-world completeness is not
 claimed here; that work is split to `f-20260916-01` (R15-01).
@@ -14,8 +14,7 @@ with those four helper pins argued, not staged”.
 
 G rows (each staged message names the listed file and signature):
 `infra/path_authority/mod.rs::ensure_app_owned_default_dir`,
-`fs.rs::download_file`, `fs.rs::download_lichess_games`,
-`fs.rs::download_engine_archive`, `chesscom.rs::download_chess_com_games`,
+`fs.rs::download_engine_archive`,
 `oauth.rs::authenticate`, `oauth.rs::migrate_legacy_lichess_token`,
 `infra/path_authority/mod.rs::engine_resource`,
 `fs.rs::set_file_as_executable_blocking`,
@@ -48,7 +47,7 @@ from this phase, mutated production files only, and ran exactly:
 `cargo test --manifest-path src-tauri/Cargo.toml platform_support`.
 The worktree was removed afterwards. “G all” means every G row above; “B all”
 means every B row above, so the named row messages are recorded without
-repeating the 39 names six times.
+repeating the 36 names six times.
 
 1. S-insert — inserted
    `std::fs::create_dir_all("staged").ok();` as the first effective B
@@ -853,29 +852,8 @@ mod tests {
             },
             GuardRow {
                 file: "fs.rs",
-                signature: "pub async fn download_file(",
-                operation: "file downloads",
-                effects: &["download_to_destination("],
-                nested: false,
-            },
-            GuardRow {
-                file: "fs.rs",
-                signature: "pub async fn download_lichess_games(",
-                operation: "Lichess game downloads",
-                effects: &["download_lichess_games_runtime("],
-                nested: false,
-            },
-            GuardRow {
-                file: "fs.rs",
                 signature: "pub async fn download_engine_archive(",
                 operation: "engine archive downloads",
-                effects: &["download_registry.begin("],
-                nested: false,
-            },
-            GuardRow {
-                file: "chesscom.rs",
-                signature: "pub async fn download_chess_com_games(",
-                operation: "Chess.com game downloads",
                 effects: &["download_registry.begin("],
                 nested: false,
             },

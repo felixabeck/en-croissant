@@ -627,7 +627,6 @@ pub async fn download_file(
     job_id: String,
     integrity: Option<ArtifactIntegrity>,
 ) -> Result<(), Error> {
-    crate::infra::platform_support::off_unix_refusal("file downloads", cfg!(unix))?;
     download_to_destination(
         &id,
         &url,
@@ -943,6 +942,12 @@ async fn download_to_destination_inner<R: tauri::Runtime>(
                 return Err(error);
             }
         }
+    } else if let Some(crate::infra::path_authority::CommitDurability::DurabilityUncertain(stage)) =
+        download_target_durability(target_durability)
+    {
+        let error = Error::CommittedDurabilityUncertain(stage);
+        report_download_error(state, app, &progress_lease, &job_id, &error);
+        return Err(error);
     } else {
         None
     };
@@ -1065,7 +1070,6 @@ pub async fn download_lichess_games(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<crate::infra::path_authority::ArtifactPublication, Error> {
-    crate::infra::platform_support::off_unix_refusal("Lichess game downloads", cfg!(unix))?;
     download_lichess_games_runtime(
         handle,
         destination,
@@ -1722,6 +1726,7 @@ fn get_file_metadata_with_authority(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::blocking::source_scan::body_at_indent;
     use std::io::Write;
     use tempfile::tempdir;
 
@@ -1911,6 +1916,30 @@ mod tests {
             Err(error) => error,
         };
         assert!(matches!(error, Error::InvalidInput(_)));
+    }
+
+    #[test]
+    fn download_file_command_publishes_on_windows() {
+        let source = include_str!("fs.rs");
+        let body = body_at_indent(source, "pub async fn download_file(");
+        assert!(!body.contains("off_unix_refusal("), "{body}");
+        assert_eq!(
+            body.matches("download_to_destination(").count(),
+            1,
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn download_lichess_games_command_publishes_on_windows() {
+        let source = include_str!("fs.rs");
+        let body = body_at_indent(source, "pub async fn download_lichess_games(");
+        assert!(!body.contains("off_unix_refusal("), "{body}");
+        assert_eq!(
+            body.matches("download_lichess_games_runtime(").count(),
+            1,
+            "{body}"
+        );
     }
 
     #[test]
@@ -2821,7 +2850,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn runtime_callers_pin_download_target_replacement_durability_override() {
         let _guard = ResetAtomicInjectorGuard;
         let dir = tempdir().unwrap();
@@ -2915,6 +2943,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_reservation_uncertainty_reports_failed_progress() {
+        let _guard = ResetAtomicInjectorGuard;
+        let dir = tempdir().unwrap();
+        let (authority, destination, download_root) = test_downloads_destination(&dir);
+        let mut state = AppState::default();
+        *state.pgn_path_authority.lock().unwrap() = Some(authority);
+        let app = test_progress_app();
+        let pgn_content: &'static [u8] = b"1. e4 c5 2. Nf3 d6";
+        state.http_transport = mock_successful_transport(pgn_content);
+
+        // The staging replacement is the first parent sync; the ordinary target replacement is
+        // the second and must report committed-but-uncertain durability terminally.
+        crate::infra::fs::set_test_atomic_file_injector(Some(Arc::new(TargetParentSyncFault {
+            skip: std::sync::atomic::AtomicUsize::new(1),
+        })));
+
+        let progress_id = "progress_no_reservation_uncertainty";
+        let error = download_to_destination(
+            progress_id,
+            "https://example.com/games.pgn",
+            destination,
+            "games.pgn".into(),
+            app.handle(),
+            &state,
+            None,
+            Some(pgn_content.len() as u32),
+            uuid::Uuid::new_v4().to_string(),
+            false,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::DownloadTargetReplacement
+            )
+        ));
+        let progress = state.progress_state.get(progress_id).unwrap().unwrap();
+        assert_eq!(progress.state, ProgressState::Failed);
+        assert!(progress.finished);
+        assert_eq!(
+            std::fs::read(download_root.join("games.pgn")).unwrap(),
+            pgn_content
+        );
+    }
+
+    #[tokio::test]
     async fn staged_artifact_cancels_at_real_install_precommit_without_publication() {
         let _guard = ResetAtomicInjectorGuard;
         let dir = tempdir().unwrap();
@@ -2957,7 +3034,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn staged_artifact_keeps_postrename_result_and_activation_after_late_cancellation() {
         let _guard = ResetAtomicInjectorGuard;
         let dir = tempdir().unwrap();
@@ -3018,7 +3094,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn download_verification_failure_records_failed_progress_and_quarantines_intent() {
         let dir = tempdir().unwrap();
         let (mut authority, destination, download_root) = test_downloads_destination(&dir);
@@ -3070,7 +3145,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn download_verification_failure_primary_error_survives_stale_or_cleared_lease() {
         let dir = tempdir().unwrap();
         let (mut authority, destination, download_root) = test_downloads_destination(&dir);
@@ -3155,7 +3229,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn download_authority_unavailable_after_transport_setup_records_failed_progress() {
         let dir = tempdir().unwrap();
         let (authority, destination, _) = test_downloads_destination(&dir);
@@ -3277,7 +3350,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn download_post_verification_stale_or_replaced_lease_preserves_published_artifact() {
         // Case 1: Replaced lease leaves replacement progress Running and preserves published capability
         let (item, publication) = run_post_verification_lease_case(true).await;
@@ -3371,7 +3443,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn download_cancellation_reporting_with_valid_and_stale_lease() {
         // Case 1: Valid lease cancellation transitions to Cancelled terminal state
         let (valid_item, valid_err) = run_cancellation_lease_case(false).await;
@@ -3417,7 +3488,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop() {
         for publication_fail in [false, true] {
             let dir = tempdir().unwrap();
