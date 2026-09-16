@@ -32,8 +32,10 @@ the named message and status 1 in the same run. The test names are the node:test
     matching subtest;
   rust-platform (3)-(5b) -> ... / matching subtest;
   rust-macos-test (6a)-(6b) and rust-windows-test (7a)-(7c) -> reports each Rust test-job
-    contract clause / matching subtest;
-  requiredWorkflowJob -> ... / missing registered workflow job for test and rust-windows-test;
+    contract clause / (6a) wrong runner, (6b) missing cargo test, (7a) wrong runner,
+    (7b) missing cargo test, (7c) strategy declaration, (7c) matrix declaration;
+  requiredWorkflowJob -> ... / missing registered workflow job test,
+    missing registered workflow job rust-windows-test;
   main findings return 1 -> every status-1 fixture above;
   unexpected main error return 2 -> reports an unexpected checker error with status 2;
   unaltered fixture -> accepts the complete Phase 3 fixture through the CLI (status 0).
@@ -154,8 +156,11 @@ function isFailureTolerant(value) {
   return value !== undefined && value !== "false";
 }
 
+// A job's own keys sit at exactly four spaces, so anchoring there keeps a `strategy:` written
+// inside a multi-line `run:` block from reading as a job key. Quoted and space-before-colon
+// spellings are accepted because YAML treats them as the same key.
 function jobHasKey(body, key) {
-  return new RegExp(`^\\s*${key}:\\s*`, "mu").test(body);
+  return new RegExp(`^ {4}["']?${key}["']?\\s*:`, "mu").test(body);
 }
 
 function declaresRustupToolchain(workflow) {
@@ -384,7 +389,12 @@ function checkTargetCoverage(workflows, findings) {
       `.github/workflows/test.yml: (5b) rust-platform is missing the exact cargo clippy step: ${RUST_PLATFORM_CLIPPY}`,
     );
   }
+}
 
+// Deliberately not part of checkTargetCoverage: that function returns early on four unrelated
+// release.yml and rust-platform problems, and those early returns would silently skip every
+// clause below, so a broken release matrix would disable the Windows job's enforcement.
+function checkRustTestJobs(workflows, findings) {
   const testWorkflow = workflows.get(".github/workflows/test.yml");
   for (const { job: jobName, runner, clauses } of RUST_TEST_JOBS) {
     const rustTestJob = testWorkflow?.jobs.find((job) => job.name === jobName);
@@ -494,6 +504,7 @@ export async function checkRustToolchainContract(repoRoot, { contents = new Map(
   }
 
   checkTargetCoverage(workflows, findings);
+  checkRustTestJobs(workflows, findings);
 
   const release = workflows.get(".github/workflows/release.yml");
   if (release !== undefined) {

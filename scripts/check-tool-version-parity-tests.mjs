@@ -206,22 +206,29 @@ function removeRustPlatformEntry(text, target) {
   );
 }
 
-function replaceNamedJobSetup(workflow, jobName, replacement) {
-  const jobPattern = new RegExp(`(^  ${jobName}:\\n[\\s\\S]*?)(?=^  \\S|(?![\\s\\S]))`, "mu");
-  const job = workflow.match(jobPattern)?.[1];
-  assert.ok(job, `missing ${jobName} job`);
-  const changed = job.replace(sharedSetupBlock, replacement);
-  assert.notEqual(changed, job, `missing setup block in ${jobName}`);
-  return workflow.replace(job, changed);
-}
-
-function replaceNamedJobText(workflow, jobName, from, to) {
+function replaceNamedJobText(
+  workflow,
+  jobName,
+  from,
+  to,
+  missing = `missing ${from} in ${jobName}`,
+) {
   const jobPattern = new RegExp(`(^  ${jobName}:\\n[\\s\\S]*?)(?=^  \\S|(?![\\s\\S]))`, "mu");
   const job = workflow.match(jobPattern)?.[1];
   assert.ok(job, `missing ${jobName} job`);
   const changed = job.replace(from, to);
-  assert.notEqual(changed, job, `missing ${from} in ${jobName}`);
+  assert.notEqual(changed, job, missing);
   return workflow.replace(job, changed);
+}
+
+function replaceNamedJobSetup(workflow, jobName, replacement) {
+  return replaceNamedJobText(
+    workflow,
+    jobName,
+    sharedSetupBlock,
+    replacement,
+    `missing setup block in ${jobName}`,
+  );
 }
 
 test("accepts matching declarations and discovers every matching site", async () => {
@@ -510,7 +517,11 @@ test("reports each Rust test-job contract clause through the CLI", async (t) => 
       ),
     );
   }
-  for (const key of ["strategy", "matrix"]) {
+  // Each key is injected as a job key on its own. Wrapping `matrix` inside `strategy` would let
+  // the `strategy` disjunct short-circuit, leaving the `matrix` check able to be deleted with
+  // every test still green.
+  for (const declaration of ["strategy:\n      fail-fast: false", "matrix:\n      os: []"]) {
+    const key = declaration.slice(0, declaration.indexOf(":"));
     await t.test(`(7c) ${key} declaration`, (subtest) =>
       mutateCheckedInFileAndRunCli(
         subtest,
@@ -520,7 +531,7 @@ test("reports each Rust test-job contract clause through the CLI", async (t) => 
             text,
             "rust-windows-test",
             "runs-on: windows-latest",
-            `runs-on: windows-latest\n    strategy:\n      ${key}: {}`,
+            `runs-on: windows-latest\n    ${declaration}`,
           ),
         ".github/workflows/test.yml: (7c) rust-windows-test must not declare strategy or matrix",
       ),

@@ -14,11 +14,11 @@ with those four helper pins argued, not staged”.
 
 G rows (each staged message names the listed file and signature):
 `infra/path_authority/mod.rs::ensure_app_owned_default_dir`,
-`infra/fs.rs::download_file`, `infra/fs.rs::download_lichess_games`,
-`infra/fs.rs::download_engine_archive`, `chesscom.rs::download_chess_com_games`,
+`fs.rs::download_file`, `fs.rs::download_lichess_games`,
+`fs.rs::download_engine_archive`, `chesscom.rs::download_chess_com_games`,
 `oauth.rs::authenticate`, `oauth.rs::migrate_legacy_lichess_token`,
 `infra/path_authority/mod.rs::engine_resource`,
-`infra/fs.rs::set_file_as_executable_blocking`,
+`fs.rs::set_file_as_executable_blocking`,
 `puzzle.rs::delete_puzzle_database`, `puzzle.rs::get_puzzle`.
 
 B rows (each staged message names the listed file and signature):
@@ -105,9 +105,12 @@ repeating the 40 names six times.
    `std::fs::create_dir_all("staged").ok();` as the first statement of both
    `single_leaf` and `validate_components`. Failing test:
    `refusal_constant_and_callees_are_exact`. Messages observed:
-   `infra/platform_support.rs: pub(crate) fn single_leaf(: body changed` and
-   `infra/platform_support.rs: fn validate_components(: body changed`. Exit
-   status: 101.
+   `infra/fs.rs: pub(crate) fn single_leaf(: body changed` and
+   `infra/path_authority/mod.rs: fn validate_components(: body changed` — each
+   naming the file the pinned body actually lives in, which is what
+   `check_helper`'s `file` parameter exists for. Both rows were reported in the
+   same run, which is the observation behind the row-collecting requirement: a
+   fail-fast loop would have hidden the second. Exit status: 101.
 
 No production whole-function rewrite was needed; all refusal messages remain
 byte-identical.
@@ -332,7 +335,11 @@ mod tests {
             let trimmed = source[previous_start..previous_end]
                 .trim_end_matches('\r')
                 .trim();
-            if trimmed.is_empty() {
+            if trimmed.is_empty() || trimmed.starts_with("//") {
+                // A comment or doc comment between an attribute and its item does not
+                // detach the attribute, so skipping it is what the compiler does. Breaking
+                // here instead would hide a `#[cfg(unix)]` sitting above a doc comment and
+                // let a refusal site be compiled out off-Unix without tripping any pin.
                 cursor = previous_start;
             } else if trimmed.starts_with("#[") || trimmed.starts_with("#![") {
                 attributes.push(trimmed);
@@ -412,10 +419,15 @@ mod tests {
         effective
     }
 
-    fn scope_blocks(source: &str) -> Vec<(String, Range<usize>)> {
+    /// Every enclosing `impl`/`mod` scope, with the offset of its *declaration* — not of its
+    /// opening brace. A multi-line header (`impl Foo\n{`, a `where` clause, a long generic list)
+    /// would otherwise make the caller scan for attributes above the `{` line, find the tail of
+    /// the declaration, and conclude the scope carries no cfg.
+    /// `impl<` is listed because `impl<T>` has no space; `unsafe impl` still matches `impl `.
+    fn scope_blocks(source: &str) -> Vec<(String, usize, Range<usize>)> {
         let normalised = normalise(source, Literals::Blank);
         let mut scopes = Vec::new();
-        for keyword in ["impl ", "mod "] {
+        for keyword in ["impl ", "impl<", "mod "] {
             for (start, _) in normalised.match_indices(keyword) {
                 let Some(opening_offset) = normalised[start..].find('{') else {
                     continue;
@@ -425,7 +437,7 @@ mod tests {
                     continue;
                 }
                 let body = body_from_opening(&normalised, opening);
-                scopes.push((compact(&source[start..opening]), body));
+                scopes.push((compact(&source[start..opening]), start, body));
             }
         }
         scopes
@@ -437,15 +449,14 @@ mod tests {
         item_start: usize,
         errors: &mut Vec<String>,
     ) {
-        for (scope, body) in scope_blocks(source) {
-            if body.start < item_start && item_start < body.end {
-                let scope_start = source[..body.start].rfind('\n').map_or(0, |i| i + 1);
-                if attribute_lines_before(source, scope_start)
+        for (scope, declaration_start, body) in scope_blocks(source) {
+            if body.start < item_start
+                && item_start < body.end
+                && attribute_lines_before(source, declaration_start)
                     .iter()
                     .any(|attribute| attribute.contains("#[cfg") || attribute.contains("cfg_attr"))
-                {
-                    errors.push(format!("{file}: enclosing scope {scope} carries cfg"));
-                }
+            {
+                errors.push(format!("{file}: enclosing scope {scope} carries cfg"));
             }
         }
         for (module_file, declaration) in module_declarations(file) {
@@ -782,12 +793,11 @@ mod tests {
                 "{label}: effective body contains an unpermitted cfg"
             ));
         }
-        let expected = row.expected.compact();
-        for crate_start in expected.match_indices("crate::").map(|(offset, _)| offset) {
-            let Some(open) = expected[crate_start..].find('(') else {
+        for crate_start in actual.match_indices("crate::").map(|(offset, _)| offset) {
+            let Some(open) = actual[crate_start..].find('(') else {
                 continue;
             };
-            let path = &expected[crate_start..crate_start + open];
+            let path = &actual[crate_start..crate_start + open];
             let allowed = [
                 "crate::infra::platform_support::unsupported",
                 "crate::infra::platform_support::unsupported_plural",
