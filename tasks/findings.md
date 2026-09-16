@@ -8851,3 +8851,16 @@ visible in the first place.
 * **Why it matters:** the content digest still gates installation, so this is not a direct install bypass; what is lost is unambiguous signed provenance — the manifest no longer proves which URL was actually contacted. `docs/signed-download-manifests.md` states the exact-URL property.
 * **Related:** `f-20260914-10` (found while reviewing its plan; outside that finding's mandate).
 * **Found by:** `review-tauri-security` (confidence 94) in round 6 of the `f-20260914-10` plan review, 2026-09-16, on Codex.
+
+---
+
+## 2026-09-16 — filed through the inbox spool
+
+### The download durability warning names neither the job nor the destination
+
+* **ID:** f-20260916-05 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** inline · **Blocked:** none
+* **Where:** `src-tauri/src/fs.rs:58`.
+* **Defect:** the warning emitted when a download's durability cannot be proven carries no job id and no destination identifier. Because reserved downloads otherwise report success, two concurrent downloads produce warning records that cannot be told apart or attributed.
+* **Why it matters:** this is the only operator-visible trace that a write may not have reached disk, and it is unattributable, so it cannot be acted on.
+* **Related:** the renderer-side finding filed alongside it in this round, where the same uncertainty is dropped before reaching the user; both concern the reporting half of `d-20260906-03`.
+* **Found by:** `review-error-handling` (confidence 90) in round 6 of the `f-20260914-10` plan review, 2026-09-16, on Codex.
