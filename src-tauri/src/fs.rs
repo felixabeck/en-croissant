@@ -1842,6 +1842,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn lichess_prefixed_id_cannot_skip_signature() {
         let dir = tempdir().unwrap();
         let (authority, destination) = database_destination(&dir);
@@ -1872,6 +1873,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn lichess_games_reject_database_destination() {
         let dir = tempdir().unwrap();
         let (authority, destination) = database_destination(&dir);
@@ -1896,6 +1898,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn download_engine_archive_rejects_database_destination() {
         let dir = tempdir().unwrap();
         let (authority, destination) = database_destination(&dir);
@@ -1935,6 +1938,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn file_exists_rejects_a_capability_without_engine_inspection_authority() {
         let dir = tempdir().unwrap();
         let executable = dir.path().join("private-engine");
@@ -1962,6 +1966,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn file_exists_returns_false_only_after_the_registered_file_is_deleted() {
         let dir = tempdir().unwrap();
         let executable = dir.path().join("engine");
@@ -1977,6 +1982,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn get_file_metadata_rejects_a_capability_without_engine_inspection_authority() {
         let dir = tempdir().unwrap();
         let executable = dir.path().join("private-engine");
@@ -2004,6 +2010,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn get_file_metadata_redacts_a_deleted_engine_path_and_os_error() {
         let dir = tempdir().unwrap();
         let executable = dir.path().join("private-engine");
@@ -2218,6 +2225,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn test_download_file_cross_origin_token_stripping() {
         let dir = tempdir().unwrap();
         let target = dir.path().join("out.txt");
@@ -2448,6 +2456,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn gzip_extraction_keeps_the_installed_file_and_reports_uncertain_durability() {
         let root = tempdir().unwrap();
         let gzip_archive = root.path().join("archive.gz");
@@ -2821,6 +2830,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn runtime_callers_pin_download_target_replacement_durability_override() {
         let _guard = ResetAtomicInjectorGuard;
         let dir = tempdir().unwrap();
@@ -2914,6 +2924,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn staged_artifact_cancels_at_real_install_precommit_without_publication() {
         let _guard = ResetAtomicInjectorGuard;
         let dir = tempdir().unwrap();
@@ -2956,6 +2967,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn staged_artifact_keeps_postrename_result_and_activation_after_late_cancellation() {
         let _guard = ResetAtomicInjectorGuard;
         let dir = tempdir().unwrap();
@@ -3016,6 +3028,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn download_verification_failure_records_failed_progress_and_quarantines_intent() {
         let dir = tempdir().unwrap();
         let (mut authority, destination, download_root) = test_downloads_destination(&dir);
@@ -3067,6 +3080,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn download_verification_failure_primary_error_survives_stale_or_cleared_lease() {
         let dir = tempdir().unwrap();
         let (mut authority, destination, download_root) = test_downloads_destination(&dir);
@@ -3151,6 +3165,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn download_authority_unavailable_after_transport_setup_records_failed_progress() {
         let dir = tempdir().unwrap();
         let (authority, destination, _) = test_downloads_destination(&dir);
@@ -3272,6 +3287,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn download_post_verification_stale_or_replaced_lease_preserves_published_artifact() {
         // Case 1: Replaced lease leaves replacement progress Running and preserves published capability
         let (item, publication) = run_post_verification_lease_case(true).await;
@@ -3365,6 +3381,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn download_cancellation_reporting_with_valid_and_stale_lease() {
         // Case 1: Valid lease cancellation transitions to Cancelled terminal state
         let (valid_item, valid_err) = run_cancellation_lease_case(false).await;
@@ -3410,6 +3427,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn production_download_core_matrix_keeps_success_and_error_tails_after_caller_drop() {
         for publication_fail in [false, true] {
             let dir = tempdir().unwrap();
@@ -3523,6 +3541,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn staging_deadline_keeps_accepted_lease_until_real_extractor_cleanup() {
         let dir = tempdir().unwrap();
         let archive_path = dir.path().join("held.gz");

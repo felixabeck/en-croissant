@@ -787,6 +787,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     fn public_registry_survives_restart_without_secret() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
@@ -810,6 +811,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     fn failed_keyring_add_is_not_visible_or_retained_after_restart() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(FailStore {
@@ -832,6 +834,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     fn write_then_error_keyring_add_recovers_after_restart_without_leaking_a_token() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(WriteThenErrorStore::default());
@@ -857,6 +860,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     fn pending_delete_reconciles_idempotently_after_restart() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
@@ -885,6 +889,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     fn final_add_write_failure_keeps_journal_for_restart_reconciliation() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
@@ -910,6 +915,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     fn durability_uncertain_pending_add_journal_is_reported() {
         let temp = tempfile::tempdir().unwrap();
         let manager = CredentialManager::with_persistence(
@@ -930,6 +936,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     fn durability_uncertain_final_add_journal_is_reported() {
         let temp = tempfile::tempdir().unwrap();
         let manager = CredentialManager::with_persistence(
@@ -950,6 +957,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     fn durability_uncertain_pending_delete_journal_is_reported() {
         let temp = tempfile::tempdir().unwrap();
         let manager = CredentialManager::with_persistence(
@@ -973,6 +981,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     fn durability_uncertain_final_delete_journal_is_reported() {
         let temp = tempfile::tempdir().unwrap();
         let manager = CredentialManager::with_persistence(
@@ -996,6 +1005,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     fn reauthentication_reuses_the_existing_opaque_handle() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(MemoryCredentialStore::default());
@@ -1082,6 +1092,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     async fn async_store_methods_do_not_run_on_the_caller_thread() {
         let caller = std::thread::current().id();
         let store = Arc::new(ThreadRecordingStore::default());

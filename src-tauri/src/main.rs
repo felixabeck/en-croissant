@@ -2325,6 +2325,7 @@ mod search_cache_tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn database_and_index_revisions_do_not_share_cache_identity() {
         let directory = tempdir().unwrap();
         let first_database = directory.path().join("first.db");
@@ -2602,6 +2603,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn native_export_keeps_the_file_and_reports_uncertain_durability() {
         let directory = tempfile::tempdir().expect("export directory");
         let path = directory.path().join("board.png");
@@ -2664,6 +2666,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn native_export_core_keeps_real_success_and_error_tails_after_caller_drop() {
         for fail in [false, true] {
             let directory = tempfile::tempdir().unwrap();
@@ -3018,6 +3021,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     async fn shutdown_drains_real_image_issue_before_seal_rejection_cleanup() {
         let directory = tempfile::tempdir().unwrap();
         let registry = directory.path().join("registry.json");

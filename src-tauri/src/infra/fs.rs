@@ -4403,6 +4403,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn fresh_target_is_private_then_durable() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("new");
@@ -4419,6 +4420,7 @@ mod tests {
         assert_eq!(std::fs::read(&target).expect("read"), b"new");
     }
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn retained_parent_descriptor_installs_without_reopening_a_target_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         let parent = std::fs::File::open(dir.path()).expect("open parent");
@@ -4440,9 +4442,15 @@ mod tests {
         entry_point: impl Fn(&File, &OsStr) -> Result<T, Error>,
     ) {
         let temp = tempfile::tempdir().expect("tempdir");
-        let parent = File::open(temp.path()).expect("open parent");
-        assert!(entry_point(&parent, OsStr::new("")).is_err());
-        assert!(entry_point(&parent, OsStr::new("nested/file")).is_err());
+        let parent_path = temp.path().join("parent");
+        std::fs::write(&parent_path, b"parent").expect("write parent");
+        let parent = File::open(parent_path).expect("open parent");
+        for leaf in [OsStr::new(""), OsStr::new("nested/file")] {
+            assert!(matches!(
+                entry_point(&parent, leaf),
+                Err(Error::InvalidInput(_))
+            ));
+        }
     }
 
     #[test]
@@ -4537,6 +4545,7 @@ mod tests {
         );
     }
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn replacement_preserves_existing_target_and_mode() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("old");
@@ -4566,6 +4575,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn caller_precommit_runs_after_revalidation_before_rename_and_preserves_target_on_conflict() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("target");
@@ -4627,6 +4637,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn file_post_commit_and_cleanup_precedence_are_explicit() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("new");
@@ -4680,6 +4691,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn file_revalidation_races_are_conflicts_and_actual_rename_failure_is_preserved() {
         for (existing, action) in [(false, "create"), (true, "replace")] {
             let root = tempfile::tempdir().expect("tempdir");

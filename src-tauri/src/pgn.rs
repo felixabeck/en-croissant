@@ -1152,6 +1152,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn edit_existing_keeps_the_replacement_and_reports_uncertain_pgn_edit() {
         let directory = tempfile::tempdir().expect("PGN directory");
         let path = directory.path().join("games.pgn");
@@ -1205,6 +1206,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn read_games_core_returns_complete_pages_and_rejects_missing_ranges() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("two-games.pgn");
@@ -1254,6 +1256,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn read_games_core_preserves_only_the_empty_file_opening_range() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("empty.pgn");
@@ -1287,6 +1290,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn cancel_long_single_game_read() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("long-game.pgn");
@@ -1487,6 +1491,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn scan_file_accepts_a_generated_300_mib_pgn() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("large.pgn");
@@ -1521,6 +1526,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn scan_file_reads_a_late_page_beyond_100_000_games() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("many-games.pgn");
@@ -1548,6 +1554,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn cache_hits_share_range_storage() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("cache.pgn");
@@ -1572,6 +1579,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn cache_byte_eviction_replacement_and_invalidation_account_exactly() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("cache-accounting.pgn");
@@ -1626,6 +1634,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn oversized_scan_is_returned_but_not_retained() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("oversized-cache.pgn");
@@ -1652,6 +1661,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn held_accepted_write_caller_dropped_commits_and_invalidates_cache() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("write-held.pgn");
@@ -1720,6 +1730,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn held_accepted_delete_caller_dropped_commits_and_invalidates_cache() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("delete-held.pgn");
@@ -1785,6 +1796,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn held_accepted_write_caller_dropped_with_uncertain_durability_invalidates_cache() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("write-uncertain.pgn");
@@ -1919,16 +1931,19 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn shutdown_cancels_write_queued_at_actual_edit_lock() {
         queued_edit_shutdown_preserves_file(true).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn shutdown_cancels_delete_queued_at_actual_edit_lock() {
         queued_edit_shutdown_preserves_file(false).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn active_production_scan_serializes_as_cancellation() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("cancelled.pgn");

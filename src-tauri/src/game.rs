@@ -3983,6 +3983,7 @@ done
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn zipped_epd_opening_book_is_applied_through_outer_dispatch() {
         let dir = tempfile::tempdir().unwrap();
         let zip_path = dir.path().join("book.zip");

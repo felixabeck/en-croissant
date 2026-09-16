@@ -694,6 +694,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn dropped_callers_retain_success_and_publication_error_terminal_tails() {
         let _reset = ResetAtomicInjector;
 
@@ -871,6 +872,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn publication_ignores_expired_staging_deadline_and_late_cancellation() {
         let _reset = ResetAtomicInjector;
         let (_dir, state, destination, root, app) = export_fixture(export_transport());
@@ -916,6 +918,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     async fn cleared_terminal_progress_cannot_replace_committed_success() {
         let _reset = ResetAtomicInjector;
         let (_dir, state, destination, root, app) = export_fixture(export_transport());

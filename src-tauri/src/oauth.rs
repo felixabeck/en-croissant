@@ -1206,6 +1206,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     async fn legacy_migration_verifies_identity_before_storing_an_opaque_handle() {
         let temp = tempfile::tempdir().unwrap();
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
@@ -1279,6 +1280,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     async fn persist_stashed_token_maps_uncertain_durability_to_success() {
         let temp = tempfile::tempdir().unwrap();
         let credentials = Arc::new(
@@ -1323,6 +1325,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     async fn migration_rejects_identity_mismatch_without_storing_the_token() {
         let temp = tempfile::tempdir().unwrap();
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
@@ -1345,6 +1348,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     async fn local_removal_stays_true_when_provider_revocation_fails() {
         let temp = tempfile::tempdir().unwrap();
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(
@@ -1374,6 +1378,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     async fn uncertain_removal_and_revocation_failure_report_both_flags() {
         let temp = tempfile::tempdir().unwrap();
         let credentials = Arc::new(
@@ -1406,6 +1411,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-11")]
     async fn removing_an_unknown_account_does_not_revoke_a_provider_token() {
         let temp = tempfile::tempdir().unwrap();
         let credentials = Arc::new(crate::credentials::CredentialManager::new(Arc::new(

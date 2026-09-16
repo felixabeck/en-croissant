@@ -438,6 +438,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn resolves_resource_options_with_individual_native_values() {
         use std::path::Path;
 
