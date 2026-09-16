@@ -8484,6 +8484,55 @@ Windows claims that a Linux runtime test cannot. The first real verification is 
 mutation tests un-ignored and proven on a Windows runner.
 <!-- ledger-meta {"command":"annotate","effect_lines":36,"effect_sha256":"2bb2602bd0cd56f85acb59bca5f66a7f13c49c03e4195f7c86ef65e5aca497f8","input_sha256":"22a36ca6c8854259adaed9c84e519a41fbd0eebb1f0ed2fb6c5382f5323e9e0b","kind":"mutation-receipt","operation":"7468b5c8de11811c372f1ebee187aaeb6e9622bd0068a355e5adc5f11c2d5f58","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-10"],"target":"f-20260914-10","v":1} -->
 
+**Handled (2026-09-16).** Atomic replacement, downloads and PGN writes are no longer refused on
+Windows. The port itself landed in 772d4558 (Phase A), 68f1f065 (Phase B), e32d8f46 (Phase C),
+97e8db57 (the writable-parent fix) and 400b7f7b (Phase D), with the durable record in 16c22a36 and
+5268132f. The push review then found that none of it compiled, and 62b4964e is the repair.
+
+**The port had never been compiled on any machine.** Its Windows claims rested entirely on source
+pins in infra/platform_support.rs, which execute on every platform. A MinGW cross toolchain
+installed unprivileged into ~/.local/opt/mingw (d-20260916-07) made a Windows-target cargo check
+possible for the first time and found nine compile errors plus two visibility errors. Four review
+lenses had independently found five of them (the security-descriptor pointer types); four were
+found by no lens and no gate, only by the compiler; and a Windows-only clippy lint surfaced behind
+those. The pins were not useless — they catch semantic regressions a type-check cannot see, such as
+an access mask losing GENERIC_WRITE — but they cannot catch a wrong winapi signature, and did not.
+
+**Substantive defects the review found, all fixed in 62b4964e:** the read-only ancestor walk
+(open_directory_path honoured its writable parameter on the base open and then demanded
+GENERIC_WRITE on every child, so pre-commit revalidation failed under a non-writable ancestor —
+reported independently by four lenses); a missing reparse-point refusal, where
+open_windows_nofollow refuses what open_directory_path merely opened; a vacuous regular-file guard
+(target_regular returned a bare true while FILE_NON_DIRECTORY_FILE still admits devices, volumes
+and pipes); and an unprotected private-temp DACL, which without SE_DACL_PROTECTED would absorb a
+parent directory's inheritable ACEs into the one file that must be creator-only.
+
+**Fifteen cfg(windows) tests could not execute on any platform.** They carried an ignore attribute
+conditioned on not(unix): true on Windows, so skipped there, while the cfg deleted them on unix.
+The markers are removed, so they run on a Windows runner for the first time. Note for whoever reads
+the first runner result: this machine has a Windows cross-compiler, not a Windows runtime, so no
+Windows test has ever been executed, and f-20260916-12 records one that is expected to fail.
+
+**Verified:** fmt check, cargo check and clippy with warnings denied on both
+x86_64-unknown-linux-gnu and x86_64-pc-windows-gnu; 1199 backend tests; 14 platform_support pins.
+**Not verified:** anything requiring a Windows runtime.
+
+**Deferred, all filed:** f-20260916-08 (two argument-forwarding wrappers), f-20260916-09 (the
+missing-entry predicate divergence between raw OS numbers and ErrorKind::NotFound), f-20260916-10
+(ctime_nanos names a unit and timestamp two of its three producers do not use), f-20260916-11 (two
+NtCreateFile call sites, where unifying them would add a sharing parameter to the path-containment
+boundary), f-20260916-12 (the post-rename race injector cannot fire, because the temp handle
+forbids the rename it performs).
+
+**Decisions:** d-20260916-07 (the cross toolchain), d-20260916-08 (the Codex lens fallback after
+Gemini exhausted its individual quota mid-review), d-20260916-09 (the full review triage, including
+two lens claims rejected with evidence and one true blocker nearly rejected on a mis-spelled grep —
+the same mis-spelling this finding's own handoff records round 6 making).
+
+Sibling f-20260914-08 (workspace create, move, rename, trash, restore, delete) and f-20260914-11
+remain open under the same root.
+<!-- ledger-meta {"command":"annotate","effect_lines":47,"effect_sha256":"da61d5a19826d391c4c0eccce2a7b368edf6f7e2f8a47456c9e82e5f758e9ec3","input_sha256":"ab609d818703b9bc0c027bf322bd4092f18a84b1a013e790561dae76fc4bbae5","kind":"mutation-receipt","operation":"b29af06c1fea2612f504236a10b76b564ba09a36bbdafa23d5a25ed1bb4e9226","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-10"],"target":"f-20260914-10","v":1} -->
+
 ### Windows startup cannot persist the path-authority and credential registries or create app-owned roots
 
 * **ID:** f-20260914-11 · **Status:** open · **Area:** app-startup · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
