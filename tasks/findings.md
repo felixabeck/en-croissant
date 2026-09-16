@@ -8838,3 +8838,16 @@ visible in the first place.
 * **Why it matters:** the path authority exists so that a renderer-supplied name addresses exactly the object it was authorised for. This silently breaks that identity and can overwrite an unintended file. It is unreachable today only because the Windows filesystem paths refuse first; enabling them (`f-20260914-10`) makes it reachable.
 * **Related:** `f-20260914-10` (the Windows atomic-replacement port, which makes this reachable and from whose plan this was cut as out-of-mandate, exactly as the alternate-stream gap `f-20260916-02` was); `f-20260916-02` (same helper, same validator, same class of input validation).
 * **Found by:** `review-tauri-security` (confidence 98) in round 5 of the `f-20260914-10` plan review, 2026-09-16, on Codex; source-verified by the orchestrator at the lines above.
+
+---
+
+## 2026-09-16 — filed through the inbox spool
+
+### The signed download manifest verifies the raw URL while transport fetches the normalized one
+
+* **ID:** f-20260916-04 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** signature verification at `src-tauri/src/fs.rs:310`; transport parses and sends the normalized URL at `:399` and `:429`.
+* **Defect:** verification covers the raw URL string, but the request is issued against the normalized form. An input such as `https://host:443/path` is therefore signed as one URL and fetched as another, so the signed-payload contract's "exact URL" property does not hold.
+* **Why it matters:** the content digest still gates installation, so this is not a direct install bypass; what is lost is unambiguous signed provenance — the manifest no longer proves which URL was actually contacted. `docs/signed-download-manifests.md` states the exact-URL property.
+* **Related:** `f-20260914-10` (found while reviewing its plan; outside that finding's mandate).
+* **Found by:** `review-tauri-security` (confidence 94) in round 6 of the `f-20260914-10` plan review, 2026-09-16, on Codex.
