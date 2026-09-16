@@ -8878,3 +8878,17 @@ visible in the first place.
 * **Related:** `f-20260914-10` (the port that makes it reachable; cut from that slice under its A6 mandate boundary), `d-20260915-03` (the binding contract this weakens).
 * **Open question:** where does parent identity get captured and enforced - does `StoredEntry` gain a persisted parent `(volume, file-id)` captured at acquisition and re-checked on every use, or does resolution re-walk and authenticate each ancestor no-follow at use time? The first costs a schema change and a migration for existing entries but makes the check O(1); the second needs no persisted state but repeats a full walk per operation and must define what happens when an ancestor legitimately moves. Both must hold on Unix and Windows without weakening `d-20260915-03`'s no-follow discipline.
 * **Found by:** `review-tauri-security` (confidence 98) in round 6 of the `f-20260914-10` plan review, 2026-09-16, on Codex.
+
+---
+
+## 2026-09-16 — filed through the inbox spool
+
+### Both renderer download adapters discard the durability field, so the user sees plain success
+
+* **ID:** f-20260916-07 · **Status:** open · **Area:** frontend-state · **Root:** - · **Entry:** build · **Blocked:** none
+* **Where:** `src/utils/lichess/api.tsx:397-399` and `src/utils/chess.com/api.tsx:65-68`; the backend sets `ArtifactPublication.durability` at `src-tauri/src/fs.rs:936` and then returns `Ok` at `:949-950`.
+* **Defect:** a reserved download whose parent-directory sync could not be proven produces `CommittedDurabilityUncertain`, which the backend carries in `ArtifactPublication.durability`. Both renderer adapters drop that field, so the interface reports an unqualified success and the user proceeds with no warning.
+* **Why it matters:** `d-20260906-03` defines three durability contracts — *report*, *record*, *combine* — and this path is a *report* contract with no reporting surface. The uncertainty is computed, typed and then thrown away at the last step, which is indistinguishable from never having measured it.
+* **Related:** `f-20260914-10` (the Windows port makes this path newly reachable there), `d-20260906-03` (the contract being broken).
+* **Open question:** which layer owns surfacing an uncertain durability, and what is its typed contract? Either the adapters return a discriminated result the callers must handle, so dropping it becomes a type error, or the platform facade raises it once as a distinct event that no adapter can swallow. `d-20260906-03` already settles *that* it must be reported, so this is the mechanism, not whether. The answer also decides whether the *record* and *combine* contracts need the same treatment.
+* **Found by:** `review-error-handling` (confidence 99) in round 6 of the `f-20260914-10` plan review, 2026-09-16, on Codex.
