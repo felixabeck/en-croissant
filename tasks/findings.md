@@ -8982,3 +8982,44 @@ incoherent. It is not blocked on anything.
 `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings`. Both
 functions are platform-neutral, so the host toolchain proves the change; no Windows target is
 required.
+
+---
+
+## 2026-09-16 — filed through the inbox spool
+
+### Two "does this path exist" predicates disagree about how a missing entry is spelled
+
+* **ID:** f-20260916-09 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+
+`review-minimalism` raised this during the `$push` review of the f-20260914-10 Windows
+atomic-replacement port (confidence 85). Two predicates answer the same question with different
+evidence:
+
+* `src-tauri/src/infra/fs.rs` `missing` matches `Error::Io(e)` where `e.raw_os_error()` is
+  `Some(2 | 3)` — that is, the Win32/errno numbers `ERROR_FILE_NOT_FOUND` / `ERROR_PATH_NOT_FOUND`,
+  which is also what `status_error` produces when it maps `STATUS_OBJECT_NAME_NOT_FOUND`,
+  `STATUS_NO_SUCH_FILE` and `STATUS_OBJECT_PATH_NOT_FOUND`.
+* `src-tauri/src/infra/path_authority/resolved.rs` `is_missing_leaf_error` matches
+  `ErrorKind::NotFound`.
+
+On Linux the two coincide for the cases these paths produce. They are not guaranteed to coincide
+for an error that arrives as an NTSTATUS mapped through `RtlNtStatusToDosError`, and the two
+modules feed each other: `fs.rs` already calls into `path_authority` for `open_windows_child` and
+`opened_file_identity`. A divergence here is silent — a "not found" that one predicate recognises
+and the other does not becomes a hard error instead of an expected absence.
+
+* **Open question:** Should the NT layer normalise its missing-entry NTSTATUS mappings to
+  `std::io::ErrorKind::NotFound` at its own boundary, so that every caller above it tests one
+  predicate — or do the raw OS numbers stay authoritative for descriptor-relative operations, with
+  `is_missing_leaf_error` changed to test those numbers instead? The answer decides where error
+  normalisation lives, which of the two predicates survives, and whether `Error::Io` keeps carrying
+  a platform-specific number across the `path_authority` boundary at all.
+
+Related: the duplicate NTSTATUS classifier (`fs.rs` `status_error` versus
+`path_authority/mod.rs` `windows_open_status_error`) was found in the same review and is being
+fixed in the f-20260914-10 push itself; this entry is the semantic half that survives that fix.
+
+**Proof:** a test that drives each predicate with an error produced by the other layer's mapping,
+plus `cargo test --manifest-path src-tauri/Cargo.toml`. A Windows target check is available
+locally via `cargo check --target x86_64-pc-windows-gnu` (see the toolchain note in the
+f-20260914-10 handoff).
