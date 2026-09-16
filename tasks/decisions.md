@@ -3034,3 +3034,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Review:** `tasks/handoffs/2026-09-16-f-20260914-07-review.md`
 * **Decided by:** Claude Code, autonomously under `full auto` · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":9,"effect_sha256":"9f4ac0f58fc9d47081c37cb91a2f222a5bb0771c80f7b787f980c8c07ee924a0","input_sha256":"6bffb380a9390eb25ed5c9dd6c51bc161bd0e5223f56994726f645f77974eee8","kind":"mutation-receipt","operation":"e3b6fdfa37a69cf74b408293dde71a61419932298b4692686fb08aecda8ee9a0","options":{"section":null},"request_id_sha256":null,"results":["d-20260916-01"],"target":"decisions-ledger","v":1} -->
+
+### d-20260916-02 — How does the refusal-pin count stay self-consistent while four phases add and remove rows?
+
+* **Question:** O5 states the end state as 36 refusal sites (40 - 5 + 1), but the removals are split across Phases B and C while the addition lands in Phase A. What count does each phase's commit document, given the pins execute on every platform and every phase must end green?
+* **Governs:** f-20260914-10
+* **Chosen:** each phase documents the count that is true at its own commit, verified by counting the actual rows rather than copying a number from prose. Phase A 40 -> 41 (adds the replace_pgn_atomic guard row), Phase B 41 -> 39 (removes two atomic_replace body rows), Phase C 39 -> 36 (removes three download guard rows). Final state 36 = 27 body + 9 guard.
+* **Rejected:** writing 36 in Phase A as O5's text literally says. The pins are executable assertions, not documentation: a documented 36 against 41 actual rows is either a red gate or a lie, and Phase A would not have ended green.
+* **Reason:** rule 4a requires every section to end green and individually pushable. O5's "36" is the end state after all phases, which its own arithmetic (40 - 5 + 1) makes explicit.
+* **Decided by:** Claude Code, autonomously under `full auto` · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"04483a089b73b0b582a66bd539335777bf935c79b3a833d7263e3b2d3bc341c6","input_sha256":"38878efd1aa3d2c9f449711d195485011779c2c34355e8c55c96c78d83954a15","kind":"mutation-receipt","operation":"543b80631ef4ef2e8ff020dd128d56a04c953e1bfa7c6eb67564002e3fb763ba","options":{"section":null},"request_id_sha256":null,"results":["d-20260916-02"],"target":"decisions-ledger","v":1} -->
