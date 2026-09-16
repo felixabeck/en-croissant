@@ -3064,3 +3064,13 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** found by the Phase C leaf, which reported it rather than working around it. resolve_windows is cfg(windows) and nothing on Linux compiles it, so the two predicates are pinned by an exact source assertion that also rejects the collapsed form.
 * **Decided by:** Claude Code, autonomously under `full auto` · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"463719c7c2959c99fb95e25ad195875d1b2bf07e7132660a6c98546fd5de2aa4","input_sha256":"57e6a12e5b90b2c7cd53b609bac494643abe64a23f27b12e3a5579cab435b75c","kind":"mutation-receipt","operation":"810dac841ed2eddb48ffe5c3243c425989c0347eaadbf6da8e39387c9629bc7d","options":{"section":null},"request_id_sha256":null,"results":["d-20260916-04"],"target":"decisions-ledger","v":1} -->
+
+### d-20260916-05 — Do platform-independent source-scan tests carry the non-unix ignore attribute?
+
+* **Question:** Phase C's three new command-entry tests are include_str! source scans asserting the download commands no longer refuse. R6-02/R7-04 say new tests carry the ignore attribute at the test-first commit. Do these?
+* **Governs:** f-20260914-10
+* **Chosen:** no. They are platform-independent and must execute on Windows, which is the platform whose refusal removal they assert. The markers were removed.
+* **Rejected:** keeping the markers, which would mean the Windows runner never verifies the commands stopped refusing, and would make the phase's "15 executed" Windows assertion unreachable (only 12 would run).
+* **Reason:** same precedent as R8-03, where Phase A's relocated test is non-ignored because its proof is that it runs on Windows at all. The ignore attribute exists for tests that cannot pass on Windows yet, not for tests whose whole purpose is to pass there.
+* **Decided by:** Claude Code, autonomously under `full auto` · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"7a50935c1d6a48dc3cfb4ff3e0edb95c3e51a70284b2675ae6dfbc9e21ea15f2","input_sha256":"59d58ac83dc666f67b5c6e97aaf1e5d342a3ce8ad87370c49881922204db75ae","kind":"mutation-receipt","operation":"f5b395c20e8d8cca9820c8c3a71b699231efd3bc331707f9cb4339552c286ffa","options":{"section":null},"request_id_sha256":null,"results":["d-20260916-05"],"target":"decisions-ledger","v":1} -->
