@@ -282,6 +282,77 @@ mod tests {
     }
 
     #[test]
+    fn windows_read_only_directory_walk_does_not_demand_write() {
+        // DIRECTORY_ACCESS carries GENERIC_WRITE. open_directory_path honours `writable` on its
+        // base open but once hardcoded DIRECTORY_ACCESS for every child, so a read-only walk
+        // (fs.rs calls it with `false`) demanded write on every ancestor. Nothing on Linux
+        // compiles this module, and a type-check cannot catch an access mask, so this source pin
+        // is the only check that the split survives.
+        let source = source_for("infra/fs.rs");
+        let body = braced_body(source, "fn open_directory_path(");
+        let body = compact(&source[body]);
+        assert!(
+            body.contains(
+                "letchild_access=ifwritable{DIRECTORY_ACCESS}else{DIRECTORY_READ_ACCESS};"
+            ),
+            "{body}"
+        );
+        assert!(body.contains(".write(writable)"), "{body}");
+        assert!(
+            body.contains("open_windows_child(&dir,name,FILE_OPEN,child_access,null(),true,true)"),
+            "{body}"
+        );
+        // The collapsed form that demanded write on every component must not come back.
+        assert!(
+            !body.contains("open_windows_child(&dir,name,FILE_OPEN,DIRECTORY_ACCESS,"),
+            "{body}"
+        );
+        // A vacuous split is the other way to lose this: the read mask must stay write-free.
+        let whole = compact(source);
+        assert!(
+            whole.contains(
+                "constDIRECTORY_READ_ACCESS:u32=SYNCHRONIZE|windows_sys::Win32::Foundation::GENERIC_READ|READ_CONTROL;"
+            ),
+            "DIRECTORY_READ_ACCESS must not acquire GENERIC_WRITE"
+        );
+        assert!(
+            whole.contains(
+                "constDIRECTORY_ACCESS:u32=DIRECTORY_READ_ACCESS|windows_sys::Win32::Foundation::GENERIC_WRITE;"
+            ),
+            "DIRECTORY_ACCESS must stay the read mask plus GENERIC_WRITE"
+        );
+    }
+
+    #[test]
+    fn windows_target_regularity_and_private_temp_dacl_are_enforced() {
+        // Two properties a type-check can never hold, because the broken form compiles perfectly.
+        // `fn target_regular(_: &Target) -> bool { true }` was the bug: FILE_NON_DIRECTORY_FILE
+        // excludes directories but admits devices, volumes and pipes, so the driver's regular-file
+        // guard was vacuous on Windows. And a supplied DACL does not keep a parent's inheritable
+        // ACEs out of a new object unless the descriptor is marked protected, so the
+        // "creator-only" temporary was not necessarily creator-only.
+        let source = source_for("infra/fs.rs");
+
+        let regular = compact(&source[braced_body(source, "fn target_regular(")]);
+        assert!(
+            regular.contains("GetFileType(target.handle.as_raw_handle()asHANDLE)==FILE_TYPE_DISK"),
+            "{regular}"
+        );
+        assert!(
+            !regular.contains("fntarget_regular(_:&Target)->bool{true}"),
+            "{regular}"
+        );
+
+        let descriptor = compact(&source[braced_body(source, "fn new(access: u32)")]);
+        assert!(
+            descriptor.contains(
+                "SetSecurityDescriptorControl(descriptor_ptr,SE_DACL_PROTECTED,SE_DACL_PROTECTED)"
+            ),
+            "{descriptor}"
+        );
+    }
+
+    #[test]
     fn post_rename_identity_uses_the_retained_handle() {
         let source = source_for("infra/fs.rs");
         let body = braced_body(source, "fn metadata(temp: &File)");

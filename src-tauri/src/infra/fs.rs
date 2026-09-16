@@ -10,7 +10,8 @@
 //! link or leave the opened parent directory.
 
 use crate::error::Error;
-#[cfg(unix)]
+// `temp.flush()` in replace_at_driver is platform-neutral, so this trait must be in scope on
+// every target, not only unix.
 use std::io::Write;
 #[cfg(test)]
 use std::sync::Arc;
@@ -279,6 +280,10 @@ pub struct AtomicInstalledFile {
 }
 
 #[cfg(test)]
+// The fault points are one cross-platform vocabulary, but no single target constructs all of
+// them: `DaclCapture` and `DaclApply` are injected only inside `mod win`, so a unix test build
+// never constructs them, and the Windows adapter likewise skips the unix-only permission path.
+// The allow covers that platform asymmetry; it is not a licence for a fault point nothing injects.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AtomicFileFaultPoint {
@@ -1763,7 +1768,9 @@ mod unix {
 #[cfg(windows)]
 mod win {
     use super::*;
-    use crate::infra::path_authority::{open_windows_child, opened_file_identity};
+    use crate::infra::path_authority::{
+        is_reparse_point, open_windows_child, opened_file_identity, windows_open_status_error,
+    };
     use std::{
         ffi::OsStr,
         fs::{File, OpenOptions},
@@ -1779,37 +1786,42 @@ mod win {
         Wdk::{
             Foundation::OBJECT_ATTRIBUTES,
             Storage::FileSystem::{
-                FileRenameInformationEx, NtCreateFile, NtSetInformationFile, FILE_CREATE,
-                FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_RENAME_IGNORE_READONLY_ATTRIBUTE,
+                FileDispositionInformation, FileRenameInformationEx, NtCreateFile,
+                NtSetInformationFile, FILE_CREATE, FILE_DISPOSITION_INFORMATION,
+                FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+                FILE_RENAME_IGNORE_READONLY_ATTRIBUTE, FILE_RENAME_INFORMATION,
                 FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
                 FILE_SYNCHRONOUS_IO_NONALERT,
             },
         },
         Win32::{
-            Foundation::{
-                RtlNtStatusToDosError, HANDLE, STATUS_NO_SUCH_FILE, STATUS_OBJECT_NAME_COLLISION,
-                STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
-                STATUS_SHARING_VIOLATION, UNICODE_STRING,
-            },
+            // The NTSTATUS constants and RtlNtStatusToDosError live with the single classifier
+            // in path_authority::windows_open_status_error, which this module now routes to.
+            Foundation::{HANDLE, UNICODE_STRING},
             Security::{
-                AddAccessAllowedAce, CreateWellKnownSid, EqualSid, GetAce, GetKernelObjectSecurity,
-                GetSecurityDescriptorDacl, InitializeAcl, InitializeSecurityDescriptor,
-                SetKernelObjectSecurity, SetSecurityDescriptorDacl, WinCreatorOwnerSid,
-                ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, DACL_SECURITY_INFORMATION, PSID,
-                SECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_REVISION, SECURITY_MAX_SID_SIZE,
+                AddAccessAllowedAce, CreateWellKnownSid, GetKernelObjectSecurity, InitializeAcl,
+                InitializeSecurityDescriptor, SetKernelObjectSecurity,
+                SetSecurityDescriptorControl, SetSecurityDescriptorDacl, WinCreatorOwnerSid,
+                ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, DACL_SECURITY_INFORMATION,
+                PSECURITY_DESCRIPTOR, PSID, SECURITY_DESCRIPTOR, SECURITY_MAX_SID_SIZE,
+                SE_DACL_PROTECTED,
             },
             Storage::FileSystem::{
-                DELETE, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
-                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-                READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
+                GetFileType, DELETE, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+                FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, READ_CONTROL, SYNCHRONIZE,
+                WRITE_DAC,
             },
-            System::IO::IO_STATUS_BLOCK,
+            System::{SystemServices::SECURITY_DESCRIPTOR_REVISION, IO::IO_STATUS_BLOCK},
         },
     };
+    // Only `test_security_descriptor_is_creator_only` reads a DACL back, so importing these
+    // unconditionally makes them unused imports in a release build.
+    #[cfg(test)]
+    use windows_sys::Win32::Security::{EqualSid, GetAce, GetSecurityDescriptorDacl};
 
     const OBJ_CASE_INSENSITIVE: u32 = 0x40;
     const OBJ_DONT_REPARSE: u32 = 0x1000;
-    const FILE_DISPOSITION_INFORMATION: i32 = 13;
     const FILE_SHARE_PRIVATE_TEMP: u32 = FILE_SHARE_WRITE;
     const TEMP_ACCESS: u32 = DELETE
         | SYNCHRONIZE
@@ -1819,12 +1831,14 @@ mod win {
         | WRITE_DAC;
     pub(super) const TARGET_ACCESS: u32 =
         DELETE | SYNCHRONIZE | windows_sys::Win32::Foundation::GENERIC_READ | READ_CONTROL;
-    const DIRECTORY_ACCESS: u32 = SYNCHRONIZE
-        | windows_sys::Win32::Foundation::GENERIC_READ
-        | windows_sys::Win32::Foundation::GENERIC_WRITE
-        | READ_CONTROL;
+    const DIRECTORY_READ_ACCESS: u32 =
+        SYNCHRONIZE | windows_sys::Win32::Foundation::GENERIC_READ | READ_CONTROL;
+    const DIRECTORY_ACCESS: u32 =
+        DIRECTORY_READ_ACCESS | windows_sys::Win32::Foundation::GENERIC_WRITE;
 
-    struct Target {
+    // Exposed through `type Target = Target` in the pub(super) AtomicReplaceAdapter impl below,
+    // so it may not be more private than that impl (E0446 on the Windows target).
+    pub(super) struct Target {
         handle: File,
         identity: (u64, u64),
     }
@@ -1866,13 +1880,26 @@ mod win {
             }
 
             let mut descriptor = SECURITY_DESCRIPTOR::default();
-            if unsafe {
-                InitializeSecurityDescriptor(&mut descriptor, SECURITY_DESCRIPTOR_REVISION)
-            } == 0
+            // PSECURITY_DESCRIPTOR is `*mut c_void`, so `&mut SECURITY_DESCRIPTOR` does not
+            // coerce; every descriptor argument in this module is cast explicitly.
+            let descriptor_ptr =
+                (&mut descriptor as *mut SECURITY_DESCRIPTOR) as PSECURITY_DESCRIPTOR;
+            if unsafe { InitializeSecurityDescriptor(descriptor_ptr, SECURITY_DESCRIPTOR_REVISION) }
+                == 0
             {
                 return Err(std::io::Error::last_os_error().into());
             }
-            if unsafe { SetSecurityDescriptorDacl(&mut descriptor, 1, acl_ptr, 0) } == 0 {
+            if unsafe { SetSecurityDescriptorDacl(descriptor_ptr, 1, acl_ptr, 0) } == 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            // Supplying a DACL for a new object does not by itself keep the parent directory's
+            // inheritable ACEs out of it: Windows merges them in unless the descriptor is marked
+            // protected. Without this, a parent carrying an inheritable grant would hand that
+            // access to the "creator-only" temporary, which is the one property it must have.
+            if unsafe {
+                SetSecurityDescriptorControl(descriptor_ptr, SE_DACL_PROTECTED, SE_DACL_PROTECTED)
+            } == 0
+            {
                 return Err(std::io::Error::last_os_error().into());
             }
             Ok(Self {
@@ -1887,22 +1914,6 @@ mod win {
     }
 
     pub(super) struct WindowsAdapter;
-
-    fn status_error(status: i32) -> Error {
-        match status {
-            STATUS_OBJECT_NAME_NOT_FOUND | STATUS_NO_SUCH_FILE => {
-                Error::Io(Box::new(std::io::Error::from_raw_os_error(2)))
-            }
-            STATUS_OBJECT_PATH_NOT_FOUND => {
-                Error::Io(Box::new(std::io::Error::from_raw_os_error(3)))
-            }
-            STATUS_OBJECT_NAME_COLLISION => Error::Conflict("Windows object name collision".into()),
-            STATUS_SHARING_VIOLATION => Error::Conflict("Windows sharing violation".into()),
-            _ => Error::Io(Box::new(std::io::Error::from_raw_os_error(unsafe {
-                RtlNtStatusToDosError(status) as i32
-            }))),
-        }
-    }
 
     fn as_io(error: Error) -> std::io::Error {
         match error {
@@ -1932,8 +1943,12 @@ mod win {
         Ok(Some(Target { handle, identity }))
     }
 
-    fn target_regular(_: &Target) -> bool {
-        true
+    fn target_regular(target: &Target) -> bool {
+        // FILE_NON_DIRECTORY_FILE only excludes directories: devices, volumes, pipes and mailslots
+        // are all "non-directory" objects and were accepted here, so the driver's "target must be
+        // a regular file, not a link or special file" guard was vacuous on Windows while the unix
+        // arm really checked. FILE_TYPE_DISK is what separates a file on disk from those.
+        unsafe { GetFileType(target.handle.as_raw_handle() as HANDLE) == FILE_TYPE_DISK }
     }
 
     fn temp_name() -> OsString {
@@ -1986,7 +2001,7 @@ mod win {
             GetKernelObjectSecurity(
                 file.as_raw_handle() as HANDLE,
                 DACL_SECURITY_INFORMATION,
-                descriptor.as_mut_ptr() as *mut SECURITY_DESCRIPTOR,
+                descriptor.as_mut_ptr() as PSECURITY_DESCRIPTOR,
                 required,
                 &mut required,
             )
@@ -1997,12 +2012,15 @@ mod win {
         Ok(descriptor)
     }
 
-    fn apply_security_descriptor(file: &File, descriptor: &[u8]) -> Result<(), Error> {
+    fn apply_security_descriptor(
+        file: &File,
+        descriptor: PSECURITY_DESCRIPTOR,
+    ) -> Result<(), Error> {
         let result = unsafe {
             SetKernelObjectSecurity(
                 file.as_raw_handle() as HANDLE,
                 DACL_SECURITY_INFORMATION,
-                descriptor.as_ptr() as *mut SECURITY_DESCRIPTOR,
+                descriptor,
             )
         };
         if result == 0 {
@@ -2027,7 +2045,7 @@ mod win {
             RootDirectory: dir.as_raw_handle() as HANDLE,
             ObjectName: &unicode,
             Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
-            SecurityDescriptor: security_descriptor.as_ptr() as *const SECURITY_DESCRIPTOR,
+            SecurityDescriptor: security_descriptor.as_ptr(),
             SecurityQualityOfService: null(),
         };
         let mut handle: HANDLE = null_mut();
@@ -2048,7 +2066,7 @@ mod win {
             )
         };
         if status != 0 {
-            return Err(status_error(status));
+            return Err(windows_open_status_error(status));
         }
         Ok(unsafe { File::from_raw_handle(handle as RawHandle) })
     }
@@ -2081,8 +2099,19 @@ mod win {
         target: &OsStr,
         replace: bool,
     ) -> Result<(), Error> {
+        // FILE_RENAME_INFORMATION is a variable-length structure: FileName is declared [u16; 1]
+        // but carries the whole leaf, so it cannot be written as a plain value and the buffer is
+        // laid out by hand. The offsets are taken from the crate's own struct rather than spelled
+        // as literals, so the compiler derives them and a layout change cannot silently desync.
+        const ROOT_DIRECTORY_OFFSET: usize =
+            std::mem::offset_of!(FILE_RENAME_INFORMATION, RootDirectory);
+        const FILE_NAME_LENGTH_OFFSET: usize =
+            std::mem::offset_of!(FILE_RENAME_INFORMATION, FileNameLength);
+        const FILE_NAME_OFFSET: usize = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+
         let wide: Vec<u16> = target.encode_wide().collect();
-        let buffer_len = 20 + wide.len() * std::mem::size_of::<u16>();
+        let name_bytes = wide.len() * std::mem::size_of::<u16>();
+        let buffer_len = FILE_NAME_OFFSET + name_bytes;
         let mut buffer = vec![0_u8; buffer_len];
         let flags = if replace {
             FILE_RENAME_REPLACE_IF_EXISTS
@@ -2094,17 +2123,23 @@ mod win {
         unsafe {
             std::ptr::write_unaligned(buffer.as_mut_ptr().cast::<u32>(), flags);
             std::ptr::write_unaligned(
-                buffer.as_mut_ptr().add(8).cast::<HANDLE>(),
+                buffer
+                    .as_mut_ptr()
+                    .add(ROOT_DIRECTORY_OFFSET)
+                    .cast::<HANDLE>(),
                 dir.as_raw_handle() as HANDLE,
             );
             std::ptr::write_unaligned(
-                buffer.as_mut_ptr().add(16).cast::<u32>(),
-                (wide.len() * 2) as u32,
+                buffer
+                    .as_mut_ptr()
+                    .add(FILE_NAME_LENGTH_OFFSET)
+                    .cast::<u32>(),
+                name_bytes as u32,
             );
             std::ptr::copy_nonoverlapping(
                 wide.as_ptr().cast::<u8>(),
-                buffer.as_mut_ptr().add(20),
-                wide.len() * 2,
+                buffer.as_mut_ptr().add(FILE_NAME_OFFSET),
+                name_bytes,
             );
         }
         let mut status_block: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
@@ -2118,25 +2153,27 @@ mod win {
             )
         };
         if status != 0 {
-            return Err(status_error(status));
+            return Err(windows_open_status_error(status));
         }
         Ok(())
     }
 
     fn delete_temp(temp: &File) -> Result<(), Error> {
-        let disposition = [1_u8];
+        // FILE_DISPOSITION_INFORMATION is a single BOOLEAN DeleteFile; the struct says that,
+        // where a bare [1_u8] left the reader to infer both the layout and the meaning.
+        let disposition = FILE_DISPOSITION_INFORMATION { DeleteFile: true };
         let mut status_block: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
         let status = unsafe {
             NtSetInformationFile(
                 temp.as_raw_handle() as HANDLE,
                 &mut status_block,
-                disposition.as_ptr().cast(),
-                disposition.len() as u32,
-                FILE_DISPOSITION_INFORMATION,
+                std::ptr::addr_of!(disposition).cast(),
+                std::mem::size_of::<FILE_DISPOSITION_INFORMATION>() as u32,
+                FileDispositionInformation,
             )
         };
         if status != 0 {
-            return Err(status_error(status));
+            return Err(windows_open_status_error(status));
         }
         Ok(())
     }
@@ -2239,7 +2276,7 @@ mod win {
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
         let file = options.open(path).map_err(io)?;
         let descriptor = PrivateSecurityDescriptor::new(access)?;
-        apply_security_descriptor(&file, &descriptor)
+        apply_security_descriptor(&file, descriptor.as_ptr() as PSECURITY_DESCRIPTOR)
     }
 
     impl AtomicReplaceAdapter for WindowsAdapter {
@@ -2279,7 +2316,7 @@ mod win {
             let descriptor = capture_security_descriptor(&original.handle)?;
             #[cfg(test)]
             inject_atomic_file(AtomicFileFaultPoint::DaclApply)?;
-            apply_security_descriptor(temp, &descriptor)
+            apply_security_descriptor(temp, descriptor.as_ptr() as PSECURITY_DESCRIPTOR)
         }
 
         fn finalize_metadata(
@@ -2342,13 +2379,31 @@ mod win {
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
         let mut dir = options.open(&base).map_err(io)?;
+        // FILE_FLAG_OPEN_REPARSE_POINT yields a handle to the link itself instead of following
+        // it, but opening a reparse point is not the same as refusing one. open_windows_nofollow
+        // refuses it at exactly this step; without the same refusal here a reparse point planted
+        // at the base prefix is traversed rather than rejected.
+        if is_reparse_point(&dir.metadata().map_err(io)?) {
+            return Err(Error::InvalidInput(
+                "reparse points cannot be authorized".into(),
+            ));
+        }
+        // DIRECTORY_ACCESS carries GENERIC_WRITE, so a read-only walk must not use it for the
+        // intermediate components: demanding write on every ancestor fails under a directory the
+        // caller may only read. `writable` already governs the base open above; this is the same
+        // two-predicate split as resolve_windows in path_authority/resolved.rs.
+        let child_access = if writable {
+            DIRECTORY_ACCESS
+        } else {
+            DIRECTORY_READ_ACCESS
+        };
         for component in components {
             let Component::Normal(name) = component else {
                 return Err(Error::InvalidInput(
                     "parent path may not contain traversal components".into(),
                 ));
             };
-            dir = open_windows_child(&dir, name, FILE_OPEN, DIRECTORY_ACCESS, null(), true, true)?;
+            dir = open_windows_child(&dir, name, FILE_OPEN, child_access, null(), true, true)?;
         }
         Ok(dir)
     }
@@ -5375,11 +5430,7 @@ mod tests {
         #[cfg(unix)]
         let parent = std::fs::File::open(dir.path()).expect("open parent");
         #[cfg(windows)]
-        let parent = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(dir.path())
-            .expect("open parent");
+        let parent = windows_test_parent(dir.path());
         let moved = dir.path().with_extension("moved");
         std::fs::rename(dir.path(), &moved).expect("rename parent");
         atomic_replace_at(&parent, std::ffi::OsStr::new("artifact.pgn"), |file| {
@@ -5943,7 +5994,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_replace_at_installs_durably() {
         let dir = tempfile::tempdir().expect("tempdir");
         let parent = windows_test_parent(dir.path());
@@ -5960,7 +6010,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_replace_at_records_real_durability_sequence() {
         let dir = tempfile::tempdir().expect("tempdir");
         let parent = windows_test_parent(dir.path());
@@ -5985,7 +6034,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_precommit_logs_after_revalidation() {
         let dir = tempfile::tempdir().expect("tempdir");
         let parent = windows_test_parent(dir.path());
@@ -6014,7 +6062,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_post_rename_identity_query_is_performed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("target");
@@ -6030,8 +6077,8 @@ mod tests {
             }),
             |file| file.write_all(b"new").map_err(io),
         )
-        .expect("replace")
-        .expect_durable();
+        .expect("replace");
+        result.outcome.expect_durable();
         assert!(durability_log().contains(&"temp.metadata"));
         assert_eq!(
             result.identity,
@@ -6046,7 +6093,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_post_rename_metadata_failure_reports_uncertain_with_target_values() {
         let dir = tempfile::tempdir().expect("tempdir");
         let parent = windows_test_parent(dir.path());
@@ -6078,7 +6124,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_dacl_is_preserved_across_replacement() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target_path = dir.path().join("target");
@@ -6102,7 +6147,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_dacl_capture_failure_fails_closed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("target");
@@ -6123,7 +6167,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_dacl_apply_failure_fails_closed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("target");
@@ -6144,7 +6187,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_target_stat_failure_cleans_up() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("target");
@@ -6165,7 +6207,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_temp_metadata_failure_cleans_up() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("target");
@@ -6186,7 +6227,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_rename_collision_is_conflict_not_io() {
         let root = tempfile::tempdir().expect("root");
         let parent = root.path().join("parent");
@@ -6208,7 +6248,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_sharing_violation_is_conflict_not_io() {
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
@@ -6230,7 +6269,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_temp_name_collision_drives_the_retry() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("collision"), b"existing").expect("collision");
@@ -6253,7 +6291,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_readonly_target_is_replaced() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("target");
@@ -6272,7 +6309,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[cfg_attr(not(unix), ignore = "unported on this platform: f-20260914-10")]
     fn windows_replace_succeeds_on_target_denying_generic_write() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("target");
@@ -6285,6 +6321,31 @@ mod tests {
         })
         .expect("replacement only needs delete/read-control access to target")
         .expect_durable();
+        assert_eq!(std::fs::read(&target).expect("target"), b"new");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_replace_under_a_read_only_ancestor_succeeds() {
+        // Regression guard for the read-only walk: open_directory_path honours `writable` on its
+        // base open but once demanded DIRECTORY_ACCESS (which carries GENERIC_WRITE) for every
+        // child component, so the pre-commit revalidation — which opens the parent chain with
+        // `writable = false` — failed on any path whose ancestor denies write. The source pin in
+        // infra/platform_support.rs proves the two-predicate split is still written; this proves
+        // the behaviour it exists for. Nothing local executes it: it first runs on a Windows
+        // runner.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ancestor = dir.path().join("ancestor");
+        std::fs::create_dir(&ancestor).expect("ancestor");
+        let target = ancestor.join("target");
+        std::fs::write(&target, b"old").expect("old");
+        // Deny GENERIC_WRITE on the ancestor itself; traversal and revalidation need only
+        // read access to it, and the replacement happens inside it via a retained descriptor.
+        win::set_test_target_security_descriptor(&ancestor, win::TARGET_ACCESS)
+            .expect("ancestor DACL without generic write");
+        atomic_replace(&target, |file| file.write_all(b"new").map_err(io))
+            .expect("a read-only ancestor must not block replacement")
+            .expect_durable();
         assert_eq!(std::fs::read(&target).expect("target"), b"new");
     }
 

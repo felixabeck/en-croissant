@@ -2714,7 +2714,9 @@ impl NativePath {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-struct Identity {
+// `windows_file_identity` is pub(crate) and returns this, so on the Windows target a private
+// Identity is "more private than the item" that exposes it.
+pub(crate) struct Identity {
     a: u64,
     b: u64,
 }
@@ -2879,11 +2881,11 @@ pub(crate) fn opened_file_identity(file: &fs::File) -> Result<(u64, u64), Error>
     }
 }
 #[cfg(not(windows))]
-fn is_reparse_point(_: &fs::Metadata) -> bool {
+pub(crate) fn is_reparse_point(_: &fs::Metadata) -> bool {
     false
 }
 #[cfg(windows)]
-fn is_reparse_point(meta: &fs::Metadata) -> bool {
+pub(crate) fn is_reparse_point(meta: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     meta.file_attributes() & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
         != 0
@@ -2908,7 +2910,7 @@ pub(crate) fn windows_file_identity(file: &fs::File) -> Result<Identity, Error> 
 }
 
 #[cfg(windows)]
-fn windows_open_status_error(status: i32) -> Error {
+pub(crate) fn windows_open_status_error(status: i32) -> Error {
     use windows_sys::Win32::Foundation::{
         RtlNtStatusToDosError, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, STATUS_NO_SUCH_FILE,
         STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
