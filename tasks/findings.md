@@ -9446,7 +9446,7 @@ private temporary is refused while it is held, run on a Windows runner — not o
 
 ### The Windows post-rename race injector cannot fire, because the temp handle forbids the rename it performs
 
-* **ID:** f-20260916-12 · **Status:** open · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
+* **ID:** f-20260916-12 · **Status:** handled · **Area:** native-fs · **Root:** - · **Entry:** build · **Blocked:** none
 
 `review-correctness` raised this during the `$push` review of the f-20260914-10 Windows
 atomic-replacement port (confidence 95).
