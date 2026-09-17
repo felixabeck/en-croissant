@@ -9576,3 +9576,42 @@ fail today for the reason above, and pass after whichever answer is chosen.
 * **Open question:** where does the policy live? A shared helper in `db/mod.rs` that both tails call would put puzzle deletion's error handling in the database module; a helper in `infra/` would give a filesystem module a renderer-category concern; a small `DeletionOutcome` type carrying `(count, Option<durability>)` with the precedence as its own method is the third option and is the only one that also removes the duplicated tuple-threading both tails now do. The cache invalidation and the registry call must stay at the call sites either way, because they differ.
 * **Related:** `f-20260914-09` (the run that created the second copy, in its Phase B and Phase C); `d-20260831-24` (partial-removal reporting) and `d-20260830-05` (every backend error crosses IPC as a plain string) constrain any answer.
 * **Found by:** `review-minimalism` (93) over the cumulative diff of the `f-20260914-09` push, 2026-09-17, on Codex; source-verified by the orchestrator at both tails. Deferred under `push-review-policy` §4 because the fix raises an open design question — where the policy belongs — rather than because of its size.
+
+---
+
+## 2026-09-17 — filed through the inbox spool
+
+### `production_game_engine_directory_replacement_is_refused_before_any_option` fails intermittently on the macOS runner
+
+* **ID:** f-20260917-09 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **Where:** `src-tauri/src/game.rs:3559` — the assertion
+  `matches!(result, Err(Error::Conflict(message)) if message == "engine resource changed after authorization")`
+  in `game::tests::production_game_engine_directory_replacement_is_refused_before_any_option`.
+  The job is `rust-macos-test` in `.github/workflows/test.yml`.
+* **Defect:** the test passes on Linux and passes on most macOS runs, and fails on some with the
+  bare assertion above — which prints nothing, so the log does not say what `result` actually was.
+  Measured on three runs of the same workflow within nine hours on 2026-09-17:
+  * run 35166326000, master `e649179a`: **FAILED**, the only failure in an otherwise 1267-passed job.
+  * run 35208741361, master `101efbbb`: `rust-macos-test` **green**.
+  * run 35226376200, `probe-windows-failures` at `dc7cef24`: **FAILED**, again the only failure,
+    again 1267 passed.
+  `dc7cef24` changes only `src-tauri/src/infra/fs.rs`'s `#[cfg(windows)] mod win` and one
+  `windows-sys` feature, so it cannot reach this test's unix path; the same failure predates it by
+  a commit that touched nothing in `src-tauri/` at all. That is what makes it intermittent rather
+  than a regression.
+* **Why it matters:** `rust-macos-test` is one of the three platform jobs Felix's 2026-09-12
+  decision put in place (`f-20260830-06`). A job that fails perhaps one run in three is worse than
+  a red one: it trains the reader to re-run rather than to look, and it will eventually mask a
+  real macOS regression in the engine-resource authorization path — which is a security boundary,
+  not a cosmetic one.
+* **Open question:** is this a genuine race in the engine-resource lease — the directory
+  replacement landing after the authorization snapshot rather than before it, so the refusal never
+  fires — or is it the test's staging that is timing-dependent on APFS? The first is a real defect
+  in a refusal path; the second is a flaky fixture. Deciding it needs the value the assertion
+  currently discards, so the first step is to replace `assert!(matches!(…))` with a `match` whose
+  fallback arm panics with `{other:?}`, exactly as `f-20260917-02`'s repair did for the two
+  Windows race assertions — after which one failing macOS run says which of the two it is.
+* **Related:** `f-20260830-06` (the parent platform-port finding; same `Root`), `f-20260917-02`
+  (the same class of blind assertion, on Windows, repaired in `dc7cef24`).
+* **Found by:** orchestrator of the `f-20260917-02` build run, 2026-09-17, while confirming that a
+  macOS failure on its own probe round was not caused by its diff.
