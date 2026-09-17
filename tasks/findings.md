@@ -9728,3 +9728,39 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Found by:** orchestrator of the `f-20260917-02` build run, 2026-09-17, running the full push
   gate set. Not caused by that run's diff: it touches no file under `scripts/`, and
   `scripts/findings.py` is clean in the working tree.
+
+---
+
+## 2026-09-17 — filed through the inbox spool
+
+### `the finaliser does not remove a fence it does not own` fails intermittently on the CI runner
+
+* **ID:** f-20260917-11 · **Status:** open · **Area:** gate-scripts · **Root:** - · **Entry:** lens · **Blocked:** none
+* **Where:** `scripts/run-frontend-mutation-tests.mjs:250-259` — the test
+  `the finaliser does not remove a fence it does not own`, which asserts
+  `result.code === 1` after overwriting `mutants.out/frontend/.mutation-in-progress/owner.json`
+  with a dead owner while the runner blocks, then releasing it. It is a member of
+  `pnpm gates:contract:check`, so it gates the `test` job and every local push.
+* **Defect:** on run 35246951216 (`c10e9db9`, `test` job) the runner exited **0** instead of 1 —
+  `AssertionError: 0 !== 1` at `run-frontend-mutation-tests.mjs:257` — the only failure in an
+  otherwise green 48-test file, and the only failing job besides which every platform job was
+  green. The pushed diff touches only `src-tauri/**` and `scripts/findings.py` and cannot reach
+  this runner. The same gate was green locally on the identical tree minutes earlier and green on
+  the immediately preceding CI run (35236576170, `09032702`). The failure means the finaliser did
+  not observe the owner change and removed (or was allowed to remove) a fence it no longer owned,
+  which is either a genuine read-after-decide race in the finaliser or a staging race in the test:
+  the fixture writes the foreign `owner.json` and the release file as two separate steps, with
+  nothing pinning that the runner reads the owner *after* the overwrite lands.
+* **Why it matters:** the fence is what stops two frontend mutation runs from sharing a tree, and
+  this is the only test of the "do not remove a foreign fence" branch. A gate that fails perhaps
+  one run in several trains the reader to re-run rather than look, exactly as `f-20260917-09`
+  did on the macOS job — and if the defect is in the finaliser rather than the fixture, the fence
+  it wrongly releases is a real concurrency guard.
+* **Open question:** is the finaliser re-reading the owner record after its decision (a real
+  ordering defect), or does the fixture need the overwrite to be observable before the release —
+  and does the assertion need to distinguish "exited 0 having left the fence" from "exited 0
+  having removed it"? The stderr assertion that follows never ran, so the log does not say which.
+* **Related:** `f-20260917-09` (the same class — a test whose failure prints too little to say
+  which of two explanations it is; that entry's repair is the pattern).
+* **Found by:** the `$push` run of `f-20260917-09`, 2026-09-17, reading CI run 35246951216 after
+  pushing `09032702..c10e9db9`; re-run of the same job was requested to measure intermittency.
