@@ -16,13 +16,8 @@ use crate::{
     infra::fs::{atomic_replace_at, AtomicFileOutcome},
 };
 
-#[cfg(unix)]
 use crate::db::DatabaseIdentity;
-#[cfg(any(test, unix))]
 use crate::error::DurabilityStage;
-#[cfg(unix)]
-use crate::infra::fs::remove_optional_regular_at;
-#[cfg(unix)]
 use std::io::Read;
 
 // Only the test-only helpers below still replace an index by pathname; production
@@ -588,7 +583,6 @@ impl MmapSearchIndex {
         Self::open_file_inner(file, None)
     }
 
-    #[cfg(unix)]
     pub(crate) fn open_file_cancellable(
         file: File,
         cancellation: &CancellationToken,
@@ -900,7 +894,6 @@ pub fn promote_legacy_index_sidecar(db_path: &Path) -> Result<Option<PathBuf>, E
     .then(|| database.with_file_name(preferred_leaf)))
 }
 
-#[cfg(unix)]
 pub(crate) fn promote_legacy_index_sidecar_at(
     parent: &File,
     preferred_leaf: &OsStr,
@@ -908,41 +901,51 @@ pub(crate) fn promote_legacy_index_sidecar_at(
     db_identity: &DatabaseIdentity,
     cancellation: &CancellationToken,
 ) -> Result<bool, Error> {
-    use rustix::{
-        fs::{self as rfs, AtFlags, Mode, OFlags},
-        io::Errno,
-    };
-
-    match rfs::statat(parent, preferred_leaf, AtFlags::SYMLINK_NOFOLLOW) {
+    match crate::infra::fs::entry_identity_at(parent, preferred_leaf, false) {
         Ok(_) => return Ok(false),
-        Err(error) if error == Errno::NOENT => {}
-        Err(error) => return Err(Error::Io(Box::new(error.into()))),
+        Err(error) => {
+            match crate::infra::path_authority::classify_probe_error(&error, parent, preferred_leaf)
+            {
+                crate::infra::path_authority::ProbeErrorClass::NotFound => {}
+                crate::infra::path_authority::ProbeErrorClass::Reparse
+                | crate::infra::path_authority::ProbeErrorClass::WrongKind
+                | crate::infra::path_authority::ProbeErrorClass::Malformed => return Ok(false),
+                crate::infra::path_authority::ProbeErrorClass::MappedFile
+                | crate::infra::path_authority::ProbeErrorClass::Other => return Err(error),
+            }
+        }
     }
-    let mut source = match rfs::openat(
+    let mut source = match crate::infra::fs::open_regular_at(
         parent,
         legacy_leaf,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
+        crate::infra::fs::RegularFileAccess::ReadOnly,
     ) {
-        Ok(file) => File::from(file),
-        Err(error) if error == Errno::NOENT || error == Errno::LOOP => return Ok(false),
-        Err(error) => return Err(Error::Io(Box::new(error.into()))),
+        Ok(file) => file,
+        Err(error) => {
+            match crate::infra::path_authority::classify_probe_error(&error, parent, legacy_leaf) {
+                crate::infra::path_authority::ProbeErrorClass::NotFound
+                | crate::infra::path_authority::ProbeErrorClass::Reparse
+                | crate::infra::path_authority::ProbeErrorClass::WrongKind
+                | crate::infra::path_authority::ProbeErrorClass::Malformed => return Ok(false),
+                crate::infra::path_authority::ProbeErrorClass::MappedFile
+                | crate::infra::path_authority::ProbeErrorClass::Other => return Err(error),
+            }
+        }
     };
-    if !source.metadata()?.is_file() {
-        return Ok(false);
-    }
     let archive = match MmapSearchIndex::open_file_cancellable(source.try_clone()?, cancellation) {
         Ok(archive) => archive,
         Err(Error::Io(error)) if error.kind() == io::ErrorKind::InvalidData => return Ok(false),
         Err(error) => return Err(error),
     };
     let expected = IndexSource::from_database_identity(db_identity)?;
-    if archive.source() != &expected {
+    let matches = archive.source() == &expected;
+    drop(archive);
+    if !matches {
         return Ok(false);
     }
     let legacy_object = crate::infra::path_authority::opened_file_identity(&source)?;
     let outcome = atomic_replace_at(parent, preferred_leaf, |destination| {
-        legacy_file_identity_at(parent, legacy_leaf, legacy_object)?;
+        crate::infra::fs::assert_entry_identity(parent, legacy_leaf, legacy_object, false)?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
             if cancellation.is_cancelled() {
@@ -960,8 +963,7 @@ pub(crate) fn promote_legacy_index_sidecar_at(
     })?;
     match outcome {
         AtomicFileOutcome::DurableCommit => {
-            legacy_file_identity_at(parent, legacy_leaf, legacy_object)?;
-            remove_optional_regular_at(parent, legacy_leaf)?;
+            crate::infra::fs::remove_entry_at(parent, legacy_leaf, legacy_object, false)?;
             Ok(true)
         }
         AtomicFileOutcome::CommittedDurabilityUncertain(error) => {
@@ -971,29 +973,6 @@ pub(crate) fn promote_legacy_index_sidecar_at(
             ))
         }
     }
-}
-
-#[cfg(unix)]
-fn legacy_file_identity_at(
-    parent: &File,
-    leaf: &OsStr,
-    expected: (u64, u64),
-) -> Result<(u64, u64), Error> {
-    use rustix::fs::{self as rfs, AtFlags, FileType};
-    let stat = rfs::statat(parent, leaf, AtFlags::SYMLINK_NOFOLLOW)
-        .map_err(|error| Error::Io(Box::new(error.into())))?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-        return Err(Error::Conflict(
-            "legacy search sidecar changed during promotion".into(),
-        ));
-    }
-    let identity = crate::infra::fs::raw_stat_identity(&stat);
-    if identity != expected {
-        return Err(Error::Conflict(
-            "legacy search sidecar changed during promotion".into(),
-        ));
-    }
-    Ok(identity)
 }
 
 #[cfg(test)]
@@ -1544,6 +1523,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn legacy_sidecar_is_atomically_promoted_without_overwriting_a_collision() {
+        use std::os::unix::fs::symlink;
+
         let dir = tempdir().unwrap();
         let database = dir.path().join("games.db3");
         std::fs::write(&database, b"database").unwrap();
@@ -1579,6 +1560,28 @@ mod tests {
         );
         assert_eq!(std::fs::read(&collision_preferred).unwrap(), b"preferred");
         assert!(collision_legacy.exists());
+
+        for preferred_kind in ["directory", "symlink"] {
+            let database = dir.path().join(format!("{preferred_kind}.db3"));
+            std::fs::write(&database, b"database").unwrap();
+            let legacy = legacy_index_path(&database);
+            SearchIndexChunk::default()
+                .write_to_with_source(&legacy, IndexSource::from_database(&database, 0).unwrap())
+                .unwrap()
+                .expect_durable();
+            let preferred = get_index_path(&database);
+            if preferred_kind == "directory" {
+                std::fs::create_dir(&preferred).unwrap();
+            } else {
+                let outside = dir.path().join("preferred-target");
+                std::fs::write(&outside, b"preferred").unwrap();
+                symlink(&outside, &preferred).unwrap();
+            }
+
+            assert_eq!(promote_legacy_index_sidecar(&database).unwrap(), None);
+            assert!(preferred.exists());
+            assert!(legacy.exists());
+        }
     }
 
     #[cfg(unix)]

@@ -472,13 +472,14 @@ pub(crate) struct WorkspaceMutationTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProbeErrorClass {
     NotFound,
+    Reparse,
     WrongKind,
     Malformed,
     MappedFile,
     Other,
 }
 
-fn is_unix_probe_status(code: Option<i32>) -> bool {
+fn unix_probe_error_class(code: Option<i32>) -> Option<ProbeErrorClass> {
     #[cfg(unix)]
     {
         matches!(
@@ -487,11 +488,18 @@ fn is_unix_probe_status(code: Option<i32>) -> bool {
                 if code == rustix::io::Errno::LOOP.raw_os_error()
                     || code == rustix::io::Errno::NOTDIR.raw_os_error()
         )
+        .then(|| {
+            if code == Some(rustix::io::Errno::LOOP.raw_os_error()) {
+                ProbeErrorClass::Reparse
+            } else {
+                ProbeErrorClass::WrongKind
+            }
+        })
     }
     #[cfg(not(unix))]
     {
         let _ = code;
-        false
+        None
     }
 }
 
@@ -505,9 +513,11 @@ pub(crate) fn classify_probe_error_kind(error: &Error) -> ProbeErrorClass {
                 || matches!(error.raw_os_error(), Some(2 | 3))
             {
                 ProbeErrorClass::NotFound
-            } else if is_unix_probe_status(error.raw_os_error())
-                || matches!(error.raw_os_error(), Some(267 | 1920 | 4393))
-            {
+            } else if let Some(class) = unix_probe_error_class(error.raw_os_error()) {
+                class
+            } else if matches!(error.raw_os_error(), Some(1920 | 4393)) {
+                ProbeErrorClass::Reparse
+            } else if error.raw_os_error() == Some(267) {
                 ProbeErrorClass::WrongKind
             } else if error.raw_os_error() == Some(1224) {
                 ProbeErrorClass::MappedFile
@@ -520,12 +530,16 @@ pub(crate) fn classify_probe_error_kind(error: &Error) -> ProbeErrorClass {
         Error::InvalidInput(message)
             if matches!(
                 message.as_str(),
-                "reparse points cannot be authorized"
-                    | "target must be a regular file"
-                    | "workspace sidecar must be a regular file"
+                "workspace sidecar must be a regular file"
                     | "workspace entry has an unexpected file type"
             ) =>
         {
+            ProbeErrorClass::WrongKind
+        }
+        Error::InvalidInput(message) if message == "reparse points cannot be authorized" => {
+            ProbeErrorClass::Reparse
+        }
+        Error::InvalidInput(message) if message == "target must be a regular file" => {
             ProbeErrorClass::WrongKind
         }
         _ => ProbeErrorClass::Other,
@@ -600,9 +614,9 @@ impl DatabaseFileTarget {
                 return Error::Conflict(CONFLICT.into());
             }
             match classify_probe_error_kind(&error) {
-                ProbeErrorClass::NotFound | ProbeErrorClass::WrongKind => {
-                    Error::Conflict(CONFLICT.into())
-                }
+                ProbeErrorClass::NotFound
+                | ProbeErrorClass::Reparse
+                | ProbeErrorClass::WrongKind => Error::Conflict(CONFLICT.into()),
                 ProbeErrorClass::Malformed
                 | ProbeErrorClass::MappedFile
                 | ProbeErrorClass::Other => error,
@@ -614,9 +628,9 @@ impl DatabaseFileTarget {
                 return Error::Conflict(CONFLICT.into());
             }
             match classify_probe_error(&error, parent, leaf) {
-                ProbeErrorClass::NotFound | ProbeErrorClass::WrongKind => {
-                    Error::Conflict(CONFLICT.into())
-                }
+                ProbeErrorClass::NotFound
+                | ProbeErrorClass::Reparse
+                | ProbeErrorClass::WrongKind => Error::Conflict(CONFLICT.into()),
                 ProbeErrorClass::Malformed
                 | ProbeErrorClass::MappedFile
                 | ProbeErrorClass::Other => error,

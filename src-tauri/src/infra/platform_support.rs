@@ -1,5 +1,5 @@
 /*!
-Phase A through Phase C refusal-pin proof records (2026-09-17).
+Phase A through Phase D refusal-pin proof records (2026-09-17).
 
 The refusal sites are pinned by the G and B rows below: 20 of the original 35,
 after `f-20260914-08` retired eleven by giving them real Windows bodies (the
@@ -40,8 +40,7 @@ bodies. The rows that remain are:
 `infra/path_authority/resolved.rs::puzzle_database_target`,
 `infra/path_authority/resolved.rs::delete_puzzle_database`,
 `infra/path_authority/resolved.rs::mark_engine_executable`,
-`db/mod.rs::unlink_database_files`, `db/repository.rs::identity_from_probe`,
-`db/search.rs::open_valid_preferred`.
+`db/mod.rs::unlink_database_files`, `db/repository.rs::identity_from_probe`.
 
 Phase A removes four B rows — `open_current`, `capability_directory`,
 `create_database_child` and `database_file_target` — leaving **11 body rows
@@ -58,9 +57,14 @@ Phase C removes the `unlink_database_files` and `identity_from_probe` rows,
 leaving **7 body rows and 7 guard rows**, counted from the arrays below. The
 positive row-absence assertion and its staged break are recorded below.
 
+Phase D removes the `open_valid_preferred` row, leaving **6 body rows and 7
+guard rows**, counted from the arrays below. The positive row-absence assertion
+and its staged break are recorded below.
+
 Staged failure matrix. Every run used a detached disposable worktree copied
-from this phase, mutated production files only, and ran exactly:
-`cargo test --manifest-path src-tauri/Cargo.toml platform_support`.
+from this phase, mutated production files only, and ran the named
+`platform_support` test or filter with
+`cargo test --manifest-path src-tauri/Cargo.toml`.
 The worktree was removed afterwards. “G all” means every G row above; “B all”
 means every B row above, so the named row messages are recorded without
 repeating the 35 names six times.
@@ -167,6 +171,49 @@ repeating the 35 names six times.
     rows, 7 guard rows, ["db/repository.rs: pub(crate) fn identity_from_probe("]`.
     Exit status: 101. The same assertion collects the database-deletion row if
     the staged refusal is inserted into `unlink_database_files` instead.
+14. S-phase-d-row-absence — inserted
+    `let _staged = crate::infra::platform_support::unsupported("fd-relative search index loading");`
+    as the first statement of `open_valid_preferred` in the disposable copy.
+    Failing test:
+    `phase_d_removed_rows_have_one_ungated_definition_without_refusals`.
+    Message observed: `Phase D refusal rows or definitions are wrong: 6 body
+    rows, 7 guard rows, ["db/search.rs: fn open_valid_preferred("]`. Exit
+    status: 101.
+15. S-phase-d-classifier-raw — changed the Windows reparse raw-code arm from
+    `ProbeErrorClass::Reparse` to `WrongKind` in the disposable classifier.
+    Failing assertion: `raw code 1920`; observed message:
+    `assertion left == right failed: raw code 1920; left: WrongKind; right:
+    Reparse`. Exit status: 101.
+16. S-phase-d-classifier-reparse-message — changed the exact reparse
+    `InvalidInput` arm to `WrongKind`. Failing assertion:
+    `InvalidInput reparse message must classify as Reparse`; observed message:
+    `left: WrongKind; right: Reparse`. Exit status: 101.
+17. S-phase-d-classifier-wrong-kind-message — changed the exact regular-file
+    `InvalidInput` arm to `Other`. Failing assertion:
+    `InvalidInput regular-file message must classify as WrongKind`; observed
+    message: `left: Other; right: WrongKind`. Exit status: 101.
+18. S-phase-d-classifier-malformed — changed the `InvalidData` arm to `Other`.
+    Failing assertion: `InvalidData must classify as Malformed`; observed
+    message: `left: Other; right: Malformed`. Exit status: 101.
+19. S-phase-d-classifier-directory — changed the ambiguous-directory return to
+    `Other`. Failing assertion: `ambiguous directory failure must classify as
+    WrongKind`; observed message: `left: Other; right: WrongKind`. Exit status:
+    101.
+20. S-phase-d-classifier-permission — changed the classifier fallback to
+    `WrongKind`. Failing assertion: `permission failure must remain Other`;
+    observed message: `left: WrongKind; right: Other`. Exit status: 101.
+21. S-phase-d-open-current-row — reordered the `open_current` class arm in the
+    disposable source. Failing assertion: `open_current must map Reparse with
+    absence and wrong-kind to Conflict`. Exit status: 101.
+22. S-phase-d-loader-row — reordered the loader's NotFound/Reparse arm.
+    Failing assertion: `loader must swallow NotFound and Reparse`. Exit status:
+    101.
+23. S-phase-d-promotion-row — reordered the preferred promotion Reparse and
+    WrongKind arm. Failing assertion: `promotion must map preferred Reparse,
+    WrongKind and Malformed to Ok(false)`. Exit status: 101.
+24. S-phase-d-deletion-row — reordered the deletion Reparse and WrongKind arm.
+    Failing assertion: `deletion must map Reparse and WrongKind to InvalidInput`.
+    Exit status: 101.
 
 No production whole-function rewrite was needed; all refusal messages remain
 byte-identical.
@@ -199,8 +246,206 @@ mod tests {
     use crate::infra::blocking::source_scan::{braced_body, normalise, Literals};
     use std::{
         ffi::{OsStr, OsString},
+        io,
         ops::Range,
     };
+
+    #[test]
+    fn probe_error_classifier_table_and_directory_split_are_explicit() {
+        use crate::infra::path_authority::{
+            classify_probe_error, classify_probe_error_kind, ProbeErrorClass,
+        };
+
+        // Only the unix arm extends this table, so the binding is not mutated on Windows.
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut rows = vec![
+            (2, ProbeErrorClass::NotFound),
+            (3, ProbeErrorClass::NotFound),
+            (267, ProbeErrorClass::WrongKind),
+            (1920, ProbeErrorClass::Reparse),
+            (4393, ProbeErrorClass::Reparse),
+            (1224, ProbeErrorClass::MappedFile),
+        ];
+        #[cfg(unix)]
+        rows.extend([
+            (
+                rustix::io::Errno::LOOP.raw_os_error(),
+                ProbeErrorClass::Reparse,
+            ),
+            (
+                rustix::io::Errno::NOTDIR.raw_os_error(),
+                ProbeErrorClass::WrongKind,
+            ),
+        ]);
+        for (raw, expected) in rows {
+            let error = Error::Io(Box::new(io::Error::from_raw_os_error(raw)));
+            assert_eq!(
+                classify_probe_error_kind(&error),
+                expected,
+                "raw code {raw}"
+            );
+        }
+        assert_eq!(
+            classify_probe_error_kind(&Error::InvalidInput(
+                "reparse points cannot be authorized".into(),
+            )),
+            ProbeErrorClass::Reparse,
+            "InvalidInput reparse message must classify as Reparse"
+        );
+        assert_eq!(
+            classify_probe_error_kind(&Error::InvalidInput("target must be a regular file".into())),
+            ProbeErrorClass::WrongKind,
+            "InvalidInput regular-file message must classify as WrongKind"
+        );
+        assert_eq!(
+            classify_probe_error_kind(&Error::Io(Box::new(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "malformed archive",
+            )))),
+            ProbeErrorClass::Malformed,
+            "InvalidData must classify as Malformed"
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let leaf = OsStr::new("sidecar");
+        std::fs::create_dir(directory.path().join(leaf)).unwrap();
+        let parent = std::fs::File::open(directory.path()).unwrap();
+        assert_eq!(
+            classify_probe_error(
+                &Error::Io(Box::new(io::Error::from_raw_os_error(5))),
+                &parent,
+                leaf,
+            ),
+            ProbeErrorClass::WrongKind,
+            "ambiguous directory failure must classify as WrongKind"
+        );
+        assert_eq!(
+            classify_probe_error(
+                &Error::Io(Box::new(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected permission failure",
+                ))),
+                &parent,
+                leaf,
+            ),
+            ProbeErrorClass::Other,
+            "permission failure must remain Other"
+        );
+    }
+
+    #[test]
+    fn probe_error_caller_rows_keep_the_split_explicit() {
+        let authority = compact(
+            &source_for("infra/path_authority/mod.rs")[braced_body(
+                source_for("infra/path_authority/mod.rs"),
+                "pub(crate) fn open_current(",
+            )],
+        );
+        assert!(
+            authority.contains(
+                "ProbeErrorClass::NotFound|ProbeErrorClass::Reparse|ProbeErrorClass::WrongKind"
+            ),
+            "open_current must map Reparse with absence and wrong-kind to Conflict"
+        );
+
+        let search_source = source_for("db/search.rs");
+        let loader =
+            compact(&search_source[braced_body(search_source, "fn open_valid_preferred(")]);
+        assert!(
+            loader.contains("ProbeErrorClass::NotFound|ProbeErrorClass::Reparse"),
+            "loader must swallow NotFound and Reparse"
+        );
+        assert!(
+            loader.contains("ProbeErrorClass::WrongKind|ProbeErrorClass::MappedFile"),
+            "loader must propagate WrongKind and MappedFile"
+        );
+        assert!(
+            loader.contains("ProbeErrorClass::Malformed"),
+            "loader must swallow Malformed"
+        );
+        assert!(
+            loader
+                .contains("ProbeErrorClass::MappedFile|ProbeErrorClass::Other=>{returnErr(error)"),
+            "loader must propagate MappedFile and Other"
+        );
+
+        let promotion_source = source_for("db/search_index.rs");
+        let promotion = compact(
+            &promotion_source[braced_body(
+                promotion_source,
+                "pub(crate) fn promote_legacy_index_sidecar_at(",
+            )],
+        );
+        assert!(
+            promotion.contains("entry_identity_at"),
+            "promotion preferred probe must ask whether anything exists"
+        );
+        assert!(
+            promotion.contains("ProbeErrorClass::Reparse"),
+            "promotion must classify Reparse"
+        );
+        let preferred_probe = promotion
+            .split("classify_probe_error(&error,parent,preferred_leaf)")
+            .nth(1)
+            .unwrap()
+            .split("letmutsource")
+            .next()
+            .unwrap();
+        assert!(
+            preferred_probe.contains(
+                "crate::infra::path_authority::ProbeErrorClass::Reparse|crate::infra::path_authority::ProbeErrorClass::WrongKind|crate::infra::path_authority::ProbeErrorClass::Malformed=>returnOk(false)"
+            ),
+            "promotion must map preferred Reparse, WrongKind and Malformed to Ok(false)"
+        );
+        assert!(
+            promotion.contains("ProbeErrorClass::WrongKind"),
+            "promotion must classify WrongKind"
+        );
+        assert!(
+            promotion.contains("ProbeErrorClass::Malformed"),
+            "promotion must classify Malformed"
+        );
+        assert!(
+            promotion.contains("ProbeErrorClass::MappedFile"),
+            "promotion must propagate MappedFile"
+        );
+        assert!(
+            promotion.contains("ProbeErrorClass::Other"),
+            "promotion must propagate Other"
+        );
+        assert!(
+            promotion.contains("returnErr(error)"),
+            "promotion must return probe errors"
+        );
+
+        let deletion_source = source_for("db/mod.rs");
+        let deletion =
+            compact(&deletion_source[braced_body(deletion_source, "fn remember_sidecar_error(")]);
+        assert!(
+            deletion.contains("ProbeErrorClass::Reparse"),
+            "deletion must classify Reparse as retryable sidecar input"
+        );
+        assert!(
+            deletion.contains("crate::infra::path_authority::ProbeErrorClass::Reparse|crate::infra::path_authority::ProbeErrorClass::WrongKind=>{"),
+            "deletion must map Reparse and WrongKind to InvalidInput"
+        );
+        assert!(
+            deletion.contains("ProbeErrorClass::WrongKind"),
+            "deletion must classify WrongKind as retryable sidecar input"
+        );
+        assert!(
+            deletion.contains("Error::InvalidInput"),
+            "deletion must return InvalidInput for retryable sidecar input"
+        );
+        assert!(
+            deletion.contains("ProbeErrorClass::MappedFile"),
+            "deletion must propagate MappedFile"
+        );
+        assert!(
+            deletion.contains("ProbeErrorClass::Other"),
+            "deletion must propagate Other"
+        );
+    }
 
     fn compact(text: &str) -> String {
         let mut out = String::with_capacity(text.len());
@@ -1258,7 +1503,7 @@ mod tests {
                     "pub(crate) fn database_file_target(",
                 ),
             ],
-            7,
+            6,
             7,
         );
     }
@@ -1277,7 +1522,7 @@ mod tests {
                     "pub(crate) fn delete_puzzle_database(",
                 ),
             ],
-            7,
+            6,
             7,
         );
     }
@@ -1290,7 +1535,17 @@ mod tests {
                 ("db/mod.rs", "fn unlink_database_files("),
                 ("db/repository.rs", "pub(crate) fn identity_from_probe("),
             ],
+            6,
             7,
+        );
+    }
+
+    #[test]
+    fn phase_d_removed_rows_have_one_ungated_definition_without_refusals() {
+        assert_removed_rows_are_ungated(
+            "Phase D",
+            &[("db/search.rs", "fn open_valid_preferred(")],
+            6,
             7,
         );
     }
@@ -1659,12 +1914,6 @@ mod tests {
                 signature: "pub(crate) fn mark_engine_executable(",
                 form: BodyForm::Counterpart,
                 expected: ExpectedBody::Refusal("engine executable mode"),
-            },
-            BodyRow {
-                file: "db/search.rs",
-                signature: "fn open_valid_preferred(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("fd-relative search index loading"),
             },
         ]
     }
@@ -2281,11 +2530,6 @@ mod tests {
             (
                 "infra/path_authority/resolved.rs",
                 "engine executable mode",
-                "unsupported",
-            ),
-            (
-                "db/search.rs",
-                "fd-relative search index loading",
                 "unsupported",
             ),
         ];

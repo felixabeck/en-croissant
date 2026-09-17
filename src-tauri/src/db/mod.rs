@@ -977,6 +977,7 @@ fn generate_search_index_locked(
                     cancellation,
                 )
             });
+        search_cache.invalidate_database(target.path());
         search_index::write_entries_to_at(target.parent(), &index_leaf, source, rows, cancellation)
     })?;
     // Publication has committed once `write_entries_to_at` returns. From here on the durability
@@ -2401,7 +2402,8 @@ fn unlink_database_files(
     ) -> Result<(), Error> {
         match crate::infra::path_authority::classify_probe_error(&error, parent, leaf) {
             crate::infra::path_authority::ProbeErrorClass::NotFound => Ok(()),
-            crate::infra::path_authority::ProbeErrorClass::WrongKind => {
+            crate::infra::path_authority::ProbeErrorClass::Reparse
+            | crate::infra::path_authority::ProbeErrorClass::WrongKind => {
                 if let Some(sidecar_error) = retained.as_ref() {
                     log::warn!(
                         "database sidecar removal failed after durability uncertainty: {sidecar_error}"
@@ -2533,6 +2535,7 @@ fn legacy_sidecar_matches(
         Err(error) => {
             match crate::infra::path_authority::classify_probe_error(&error, parent, leaf) {
                 crate::infra::path_authority::ProbeErrorClass::NotFound
+                | crate::infra::path_authority::ProbeErrorClass::Reparse
                 | crate::infra::path_authority::ProbeErrorClass::WrongKind => return Ok(None),
                 crate::infra::path_authority::ProbeErrorClass::Malformed
                 | crate::infra::path_authority::ProbeErrorClass::MappedFile
@@ -3328,6 +3331,27 @@ mod tests {
         observed_before_removal: std::sync::atomic::AtomicBool,
     }
 
+    struct GenerationCacheEvictionProbe {
+        cache: Arc<SearchCache>,
+        identity: crate::SearchIndexIdentity,
+        observed_before_replacement: std::sync::atomic::AtomicBool,
+    }
+
+    impl crate::infra::fs::AtomicWriterInjector for GenerationCacheEvictionProbe {
+        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == crate::infra::fs::AtomicFileFaultPoint::TempfileCreate {
+                if self.cache.get_index(&self.identity).is_some() {
+                    return Err(std::io::Error::other(
+                        "search index cache was not invalidated before generation",
+                    ));
+                }
+                self.observed_before_replacement
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
     impl crate::infra::fs::RemovalInjector for CacheInvalidationProbe {
         fn inject(
             &self,
@@ -3783,6 +3807,32 @@ mod tests {
         assert!(!body.contains("canonicalize("));
         assert!(body.contains("target.path()"));
         assert!(!body.contains("remove_file"));
+    }
+
+    #[test]
+    fn search_index_generation_evicts_cache_before_replacement() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let (_cache_key, identity) = seed_search_index_cache_for_database(&app, &database);
+        let probe = Arc::new(GenerationCacheEvictionProbe {
+            cache: Arc::clone(&state.search_cache),
+            identity,
+            observed_before_replacement: std::sync::atomic::AtomicBool::new(false),
+        });
+        crate::infra::fs::set_test_atomic_file_injector(Some(probe.clone()));
+        let result = generate_search_index(
+            &handle,
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &CancellationToken::new(),
+        );
+        crate::infra::fs::set_test_atomic_file_injector(None);
+
+        assert!(result.is_ok());
+        assert!(probe
+            .observed_before_replacement
+            .load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

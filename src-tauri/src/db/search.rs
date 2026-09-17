@@ -23,7 +23,6 @@ use tauri::Manager;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(unix)]
 use crate::db::search_index::{
     legacy_sidecar_leaf, preferred_sidecar_leaf, promote_legacy_index_sidecar_at,
 };
@@ -42,7 +41,10 @@ use crate::{
     error::Error,
     infra::{
         blocking::BLOCKING_GATEWAY,
-        path_authority::{DatabaseFileTarget, DatabaseHandle, PathAuthority, PathOperation},
+        path_authority::{
+            classify_probe_error, DatabaseFileTarget, DatabaseHandle, PathAuthority, PathOperation,
+            ProbeErrorClass,
+        },
     },
     progress::{update_progress_with_state, JobProgress, ProgressLease, ProgressState},
     AppState, SearchCache, SearchIndexIdentity, SearchResultKey,
@@ -247,28 +249,25 @@ pub(crate) fn load_search_index_cancellable(
         );
     }
 
-    #[cfg(unix)]
-    {
-        let mutate_target =
-            super::resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
-        let preferred_leaf = preferred_sidecar_leaf(mutate_target.leaf());
-        let legacy_leaf = legacy_sidecar_leaf(mutate_target.leaf());
-        promote_legacy_index_sidecar_at(
-            mutate_target.parent(),
-            &preferred_leaf,
-            &legacy_leaf,
-            &db_identity,
+    let mutate_target = super::resolve_database(authority, handle, PathOperation::DatabaseMutate)?;
+    let preferred_leaf = preferred_sidecar_leaf(mutate_target.leaf());
+    let legacy_leaf = legacy_sidecar_leaf(mutate_target.leaf());
+    search_cache.invalidate_database(mutate_target.path());
+    promote_legacy_index_sidecar_at(
+        mutate_target.parent(),
+        &preferred_leaf,
+        &legacy_leaf,
+        &db_identity,
+        cancellation,
+    )?;
+    if let Some(index) = open_valid_preferred(&mutate_target, &expected_source, cancellation)? {
+        return cache_loaded_index(
+            search_cache,
+            mutate_target.path(),
+            expected_source,
+            index,
             cancellation,
-        )?;
-        if let Some(index) = open_valid_preferred(&mutate_target, &expected_source, cancellation)? {
-            return cache_loaded_index(
-                search_cache,
-                mutate_target.path(),
-                expected_source,
-                index,
-                cancellation,
-            );
-        }
+        );
     }
 
     info!("Search index is absent, corrupt, or stale; generating automatically...");
@@ -312,26 +311,25 @@ pub(crate) fn load_search_index_cancellable(
     )
 }
 
-#[cfg(unix)]
 fn open_valid_preferred(
     target: &DatabaseFileTarget,
     expected_source: &IndexSource,
     cancellation: &CancellationToken,
 ) -> Result<Option<MmapSearchIndex>, Error> {
-    use rustix::{
-        fs::{self as rfs, Mode, OFlags},
-        io::Errno,
-    };
     let leaf = preferred_sidecar_leaf(target.leaf());
-    let file = match rfs::openat(
+    let file = match crate::infra::fs::open_regular_at(
         target.parent(),
         &leaf,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
+        crate::infra::fs::RegularFileAccess::ReadOnly,
     ) {
-        Ok(file) => std::fs::File::from(file),
-        Err(error) if error == Errno::NOENT || error == Errno::LOOP => return Ok(None),
-        Err(error) => return Err(Error::Io(Box::new(error.into()))),
+        Ok(file) => file,
+        Err(error) => match classify_probe_error(&error, target.parent(), &leaf) {
+            ProbeErrorClass::NotFound | ProbeErrorClass::Reparse => return Ok(None),
+            ProbeErrorClass::Malformed => return Ok(None),
+            ProbeErrorClass::WrongKind | ProbeErrorClass::MappedFile | ProbeErrorClass::Other => {
+                return Err(error)
+            }
+        },
     };
     let index = match MmapSearchIndex::open_file_cancellable(file, cancellation) {
         Ok(index) => index,
@@ -341,17 +339,6 @@ fn open_valid_preferred(
         Err(error) => return Err(error),
     };
     Ok((index.source() == expected_source).then_some(index))
-}
-
-#[cfg(not(unix))]
-fn open_valid_preferred(
-    _target: &DatabaseFileTarget,
-    _expected_source: &IndexSource,
-    _cancellation: &CancellationToken,
-) -> Result<Option<MmapSearchIndex>, Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "fd-relative search index loading",
-    ))
 }
 
 fn cache_loaded_index(
@@ -955,6 +942,26 @@ mod tests {
         super::super::schema_database_case("search", operations)
     }
 
+    struct CacheEvictionProbe {
+        cache: Arc<SearchCache>,
+        identity: SearchIndexIdentity,
+        observed: AtomicBool,
+    }
+
+    impl crate::infra::fs::AtomicWriterInjector for CacheEvictionProbe {
+        fn inject(&self, point: crate::infra::fs::AtomicFileFaultPoint) -> std::io::Result<()> {
+            if point == crate::infra::fs::AtomicFileFaultPoint::TempfileCreate {
+                if self.cache.get_index(&self.identity).is_some() {
+                    return Err(std::io::Error::other(
+                        "search index cache was not invalidated before promotion",
+                    ));
+                }
+                self.observed.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
     #[test]
     fn search_commands_resolve_with_their_own_operation() {
         let (_dir, app, handle, _database) = loader_test_case(vec![PathOperation::DatabaseRead]);
@@ -1193,17 +1200,103 @@ mod tests {
                 &handle,
             )
         };
-        assert!(matches!(result, Err(Error::Io(_))));
+        // The loader refuses a non-regular sidecar at open instead of failing later in mmap;
+        // this pins propagation, not the error variant.
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_search_index_is_no_index_and_generation_replaces_it() {
+        use std::os::unix::fs::symlink;
+
+        let (_dir, app, handle, database) = loader_test_case(vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+        ]);
+        let outside = database.with_file_name("outside.ecsi");
+        std::fs::write(&outside, b"outside").unwrap();
+        symlink(&outside, get_index_path(&database)).unwrap();
+
+        let state = app.state::<AppState>();
+        let target = super::super::resolve_database(
+            &state.pgn_path_authority,
+            &handle,
+            PathOperation::DatabaseRead,
+        )
+        .unwrap();
+        let db_identity = state
+            .database_repository
+            .database_identity_expected(&target, target.identity(), None)
+            .unwrap();
+        let expected_source = IndexSource::from_database_identity(&db_identity).unwrap();
+        let result = open_valid_preferred(&target, &expected_source, &CancellationToken::new());
+        assert!(matches!(result, Ok(None)), "{result:?}");
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn search_index_promotion_evicts_cache_before_replacement() {
+        let (_dir, app, handle, database) = loader_test_case(vec![
+            PathOperation::DatabaseRead,
+            PathOperation::DatabaseMutate,
+        ]);
+        let state = app.state::<AppState>();
+        let target = super::super::resolve_database(
+            &state.pgn_path_authority,
+            &handle,
+            PathOperation::DatabaseRead,
+        )
+        .unwrap();
+        let db_identity = state
+            .database_repository
+            .database_identity_expected(&target, target.identity(), None)
+            .unwrap();
+        let source = IndexSource::from_database_identity(&db_identity).unwrap();
+        let preferred = get_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&preferred, source.clone())
+            .unwrap()
+            .expect_durable();
+        let identity = SearchIndexIdentity::for_database(&database, source.clone()).unwrap();
+        let index = MmapSearchIndex::open(&preferred).unwrap();
+        state.search_cache.insert_index(identity.clone(), index);
+        std::fs::remove_file(&preferred).unwrap();
+        SearchIndexChunk::default()
+            .write_to_with_source(legacy_index_path(&database), source)
+            .unwrap()
+            .expect_durable();
+
+        let probe = Arc::new(CacheEvictionProbe {
+            cache: Arc::clone(&state.search_cache),
+            identity,
+            observed: AtomicBool::new(false),
+        });
+        set_test_atomic_file_injector(Some(probe.clone()));
+        let result = load_search_index(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            &handle,
+        );
+        set_test_atomic_file_injector(None);
+
+        assert!(result.is_ok());
+        assert!(probe.observed.load(Ordering::SeqCst));
     }
 
     #[test]
     fn search_index_loader_uses_fd_relative_authority_boundaries() {
         let source = include_str!("search.rs");
-        let loader = source
-            .split("fn load_search_index_cancellable")
+        let production = source
+            .split("#[cfg(all(test, unix))]\nmod tests {")
+            .next()
+            .unwrap();
+        let loader = production
+            .split("pub(crate) fn load_search_index_cancellable(")
             .nth(1)
             .unwrap()
-            .split("fn open_valid_preferred")
+            .split("fn open_valid_preferred(")
             .next()
             .unwrap();
         assert!(loader.contains("resolve_database("));
@@ -1217,9 +1310,7 @@ mod tests {
         ));
         assert!(loader.contains("generation_lock(get_index_path(read_target.path()))"));
         assert!(loader.contains("get_index_path(read_target.path())"));
-        assert!(loader.contains(
-            "cache_loaded_index(\n                search_cache,\n                mutate_target.path()"
-        ));
+        assert!(loader.contains("cache_loaded_index(") && loader.contains("mutate_target.path()"));
         assert!(!loader.contains("atomic_replace(&"));
         assert!(!loader.contains("std::fs::remove_file"));
     }
