@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --script
-# agent-kit-sha256: 2854f90b68eeff1fdf7c881f44ddb3f6ead874430a19e2e70a70600b764206bb
+# agent-kit-sha256: 13da59b038c692bbf7058f6ecb56c263565a7ece803ec89bbcfdb84e9431bfa8
 # /// script
 # requires-python = ">=3.14"
 # ///
@@ -35,7 +35,9 @@ Subcommands
 ``merge-inbox``  fold published findings from the inbox into the ledger
 ``finalize-claims`` release prepared claims whose entries are proven in ``HEAD``
 ``decisions``    print Felix-facing blockers waiting on Felix
-``apply-answers`` fold his answers back in and unblock what he decided
+``apply-answers`` fold answers back in and unblock what was decided
+``answer``       publish one answer atomically through the answers spool
+``commit-ledger`` commit an expected ledger snapshot by its exact bytes
 ``drain-status`` exit 0 if a drain holds this repo's lock, 1 otherwise
 ``set-header``  mutate selected fields of one finding header
 ``annotate``    append file contents to one finding entry
@@ -57,6 +59,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -280,7 +283,14 @@ NOTIFY_POST_TIMEOUT_S = (NOTIFY_DURATION_MS + 999) // 1000 + 2
 # Lets the waiter outlast the overlay-length post timeout plus the state write.
 NOTIFY_STATE_WRITE_GRACE_S = 5.0
 NOTIFY_TITLE_CHARS = 90
-LEDGER_LOCK_RETRY_WINDOW_SECONDS = 1.0
+# Ledger writers may wait for the exact-byte pre-commit hook and its termination
+# grace period. Keep this above both those bounds so a hook never races another
+# writer's read or worktree restoration.
+LEDGER_LOCK_WAIT_SECONDS = 660.0
+# The merge-driver config lock fences only the short `git config` repair in a
+# shared Git common directory; it is never held across a hook, so contention is
+# reported promptly instead of delaying a cheap read command.
+MERGE_DRIVER_CONFIG_LOCK_WAIT_SECONDS = 1.0
 LEDGER_LOCK_RETRY_INTERVAL_SECONDS = 0.05
 DRAIN_LOCK_READ_BYTES = 4096
 # What `drain-findings.sh` writes into the consumer lock once it has released the
@@ -292,6 +302,10 @@ DRAIN_LOCK_RELEASED_MARKER = "released"
 # took, or from a filesystem that refused the link. Bounded rather than `while
 # True` so a persistent collision errors out instead of hanging in a filing session.
 PUBLISH_NAME_ATTEMPTS = 8
+# A publisher must never wait forever behind a crashed or wedged writer. The
+# lock is a short fence around rename/link and claim cleanup, so callers report a
+# retryable refusal when this bounded window expires.
+PUBLISH_LOCK_TIMEOUT_SECONDS = 30.0
 RECEIPT_DIGEST_HEX_LENGTH = 64
 # A completed `.part` is adopted only after this grace period. A live publisher
 # keeps the publish lock, so the grace protects only writers from older versions
@@ -390,6 +404,17 @@ SENTRY_ORIGIN_RE = re.compile(
 )
 SENTRY_CONTEXT_RE = re.compile(
     rf"^[ \t]*{_BULLET}[ \t]+\*\*(?:Where|Defect):\*\*[ \t]*", re.MULTILINE
+)
+_VERIFIER_ACTOR_PATTERN = (
+    r"automated Sentry-origin verifier \(codex, run [A-Za-z0-9._-]+, "
+    r"body (?P<body>[0-9a-f]{64})\)"
+)
+VERIFIER_ACTOR_FULL_RE = re.compile(_VERIFIER_ACTOR_PATTERN)
+VERIFIER_EVIDENCE_RE = re.compile(
+    rf"^(?P<actor>{_VERIFIER_ACTOR_PATTERN}):[ \t]*(?P<reason>\S.*)$"
+)
+VERIFIER_DECISION_RE = re.compile(
+    rf"^(?P<kind>approve|reject) — (?P<actor>{_VERIFIER_ACTOR_PATTERN}):[ \t]*\S"
 )
 
 
@@ -498,8 +523,12 @@ VACUOUS_IMPACT_RE = re.compile(
 # Slugs naming the waits that depend on Felix. Answerable blockers carry a
 # question; other `felix-*` values name preconditions he must clear.
 FELIX_DECISION = "felix-decision"
+# The old spelling remains a read alias for already filed entries. New writes use
+# SENTRY_UNVERIFIED so this trust boundary is not mistaken for a Felix decision.
+SENTRY_UNVERIFIED = "sentry-unverified"
 FELIX_SENTRY_ORIGIN = "felix-sentry-origin"
-ANSWERABLE_BLOCKERS = frozenset({FELIX_DECISION, FELIX_SENTRY_ORIGIN})
+SENTRY_VERIFIER_BLOCKERS = frozenset({SENTRY_UNVERIFIED, FELIX_SENTRY_ORIGIN})
+ANSWERABLE_BLOCKERS = frozenset({FELIX_DECISION})
 DECIDED_MARKER = "**Decision made:**"
 
 
@@ -526,6 +555,9 @@ ANSWER_EVIDENCE_MARKERS = (
         ),
         "**Why rejected:**",
     ),
+)
+ANSWER_EVIDENCE_MARKER_LINE_RE = re.compile(
+    rf"^[ \t]*{_BULLET}[ \t]+\*\*(?:Approved|Why rejected|Decision made):\*\*"
 )
 SENTRY_ONLY_ANSWER_EVIDENCE = "**Why rejected:**"
 
@@ -559,8 +591,15 @@ BLOCKER_NONE = "none"
 BLOCKER_ANSWERABLE = "answerable"
 BLOCKER_PRECONDITION = "precondition"
 BLOCKER_EXTERNAL = "external"
+BLOCKER_VERIFIER = "verifier"
 BLOCKER_CLASSES = frozenset(
-    {BLOCKER_NONE, BLOCKER_ANSWERABLE, BLOCKER_PRECONDITION, BLOCKER_EXTERNAL}
+    {
+        BLOCKER_NONE,
+        BLOCKER_ANSWERABLE,
+        BLOCKER_PRECONDITION,
+        BLOCKER_EXTERNAL,
+        BLOCKER_VERIFIER,
+    }
 )
 
 
@@ -568,6 +607,8 @@ def classify_blocker(blocked: str) -> str:
     """Classify a blocker without enumerating future Felix-only preconditions."""
     if blocked == BLOCKER_NONE:
         blocker_class = BLOCKER_NONE
+    elif blocked in SENTRY_VERIFIER_BLOCKERS:
+        blocker_class = BLOCKER_VERIFIER
     elif blocked in ANSWERABLE_BLOCKERS:
         blocker_class = BLOCKER_ANSWERABLE
     elif blocked.startswith("felix-"):
@@ -1156,7 +1197,31 @@ class Finding:
 
     @property
     def pickable(self) -> bool:
-        return self.status == "open" and classify_blocker(self.blocked) == BLOCKER_NONE
+        return (
+            self.status == "open"
+            and classify_blocker(self.blocked) == BLOCKER_NONE
+            and self.sentry_verification is None
+        )
+
+    @property
+    def sentry_verification(self) -> str | None:
+        """Return derived Sentry verification state for queue-facing surfaces."""
+        if self.status != "open" or not _body_is_sentry_origin(_unfenced_body(self)):
+            return None
+        if classify_blocker(self.blocked) == BLOCKER_VERIFIER:
+            return "unverified"
+        body = _unfenced_body(self)
+        if APPROVED_RE.search(body) is None:
+            return "unverified"
+        verifier_digest = _last_approved_verifier_digest(body)
+        # Legacy/manual approval evidence has no verifier digest and remains a
+        # completed approval.  Only the latest verifier-authenticated approval
+        # can drift when the covered body changes.
+        if verifier_digest is None:
+            return None
+        if verified_body_sha256(self) != verifier_digest:
+            return "drifted"
+        return None
 
     @property
     def cluster_key(self) -> tuple[str, str]:
@@ -1244,6 +1309,18 @@ class LedgerError(Exception):
     pass
 
 
+class PublishLockBusyError(LedgerError):
+    """The bounded publish fence did not become available."""
+
+
+class LedgerDirtyError(LedgerError):
+    """The consumer requested an answer-only commit over foreign ledger dirt."""
+
+
+class LedgerSupersededError(LedgerError):
+    """A foreign ledger commit superseded this command's saved replacement."""
+
+
 @dataclass
 class LedgerCommitIntent:
     """One CLI command's semantic obligation for a replaced ledger."""
@@ -1253,6 +1330,8 @@ class LedgerCommitIntent:
     findings: Path
     decisions: Path
     subject: str = ""
+    expected_head: str | None = None
+    head_at_write: str | None = None
     identifiers: tuple[str, ...] = ()
     postcondition: Callable[[Path, Path], bool] | None = None
     replaced: bool = False
@@ -1284,6 +1363,7 @@ class ClaimIntent:
     has_fixed: bool
     claimed: tuple[Path, ...]
     files: dict[str, dict[str, object]] | None = None
+    quarantined: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1316,6 +1396,17 @@ def _note_ledger_replacement(path: Path, text: str) -> None:
     if intent is not None and path == intent.ledger:
         intent.replaced = True
         intent.written_bytes = text.encode("utf-8")
+        root = REPO_ROOT
+        if root is None:
+            intent.head_at_write = None
+            return
+        try:
+            intent.head_at_write = _resolve_head(root.resolve())
+        except (LedgerError, OSError, UnicodeError, RuntimeError):
+            # An unborn repository has no commit to compare. The commit helper
+            # will report its inability to commit later; recording no baseline
+            # here keeps the replacement notification itself non-fatal.
+            intent.head_at_write = None
 
 
 def _register_ledger_commit(
@@ -1556,7 +1647,9 @@ def _merge_driver_config_lock(root: Path) -> Iterator[None]:
         common_dir = root / common_dir
     lock = common_dir.resolve() / MERGE_DRIVER_CONFIG_LOCK_NAME
     try:
-        acquired, waited = acquire_ledger_lock(lock)
+        acquired, waited = acquire_ledger_lock(
+            lock, MERGE_DRIVER_CONFIG_LOCK_WAIT_SECONDS
+        )
     except LedgerError as exc:
         raise LedgerError(
             f"could not acquire merge-driver config lock {lock}: {exc}"
@@ -2190,15 +2283,20 @@ def validate(
 
         joined = _unfenced_body(f)
         sentry_origin = _body_is_sentry_origin(joined)
+        if f.blocked in SENTRY_VERIFIER_BLOCKERS and not sentry_origin:
+            issues.append(
+                f"{where}: entry {f.id} is not Sentry-origin but carries verifier "
+                f"blocker {f.blocked}; it must carry {FELIX_DECISION}"
+            )
         if (
             f.status == "open"
             and sentry_origin
             and APPROVED_RE.search(joined) is None
-            and f.blocked != FELIX_SENTRY_ORIGIN
+            and f.blocked not in SENTRY_VERIFIER_BLOCKERS
         ):
             issues.append(
                 f"{where}: Sentry-origin open finding without an '**Approved:**' "
-                f"bullet must be blocked on {FELIX_SENTRY_ORIGIN}"
+                f"bullet must be blocked on {SENTRY_UNVERIFIED}"
             )
         if f.status == "handled" and "Still open" in joined:
             issues.append(
@@ -2963,7 +3061,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def _list_json_records(
-    rows: list[Finding], tooling_areas: frozenset[str]
+    rows: list[Finding], tooling_areas: frozenset[str], *, include_body: bool = False
 ) -> list[dict[str, object]]:
     """One JSON object per finding; field values are the Finding attributes."""
     return [
@@ -2976,6 +3074,15 @@ def _list_json_records(
             "blocked": f.blocked,
             "heading": f.title,
             "tooling": f.area in tooling_areas,
+            "sentry_verification": f.sentry_verification,
+            **(
+                {
+                    "body": _unfenced_body(f),
+                    "body_sha256": verified_body_sha256(f),
+                }
+                if include_body
+                else {}
+            ),
         }
         for f in rows
     ]
@@ -2986,7 +3093,10 @@ def cmd_list(args: argparse.Namespace) -> int:
     # Full validation, not just parse problems: an entry with an invented area
     # parses fine, so a structural-only warning would let `related` answer
     # "looks new" about a finding that is already recorded.
-    _warn_problems(validate(findings, problems, vocabulary), "list")
+    issues = validate(findings, problems, vocabulary)
+    _warn_problems(issues, "list")
+    if getattr(args, "strict", False) and issues:
+        return 1
     rows = findings
     if args.open:
         rows = [f for f in rows if f.status == "open"]
@@ -2996,7 +3106,11 @@ def cmd_list(args: argparse.Namespace) -> int:
         rows = [f for f in rows if f.root == args.root]
     if _json_requested(args):
         return _print_json(
-            _list_json_records(rows, load_tooling_areas_from_path(args.ledger))
+            _list_json_records(
+                rows,
+                load_tooling_areas_from_path(args.ledger),
+                include_body=getattr(args, "body", False),
+            )
         )
     if not rows:
         print("(none)")
@@ -3018,6 +3132,54 @@ def _unfenced_body(entry: Finding) -> str:
         for index, line in enumerate(entry.body)
         if not (index < len(entry.body_fenced) and entry.body_fenced[index])
     )
+
+
+def _verified_body_lines(entry: Finding) -> list[str]:
+    """Return body lines covered by a verifier approval.
+
+    Answer evidence is an effect of the answer route, rather than source text
+    the verifier judged. Wrapped answer bullets are skipped as one block.
+    """
+    lines = _unfenced_body(entry).splitlines()
+    result: list[str] = []
+    skip_continuation = False
+    for line in lines:
+        if ANSWER_EVIDENCE_MARKER_LINE_RE.match(line):
+            skip_continuation = True
+            continue
+        if skip_continuation and line[:1].isspace():
+            continue
+        skip_continuation = False
+        result.append(line)
+    return result
+
+
+def verified_body_sha256(entry: Finding) -> str:
+    """Hash one entry's unfenced, non-answer body with its exact line joins."""
+    return _sha256_bytes("\n".join(_verified_body_lines(entry)).encode("utf-8"))
+
+
+def _last_approved_verifier_digest(body: str) -> str | None:
+    """Return the digest from the latest verifier-authenticated approval."""
+    latest: str | None = None
+    lines = body.splitlines()
+    for index, line in enumerate(lines):
+        marker = ANSWER_EVIDENCE_MARKER_LINE_RE.match(line)
+        if marker is None or re.match(
+            rf"^[ \t]*{_BULLET}[ \t]+\*\*Approved:\*\*[ \t]*", line
+        ) is None:
+            continue
+        continuation = index + 1
+        while continuation < len(lines) and lines[continuation][:1].isspace():
+            continuation += 1
+        candidate = " ".join(
+            [line[marker.end() :].strip()]
+            + [value.strip() for value in lines[index + 1 : continuation]]
+        )
+        match = VERIFIER_EVIDENCE_RE.fullmatch(candidate)
+        if match is not None:
+            latest = match.group("body")
+    return latest
 
 
 def _unfenced_text(text: str) -> str:
@@ -3119,11 +3281,19 @@ def _print_related_decisions(
 
 
 def _waiting_rows(findings: list[Finding]) -> list[tuple[str, str, str]]:
-    """Leftover blocked rows: (id, slug, title). Shared by text and JSON."""
+    """Leftover blocked or drifted rows: (id, slug, title)."""
     return [
-        (f.id, f.blocked, f.title)
+        (
+            f.id,
+            SENTRY_UNVERIFIED if f.sentry_verification == "drifted" else f.blocked,
+            f.title,
+        )
         for f in findings
-        if f.status == "open" and classify_blocker(f.blocked) != BLOCKER_NONE
+        if f.status == "open"
+        and (
+            classify_blocker(f.blocked) != BLOCKER_NONE
+            or f.sentry_verification == "drifted"
+        )
     ]
 
 
@@ -3561,17 +3731,35 @@ def _link_with_retries(
 
 
 @contextmanager
-def _publish_lock(lock: Path) -> Iterator[None]:
-    """Hold a short exclusive fence for one spool's publish window."""
+def _publish_lock(
+    lock: Path, wait_window_seconds: float | None = None
+) -> Iterator[None]:
+    """Hold a bounded exclusive fence for one spool's publish window."""
+    if wait_window_seconds is None:
+        wait_window_seconds = PUBLISH_LOCK_TIMEOUT_SECONDS
     try:
         fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o644)
     except OSError as exc:
         raise LedgerError(f"could not open publish lock {lock}: {exc}") from exc
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        except OSError as exc:
-            raise LedgerError(f"could not acquire publish lock {lock}: {exc}") from exc
+        started = time.monotonic()
+        deadline = started + wait_window_seconds
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                    raise LedgerError(
+                        f"could not acquire publish lock {lock}: {exc}"
+                    ) from exc
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PublishLockBusyError(
+                        f"publish lock busy: {lock} remained busy for "
+                        f"{time.monotonic() - started:.2f}s"
+                    ) from exc
+                time.sleep(min(LEDGER_LOCK_RETRY_INTERVAL_SECONDS, remaining))
         yield
     finally:
         with suppress(OSError):
@@ -3813,7 +4001,7 @@ def _entry_candidate_text(entry: str, ledger_text: str) -> str:
 
 
 def _normalise_sentry_origin_entry(entry: str, ledger: Path) -> str:
-    """Stamp the approval blocker onto an unapproved Sentry-origin entry.
+    """Canonicalise the verification blocker on a Sentry-origin entry.
 
     Filing and merging both use this content-driven, idempotent normalisation
     before validation. The validator remains the authority: this only makes the
@@ -3830,12 +4018,15 @@ def _normalise_sentry_origin_entry(entry: str, ledger: Path) -> str:
 
     finding = findings[0]
     body = _unfenced_body(finding)
-    if (
-        finding.status != "open"
-        or not _body_is_sentry_origin(body)
-        or APPROVED_RE.search(body) is not None
-        or finding.blocked == FELIX_SENTRY_ORIGIN
+    if not _body_is_sentry_origin(body):
+        return entry
+    if finding.blocked == SENTRY_UNVERIFIED:
+        return entry
+    if finding.blocked == FELIX_SENTRY_ORIGIN or (
+        finding.status == "open" and APPROVED_RE.search(body) is None
     ):
+        replacement = SENTRY_UNVERIFIED
+    else:
         return entry
 
     lines = entry.splitlines()
@@ -3847,7 +4038,7 @@ def _normalise_sentry_origin_entry(entry: str, ledger: Path) -> str:
             continue
         lines[index] = re.sub(
             r"(\*\*Blocked:\*\* )\S+",
-            rf"\g<1>{FELIX_SENTRY_ORIGIN}",
+            rf"\g<1>{replacement}",
             line,
             count=1,
         )
@@ -3889,6 +4080,14 @@ def _read_and_validate_entry(
             "the real finding id"
         )
     if len(findings) == 1:
+        if (
+            _body_is_sentry_origin(_unfenced_body(findings[0]))
+            and findings[0].status != "open"
+        ):
+            issues.append(
+                f"{entry_path} is Sentry-origin but carries status "
+                f"{findings[0].status!r}; new Sentry-origin entries must be filed open"
+            )
         body = _unfenced_body(findings[0])
         if findings[0].entry == "build" and not OPEN_QUESTION_RE.search(body):
             issues.append(OPEN_QUESTION_REFUSAL.format(where=entry_path))
@@ -4125,7 +4324,7 @@ _HELD_LEDGER_LOCKS: dict[str, int] = {}
 
 
 def acquire_ledger_lock(
-    lock: Path, wait_window_seconds: float = LEDGER_LOCK_RETRY_WINDOW_SECONDS
+    lock: Path, wait_window_seconds: float | None = None
 ) -> tuple[bool, float]:
     """Take the ledger-wide writer lock, retrying for the requested window.
 
@@ -4151,6 +4350,8 @@ def acquire_ledger_lock(
     ``lsof`` on the lock file; that answer is authoritative where a self-reported
     PID was not.
     """
+    if wait_window_seconds is None:
+        wait_window_seconds = LEDGER_LOCK_WAIT_SECONDS
     started = time.monotonic()
     deadline = started + wait_window_seconds
     while True:
@@ -4312,7 +4513,8 @@ def _locked_ledger_mutation(
                 )
             if clear_announcement_ids is not None:
                 _prune_announcement_state_strict(path, clear_announcement_ids)
-            _write_if_unchanged(path, original, candidate)
+            if candidate != original:
+                _write_if_unchanged(path, original, candidate)
             if post_commit is not None:
                 post_commit()
 
@@ -4579,6 +4781,7 @@ def _write_claim_intent(
     fixed: Collection[str] | None = None,
     *,
     files: dict[str, dict[str, object]] | None = None,
+    quarantined: dict[str, str] | None = None,
 ) -> None:
     payload: dict[str, object] = {"phase": phase}
     if ids is not None:
@@ -4589,6 +4792,8 @@ def _write_claim_intent(
         payload["fixed"] = sorted(fixed)
     if files is not None:
         payload["files"] = dict(sorted(files.items()))
+    if quarantined:
+        payload["quarantined"] = dict(sorted(quarantined.items()))
     intent = _claim_intent_path(claim)
     serialized = json.dumps(payload, sort_keys=True)
     _atomic_write(intent, serialized, durable_directory=True)
@@ -4598,6 +4803,50 @@ def _remove_claim_intent(claim: Path) -> None:
     _claim_intent_path(claim).unlink(missing_ok=True)
     for scratch in claim.glob(f"{MERGE_INTENT_NAME}.tmp-*"):
         scratch.unlink(missing_ok=True)
+
+
+def _quarantine_claim_files(
+    claim: Path, spool: Path, intent: ClaimIntent
+) -> None:
+    """Move intent-recorded irregular answer files to a durable side directory.
+
+    Quarantine is part of the claim lifecycle. The intent is written before this
+    move, so a crash leaves a restartable record; a file already at its refused
+    destination is the completed half of that move and is accepted on replay.
+    """
+    if not intent.quarantined:
+        return
+    refused = spool.with_name(f"{spool.name}.refused")
+    try:
+        if not refused.exists():
+            refused.mkdir(parents=True)
+            _fsync_directory(refused.parent)
+        elif not refused.is_dir():
+            raise LedgerError(
+                f"cannot quarantine answers: {refused} exists but is not a directory"
+            )
+        for name, reason in sorted(intent.quarantined.items()):
+            source = claim / name
+            destination = refused / name
+            if source.exists():
+                if destination.exists():
+                    raise LedgerError(
+                        f"cannot quarantine {source.name}: destination "
+                        f"{destination} already exists"
+                    )
+                os.rename(source, destination)
+                print(f"quarantined {name}: {reason}")
+            elif not destination.exists():
+                raise LedgerError(
+                    f"quarantined answer {name} is missing from both {claim} and "
+                    f"{refused}; the claim is kept"
+                )
+        _fsync_directory(refused)
+        _fsync_directory(claim)
+    except OSError as exc:
+        raise LedgerError(
+            f"could not quarantine answers from {claim} into {refused}: {exc}"
+        ) from exc
 
 
 def _complete_claim(
@@ -4698,6 +4947,7 @@ def _validate_answers_files(
     claim: Path,
     files: object,
     ids: list[str],
+    quarantined: dict[str, str] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Validate and authenticate the recorded effect of an answers claim."""
     if not isinstance(files, dict):
@@ -4720,6 +4970,16 @@ def _validate_answers_files(
         if not isinstance(value, dict):
             raise ValueError("answers file records must be objects")
         identifier = value.get("id")
+        is_quarantined = quarantined is not None and name in quarantined
+        # A fresh unreadable answer cannot reveal its id or answer class.  The
+        # caller records an explicit tombstone so the durable quarantine name is
+        # still a member of ``files``; prepared claims retain their real id and
+        # continue through the full schema below.
+        if is_quarantined and identifier is None:
+            if value.get("kind") != "quarantine":
+                raise ValueError("invalid quarantined answer record")
+            result[name] = value
+            continue
         blocked = value.get("blocked")
         status = value.get("status")
         kind = value.get("kind")
@@ -4728,13 +4988,16 @@ def _validate_answers_files(
         previous_line_occurrences = value.get("previous_line_occurrences")
         if not isinstance(identifier, str) or ID_RE.fullmatch(identifier) is None:
             raise ValueError("invalid answers file id")
-        if not isinstance(blocked, str) or blocked not in ANSWERABLE_BLOCKERS:
+        if not isinstance(blocked, str) or classify_blocker(blocked) not in {
+            BLOCKER_ANSWERABLE,
+            BLOCKER_VERIFIER,
+        }:
             raise ValueError("answers file blocker is not answerable")
         if not isinstance(status, str) or status not in STATUSES:
             raise ValueError("invalid answers file status")
         if kind not in {"decision", "approve", "reject"}:
             raise ValueError("invalid answers file kind")
-        if (kind == "decision") != (blocked == FELIX_DECISION):
+        if (kind == "decision") != (classify_blocker(blocked) == BLOCKER_ANSWERABLE):
             raise ValueError("answers file kind does not match blocker")
         if (
             not isinstance(evidence, list)
@@ -4762,17 +5025,29 @@ def _validate_answers_files(
             raise ValueError("invalid previous evidence line count")
         result[name] = value
 
-    if len({cast(str, value["id"]) for value in result.values()}) != len(result):
+    record_ids = {
+        cast(str, value["id"])
+        for value in result.values()
+        if isinstance(value.get("id"), str)
+    }
+    if len(record_ids) != sum(
+        1 for value in result.values() if isinstance(value.get("id"), str)
+    ):
         raise ValueError("duplicate answers file ids")
 
     for name, value in result.items():
         path = claim / name
         if not path.exists():
             continue
+        if quarantined is not None and name in quarantined:
+            continue
         try:
             parsed = _parse_answer_file(path)
         except (OSError, UnicodeError) as exc:
-            raise LedgerError(f"could not read {path}: {exc}") from exc
+            if quarantined is None:
+                raise LedgerError(f"could not read {path}: {exc}") from exc
+            quarantined[name] = "unreadable"
+            continue
         if parsed is None:
             raise LedgerError(f"could not read {path}: invalid answer file")
         identifier, bullet = parsed
@@ -4782,9 +5057,13 @@ def _validate_answers_files(
                 f"recorded id {value['id']}"
             )
         kind = cast(str, value["kind"])
+        legacy_evidence: list[str] | None = None
         if kind != "decision":
             try:
-                parsed_kind = _sentry_answer_kind(bullet)
+                # A prepared intent can predate the P2 verifier actor gate.  Its
+                # recorded evidence is the durable source of truth for recovery;
+                # newly claimed spool answers are still parsed strictly below.
+                parsed_kind = _sentry_answer_kind(bullet, allow_legacy=True)
             except LedgerError as exc:
                 raise LedgerError(f"could not read {path}: {exc}") from exc
             if parsed_kind != kind:
@@ -4793,9 +5072,16 @@ def _validate_answers_files(
                     f"match recorded kind {kind}"
                 )
             derived = bullet + _sentry_answer_evidence(bullet, kind)
+            # Claims prepared by the pre-P2 answer consumer recorded the same
+            # verifier effect without the actor prefix.  Keep those durable
+            # claims recoverable while every newly applied answer uses the
+            # authenticated, actor-prefixed evidence below.
+            legacy_evidence = bullet + _sentry_answer_evidence(
+                bullet, kind, actor_prefixed=False
+            )
         else:
             derived = bullet
-        if derived != value["evidence"]:
+        if derived != value["evidence"] and legacy_evidence != value["evidence"]:
             raise LedgerError(
                 f"could not read {path}: recorded evidence does not match the "
                 "answer file"
@@ -4908,8 +5194,43 @@ def _read_claim_intent(
                 raise ValueError("invalid fixed ids")
             fixed = set(raw_fixed)
         files = None
+        quarantined: dict[str, str] = {}
+        raw_quarantined = record.get("quarantined")
+        if raw_quarantined is not None:
+            if not isinstance(raw_quarantined, dict):
+                raise TypeError("quarantined must be an object")
+            for name, reason in raw_quarantined.items():
+                if (
+                    not isinstance(name, str)
+                    or not isinstance(reason, str)
+                    or not reason
+                ):
+                    raise ValueError("invalid quarantined record")
+                quarantined[name] = reason
         if "files" in record:
-            files = _validate_answers_files(claim, record["files"], ids)
+            files = _validate_answers_files(
+                claim, record["files"], ids, quarantined
+            )
+            # Prepared claims carry a complete file record for every answer,
+            # including a file discovered unreadable during recovery.  A
+            # direct apply may have no readable id to record at all; its
+            # quarantine-only intent is the one explicit empty-files case.
+            if any(name not in files for name in quarantined):
+                raise ValueError("quarantined file is absent from files")
+            # Persist unreadable-file discoveries before a recovery caller can
+            # move or replay any member of this claim.
+            if quarantined and raw_quarantined != quarantined:
+                _write_claim_intent(
+                    claim,
+                    phase,
+                    set(ids),
+                    receipt_ids if raw_receipts is not None else None,
+                    fixed if raw_fixed is not None else None,
+                    files=files,
+                    quarantined=quarantined,
+                )
+        elif quarantined:
+            raise ValueError("quarantined requires files")
         return ClaimIntent(
             phase,
             ids,
@@ -4919,6 +5240,7 @@ def _read_claim_intent(
             raw_fixed is not None,
             claimed,
             files,
+            quarantined,
         )
     except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
         raise LedgerError(f"could not read {intent_path}: {exc}") from exc
@@ -4941,9 +5263,14 @@ def _recover_claim(
         _remove_claim_intent(claim)
         claim.rmdir()
         return
+    _quarantine_claim_files(claim, spool, intent)
     claimed = list(intent.claimed)
     if intent.phase == "prepared" and not answers:
-        ids = intent.ids
+        ids = [
+            cast(str, value["id"])
+            for name, value in (intent.files or {}).items()
+            if name not in intent.quarantined and isinstance(value.get("id"), str)
+        ] or [identifier for identifier in intent.ids if not intent.quarantined]
         if ids:
             try:
                 ledger_text = ledger.read_text(encoding="utf-8")
@@ -5058,7 +5385,7 @@ def _report_ledger_lock_busy(lock: Path, waited_seconds: float) -> int:
     print(
         f"FAIL ledger lock {lock}: another ledger writer still holds it after "
         f"{waited_seconds:.2f}s of retries (window "
-        f"{LEDGER_LOCK_RETRY_WINDOW_SECONDS:.2f}s).",
+        f"{LEDGER_LOCK_WAIT_SECONDS:.2f}s).",
         file=sys.stderr,
     )
     return 1
@@ -5081,7 +5408,25 @@ def _merge_sources(claimed: list[Path], ledger: Path) -> list[str]:
                 f"{path} carries '{marker}' answer evidence; only the answer route "
                 "may write it"
             )
-        sources.append(_normalise_sentry_origin_entry(text, ledger))
+        normalized = _normalise_sentry_origin_entry(text, ledger)
+        try:
+            findings, problems, _vocabulary = _parse_text(
+                _entry_candidate_text(normalized, ledger.read_text(encoding="utf-8")), ledger
+            )
+        except (OSError, UnicodeError, LedgerError) as exc:
+            raise LedgerError(f"could not parse claimed filing {path}: {exc}") from exc
+        if len(findings) == 1 and problems:
+            raise LedgerError(f"claimed filing {path} is invalid: {'; '.join(problems)}")
+        if (
+            len(findings) == 1
+            and _body_is_sentry_origin(_unfenced_body(findings[0]))
+            and findings[0].status != "open"
+        ):
+            raise LedgerError(
+                f"{path} is Sentry-origin but carries status "
+                f"{findings[0].status!r}; new Sentry-origin entries must be filed open"
+            )
+        sources.append(normalized)
     return sources
 
 
@@ -5521,12 +5866,18 @@ def _reconcile_prepared_claim(
             "the claim is kept — inspect it by hand"
         )
 
+    quarantined_names = set(intent.quarantined)
+    records = {
+        key: value for key, value in records.items() if key not in quarantined_names
+    }
     keys_by_path: dict[Path, list[str]] = {}
     for key, (path, _record) in records.items():
         keys_by_path.setdefault(path, []).append(key)
         if path not in intent.claimed:
             raise LedgerError(missing_message(path, key))
     for path in intent.claimed:
+        if path.name in quarantined_names:
+            continue
         if path not in keys_by_path:
             raise LedgerError(
                 f"{path} is in {claim} but not in its intent; move it back to "
@@ -5595,7 +5946,8 @@ def _reconcile_prepared_claim(
             remaining_files = {
                 name: value
                 for name, value in intent.files.items()
-                if any(path.name == name for path in absent)
+                if name not in quarantined_names
+                and any(path.name == name for path in absent)
             }
         intent_kwargs: dict[str, object] = {}
         if remaining_files is not None:
@@ -5832,8 +6184,11 @@ def _reconcile_answers_claim(
         return Reconciliation([], {}, set(), False)
     if intent.files is None:
         raise LedgerError(_answers_legacy_intent_message(claim, answers, ledger, mode))
+    _quarantine_claim_files(claim, answers, intent)
     records = {
-        name: (claim / name, value) for name, value in intent.files.items()
+        name: (claim / name, value)
+        for name, value in intent.files.items()
+        if name not in intent.quarantined
     }
     working_text = ledger.read_text(encoding="utf-8")
 
@@ -6299,6 +6654,21 @@ def _merge_inbox_publish_locked(
                 for path, text in zip(claimed, sources, strict=True)
             ]
     except (OSError, UnicodeDecodeError, LedgerError) as exc:
+        # Admission failures are about the filed source's status, so leave the
+        # published file in the inbox for correction/retry. Other parse and
+        # candidate failures retain the prepared claim for crash recovery.
+        if "new Sentry-origin entries must be filed open" in str(exc):
+            try:
+                inbox.mkdir(parents=True, exist_ok=True)
+                for claimed_path in claimed:
+                    os.rename(claimed_path, inbox / claimed_path.name)
+                _remove_claim_intent(claim)
+                claim.rmdir()
+            except OSError as restore_exc:
+                print(
+                    f"FAIL could not restore refused filing claim {claim}: {restore_exc}",
+                    file=sys.stderr,
+                )
         print(
             f"FAIL could not read {claim} while merging: {exc}. The ledger is "
             f"unchanged and the batch is preserved at {claim}.",
@@ -6604,6 +6974,41 @@ def _drain_lock_state(lock: Path) -> tuple[bool, str | None, bool]:
     return False, reason, False
 
 
+def _try_consumer_lock() -> tuple[int | None, Path, str | None]:
+    """Take the drain's shared consumer lock without waiting.
+
+    The returned descriptor is kept by ``main`` until the exact ledger commit
+    helper has finished. A busy drain is a normal retryable outcome; path and
+    filesystem failures are reported separately so callers do not mistake a
+    broken lock path for a live drain.
+    """
+    lock = drain_lock_path()
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o644)
+    except OSError as exc:
+        return None, lock, f"could not open consumer lock {lock}: {exc}"
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except OSError as exc:
+        with suppress(OSError):
+            os.close(fd)
+        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+            return None, lock, None
+        return None, lock, f"could not acquire consumer lock {lock}: {exc}"
+    return fd, lock, None
+
+
+def _release_consumer_lock(args: argparse.Namespace) -> None:
+    fd = getattr(args, "_consumer_lock_fd", None)
+    if fd is None:
+        return
+    with suppress(OSError):
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    with suppress(OSError):
+        os.close(fd)
+    args._consumer_lock_fd = None
+
+
 def cmd_file(args: argparse.Namespace) -> int:
     """Publish one pending finding, then merge it when no live drain owns the ledger."""
     entry, issues = _read_and_validate_entry(args.entry, args.ledger)
@@ -6808,7 +7213,7 @@ def cmd_file(args: argparse.Namespace) -> int:
     lock_fd: int | None = None
     mutex_error: OSError | None = None
     try:
-        lock_fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+        lock_fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o644)
     except OSError as exc:
         mutex_error = exc
     else:
@@ -6863,10 +7268,13 @@ def cmd_file(args: argparse.Namespace) -> int:
         result = merge_inbox(inbox, args.ledger, decisions=_args_decisions(args))
     finally:
         if lock_fd is not None:
-            with suppress(OSError):
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            with suppress(OSError):
-                os.close(lock_fd)
+            if bool(getattr(args, "_hold_consumer_lock", False)):
+                args._consumer_lock_fd = lock_fd
+            else:
+                with suppress(OSError):
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                with suppress(OSError):
+                    os.close(lock_fd)
     if result.returncode != 0:
         return result.returncode
 
@@ -7159,7 +7567,9 @@ def _announce_felix_blockers(shown: list[Finding], ledger: Path) -> None:
 
 
 def cmd_decisions(args: argparse.Namespace) -> int:
-    """Print Felix-facing blockers, optionally restricted to ``args.ids``.
+    """Print Felix-facing blockers and automated verification.
+
+    Optionally restricted to ``args.ids``.
 
     The drain prints a Felix-facing blocker once, when it parks it. A six-hour run scrolls,
     and Felix reads the chat rather than the ledger, so a one-time print is a
@@ -7186,13 +7596,28 @@ def cmd_decisions(args: argparse.Namespace) -> int:
     preconditions = [
         f for f in all_waiting if classify_blocker(f.blocked) == BLOCKER_PRECONDITION
     ]
+    verification = [
+        f
+        for f in findings
+        if f.sentry_verification in {"unverified", "drifted"}
+    ]
     if args.ids:
         # The drain names the ids a cluster just parked, so a park announcement
         # shows those blockers and not the whole backlog again.
         wanted = set(args.ids)
         waiting = [f for f in waiting if f.id in wanted]
         preconditions = [f for f in preconditions if f.id in wanted]
+        verification = [f for f in verification if f.id in wanted]
     if not waiting and not preconditions:
+        if verification:
+            # Sentry verification is machine work.  It must not touch Felix's
+            # announcement state, even when the state contains stale entries
+            # from an earlier product decision.
+            print(
+                f"{len(verification)} Sentry finding(s) awaiting automated "
+                "verification — nothing for you to do."
+            )
+            return 0
         # The announcement read also prunes cleared ids. Run it before this
         # early return so an emptied queue can self-heal before a re-park.
         # A bare review never toasts: shown_ids is empty.
@@ -7201,43 +7626,17 @@ def cmd_decisions(args: argparse.Namespace) -> int:
             print("No decisions are waiting on you.")
         return 0
 
-    # Product decisions and Sentry approvals are two different asks and were
-    # printed as one list under one count, which made the queue read as "18
-    # decisions waiting on you" when only a handful were product questions.
-    # Felix, 2026-09-01: "I only want decisions when they are really for me and
-    # change the product in an important way." Separating them costs nothing and
-    # stops the security gate inflating the number he judges the queue by.
+    if verification:
+        print(
+            f"{len(verification)} Sentry finding(s) awaiting automated "
+            "verification — nothing for you to do.\n"
+        )
     product = [f for f in waiting if f.blocked == FELIX_DECISION]
-    approvals = [f for f in waiting if f.blocked == FELIX_SENTRY_ORIGIN]
     if product:
         print(f"{len(product)} product decision(s) waiting on you.\n")
-    for f in product + approvals:
-        if approvals and f is approvals[0]:
-            print(
-                f"{len(approvals)} Sentry approval(s) waiting on you — not product\n"
-                "decisions. The unattended intake reads externally-influenceable\n"
-                "input while holding authority, so a human confirms each defect it\n"
-                "files before it becomes work (d-20260825-19).\n"
-            )
+    for f in product:
         print(f"{f.id} — {f.title}")
         print(f"  area={f.area}  entry={f.entry}  ledger line {f.line}")
-        if f.blocked == FELIX_SENTRY_ORIGIN:
-            sentry_ids: list[str] = []
-            for line in _unfenced_body(f).splitlines():
-                if SENTRY_CONTEXT_RE.match(line) is not None:
-                    print(f"  {line}")
-                if SENTRY_RE.match(line) is not None:
-                    short_id = line.split("**Sentry:**", 1)[1].strip()
-                    if short_id:
-                        sentry_ids.append(short_id)
-                    print(f"  {line}")
-            if sentry_ids:
-                print(f"  Sentry short-ID: {', '.join(sentry_ids)}")
-            else:
-                print("  Sentry short-ID: none (this entry has no **Sentry:** bullet).")
-            print("  Approval question: approve or reject this finding.")
-            print()
-            continue
         # The brief runs from the **Decision:** bullet to the end of the entry;
         # that placement is the contract, so everything after it is part of it.
         brief_started = False
@@ -7446,7 +7845,27 @@ def _answerable_header_change_refusal(
 ) -> str | None:
     """Refuse a set-header change that would bypass an answerable blocker."""
     target = next((finding for finding in findings if finding.id == finding_id), None)
-    if target is None or target.blocked not in ANSWERABLE_BLOCKERS:
+    if target is None:
+        return None
+    target_is_sentry = _body_is_sentry_origin(_unfenced_body(target))
+    if target.blocked in SENTRY_VERIFIER_BLOCKERS:
+        if status in {"handled", "rejected"}:
+            return (
+                f"cannot clear verifier blocker {target.blocked} with set-header; "
+                "answer it through the verifier answer route"
+            )
+        if blocked is not None and blocked != SENTRY_UNVERIFIED:
+            return (
+                f"cannot clear verifier blocker {target.blocked} with set-header; "
+                "only sentry-unverified is accepted"
+            )
+        return None
+    if target_is_sentry and blocked is not None and blocked != SENTRY_UNVERIFIED:
+        return (
+            f"cannot set a Sentry-origin finding to blocker {blocked}; "
+            f"only {SENTRY_UNVERIFIED} is accepted"
+        )
+    if target.blocked not in ANSWERABLE_BLOCKERS:
         return None
     blocked_change = blocked is not None and blocked not in ANSWERABLE_BLOCKERS
     status_close = status in {"handled", "rejected"}
@@ -7940,29 +8359,59 @@ def _parse_answer_file(path: Path) -> tuple[str, list[str]] | None:
     return ids[0], bullet
 
 
-def _sentry_answer_kind(bullet: list[str]) -> str:
+def _sentry_answer_kind(
+    bullet: list[str], *, allow_legacy: bool = False
+) -> str:
     """Return the explicit approval decision from a Sentry answer bullet."""
     decision = bullet[0].split(DECIDED_MARKER, 1)[1].strip()
-    match = re.match(r"^(approve|reject)(?:\s|$|[—:,-])", decision)
+    match = VERIFIER_DECISION_RE.match(decision)
     if match is None:
+        if allow_legacy:
+            legacy = re.match(r"^(?P<kind>approve|reject)(?:[ \t]+|$)", decision)
+            if legacy is not None:
+                return legacy.group("kind")
         raise LedgerError(
-            "a Sentry-origin answer must start with 'approve' or 'reject'"
+            "a Sentry-origin answer must use the verifier actor and current body "
+            "digest"
         )
-    return match.group(1)
+    return match.group("kind")
 
 
-def _sentry_answer_evidence(bullet: list[str], kind: str) -> list[str]:
+def _validate_verifier_actor(
+    actor: str, expected_digest: str
+) -> tuple[re.Match[str] | None, str | None]:
+    """Validate one verifier actor and its body digest at an answer boundary."""
+    actor_match = VERIFIER_ACTOR_FULL_RE.fullmatch(actor)
+    if actor_match is None:
+        return None, "invalid verifier actor"
+    if actor_match.group("body") != expected_digest:
+        return actor_match, "verifier body digest does not match"
+    return actor_match, None
+
+
+def _sentry_answer_evidence(
+    bullet: list[str], kind: str, *, actor_prefixed: bool = True
+) -> list[str]:
     """Turn a Sentry answer into validator evidence for approval or rejection."""
     decision = bullet[0].split(DECIDED_MARKER, 1)[1].strip()
-    reason = decision[len(kind) :].lstrip(" \t—:,-")
+    verifier = VERIFIER_DECISION_RE.match(decision)
+    if verifier is not None:
+        actor = verifier.group("actor")
+        reason = decision[verifier.end("actor") + 1 :].lstrip()
+    else:
+        actor_match = re.match(r"^(?P<actor>[^:—]+):[ \t]*(?P<reason>.*)$", decision)
+        actor = actor_match.group("actor").strip() if actor_match else "answer route"
+        reason = actor_match.group("reason").strip() if actor_match else decision[len(kind) :].lstrip(" \t—:,-")
     continuation = " ".join(line.strip() for line in bullet[1:] if line.strip())
     reason = " ".join(part for part in (reason, continuation) if part)
     if not reason:
         reason = (
-            "Felix approved this Sentry-origin finding."
+            "Approved through the answer route."
             if kind == "approve"
-            else "Felix rejected this Sentry-origin finding."
+            else "Rejected through the answer route."
         )
+    if actor != "answer route" and actor_prefixed:
+        reason = f"{actor}: {reason}"
     marker = "Approved" if kind == "approve" else "Why rejected"
     return [f"* **{marker}:** {reason}"]
 
@@ -8013,8 +8462,142 @@ def _refuse_unapplied_answers(spool: Path) -> None:
         )
 
 
+def _answer_ids_in_path(path: Path) -> set[str]:
+    """Read answer ids from one spool or claim file for duplicate detection."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return set()
+    lines = text.splitlines()
+    states = _fence_mask(lines)
+    return {
+        match.group("id")
+        for line, state in zip(lines, states, strict=True)
+        if state is FenceState.OUTSIDE
+        and (match := ANSWER_ID_RE.match(line)) is not None
+    }
+
+
+def _answer_target_finding(ledger: Path, identifier: str) -> Finding:
+    findings, problems, vocabulary = parse(ledger)
+    issues = validate(findings, problems, vocabulary)
+    if issues:
+        raise LedgerError(
+            f"the findings ledger does not validate: {'; '.join(issues)}"
+        )
+    target = next((finding for finding in findings if finding.id == identifier), None)
+    if target is None:
+        raise LedgerError(f"finding id {identifier} is not present in the ledger")
+    return target
+
+
+def _cmd_answer(args: argparse.Namespace) -> int:
+    """Publish one authenticated answer without touching either ledger."""
+    target = _answer_target_finding(args.ledger, args.id)
+    blocker_class = classify_blocker(target.blocked)
+    actor = str(getattr(args, "actor", "")).strip()
+    reason = str(getattr(args, "reason", "")).strip()
+    verdict = getattr(args, "verdict", None)
+    decision = getattr(args, "decision", None)
+    if not actor:
+        raise LedgerError("--actor is required")
+    if blocker_class == BLOCKER_VERIFIER:
+        if decision is not None:
+            raise LedgerError(
+                "--decision is only valid for felix-decision findings; verifier "
+                "answers require --verdict"
+            )
+        if verdict not in {"approve", "reject"}:
+            raise LedgerError("verifier answers require --verdict approve or reject")
+        expected_digest = verified_body_sha256(target)
+        actor_match, validation_error = _validate_verifier_actor(
+            actor, expected_digest
+        )
+        if validation_error == "invalid verifier actor":
+            raise LedgerError(
+                "Sentry verifier answers require actor "
+                "'automated Sentry-origin verifier (codex, run <id>, body <sha256>)'"
+            )
+        if validation_error is not None:
+            actual_digest = actor_match.group("body") if actor_match else ""
+            raise LedgerError(
+                f"verifier actor body digest {actual_digest} does not "
+                f"match the current body digest {expected_digest}"
+            )
+        choice = verdict
+    elif blocker_class == BLOCKER_ANSWERABLE:
+        if verdict is not None:
+            raise LedgerError("--verdict is only valid for Sentry verifier findings")
+        if not isinstance(decision, str) or not decision.strip():
+            raise LedgerError("felix-decision answers require --decision")
+        choice = decision.strip()
+    else:
+        raise LedgerError(
+            f"finding {target.id} is not answerable (blocker={target.blocked})"
+        )
+    if not reason:
+        reason = "Answer recorded through the findings answer route."
+    answer = (
+        f"* **ID:** {target.id}\n\n"
+        f"* **Decision made:** {choice} — {actor}: {reason}\n"
+    )
+    spool: Path = args.answers
+    claim = spool.with_name(f"{spool.name}.claim")
+    with _publish_lock(publish_lock_path(spool)):
+        spool.mkdir(parents=True, exist_ok=True)
+        candidates = list(spool.glob("*.md")) + list(spool.glob(".*.part"))
+        if claim.exists():
+            if not claim.is_dir():
+                raise LedgerError(
+                    f"answers claim {claim} exists but is not a directory"
+                )
+            candidates += list(claim.glob("*.md"))
+        for path in candidates:
+            if target.id in _answer_ids_in_path(path):
+                raise LedgerError(
+                    f"finding {target.id} already has an answer in {path}; "
+                    "refusing a duplicate verifier or decision answer"
+                )
+        part = spool / f".{_publish_stamp()}-{_unique_suffix()}.part"
+        candidate = spool / f"{_publish_stamp()}-{_unique_suffix()}.md"
+        _atomic_write(part, answer, durable_directory=True)
+        try:
+            os.link(part, candidate)
+            _fsync_directory(spool)
+        except OSError as exc:
+            raise LedgerError(f"could not publish answer to {spool}: {exc}") from exc
+        finally:
+            part.unlink(missing_ok=True)
+        _fsync_directory(spool)
+    print(f"published answer for {target.id}: {candidate}")
+    return 0
+
+
+def cmd_answer(args: argparse.Namespace) -> int:
+    """CLI answer wrapper with a typed usage/refusal status."""
+    try:
+        return _cmd_answer(args)
+    except (LedgerError, OSError, UnicodeError) as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 2
+
+
 def cmd_apply_answers(args: argparse.Namespace) -> int:
     """Fold answers through the shared locked mutation pipeline."""
+    hold_consumer_lock = bool(getattr(args, "hold_consumer_lock", False))
+    if hold_consumer_lock:
+        consumer_fd, consumer_lock, consumer_error = _try_consumer_lock()
+        if consumer_error is not None:
+            print(f"FAIL {consumer_error}", file=sys.stderr)
+            return 2
+        if consumer_fd is None:
+            print(
+                f"consumer lock {consumer_lock} is held by the drain; retry after it "
+                "finishes",
+                file=sys.stderr,
+            )
+            return 75
+        args._consumer_lock_fd = consumer_fd
     spool: Path = args.answers
     claim = spool.with_name(f"{spool.name}.claim")
     decisions = _args_decisions(args)
@@ -8024,7 +8607,8 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
     if mode == "deferred":
         _deferred_preconditions(args.ledger, decisions)
         if (
-            _ACTIVE_LEDGER_COMMIT is not None
+            not hold_consumer_lock
+            and _ACTIVE_LEDGER_COMMIT is not None
             and os.environ.get(LEDGER_COMMIT_ENV) != "0"
         ):
             _settle_pending_ledger_dirt(_ACTIVE_LEDGER_COMMIT)
@@ -8037,9 +8621,30 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
     applied: list[str] = []
     skipped: list[str] = []
     quarantined: list[Path] = []
+    unreadable_current: dict[str, str] = {}
 
     def build(text: str) -> str:
         nonlocal claimed
+        if hold_consumer_lock:
+            # This check runs inside _locked_ledger_mutation's writer lock,
+            # before claiming or settling anything. It prevents foreign bytes
+            # from being folded into the answer commit between a preflight
+            # probe and the locked mutation.
+            root = cast(Path, REPO_ROOT).resolve()
+            ledger_relative = _repo_relative(_resolved_repo_path(args.ledger), root)
+            dirty_probe = _git_for_ledger(
+                root, "diff", "--quiet", "HEAD", "--", ledger_relative
+            )
+            if dirty_probe.returncode == 1:
+                raise LedgerDirtyError(
+                    f"ledger dirty against HEAD: {_resolved_repo_path(args.ledger)}; "
+                    "commit or discard that change before applying answers"
+                )
+            if dirty_probe.returncode != 0:
+                raise LedgerError(
+                    "could not inspect ledger dirt against HEAD: "
+                    + _git_failure_detail(dirty_probe)
+                )
         issues = _validate_text(text, args.ledger)
         if issues:
             raise LedgerError(
@@ -8106,6 +8711,20 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                 f"a previously refused answers batch is still unresolved: {claim}"
             )
         if not claimed:
+            if claim.exists():
+                existing_intent = _read_claim_intent(
+                    claim, strict=mode == "deferred"
+                )
+                if (
+                    existing_intent is not None
+                    and existing_intent.phase == "prepared"
+                    and existing_intent.quarantined
+                    and not list(claim.glob("*.md"))
+                ):
+                    # A retry after a crash between the quarantine move and
+                    # cleanup has no replayable answer left.  Finish that
+                    # durable quarantine boundary before returning.
+                    release_spool(claim, spool, [], publish_locked=False)
             return text
         lines = text.splitlines()
         ledger_fence_states = _fence_mask(lines)
@@ -8114,10 +8733,9 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         for answer_path in claimed:
             try:
                 record = _parse_answer_file(answer_path)
-            except (OSError, UnicodeError) as exc:
-                raise LedgerError(
-                    f"could not read answer file {answer_path}: {exc}"
-                ) from exc
+            except (OSError, UnicodeError):
+                unreadable_current[answer_path.name] = "unreadable"
+                continue
             if record is None:
                 raise LedgerError(
                     f"{answer_path.name} needs exactly one finding id and one "
@@ -8127,17 +8745,6 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             answer_records.append((answer_path, finding_id, bullet))
             paths_by_id.setdefault(finding_id, []).append(answer_path)
 
-        duplicate_ids = {
-            finding_id: paths
-            for finding_id, paths in paths_by_id.items()
-            if len(paths) > 1
-        }
-        if duplicate_ids:
-            details = "; ".join(
-                f"{finding_id}: {', '.join(path.name for path in paths)}"
-                for finding_id, paths in duplicate_ids.items()
-            )
-            raise LedgerError(f"duplicate answer id(s) in batch: {details}")
         answer_by_id = {
             finding_id: (answer_path, bullet)
             for answer_path, finding_id, bullet in answer_records
@@ -8145,12 +8752,61 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
         target_spans = _answer_target_spans(
             lines, ledger_fence_states, answer_by_id
         )
+        duplicate_ids = {
+            finding_id: paths
+            for finding_id, paths in paths_by_id.items()
+            if len(paths) > 1
+        }
+        verifier_duplicate_ids = {
+            finding_id: paths
+            for finding_id, paths in duplicate_ids.items()
+            if (
+                finding_id in target_spans
+                and classify_blocker(target_spans[finding_id][2].group("blocked"))
+                == BLOCKER_VERIFIER
+            )
+        }
+        ordinary_duplicate_ids = {
+            finding_id: paths
+            for finding_id, paths in duplicate_ids.items()
+            if finding_id not in verifier_duplicate_ids
+        }
+        if ordinary_duplicate_ids:
+            details = "; ".join(
+                f"{finding_id}: {', '.join(path.name for path in paths)}"
+                for finding_id, paths in ordinary_duplicate_ids.items()
+            )
+            raise LedgerError(f"duplicate answer id(s) in batch: {details}")
+        verifier_to_quarantine: list[tuple[Path, str, Path]] = []
+        duplicate_verifier_paths = {
+            path
+            for paths in verifier_duplicate_ids.values()
+            for path in paths
+        }
+        for answer_path in duplicate_verifier_paths:
+            destination = spool.with_name(f"{spool.name}.refused") / answer_path.name
+            if destination.exists():
+                raise LedgerError(
+                    f"cannot quarantine {answer_path.name}: destination "
+                    f"{destination} already exists"
+                )
+            verifier_to_quarantine.append(
+                (answer_path, "duplicate verifier answer", destination)
+            )
+        answer_records = [
+            record for record in answer_records if record[0] not in duplicate_verifier_paths
+        ]
+        answer_by_id = {
+            finding_id: (answer_path, bullet)
+            for answer_path, finding_id, bullet in answer_records
+        }
 
         header_updates: dict[int, str] = {}
         insertions: dict[int, list[str]] = {}
         waiting_records: list[dict[str, object]] = []
         already_applied: list[tuple[Path, str]] = []
         to_quarantine: list[tuple[Path, str, Path]] = []
+        verifier_quarantine: list[tuple[Path, str, Path]] = verifier_to_quarantine
         for answer_path, finding_id, bullet in answer_records:
             target = target_spans.get(finding_id)
             if target is None:
@@ -8159,16 +8815,41 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                 )
             header_index, end, header_match = target
             blocked = header_match.group("blocked")
-            if classify_blocker(blocked) == BLOCKER_ANSWERABLE:
+            blocker_class = classify_blocker(blocked)
+            if blocker_class in {BLOCKER_ANSWERABLE, BLOCKER_VERIFIER}:
                 kind = "decision"
                 evidence = list(bullet)
-                if blocked == FELIX_SENTRY_ORIGIN:
+                if blocker_class == BLOCKER_VERIFIER:
                     try:
                         kind = _sentry_answer_kind(bullet)
                     except LedgerError as exc:
-                        raise LedgerError(
-                            f"{answer_path.name} answers {finding_id}: {exc}"
-                        ) from exc
+                        destination = spool.with_name(f"{spool.name}.refused") / answer_path.name
+                        verifier_quarantine.append((answer_path, str(exc), destination))
+                        continue
+                    decision = bullet[0].split(DECIDED_MARKER, 1)[1].strip()
+                    verifier_match = VERIFIER_DECISION_RE.match(decision)
+                    target_finding = next(
+                        (finding for finding in _parse_text(text, args.ledger)[0]
+                         if finding.id == finding_id),
+                        None,
+                    )
+                    expected_digest = (
+                        verified_body_sha256(target_finding)
+                        if target_finding is not None
+                        else ""
+                    )
+                    if verifier_match is None:
+                        destination = spool.with_name(f"{spool.name}.refused") / answer_path.name
+                        verifier_quarantine.append((answer_path, "invalid verifier actor", destination))
+                        continue
+                    actual_actor = verifier_match.group("actor")
+                    _actual_match, validation_error = _validate_verifier_actor(
+                        actual_actor, expected_digest
+                    )
+                    if validation_error is not None:
+                        destination = spool.with_name(f"{spool.name}.refused") / answer_path.name
+                        verifier_quarantine.append((answer_path, validation_error, destination))
+                        continue
                     evidence += _sentry_answer_evidence(bullet, kind)
                 body = tuple(
                     lines[index]
@@ -8223,7 +8904,6 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
                 f"{finding_id} (not waiting on a decision; preserved "
                 f"{destination.name})"
             )
-
         for record in waiting_records:
             finding_id = cast(str, record["id"])
             bullet = cast(list[str], record["bullet"])
@@ -8232,7 +8912,7 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             target = target_spans[finding_id]
             header_index, end, header_match = target
             updated_header = lines[header_index]
-            if blocked == FELIX_SENTRY_ORIGIN and kind == "reject":
+            if classify_blocker(blocked) == BLOCKER_VERIFIER and kind == "reject":
                 updated_header = re.sub(
                     r"(\*\*Status:\*\* )\S+",
                     r"\g<1>rejected",
@@ -8289,21 +8969,47 @@ def cmd_apply_answers(args: argparse.Namespace) -> int:
             if index < len(lines):
                 result_lines.append(header_updates.get(index, lines[index]))
 
-        if waiting_records:
+        if waiting_records or unreadable_current or verifier_quarantine:
             existing_intent = _read_claim_intent(claim, strict=mode == "deferred")
             if existing_intent is not None and existing_intent.files is not None:
                 existing_files = dict(existing_intent.files)
                 existing_files.update(answer_files)
                 answer_files = existing_files
+            existing_quarantined = (
+                dict(existing_intent.quarantined)
+                if existing_intent is not None
+                else {}
+            )
+            existing_quarantined.update(unreadable_current)
+            for answer_path, reason, _destination in verifier_quarantine:
+                existing_quarantined[answer_path.name] = reason
+            for name in existing_quarantined:
+                # The unreadable file has no trustworthy bytes from which to
+                # recover an id.  Keep a schema-marked tombstone in ``files``;
+                # prepared claims already carry their real per-file record.
+                answer_files.setdefault(
+                    name,
+                    {
+                        "id": None,
+                        "kind": "quarantine",
+                    },
+                )
             _write_claim_intent(
                 claim,
                 "prepared",
                 {
                     cast(str, record["id"])
                     for record in answer_files.values()
+                    if isinstance(record.get("id"), str)
                 },
                 files=answer_files,
+                quarantined=existing_quarantined,
             )
+            if existing_quarantined:
+                with _publish_lock(publish_lock_path(spool)):
+                    intent = _read_claim_intent(claim, strict=mode == "deferred")
+                    if intent is not None:
+                        _quarantine_claim_files(claim, spool, intent)
             if mode == "deferred" and _ACTIVE_LEDGER_COMMIT is not None:
                 _ACTIVE_LEDGER_COMMIT.claim = claim
                 _ACTIVE_LEDGER_COMMIT.finalize = lambda: _finalize_answers_claim(
@@ -8355,6 +9061,13 @@ LEDGER_COMMIT_COMMANDS = frozenset(
     }
 )
 LEDGER_COMMIT_RETRY_SECONDS = 0.1
+LEDGER_INDEX_REFRESH_ATTEMPTS = 2
+LEDGER_HOOK_TIMEOUT_SECONDS = 600.0
+LEDGER_HOOK_TERM_GRACE_SECONDS = 30.0
+LEDGER_INDEX_FILE_MODE = 0o600
+LEDGER_INDEX_NAME_PREFIX = "findings-ledger-index-"
+LEDGER_BLOB_READ_FAILURE_CAUSE = "stored-blob-read-failed"
+LEDGER_BLOB_BYTES_MISMATCH_CAUSE = "exact-byte-mismatch"
 
 
 def _git_for_ledger(
@@ -8368,6 +9081,40 @@ def _git_for_ledger(
         input=stdin,
         capture_output=True,
         text=True,
+        check=False,
+    )
+
+
+def _git_for_ledger_bytes(
+    root: Path, *arguments: str
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one git operation while preserving binary stdout and stderr."""
+    git = shutil.which("git") or "/usr/bin/git"
+    return subprocess.run(
+        [git, *arguments],
+        cwd=root,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+
+
+def _git_for_ledger_env(
+    root: Path,
+    environment: dict[str, str],
+    *arguments: str,
+    stdin: bytes | str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run git with a private index without changing this process's environment."""
+    git = shutil.which("git") or "/usr/bin/git"
+    text_input = isinstance(stdin, str) or stdin is None
+    return subprocess.run(
+        [git, *arguments],
+        cwd=root,
+        env=environment,
+        input=stdin,
+        capture_output=True,
+        text=text_input,
         check=False,
     )
 
@@ -8415,6 +9162,35 @@ def _discard_scratch(path: Path | None) -> None:
 def _safe_discard_scratch(path: Path | None) -> None:
     with suppress(OSError):
         _discard_scratch(path)
+
+
+def _create_temporary_git_index() -> Path:
+    """Reserve a private index path without sharing scratch-file allocation."""
+    directory = Path(tempfile.gettempdir()).resolve()
+    root = cast(Path, REPO_ROOT).resolve()
+    if directory == root or root in directory.parents:
+        directory = Path("/tmp")
+    for _attempt in range(PUBLISH_NAME_ATTEMPTS):
+        candidate = directory / f"{LEDGER_INDEX_NAME_PREFIX}{_unique_suffix()}"
+        try:
+            descriptor = os.open(
+                candidate,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                LEDGER_INDEX_FILE_MODE,
+            )
+        except FileExistsError:
+            continue
+        try:
+            os.close(descriptor)
+            candidate.unlink()
+        except OSError:
+            with suppress(OSError):
+                os.close(descriptor)
+            with suppress(OSError):
+                candidate.unlink()
+            raise
+        return candidate
+    raise OSError(f"could not reserve a unique temporary index path in {directory}")
 
 
 def _head_postcondition(intent: LedgerCommitIntent) -> tuple[bool, str]:
@@ -8490,8 +9266,257 @@ def _validate_worktree_for_commit(intent: LedgerCommitIntent) -> tuple[bool, str
     return _validate_ledger_paths(intent.findings, intent.decisions)
 
 
-def _attempt_ledger_commit(intent: LedgerCommitIntent) -> LedgerCommitResult:
-    """Best-effort isolated commit that can never change command status."""
+def _run_ledger_hook(
+    root: Path, environment: dict[str, str]
+) -> tuple[bool, bool, str]:
+    """Run the repository pre-commit hook on the private index."""
+    git = shutil.which("git") or "/usr/bin/git"
+    process = subprocess.Popen(
+        [git, "hook", "run", "--ignore-missing", "pre-commit"],
+        cwd=root,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    term_sent = False
+    kill_sent = False
+    stdout = ""
+    stderr = ""
+
+    def stream_text(value: object) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value if isinstance(value, str) else ""
+
+    def group_alive() -> bool:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            # Permission errors and an indeterminate group state fail closed:
+            # never assume a descendant is gone before releasing the ledger lock.
+            return True
+        return True
+
+    def terminate_group() -> None:
+        nonlocal term_sent
+        if term_sent:
+            return
+        term_sent = True
+        with suppress(OSError):
+            os.killpg(process.pid, signal.SIGTERM)
+
+    def remember_partial(exc: subprocess.TimeoutExpired) -> None:
+        nonlocal stdout, stderr
+        partial_stdout = getattr(exc, "output", None)
+        partial_stderr = getattr(exc, "stderr", None)
+        if partial_stdout is not None:
+            stdout = stream_text(partial_stdout)
+        if partial_stderr is not None:
+            stderr = stream_text(partial_stderr)
+
+    def wait_for_group_grace() -> None:
+        """Wait until the group exits or the full TERM grace has elapsed."""
+        nonlocal stdout, stderr
+        deadline = time.monotonic() + LEDGER_HOOK_TERM_GRACE_SECONDS
+        while group_alive():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=min(remaining, LEDGER_LOCK_RETRY_INTERVAL_SECONDS)
+                )
+            except subprocess.TimeoutExpired as exc:
+                remember_partial(exc)
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(LEDGER_LOCK_RETRY_INTERVAL_SECONDS, remaining))
+        if not group_alive() and process.poll() is not None:
+            stdout, stderr = process.communicate()
+
+    try:
+        stdout, stderr = process.communicate(timeout=LEDGER_HOOK_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        remember_partial(exc)
+        terminate_group()
+    else:
+        if group_alive():
+            # The direct hook exited before the normal timeout, but a descendant
+            # still owns the session. Give the group the same TERM/grace/KILL
+            # treatment before considering the hook complete.
+            terminate_group()
+    if term_sent:
+        # communicate() can return as soon as the direct process exits while a
+        # detached descendant still owns the group. The grace is therefore
+        # measured from the TERM signal and checked independently of pipes.
+        wait_for_group_grace()
+        if group_alive():
+            kill_sent = True
+            with suppress(OSError):
+                os.killpg(process.pid, signal.SIGKILL)
+            stdout, stderr = process.communicate()
+    if term_sent:
+        detail = "\n".join(
+            part.strip()
+            for part in (stream_text(stderr), stream_text(stdout))
+            if part.strip()
+        )
+        if detail:
+            sys.stderr.write(detail + "\n")
+        return False, kill_sent, (
+            "pre-commit hook refused the ledger commit: timeout"
+            + (f"; {detail}" if detail else "")
+        )
+    output = "\n".join(
+        part for part in (stream_text(stdout), stream_text(stderr)) if part
+    )
+    if output:
+        sys.stderr.write(output)
+        if not output.endswith("\n"):
+            sys.stderr.write("\n")
+    if process.returncode != 0:
+        return False, kill_sent, "pre-commit hook refused the ledger commit"
+    return True, kill_sent, ""
+
+
+def _commit_blob(
+    root: Path,
+    relative: str,
+    scratch: Path | None,
+    content: bytes | None,
+) -> tuple[str | None, str | None]:
+    """Hash one exact ledger byte string into the object store."""
+    try:
+        saved_bytes = scratch.read_bytes() if scratch is not None else content or b""
+    except (OSError, UnicodeError) as exc:
+        return None, f"could not read saved bytes for {relative}: {exc}"
+    if scratch is not None:
+        result = _git_for_ledger(
+            root, "hash-object", "-w", "--path", relative, str(scratch)
+        )
+    else:
+        result = _git_for_ledger_env(
+            root,
+            os.environ.copy(),
+            "hash-object",
+            "-w",
+            "--path",
+            relative,
+            "--stdin",
+            stdin=content or b"",
+        )
+    if result.returncode != 0:
+        return None, _git_failure_detail(result)
+    blob = result.stdout.strip()
+    if isinstance(blob, bytes):
+        blob = blob.decode("ascii", errors="replace")
+    if SHA256_RE.fullmatch(blob) is None and not re.fullmatch(r"[0-9a-f]{40,64}", blob):
+        return None, "git hash-object returned an invalid object id"
+    stored = _git_for_ledger_bytes(root, "cat-file", "blob", blob)
+    if stored.returncode != 0:
+        detail = (stored.stderr or stored.stdout).decode("utf-8", errors="replace")
+        detail = detail.strip().replace("\n", "; ")
+        return None, (
+            f"{LEDGER_BLOB_READ_FAILURE_CAUSE}:{relative}: "
+            f"{detail or f'git exited {stored.returncode} without a diagnostic'}"
+        )
+    if stored.stdout != saved_bytes:
+        return None, (
+            f"{LEDGER_BLOB_BYTES_MISMATCH_CAUSE}:{relative}: "
+            "stored blob differs from saved bytes"
+        )
+    return blob, None
+
+
+def _head_file_mode(root: Path, commit: str, relative: str) -> str:
+    result = _git_for_ledger(root, "ls-tree", commit, "--", relative)
+    if result.returncode != 0:
+        raise LedgerError(f"could not inspect HEAD tree: {_git_failure_detail(result)}")
+    fields = result.stdout.rstrip("\n").split(None, 2)
+    actual_path = fields[2].split("\t", 1)[1] if len(fields) >= 3 and "\t" in fields[2] else ""
+    if len(fields) < 3 or actual_path != relative:
+        raise LedgerError(f"ledger path {relative} is not tracked in HEAD")
+    return fields[0]
+
+
+def _head_file_blob(root: Path, commit: str, relative: str) -> str | None:
+    """Return one tracked ledger blob from a named commit, if present."""
+    result = _git_for_ledger(root, "ls-tree", commit, "--", relative)
+    if result.returncode != 0:
+        raise LedgerError(f"could not inspect HEAD tree: {_git_failure_detail(result)}")
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) < 3 or "\t" not in fields[2]:
+            continue
+        blob, actual_path = fields[2].split("\t", 1)
+        if actual_path == relative:
+            return blob
+    return None
+
+
+def _ledger_superseded_error(
+    root: Path, intent: LedgerCommitIntent, current_head: str
+) -> LedgerSupersededError | None:
+    """Detect a foreign ledger replacement since this command's write."""
+    if intent.head_at_write is None or intent.head_at_write == current_head:
+        return None
+    paths = [intent.ledger]
+    if intent.companion is not None:
+        paths.append(intent.companion)
+    changed: list[str] = []
+    for path in paths:
+        relative = _repo_relative(_resolved_repo_path(path), root)
+        before = _head_file_blob(root, intent.head_at_write, relative)
+        after = _head_file_blob(root, current_head, relative)
+        if before != after:
+            changed.append(relative)
+    if not changed:
+        return None
+    return LedgerSupersededError(
+        f"ledger superseded: HEAD moved from {intent.head_at_write} to "
+        f"{current_head}; ledger blob changed for {', '.join(changed)}"
+    )
+
+
+def _refresh_ledger_index(
+    root: Path, relative_modes_blobs: list[tuple[str, str, str]]
+) -> tuple[bool, str]:
+    """Refresh only ledger index entries, preserving unrelated staged work."""
+    last = "index refresh not attempted"
+    for attempt in range(LEDGER_INDEX_REFRESH_ATTEMPTS):
+        last_result: subprocess.CompletedProcess[str] | None = None
+        for relative, mode, blob in relative_modes_blobs:
+            last_result = _git_for_ledger(
+                root,
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                f"{mode},{blob},{relative}",
+            )
+            if last_result.returncode != 0:
+                break
+        if last_result is None or last_result.returncode == 0:
+            return True, ""
+        last = _git_failure_detail(last_result)
+        if "index.lock" not in last and "index.lock" not in (last_result.stderr or ""):
+            break
+        if attempt < LEDGER_INDEX_REFRESH_ATTEMPTS - 1:
+            time.sleep(LEDGER_COMMIT_RETRY_SECONDS)
+    return False, last
+
+
+def _attempt_ledger_commit(
+    intent: LedgerCommitIntent,
+    *,
+    lock_held: bool = False,
+    warn: bool = True,
+    require_worktree_match: bool = False,
+) -> LedgerCommitResult:
+    """Commit exactly the command's bytes through a hooked temporary index."""
     if not intent.replaced or os.environ.get(LEDGER_COMMIT_ENV) == "0":
         return LedgerCommitResult(False)
     scratch = _save_ledger_commit_scratch(intent)
@@ -8507,11 +9532,23 @@ def _attempt_ledger_commit(intent: LedgerCommitIntent) -> LedgerCommitResult:
     )
 
     def failed(cause: str) -> LedgerCommitResult:
-        _warn_ledger_commit(intent, cause, scratch, companion_scratch)
+        if warn:
+            _warn_ledger_commit(intent, cause, scratch, companion_scratch)
         return LedgerCommitResult(False, cause)
 
+    root = cast(Path, REPO_ROOT).resolve()
+    lock = ledger_lock_path(_resolved_repo_path(intent.ledger))
+    acquired_here = False
+    temp_index: Path | None = None
     try:
-        root = cast(Path, REPO_ROOT).resolve()
+        if not lock_held:
+            acquired, waited = acquire_ledger_lock(lock, LEDGER_LOCK_WAIT_SECONDS)
+            if not acquired:
+                return failed(
+                    f"ledger lock {lock}: another ledger writer still holds it after "
+                    f"{waited:.2f}s of retries"
+                )
+            acquired_here = True
         paths = [intent.ledger]
         if intent.companion is not None:
             paths.append(intent.companion)
@@ -8529,63 +9566,163 @@ def _attempt_ledger_commit(intent: LedgerCommitIntent) -> LedgerCommitResult:
             )
             if companion_tracked.returncode != 0:
                 if companion_tracked.returncode == 1:
-                    return failed(
-                        f"companion ledger is untracked: {relatives[1]}"
-                    )
+                    return failed(f"companion ledger is untracked: {relatives[1]}")
                 return failed(
                     f"fatal tracked-file probe: {_git_failure_detail(companion_tracked)}"
                 )
 
         dirty = _git_for_ledger(root, "diff", "--quiet", "HEAD", "--", *relatives)
-        if dirty.returncode == 0:
-            holds, detail = _head_postcondition(intent)
-            if not holds:
-                return failed(detail)
+        if dirty.returncode not in {0, 1}:
+            return failed(f"fatal HEAD dirtiness probe: {_git_failure_detail(dirty)}")
+
+        expected_bytes = [intent.written_bytes]
+        scratch_paths = [scratch]
+        if intent.companion is not None:
+            expected_bytes.append(intent.companion_bytes)
+            scratch_paths.append(companion_scratch)
+        for path, expected, saved in zip(paths, expected_bytes, scratch_paths, strict=True):
+            if expected is None and saved is None:
+                return failed(f"no exact bytes were recorded for {path}")
+            if require_worktree_match:
+                try:
+                    actual = _resolved_repo_path(path).read_bytes()
+                    saved_bytes = saved.read_bytes() if saved is not None else expected or b""
+                except (OSError, UnicodeError) as exc:
+                    return failed(f"could not read exact ledger bytes for {path}: {exc}")
+                if actual != saved_bytes:
+                    return failed(
+                        f"worktree ledger differs from the exact bytes written by {intent.command}"
+                    )
+
+        if require_worktree_match:
+            valid, validation_detail = _validate_worktree_for_commit(intent)
+            if not valid:
+                return failed(f"ledger validation refused the commit: {validation_detail}")
+
+        current_head = _resolve_head(root)
+        old_head = intent.expected_head or current_head
+        if intent.expected_head is not None and current_head != intent.expected_head:
+            return failed(f"HEAD is {current_head}, not {intent.expected_head}")
+
+        # A no-op consumer mutation has no semantic postcondition to evaluate.
+        # If its exact saved bytes already occupy HEAD, that is durable and must
+        # not turn into an empty commit merely because the write was observed.
+        if intent.postcondition is None:
+            exact_head = True
+            for relative, saved, expected in zip(
+                relatives, scratch_paths, expected_bytes, strict=True
+            ):
+                try:
+                    expected_content = (
+                        saved.read_bytes() if saved is not None else expected or b""
+                    )
+                except (OSError, UnicodeError) as exc:
+                    return failed(f"could not read exact ledger bytes for {relative}: {exc}")
+                shown = _git_for_ledger(root, "show", f"{old_head}:{relative}")
+                if (
+                    shown.returncode != 0
+                    or shown.stdout.encode("utf-8") != expected_content
+                ):
+                    exact_head = False
+                    break
+            if exact_head:
+                _safe_discard_scratch(scratch)
+                _safe_discard_scratch(companion_scratch)
+                return LedgerCommitResult(True)
+
+        # The worktree may have returned to its old HEAD bytes after this
+        # command's replacement, or may have moved independently while the
+        # command's exact bytes are already represented in HEAD. Semantic
+        # durability is checked independently of the dirtiness probe: foreign
+        # worktree contents never suppress a saved commit, and an effect already
+        # proven in HEAD never receives an empty commit.
+        holds, detail = _head_postcondition(intent)
+        if holds:
             _safe_discard_scratch(scratch)
             _safe_discard_scratch(companion_scratch)
             return LedgerCommitResult(True)
-        if dirty.returncode != 1:
-            return failed(f"fatal HEAD dirtiness probe: {_git_failure_detail(dirty)}")
+        superseded = _ledger_superseded_error(root, intent, current_head)
+        if superseded is not None:
+            return failed(str(superseded))
 
-        valid, validation_detail = _validate_worktree_for_commit(intent)
-        if not valid:
-            return failed(f"ledger validation refused the commit: {validation_detail}")
-
-        committed = subprocess.CompletedProcess[str]([], 1, "", "commit not attempted")
-        for attempt in range(2):
-            committed = _git_for_ledger(
+        try:
+            temp_index = _create_temporary_git_index()
+        except OSError as exc:
+            return failed(f"could not create temporary git index: {exc}")
+        environment = os.environ.copy()
+        environment["GIT_INDEX_FILE"] = str(temp_index)
+        read_tree = _git_for_ledger_env(root, environment, "read-tree", old_head)
+        if read_tree.returncode != 0:
+            return failed(f"temporary index read-tree failed: {_git_failure_detail(read_tree)}")
+        modes_blobs: list[tuple[str, str, str]] = []
+        for relative, saved, expected in zip(relatives, scratch_paths, expected_bytes, strict=True):
+            blob, error = _commit_blob(root, relative, saved, expected)
+            if blob is None:
+                return failed(f"hash-object failed for {relative}: {error}")
+            mode = _head_file_mode(root, old_head, relative)
+            update = _git_for_ledger_env(
                 root,
-                "commit",
-                "-q",
-                "-F",
-                "-",
-                "--",
-                *relatives,
-                stdin=intent.subject + "\n",
+                environment,
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                f"{mode},{blob},{relative}",
             )
-            if committed.returncode == 0:
-                break
-            if "index.lock" not in (committed.stderr or committed.stdout) or attempt == 1:
-                break
-            time.sleep(LEDGER_COMMIT_RETRY_SECONDS)
-        if committed.returncode != 0:
-            reprobe = _git_for_ledger(
-                root, "diff", "--quiet", "HEAD", "--", *relatives
-            )
-            if reprobe.returncode == 0:
-                holds, detail = _head_postcondition(intent)
-                if holds:
-                    _safe_discard_scratch(scratch)
-                    _safe_discard_scratch(companion_scratch)
-                    return LedgerCommitResult(True)
-                return failed(
-                    f"{detail}; git commit reported: {_git_failure_detail(committed)}"
+            if update.returncode != 0:
+                return failed(f"temporary index update failed: {_git_failure_detail(update)}")
+            modes_blobs.append((relative, mode, blob))
+        hooked, killed, hook_detail = _run_ledger_hook(root, environment)
+        if not hooked:
+            if killed:
+                hook_output = hook_detail
+                stash_match = re.search(
+                    r"Stashing unstaged files to (?P<path>[^\n]+?)(?:\.\s|\.$|\n|$)",
+                    hook_output,
                 )
-            cause = _git_failure_detail(committed)
-            if reprobe.returncode not in {0, 1}:
-                cause += f"; fatal post-commit probe: {_git_failure_detail(reprobe)}"
-            return failed(f"git commit failed: {cause}")
-
+                if stash_match is not None:
+                    stash_path = stash_match.group("path").rstrip(".")
+                    if f"Restored changes from {stash_path}" not in hook_output:
+                        hook_detail += (
+                            f"; unstaged changes left in {stash_path}; restore with: "
+                            f"git apply {stash_path}"
+                        )
+            return failed(hook_detail)
+        for relative, _mode, blob in modes_blobs:
+            observed = _git_for_ledger_env(root, environment, "rev-parse", f":{relative}")
+            if observed.returncode != 0 or observed.stdout.strip() != blob:
+                return failed(
+                    f"pre-commit hook changed exact ledger bytes for {relative}"
+                )
+        tree = _git_for_ledger_env(root, environment, "write-tree")
+        if tree.returncode != 0:
+            return failed(f"temporary index write-tree failed: {_git_failure_detail(tree)}")
+        commit = _git_for_ledger(
+            root,
+            "commit-tree",
+            tree.stdout.strip(),
+            "-p",
+            old_head,
+            stdin=(intent.subject or "docs(findings): commit the verified ledger bytes") + "\n",
+        )
+        if commit.returncode != 0:
+            return failed(f"commit-tree failed: {_git_failure_detail(commit)}")
+        new_head = commit.stdout.strip()
+        head_ref = _git_for_ledger(root, "symbolic-ref", "-q", "HEAD")
+        if head_ref.returncode != 0 or not head_ref.stdout.strip():
+            return failed("detached HEAD cannot receive an exact ledger commit")
+        update_ref = _git_for_ledger(
+            root, "update-ref", head_ref.stdout.strip(), new_head, old_head
+        )
+        if update_ref.returncode != 0:
+            holds, detail = _head_postcondition(intent)
+            if holds:
+                _safe_discard_scratch(scratch)
+                _safe_discard_scratch(companion_scratch)
+                return LedgerCommitResult(True)
+            return failed(f"HEAD moved during commit: {_git_failure_detail(update_ref)}")
+        refreshed, refresh_detail = _refresh_ledger_index(root, modes_blobs)
+        if not refreshed:
+            return failed(f"ledger commit is durable but index refresh failed: {refresh_detail}")
         holds, detail = _head_postcondition(intent)
         if not holds:
             return failed(detail)
@@ -8594,6 +9731,72 @@ def _attempt_ledger_commit(intent: LedgerCommitIntent) -> LedgerCommitResult:
         return LedgerCommitResult(True)
     except (LedgerError, OSError, UnicodeError, ValueError) as exc:
         return failed(f"commit helper failed: {exc}")
+    finally:
+        if temp_index is not None:
+            with suppress(OSError):
+                temp_index.unlink()
+        if acquired_here:
+            release_ledger_lock(lock)
+
+
+def cmd_commit_ledger(args: argparse.Namespace) -> int:
+    """Commit an expected ledger snapshot while holding the writer lock."""
+    ledger = _resolved_repo_path(args.ledger)
+    expected_path = _resolved_repo_path(args.expected)
+    lock = ledger_lock_path(ledger)
+    try:
+        acquired, waited = acquire_ledger_lock(lock, LEDGER_LOCK_WAIT_SECONDS)
+        if not acquired:
+            print(
+                f"FAIL ledger lock {lock}: another ledger writer still holds it "
+                f"after {waited:.2f}s of retries",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            actual_head = _resolve_head(cast(Path, REPO_ROOT).resolve())
+            if actual_head != args.expected_head:
+                print(
+                    f"FAIL HEAD is {actual_head}, not --expected-head {args.expected_head}",
+                    file=sys.stderr,
+                )
+                return 1
+            expected_bytes = expected_path.read_bytes()
+            if ledger.read_bytes() != expected_bytes:
+                print(
+                    f"FAIL worktree ledger differs from --expected {expected_path}",
+                    file=sys.stderr,
+                )
+                return 1
+            is_decisions = ledger == _resolved_repo_path(args.decisions)
+            intent = LedgerCommitIntent(
+                command="commit-ledger",
+                ledger=ledger,
+                findings=_resolved_repo_path(args.ledger),
+                decisions=_resolved_repo_path(args.decisions),
+                subject=args.subject
+                or "docs(findings): commit the verified ledger bytes",
+                expected_head=args.expected_head,
+                postcondition=_ledger_bytes_postcondition(
+                    None if is_decisions else expected_bytes,
+                    expected_bytes if is_decisions else None,
+                ),
+                replaced=True,
+                written_bytes=expected_bytes,
+            )
+            result = _attempt_ledger_commit(
+                intent, lock_held=True, require_worktree_match=True
+            )
+            if not result.durable:
+                print(f"FAIL {result.cause or 'ledger commit failed'}", file=sys.stderr)
+                return 1
+            print(_resolve_head(cast(Path, REPO_ROOT).resolve()))
+            return 0
+        finally:
+            release_ledger_lock(lock)
+    except (LedgerError, OSError, UnicodeError, ValueError) as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -8621,6 +9824,16 @@ def main(argv: list[str] | None = None) -> int:
         "--json",
         action="store_true",
         help="print a JSON array of findings on stdout; warnings stay on stderr",
+    )
+    p_list.add_argument(
+        "--body",
+        action="store_true",
+        help="include unfenced body text and verified body digest in JSON",
+    )
+    p_list.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 1 without output when validation finds a problem",
     )
     p_list.set_defaults(func=cmd_list)
 
@@ -8679,7 +9892,27 @@ def main(argv: list[str] | None = None) -> int:
         "apply-answers", help="fold answered decisions in and unblock them"
     )
     p_answers.add_argument("--answers", type=Path, default=None, help=argparse.SUPPRESS)
+    p_answers.add_argument("--hold-consumer-lock", action="store_true", help=argparse.SUPPRESS)
     p_answers.set_defaults(func=cmd_apply_answers)
+
+    p_answer = sub.add_parser(
+        "answer", help="publish one answer atomically through the answers spool"
+    )
+    p_answer.add_argument("id")
+    p_answer.add_argument("--actor", required=True)
+    p_answer.add_argument("--verdict", choices=("approve", "reject"))
+    p_answer.add_argument("--reason", default="")
+    p_answer.add_argument("--decision")
+    p_answer.add_argument("--answers", type=Path, default=None, help=argparse.SUPPRESS)
+    p_answer.set_defaults(func=cmd_answer)
+
+    p_commit = sub.add_parser(
+        "commit-ledger", help=argparse.SUPPRESS
+    )
+    p_commit.add_argument("--expected", type=Path, required=True, help=argparse.SUPPRESS)
+    p_commit.add_argument("--expected-head", required=True, help=argparse.SUPPRESS)
+    p_commit.add_argument("--subject", default=None, help=argparse.SUPPRESS)
+    p_commit.set_defaults(func=cmd_commit_ledger)
 
     p_header = sub.add_parser(
         "set-header", help="update selected finding header fields"
@@ -8760,17 +9993,55 @@ def main(argv: list[str] | None = None) -> int:
             decisions=args.decisions,
         )
         _ACTIVE_LEDGER_COMMIT = intent
+    # Filing and answer consumers keep their shared lock until the automatic
+    # exact-byte commit attempt finishes in the outer ``finally`` block.
+    args._hold_consumer_lock = args.command == "file" or (
+        args.command == "apply-answers"
+        and bool(getattr(args, "hold_consumer_lock", False))
+    )
+    command_result: int = 1
     try:
         try:
-            return args.func(args)
+            command_result = args.func(args)
         except (LedgerError, OSError, UnicodeDecodeError) as exc:
             print(f"FAIL {exc}", file=sys.stderr)
-            return 1
+            command_result = (
+                2
+                if isinstance(exc, (PublishLockBusyError, LedgerDirtyError))
+                else 1
+            )
     finally:
         _ACTIVE_LEDGER_COMMIT = None
         if intent is not None:
             try:
-                commit_result = _attempt_ledger_commit(intent)
+                commit_result = _attempt_ledger_commit(
+                    intent,
+                    warn=not (
+                        args.command == "apply-answers"
+                        and bool(getattr(args, "hold_consumer_lock", False))
+                    ),
+                )
+                if (
+                    args.command == "apply-answers"
+                    and bool(getattr(args, "hold_consumer_lock", False))
+                    and intent.replaced
+                    and not commit_result.durable
+                    and os.environ.get(LEDGER_COMMIT_ENV) != "0"
+                ):
+                    retry = _attempt_ledger_commit(intent, warn=False)
+                    if retry.durable:
+                        commit_result = retry
+                    else:
+                        _warn_ledger_commit(
+                            intent,
+                            retry.cause or commit_result.cause,
+                            _save_ledger_commit_scratch(intent),
+                        )
+                        if "worktree ledger differs" in (retry.cause or ""):
+                            command_result = 2
+                        else:
+                            print("ledger applied, commit failed", file=sys.stderr)
+                            command_result = 3
                 if (
                     commit_result.durable
                     and intent.finalize is not None
@@ -8811,6 +10082,8 @@ def main(argv: list[str] | None = None) -> int:
                     _warn_ledger_commit(
                         intent, f"unexpected commit helper failure: {exc}", None
                     )
+        _release_consumer_lock(args)
+    return command_result
 
 
 if __name__ == "__main__":
