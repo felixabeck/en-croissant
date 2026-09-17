@@ -8410,6 +8410,63 @@ question did not converge in fifteen plan-review rounds.
 * **Related:** `f-20260830-06` (parent); existing Windows handle helpers `open_windows_child`, `windows_file_identity` in `infra/path_authority/mod.rs`; depends on the Windows durable atomic replacement finding filed alongside.
 * **Found by:** `f-20260830-06` slice-1 plan (Codex locate probe-2 and cross `cargo check --target x86_64-pc-windows-gnu`), 2026-09-14.
 
+**Handled (2026-09-17).** Workspace create, directory-create, move, rename, trash, restore,
+permanent delete and listing now reach the real filesystem on Windows, and the eleven `pgn.rs`
+markers this finding owned are gone. Four phases plus a review repair: `125d8137` (descriptor-relative
+primitives and the shared `NtQueryDirectoryFile` enumerator), `fd20158e` (enumeration wired into
+listing, FILETIME conversion), `ff21a822` (path-authority workspace API, `ResolvedPath::directory`,
+`create_pgn_export_destination`), `2cb32b01` (the four counterpart refusals deleted, tests un-gated,
+markers removed, accounting closed), `edf5a508` (the review repair).
+
+**The open question is answered, and the plan's first answer to it was wrong.** "Durably committed"
+on NTFS means what it means on unix; there is no directory-fsync gap to model around. What the port
+had to get right is *which handle carries `GENERIC_WRITE`* — `FlushFileBuffers` fails with os error 5
+only on a read-only directory handle, which this tree had already measured at `resolved.rs:894-897`.
+Two handles on the mutation path needed it, not one, and two successive plan revisions attached the
+requirement to the wrong function before it landed. `d-20260917-02` records it.
+
+**Eight rounds of plan review, 68 issues, all adopted, none deferred; durable record in
+`tasks/handoffs/2026-09-17-f-20260914-08-review.md`.** Five of the 68 were refutations of claims the
+plan made about this repository — including that `create_pgn_export_destination` routes through the
+atomic-replace primitive (it does not; following it would have wiped the fixture of all eleven PGN
+tests) and that unix recursive removal unlinks a reparse point (it refuses; following it would have
+deleted a workspace containing a junction and returned `Ok(())`).
+
+**The port is falsifiable, which was the review's hardest-won property.** Every workspace test was
+`#[cfg(unix)]`, so a Windows arm returning `Ok(vec![])` would have passed the cross-target
+type-check, every source pin, the census and the whole Linux suite. The answer was to un-gate rather
+than to add a Windows corpus — an un-gated test reddens Linux too when a Windows arm is reverted.
+Verified by probe, not asserted: reintroducing a `#[cfg(not(unix))]` counterpart for
+`mutation_target` turned two Linux-executing tests red, then was reverted.
+
+**The nine-lens review of the diff found a defect no pin could see.** `open_windows_child` never set
+`FILE_SYNCHRONOUS_IO_NONALERT`, so every handle it returned was an asynchronous NT file object:
+`File::read`/`File::write` would fail with `STATUS_INVALID_PARAMETER` and `NtQueryDirectoryFile`
+could complete with `STATUS_PENDING` into a dropped buffer. It stayed latent because until this port
+no Windows consumer of such a handle did byte I/O, and the existing Windows tests enumerate a
+`CreateFile` handle, which is synchronous — they exercised a handle kind production never produces.
+That is the honest measure of what source pins prove and what they do not (`d-20260917-03`).
+
+**Verified:** `cargo check` and `clippy -D warnings` on both `x86_64-unknown-linux-gnu` and
+`x86_64-pc-windows-gnu`, `cargo fmt --check`, 1225 backend tests, the full contract gate, and
+`bindings:check` byte-identical. **Not verified: anything requiring a Windows runtime.** This
+machine has a cross-compiler only; the first real execution of every `#[cfg(windows)]` test and every
+pinned Windows property is the `rust-windows-test` job on this push.
+
+**Executors:** Codex was logged out for the whole run and Grok's balance was exhausted mid-phase-B,
+so this ran on Grok and then Claude (`d-20260916-10`, `d-20260917-01`). Phase A was written by Grok
+and reviewed by Claude; phases B-D were written and reviewed within one model family, which
+`push-review-policy` §3 prefers against — stated rather than hidden.
+
+**Left open, deliberately, and each made more reachable by this port:** `f-20260916-02` (the
+`validate_components` colon — distinct from the `validate_name` colon rejection that shipped here),
+`f-20260916-03` (`open_windows_child`'s `u16` length truncation, now on every workspace mutation
+path), `f-20260916-06` (Windows resolution authenticates only the leaf, and `open_verified_parent` is
+now reachable from every mutation). Siblings `f-20260914-09/-11/-12/-13/-15/-29/-36` remain open
+under the same root. Newly filed: the Grok `write`-leaf profile carries `git` and `push`
+(inbox-spooled).
+<!-- ledger-meta {"command":"annotate","effect_lines":55,"effect_sha256":"6d05d19517e94b9bf750d4377a3d6380b0f329d5c8e8da41bd1a08e45b69fd58","input_sha256":"3e66d804bad2e975b5cfbf4f32e931df5422d977cbc3dbdc1fce3d24dcf36568","kind":"mutation-receipt","operation":"f81ba7a4820344df9c696556ce96942c47e4205bca07a5be5973c9bf4d2e9270","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-08"],"target":"f-20260914-08","v":1} -->
+
 ### Database, search-index and puzzle-database operations are refused on Windows
 
 * **ID:** f-20260914-09 · **Status:** open · **Area:** db-search · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
