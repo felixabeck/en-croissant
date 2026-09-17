@@ -3473,18 +3473,22 @@ mod win {
         }
         // DIRECTORY_ACCESS carries GENERIC_WRITE, so a read-only walk must not use it for the
         // intermediate components: demanding write on every ancestor fails under a directory the
-        // caller may only read. `writable` already governs the base open above; this is the same
-        // two-predicate split as resolve_windows in path_authority/resolved.rs.
-        let child_access = if writable && components.peek().is_none() {
-            DIRECTORY_ACCESS
-        } else {
-            READ_ONLY_ACCESS
-        };
-        for component in components.by_ref() {
+        // caller may only read. Only the LAST component is the directory the caller writes into,
+        // and the decision is therefore per component -- computing it once before the loop makes
+        // every component read-only as soon as the path has any, which denies the final parent the
+        // write access its `sync_all` needs. `writable` already governs the base open above; this
+        // is the same two-predicate split as resolve_windows in path_authority/resolved.rs.
+        while let Some(component) = components.next() {
             let Component::Normal(name) = component else {
                 return Err(Error::InvalidInput(
                     "parent path may not contain traversal components".into(),
                 ));
+            };
+            let last = components.peek().is_none();
+            let child_access = if writable && last {
+                DIRECTORY_ACCESS
+            } else {
+                READ_ONLY_ACCESS
             };
             dir = open_windows_child(&dir, name, FILE_OPEN, child_access, null(), true, true)?;
         }

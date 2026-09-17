@@ -655,11 +655,24 @@ mod tests {
         let source = source_for("infra/fs.rs");
         let body = braced_body(source, "fn open_directory_path(");
         let body = compact(&source[body]);
+        // The decision must be INSIDE the walk: computing it once before the loop denied write to
+        // every component as soon as the path had any, which is measured -- run 35230257907 turned
+        // 7 Windows failures into 50, all of them the final parent's `sync_all` returning
+        // ERROR_ACCESS_DENIED. So the pin requires the per-component form, and refuses the
+        // hoisted one below.
+        assert!(
+            body.contains("letlast=components.peek().is_none();"),
+            "{body}"
+        );
         assert!(
             body.contains(
-                "letchild_access=ifwritable&&components.peek().is_none(){DIRECTORY_ACCESS}else{READ_ONLY_ACCESS};",
+                "letchild_access=ifwritable&&last{DIRECTORY_ACCESS}else{READ_ONLY_ACCESS};"
             ),
             "{body}"
+        );
+        assert!(
+            !body.contains("letchild_access=ifwritable&&components.peek().is_none()"),
+            "the access decision must not be hoisted out of the walk; {body}"
         );
         assert!(body.contains(".write(writable)"), "{body}");
         assert!(
