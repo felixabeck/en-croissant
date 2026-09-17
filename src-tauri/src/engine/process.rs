@@ -1803,14 +1803,7 @@ pub(crate) async fn resolve_launch(
                 return Ok(Err(PinFailure::Primary(Error::Cancellation)));
             }
             #[cfg(all(test, unix))]
-            if let Ok(mut hook) = ENGINE_LAUNCH_RESOLUTION_HOOK
-                .get_or_init(|| std::sync::Mutex::new(None))
-                .lock()
-            {
-                if let Some(hook) = hook.take() {
-                    hook();
-                }
-            }
+            ENGINE_LAUNCH_RESOLUTION_HOOKS.run(&key);
             let option_leases = resolved
                 .iter()
                 .flat_map(|option| option.resources.iter().cloned())
@@ -1833,14 +1826,7 @@ pub(crate) async fn resolve_launch(
                 ))));
             }
             #[cfg(all(test, target_os = "macos"))]
-            if let Ok(mut hook) = ENGINE_LAUNCH_POST_PIN_HOOK
-                .get_or_init(|| std::sync::Mutex::new(None))
-                .lock()
-            {
-                if let Some(hook) = hook.take() {
-                    hook();
-                }
-            }
+            ENGINE_LAUNCH_POST_PIN_HOOKS.run(&key);
             #[cfg(not(target_os = "macos"))]
             let reclaim_failures = Vec::new();
             for option in &mut resolved {
@@ -2754,14 +2740,7 @@ pub(crate) async fn verify_option_resources_in(
     let verify = gateway.spawn(move || {
         #[cfg(all(test, unix))]
         if let Some(key) = verify_hook_key {
-            if let Ok(mut hooks) = RESOURCE_VERIFY_HOOKS
-                .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
-                .lock()
-            {
-                if let Some(hook) = hooks.remove(&key) {
-                    hook();
-                }
-            }
+            RESOURCE_VERIFY_HOOKS.run(&key);
         }
         for value in values {
             let Some(resource) = resources.iter().find(|resource| {
@@ -2796,24 +2775,18 @@ pub(crate) async fn verify_option_resources_in(
 }
 
 #[cfg(all(test, unix))]
-type ResourceVerifyHook = Box<dyn FnOnce() + Send>;
+type ResourceVerifyHook = crate::infra::test_hooks::TestHook;
+
+/// Keyed by the resource value under verification; see `infra::test_hooks`.
+#[cfg(all(test, unix))]
+static RESOURCE_VERIFY_HOOKS: crate::infra::test_hooks::KeyedTestHooks<String> =
+    crate::infra::test_hooks::KeyedTestHooks::new();
 
 #[cfg(all(test, unix))]
-type ResourceVerifyHooks = std::sync::Mutex<HashMap<String, ResourceVerifyHook>>;
-
-#[cfg(all(test, unix))]
-static RESOURCE_VERIFY_HOOKS: std::sync::OnceLock<ResourceVerifyHooks> = std::sync::OnceLock::new();
-
-#[cfg(all(test, unix))]
-fn set_resource_verify_hook(key: String, hook: Option<Box<dyn FnOnce() + Send>>) {
-    let mut hooks = RESOURCE_VERIFY_HOOKS
-        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap();
-    if let Some(hook) = hook {
-        hooks.insert(key, hook);
-    } else {
-        hooks.remove(&key);
+fn set_resource_verify_hook(key: String, hook: Option<ResourceVerifyHook>) {
+    match hook {
+        Some(hook) => RESOURCE_VERIFY_HOOKS.arm(key, hook),
+        None => RESOURCE_VERIFY_HOOKS.clear(&key),
     }
 }
 
@@ -2828,37 +2801,16 @@ fn set_option_before_send_hook(hook: Option<Box<dyn FnOnce() + Send>>) {
     SET_OPTION_BEFORE_SEND_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
+/// Both launch hooks are keyed by the engine identity `resolve_launch` was called for:
+/// every concurrent launch reaches these fire sites, so an unkeyed slot made whichever
+/// launch arrived first run a foreign test's hook (`f-20260917-09`, `infra::test_hooks`).
 #[cfg(all(test, unix))]
-type EngineLaunchResolutionHook = Box<dyn FnOnce() + Send>;
-
-#[cfg(all(test, unix))]
-static ENGINE_LAUNCH_RESOLUTION_HOOK: std::sync::OnceLock<
-    std::sync::Mutex<Option<EngineLaunchResolutionHook>>,
-> = std::sync::OnceLock::new();
-
-#[cfg(all(test, unix))]
-fn set_engine_launch_resolution_hook(hook: Option<EngineLaunchResolutionHook>) {
-    *ENGINE_LAUNCH_RESOLUTION_HOOK
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .unwrap() = hook;
-}
+static ENGINE_LAUNCH_RESOLUTION_HOOKS: crate::infra::test_hooks::KeyedTestHooks<EngineKey> =
+    crate::infra::test_hooks::KeyedTestHooks::new();
 
 #[cfg(all(test, target_os = "macos"))]
-type EngineLaunchPostPinHook = Box<dyn FnOnce() + Send>;
-
-#[cfg(all(test, target_os = "macos"))]
-static ENGINE_LAUNCH_POST_PIN_HOOK: std::sync::OnceLock<
-    std::sync::Mutex<Option<EngineLaunchPostPinHook>>,
-> = std::sync::OnceLock::new();
-
-#[cfg(all(test, target_os = "macos"))]
-fn set_engine_launch_post_pin_hook(hook: Option<EngineLaunchPostPinHook>) {
-    *ENGINE_LAUNCH_POST_PIN_HOOK
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .unwrap() = hook;
-}
+static ENGINE_LAUNCH_POST_PIN_HOOKS: crate::infra::test_hooks::KeyedTestHooks<EngineKey> =
+    crate::infra::test_hooks::KeyedTestHooks::new();
 
 #[cfg(all(test, unix))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -6951,13 +6903,16 @@ mod tests {
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = EngineKey::new("replacement".into(), "authorized-engine".into()).unwrap();
         let admission = supervisor
-            .admit_for_launch(key, "authorized-engine".into(), engine.id.clone())
+            .admit_for_launch(key.clone(), "authorized-engine".into(), engine.id.clone())
             .await
             .unwrap();
-        set_engine_launch_resolution_hook(Some(Box::new(move || {
-            std::fs::rename(&replacement, replacement.with_extension("replaced")).unwrap();
-            std::fs::write(&replacement, "#!/bin/sh\nexit 22\n").unwrap();
-        })));
+        ENGINE_LAUNCH_RESOLUTION_HOOKS.arm(
+            key.clone(),
+            Box::new(move || {
+                std::fs::rename(&replacement, replacement.with_extension("replaced")).unwrap();
+                std::fs::write(&replacement, "#!/bin/sh\nexit 22\n").unwrap();
+            }),
+        );
         let (executable, _) = resolve_launch(
             authority,
             engine,
@@ -6967,7 +6922,7 @@ mod tests {
         )
         .await
         .unwrap();
-        set_engine_launch_resolution_hook(None);
+        ENGINE_LAUNCH_RESOLUTION_HOOKS.clear(&key);
 
         let actor = EngineActor::spawn_initialized(executable, EngineDeadlines::default())
             .await
@@ -7569,13 +7524,20 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
         let key =
             EngineKey::new("post-pin-cancel".into(), "post-pin-cancel-engine".into()).unwrap();
         let admission = supervisor
-            .admit_for_launch(key, "post-pin-cancel-engine".into(), engine.id.clone())
+            .admit_for_launch(
+                key.clone(),
+                "post-pin-cancel-engine".into(),
+                engine.id.clone(),
+            )
             .await
             .unwrap();
         let cancelled = admission.admission.cancelled.clone();
-        set_engine_launch_post_pin_hook(Some(Box::new(move || {
-            cancelled.store(true, AtomicOrdering::SeqCst);
-        })));
+        ENGINE_LAUNCH_POST_PIN_HOOKS.arm(
+            key.clone(),
+            Box::new(move || {
+                cancelled.store(true, AtomicOrdering::SeqCst);
+            }),
+        );
         let result = resolve_launch(
             authority,
             engine,
@@ -7584,7 +7546,7 @@ engine_id=pin-failure-engine primary_category=I/O failure cleanup_category=I/O f
             &admission,
         )
         .await;
-        set_engine_launch_post_pin_hook(None);
+        ENGINE_LAUNCH_POST_PIN_HOOKS.clear(&key);
         assert!(matches!(result, Err(Error::Cancellation)));
         assert_eq!(root.registry_snapshot_for_test().0, 1);
         assert_eq!(root.reclaim().removed, 1);

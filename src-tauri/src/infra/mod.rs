@@ -7,4 +7,6 @@ pub mod operations;
 pub mod path_authority;
 pub(crate) mod platform_support;
 pub mod runtime;
+#[cfg(test)]
+pub(crate) mod test_hooks;
 pub mod validation;

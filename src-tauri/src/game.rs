@@ -1046,9 +1046,12 @@ async fn initialize_configured_game_engine(
     engine: Arc<EngineActor>,
     resolved: Vec<ResolvedEngineOption>,
     chess960: bool,
+    key: EngineKey,
 ) -> Result<(), Error> {
-    #[cfg(all(test, target_os = "macos"))]
-    run_game_engine_after_spawn_hook();
+    #[cfg(all(test, unix))]
+    GAME_ENGINE_AFTER_SPAWN_HOOKS.run(&key);
+    #[cfg(not(all(test, unix)))]
+    drop(key);
     engine.init_uci().await?;
     verify_option_resources(&engine, &resolved, None).await?;
     for option in resolved {
@@ -1072,40 +1075,20 @@ async fn spawn_configured_game_engine_with_resolved(
     key: EngineKey,
     chess960: bool,
 ) -> Result<crate::engine::SupervisedEngine, Error> {
+    let hook_key = key.clone();
     spawn_registered(supervisor, key, executable, admission, move |engine| {
-        initialize_configured_game_engine(engine, resolved, chess960)
+        initialize_configured_game_engine(engine, resolved, chess960, hook_key)
     })
     .await
     .map(|(supervised, ())| supervised)
 }
 
-#[cfg(all(test, target_os = "macos"))]
-fn set_game_engine_after_spawn_hook(hook: Option<Box<dyn FnOnce() + Send>>) {
-    *GAME_ENGINE_AFTER_SPAWN_HOOK
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .unwrap() = hook;
-}
-
-#[cfg(all(test, target_os = "macos"))]
-fn run_game_engine_after_spawn_hook() {
-    if let Ok(mut hook) = GAME_ENGINE_AFTER_SPAWN_HOOK
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-    {
-        if let Some(hook) = hook.take() {
-            hook();
-        }
-    }
-}
-
-#[cfg(all(test, target_os = "macos"))]
-type GameEngineAfterSpawnHook = Box<dyn FnOnce() + Send>;
-
-#[cfg(all(test, target_os = "macos"))]
-static GAME_ENGINE_AFTER_SPAWN_HOOK: std::sync::OnceLock<
-    std::sync::Mutex<Option<GameEngineAfterSpawnHook>>,
-> = std::sync::OnceLock::new();
+/// The after-spawn hook every game engine's initialization fires. It is keyed by engine
+/// identity because `cargo test` runs these tests in parallel in one process — see
+/// `infra::test_hooks` and `f-20260917-09`.
+#[cfg(all(test, unix))]
+static GAME_ENGINE_AFTER_SPAWN_HOOKS: crate::infra::test_hooks::KeyedTestHooks<EngineKey> =
+    crate::infra::test_hooks::KeyedTestHooks::new();
 
 #[cfg(all(test, unix))]
 async fn spawn_configured_game_engine_with_executable(
@@ -3525,11 +3508,11 @@ done
         let replaced = Arc::new(AtomicBool::new(false));
         let replaced_for_hook = replaced.clone();
         let tables_for_hook = tables.clone();
-        set_game_engine_after_spawn_hook(Some(Box::new(move || {
+        let hook: crate::infra::test_hooks::TestHook = Box::new(move || {
             std::fs::remove_dir_all(&tables_for_hook).unwrap();
             std::fs::write(&tables_for_hook, b"replacement").unwrap();
             replaced_for_hook.store(true, Ordering::SeqCst);
-        })));
+        });
         let supervisor = Arc::new(EngineSupervisor::default());
         let key = game_side_engine_key(
             "production-game-directory",
@@ -3538,10 +3521,11 @@ done
             "production-game-directory-engine",
         )
         .unwrap();
+        GAME_ENGINE_AFTER_SPAWN_HOOKS.arm(key.clone(), hook);
         let result = spawn_configured_game_engine(
             GameEngineRegistration {
                 supervisor,
-                key,
+                key: key.clone(),
                 engine_id: "production-game-directory-engine".into(),
                 executable_ref: engine.id.clone(),
             },
@@ -3554,13 +3538,20 @@ done
             false,
         )
         .await;
-        set_game_engine_after_spawn_hook(None);
-        assert!(replaced.load(Ordering::SeqCst));
-        assert!(matches!(
-            result,
-            Err(Error::Conflict(message))
-                if message == "engine resource changed after authorization"
-        ));
+        GAME_ENGINE_AFTER_SPAWN_HOOKS.clear(&key);
+        assert!(
+            replaced.load(Ordering::SeqCst),
+            "the after-spawn hook armed for {key:?} never ran, so the replacement never happened"
+        );
+        match result {
+            Err(Error::Conflict(ref message))
+                if message == "engine resource changed after authorization" => {}
+            Err(other) => panic!("expected the authorization conflict, got {other:?}"),
+            Ok(registered) => panic!(
+                "expected the authorization conflict, but the engine started as {:?}",
+                registered.key
+            ),
+        }
         let capture =
             std::fs::read_to_string(directory.path().join("capture.log")).unwrap_or_default();
         assert!(!capture.contains("setoption"));
