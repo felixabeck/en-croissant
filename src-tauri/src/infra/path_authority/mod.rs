@@ -17468,16 +17468,25 @@ mod workspace_directory_enumeration_tests {
             .pop()
             .unwrap();
         let replacement = source_path.clone();
+        let swapped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let swapped_in_hook = swapped.clone();
         set_engine_launch_before_clone_hook(
             "test:engine",
             Some(Box::new(move || {
                 fs::rename(&replacement, replacement.with_extension("original")).unwrap();
                 fs::write(&replacement, b"replacement").unwrap();
+                swapped_in_hook.store(true, std::sync::atomic::Ordering::SeqCst);
             })),
         );
         leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &|| false)
             .unwrap();
         set_engine_launch_before_clone_hook("test:engine", None);
+        // The descriptor was opened before the swap, so the bytes below read `authorized`
+        // whether or not the hook fired. Without this the test proves nothing about the seam.
+        assert!(
+            swapped.load(std::sync::atomic::Ordering::SeqCst),
+            "the before-clone hook armed for test:engine never ran, so no swap was staged"
+        );
         assert_eq!(fs::read(leaf.path()).unwrap(), b"authorized");
         drop(leaf);
         assert_eq!(root.reclaim().removed, 1);
@@ -17521,7 +17530,14 @@ mod workspace_directory_enumeration_tests {
             set_engine_launch_failure("test:fallback", Some(failure));
             leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &|| false)
                 .unwrap();
-            set_engine_launch_failure("test:fallback", None);
+            // An unconsumed injection means the clone simply succeeded, and the assertions
+            // below would then pass without the fallback ever being exercised.
+            assert!(
+                ENGINE_LAUNCH_FAILURES
+                    .take(&"test:fallback".to_owned())
+                    .is_none(),
+                "the injected {failure:?} was never consumed, so no fallback was exercised"
+            );
             assert_eq!(fs::read(leaf.path()).unwrap(), b"authorized-fallback-bytes");
             assert_eq!(
                 fs::metadata(leaf.path()).unwrap().permissions().mode() & 0o777,
@@ -17548,7 +17564,12 @@ mod workspace_directory_enumeration_tests {
                 .unwrap();
             set_engine_launch_failure("test:failure", Some(failure));
             let result = leaf.create_from(&source, ENGINE_RESOURCE_LEAF_MODE, &cancelled);
-            set_engine_launch_failure("test:failure", None);
+            assert!(
+                ENGINE_LAUNCH_FAILURES
+                    .take(&"test:failure".to_owned())
+                    .is_none(),
+                "the injected {failure:?} was never consumed, so no failure path was exercised"
+            );
             match (failure, result) {
                 (EngineLaunchFailure::Copy, Err(Error::Io(error))) => assert!(error
                     .to_string()
