@@ -1845,7 +1845,7 @@ mod win {
                 STATUS_NO_MORE_FILES, UNICODE_STRING,
             },
             Security::{
-                AddAccessAllowedAce, CopySid, GetKernelObjectSecurity, GetLengthSid,
+                AddAccessAllowedAce, CopySid, GetAce, GetKernelObjectSecurity, GetLengthSid,
                 GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor,
                 SetKernelObjectSecurity, SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
                 TokenUser, ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, DACL_SECURITY_INFORMATION,
@@ -1869,9 +1869,9 @@ mod win {
     // unconditionally makes them unused imports in a release build.
     #[cfg(test)]
     use windows_sys::Win32::Security::{
-        CreateWellKnownSid, EqualSid, GetAce, GetSecurityDescriptorControl,
-        GetSecurityDescriptorDacl, WinAuthenticatedUserSid, WinBuiltinAdministratorsSid,
-        WinCreatorOwnerSid, WinWorldSid, CONTAINER_INHERIT_ACE, OBJECT_INHERIT_ACE,
+        CreateWellKnownSid, EqualSid, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+        WinAuthenticatedUserSid, WinBuiltinAdministratorsSid, WinCreatorOwnerSid, WinWorldSid,
+        CONTAINER_INHERIT_ACE, OBJECT_INHERIT_ACE,
     };
     // `ACE_HEADER::AceType` is a `u8` while the crate declares the constant as `u32`, so the
     // comparison casts rather than re-declaring the value here: a local copy of a crate constant
@@ -1950,24 +1950,8 @@ mod win {
         Ok(unsafe { OwnedHandle::from_raw_handle(token as RawHandle) })
     }
 
-    fn token_user_buffer_size(token: &OwnedHandle) -> Result<u32, Error> {
-        let mut required = 0_u32;
-        let _ = unsafe {
-            GetTokenInformation(
-                token.as_raw_handle() as HANDLE,
-                TokenUser,
-                null_mut(),
-                0,
-                &mut required,
-            )
-        };
-        let error = std::io::Error::last_os_error();
-        if required == 0 {
-            return Err(error.into());
-        }
-        Ok(required)
-    }
-
+    // Keep these typed buffer boundaries: `AlignedBuffer` is the compile-time anchor for the
+    // alignment required by each API, so unsafe code never accepts a caller-owned `*mut u8`.
     fn get_token_information(token: &OwnedHandle, buffer: &mut AlignedBuffer) -> Result<(), Error> {
         let mut returned = 0_u32;
         if unsafe {
@@ -1987,7 +1971,20 @@ mod win {
 
     fn process_user_sid_uncached() -> Result<Vec<u8>, Error> {
         let token = open_current_process_token()?;
-        let required = token_user_buffer_size(&token)?;
+        let mut required = 0_u32;
+        let _ = unsafe {
+            GetTokenInformation(
+                token.as_raw_handle() as HANDLE,
+                TokenUser,
+                null_mut(),
+                0,
+                &mut required,
+            )
+        };
+        let error = std::io::Error::last_os_error();
+        if required == 0 {
+            return Err(error.into());
+        }
         let mut token_user =
             AlignedBuffer::new::<{ std::mem::align_of::<TOKEN_USER>() }>(required as usize);
         get_token_information(&token, &mut token_user)?;
@@ -2015,24 +2012,6 @@ mod win {
         Ok(PROCESS_USER_SID.get_or_init(|| sid).as_slice())
     }
 
-    fn security_descriptor_buffer_size(file: &File) -> Result<u32, Error> {
-        let mut required = 0_u32;
-        let _ = unsafe {
-            GetKernelObjectSecurity(
-                file.as_raw_handle() as HANDLE,
-                DACL_SECURITY_INFORMATION,
-                null_mut(),
-                0,
-                &mut required,
-            )
-        };
-        let error = std::io::Error::last_os_error();
-        if required == 0 {
-            return Err(error.into());
-        }
-        Ok(required)
-    }
-
     fn get_kernel_object_security(
         file: &File,
         descriptor: &mut AlignedBuffer,
@@ -2053,30 +2032,31 @@ mod win {
         Ok(())
     }
 
-    fn set_kernel_object_security(file: &File, descriptor: &AlignedBuffer) -> Result<(), Error> {
-        if unsafe {
-            SetKernelObjectSecurity(
-                file.as_raw_handle() as HANDLE,
-                DACL_SECURITY_INFORMATION,
-                descriptor.as_ptr().cast_mut().cast(),
-            )
-        } == 0
-        {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok(())
+    trait AsSecurityDescriptor {
+        fn as_security_descriptor(&self) -> PSECURITY_DESCRIPTOR;
     }
 
-    #[cfg(test)]
-    fn set_absolute_security_descriptor(
+    impl AsSecurityDescriptor for AlignedBuffer {
+        fn as_security_descriptor(&self) -> PSECURITY_DESCRIPTOR {
+            self.as_ptr().cast_mut().cast()
+        }
+    }
+
+    impl AsSecurityDescriptor for SECURITY_DESCRIPTOR {
+        fn as_security_descriptor(&self) -> PSECURITY_DESCRIPTOR {
+            (self as *const SECURITY_DESCRIPTOR).cast_mut().cast()
+        }
+    }
+
+    fn set_kernel_object_security(
         file: &File,
-        descriptor: &SECURITY_DESCRIPTOR,
+        descriptor: &impl AsSecurityDescriptor,
     ) -> Result<(), Error> {
         if unsafe {
             SetKernelObjectSecurity(
                 file.as_raw_handle() as HANDLE,
                 DACL_SECURITY_INFORMATION,
-                (descriptor as *const SECURITY_DESCRIPTOR).cast_mut().cast(),
+                descriptor.as_security_descriptor(),
             )
         } == 0
         {
@@ -2131,6 +2111,10 @@ mod win {
 
     impl PrivateSecurityDescriptor {
         fn new(access: u32) -> Result<Self, Error> {
+            Self::new_with_options(access, 0, true)
+        }
+
+        fn new_with_options(access: u32, ace_flags: u8, protect_dacl: bool) -> Result<Self, Error> {
             let sid = process_user_sid()?;
 
             let acl_length = std::mem::size_of::<ACL>() + std::mem::size_of::<ACCESS_ALLOWED_ACE>()
@@ -2139,6 +2123,7 @@ mod win {
             let mut acl = AlignedBuffer::new::<{ std::mem::align_of::<ACL>() }>(acl_length);
             initialize_acl(&mut acl, acl_length as u32)?;
             add_access_allowed_ace(&mut acl, access, sid)?;
+            set_acl_ace_flags(&mut acl, ace_flags)?;
 
             let mut descriptor = SECURITY_DESCRIPTOR::default();
             // PSECURITY_DESCRIPTOR is `*mut c_void`, so `&mut SECURITY_DESCRIPTOR` does not
@@ -2151,13 +2136,18 @@ mod win {
                 return Err(std::io::Error::last_os_error().into());
             }
             set_security_descriptor_dacl(&mut descriptor, &acl)?;
-            // Supplying a DACL for a new object does not by itself keep the parent directory's
-            // inheritable ACEs out of it: Windows merges them in unless the descriptor is marked
-            // protected. Without this, a parent carrying an inheritable grant would hand that
-            // access to the "creator-only" temporary, which is the one property it must have.
-            if unsafe {
-                SetSecurityDescriptorControl(descriptor_ptr, SE_DACL_PROTECTED, SE_DACL_PROTECTED)
-            } == 0
+            // A supplied DACL does not keep the parent directory's inheritable ACEs out of a new
+            // object: Windows merges them in unless the descriptor is marked protected. Production
+            // temporaries therefore pass `protect_dacl = true`; the inheritable test fixture
+            // deliberately passes false so it can exercise that Windows behaviour.
+            if protect_dacl
+                && unsafe {
+                    SetSecurityDescriptorControl(
+                        descriptor_ptr,
+                        SE_DACL_PROTECTED,
+                        SE_DACL_PROTECTED,
+                    )
+                } == 0
             {
                 return Err(std::io::Error::last_os_error().into());
             }
@@ -2242,7 +2232,20 @@ mod win {
     }
 
     fn capture_security_descriptor(file: &File) -> Result<AlignedBuffer, Error> {
-        let required = security_descriptor_buffer_size(file)?;
+        let mut required = 0_u32;
+        let _ = unsafe {
+            GetKernelObjectSecurity(
+                file.as_raw_handle() as HANDLE,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                0,
+                &mut required,
+            )
+        };
+        let error = std::io::Error::last_os_error();
+        if required == 0 {
+            return Err(error.into());
+        }
         let mut descriptor = AlignedBuffer::new::<
             { std::mem::align_of::<windows_sys::Win32::Security::SECURITY_DESCRIPTOR_RELATIVE>() },
         >(required as usize);
@@ -2658,7 +2661,15 @@ mod win {
                 return Ok(());
             }
             let next = match offset.checked_add(header.NextEntryOffset as usize) {
-                Some(next) if next > offset && next <= used => next,
+                Some(next)
+                    if next > offset
+                        && next <= used
+                        && next.is_multiple_of(std::mem::align_of::<
+                            FILE_ID_BOTH_DIR_INFORMATION,
+                        >()) =>
+                {
+                    next
+                }
                 _ => {
                     return Err(Error::Io(Box::new(std::io::Error::other(
                         "directory enumeration next-entry offset is invalid",
@@ -3206,16 +3217,28 @@ mod win {
         }
     }
 
-    #[cfg(test)]
-    fn get_aligned_acl_ace(acl: &AlignedBuffer) -> Result<*mut std::ffi::c_void, Error> {
+    fn get_aligned_acl_ace(acl: &mut AlignedBuffer) -> Result<*mut std::ffi::c_void, Error> {
         let mut ace: *mut std::ffi::c_void = null_mut();
-        if unsafe { GetAce(acl.as_ptr().cast(), 0, &mut ace) } == 0 {
+        if unsafe { GetAce(acl.as_mut_ptr().cast(), 0, &mut ace) } == 0 {
             return Err(std::io::Error::last_os_error().into());
         }
         if ace.is_null() {
-            return Err(std::io::Error::other("test parent DACL has no ACE").into());
+            return Err(std::io::Error::other("ACL has no ACE").into());
         }
         Ok(ace)
+    }
+
+    fn set_acl_ace_flags(acl: &mut AlignedBuffer, flags: u8) -> Result<(), Error> {
+        if flags == 0 {
+            return Ok(());
+        }
+        let ace = get_aligned_acl_ace(acl)?;
+        unsafe {
+            (*(ace as *mut windows_sys::Win32::Security::ACCESS_ALLOWED_ACE))
+                .Header
+                .AceFlags = flags;
+        }
+        Ok(())
     }
 
     /// The oracle the DACL assertion compares against. It deliberately goes around
@@ -3314,30 +3337,12 @@ mod win {
 
     #[cfg(test)]
     pub(super) fn set_test_parent_inheritable_dacl(parent: &File) -> Result<(), Error> {
-        let sid = test_process_user_sid()?;
-        let acl_length = std::mem::size_of::<ACL>() + std::mem::size_of::<ACCESS_ALLOWED_ACE>()
-            - std::mem::size_of::<u32>()
-            + sid.len();
-        let mut acl = AlignedBuffer::new::<{ std::mem::align_of::<ACL>() }>(acl_length);
-        initialize_acl(&mut acl, acl_length as u32)?;
-        add_access_allowed_ace(&mut acl, FILE_ALL_ACCESS, &sid)?;
-
-        let ace = get_aligned_acl_ace(&acl)?;
-        unsafe {
-            (*(ace as *mut windows_sys::Win32::Security::ACCESS_ALLOWED_ACE))
-                .Header
-                .AceFlags = (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8;
-        }
-
-        let mut descriptor = SECURITY_DESCRIPTOR::default();
-        let descriptor_ptr = (&mut descriptor as *mut SECURITY_DESCRIPTOR) as PSECURITY_DESCRIPTOR;
-        if unsafe { InitializeSecurityDescriptor(descriptor_ptr, SECURITY_DESCRIPTOR_REVISION) }
-            == 0
-        {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        set_security_descriptor_dacl(&mut descriptor, &acl)?;
-        set_absolute_security_descriptor(parent, &descriptor)
+        let descriptor = PrivateSecurityDescriptor::new_with_options(
+            FILE_ALL_ACCESS,
+            (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8,
+            false,
+        )?;
+        set_kernel_object_security(parent, &descriptor.descriptor)
     }
 
     #[cfg(test)]
@@ -3359,7 +3364,7 @@ mod win {
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
         let file = options.open(path).map_err(io)?;
         let descriptor = PrivateSecurityDescriptor::new(access)?;
-        set_absolute_security_descriptor(&file, &descriptor.descriptor)
+        set_kernel_object_security(&file, &descriptor.descriptor)
     }
 
     impl AtomicReplaceAdapter for WindowsAdapter {
@@ -3455,10 +3460,11 @@ mod win {
                 components.next();
             }
         }
+        let base_is_final = components.peek().is_none();
         let mut options = OpenOptions::new();
         options
             .read(true)
-            .write(writable)
+            .write(writable && base_is_final)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
         let mut dir = options.open(&base).map_err(io)?;
@@ -3476,8 +3482,8 @@ mod win {
         // caller may only read. Only the LAST component is the directory the caller writes into,
         // and the decision is therefore per component -- computing it once before the loop makes
         // every component read-only as soon as the path has any, which denies the final parent the
-        // write access its `sync_all` needs. `writable` already governs the base open above; this
-        // is the same two-predicate split as resolve_windows in path_authority/resolved.rs.
+        // write access its `sync_all` needs. The base open uses the same two-predicate split;
+        // this is the same policy as resolve_windows in path_authority/resolved.rs.
         while let Some(component) = components.next() {
             let Component::Normal(name) = component else {
                 return Err(Error::InvalidInput(

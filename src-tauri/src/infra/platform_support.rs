@@ -674,7 +674,18 @@ mod tests {
             !body.contains("letchild_access=ifwritable&&components.peek().is_none()"),
             "the access decision must not be hoisted out of the walk; {body}"
         );
-        assert!(body.contains(".write(writable)"), "{body}");
+        assert!(
+            body.contains("letbase_is_final=components.peek().is_none();"),
+            "the base write decision must depend on whether components remain; {body}"
+        );
+        assert!(
+            body.contains(".write(writable&&base_is_final)"),
+            "the base must be writable only when it is the final directory; {body}"
+        );
+        assert!(
+            !body.contains(".write(writable)"),
+            "the base must not demand write access before the component walk; {body}"
+        );
         assert!(
             body.contains("open_windows_child(&dir,name,FILE_OPEN,child_access,null(),true,true)"),
             "{body}"
@@ -1231,10 +1242,15 @@ mod tests {
             "{regular}"
         );
 
-        let descriptor = compact(&source[braced_body(source, "fn new(access: u32)")]);
+        let production = compact(&source[braced_body(source, "fn new(access: u32)")]);
+        assert!(
+            production.contains("Self::new_with_options(access,0,true)"),
+            "the production constructor must retain protected, non-inheriting defaults: {production}"
+        );
+        let descriptor = compact(&source[braced_body(source, "fn new_with_options(")]);
         assert!(
             descriptor.contains(
-                "SetSecurityDescriptorControl(descriptor_ptr,SE_DACL_PROTECTED,SE_DACL_PROTECTED)"
+                "SetSecurityDescriptorControl(descriptor_ptr,SE_DACL_PROTECTED,SE_DACL_PROTECTED,)"
             ),
             "{descriptor}"
         );
