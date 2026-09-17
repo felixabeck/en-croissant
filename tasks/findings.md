@@ -9640,6 +9640,23 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Found by:** orchestrator of the `f-20260917-02` build run, 2026-09-17, while confirming that a
   macOS failure on its own probe round was not caused by its diff.
 
+* **Annotated 2026-09-17 (Entry revalidation, `build` -> `lens`; then handled in the same run):**
+  the filed open question — genuine race in the engine-resource lease, or timing-dependent test
+  staging — is answered from source and needs no design round. `GAME_ENGINE_AFTER_SPAWN_HOOK` was
+  one process-global `Option<FnOnce>` slot drained by `run_game_engine_after_spawn_hook()` at the
+  top of `initialize_configured_game_engine`, which every game-engine spawn reaches; four other
+  `#[cfg(unix)]` tests in `game.rs` spawn game engines, and `cargo test` runs them in parallel in
+  one process. A foreign spawn therefore consumed the hook this test armed — and when it did so
+  before this test's own `resolve_launch`, the resource was already replaced at authorization
+  time, so the refusal carried a different message while `replaced` was already `true`: exactly
+  the observed shape, the `matches!` assertion the only failure. Linux was immune because the
+  hook was compiled out there, which is the platform asymmetry the finding records. That makes
+  this one file set (`game.rs`, `engine/process.rs`, a new `infra/test_hooks.rs`) with no
+  unresolved design question, so it ran at `lens`: `review-root-cause` and `review-tests` on the
+  cumulative diff, both `APPROVED` (agy / Gemini 3.8 Flash high, reports
+  `scratchpad/lens-root-cause.txt`, `scratchpad/lens-tests.txt`).
+<!-- ledger-meta {"command":"annotate","effect_lines":15,"effect_sha256":"0d5dff8f2145b44a86d4a6cbec215d10757f80780ad76a0a2c1aa6d186d9f385","input_sha256":"5f4d7e611de17b6b82e90ff2e92ac10c1ed53c08fb604f57fba218591ce646d1","kind":"mutation-receipt","operation":"9fe29bbd6aba02edd54ff2035cb9f1022fec08eea25fcc933815496853d37cd9","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-09"],"target":"f-20260917-09","v":1} -->
+
 ---
 
 ## 2026-09-17 — filed through the inbox spool
