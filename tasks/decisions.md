@@ -3204,3 +3204,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
   creator's actual SID.
 * **Decided by:** build run f-20260917-02, session d3c37561, 2026-09-17 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"8be225287df87db5c44889d25f627d2ef5bb30bac6292dbccc4c8199864c27ca","input_sha256":"825b6d21b127cbbce10bc74bdc6ac63b9e5221c5fb78d2b48de7bb55874b547b","kind":"mutation-receipt","operation":"3c22fea8860b82b2db0556ab8bddd9d1219d13f8e6256bbd9c3c72f94b95480b","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-07"],"target":"decisions-ledger","v":1} -->
+
+### d-20260917-08 — How is the Windows buffer-alignment repair held in place against a later revert?
+
+* **Question:** How is the Windows buffer-alignment repair held in place against a later revert?
+* **Governs:** f-20260917-02
+* **Chosen:** an opaque `AlignedBuffer` type whose backing element type carries the alignment and
+  whose constructor takes the consumer's `align_of::<T>()` as a `const` parameter. Every Win32
+  call that touches such a buffer goes through a wrapper taking `AlignedBuffer`, so no `unsafe`
+  block in these paths accepts a `*mut u8` from a caller.
+* **Rejected:** (a) a runtime assertion over an observed address — Windows allocators commonly
+  return over-aligned addresses, so it stays green against the wrong implementation; (b) a `const`
+  assertion inside a helper, which constrains nothing once a consumer stops calling the helper.
+* **Reason:** the anchor has to be the type, so that substituting a `Vec<u8>` at any consumer
+  fails to compile rather than depending on what the allocator happened to return. The concrete
+  hazard is `TOKEN_USER`, which holds a `PSID` and therefore needs 8-byte alignment on x86_64,
+  not the 4 an earlier draft assumed. Nothing on Linux compiles this module and a type-check
+  cannot see an access mask, so a compile-time boundary is the only local guard that exists.
+* **Decided by:** build run f-20260917-02, session d3c37561, 2026-09-17 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"5fd2729d066715c076c5047dcddf8c6d5deffcb6aa5b7f12c529ec66d4691d5f","input_sha256":"297241f17416510327c8376fbb29cfac2934a1997525224170fd82d8e39d9912","kind":"mutation-receipt","operation":"e5c00425fcd455a0f5ced061fbe199c4566bcac02ec5a3cb6a17532ca7054e87","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-08"],"target":"decisions-ledger","v":1} -->
