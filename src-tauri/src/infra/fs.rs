@@ -26,15 +26,19 @@ use tokio_util::sync::CancellationToken;
 #[cfg(all(test, windows))]
 pub(crate) fn windows_test_parent(path: &Path) -> File {
     use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, WRITE_DAC,
     };
 
     let mut options = std::fs::OpenOptions::new();
     options
         .read(true)
         .write(true)
+        // The fixture changes the parent DACL itself, so its handle must carry WRITE_DAC rather
+        // than relying on the generic write right used for ordinary directory contents.
+        .access_mode(GENERIC_READ | GENERIC_WRITE | WRITE_DAC)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
     options.open(path).expect("writable parent descriptor")
@@ -339,6 +343,11 @@ pub(crate) trait AtomicWriterInjector {
     #[cfg(windows)]
     fn inspect_temp(&self, _: &File) -> std::io::Result<()> {
         Ok(())
+    }
+
+    #[cfg(windows)]
+    fn parent_revalidation_identity(&self, actual: (u64, u64)) -> (u64, u64) {
+        actual
     }
 }
 
@@ -703,6 +712,15 @@ where
 
 fn target_identity<A: AtomicReplaceAdapter>(adapter: &A, target: &A::Target) -> (u64, u64) {
     adapter.target_identity(target)
+}
+
+fn ensure_remove_tree_depth(depth: usize, maximum: usize) -> Result<(), Error> {
+    if depth >= maximum {
+        return Err(Error::ResourceLimit(format!(
+            "directory cleanup exceeded {maximum} levels"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1532,11 +1550,7 @@ mod unix {
         parent_dev: u64,
         removed_entries: &mut usize,
     ) -> Result<(), Error> {
-        if depth >= MAX_REMOVE_TREE_DEPTH {
-            return Err(Error::ResourceLimit(format!(
-                "directory cleanup exceeded {MAX_REMOVE_TREE_DEPTH} levels"
-            )));
-        }
+        ensure_remove_tree_depth(depth, MAX_REMOVE_TREE_DEPTH)?;
         let stat = fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|e| io(e.into()))?;
         // The identity check lives in each arm rather than here, because the directory arm must
         // let the mount check answer first: a cross-device mount differs from `expected` in
@@ -2996,11 +3010,7 @@ mod win {
         parent_volume: u64,
         removed_entries: &mut usize,
     ) -> Result<(), Error> {
-        if depth >= MAX_REMOVE_TREE_DEPTH {
-            return Err(Error::ResourceLimit(format!(
-                "directory cleanup exceeded {MAX_REMOVE_TREE_DEPTH} levels"
-            )));
-        }
+        ensure_remove_tree_depth(depth, MAX_REMOVE_TREE_DEPTH)?;
         let child = open_windows_child(
             parent,
             name,
@@ -3026,6 +3036,10 @@ mod win {
         // recursive unlink would leave a partially removed tree behind, so the removal walk
         // enumerates with a token that is never cancelled.
         for entry in enumerate_directory(&child, &CancellationToken::new())? {
+            // Unix checks this at the recursive entry point for both files and directories. A
+            // Windows file was previously removed directly from this loop, allowing a file at
+            // the boundary depth to evade the shared traversal bound.
+            ensure_remove_tree_depth(depth.saturating_add(1), MAX_REMOVE_TREE_DEPTH)?;
             match entry.kind {
                 DirectoryEntryKind::Other => {
                     return Err(Error::InvalidInput(
@@ -3461,12 +3475,12 @@ mod win {
         // intermediate components: demanding write on every ancestor fails under a directory the
         // caller may only read. `writable` already governs the base open above; this is the same
         // two-predicate split as resolve_windows in path_authority/resolved.rs.
-        let child_access = if writable {
+        let child_access = if writable && components.peek().is_none() {
             DIRECTORY_ACCESS
         } else {
             READ_ONLY_ACCESS
         };
-        for component in components {
+        for component in components.by_ref() {
             let Component::Normal(name) = component else {
                 return Err(Error::InvalidInput(
                     "parent path may not contain traversal components".into(),
@@ -3502,7 +3516,12 @@ mod win {
             target_name,
             move || {
                 let current = open_directory_path(logical_parent, false)?;
-                if opened_file_identity(&current)? != parent_identity {
+                let current_identity = opened_file_identity(&current)?;
+                #[cfg(test)]
+                let current_identity = current_test_atomic_file_injector()
+                    .map(|injector| injector.parent_revalidation_identity(current_identity))
+                    .unwrap_or(current_identity);
+                if current_identity != parent_identity {
                     return Err(Error::Conflict(
                         "parent directory changed concurrently".into(),
                     ));
@@ -6327,6 +6346,9 @@ mod tests {
     struct Mutation {
         point: AtomicFileFaultPoint,
         target: PathBuf,
+        // Unix uses the pathname to perform the real parent-directory substitution; Windows
+        // injects the distinct identity through the retained-handle test seam below.
+        #[cfg(not(windows))]
         parent: PathBuf,
         action: &'static str,
     }
@@ -6349,29 +6371,30 @@ mod tests {
                     }
                 }
                 "parent" => {
-                    let moved = self.parent.with_extension("moved");
-                    std::fs::rename(&self.parent, &moved)?;
-                    std::fs::create_dir(&self.parent)
+                    #[cfg(windows)]
+                    {
+                        // The private temporary deliberately omits FILE_SHARE_DELETE, so moving
+                        // its containing directory cannot faithfully stage this race on Windows.
+                        Ok(())
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        let moved = self.parent.with_extension("moved");
+                        std::fs::rename(&self.parent, &moved)?;
+                        std::fs::create_dir(&self.parent)
+                    }
                 }
                 _ => unreachable!("test action"),
             }
         }
-    }
 
-    #[cfg(windows)]
-    struct PostRenameSwap {
-        target: PathBuf,
-        installed: PathBuf,
-    }
-
-    #[cfg(windows)]
-    impl AtomicWriterInjector for PostRenameSwap {
-        fn inject(&self, point: AtomicFileFaultPoint) -> std::io::Result<()> {
-            if point == AtomicFileFaultPoint::PostRenameMetadata {
-                std::fs::rename(&self.target, &self.installed)?;
-                std::fs::write(&self.target, b"racer")?;
+        #[cfg(windows)]
+        fn parent_revalidation_identity(&self, actual: (u64, u64)) -> (u64, u64) {
+            if self.action == "parent" {
+                (actual.0, actual.1 ^ 1)
+            } else {
+                actual
             }
-            Ok(())
         }
     }
 
@@ -6414,10 +6437,26 @@ mod tests {
                             .then_some(entry.path())
                     })
                     .expect("temp");
-                let moved = self.parent.join("moved-temp");
-                std::fs::rename(&temp, &moved)?;
-                std::fs::create_dir(&temp)?;
-                std::fs::write(temp.join("blocker"), b"x")?;
+                #[cfg(windows)]
+                {
+                    // The creator SID repair makes this process pass the temporary's DACL. Its
+                    // FILE_SHARE_PRIVATE_TEMP mask still refuses a read opener, which is the
+                    // cleanup failure this precedence test needs and does not rename the held
+                    // private object just to manufacture an error.
+                    return match std::fs::File::open(temp) {
+                        Ok(_) => Err(std::io::Error::other(
+                            "private temporary unexpectedly allowed a read opener",
+                        )),
+                        Err(error) => Err(error),
+                    };
+                }
+                #[cfg(not(windows))]
+                {
+                    let moved = self.parent.join("moved-temp");
+                    std::fs::rename(&temp, &moved)?;
+                    std::fs::create_dir(&temp)?;
+                    std::fs::write(temp.join("blocker"), b"x")?;
+                }
             }
             Ok(())
         }
@@ -7011,6 +7050,7 @@ mod tests {
             let injector = Mutation {
                 point: AtomicFileFaultPoint::PreCommitRevalidate,
                 target: target.clone(),
+                #[cfg(not(windows))]
                 parent: parent.clone(),
                 action,
             };
@@ -7038,6 +7078,7 @@ mod tests {
         let injector = Mutation {
             point: AtomicFileFaultPoint::PreCommitRevalidate,
             target: target.clone(),
+            #[cfg(not(windows))]
             parent: parent.clone(),
             action: "parent",
         };
@@ -7052,6 +7093,7 @@ mod tests {
         let injector = Mutation {
             point: AtomicFileFaultPoint::Rename,
             target: target.clone(),
+            #[cfg(not(windows))]
             parent: dir.path().to_path_buf(),
             action: "create",
         };
@@ -7489,30 +7531,35 @@ mod tests {
     fn windows_post_rename_identity_query_is_performed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("target");
-        let installed = dir.path().join("installed");
         let parent = windows_test_parent(dir.path());
         clear_durability_log();
         let result = run_atomic_at_fault(
             &parent,
             OsStr::new("target"),
-            Arc::new(PostRenameSwap {
-                target: target.clone(),
-                installed: installed.clone(),
-            }),
+            Arc::new(Fault(None, None, Arc::new(Mutex::new(Vec::new())))),
             |file| file.write_all(b"new").map_err(io),
         )
         .expect("replace");
         result.outcome.expect_durable();
-        assert!(durability_log().contains(&"temp.metadata"));
+        let durability = durability_log();
+        assert!(
+            durability.contains(&"temp.metadata"),
+            "durability log: {durability:?}"
+        );
         assert_eq!(
             result.identity,
             crate::infra::path_authority::opened_file_identity(
-                &File::open(&installed).expect("installed")
+                &File::open(&target).expect("target")
             )
             .expect("identity")
         );
-        assert_eq!(std::fs::read(installed).expect("installed"), b"new");
-        assert_eq!(std::fs::read(target).expect("racer"), b"racer");
+        assert_eq!(std::fs::read(&target).expect("target"), b"new");
+        // A live pathname swap cannot be staged while the private temporary is retained: the
+        // exact sharing mask under test rejects the second opener, which is `f-20260916-12`. The
+        // invariant it used to prove at runtime — that the post-rename identity comes from the
+        // retained handle and never from re-opening the pathname — is pinned against the source
+        // instead, beside this repository's other source pins in `platform_support.rs`, so that
+        // rewriting the query to reopen the target fails a test rather than passing silently.
     }
 
     #[cfg(windows)]
@@ -7659,6 +7706,7 @@ mod tests {
         let injector = Mutation {
             point: AtomicFileFaultPoint::Rename,
             target: target.clone(),
+            #[cfg(not(windows))]
             parent: parent.clone(),
             action: "create",
         };
@@ -7761,7 +7809,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let ancestor = dir.path().join("ancestor");
         std::fs::create_dir(&ancestor).expect("ancestor");
-        let target = ancestor.join("target");
+        let writable_parent = ancestor.join("parent");
+        std::fs::create_dir(&writable_parent).expect("writable parent");
+        let target = writable_parent.join("target");
         std::fs::write(&target, b"old").expect("old");
         // Deny GENERIC_WRITE on the ancestor itself; traversal and revalidation need only
         // read access to it, and the replacement happens inside it via a retained descriptor.

@@ -324,6 +324,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let leaf = OsStr::new("sidecar");
         std::fs::create_dir(directory.path().join(leaf)).unwrap();
+        #[cfg(windows)]
+        let parent = crate::infra::fs::windows_test_parent(directory.path());
+        #[cfg(not(windows))]
         let parent = std::fs::File::open(directory.path()).unwrap();
         assert_eq!(
             classify_probe_error(
@@ -604,17 +607,58 @@ mod tests {
     }
 
     #[test]
+    fn post_rename_identity_comes_from_the_retained_handle() {
+        // `f-20260916-12`: the injector that used to prove this at runtime renamed the held
+        // private temporary, and the temporary's `FILE_SHARE_PRIVATE_TEMP` mask — deliberately
+        // without FILE_SHARE_DELETE — refuses that second opener, so the race could never be
+        // staged in-process. Measured on the runner as os error 32, a sharing violation. Widening
+        // the mask to make the injector work would delete the property the private temporary
+        // exists for, so the invariant is pinned against the source instead.
+        //
+        // What it protects: the post-rename metadata query reads the RETAINED handle. If it were
+        // rewritten to reopen the target pathname, a pathname-substitution race would be observed
+        // as the installed object — which is exactly the attack the retained handle prevents.
+        let source = source_for("infra/fs.rs");
+        let body = braced_body(source, "fn replace_at_driver<A, F, P>(");
+        let body = compact(&source[body]);
+        assert!(
+            body.contains("Ok(())=>adapter.metadata(&temp),"),
+            "post-rename identity query must read the retained temporary handle; {body}"
+        );
+        assert!(
+            body.contains("#[cfg(not(test))]letmetadata=adapter.metadata(&temp);"),
+            "the non-test path must read the retained temporary handle too; {body}"
+        );
+        // Re-opening by pathname must not come back in either arm.
+        assert!(
+            !body.contains("adapter.metadata(&File::open("),
+            "post-rename identity must never be re-read from a pathname; {body}"
+        );
+        // Staged-failure matrix (push-review-policy section 2), 2026-09-17. Each row was produced
+        // by editing what this test READS — the `replace_at_driver` body in `fs.rs` — never this
+        // test's own logic, and `fs.rs` was restored and re-run green afterwards.
+        //   1. `Ok(()) => adapter.metadata(&File::open("x").unwrap())` (the test arm)
+        //      -> "post-rename identity query must read the retained temporary handle",
+        //         exit status 101.
+        //   2. `#[cfg(not(test))] let metadata = adapter.metadata(&File::open("x").unwrap())`
+        //      -> "the non-test path must read the retained temporary handle too", exit 101.
+        // Both edits also trip the negative assertion above, which is why each positive assertion
+        // carries a message of its own: a shared "FAIL" would identify nothing.
+    }
+
+    #[test]
     fn windows_read_only_directory_walk_does_not_demand_write() {
-        // DIRECTORY_ACCESS carries GENERIC_WRITE. open_directory_path honours `writable` on its
-        // base open but once hardcoded DIRECTORY_ACCESS for every child, so a read-only walk
-        // (fs.rs calls it with `false`) demanded write on every ancestor. Nothing on Linux
+        // DIRECTORY_ACCESS carries GENERIC_WRITE. Only the final parent needs it for staging;
+        // intermediate ancestors are traversal-only and must remain readable. Nothing on Linux
         // compiles this module, and a type-check cannot catch an access mask, so this source pin
         // is the only check that the split survives.
         let source = source_for("infra/fs.rs");
         let body = braced_body(source, "fn open_directory_path(");
         let body = compact(&source[body]);
         assert!(
-            body.contains("letchild_access=ifwritable{DIRECTORY_ACCESS}else{READ_ONLY_ACCESS};"),
+            body.contains(
+                "letchild_access=ifwritable&&components.peek().is_none(){DIRECTORY_ACCESS}else{READ_ONLY_ACCESS};",
+            ),
             "{body}"
         );
         assert!(body.contains(".write(writable)"), "{body}");
