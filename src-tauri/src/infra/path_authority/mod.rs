@@ -11,7 +11,7 @@
 
 use crate::infra::fs::{
     assert_entry_identity, open_directory_at, open_regular_at, read_directory_entries_at,
-    RegularFileAccess,
+    ParentAccess, RegularFileAccess,
 };
 use crate::{
     error::Error,
@@ -59,9 +59,6 @@ const MAX_TRUSTED_OWNER_FAMILIES: usize = 32;
 const MAX_PENDING_ARTIFACTS: usize = 256;
 const MAX_REGISTRY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LEGACY_REGISTRY_BYTES: u64 = 64 * 1024 * 1024;
-#[cfg(not(unix))]
-const UNSUPPORTED_DIRECTORY_ENUMERATION: &str = "fd-relative directory enumeration";
-
 fn map_db3_children_cancellable<T>(
     root: CapabilityDirectory,
     cancellation: &CancellationToken,
@@ -469,6 +466,90 @@ pub(crate) struct WorkspaceMutationTarget {
     pub(crate) is_dir: bool,
     path: PathBuf,
 }
+/// The failure classes shared by database probes, search-index loading and sidecar cleanup.
+/// Callers map the classes differently because absence, a wrong object kind and a malformed
+/// archive have different meanings at each boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProbeErrorClass {
+    NotFound,
+    WrongKind,
+    Malformed,
+    MappedFile,
+    Other,
+}
+
+fn is_unix_probe_status(code: Option<i32>) -> bool {
+    #[cfg(unix)]
+    {
+        matches!(
+            code,
+            Some(code)
+                if code == rustix::io::Errno::LOOP.raw_os_error()
+                    || code == rustix::io::Errno::NOTDIR.raw_os_error()
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = code;
+        false
+    }
+}
+
+/// Maps platform error values without importing a platform-specific error table. The Windows
+/// values are stable DOS error codes, and using their numeric values lets Linux execute the same
+/// classifier in its tests.
+pub(crate) fn classify_probe_error_kind(error: &Error) -> ProbeErrorClass {
+    match error {
+        Error::Io(error) => {
+            if error.kind() == std::io::ErrorKind::NotFound
+                || matches!(error.raw_os_error(), Some(2 | 3))
+            {
+                ProbeErrorClass::NotFound
+            } else if is_unix_probe_status(error.raw_os_error())
+                || matches!(error.raw_os_error(), Some(267 | 1920 | 4393))
+            {
+                ProbeErrorClass::WrongKind
+            } else if error.raw_os_error() == Some(1224) {
+                ProbeErrorClass::MappedFile
+            } else if error.kind() == std::io::ErrorKind::InvalidData {
+                ProbeErrorClass::Malformed
+            } else {
+                ProbeErrorClass::Other
+            }
+        }
+        Error::InvalidInput(message)
+            if matches!(
+                message.as_str(),
+                "reparse points cannot be authorized"
+                    | "target must be a regular file"
+                    | "workspace sidecar must be a regular file"
+                    | "workspace entry has an unexpected file type"
+            ) =>
+        {
+            ProbeErrorClass::WrongKind
+        }
+        _ => ProbeErrorClass::Other,
+    }
+}
+
+/// Resolves Windows' ambiguous directory-open error without turning permission failures into
+/// "missing". A directory probe succeeds only for a directory at the same parent/name; if it
+/// fails, the original error remains `Other` and the caller propagates it.
+pub(crate) fn classify_probe_error(
+    error: &Error,
+    parent: &fs::File,
+    leaf: &OsStr,
+) -> ProbeErrorClass {
+    if matches!(
+        error,
+        Error::Io(error) if error.raw_os_error() == Some(5)
+    ) && crate::infra::fs::entry_identity_at(parent, leaf, true).is_ok()
+    {
+        return ProbeErrorClass::WrongKind;
+    }
+    classify_probe_error_kind(error)
+}
+
 /// Retained no-follow parent descriptor for a database file. Callers must not
 /// reopen `leaf` by pathname for create, unlink, or mmap; use this parent with
 /// `openat` / `unlinkat` / `atomic_replace_at`.
@@ -480,7 +561,6 @@ pub(crate) struct DatabaseFileTarget {
 }
 
 impl DatabaseFileTarget {
-    #[cfg(unix)]
     fn assemble(parent: fs::File, leaf: OsString, identity: (u64, u64), path: PathBuf) -> Self {
         Self {
             parent,
@@ -512,48 +592,54 @@ impl DatabaseFileTarget {
     /// Opens the exact regular file authorized by this carrier after rechecking its retained
     /// parent and inode. The pathname walk is deliberately kept beside the carrier so repository
     /// callers cannot substitute a pathname while probing a pooled SQLite connection.
-    #[cfg(unix)]
     pub(crate) fn open_current(&self) -> Result<fs::File, Error> {
         const CONFLICT: &str = "database changed after capability resolution";
 
         fn map_probe_error(error: Error) -> Error {
-            match error {
-                Error::Conflict(_) => Error::Conflict(CONFLICT.into()),
-                Error::InvalidInput(message) if message == "target must be a regular file" => {
+            if matches!(error, Error::Conflict(_)) {
+                return Error::Conflict(CONFLICT.into());
+            }
+            match classify_probe_error_kind(&error) {
+                ProbeErrorClass::NotFound | ProbeErrorClass::WrongKind => {
                     Error::Conflict(CONFLICT.into())
                 }
-                Error::Io(error)
-                    if matches!(error.kind(), std::io::ErrorKind::NotFound)
-                        || error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
-                        || error.raw_os_error()
-                            == Some(rustix::io::Errno::NOTDIR.raw_os_error()) =>
-                {
-                    Error::Conflict(CONFLICT.into())
-                }
-                error => error,
+                ProbeErrorClass::Malformed
+                | ProbeErrorClass::MappedFile
+                | ProbeErrorClass::Other => error,
             }
         }
 
-        let (parent_now, leaf) =
-            crate::infra::fs::open_verified_parent(&self.path, self.identity, false)
-                .map_err(map_probe_error)?;
+        fn map_probe_error_at(error: Error, parent: &fs::File, leaf: &OsStr) -> Error {
+            if matches!(error, Error::Conflict(_)) {
+                return Error::Conflict(CONFLICT.into());
+            }
+            match classify_probe_error(&error, parent, leaf) {
+                ProbeErrorClass::NotFound | ProbeErrorClass::WrongKind => {
+                    Error::Conflict(CONFLICT.into())
+                }
+                ProbeErrorClass::Malformed
+                | ProbeErrorClass::MappedFile
+                | ProbeErrorClass::Other => error,
+            }
+        }
+
+        let (parent_now, leaf) = crate::infra::fs::open_verified_parent(
+            &self.path,
+            self.identity,
+            false,
+            ParentAccess::Readable,
+        )
+        .map_err(map_probe_error)?;
         if opened_file_identity(&parent_now)? != opened_file_identity(&self.parent)? {
             return Err(Error::Conflict(CONFLICT.into()));
         }
         let file =
             crate::infra::fs::open_regular_at(&parent_now, &leaf, RegularFileAccess::ReadOnly)
-                .map_err(map_probe_error)?;
+                .map_err(|error| map_probe_error_at(error, &parent_now, &leaf))?;
         if opened_file_identity(&file)? != self.identity {
             return Err(Error::Conflict(CONFLICT.into()));
         }
         Ok(file)
-    }
-
-    #[cfg(not(unix))]
-    pub(crate) fn open_current(&self) -> Result<fs::File, Error> {
-        Err(crate::infra::platform_support::unsupported(
-            "database file reopening",
-        ))
     }
 
     #[cfg(all(test, unix))]
@@ -567,7 +653,12 @@ impl DatabaseFileTarget {
             .create(true)
             .truncate(false)
             .open(path)?;
-        let acquired = acquire_target(path, AcquireShape::File)?;
+        let acquired = acquire_target(
+            path,
+            AcquireShape::File {
+                parent_access: ParentAccess::Readable,
+            },
+        )?;
         let (parent, leaf) = acquired
             .parent_and_leaf
             .ok_or_else(|| Error::InvalidInput("database path needs a leaf name".into()))?;
@@ -666,7 +757,6 @@ mod verified_identity {
         Ok(VerifiedIdentity(pair))
     }
 
-    #[cfg(unix)]
     impl super::ResolvedPath {
         pub(super) fn create_database_file(&self) -> Result<(fs::File, VerifiedIdentity), Error> {
             if self.operation() != super::PathOperation::DatabaseCreate {
@@ -1571,7 +1661,6 @@ pub enum PathOperation {
     OpenShell,
 }
 
-#[cfg(unix)]
 fn is_database_file_operation(op: PathOperation) -> bool {
     match op {
         PathOperation::DatabaseRead
@@ -1611,6 +1700,106 @@ fn parent_of(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
+}
+
+/// Returns the Windows namespace/path reason for a single component, independent of the host
+/// platform. Callers apply this predicate only when the Windows path grammar is active; keeping
+/// the policy itself cfg-free lets Linux tests execute every Windows-shaped case.
+pub(crate) fn windows_component_refusal(name: &OsStr) -> Option<&'static str> {
+    let text = name.to_string_lossy();
+    if text
+        .chars()
+        .any(|character| matches!(character, ':' | '/' | '\\' | '\0'))
+    {
+        return Some("Windows path components may not contain a separator, colon, or NUL");
+    }
+    if text.encode_utf16().count() > 255 {
+        return Some("Windows path component exceeds 255 UTF-16 units");
+    }
+    if matches!(text.chars().last(), Some('.' | ' ')) {
+        return Some("Windows path components may not end with a dot or space");
+    }
+    let stem = text
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+            | "COM¹"
+            | "COM²"
+            | "COM³"
+            | "LPT¹"
+            | "LPT²"
+            | "LPT³"
+    ) {
+        return Some("Windows path component uses a reserved DOS device name");
+    }
+    None
+}
+
+/// The database name leaves room for the appended `.ecsi` search-index sidecar. The shared
+/// component predicate remains at the real filesystem limit of 255 units so derived sidecars
+/// are valid for an accepted 250-unit database name.
+pub(crate) fn windows_database_leaf_refusal(name: &OsStr) -> Option<&'static str> {
+    (name.to_string_lossy().encode_utf16().count() > 250).then_some(
+        "database filename exceeds the Windows search-index sidecar limit of 250 UTF-16 units",
+    )
+}
+
+fn validate_windows_database_leaf(name: &OsStr) -> Result<(), Error> {
+    if !cfg!(windows) {
+        return Ok(());
+    }
+    if let Some(reason) = windows_database_leaf_refusal(name) {
+        return Err(Error::InvalidInput(reason.into()));
+    }
+    let mut preferred = name.to_os_string();
+    preferred.push(".ecsi");
+    let legacy = Path::new(name).with_extension("ecsi").into_os_string();
+    for sidecar in [preferred, legacy] {
+        if let Some(reason) = windows_component_refusal(&sidecar) {
+            return Err(Error::InvalidInput(format!(
+                "database search-index sidecar is not a valid Windows component: {reason}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Converts a UTF-16 component length to the two byte lengths used by `UNICODE_STRING`.
+/// Returning `None` prevents the lossy `usize` to `u16` cast from opening a different object.
+///
+/// Deliberately not `#[cfg(windows)]`: its only production caller is `open_windows_child`, but the
+/// guard it carries is `f-20260916-03`'s subject and is unit-tested on every platform, which a
+/// gated helper could not be. The non-test Linux build therefore has no caller.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn unicode_string_lengths(utf16_units: usize) -> Option<(u16, u16)> {
+    let bytes = utf16_units.checked_mul(2)?;
+    let length = u16::try_from(bytes).ok()?;
+    Some((length, length))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2989,9 +3178,12 @@ pub(crate) fn open_windows_child(
     const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
     crate::infra::fs::single_leaf(name)?;
     let mut wide: Vec<u16> = name.encode_wide().collect();
+    let (length, maximum_length) = unicode_string_lengths(wide.len()).ok_or_else(|| {
+        Error::InvalidInput("Windows path component exceeds the UNICODE_STRING limit".into())
+    })?;
     let mut unicode = UNICODE_STRING {
-        Length: (wide.len() * 2) as u16,
-        MaximumLength: (wide.len() * 2) as u16,
+        Length: length,
+        MaximumLength: maximum_length,
         Buffer: wide.as_mut_ptr(),
     };
     let attributes = OBJECT_ATTRIBUTES {
@@ -3106,24 +3298,31 @@ fn validate_target(path: &Path, class: PathClass) -> Result<Identity, Error> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AcquireShape {
-    Dialog,
-    File,
-    Root,
+    Dialog { parent_access: ParentAccess },
+    File { parent_access: ParentAccess },
+    Root { parent_access: ParentAccess },
 }
 
 impl AcquireShape {
-    fn for_persistent_class(class: PathClass) -> Self {
+    fn for_persistent_class(class: PathClass, parent_access: ParentAccess) -> Self {
         if class == PathClass::PersistentCustomRoot {
-            Self::Root
+            Self::Root { parent_access }
         } else {
-            Self::File
+            Self::File { parent_access }
+        }
+    }
+
+    fn parent_access(self) -> ParentAccess {
+        match self {
+            Self::Dialog { parent_access }
+            | Self::File { parent_access }
+            | Self::Root { parent_access } => parent_access,
         }
     }
 }
 
-/// On Unix, a path with a normal leaf stores the proven canonical `(path, identity)` pair.
-/// Leafless paths and non-Unix targets keep the caller's spelling and carry no descriptor (the
-/// descriptor field exists only on Unix).
+/// A path with a normal leaf stores the proven canonical `(path, identity)` pair and its retained
+/// parent/leaf descriptor. Leafless paths keep the caller's spelling and carry no descriptor.
 /// `parent_and_leaf` is the proving descriptor consumed by `database_file_target`/`for_test_path`
 /// and dropped by registration doors, whose later use re-walks the stored path no-follow. The PGN
 /// export door keeps its own proving parent and passes `None`.
@@ -3131,7 +3330,6 @@ struct AcquiredTarget {
     path: PathBuf,
     identity: Identity,
     target_is_dir: bool,
-    #[cfg(unix)]
     parent_and_leaf: Option<(fs::File, OsString)>,
 }
 
@@ -3139,8 +3337,9 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
     #[cfg(all(test, unix))]
     ACQUIRE_TARGET_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
 
+    let parent_access = shape.parent_access();
     let (identity, target_is_dir) = match shape {
-        AcquireShape::Dialog => {
+        AcquireShape::Dialog { .. } => {
             let meta = fs::symlink_metadata(path)?;
             if meta.file_type().is_symlink() || (!meta.is_file() && !meta.is_dir()) {
                 return Err(Error::InvalidInput(
@@ -3149,8 +3348,8 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
             }
             (identity(path)?, meta.is_dir())
         }
-        AcquireShape::File => (validate_target(path, PathClass::PersistentFile)?, false),
-        AcquireShape::Root => (
+        AcquireShape::File { .. } => (validate_target(path, PathClass::PersistentFile)?, false),
+        AcquireShape::Root { .. } => (
             validate_target(path, PathClass::PersistentCustomRoot)?,
             true,
         ),
@@ -3164,7 +3363,6 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
             path: path.to_path_buf(),
             identity,
             target_is_dir,
-            #[cfg(unix)]
             parent_and_leaf: None,
         });
     };
@@ -3182,6 +3380,7 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
             &canonical,
             (identity.a, identity.b),
             target_is_dir,
+            parent_access,
         )?;
         Ok(AcquiredTarget {
             path: canonical,
@@ -3191,12 +3390,20 @@ fn acquire_target(path: &Path, shape: AcquireShape) -> Result<AcquiredTarget, Er
         })
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
+        let canonical = canonical_binding(path)?;
+        let parent_and_leaf = crate::infra::fs::open_verified_parent(
+            &canonical,
+            (identity.a, identity.b),
+            target_is_dir,
+            parent_access,
+        )?;
         Ok(AcquiredTarget {
-            path: path.to_path_buf(),
+            path: canonical,
             identity,
             target_is_dir,
+            parent_and_leaf: Some(parent_and_leaf),
         })
     }
 }
@@ -3296,6 +3503,42 @@ fn is_write_operation(op: PathOperation) -> bool {
     )
 }
 
+fn allows_missing_leaf(op: PathOperation) -> bool {
+    match op {
+        PathOperation::ReadPgn
+        | PathOperation::WritePgn
+        | PathOperation::DatabaseRead
+        | PathOperation::DatabaseMutate
+        | PathOperation::DatabaseCreate
+        | PathOperation::DatabaseExport
+        | PathOperation::PuzzleRead
+        | PathOperation::PuzzleDelete
+        | PathOperation::EngineExecute
+        | PathOperation::EngineConfigure
+        | PathOperation::EngineBinaryInspect
+        | PathOperation::EngineResourceRead
+        | PathOperation::OpeningBookRead
+        | PathOperation::ImageRead
+        | PathOperation::EngineInstall
+        | PathOperation::SnapshotWrite
+        | PathOperation::LogWrite
+        | PathOperation::OpenShell => false,
+        PathOperation::DownloadFile | PathOperation::DownloadArchive => true,
+    }
+}
+
+pub(crate) fn parent_access_for_operations(operations: &[PathOperation]) -> ParentAccess {
+    if operations
+        .iter()
+        .copied()
+        .any(|operation| is_write_operation(operation) || allows_missing_leaf(operation))
+    {
+        ParentAccess::Writable
+    } else {
+        ParentAccess::Readable
+    }
+}
+
 /// Counts complete blocking image issuances so shutdown cannot clean up before they settle.
 pub(crate) struct ActiveImageIssuances {
     active: AtomicUsize,
@@ -3376,6 +3619,11 @@ pub struct PathAuthority {
 fn validate_components(components: &[OsString]) -> Result<(), Error> {
     for name in components {
         let component = name.as_os_str();
+        if cfg!(windows) {
+            if let Some(reason) = windows_component_refusal(component) {
+                return Err(Error::InvalidInput(reason.into()));
+            }
+        }
         if component.is_empty()
             || component == OsStr::new(".")
             || component == OsStr::new("..")
@@ -3428,23 +3676,13 @@ impl PathAuthority {
         snapshot
     }
 
-    /// Off unix this serves the PGN workspace listing only. `list_database_children_cancellable`
-    /// is the other caller and belongs to `f-20260914-09`: enumerating and registering database
-    /// children while `database_file_target` and `open_current` still refuse to open them would
-    /// mint handles nothing can use, so every other operation keeps the refusal.
+    /// Resolves an authorized directory for descriptor-relative enumeration. Database and puzzle
+    /// listings share the same retained-directory walk as the PGN workspace listing.
     pub(crate) fn capability_directory(
         &mut self,
         id: &PathRef,
         operation: PathOperation,
     ) -> Result<CapabilityDirectory, Error> {
-        #[cfg(not(unix))]
-        {
-            if operation != PathOperation::ReadPgn {
-                return Err(crate::infra::platform_support::unsupported(
-                    UNSUPPORTED_DIRECTORY_ENUMERATION,
-                ));
-            }
-        }
         let mut resolved = self.resolve(id, operation, &[])?;
         let directory = resolved
             .take_directory()
@@ -3548,6 +3786,7 @@ impl PathAuthority {
                         b: identity.1,
                     },
                     target_is_dir: false,
+                    parent_and_leaf: None,
                 },
                 display_name.clone(),
                 PathClass::BoundedDialogGrant,
@@ -4107,7 +4346,12 @@ impl PathAuthority {
         uses_left: u32,
     ) -> Result<PathRef, Error> {
         Self::check_dialog_grant_shape(class, &operations, uses_left)?;
-        let acquired = acquire_target(path, AcquireShape::Dialog)?;
+        let acquired = acquire_target(
+            path,
+            AcquireShape::Dialog {
+                parent_access: parent_access_for_operations(&operations),
+            },
+        )?;
         self.grant_acquired(
             acquired,
             display_name.into(),
@@ -4163,7 +4407,10 @@ impl PathAuthority {
             ));
         }
         let path = grant.entry.stored.path.to_path()?;
-        let shape = AcquireShape::for_persistent_class(persistent_class);
+        let shape = AcquireShape::for_persistent_class(
+            persistent_class,
+            parent_access_for_operations(&operations),
+        );
         let acquired = acquire_target(&path, shape)?;
         if acquired.path != path || acquired.identity != grant.entry.stored.identity {
             return Err(Error::Conflict(
@@ -4289,11 +4536,15 @@ impl PathAuthority {
     fn registration_target(
         path: &Path,
         class: PathClass,
+        operations: &[PathOperation],
         expected_identity: Option<VerifiedIdentity>,
     ) -> Result<(PathBuf, Identity), Error> {
         match expected_identity {
             None => {
-                let shape = AcquireShape::for_persistent_class(class);
+                let shape = AcquireShape::for_persistent_class(
+                    class,
+                    parent_access_for_operations(operations),
+                );
                 let acquired = acquire_target(path, shape)?;
                 Ok((acquired.path, acquired.identity))
             }
@@ -4327,7 +4578,8 @@ impl PathAuthority {
             ));
         }
         let path = PathBuf::from(path);
-        let (path, identity) = Self::registration_target(&path, class, expected_identity)?;
+        let (path, identity) =
+            Self::registration_target(&path, class, &operations, expected_identity)?;
         self.persist_entry(&path, identity, display_name, class, operations)
     }
     /// Registers a bundled/app-owned or picker-selected persistent file. A call without an
@@ -4371,8 +4623,12 @@ impl PathAuthority {
                 "persistent operations cannot be empty".into(),
             ));
         }
-        let (path, expected) =
-            Self::registration_target(path, PathClass::PersistentFile, expected_identity)?;
+        let (path, expected) = Self::registration_target(
+            path,
+            PathClass::PersistentFile,
+            &operations,
+            expected_identity,
+        )?;
         self.get_or_create_persistent_file_from_identity(&path, display_name, operations, expected)
     }
 
@@ -4537,8 +4793,12 @@ impl PathAuthority {
     ) -> Result<PathRef, Error> {
         let display_name = display_name.into();
         let purpose = purpose_for_shape(PathClass::PersistentCustomRoot, true, &operations);
-        let (path, identity) =
-            Self::registration_target(path, PathClass::PersistentCustomRoot, expected_identity)?;
+        let (path, identity) = Self::registration_target(
+            path,
+            PathClass::PersistentCustomRoot,
+            &operations,
+            expected_identity,
+        )?;
         if let Some(entry) = self
             .persistent
             .values()
@@ -5199,6 +5459,7 @@ impl PathAuthority {
         display_name: impl Into<String>,
         observed: (u64, u64),
     ) -> Result<DatabaseHandle, Error> {
+        validate_windows_database_leaf(filename)?;
         let components = vec![filename.to_os_string()];
         let resolved = self.resolve(root.path_ref(), PathOperation::DatabaseRead, &components)?;
         let resolved_identity = refuse_unobserved(resolved.identity()?, observed)?;
@@ -5298,82 +5559,71 @@ impl PathAuthority {
         root: &DatabaseRootHandle,
         filename: &OsStr,
     ) -> Result<DatabaseHandle, Error> {
+        validate_windows_database_leaf(filename)?;
         validate_components(&[filename.to_os_string()])?;
         if std::path::Path::new(filename).extension() != Some(OsStr::new("db3")) {
             return Err(Error::InvalidInput(
                 "database filename must end in .db3".into(),
             ));
         }
-        #[cfg(not(unix))]
-        {
-            let _ = root;
-            Err(crate::infra::platform_support::unsupported(
-                "descriptor-relative database creation",
-            ))
-        }
-        #[cfg(unix)]
-        {
-            let components = vec![filename.to_os_string()];
-            let resolved =
-                self.resolve(root.path_ref(), PathOperation::DatabaseCreate, &components)?;
-            #[cfg(test)]
-            DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
-                if let Some(hook) = slot.borrow_mut().take() {
-                    hook();
-                }
-            });
-            let parent = resolved.parent().ok_or_else(|| {
-                Error::InvalidInput("database child has no retained parent".into())
-            })?;
-            let leaf = resolved
-                .leaf()
-                .ok_or_else(|| Error::InvalidInput("database child has no retained leaf".into()))?;
-            let (file, verified_identity) = match resolved.create_database_file() {
-                Ok(created) => created,
-                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return Err(Error::Conflict("database filename already exists".into()));
-                }
-                Err(error) => return Err(error),
-            };
-            let sync_result = (|| {
-                file.sync_all()?;
-                parent.sync_all()?;
-                Ok::<_, Error>(())
-            })();
-            if let Err(error) = sync_result {
-                return Err(Self::cleanup_created_database_child(
-                    parent,
-                    leaf,
-                    verified_identity,
-                    error,
-                ));
+        let components = vec![filename.to_os_string()];
+        let resolved = self.resolve(root.path_ref(), PathOperation::DatabaseCreate, &components)?;
+        #[cfg(test)]
+        DATABASE_CHILD_POST_RESOLVE_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
             }
-            #[cfg(test)]
-            DATABASE_CHILD_POST_CREATE_HOOK.with(|slot| {
-                if let Some(hook) = slot.borrow_mut().take() {
-                    hook();
-                }
-            });
-            match self.register_database_child_verified(
-                root,
-                filename,
-                filename.to_string_lossy().into_owned(),
-                &resolved,
+        });
+        let parent = resolved
+            .parent()
+            .ok_or_else(|| Error::InvalidInput("database child has no retained parent".into()))?;
+        let leaf = resolved
+            .leaf()
+            .ok_or_else(|| Error::InvalidInput("database child has no retained leaf".into()))?;
+        let (file, verified_identity) = match resolved.create_database_file() {
+            Ok(created) => created,
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(Error::Conflict("database filename already exists".into()));
+            }
+            Err(error) => return Err(error),
+        };
+        let sync_result = (|| {
+            file.sync_all()?;
+            parent.sync_all()?;
+            Ok::<_, Error>(())
+        })();
+        if let Err(error) = sync_result {
+            return Err(Self::cleanup_created_database_child(
+                parent,
+                leaf,
                 verified_identity,
-            ) {
-                Ok(handle) => Ok(handle),
-                Err(error @ Error::CommittedDurabilityUncertain(_)) => Err(error),
-                Err(error) => Err(Self::cleanup_created_database_child(
-                    parent,
-                    leaf,
-                    verified_identity,
-                    error,
-                )),
+                error,
+            ));
+        }
+        #[cfg(test)]
+        DATABASE_CHILD_POST_CREATE_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
             }
+        });
+        match self.register_database_child_verified(
+            root,
+            filename,
+            filename.to_string_lossy().into_owned(),
+            &resolved,
+            verified_identity,
+        ) {
+            Ok(handle) => Ok(handle),
+            Err(error @ Error::CommittedDurabilityUncertain(_)) => Err(error),
+            Err(error) => Err(Self::cleanup_created_database_child(
+                parent,
+                leaf,
+                verified_identity,
+                error,
+            )),
         }
     }
 
-    #[cfg(unix)]
     fn cleanup_created_database_child(
         parent: &fs::File,
         leaf: &OsStr,
@@ -5389,7 +5639,6 @@ impl PathAuthority {
         }
     }
 
-    #[cfg(unix)]
     pub(crate) fn database_file_target(
         &mut self,
         handle: &DatabaseHandle,
@@ -5410,7 +5659,12 @@ impl PathAuthority {
         let stored = entry.stored;
         let path = stored.path.to_path()?;
         let expected = (stored.identity.a, stored.identity.b);
-        let acquired = acquire_target(&path, AcquireShape::File)?;
+        let acquired = acquire_target(
+            &path,
+            AcquireShape::File {
+                parent_access: parent_access_for_operations(&[operation]),
+            },
+        )?;
         if acquired.identity != stored.identity {
             return Err(Error::Conflict(
                 "workspace entry is unavailable because its object changed".into(),
@@ -5426,17 +5680,6 @@ impl PathAuthority {
             leaf,
             expected,
             acquired.path,
-        ))
-    }
-
-    #[cfg(not(unix))]
-    pub(crate) fn database_file_target(
-        &mut self,
-        _handle: &DatabaseHandle,
-        _operation: PathOperation,
-    ) -> Result<DatabaseFileTarget, Error> {
-        Err(crate::infra::platform_support::unsupported(
-            "database file targets",
         ))
     }
 
@@ -6537,8 +6780,12 @@ impl PathAuthority {
         let entry = self.persistent_entry_for(handle, required_operation)?;
         let path = entry.stored.path.to_path()?;
         let expected = (entry.stored.identity.a, entry.stored.identity.b);
-        let (parent, leaf) =
-            crate::infra::fs::open_verified_parent(&path, expected, entry.stored.target_is_dir)?;
+        let (parent, leaf) = crate::infra::fs::open_verified_parent(
+            &path,
+            expected,
+            entry.stored.target_is_dir,
+            ParentAccess::Writable,
+        )?;
         self.session_protected_ids
             .insert(handle.path_ref().id.clone());
         Ok(RetainedWorkspaceTarget {

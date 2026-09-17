@@ -892,7 +892,12 @@ pub fn promote_legacy_index_sidecar(db_path: &Path) -> Result<Option<PathBuf>, E
         length: metadata.len(),
         modified: metadata.modified()?,
     };
-    let (parent, database_leaf) = crate::infra::fs::open_verified_parent(&database, object, false)?;
+    let (parent, database_leaf) = crate::infra::fs::open_verified_parent(
+        &database,
+        object,
+        false,
+        crate::infra::fs::ParentAccess::Readable,
+    )?;
     let preferred_leaf = preferred_sidecar_leaf(&database_leaf);
     let legacy_leaf = legacy_sidecar_leaf(&database_leaf);
     Ok(promote_legacy_index_sidecar_at(
@@ -1610,7 +1615,13 @@ mod tests {
             )
             .unwrap()
             .expect_durable();
-        let (parent, database_leaf) = open_verified_parent(&database, object, false).unwrap();
+        let (parent, database_leaf) = open_verified_parent(
+            &database,
+            object,
+            false,
+            crate::infra::fs::ParentAccess::Readable,
+        )
+        .unwrap();
         let preferred_leaf = preferred_sidecar_leaf(&database_leaf);
         let legacy_leaf = legacy_sidecar_leaf(&database_leaf);
 

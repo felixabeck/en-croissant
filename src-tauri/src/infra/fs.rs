@@ -159,6 +159,15 @@ pub(crate) enum RegularFileAccess {
     ReadWrite,
 }
 
+/// Access required for a retained parent directory. Read-only probes need no write permission;
+/// namespace mutations and missing-leaf operations need `GENERIC_WRITE` on Windows so their
+/// parent can be flushed after the mutation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ParentAccess {
+    Readable,
+    Writable,
+}
+
 pub(crate) fn read_bounded_bytes<R: Read>(
     reader: &mut R,
     declared: u64,
@@ -2682,8 +2691,14 @@ mod win {
         path: &Path,
         expected: (u64, u64),
         directory: bool,
+        access: ParentAccess,
     ) -> Result<(File, OsString), Error> {
-        let parent = open_writable_parent(path)?;
+        let writable = match access {
+            ParentAccess::Readable => false,
+            ParentAccess::Writable => true,
+        };
+        let parent =
+            open_directory_path(path.parent().unwrap_or_else(|| Path::new(".")), writable)?;
         let leaf = path
             .file_name()
             .filter(|name| !name.is_empty())
@@ -2702,7 +2717,7 @@ mod win {
         path: &Path,
         expected: (u64, u64),
     ) -> Result<VerifiedDir, Error> {
-        let (parent, leaf) = open_verified_parent(path, expected, true)?;
+        let (parent, leaf) = open_verified_parent(path, expected, true, ParentAccess::Writable)?;
         let opened = open_writable_leaf_directory(&parent, &leaf)?;
         VerifiedDir::new(opened, expected)
     }
@@ -3257,6 +3272,11 @@ where
 }
 
 pub(crate) fn single_leaf(leaf: &OsStr) -> Result<(), Error> {
+    if cfg!(windows) {
+        if let Some(reason) = crate::infra::path_authority::windows_component_refusal(leaf) {
+            return Err(Error::InvalidInput(reason.into()));
+        }
+    }
     if leaf.is_empty() || Path::new(leaf).file_name() != Some(leaf) {
         return Err(Error::InvalidInput(
             "leaf name must be one component".into(),
@@ -3287,8 +3307,9 @@ pub(crate) fn open_verified_parent(
     path: &Path,
     expected: (u64, u64),
     directory: bool,
+    access: ParentAccess,
 ) -> Result<(File, std::ffi::OsString), Error> {
-    win::open_verified_parent(path, expected, directory)
+    win::open_verified_parent(path, expected, directory, access)
 }
 
 #[cfg(unix)]
@@ -3296,6 +3317,7 @@ pub(crate) fn open_verified_parent(
     path: &Path,
     expected: (u64, u64),
     directory: bool,
+    _access: ParentAccess,
 ) -> Result<(File, std::ffi::OsString), Error> {
     use rustix::fs::{self as rfs, AtFlags, FileType, Mode, OFlags};
     use std::os::unix::ffi::OsStrExt;
@@ -3355,7 +3377,7 @@ pub(crate) fn open_verified_directory(
     expected: (u64, u64),
 ) -> Result<VerifiedDir, Error> {
     use rustix::fs::{self as rfs, Mode, OFlags};
-    let (parent, leaf) = open_verified_parent(path, expected, true)?;
+    let (parent, leaf) = open_verified_parent(path, expected, true, ParentAccess::Writable)?;
     let opened = File::from(
         rfs::openat(
             &parent,
@@ -4413,7 +4435,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, &nested).expect("swap link");
 
         assert!(matches!(
-            open_verified_parent(&entry, expected, false),
+            open_verified_parent(&entry, expected, false, ParentAccess::Readable),
             Err(Error::Io(_))
         ));
         assert_eq!(
@@ -4690,7 +4712,8 @@ mod tests {
         std::fs::write(&entry, b"trusted").expect("entry");
         std::fs::write(outside.join("game.pgn"), b"outside").expect("outside entry");
         let expected = inode(&entry);
-        let (parent, leaf) = open_verified_parent(&entry, expected, false).expect("retain parent");
+        let (parent, leaf) = open_verified_parent(&entry, expected, false, ParentAccess::Readable)
+            .expect("retain parent");
         let target_parent = std::fs::File::open(&destination).expect("destination FD");
         std::fs::rename(&nested, root.join("nested-old")).expect("move nested");
         std::os::unix::fs::symlink(&outside, &nested).expect("swap link");

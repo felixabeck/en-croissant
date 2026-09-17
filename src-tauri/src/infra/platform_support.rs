@@ -1,7 +1,7 @@
 /*!
-Phase 1 refusal-pin proof record (2026-09-16).
+Phase A refusal-pin proof record (2026-09-17).
 
-The refusal sites are pinned by the G and B rows below: 24 of the original 35,
+The refusal sites are pinned by the G and B rows below: 20 of the original 35,
 after `f-20260914-08` retired eleven by giving them real Windows bodies (the
 four `file_workspace.rs` rows and the seven named under "B rows"). The O4d exclusion is
 `opened_file_change_stamp`: its unconditional non-unix tail is not a refusal
@@ -33,19 +33,21 @@ rename_entry_at, remove_entry_at, remove_optional_regular_at}` and
 `infra/path_authority/mod.rs::entries`, all of which now have real Windows
 bodies. The rows that remain are:
 `infra/fs.rs::atomic_install_dir`,
-`infra/path_authority/mod.rs::open_current`,
 `infra/path_authority/mod.rs::remove_leaf_identified`,
 `infra/path_authority/mod.rs::open_regular_relative`,
 `infra/path_authority/mod.rs::authorize_existing_dir`,
-`infra/path_authority/mod.rs::capability_directory`,
-`infra/path_authority/mod.rs::create_database_child`,
-`infra/path_authority/mod.rs::database_file_target`,
 `infra/path_authority/resolved.rs::atomic_install_download_dir`,
 `infra/path_authority/resolved.rs::puzzle_database_target`,
 `infra/path_authority/resolved.rs::delete_puzzle_database`,
 `infra/path_authority/resolved.rs::mark_engine_executable`,
 `db/mod.rs::unlink_database_files`, `db/repository.rs::identity_from_probe`,
 `db/search.rs::open_valid_preferred`.
+
+Phase A removes four B rows — `open_current`, `capability_directory`,
+`create_database_child` and `database_file_target` — leaving **11 body rows
+and 9 guard rows**, counted from `body_rows()` and `guard_rows()` below. The
+guard rows are unchanged; the counts are recorded at this phase boundary
+rather than copied from the plan's final arithmetic.
 
 Staged failure matrix. Every run used a detached disposable worktree copied
 from this phase, mutated production files only, and ran exactly:
@@ -113,6 +115,34 @@ repeating the 35 names six times.
    `check_helper`'s `file` parameter exists for. Both rows were reported in the
    same run, which is the observation behind the row-collecting requirement: a
    fail-fast loop would have hidden the second. Exit status: 101.
+7. S-component — changed the reserved-device predicate arm for `COM1` to
+   `COM1_STAGED`. Failing test:
+   `windows_component_gate_covers_namespace_shapes_and_both_gates`. Message
+   observed: `Windows component gate checks failed: COM1.db3, COM1, device
+   extension`. Exit status: 101.
+8. S-parent-access — changed the first `db/search_index.rs` parent access from
+   `Readable` to `Writable`. Failing test:
+   `phase_a_parent_access_predicate_and_call_sites_are_explicit`. Message
+   observed: `parent access pins failed: search-index access call sites`.
+   Exit status: 101.
+9. S-database-leaf — removed the `validate_windows_database_leaf(filename)?;`
+   call from `create_database_child`, replacing it with a no-op validation in
+   the disposable copy. Failing test:
+   `database_leaf_bound_is_checked_at_creation_and_registration`. Message
+   observed: `database leaf bound must guard both entry points and both derived
+   sidecars` (the diagnostic included the changed create body). Exit status:
+   101.
+10. S-unicode-length — changed the `open_windows_child` call to pass
+    `wide.len().saturating_sub(1)` to the checked helper. Failing test:
+    `unicode_string_length_guard_is_checked_and_called`. Message observed:
+    `UNICODE_STRING length guard is missing or not used` (the diagnostic
+    included the changed opener body). Exit status: 101.
+11. S-row-absence — inserted a Windows-only staged refusal into
+    `capability_directory`. Failing test:
+    `phase_a_removed_rows_have_one_ungated_definition_without_refusals`.
+    Message observed: `Phase A refusal rows or definitions are wrong: 11 body
+    rows, 9 guard rows, ["infra/path_authority/mod.rs: pub(crate) fn
+    capability_directory("]`. Exit status: 101.
 
 No production whole-function rewrite was needed; all refusal messages remain
 byte-identical.
@@ -143,7 +173,10 @@ pub(crate) fn off_unix_refusal(operation: &str, unix: bool) -> Result<(), Error>
 mod tests {
     use super::*;
     use crate::infra::blocking::source_scan::{braced_body, normalise, Literals};
-    use std::ops::Range;
+    use std::{
+        ffi::{OsStr, OsString},
+        ops::Range,
+    };
 
     fn compact(text: &str) -> String {
         let mut out = String::with_capacity(text.len());
@@ -895,6 +928,303 @@ mod tests {
     }
 
     #[test]
+    fn windows_component_gate_covers_namespace_shapes_and_both_gates() {
+        let mut failures = Vec::new();
+        let mut check = |condition: bool, message: &str| {
+            if !condition {
+                failures.push(message.to_owned());
+            }
+        };
+
+        for name in [
+            "a:stream.db3",
+            r"a/b",
+            r"a\b",
+            "a\0b",
+            "foo.db3.",
+            "foo.db3 ",
+            "NUL",
+            "nul.db3",
+            "COM1.db3",
+            "lpt9",
+            "COM¹",
+            "lpt².db3",
+        ] {
+            check(
+                crate::infra::path_authority::windows_component_refusal(OsStr::new(name)).is_some(),
+                name,
+            );
+        }
+        for stem in [
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+            "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³",
+        ] {
+            check(
+                crate::infra::path_authority::windows_component_refusal(OsStr::new(stem)).is_some(),
+                stem,
+            );
+            check(
+                crate::infra::path_authority::windows_component_refusal(OsStr::new(&format!(
+                    "{stem}.db3"
+                )))
+                .is_some(),
+                "device extension",
+            );
+        }
+
+        let database_250 = OsString::from(format!("{}{}.db3", "a".repeat(246), ""));
+        let database_251 = OsString::from(format!("{}{}.db3", "a".repeat(247), ""));
+        let mut preferred = database_250.clone();
+        preferred.push(".ecsi");
+        let legacy = std::path::Path::new(&database_250)
+            .with_extension("ecsi")
+            .into_os_string();
+        check(
+            crate::infra::path_authority::windows_database_leaf_refusal(&database_250).is_none(),
+            "250-unit database leaf",
+        );
+        check(
+            crate::infra::path_authority::windows_database_leaf_refusal(&database_251).is_some(),
+            "251-unit database leaf",
+        );
+        check(
+            crate::infra::path_authority::windows_component_refusal(&preferred).is_none(),
+            "250-unit preferred sidecar",
+        );
+        check(
+            crate::infra::path_authority::windows_component_refusal(&legacy).is_none(),
+            "250-unit legacy sidecar",
+        );
+
+        let authority = source_for("infra/path_authority/mod.rs");
+        let validate = compact(&authority[braced_body(authority, "fn validate_components(")]);
+        let fs_source = source_for("infra/fs.rs");
+        let single = compact(&fs_source[braced_body(fs_source, "pub(crate) fn single_leaf(")]);
+        check(
+            validate.contains("windows_component_refusal(component)"),
+            "validate_components route",
+        );
+        check(
+            single.contains("windows_component_refusal(leaf)"),
+            "single_leaf route",
+        );
+        assert!(
+            failures.is_empty(),
+            "Windows component gate checks failed: {}",
+            failures.join(", ")
+        );
+    }
+
+    #[test]
+    fn phase_a_parent_access_predicate_and_call_sites_are_explicit() {
+        use crate::infra::{
+            fs::ParentAccess,
+            path_authority::{parent_access_for_operations, PathOperation},
+        };
+
+        let operations = [
+            (PathOperation::ReadPgn, ParentAccess::Readable),
+            (PathOperation::WritePgn, ParentAccess::Writable),
+            (PathOperation::DatabaseRead, ParentAccess::Readable),
+            (PathOperation::DatabaseMutate, ParentAccess::Writable),
+            (PathOperation::DatabaseCreate, ParentAccess::Writable),
+            (PathOperation::DatabaseExport, ParentAccess::Writable),
+            (PathOperation::PuzzleRead, ParentAccess::Readable),
+            (PathOperation::PuzzleDelete, ParentAccess::Writable),
+            (PathOperation::EngineExecute, ParentAccess::Readable),
+            (PathOperation::EngineConfigure, ParentAccess::Readable),
+            (PathOperation::EngineBinaryInspect, ParentAccess::Readable),
+            (PathOperation::EngineResourceRead, ParentAccess::Readable),
+            (PathOperation::OpeningBookRead, ParentAccess::Readable),
+            (PathOperation::ImageRead, ParentAccess::Readable),
+            (PathOperation::DownloadFile, ParentAccess::Writable),
+            (PathOperation::DownloadArchive, ParentAccess::Writable),
+            (PathOperation::EngineInstall, ParentAccess::Writable),
+            (PathOperation::SnapshotWrite, ParentAccess::Writable),
+            (PathOperation::LogWrite, ParentAccess::Writable),
+            (PathOperation::OpenShell, ParentAccess::Readable),
+        ];
+        let mut failures = Vec::new();
+        for (operation, expected) in operations {
+            if parent_access_for_operations(&[operation]) != expected {
+                failures.push(format!("wrong access for {operation:?}"));
+            }
+        }
+
+        let authority = source_for("infra/path_authority/mod.rs");
+        let fs_source = source_for("infra/fs.rs");
+        let search_index = source_for("db/search_index.rs");
+        let database =
+            compact(&authority[braced_body(authority, "pub(crate) fn database_file_target(")]);
+        let dialog = compact(&authority[braced_body(authority, "pub fn grant_dialog_operations(")]);
+        let promote = compact(&authority[braced_body(authority, "pub fn promote_dialog(")]);
+        let registration = compact(&authority[braced_body(authority, "fn registration_target(")]);
+        let current = compact(&authority[braced_body(authority, "pub(crate) fn open_current(")]);
+        let retained = compact(&authority[braced_body(authority, "fn retained_workspace_target(")]);
+        let fs_open_directory =
+            compact(&fs_source[braced_body(fs_source, "pub(crate) fn open_verified_directory(")]);
+        let acquire = compact(&authority[braced_body(authority, "fn acquire_target(")]);
+        let shape = compact(&authority[braced_body(authority, "enum AcquireShape {")]);
+        let checks = [
+            (
+                database.contains("AcquireShape::File{parent_access:parent_access_for_operations(&[operation])"),
+                "database_file_target",
+            ),
+            (
+                dialog.contains("AcquireShape::Dialog{parent_access:parent_access_for_operations(&operations)"),
+                "dialog acquisition",
+            ),
+            (
+                promote.contains(
+                    "for_persistent_class(persistent_class,parent_access_for_operations(&operations)",
+                ),
+                "dialog promotion",
+            ),
+            (
+                registration.contains("parent_access_for_operations(operations)"),
+                "registration acquisition",
+            ),
+            (current.contains("ParentAccess::Readable"), "open_current access"),
+            (retained.contains("ParentAccess::Writable"), "retained workspace access"),
+            (
+                fs_open_directory.contains("ParentAccess::Writable"),
+                "verified directory access",
+            ),
+            (
+                search_index.matches("ParentAccess::Readable").count() == 2,
+                "search-index access call sites",
+            ),
+            (acquire.contains("letparent_access=shape.parent_access();"), "acquire access extraction"),
+            (acquire.contains("#[cfg(windows)]"), "Windows acquire branch"),
+            (acquire.contains("letcanonical=canonical_binding(path)?"), "Windows canonical binding"),
+            (
+                acquire.contains(
+                    "open_verified_parent(&canonical,(identity.a,identity.b),target_is_dir,parent_access",
+                ),
+                "Windows acquire parent access",
+            ),
+            (shape.contains("Dialog{parent_access:ParentAccess}"), "dialog shape"),
+            (shape.contains("File{parent_access:ParentAccess}"), "file shape"),
+            (shape.contains("Root{parent_access:ParentAccess}"), "root shape"),
+        ];
+        for (condition, label) in checks {
+            if !condition {
+                failures.push(label.to_owned());
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "parent access pins failed: {}",
+            failures.join(", ")
+        );
+    }
+
+    #[test]
+    fn database_leaf_bound_is_checked_at_creation_and_registration() {
+        let authority = source_for("infra/path_authority/mod.rs");
+        let create =
+            compact(&authority[braced_body(authority, "pub(crate) fn create_database_child(")]);
+        let register =
+            compact(&authority[braced_body(authority, "pub(crate) fn register_database_child(")]);
+        let validator =
+            compact(&authority[braced_body(authority, "fn validate_windows_database_leaf(")]);
+        let conditions = [
+            create.contains("validate_windows_database_leaf(filename)?;")
+                && register.contains("validate_windows_database_leaf(filename)?;"),
+            validator.contains("windows_database_leaf_refusal(name)")
+                && validator.contains("preferred.push(\".ecsi\")")
+                && validator.contains("letlegacy=Path::new(name).with_extension(\"ecsi\")")
+                && validator.contains("windows_component_refusal(&sidecar)"),
+            crate::infra::path_authority::windows_database_leaf_refusal(OsStr::new(&format!(
+                "{}{}.db3",
+                "a".repeat(247),
+                ""
+            )))
+            .is_some(),
+            crate::infra::path_authority::windows_database_leaf_refusal(OsStr::new(&format!(
+                "{}{}.db3",
+                "a".repeat(246),
+                ""
+            )))
+            .is_none(),
+        ];
+        assert!(
+            conditions.into_iter().all(|condition| condition),
+            "database leaf bound must guard both entry points and both derived sidecars: create={create} register={register} validator={validator}"
+        );
+    }
+
+    #[test]
+    fn unicode_string_length_guard_is_checked_and_called() {
+        let values = [
+            (255, Some((510, 510))),
+            (256, Some((512, 512))),
+            (32_768, None),
+        ];
+        let mut results = values.into_iter().map(|(units, expected)| {
+            crate::infra::path_authority::unicode_string_lengths(units) == expected
+        });
+        let source = source_for("infra/path_authority/mod.rs");
+        let opener = compact(&source[braced_body(source, "pub(crate) fn open_windows_child(")]);
+        assert!(
+            results.all(|result| result) && opener.contains("unicode_string_lengths(wide.len())"),
+            "UNICODE_STRING length guard is missing or not used: {opener}"
+        );
+    }
+
+    #[test]
+    fn phase_a_removed_rows_have_one_ungated_definition_without_refusals() {
+        let rows = [
+            ("infra/path_authority/mod.rs", "pub(crate) fn open_current("),
+            (
+                "infra/path_authority/mod.rs",
+                "pub(crate) fn capability_directory(",
+            ),
+            (
+                "infra/path_authority/mod.rs",
+                "pub(crate) fn create_database_child(",
+            ),
+            (
+                "infra/path_authority/mod.rs",
+                "pub(crate) fn database_file_target(",
+            ),
+        ];
+        let mut failures = Vec::new();
+        for (file, signature) in rows {
+            let source = source_for(file);
+            let starts = function_starts(source, signature);
+            let ungated = starts.len() == 1
+                && attribute_lines_before(source, starts[0])
+                    .iter()
+                    .all(|attribute| {
+                        !attribute.contains("#[cfg") && !attribute.contains("cfg_attr")
+                    });
+            let body = starts
+                .first()
+                .map(|start| compact(&source[body_at(source, *start)]))
+                .unwrap_or_default();
+            let body_has_no_refusal = !body.contains("unsupported")
+                && !body.contains("off_unix_refusal")
+                && !body.contains("platform_support")
+                && !body.contains("#[cfg(windows)]")
+                && !body.contains("#[cfg(not(unix))]")
+                && !body.contains("cfg!(windows)")
+                && !body.contains("cfg_attr");
+            if !ungated || !body_has_no_refusal {
+                failures.push(format!("{file}: {signature}"));
+            }
+        }
+        assert!(
+            failures.is_empty() && body_rows().len() == 11 && guard_rows().len() == 9,
+            "Phase A refusal rows or definitions are wrong: {} body rows, {} guard rows, {:?}",
+            body_rows().len(),
+            guard_rows().len(),
+            failures
+        );
+    }
+
+    #[test]
     fn post_rename_identity_uses_the_retained_handle() {
         let source = source_for("infra/fs.rs");
         let body = braced_body(source, "fn metadata(temp: &File)");
@@ -914,6 +1244,7 @@ mod tests {
             "puzzle.rs" => include_str!("../puzzle.rs"),
             "db/repository.rs" => include_str!("../db/repository.rs"),
             "db/search.rs" => include_str!("../db/search.rs"),
+            "db/search_index.rs" => include_str!("../db/search_index.rs"),
             "db/mod.rs" => include_str!("../db/mod.rs"),
             "file_workspace.rs" => include_str!("../file_workspace.rs"),
             "pgn.rs" => include_str!("../pgn.rs"),
@@ -1222,12 +1553,6 @@ mod tests {
             },
             BodyRow {
                 file: "infra/path_authority/mod.rs",
-                signature: "pub(crate) fn open_current(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("database file reopening"),
-            },
-            BodyRow {
-                file: "infra/path_authority/mod.rs",
                 signature: "pub(crate) fn remove_leaf_identified(",
                 form: BodyForm::Block,
                 expected: ExpectedBody::Exact(
@@ -1249,32 +1574,6 @@ mod tests {
                 expected: ExpectedBody::Exact(
                     r#"{let_=path;Err(crate::infra::platform_support::unsupported_plural("authorized directories",))}"#,
                 ),
-            },
-            // Off unix this one is a partial refusal, not a whole-body one: `ReadPgn` is served
-            // and every other operation is refused, because `list_database_children_cancellable`
-            // is still `f-20260914-09`. The pinned effective body therefore contains the served
-            // arm as well, so narrowing or widening the served set reddens the pin.
-            BodyRow {
-                file: "infra/path_authority/mod.rs",
-                signature: "pub(crate) fn capability_directory(",
-                form: BodyForm::Block,
-                expected: ExpectedBody::Exact(
-                    r#"{ifoperation!=PathOperation::ReadPgn{returnErr(crate::infra::platform_support::unsupported(UNSUPPORTED_DIRECTORY_ENUMERATION,));}letmutresolved=self.resolve(id,operation,&[])?;letdirectory=resolved.take_directory().ok_or_else(||Error::InvalidInput("path capability is not a directory".into()))?;Ok(CapabilityDirectory{directory})}"#,
-                ),
-            },
-            BodyRow {
-                file: "infra/path_authority/mod.rs",
-                signature: "pub(crate) fn create_database_child(",
-                form: BodyForm::Block,
-                expected: ExpectedBody::Exact(
-                    r#"{validate_components(&[filename.to_os_string()])?;ifstd::path::Path::new(filename).extension()!=Some(OsStr::new("db3")){returnErr(Error::InvalidInput("database filename must end in .db3".into(),));}let_=root;Err(crate::infra::platform_support::unsupported("descriptor-relative database creation",))}"#,
-                ),
-            },
-            BodyRow {
-                file: "infra/path_authority/mod.rs",
-                signature: "pub(crate) fn database_file_target(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("database file targets"),
             },
             BodyRow {
                 file: "infra/path_authority/resolved.rs",
@@ -1841,12 +2140,11 @@ mod tests {
     fn refusal_constant_and_callees_are_exact() {
         let mut errors = Vec::new();
         let authority = source_for("infra/path_authority/mod.rs");
-        let constant =
-            "#[cfg(not(unix))]\nconst UNSUPPORTED_DIRECTORY_ENUMERATION: &str = \"fd-relative directory enumeration\";";
+        let constant = "UNSUPPORTED_DIRECTORY_ENUMERATION";
         let normalised = normalise(authority, Literals::Keep);
-        if normalised.matches(constant).count() != 1 {
+        if normalised.matches(constant).count() != 0 {
             errors.push(
-                "infra/path_authority/mod.rs: UNSUPPORTED_DIRECTORY_ENUMERATION declaration changed"
+                "infra/path_authority/mod.rs: UNSUPPORTED_DIRECTORY_ENUMERATION was not removed"
                     .into(),
             );
         }
@@ -1855,7 +2153,7 @@ mod tests {
             source_for("infra/fs.rs"),
             "pub(crate) fn single_leaf(",
             "pub(crate)fnsingle_leaf(leaf:&OsStr)->Result<(),Error>",
-            r#"{ifleaf.is_empty()||Path::new(leaf).file_name()!=Some(leaf){returnErr(Error::InvalidInput("leaf name must be one component".into(),));}Ok(())}"#,
+            r#"{ifcfg!(windows){ifletSome(reason)=crate::infra::path_authority::windows_component_refusal(leaf){returnErr(Error::InvalidInput(reason.into()));}}ifleaf.is_empty()||Path::new(leaf).file_name()!=Some(leaf){returnErr(Error::InvalidInput("leaf name must be one component".into(),));}Ok(())}"#,
             &mut errors,
         );
         check_helper(
@@ -1863,7 +2161,7 @@ mod tests {
             authority,
             "fn validate_components(",
             "fnvalidate_components(components:&[OsString])->Result<(),Error>",
-            r#"{fornameincomponents{letcomponent=name.as_os_str();ifcomponent.is_empty()||component==OsStr::new(".")||component==OsStr::new("..")||Path::new(component).components().count()!=1{returnErr(Error::InvalidInput("invalid relative path component".into(),));}#[cfg(unix)]{usestd::os::unix::ffi::OsStrExt;ifcomponent.as_bytes().contains(&b'/')||component.as_bytes().contains(&0){returnErr(Error::InvalidInput("path component contains a separator or NUL".into(),));}}}Ok(())}"#,
+            r#"{fornameincomponents{letcomponent=name.as_os_str();ifcfg!(windows){ifletSome(reason)=windows_component_refusal(component){returnErr(Error::InvalidInput(reason.into()));}}ifcomponent.is_empty()||component==OsStr::new(".")||component==OsStr::new("..")||Path::new(component).components().count()!=1{returnErr(Error::InvalidInput("invalid relative path component".into(),));}#[cfg(unix)]{usestd::os::unix::ffi::OsStrExt;ifcomponent.as_bytes().contains(&b'/')||component.as_bytes().contains(&0){returnErr(Error::InvalidInput("path component contains a separator or NUL".into(),));}}}Ok(())}"#,
             &mut errors,
         );
         if let Some(start) = function_starts(authority, "fn validate_components(").first() {
@@ -1924,11 +2222,6 @@ mod tests {
         let expected = [
             (
                 "infra/path_authority/mod.rs",
-                "database file reopening",
-                "unsupported",
-            ),
-            (
-                "infra/path_authority/mod.rs",
                 "fd-relative removal",
                 "unsupported",
             ),
@@ -1946,21 +2239,6 @@ mod tests {
                 "infra/path_authority/mod.rs",
                 "post-rename marker timestamps",
                 "unsupported_plural",
-            ),
-            (
-                "infra/path_authority/mod.rs",
-                "fd-relative directory enumeration",
-                "unsupported",
-            ),
-            (
-                "infra/path_authority/mod.rs",
-                "descriptor-relative database creation",
-                "unsupported",
-            ),
-            (
-                "infra/path_authority/mod.rs",
-                "database file targets",
-                "unsupported",
             ),
             (
                 "infra/path_authority/resolved.rs",
@@ -1998,12 +2276,7 @@ mod tests {
         for (file, operation, function) in expected {
             let source = source_for(file);
             let normalised = compact(&normalise(source, Literals::Keep));
-            let needle = if operation == "fd-relative directory enumeration" {
-                "crate::infra::platform_support::unsupported(UNSUPPORTED_DIRECTORY_ENUMERATION)"
-                    .to_owned()
-            } else {
-                format!("crate::infra::platform_support::{function}(\"{operation}\")")
-            };
+            let needle = format!("crate::infra::platform_support::{function}(\"{operation}\")");
             let comma_needle = needle
                 .strip_suffix(')')
                 .map(|prefix| format!("{prefix},)"))
