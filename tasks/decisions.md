@@ -3223,3 +3223,25 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
   cannot see an access mask, so a compile-time boundary is the only local guard that exists.
 * **Decided by:** build run f-20260917-02, session d3c37561, 2026-09-17 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"5fd2729d066715c076c5047dcddf8c6d5deffcb6aa5b7f12c529ec66d4691d5f","input_sha256":"297241f17416510327c8376fbb29cfac2934a1997525224170fd82d8e39d9912","kind":"mutation-receipt","operation":"e5c00425fcd455a0f5ced061fbe199c4566bcac02ec5a3cb6a17532ca7054e87","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-08"],"target":"decisions-ledger","v":1} -->
+
+### d-20260917-09 — How are the two Windows fault-injection races repaired when the race cannot be staged in-process?
+
+* **Question:** How are the two Windows fault-injection races repaired when the race cannot be staged in-process?
+* **Governs:** f-20260917-02, f-20260916-12
+* **Chosen:** restage the test, never widen the production sharing mask. The parent-replacement
+  case injects a distinct parent identity through a `#[cfg(test)]` seam, so the production
+  comparison still decides; the post-rename case keeps its invariant as a source pin in
+  `platform_support.rs`, beside this repository's other source pins, with a recorded
+  staged-failure matrix proving both of its assertions were seen to fail.
+* **Rejected:** (a) adding `FILE_SHARE_DELETE` to `FILE_SHARE_PRIVATE_TEMP` so the injectors'
+  renames succeed — that deletes the property the private temporary exists for, which is that
+  nothing else can open, replace or delete it before commit; (b) deleting or weakening the
+  assertions, which would buy a green job by removing the only proof a security-relevant path has.
+* **Reason:** measured on the runner. The parent rename returns ERROR_ACCESS_DENIED and the
+  post-rename swap returns os error 32, a sharing violation, both because the held temporary is
+  opened without delete sharing — which is `f-20260916-12`'s prediction, confirmed. The invariants
+  each test exists to prove are named and still proven: a replaced parent directory is refused,
+  and the post-rename identity is read from the retained handle rather than by re-opening the
+  pathname.
+* **Decided by:** build run f-20260917-02, session d3c37561, 2026-09-17 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":20,"effect_sha256":"850cd40539606558cf35e5c507ae420c969dbcdd7dd7325f564a698841f11a26","input_sha256":"4a1222cd861ba13f729ed46a0df860c443e1e7cf44641dddbeaca47914002b91","kind":"mutation-receipt","operation":"6262cd85f7791a084df3c88487c2501c40c5fecdddfa03daee18ee04f79b0e74","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-09"],"target":"decisions-ledger","v":1} -->
