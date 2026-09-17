@@ -9117,6 +9117,46 @@ visible in the first place.
 * **Related:** `f-20260914-10` (the Windows atomic-replacement port, which makes this reachable and from whose plan this was cut as out-of-mandate). Raised by `review-root-cause` (95) and `review-tauri-security` (91/99) in rounds 3-4 of that plan review, which held that fixing it inside that slice violates its A6 slice boundary.
 * **Found by:** `f-20260914-10` plan review rounds 3-4 (review-tauri-security, review-root-cause, review-minimalism on Codex), 2026-09-16; source-verified by the orchestrator at the lines above.
 
+**Handled 2026-09-17** by the `f-20260914-09` Windows database port, commit `cd3132dd`, under the
+scope amendment that slice's mandate carried: it may not ship a route that makes this reachable and
+leave it open.
+
+**Why it became this slice's problem.** `create_database_child` takes a **renderer-supplied**
+filename, and its only filter — in `create_workspace_database_blocking` (`main.rs:1058-1060`) —
+rejects `/`, `\` and emptiness. Enabling database creation on Windows therefore put
+`existing.db3:stream` on a live renderer-driven route into `open_windows_child`, which is stronger
+reachability than the dialog-selected paths this finding was originally filed against.
+
+**The answer to the open question — where the colon is rejected — is: in one cfg-free predicate,
+routed through both gates.** `windows_component_refusal(name) -> Option<&'static str>`
+(`infra/path_authority/mod.rs`) is *called* only where the Windows path grammar is active but is
+*compiled and unit-tested everywhere*, which is what makes it assertable at all: a
+`#[cfg(windows)]` validation branch cannot be exercised by a Linux test. It is routed through
+`validate_components` **and** `single_leaf`, because `single_leaf` is the last gate every Windows
+caller passes and `validate_components` is not on every route — a rule placed only in the latter
+would not have held for persisted or dialog-selected paths.
+
+It rejects a component containing `:`, `/`, `\` or NUL; a component over 255 UTF-16 units
+(the NTFS/ReFS maximum); a trailing dot or space, because Win32 strips both when resolving a
+non-verbatim path and the port deliberately hands SQLite a non-verbatim path; and a reserved DOS
+device stem — `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9` and the superscript
+`COM¹`-`COM³` / `LPT¹`-`LPT³` aliases — with or without an extension, because `NUL.db3` resolves to
+the device.
+
+**Both `check_helper` pin strings changed in the same commit**, which is the mechanism working as
+designed rather than an obstacle. A separate rule bounds a database leaf at 250 units at both entry
+points, `create_database_child` and `register_database_child`, so the derived `.ecsi` sidecars stay
+inside the component limit instead of being accepted at creation and refused at every later search.
+
+**Proof:** the predicate is unit-tested on Linux over `a:stream.db3`, over-length names, `a/b`,
+`a\b`, NUL, trailing dot and space, and each device stem, plus a test that both gates route through
+it. No Windows runtime evidence exists for any of it (`f-20260917-02`); the Windows-target
+`cargo check --all-targets` and `clippy -D warnings` are green.
+
+**Related:** closed together with `f-20260916-03` (the `u16` truncation in the same helper) and
+`f-20260914-09`. Review record: `tasks/handoffs/2026-09-17-f-20260914-09-review.md`.
+<!-- ledger-meta {"command":"annotate","effect_lines":38,"effect_sha256":"f3e0340aa99f51cc4d04c71e6e49ca836973f69637d20d45a1719f91148fa421","input_sha256":"2192a2e762be6b4e8938d0b51e7396710d1ff163ca4e2e24c67def9bb75391c4","kind":"mutation-receipt","operation":"32684c58526b6e3bed1e028f9276772bcbffbdd5951a5a78a6fca2648f085638","options":{"section":null},"request_id_sha256":null,"results":["f-20260916-02"],"target":"f-20260916-02","v":1} -->
+
 ---
 
 ## 2026-09-16 — filed through the inbox spool
