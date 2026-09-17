@@ -214,6 +214,21 @@ repeating the 35 names six times.
 24. S-phase-d-deletion-row — reordered the deletion Reparse and WrongKind arm.
     Failing assertion: `deletion must map Reparse and WrongKind to InvalidInput`.
     Exit status: 101.
+25. S-sidecar-preferred-race — reverted the preferred-sidecar removal to a
+    name-based `remove_optional_regular_at`. Failing test:
+    `unlink_database_files_rechecks_preferred_sidecar_identity_and_ignores_vanishing_sidecars`.
+    Message observed: "called `Result::unwrap_err()` on an `Ok` value: (2, None)".
+    Exit status: 101.
+26. S-sidecar-legacy-race — reverted the legacy-sidecar removal to ignore the
+    identity returned by `legacy_sidecar_matches`. Failing test:
+    `legacy_sidecar_removal_uses_the_verified_identity_and_skips_corrupt_archives`.
+    Message observed: "called `Result::unwrap_err()` on an `Ok` value: (2, None)".
+    Exit status: 101.
+27. S-legacy-mapped-removal — removed `drop(archive)` from
+    `promote_legacy_index_sidecar_at`. Failing test:
+    `legacy_index_mapping_is_dropped_before_removal`.
+    Message observed: "Windows refuses a still-mapped legacy index (ERROR_USER_MAPPED_FILE): drop(archive) must precede remove_entry_at".
+    Exit status: 101.
 
 No production whole-function rewrite was needed; all refusal messages remain
 byte-identical.
@@ -1439,6 +1454,19 @@ mod tests {
         assert!(
             results.all(|result| result) && opener.contains("unicode_string_lengths(wide.len())"),
             "UNICODE_STRING length guard is missing or not used: {opener}"
+        );
+    }
+
+    #[test]
+    fn legacy_index_mapping_is_dropped_before_removal() {
+        let source = source_for("db/search_index.rs");
+        let body =
+            compact(&source[braced_body(source, "pub(crate) fn promote_legacy_index_sidecar_at(")]);
+        let drop_position = body.find("drop(archive)");
+        let remove_position = body.find("remove_entry_at(parent,legacy_leaf,legacy_object,false)");
+        assert!(
+            matches!((drop_position, remove_position), (Some(drop), Some(remove)) if drop < remove),
+            "Windows refuses a still-mapped legacy index (ERROR_USER_MAPPED_FILE): drop(archive) must precede remove_entry_at"
         );
     }
 

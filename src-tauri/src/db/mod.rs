@@ -2390,6 +2390,17 @@ fn finish_database_deletion(
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static UNLINK_SIDECAR_AFTER_IDENTITY_PROBE_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, unix))]
+fn set_unlink_sidecar_after_identity_probe_hook(hook: Option<Box<dyn FnOnce()>>) {
+    UNLINK_SIDECAR_AFTER_IDENTITY_PROBE_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
 fn unlink_database_files(
     target: &DatabaseFileTarget,
     expected_source: &IndexSource,
@@ -2442,6 +2453,12 @@ fn unlink_database_files(
         unlinked: &mut usize,
         retained: &mut Option<Error>,
     ) -> Result<(), Error> {
+        #[cfg(test)]
+        UNLINK_SIDECAR_AFTER_IDENTITY_PROBE_HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() {
+                hook();
+            }
+        });
         match remove_entry_at(parent, leaf, identity, false) {
             Ok(()) => {
                 *unlinked += 1;
@@ -3582,20 +3599,19 @@ mod tests {
         let preferred_replacement = dir.path().join("preferred-replacement");
         std::fs::write(&preferred_replacement, b"replacement").unwrap();
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
-        let observed =
-            entry_identity_at(target.parent(), preferred.file_name().unwrap(), false).unwrap();
-        std::fs::remove_file(&preferred).unwrap();
-        std::fs::rename(&preferred_replacement, &preferred).unwrap();
+        let preferred_for_hook = preferred.clone();
+        let preferred_replacement_for_hook = preferred_replacement.clone();
+        set_unlink_sidecar_after_identity_probe_hook(Some(Box::new(move || {
+            std::fs::remove_file(&preferred_for_hook).unwrap();
+            std::fs::rename(&preferred_replacement_for_hook, &preferred_for_hook).unwrap();
+        })));
 
-        let error = remove_entry_at(
-            target.parent(),
-            preferred.file_name().unwrap(),
-            observed,
-            false,
-        )
-        .unwrap_err();
+        let error =
+            unlink_database_files(&target, &IndexSource::from_database(&database, 0).unwrap())
+                .unwrap_err();
         assert!(matches!(error, Error::Conflict(_)));
         assert_eq!(std::fs::read(&preferred).unwrap(), b"replacement");
+        assert!(database.exists());
 
         let vanished_database = dir.path().join("vanished.db3");
         std::fs::write(&vanished_database, b"database").unwrap();
@@ -3624,16 +3640,17 @@ mod tests {
         let legacy_replacement = dir.path().join("legacy-replacement");
         std::fs::write(&legacy_replacement, b"replacement").unwrap();
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
-        let legacy_leaf = legacy.file_name().unwrap();
-        let observed = legacy_sidecar_matches(target.parent(), legacy_leaf, &expected_source)
-            .unwrap()
-            .unwrap();
-        std::fs::remove_file(&legacy).unwrap();
-        std::fs::rename(&legacy_replacement, &legacy).unwrap();
+        let legacy_for_hook = legacy.clone();
+        let legacy_replacement_for_hook = legacy_replacement.clone();
+        set_unlink_sidecar_after_identity_probe_hook(Some(Box::new(move || {
+            std::fs::remove_file(&legacy_for_hook).unwrap();
+            std::fs::rename(&legacy_replacement_for_hook, &legacy_for_hook).unwrap();
+        })));
 
-        let error = remove_entry_at(target.parent(), legacy_leaf, observed, false).unwrap_err();
+        let error = unlink_database_files(&target, &expected_source).unwrap_err();
         assert!(matches!(error, Error::Conflict(_)));
         assert_eq!(std::fs::read(&legacy).unwrap(), b"replacement");
+        assert!(database.exists());
 
         let corrupt_database = dir.path().join("legacy-corrupt.db3");
         std::fs::write(&corrupt_database, b"database").unwrap();
