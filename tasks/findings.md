@@ -9789,6 +9789,13 @@ Review record, 7 plan rounds and one cumulative diff review: `tasks/handoffs/202
 * **Related:** `f-20260914-36`, whose plan review (round 2, `review-plan` 97 and `review-error-handling` 98) measured this while checking that finding's claim that the availability API is the user's remedy; that claim was corrected rather than this behaviour changed, because the repair spans three command modules and the renderer and is a different area (universal rule 4b). `f-20260906-16` (a saved download destination absent from native authority has no re-selection recovery) is the same class for a different surface.
 * **Found by:** `f-20260914-36` plan review round 2 on Codex — `review-plan` (confidence 97) and `review-error-handling` (confidence 98); the orchestrator source-verified `active_database_root`'s `Ok(None)` mapping at `mod.rs:5271-5288` and `registration_target`'s behaviour at `:4524-4546`, 2026-09-17.
 
+* **Annotated 2026-09-18 (from the `f-20260914-36` plan review; status stays open):** this finding
+  inherits issue IDs from that run and its durable record is
+  `tasks/handoffs/2026-09-17-f-20260914-36-review.md`. **Load that record before this finding's own
+  plan review** — it carries the measurements that produced this finding, the dispositions already
+  settled, and the two withdrawn mechanisms, so they are not re-derived.
+<!-- ledger-meta {"command":"annotate","effect_lines":5,"effect_sha256":"232b241159561a2fae850f75517f48e6aec08135e61460b157eacc54354f1a58","input_sha256":"e373e20eb2b10e34805f33b9e14685aa9d381d136d1bd75562729c0614dfe7e1","kind":"mutation-receipt","operation":"ae70ba78fab52d84f2d2c925773a5c48850e12b0dedd28dd2bd1a15a5a32dc61","options":{"section":null},"request_id_sha256":null,"results":["f-20260917-12"],"target":"f-20260917-12","v":1} -->
+
 ---
 
 ## 2026-09-17 — filed through the inbox spool
