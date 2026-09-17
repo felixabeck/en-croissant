@@ -208,7 +208,6 @@ fn validate_mainline_move_bytes(
     Ok(())
 }
 
-#[cfg(any(test, unix))]
 pub fn try_iter_mainline_move_bytes(bytes: &[u8]) -> Result<MainlineMoveBytesIter<'_>, Error> {
     validate_mainline_move_bytes(bytes, None, &mut |_| {})?;
     Ok(MainlineMoveBytesIter::new(bytes))

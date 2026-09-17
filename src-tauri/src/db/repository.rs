@@ -12,6 +12,115 @@ std::thread_local! {
     pub(crate) static FAIL_NEXT_REVISION_BUMP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[cfg(test)]
+mod sqlite_uri_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn invalid_input(result: Result<String, Error>) -> String {
+        match result {
+            Err(Error::InvalidInput(message)) => message,
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn windows_sqlite_uri_covers_drive_unc_and_verbatim_shapes() {
+        let cases = [
+            (r"\\?\C:\dir\db.db3", "file:///C:/dir/db.db3?mode=rw"),
+            (
+                r"\\?\UNC\server\share\db.db3",
+                "file://server/share/db.db3?mode=rw",
+            ),
+            (r"C:\dir\db.db3", "file:///C:/dir/db.db3?mode=rw"),
+            (
+                r"\\server\share\db.db3",
+                "file://server/share/db.db3?mode=rw",
+            ),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(
+                sqlite_uri_for(Path::new(path), SqliteMode::ReadWrite, PathStyle::Windows).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn windows_sqlite_uri_refuses_non_absolute_shapes_with_the_existing_message() {
+        for path in [r"db.db3", r"\dir\db.db3", r"C:dir\db.db3"] {
+            assert_eq!(
+                invalid_input(sqlite_uri_for(
+                    Path::new(path),
+                    SqliteMode::ReadWrite,
+                    PathStyle::Windows,
+                )),
+                "SQLite database path must be absolute"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_sqlite_uri_preserves_encoding_and_mode() {
+        let path = Path::new(r"C:\dir\percent%question?#.db3");
+        let read_write = sqlite_uri_for(path, SqliteMode::ReadWrite, PathStyle::Windows).unwrap();
+        let read_only = sqlite_uri_for(path, SqliteMode::ReadOnly, PathStyle::Windows).unwrap();
+        assert_eq!(
+            read_write,
+            "file:///C:/dir/percent%25question%3F%23.db3?mode=rw"
+        );
+        assert_eq!(
+            read_only,
+            "file:///C:/dir/percent%25question%3F%23.db3?mode=ro"
+        );
+        assert!(read_write.contains("/C:/"));
+        assert!(!read_write.contains("%3A"));
+    }
+
+    #[test]
+    fn windows_sqlite_uri_checks_ancestors_and_path_length() {
+        for path in [r"\\?\C:\Data.\games.db3", r"\\?\C:\Data \games.db3"] {
+            assert!(matches!(
+                sqlite_uri_for(Path::new(path), SqliteMode::ReadWrite, PathStyle::Windows),
+                Err(Error::InvalidInput(_))
+            ));
+        }
+
+        let long_path = format!(
+            r"C:\{}\{}\{}.db3",
+            "a".repeat(100),
+            "b".repeat(100),
+            "c".repeat(60)
+        );
+        assert_eq!(
+            invalid_input(sqlite_uri_for(
+                Path::new(&long_path),
+                SqliteMode::ReadWrite,
+                PathStyle::Windows,
+            )),
+            "SQLite Windows path exceeds the 259-character path-length limit"
+        );
+    }
+
+    #[test]
+    fn production_sqlite_uri_selects_the_platform_path_style() {
+        // The delimiters carry the complete signature line: this module's own shorter string
+        // literals would otherwise match first and the scan would pin itself rather than the
+        // function.
+        let source = include_str!("repository.rs");
+        let body = source
+            .split("\nfn sqlite_uri(path: &Path, mode: SqliteMode) -> Result<String, Error> {\n")
+            .nth(1)
+            .unwrap()
+            .split("\nfn sqlite_uri_for(")
+            .next()
+            .unwrap();
+        assert!(body.contains("cfg!(windows)"));
+        assert!(body.contains("PathStyle::Windows"));
+        assert!(body.contains("PathStyle::Posix"));
+    }
+}
+
 #[cfg(all(test, unix))]
 pub(crate) struct RevisionBumpFailureGuard;
 
@@ -356,7 +465,6 @@ impl DatabaseRepository {
         Ok(identity)
     }
 
-    #[cfg(unix)]
     pub(crate) fn identity_from_probe(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -394,19 +502,6 @@ impl DatabaseRepository {
         })
     }
 
-    #[cfg(not(unix))]
-    pub(crate) fn identity_from_probe(
-        &self,
-        _target: &crate::infra::path_authority::DatabaseFileTarget,
-        _cancellation: &CancellationToken,
-        _hydrate: bool,
-    ) -> Result<DatabaseIdentity, Error> {
-        Err(crate::infra::platform_support::unsupported(
-            "database identity probing",
-        ))
-    }
-
-    #[cfg(unix)]
     fn probe_schema_and_revision(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -417,7 +512,6 @@ impl DatabaseRepository {
         Ok((schema, revision))
     }
 
-    #[cfg(unix)]
     fn probe_schema(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -435,7 +529,6 @@ impl DatabaseRepository {
         Ok(identity)
     }
 
-    #[cfg(unix)]
     fn read_revision(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -454,7 +547,6 @@ impl DatabaseRepository {
         Ok(revision)
     }
 
-    #[cfg(unix)]
     fn tombstone_conflict(
         &self,
         target: &crate::infra::path_authority::DatabaseFileTarget,
@@ -985,8 +1077,13 @@ fn entry_key(target: &crate::infra::path_authority::DatabaseFileTarget) -> Resul
 #[derive(Clone, Copy)]
 enum SqliteMode {
     ReadWrite,
-    #[cfg(unix)]
     ReadOnly,
+}
+
+#[derive(Clone, Copy)]
+enum PathStyle {
+    Posix,
+    Windows,
 }
 
 #[derive(QueryableByName)]
@@ -1036,29 +1133,132 @@ pub(crate) fn read_data_revision(conn: &mut SqliteConnection) -> Result<u64, Err
 }
 
 fn sqlite_uri(path: &Path, mode: SqliteMode) -> Result<String, Error> {
+    let style = if cfg!(windows) {
+        PathStyle::Windows
+    } else {
+        PathStyle::Posix
+    };
+    sqlite_uri_for(path, mode, style)
+}
+
+fn sqlite_uri_for(path: &Path, mode: SqliteMode, style: PathStyle) -> Result<String, Error> {
     let path = path
         .to_str()
         .ok_or_else(|| Error::InvalidInput("Path is not valid UTF-8".into()))?;
-    if !path.starts_with('/') {
-        return Err(Error::InvalidInput(
-            "SQLite database path must be absolute".into(),
-        ));
-    }
+    let path = match style {
+        PathStyle::Posix => {
+            if !path.starts_with('/') {
+                return Err(Error::InvalidInput(
+                    "SQLite database path must be absolute".into(),
+                ));
+            }
+            path.to_owned()
+        }
+        PathStyle::Windows => windows_sqlite_path(path)?,
+    };
+    let encoded = percent_encode_path(&path, matches!(style, PathStyle::Windows));
+    let mode = match mode {
+        SqliteMode::ReadWrite => "rw",
+        SqliteMode::ReadOnly => "ro",
+    };
+    let prefix = if matches!(style, PathStyle::Windows) && path.as_bytes().get(1) == Some(&b':') {
+        "file:///"
+    } else {
+        "file://"
+    };
+    Ok(format!("{prefix}{encoded}?mode={mode}"))
+}
+
+fn percent_encode_path(path: &str, allow_drive_colon: bool) -> String {
     let mut encoded = String::with_capacity(path.len());
-    for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
+    for (index, byte) in path.bytes().enumerate() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/')
+            || (allow_drive_colon && index == 1 && byte == b':')
+        {
             encoded.push(char::from(byte));
         } else {
             encoded.push('%');
             encoded.push_str(&format!("{byte:02X}"));
         }
     }
-    let mode = match mode {
-        SqliteMode::ReadWrite => "rw",
-        #[cfg(unix)]
-        SqliteMode::ReadOnly => "ro",
+    encoded
+}
+
+fn windows_sqlite_path(path: &str) -> Result<String, Error> {
+    const ABSOLUTE: &str = "SQLite database path must be absolute";
+    const LENGTH: &str = "SQLite Windows path exceeds the 259-character path-length limit";
+
+    let (prefix, rest) = if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        ("unc", rest)
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        ("drive", rest)
+    } else if let Some(rest) = path.strip_prefix(r"\\") {
+        ("unc", rest)
+    } else {
+        ("drive", path)
     };
-    Ok(format!("file://{encoded}?mode={mode}"))
+
+    let (root, components_start) = match prefix {
+        "drive" if rest.len() >= 3 => {
+            let bytes = rest.as_bytes();
+            if bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && matches!(bytes[2], b'\\' | b'/')
+            {
+                (format!("{}:", &rest[..1]), 3)
+            } else {
+                return Err(Error::InvalidInput(ABSOLUTE.into()));
+            }
+        }
+        "unc" => {
+            let mut components = rest.split(is_windows_separator);
+            let server = components.next().filter(|component| !component.is_empty());
+            let share = components.next().filter(|component| !component.is_empty());
+            let (Some(server), Some(share)) = (server, share) else {
+                return Err(Error::InvalidInput(ABSOLUTE.into()));
+            };
+            check_windows_component(server)?;
+            check_windows_component(share)?;
+            let prefix_len = server.len() + 1 + share.len();
+            (format!("{server}/{share}"), prefix_len + 1)
+        }
+        _ => return Err(Error::InvalidInput(ABSOLUTE.into())),
+    };
+
+    let tail = &rest[components_start..];
+    let mut output = root;
+    let mut component_count = 0;
+    for component in tail.split(is_windows_separator) {
+        if component.is_empty() {
+            continue;
+        }
+        check_windows_component(component)?;
+        output.push('/');
+        output.push_str(component);
+        component_count += 1;
+    }
+    if prefix == "drive" && component_count == 0 {
+        return Err(Error::InvalidInput(ABSOLUTE.into()));
+    }
+    let path_length = output.encode_utf16().count() + if prefix == "unc" { 2 } else { 0 };
+    if path_length > 259 {
+        return Err(Error::InvalidInput(LENGTH.into()));
+    }
+    Ok(output)
+}
+
+fn is_windows_separator(character: char) -> bool {
+    character == '\\' || character == '/'
+}
+
+fn check_windows_component(component: &str) -> Result<(), Error> {
+    if let Some(reason) =
+        crate::infra::path_authority::windows_component_refusal(std::ffi::OsStr::new(component))
+    {
+        return Err(Error::InvalidInput(reason.into()));
+    }
+    Ok(())
 }
 
 struct BuildGuard<'a> {

@@ -1,5 +1,5 @@
 /*!
-Phase A and Phase B refusal-pin proof records (2026-09-17).
+Phase A through Phase C refusal-pin proof records (2026-09-17).
 
 The refusal sites are pinned by the G and B rows below: 20 of the original 35,
 after `f-20260914-08` retired eleven by giving them real Windows bodies (the
@@ -53,6 +53,10 @@ Phase B removes the two puzzle rows — `puzzle_database_target` and
 `delete_puzzle_database` — and the two puzzle guard rows, leaving **9 body rows
 and 7 guard rows**, counted from the arrays below. The positive row-absence
 assertion and its staged break are recorded below.
+
+Phase C removes the `unlink_database_files` and `identity_from_probe` rows,
+leaving **7 body rows and 7 guard rows**, counted from the arrays below. The
+positive row-absence assertion and its staged break are recorded below.
 
 Staged failure matrix. Every run used a detached disposable worktree copied
 from this phase, mutated production files only, and ran exactly:
@@ -155,6 +159,14 @@ repeating the 35 names six times.
     Message observed: `Phase B refusal rows or definitions are wrong: 9 body
     rows, 7 guard rows, ["infra/path_authority/resolved.rs: pub(crate) fn
     puzzle_database_target("]`. Exit status: 101.
+13. S-phase-c-row-absence — inserted
+    `let _staged = crate::infra::platform_support::unsupported("database identity probing");`
+    as the first statement of `identity_from_probe` in the disposable copy.
+    Failing test: `phase_c_removed_rows_have_one_ungated_definition_without_refusals`.
+    Message observed: `Phase C refusal rows or definitions are wrong: 7 body
+    rows, 7 guard rows, ["db/repository.rs: pub(crate) fn identity_from_probe("]`.
+    Exit status: 101. The same assertion collects the database-deletion row if
+    the staged refusal is inserted into `unlink_database_files` instead.
 
 No production whole-function rewrite was needed; all refusal messages remain
 byte-identical.
@@ -1246,7 +1258,7 @@ mod tests {
                     "pub(crate) fn database_file_target(",
                 ),
             ],
-            9,
+            7,
             7,
         );
     }
@@ -1265,7 +1277,20 @@ mod tests {
                     "pub(crate) fn delete_puzzle_database(",
                 ),
             ],
-            9,
+            7,
+            7,
+        );
+    }
+
+    #[test]
+    fn phase_c_removed_rows_have_one_ungated_definition_without_refusals() {
+        assert_removed_rows_are_ungated(
+            "Phase C",
+            &[
+                ("db/mod.rs", "fn unlink_database_files("),
+                ("db/repository.rs", "pub(crate) fn identity_from_probe("),
+            ],
+            7,
             7,
         );
     }
@@ -1634,18 +1659,6 @@ mod tests {
                 signature: "pub(crate) fn mark_engine_executable(",
                 form: BodyForm::Counterpart,
                 expected: ExpectedBody::Refusal("engine executable mode"),
-            },
-            BodyRow {
-                file: "db/mod.rs",
-                signature: "fn unlink_database_files(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("database file deletion"),
-            },
-            BodyRow {
-                file: "db/repository.rs",
-                signature: "pub(crate) fn identity_from_probe(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("database identity probing"),
             },
             BodyRow {
                 file: "db/search.rs",
@@ -2270,12 +2283,6 @@ mod tests {
                 "engine executable mode",
                 "unsupported",
             ),
-            (
-                "db/repository.rs",
-                "database identity probing",
-                "unsupported",
-            ),
-            ("db/mod.rs", "database file deletion", "unsupported"),
             (
                 "db/search.rs",
                 "fd-relative search index loading",

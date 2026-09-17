@@ -33,15 +33,12 @@ use crate::infra::fs::atomic_replace;
 const MAGIC: &[u8; 4] = b"ECSI";
 const VERSION: u32 = 8;
 const ARCHIVE_ALIGNMENT: usize = 16;
-#[cfg(any(test, unix))]
 const HEADER_SIZE: usize = 32;
-#[cfg(any(test, unix))]
 const CHUNK_HEADER_SIZE: usize = 16;
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 pub(crate) const CHUNK_ENTRY_LIMIT: usize = 4_096;
 pub(crate) const CHUNK_PAYLOAD_TARGET_BYTES: usize = 4 * 1024 * 1024;
 
-#[cfg(any(test, unix))]
 #[derive(Debug, Clone, Copy)]
 struct ArchiveHeader {
     source_len: usize,
@@ -53,7 +50,6 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-#[cfg(any(test, unix))]
 fn read_u64(bytes: &[u8], offset: usize, name: &str) -> io::Result<u64> {
     let end = offset
         .checked_add(8)
@@ -68,7 +64,6 @@ fn read_u64(bytes: &[u8], offset: usize, name: &str) -> io::Result<u64> {
     ))
 }
 
-#[cfg(any(test, unix))]
 fn checked_usize(value: u64, name: &str) -> io::Result<usize> {
     usize::try_from(value).map_err(|_| invalid_data(format!("{name} exceeds platform limits")))
 }
@@ -80,7 +75,6 @@ fn align_up(offset: usize) -> io::Result<usize> {
         .ok_or_else(|| invalid_data("archive offset overflow"))
 }
 
-#[cfg(any(test, unix))]
 fn verify_header(header: &[u8]) -> io::Result<ArchiveHeader> {
     if header.len() < HEADER_SIZE {
         return Err(io::Error::new(
@@ -571,7 +565,6 @@ pub struct MmapSearchIndex {
     /// individual method call, never stored with a fabricated lifetime.
     mmap: Arc<Mmap>,
     entry_count: usize,
-    #[cfg(any(test, unix))]
     source: IndexSource,
     chunks: Arc<[ChunkMetadata]>,
 }
@@ -591,7 +584,6 @@ impl MmapSearchIndex {
         Self::open_file(File::open(path)?)
     }
 
-    #[cfg(any(test, unix))]
     pub(crate) fn open_file(file: File) -> io::Result<Self> {
         Self::open_file_inner(file, None)
     }
@@ -610,7 +602,6 @@ impl MmapSearchIndex {
         })
     }
 
-    #[cfg(any(test, unix))]
     fn open_file_inner(file: File, cancellation: Option<&CancellationToken>) -> io::Result<Self> {
         let check = || {
             if cancellation.is_some_and(CancellationToken::is_cancelled) {
@@ -763,7 +754,6 @@ impl MmapSearchIndex {
         self.entry_count
     }
 
-    #[cfg(any(test, unix))]
     pub fn source(&self) -> &IndexSource {
         &self.source
     }

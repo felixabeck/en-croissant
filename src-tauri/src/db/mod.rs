@@ -42,8 +42,7 @@ use crate::{
     AppState, SearchCache,
 };
 
-#[cfg(unix)]
-use crate::infra::fs::remove_optional_regular_at;
+use crate::infra::fs::{entry_identity_at, remove_entry_at, RegularFileAccess};
 use chrono::{NaiveDate, NaiveTime};
 use diesel::{
     connection::{DefaultLoadingMode, SimpleConnection},
@@ -59,7 +58,6 @@ use shakmaty::{
     PositionError,
 };
 use specta::Type;
-#[cfg(unix)]
 use std::ffi::OsStr;
 use std::{
     collections::HashMap,
@@ -2342,9 +2340,13 @@ fn delete_database_blocking(
     let expected_source = IndexSource::from_database_identity(&identity)?;
     let mut primary_gone = false;
     let mut unlinked = 0;
+    let mut deletion_durability = None;
     let unlink_result = repository.delete_exclusive_cancellable(&target, cancellation, || {
-        unlinked = unlink_database_files(&target, &expected_source)?;
+        search_cache.invalidate_database(target.path());
+        let result = unlink_database_files(&target, &expected_source)?;
+        unlinked = result.0;
         primary_gone = true;
+        deletion_durability = result.1;
         Ok(())
     });
     if let Err(error) = unlink_result {
@@ -2360,6 +2362,14 @@ fn delete_database_blocking(
             .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
             .remove_database(&file)
     })();
+    if let Some(error) = deletion_durability {
+        if let Err(cleanup_error) = registry_result {
+            log::warn!(
+                "database registry cleanup failed after durability uncertainty: {cleanup_error}"
+            );
+        }
+        return finish_database_deletion(primary_gone, unlinked, Err(error));
+    }
     finish_database_deletion(primary_gone, unlinked, registry_result)
 }
 
@@ -2379,84 +2389,170 @@ fn finish_database_deletion(
     }
 }
 
-#[cfg(unix)]
 fn unlink_database_files(
     target: &DatabaseFileTarget,
     expected_source: &IndexSource,
-) -> Result<usize, Error> {
-    use rustix::fs::{self as rfs, AtFlags, FileType};
+) -> Result<(usize, Option<Error>), Error> {
+    fn remember_sidecar_error(
+        error: Error,
+        parent: &File,
+        leaf: &OsStr,
+        retained: &mut Option<Error>,
+    ) -> Result<(), Error> {
+        match crate::infra::path_authority::classify_probe_error(&error, parent, leaf) {
+            crate::infra::path_authority::ProbeErrorClass::NotFound => Ok(()),
+            crate::infra::path_authority::ProbeErrorClass::WrongKind => {
+                if let Some(sidecar_error) = retained.as_ref() {
+                    log::warn!(
+                        "database sidecar removal failed after durability uncertainty: {sidecar_error}"
+                    );
+                }
+                Err(Error::InvalidInput(
+                    "workspace sidecar must be a regular file".into(),
+                ))
+            }
+            crate::infra::path_authority::ProbeErrorClass::Malformed
+            | crate::infra::path_authority::ProbeErrorClass::MappedFile
+            | crate::infra::path_authority::ProbeErrorClass::Other => {
+                if matches!(error, Error::CommittedDurabilityUncertain(_)) {
+                    if let Some(previous) = retained.replace(error) {
+                        log::warn!(
+                            "database sidecar removal durability remained uncertain: {previous}"
+                        );
+                    }
+                    Ok(())
+                } else {
+                    if let Some(sidecar_error) = retained.as_ref() {
+                        log::warn!(
+                            "database sidecar removal failed after durability uncertainty: {sidecar_error}"
+                        );
+                    }
+                    Err(error)
+                }
+            }
+        }
+    }
 
-    fn existed_as_regular(parent: &File, leaf: &OsStr) -> bool {
-        rfs::statat(parent, leaf, AtFlags::SYMLINK_NOFOLLOW)
-            .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile)
+    fn remove_sidecar(
+        parent: &File,
+        leaf: &OsStr,
+        identity: (u64, u64),
+        unlinked: &mut usize,
+        retained: &mut Option<Error>,
+    ) -> Result<(), Error> {
+        match remove_entry_at(parent, leaf, identity, false) {
+            Ok(()) => {
+                *unlinked += 1;
+                Ok(())
+            }
+            Err(error) => match error {
+                Error::CommittedDurabilityUncertain(_) => {
+                    *unlinked += 1;
+                    remember_sidecar_error(error, parent, leaf, retained)
+                }
+                error => remember_sidecar_error(error, parent, leaf, retained),
+            },
+        }
     }
 
     let preferred_leaf = search_index::preferred_sidecar_leaf(target.leaf());
     let legacy_leaf = search_index::legacy_sidecar_leaf(target.leaf());
     let mut unlinked = 0;
+    let mut durability = None;
 
-    let preferred_existed = existed_as_regular(target.parent(), &preferred_leaf);
-    remove_optional_regular_at(target.parent(), &preferred_leaf)?;
-    unlinked += usize::from(preferred_existed);
-
-    if legacy_leaf != preferred_leaf
-        && legacy_sidecar_matches(target.parent(), &legacy_leaf, expected_source)?
-    {
-        let legacy_existed = existed_as_regular(target.parent(), &legacy_leaf);
-        remove_optional_regular_at(target.parent(), &legacy_leaf)?;
-        unlinked += usize::from(legacy_existed);
+    match entry_identity_at(target.parent(), &preferred_leaf, false) {
+        Ok(identity) => remove_sidecar(
+            target.parent(),
+            &preferred_leaf,
+            identity,
+            &mut unlinked,
+            &mut durability,
+        )?,
+        Err(error) => {
+            remember_sidecar_error(error, target.parent(), &preferred_leaf, &mut durability)?
+        }
     }
 
-    let stat = rfs::statat(target.parent(), target.leaf(), AtFlags::SYMLINK_NOFOLLOW)
-        .map_err(|error| Error::Io(Box::new(error.into())))?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-        || crate::infra::fs::raw_stat_identity(&stat) != target.identity()
-    {
-        return Err(Error::Conflict("database changed before deletion".into()));
+    if legacy_leaf != preferred_leaf {
+        match legacy_sidecar_matches(target.parent(), &legacy_leaf, expected_source) {
+            Ok(Some(identity)) => remove_sidecar(
+                target.parent(),
+                &legacy_leaf,
+                identity,
+                &mut unlinked,
+                &mut durability,
+            )?,
+            Ok(None) => {}
+            Err(error) => {
+                if let Some(sidecar_error) = durability.as_ref() {
+                    log::warn!(
+                        "database sidecar removal failed after durability uncertainty: {sidecar_error}"
+                    );
+                }
+                return Err(error);
+            }
+        }
     }
-    // Same residual POSIX window as delete_puzzle_database: there is no
-    // compare-and-unlink. The inode check is the last userspace observation
-    // before unlinkat.
-    rfs::unlinkat(target.parent(), target.leaf(), AtFlags::empty())
-        .map_err(|error| Error::Io(Box::new(error.into())))?;
-    Ok(unlinked + 1)
+
+    match remove_entry_at(target.parent(), target.leaf(), target.identity(), false) {
+        Ok(()) => unlinked += 1,
+        Err(Error::CommittedDurabilityUncertain(error)) => {
+            unlinked += 1;
+            if durability.is_some() {
+                log::warn!("database primary removal durability remained uncertain: {error}");
+            }
+            durability = Some(Error::CommittedDurabilityUncertain(error));
+        }
+        Err(Error::Conflict(_)) => {
+            if let Some(sidecar_error) = durability {
+                log::warn!(
+                    "database sidecar removal durability was uncertain before primary failure: {sidecar_error}"
+                );
+            }
+            return Err(Error::Conflict("database changed before deletion".into()));
+        }
+        Err(error) => {
+            if let Some(sidecar_error) = durability {
+                log::warn!(
+                    "database sidecar removal durability was uncertain before primary failure: {sidecar_error}"
+                );
+            }
+            return Err(error);
+        }
+    }
+    Ok((unlinked, durability))
 }
 
-#[cfg(not(unix))]
-fn unlink_database_files(
-    _target: &DatabaseFileTarget,
-    _expected_source: &IndexSource,
-) -> Result<usize, Error> {
-    Err(crate::infra::platform_support::unsupported(
-        "database file deletion",
-    ))
-}
-
-#[cfg(unix)]
 fn legacy_sidecar_matches(
     parent: &File,
     leaf: &OsStr,
     expected_source: &IndexSource,
-) -> Result<bool, Error> {
-    use rustix::{
-        fs::{self as rfs, Mode, OFlags},
-        io::Errno,
-    };
-
-    let file = match rfs::openat(
-        parent,
-        leaf,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    ) {
-        Ok(file) => File::from(file),
-        Err(error) if error == Errno::NOENT || error == Errno::LOOP => return Ok(false),
-        Err(error) => return Err(Error::Io(Box::new(error.into()))),
+) -> Result<Option<(u64, u64)>, Error> {
+    let file = match crate::infra::fs::open_regular_at(parent, leaf, RegularFileAccess::ReadOnly) {
+        Ok(file) => file,
+        Err(error) => {
+            match crate::infra::path_authority::classify_probe_error(&error, parent, leaf) {
+                crate::infra::path_authority::ProbeErrorClass::NotFound
+                | crate::infra::path_authority::ProbeErrorClass::WrongKind => return Ok(None),
+                crate::infra::path_authority::ProbeErrorClass::Malformed
+                | crate::infra::path_authority::ProbeErrorClass::MappedFile
+                | crate::infra::path_authority::ProbeErrorClass::Other => return Err(error),
+            }
+        }
     };
     if !file.metadata()?.is_file() {
-        return Ok(false);
+        return Ok(None);
     }
-    Ok(MmapSearchIndex::open_file(file).is_ok_and(|archive| archive.source() == expected_source))
+    let identity = crate::infra::path_authority::opened_file_identity(&file)?;
+    let archive = match MmapSearchIndex::open_file(file) {
+        Ok(archive) => archive,
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
+        Err(error) => return Err(Error::Io(Box::new(error))),
+    };
+    if archive.source() != expected_source {
+        return Ok(None);
+    }
+    Ok(Some(identity))
 }
 
 fn delete_orphaned_data(db: &mut SqliteConnection) -> Result<(), Error> {
@@ -3202,6 +3298,95 @@ mod tests {
     use std::path::{Path, PathBuf};
     use tauri::Manager;
 
+    struct RemovalFaultSequence(
+        std::sync::Mutex<std::collections::VecDeque<crate::infra::fs::RemovalFaultPoint>>,
+    );
+
+    impl RemovalFaultSequence {
+        fn new(points: impl IntoIterator<Item = crate::infra::fs::RemovalFaultPoint>) -> Self {
+            Self(std::sync::Mutex::new(points.into_iter().collect()))
+        }
+    }
+
+    impl crate::infra::fs::RemovalInjector for RemovalFaultSequence {
+        fn inject(
+            &self,
+            point: crate::infra::fs::RemovalFaultPoint,
+        ) -> std::io::Result<Option<u64>> {
+            let mut points = self.0.lock().expect("removal fault sequence lock");
+            if points.front().copied() == Some(point) {
+                points.pop_front();
+                return Err(std::io::Error::other(format!("injected {point:?} failure")));
+            }
+            Ok(None)
+        }
+    }
+
+    struct CacheInvalidationProbe {
+        cache: Arc<SearchCache>,
+        identity: crate::SearchIndexIdentity,
+        observed_before_removal: std::sync::atomic::AtomicBool,
+    }
+
+    impl crate::infra::fs::RemovalInjector for CacheInvalidationProbe {
+        fn inject(
+            &self,
+            point: crate::infra::fs::RemovalFaultPoint,
+        ) -> std::io::Result<Option<u64>> {
+            match point {
+                crate::infra::fs::RemovalFaultPoint::BeforeTopOpen => {
+                    if self.cache.get_index(&self.identity).is_some() {
+                        return Err(std::io::Error::other(
+                            "search index cache was not invalidated before removal",
+                        ));
+                    }
+                    self.observed_before_removal
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(None)
+                }
+                crate::infra::fs::RemovalFaultPoint::ParentSync => Err(std::io::Error::other(
+                    "injected primary parent sync failure",
+                )),
+                _ => Ok(None),
+            }
+        }
+    }
+
+    struct RemovalFaultReset;
+
+    impl Drop for RemovalFaultReset {
+        fn drop(&mut self) {
+            crate::infra::fs::set_test_removal_injector(None);
+        }
+    }
+
+    fn scoped_removal_failures(
+        points: impl IntoIterator<Item = crate::infra::fs::RemovalFaultPoint>,
+    ) -> RemovalFaultReset {
+        crate::infra::fs::set_test_removal_injector(Some(Arc::new(RemovalFaultSequence::new(
+            points,
+        ))));
+        RemovalFaultReset
+    }
+
+    fn database_is_registered(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        handle: &DatabaseHandle,
+    ) -> bool {
+        let state = app.state::<AppState>();
+        let registered = state
+            .pgn_path_authority
+            .lock()
+            .expect("path authority lock")
+            .as_mut()
+            .is_some_and(|authority| {
+                authority
+                    .resolve(handle.path_ref(), PathOperation::DatabaseRead, &[])
+                    .is_ok()
+            });
+        registered
+    }
+
     #[test]
     fn finish_database_deletion_returns_ok_when_the_tail_succeeds() {
         assert!(finish_database_deletion(true, 2, Ok(())).is_ok());
@@ -3278,7 +3463,10 @@ mod tests {
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
 
-        assert_eq!(unlink_database_files(&target, &expected_source).unwrap(), 1);
+        assert_eq!(
+            unlink_database_files(&target, &expected_source).unwrap().0,
+            1
+        );
         assert!(!database.exists());
         assert!(shared_sidecar.exists());
     }
@@ -3298,7 +3486,10 @@ mod tests {
             .expect_durable();
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
 
-        assert_eq!(unlink_database_files(&target, &expected_source).unwrap(), 2);
+        assert_eq!(
+            unlink_database_files(&target, &expected_source).unwrap().0,
+            2
+        );
         assert!(!database.exists());
         assert!(!preferred.exists());
     }
@@ -3332,7 +3523,10 @@ mod tests {
         std::fs::rename(&replacement, &database).unwrap();
 
         let error = unlink_database_files(&target, &expected_source).unwrap_err();
-        assert!(matches!(error, Error::Conflict(_)));
+        assert!(matches!(
+            error,
+            Error::Conflict(message) if message == "database changed before deletion"
+        ));
         assert!(database.exists());
     }
 
@@ -3346,9 +3540,229 @@ mod tests {
         let expected_source = IndexSource::from_database(&database, 0).unwrap();
         let target = DatabaseFileTarget::for_test_path(&database).unwrap();
 
-        assert_eq!(unlink_database_files(&target, &expected_source).unwrap(), 1);
+        assert_eq!(
+            unlink_database_files(&target, &expected_source).unwrap().0,
+            1
+        );
         assert!(!database.exists());
         assert!(legacy_index_path(&database).is_dir());
+    }
+
+    #[test]
+    fn unlink_database_files_rechecks_preferred_sidecar_identity_and_ignores_vanishing_sidecars() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("preferred-swap.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let preferred = get_index_path(&database);
+        std::fs::write(&preferred, b"original").unwrap();
+        let preferred_replacement = dir.path().join("preferred-replacement");
+        std::fs::write(&preferred_replacement, b"replacement").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let observed =
+            entry_identity_at(target.parent(), preferred.file_name().unwrap(), false).unwrap();
+        std::fs::remove_file(&preferred).unwrap();
+        std::fs::rename(&preferred_replacement, &preferred).unwrap();
+
+        let error = remove_entry_at(
+            target.parent(),
+            preferred.file_name().unwrap(),
+            observed,
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(std::fs::read(&preferred).unwrap(), b"replacement");
+
+        let vanished_database = dir.path().join("vanished.db3");
+        std::fs::write(&vanished_database, b"database").unwrap();
+        let vanished_source = IndexSource::from_database(&vanished_database, 0).unwrap();
+        let vanished_preferred = get_index_path(&vanished_database);
+        std::fs::write(&vanished_preferred, b"sidecar").unwrap();
+        let vanished_target = DatabaseFileTarget::for_test_path(&vanished_database).unwrap();
+        std::fs::remove_file(&vanished_preferred).unwrap();
+
+        let result = unlink_database_files(&vanished_target, &vanished_source).unwrap();
+        assert_eq!(result.0, 1);
+        assert!(!vanished_database.exists());
+    }
+
+    #[test]
+    fn legacy_sidecar_removal_uses_the_verified_identity_and_skips_corrupt_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("legacy-swap.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let legacy = legacy_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&legacy, expected_source.clone())
+            .unwrap()
+            .expect_durable();
+        let legacy_replacement = dir.path().join("legacy-replacement");
+        std::fs::write(&legacy_replacement, b"replacement").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let legacy_leaf = legacy.file_name().unwrap();
+        let observed = legacy_sidecar_matches(target.parent(), legacy_leaf, &expected_source)
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(&legacy).unwrap();
+        std::fs::rename(&legacy_replacement, &legacy).unwrap();
+
+        let error = remove_entry_at(target.parent(), legacy_leaf, observed, false).unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(std::fs::read(&legacy).unwrap(), b"replacement");
+
+        let corrupt_database = dir.path().join("legacy-corrupt.db3");
+        std::fs::write(&corrupt_database, b"database").unwrap();
+        let corrupt_source = IndexSource::from_database(&corrupt_database, 0).unwrap();
+        let corrupt_legacy = legacy_index_path(&corrupt_database);
+        std::fs::write(&corrupt_legacy, b"corrupt archive").unwrap();
+        let corrupt_target = DatabaseFileTarget::for_test_path(&corrupt_database).unwrap();
+
+        let result = unlink_database_files(&corrupt_target, &corrupt_source).unwrap();
+        assert_eq!(result.0, 1);
+        assert!(!corrupt_database.exists());
+        assert!(corrupt_legacy.exists());
+    }
+
+    #[test]
+    fn legacy_sidecar_read_permission_failure_propagates() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("legacy-permission.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let legacy = legacy_index_path(&database);
+        std::fs::write(&legacy, b"unreadable").unwrap();
+        std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+
+        let result = legacy_sidecar_matches(
+            target.parent(),
+            legacy.file_name().unwrap(),
+            &expected_source,
+        );
+        std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied
+        ));
+    }
+
+    #[test]
+    fn sidecar_durability_uncertainty_is_retained_until_primary_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("sidecar-durability.db3");
+        std::fs::write(&database, b"database").unwrap();
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let preferred = get_index_path(&database);
+        std::fs::write(&preferred, b"sidecar").unwrap();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let _faults = scoped_removal_failures([crate::infra::fs::RemovalFaultPoint::ParentSync]);
+
+        let result = unlink_database_files(&target, &expected_source).unwrap();
+        assert_eq!(result.0, 2);
+        assert!(matches!(
+            result.1,
+            Some(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceRemoval
+            ))
+        ));
+        assert!(!database.exists());
+        assert!(!preferred.exists());
+    }
+
+    #[test]
+    fn sequential_sidecar_failure_returns_the_later_hard_error_and_keeps_primary() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let cache_key = seed_search_cache_for_database(&app, &database);
+        let expected_source = IndexSource::from_database(&database, 0).unwrap();
+        let legacy = legacy_index_path(&database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&legacy, expected_source.clone())
+            .unwrap()
+            .expect_durable();
+        let target = DatabaseFileTarget::for_test_path(&database).unwrap();
+        let capture = crate::error::LogCaptureScope::start();
+        let _faults = scoped_removal_failures([
+            crate::infra::fs::RemovalFaultPoint::ParentSync,
+            crate::infra::fs::RemovalFaultPoint::BeforeTopOpen,
+        ]);
+
+        let result = unlink_database_files(&target, &expected_source);
+        assert!(matches!(result, Err(Error::Io(_))));
+        assert!(database.exists());
+        assert!(!get_index_path(&database).exists());
+        assert!(legacy.exists());
+        assert!(state.search_cache.get_result(&cache_key).is_some());
+        assert!(database_is_registered(&app, &handle));
+        assert!(
+            capture
+                .messages()
+                .iter()
+                .any(|message| message
+                    .contains("sidecar removal failed after durability uncertainty"))
+        );
+    }
+
+    #[test]
+    fn primary_durability_uncertainty_runs_cache_and_registry_cleanup() {
+        let (_dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let (cache_key, index_identity) = seed_search_index_cache_for_database(&app, &database);
+        std::fs::remove_file(get_index_path(&database)).unwrap();
+        let removal_probe = Arc::new(CacheInvalidationProbe {
+            cache: Arc::clone(&state.search_cache),
+            identity: index_identity,
+            observed_before_removal: std::sync::atomic::AtomicBool::new(false),
+        });
+        crate::infra::fs::set_test_removal_injector(Some(removal_probe.clone()));
+        let _faults = RemovalFaultReset;
+
+        let result = delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle.clone(),
+            &CancellationToken::new(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceRemoval
+            ))
+        ));
+        assert!(!database.exists());
+        assert!(removal_probe
+            .observed_before_removal
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert!(state.search_cache.get_result(&cache_key).is_none());
+        assert!(!database_is_registered(&app, &handle));
+
+        let (_dir, app, handle, database) = blocking_database_case();
+        let state = app.state::<AppState>();
+        let capture = crate::error::LogCaptureScope::start();
+        let _atomic =
+            install_atomic_export_failure(crate::infra::fs::AtomicFileFaultPoint::ParentSync);
+        let _faults = scoped_removal_failures([crate::infra::fs::RemovalFaultPoint::ParentSync]);
+
+        let result = delete_database_blocking(
+            &state.pgn_path_authority,
+            &state.database_repository,
+            &state.search_cache,
+            handle,
+            &CancellationToken::new(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(
+                crate::error::DurabilityStage::WorkspaceRemoval
+            ))
+        ));
+        assert!(!database.exists());
+        assert!(capture.messages().iter().any(|message| message
+            .contains("database registry cleanup failed after durability uncertainty")));
     }
 
     #[test]
@@ -8513,6 +8927,25 @@ mod tests {
             .search_cache
             .insert_result(key.clone(), (Vec::new(), Vec::new()));
         key
+    }
+
+    fn seed_search_index_cache_for_database(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        database: &Path,
+    ) -> (crate::SearchResultKey, crate::SearchIndexIdentity) {
+        let source = IndexSource::from_database(database, 0).unwrap();
+        let index_path = get_index_path(database);
+        SearchIndexChunk::default()
+            .write_to_with_source(&index_path, source.clone())
+            .unwrap()
+            .expect_durable();
+        let identity = crate::SearchIndexIdentity::for_database(database, source).unwrap();
+        let index = MmapSearchIndex::open(&index_path).unwrap();
+        let key = crate::SearchResultKey::new(GameQuery::new(), identity.clone());
+        let cache = &app.state::<AppState>().search_cache;
+        cache.insert_index(identity.clone(), index);
+        cache.insert_result(key.clone(), (Vec::new(), Vec::new()));
+        (key, identity)
     }
 
     #[test]
