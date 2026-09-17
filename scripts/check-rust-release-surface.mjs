@@ -155,7 +155,14 @@ function maskRustLines(source) {
         continue;
       }
 
-      const rawStart = line.slice(index).match(/^r(#+)"/);
+      // `#*`, not `#+`: a hash-less `r"..."` is a raw string too, and reading one as an
+      // ordinary string is not a cosmetic error. `r"\\?\UNC\"` ends in a backslash-quote,
+      // which the ordinary-string branch takes for an escaped quote, so the masker stays inside
+      // a string for the rest of the file. Every brace after it is then miscounted, and
+      // `walkGatedLines` loses track of which regions are `#[cfg(test)]` — which reports
+      // production violations inside test modules and, worse, can silently treat a real
+      // production region as gated.
+      const rawStart = line.slice(index).match(/^r(#*)"/);
       if (rawStart) {
         const delimiter = rawStart[1];
         state.rawStringEnd = `"${delimiter}`;

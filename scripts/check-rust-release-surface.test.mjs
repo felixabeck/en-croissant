@@ -208,6 +208,28 @@ pub(crate) trait AtomicWriterInjector {}
 });
 
 describe("Rust filesystem-surface gate", () => {
+  test("a hash-less raw string ending in a backslash does not hide the production reach after it", () => {
+    // `r"...\\"` is a raw string whose last character is a backslash. Read as an ordinary
+    // string, its closing quote looks escaped and the masker never leaves the literal, so every
+    // following line is blanked: the brace depth drifts, `#[cfg(test)]` region boundaries move,
+    // and a real production filesystem reach after it is reported by nothing at all. The
+    // false-negative is why this matters more than the noisy false-positives it also causes.
+    const source = [
+      "fn windows_prefix(path: &str) -> Option<&str> {",
+      '    path.strip_prefix(r"\\\\?\\UNC\\")',
+      "}",
+      "",
+      "fn reads_a_file() {",
+      '    let _ = std::fs::read("probe");',
+      "}",
+      "",
+    ].join("\n");
+
+    expect(checkFilesystemSurface(sources(["src-tauri/src/db/probe.rs", source]))).toEqual([
+      "src-tauri/src/db/probe.rs:6: R3: production filesystem reach (qualified) must be inside infra/, #[cfg(test)], or the shrink-only allowlist",
+    ]);
+  });
+
   const chess = "src-tauri/src/chess.rs";
   const LEAK_FIXTURE = [
     { path: "src-tauri/src/infra/path_authority.rs", contents: "#![allow(dead_code)]\n" },
