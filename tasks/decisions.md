@@ -3185,3 +3185,22 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
 * **Reason:** clause 2 supersession — new evidence (two ports), the prior decision named, the trailer set. The count is a live assertion rather than documentation, so a documented number that disagrees with the arrays is either a red gate or a lie. Reversal: recount the arrays and say what moved.
 * **Decided by:** Claude Code, autonomously under `full auto` · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":8,"effect_sha256":"8f45c931e5e5a2f51b8b39b53d48c05ba87577b7942e1b6712047b4915440d29","input_sha256":"542c24533a7869d8449892e27414d50cadc79f9ff8bd2436c037e16e62b4affc","kind":"mutation-receipt","operation":"6cc65be475f63446809387d4f4c48751f0f2663716cef4781c3b8b1a015a01bc","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-06"],"target":"decisions-ledger","v":1} -->
+
+### d-20260917-07 — Which principal does the Windows private temporary's DACL grant to?
+
+* **Question:** Which principal does the Windows private temporary's DACL grant to?
+* **Governs:** f-20260917-02
+* **Chosen:** the calling process token's user SID, obtained through `OpenProcessToken` +
+  `GetTokenInformation(TokenUser)` + `GetLengthSid`/`CopySid` and memoised per process in a
+  `OnceLock`, with the DACL still marked `SE_DACL_PROTECTED`.
+* **Rejected:** (a) the well-known CREATOR OWNER SID, which is what the code did — Windows
+  substitutes that placeholder only in *inheritable* ACEs, so as an effective ACE on the object it
+  matches no token and the file grants nobody anything; (b) supplying no DACL at all and letting
+  the file inherit the parent's, which drops the single property the descriptor exists for.
+* **Reason:** measured, not argued. On the runner the CREATOR OWNER form failed every later open
+  with ERROR_ACCESS_DENIED across six modules; swapping the subject to the token user SID turned
+  file_workspace 10/10, fs 43/43, db::search_index 21/21, chesscom 10/10 and engine::types 9/9
+  green in run 35210674941. "Creator only" on a concrete object is expressible only as the
+  creator's actual SID.
+* **Decided by:** build run f-20260917-02, session d3c37561, 2026-09-17 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":17,"effect_sha256":"8be225287df87db5c44889d25f627d2ef5bb30bac6292dbccc4c8199864c27ca","input_sha256":"825b6d21b127cbbce10bc74bdc6ac63b9e5221c5fb78d2b48de7bb55874b547b","kind":"mutation-receipt","operation":"3c22fea8860b82b2db0556ab8bddd9d1219d13f8e6256bbd9c3c72f94b95480b","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-07"],"target":"decisions-ledger","v":1} -->
