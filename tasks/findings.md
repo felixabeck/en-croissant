@@ -8402,7 +8402,7 @@ question did not converge in fifteen plan-review rounds.
 
 ### Workspace create, move, rename, trash, restore and delete are refused on Windows
 
-* **ID:** f-20260914-08 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **ID:** f-20260914-08 · **Status:** handled · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
 * **Where:** `src-tauri/src/file_workspace.rs` mutation cores and their Unix helpers `mutation_target` (`:177`), `register_created_entry` (`:223`), `paired_rename` (`:594`); `src-tauri/src/infra/fs.rs` `create_dir_at`, `rename_entry_at`, `remove_entry_at`, `remove_regular_at`, `remove_optional_regular_at`, `open_directory_at`, `entry_identity_at`; workspace listing already refuses at `file_workspace.rs:461`.
 * **Defect:** after `f-20260830-06` slice 1 every workspace mutation command returns `Error::Conflict("… is unsupported on this platform")` on Windows, and listing refuses too, so the Files page is unusable there.
 * **Why it matters:** Windows is a supported platform (Felix, 2026-09-12, `f-20260830-06`).
