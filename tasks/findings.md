@@ -8467,6 +8467,33 @@ under the same root. Newly filed: the Grok `write`-leaf profile carries `git` an
 (inbox-spooled).
 <!-- ledger-meta {"command":"annotate","effect_lines":55,"effect_sha256":"6d05d19517e94b9bf750d4377a3d6380b0f329d5c8e8da41bd1a08e45b69fd58","input_sha256":"3e66d804bad2e975b5cfbf4f32e931df5422d977cbc3dbdc1fce3d24dcf36568","kind":"mutation-receipt","operation":"f81ba7a4820344df9c696556ce96942c47e4205bca07a5be5973c9bf4d2e9270","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-08"],"target":"f-20260914-08","v":1} -->
 
+**CI correction (2026-09-17, after the push).** The closing note above said the first real execution
+would be the `rust-windows-test` job. It has now run, and it must qualify the claim above rather
+than confirm it.
+
+* **`rust-platform (windows-latest, x86_64-pc-windows-msvc)` is GREEN**, as are both macOS platform
+  jobs and `rust-macos-test` (run 35166192129). So the port compiles and passes
+  `clippy -D warnings` on the real MSVC target, not merely under the local MinGW cross toolchain —
+  the gnu-versus-msvc risk this plan recorded under `## Risks` did not materialise.
+* **`rust-windows-test` is RED, and its verdict is not usable.** The test binary terminates with
+  `exit code: 0xc0000005, STATUS_ACCESS_VIOLATION` — it segfaults — so every test that had not
+  finished is reported `FAILED` as an artefact of the dying harness. **The same crash, with the same
+  signature and the same last-named test, occurs at the base commit `9f718887`, before any of this
+  work**: 28 reported failures there against 33 here, the five extra being exactly the workspace
+  tests this finding un-gated. The crash therefore predates this port and is not caused by it; it is
+  filed separately, under the same root, as the finding that blocks all Windows verification.
+* **What this means honestly:** the refusals are gone, the implementation is written, reviewed
+  through eight plan rounds and nine cumulative lenses, and green on every gate that can execute
+  here — but **the Windows runtime behaviour of this port is still unproven**, because the one
+  runner that could prove it cannot complete a run. The un-gated tests did their job: they are in
+  that aborted set precisely because the plan chose un-gated over `#[cfg(windows)]`, and a
+  `#[cfg(windows)]`-only design would have hidden them among the pre-existing failures instead.
+* The status stays `handled` because the delivery is complete and was reviewed; what is missing is
+  not work on this finding but a working Windows test binary, which is a different defect with its
+  own open question. A successor must not re-implement this port; it must fix the access violation
+  and then read this job's output for the first time.
+<!-- ledger-meta {"command":"annotate","effect_lines":25,"effect_sha256":"e9f7cc29f4d4e90af113d89a892a55e19c95e64c4248de428b1e88eb82060cf2","input_sha256":"b839946866cc689eea245179f39cf0f39047217e22be6b1d5a4cfbcd69f9d75a","kind":"mutation-receipt","operation":"5c29534cc91a0c77275b53c05edb9bc1e4864899b8ca05414d53e0109906e204","options":{"section":null},"request_id_sha256":null,"results":["f-20260914-08"],"target":"f-20260914-08","v":1} -->
+
 ### Database, search-index and puzzle-database operations are refused on Windows
 
 * **ID:** f-20260914-09 · **Status:** open · **Area:** db-search · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
