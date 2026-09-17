@@ -8496,7 +8496,7 @@ than confirm it.
 
 ### Database, search-index and puzzle-database operations are refused on Windows
 
-* **ID:** f-20260914-09 · **Status:** open · **Area:** db-search · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **ID:** f-20260914-09 · **Status:** handled · **Area:** db-search · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
 * **Where:** `PathAuthority::database_file_target` (`src-tauri/src/infra/path_authority/mod.rs:3945`), `DatabaseFileTarget::open_current` (`:300`), `DatabaseRepository::identity_from_probe` refusal (`src-tauri/src/db/repository.rs:397-405`), `db::unlink_database_files` (`src-tauri/src/db/mod.rs:2376`), `promote_legacy_index_sidecar_at` (`src-tauri/src/db/search_index.rs:890`) and `open_valid_preferred`'s refusal (`db/search.rs:344`), `ResolvedPath::puzzle_database_target` and `delete_puzzle_database` (`infra/path_authority/resolved.rs`).
 * **Defect:** after `f-20260830-06` slice 1, `resolve_database` and therefore essentially every database command (open, import, export, search, player stats, indexes, delete), position search, reference preload, novelty lookup and puzzle database access return `Error::Conflict` on Windows.
 * **Why it matters:** Windows is a supported platform (Felix, 2026-09-12, `f-20260830-06`); the database is the product's core.
