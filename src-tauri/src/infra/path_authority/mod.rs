@@ -297,11 +297,14 @@ pub(crate) struct CapabilityDirectory {
 }
 
 impl CapabilityDirectory {
-    /// The one arm with a Windows caller today: `map_db3_children_cancellable`.
-    /// `capability_directory` now issues this type on Windows for `PathOperation::ReadPgn`, but
-    /// the walk that consumes the other methods is `file_workspace.rs::collect_tree_entries`,
-    /// whose non-unix counterpart still refuses, so they keep `allow(dead_code)` there rather
-    /// than an unimplemented body.
+    /// One descriptor-relative read of this directory, on both platforms.
+    ///
+    /// Every method on this type is live on Windows since `f-20260914-08`: the walk that drives
+    /// them, `file_workspace.rs::collect_tree_entries`, is no longer `#[cfg(unix)]` and neither
+    /// are the helpers it calls. `map_db3_children_cancellable` is the other caller.
+    /// `capability_directory` itself is still refused off unix for every operation except
+    /// `PathOperation::ReadPgn` (obligation B3b), so the database and puzzle listings reach this
+    /// code only on unix for now — that gate is `f-20260914-09`, not a property of this type.
     pub(crate) fn entries(
         &self,
         cancellation: &CancellationToken,
@@ -2977,6 +2980,13 @@ pub(crate) fn open_windows_child(
     const FILE_DIRECTORY_FILE: u32 = 0x1;
     const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    // Without this the I/O manager keeps no `CurrentByteOffset` on the returned file object:
+    // every `ReadFile`/`WriteFile` with a NULL `lpOverlapped` — which is what `File::read` and
+    // `File::write` always issue — fails with `STATUS_INVALID_PARAMETER`, and
+    // `NtQueryDirectoryFile` may complete asynchronously with `STATUS_PENDING`. `SYNCHRONIZE` in
+    // the access mask does not imply it; only the create option does. Every call site's mask
+    // carries `SYNCHRONIZE`, which this option requires.
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
     crate::infra::fs::single_leaf(name)?;
     let mut wide: Vec<u16> = name.encode_wide().collect();
     let mut unicode = UNICODE_STRING {
@@ -2995,6 +3005,7 @@ pub(crate) fn open_windows_child(
     let mut handle: HANDLE = null_mut();
     let mut status: IO_STATUS_BLOCK = unsafe { zeroed() };
     let options = FILE_OPEN_REPARSE_POINT
+        | FILE_SYNCHRONOUS_IO_NONALERT
         | if directory {
             FILE_DIRECTORY_FILE
         } else {

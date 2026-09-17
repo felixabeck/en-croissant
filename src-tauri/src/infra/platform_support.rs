@@ -1,7 +1,9 @@
 /*!
 Phase 1 refusal-pin proof record (2026-09-16).
 
-The 35 refusal sites are pinned by the G and B rows below. The O4d exclusion is
+The refusal sites are pinned by the G and B rows below: 24 of the original 35,
+after `f-20260914-08` retired eleven by giving them real Windows bodies (the
+four `file_workspace.rs` rows and the seven named under "B rows"). The O4d exclusion is
 `opened_file_change_stamp`: its unconditional non-unix tail is not a refusal
 site and is intentionally not a row. Future closed-world completeness is not
 claimed here; that work is split to `f-20260916-01` (R15-01).
@@ -24,11 +26,13 @@ B rows (each staged message names the listed file and signature).
 `file_workspace.rs`'s four rows — `mutation_target`, `register_created_entry`,
 `collect_tree_entries` and `paired_rename` — were retired when `f-20260914-08`
 ported them; `workspace_bodies_are_single_ungated_delegations` replaced them,
-because a deleted row can no longer notice its refusal coming back:
-`infra/fs.rs::entry_identity_at`, `infra/fs.rs::create_dir_at`,
-`infra/fs.rs::open_directory_at`, `infra/fs.rs::rename_entry_at`,
-`infra/fs.rs::remove_entry_at`, `infra/fs.rs::remove_optional_regular_at`,
-`infra/fs.rs::atomic_install_dir`, `infra/path_authority/mod.rs::entries`,
+because a deleted row can no longer notice its refusal coming back. The same
+port removed seven further rows whose counterparts no longer exist at all —
+`infra/fs.rs::{entry_identity_at, create_dir_at, open_directory_at,
+rename_entry_at, remove_entry_at, remove_optional_regular_at}` and
+`infra/path_authority/mod.rs::entries`, all of which now have real Windows
+bodies. The rows that remain are:
+`infra/fs.rs::atomic_install_dir`,
 `infra/path_authority/mod.rs::open_current`,
 `infra/path_authority/mod.rs::remove_leaf_identified`,
 `infra/path_authority/mod.rs::open_regular_relative`,
@@ -293,9 +297,7 @@ mod tests {
         let body = braced_body(source, "fn open_directory_path(");
         let body = compact(&source[body]);
         assert!(
-            body.contains(
-                "letchild_access=ifwritable{DIRECTORY_ACCESS}else{DIRECTORY_READ_ACCESS};"
-            ),
+            body.contains("letchild_access=ifwritable{DIRECTORY_ACCESS}else{READ_ONLY_ACCESS};"),
             "{body}"
         );
         assert!(body.contains(".write(writable)"), "{body}");
@@ -312,13 +314,13 @@ mod tests {
         let whole = compact(source);
         assert!(
             whole.contains(
-                "constDIRECTORY_READ_ACCESS:u32=SYNCHRONIZE|windows_sys::Win32::Foundation::GENERIC_READ|READ_CONTROL;"
+                "constREAD_ONLY_ACCESS:u32=SYNCHRONIZE|windows_sys::Win32::Foundation::GENERIC_READ|READ_CONTROL;"
             ),
-            "DIRECTORY_READ_ACCESS must not acquire GENERIC_WRITE"
+            "READ_ONLY_ACCESS must not acquire GENERIC_WRITE"
         );
         assert!(
             whole.contains(
-                "constDIRECTORY_ACCESS:u32=DIRECTORY_READ_ACCESS|windows_sys::Win32::Foundation::GENERIC_WRITE;"
+                "constDIRECTORY_ACCESS:u32=READ_ONLY_ACCESS|windows_sys::Win32::Foundation::GENERIC_WRITE;"
             ),
             "DIRECTORY_ACCESS must stay the read mask plus GENERIC_WRITE"
         );
@@ -344,7 +346,7 @@ mod tests {
         );
         let directory = compact(&source[braced_body(source, "fn directory_open_access(")]);
         assert!(
-            directory.contains("ifwritable{DIRECTORY_ACCESS}else{DIRECTORY_READ_ACCESS}"),
+            directory.contains("ifwritable{DIRECTORY_ACCESS}else{READ_ONLY_ACCESS}"),
             "{directory}"
         );
     }
@@ -532,7 +534,7 @@ mod tests {
             "{tree}"
         );
         assert!(
-            tree.contains("EnumeratedKind::Other"),
+            tree.contains("DirectoryEntryKind::Other=>{returnErr(Error::InvalidInput("),
             "reparse entries must be refused, not unlinked: {tree}"
         );
         let remove = compact(&source[braced_body(source, "pub(super) fn remove_entry_at(")]);
@@ -584,13 +586,19 @@ mod tests {
         let source = source_for("infra/fs.rs");
         let read = compact(&source[braced_body(source, "pub(super) fn read_directory_entries(")]);
         assert!(
-            read.contains("EnumeratedKind::Other=>DirectoryEntryKind::Other"),
-            "a reparse entry must stay `Other` in the listing: {read}"
+            read.contains("kind:entry.kind,"),
+            "the listing must hand on the enumerated kind unchanged, `Other` included: {read}"
         );
+        // The enumerator and `DirectoryEntry` share one kind enum, so there is no remapping arm
+        // left that could collapse `Other`; a reintroduced translation is the regression.
         assert!(
-            read.contains("EnumeratedKind::Directory=>DirectoryEntryKind::Directory")
-                && read.contains("EnumeratedKind::RegularFile=>DirectoryEntryKind::RegularFile"),
-            "{read}"
+            !read.contains("=>DirectoryEntryKind::"),
+            "a second kind enum must not come back: {read}"
+        );
+        let entry_kind = compact(&source[braced_body(source, "pub(super) struct EnumeratedEntry")]);
+        assert!(
+            entry_kind.contains("kind:DirectoryEntryKind,"),
+            "the enumerator must carry the one kind enum: {entry_kind}"
         );
         assert_eq!(
             read.matches("ifcancellation.is_cancelled(){returnErr(Error::Cancellation);}")
@@ -598,6 +606,105 @@ mod tests {
             3,
             "the single-directory read is cancellable before, during and after the walk: {read}"
         );
+        // F3: the page loop itself has to observe cancellation, or a large directory is
+        // uninterruptible for the whole of its enumeration.
+        let whole = compact(&normalise(source, Literals::Keep));
+        assert!(
+            whole.contains(
+                "pub(super)fnenumerate_directory(dir:&File,cancellation:&CancellationToken,)"
+            ),
+            "the enumerator must take the caller's cancellation token"
+        );
+        let enumerate = compact(&source[braced_body(source, "pub(super) fn enumerate_directory(")]);
+        let loop_start = enumerate.find("loop{").expect("the page loop must exist");
+        assert!(
+            enumerate[loop_start..]
+                .starts_with("loop{ifcancellation.is_cancelled(){returnErr(Error::Cancellation);}"),
+            "cancellation must be observed once per NtQueryDirectoryFile page: {enumerate}"
+        );
+    }
+
+    /// F1. `NtCreateFile` returns an ASYNCHRONOUS file object unless `CreateOptions` carries
+    /// `FILE_SYNCHRONOUS_IO_NONALERT`: the I/O manager then keeps no `CurrentByteOffset`, so
+    /// `ReadFile`/`WriteFile` with a NULL `lpOverlapped` — which is exactly what `File::read`
+    /// and `File::write` always issue — fail with `STATUS_INVALID_PARAMETER`, and
+    /// `NtQueryDirectoryFile` may return `STATUS_PENDING` while still writing into a buffer this
+    /// code would drop. `SYNCHRONIZE` in the access mask does not imply it. No Linux test can
+    /// observe it, and no Windows test can either: the Windows listing tests enumerate
+    /// `windows_test_parent`, a `CreateFile` handle that is synchronous by construction, so they
+    /// exercise a handle kind production never produces.
+    #[test]
+    fn windows_nt_create_sites_open_synchronous_file_objects() {
+        // The flag has to appear in the `CreateOptions` argument, not merely somewhere in the
+        // body: both sites also name it in a `use` or a `const`, so a bare `contains` would stay
+        // green with the option dropped from the create call.
+        for (file, signature, create_options) in [
+            (
+                "infra/fs.rs",
+                "fn open_temp_child(",
+                "FILE_NON_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT,",
+            ),
+            (
+                "infra/path_authority/mod.rs",
+                "pub(crate) fn open_windows_child(",
+                "letoptions=FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT|ifdirectory{FILE_DIRECTORY_FILE}else{FILE_NON_DIRECTORY_FILE};",
+            ),
+        ] {
+            let source = source_for(file);
+            let body = compact(&source[braced_body(source, signature)]);
+            assert!(
+                body.contains(create_options),
+                "{file}: {signature} must pass {create_options} as its CreateOptions: {body}"
+            );
+            assert!(
+                body.contains("NtCreateFile("),
+                "{file}: {signature} must still be the NT create site: {body}"
+            );
+        }
+        // `open_windows_child` declares the constant itself; a wrong value is invisible to a
+        // type-check and would silently leave the handle asynchronous.
+        assert!(
+            compact(source_for("infra/path_authority/mod.rs"))
+                .contains("constFILE_SYNCHRONOUS_IO_NONALERT:u32=0x20;"),
+            "FILE_SYNCHRONOUS_IO_NONALERT is 0x20"
+        );
+        // The flag requires `SYNCHRONIZE`, so every mask handed to `open_windows_child` must
+        // carry it. All of them are composed from these named constants.
+        let fs_source = compact(source_for("infra/fs.rs"));
+        for constant in [
+            "constREAD_ONLY_ACCESS:u32=SYNCHRONIZE|",
+            "constDIRECTORY_ACCESS:u32=READ_ONLY_ACCESS|",
+            "pub(super)constTARGET_ACCESS:u32=DELETE|SYNCHRONIZE|",
+            "constTEMP_ACCESS:u32=DELETE|SYNCHRONIZE|",
+        ] {
+            assert!(
+                fs_source.contains(constant),
+                "every NT access mask must carry SYNCHRONIZE: missing {constant}"
+            );
+        }
+        for (file, mask) in [
+            (
+                "infra/path_authority/mod.rs",
+                "letread_access=SYNCHRONIZE|GENERIC_READ;",
+            ),
+            (
+                "infra/path_authority/resolved.rs",
+                "letaccess=SYNCHRONIZE|GENERIC_READ|ifwritable{GENERIC_WRITE}else{0};",
+            ),
+            (
+                "infra/path_authority/resolved.rs",
+                "letaccess=SYNCHRONIZE|GENERIC_READ|ifchild_writable{GENERIC_WRITE}else{0};",
+            ),
+            (
+                "infra/path_authority/resolved.rs",
+                "SYNCHRONIZE|GENERIC_READ|ifparent_writable{GENERIC_WRITE}else{0};",
+            ),
+        ] {
+            assert!(
+                compact(source_for(file)).contains(mask),
+                "{file}: every NT access mask must carry SYNCHRONIZE: missing {mask}"
+            );
+        }
     }
 
     #[test]
@@ -709,7 +816,17 @@ mod tests {
     fn windows_optional_regular_missing_leaf_is_success() {
         let source = source_for("infra/fs.rs");
         let missing = compact(&source[braced_body(source, "fn missing_leaf(")]);
-        assert!(missing.contains("raw_os_error()==Some(2)"), "{missing}");
+        // Named constants, not the bare literal 2: `ERROR_FILE_NOT_FOUND` is what
+        // `RtlNtStatusToDosError` gives for `STATUS_OBJECT_NAME_NOT_FOUND`.
+        assert!(
+            missing.contains("raw_os_error()==Some(ERROR_FILE_NOT_FOUNDasi32)")
+                && missing.contains("raw_os_error()==Some(ERROR_PATH_NOT_FOUNDasi32)"),
+            "{missing}"
+        );
+        assert!(
+            !missing.contains("Some(2)") && !missing.contains("Some(3)"),
+            "the missing-leaf codes must stay named: {missing}"
+        );
         let rename =
             compact(&source[braced_body(source, "pub(super) fn rename_optional_regular_at(")]);
         assert!(rename.contains("missing_leaf(&error)"), "{rename}");

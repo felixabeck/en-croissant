@@ -1817,7 +1817,10 @@ mod win {
         Win32::{
             // The NTSTATUS constants and RtlNtStatusToDosError live with the single classifier
             // in path_authority::windows_open_status_error, which this module now routes to.
-            Foundation::{HANDLE, STATUS_BUFFER_OVERFLOW, STATUS_NO_MORE_FILES, UNICODE_STRING},
+            Foundation::{
+                ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE, STATUS_BUFFER_OVERFLOW,
+                STATUS_NO_MORE_FILES, UNICODE_STRING,
+            },
             Security::{
                 AddAccessAllowedAce, CreateWellKnownSid, GetKernelObjectSecurity, InitializeAcl,
                 InitializeSecurityDescriptor, SetKernelObjectSecurity,
@@ -1851,10 +1854,11 @@ mod win {
         | WRITE_DAC;
     pub(super) const TARGET_ACCESS: u32 =
         DELETE | SYNCHRONIZE | windows_sys::Win32::Foundation::GENERIC_READ | READ_CONTROL;
-    const DIRECTORY_READ_ACCESS: u32 =
+    /// Read-only access to an already-existing object of either kind. `SYNCHRONIZE` is what
+    /// `FILE_SYNCHRONOUS_IO_NONALERT` requires of every mask this module opens with.
+    const READ_ONLY_ACCESS: u32 =
         SYNCHRONIZE | windows_sys::Win32::Foundation::GENERIC_READ | READ_CONTROL;
-    const DIRECTORY_ACCESS: u32 =
-        DIRECTORY_READ_ACCESS | windows_sys::Win32::Foundation::GENERIC_WRITE;
+    const DIRECTORY_ACCESS: u32 = READ_ONLY_ACCESS | windows_sys::Win32::Foundation::GENERIC_WRITE;
     pub(crate) const MAX_REMOVE_TREE_DEPTH: usize = 64;
     const DIRECTORY_ENUMERATION_START_BYTES: usize = 8192;
     const DIRECTORY_ENUMERATION_MAX_BYTES: usize = 1024 * 1024;
@@ -2212,10 +2216,16 @@ mod win {
         }
     }
 
+    /// `NtCreateFile` reports an absent single-leaf child as `STATUS_OBJECT_NAME_NOT_FOUND`,
+    /// which `windows_open_status_error` maps through `RtlNtStatusToDosError` to
+    /// `ERROR_FILE_NOT_FOUND`; a directory handle whose own name has gone gives
+    /// `ERROR_PATH_NOT_FOUND`. Both mean "the optional leaf is not there".
     fn missing_leaf(error: &Error) -> bool {
         matches!(
             error,
-            Error::Io(error) if error.raw_os_error() == Some(2)
+            Error::Io(error)
+                if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32)
+                    || error.raw_os_error() == Some(ERROR_PATH_NOT_FOUND as i32)
         )
     }
 
@@ -2238,15 +2248,16 @@ mod win {
         if writable {
             DIRECTORY_ACCESS
         } else {
-            DIRECTORY_READ_ACCESS
+            READ_ONLY_ACCESS
         }
     }
 
     fn regular_file_access(access: RegularFileAccess) -> u32 {
-        let read = SYNCHRONIZE | READ_CONTROL | windows_sys::Win32::Foundation::GENERIC_READ;
         match access {
-            RegularFileAccess::ReadOnly => read,
-            RegularFileAccess::ReadWrite => read | windows_sys::Win32::Foundation::GENERIC_WRITE,
+            RegularFileAccess::ReadOnly => READ_ONLY_ACCESS,
+            RegularFileAccess::ReadWrite => {
+                READ_ONLY_ACCESS | windows_sys::Win32::Foundation::GENERIC_WRITE
+            }
         }
     }
 
@@ -2268,12 +2279,18 @@ mod win {
         directory: bool,
         conflict: bool,
     ) -> Result<File, Error> {
-        let access = if directory {
-            DIRECTORY_READ_ACCESS
-        } else {
-            SYNCHRONIZE | READ_CONTROL | windows_sys::Win32::Foundation::GENERIC_READ
-        };
-        match open_windows_child(parent, name, FILE_OPEN, access, null(), directory, true) {
+        // `NtCreateFile` takes the expected object kind from `CreateOptions`
+        // (`FILE_DIRECTORY_FILE` / `FILE_NON_DIRECTORY_FILE`), never from the access mask, so
+        // both kinds are probed with the identical read-only mask.
+        match open_windows_child(
+            parent,
+            name,
+            FILE_OPEN,
+            READ_ONLY_ACCESS,
+            null(),
+            directory,
+            true,
+        ) {
             Ok(file) => {
                 if !directory && !opened_is_disk(&file) {
                     return Err(type_mismatch(conflict));
@@ -2292,15 +2309,13 @@ mod win {
                     Err(error)
                 }
             }
+            // Re-probe with the opposite `CreateOptions` kind: succeeding there means the leaf
+            // exists but is the other kind, which is a type mismatch rather than the open error.
             Err(error) => match open_windows_child(
                 parent,
                 name,
                 FILE_OPEN,
-                if directory {
-                    SYNCHRONIZE | READ_CONTROL | windows_sys::Win32::Foundation::GENERIC_READ
-                } else {
-                    DIRECTORY_READ_ACCESS
-                },
+                READ_ONLY_ACCESS,
                 null(),
                 !directory,
                 true,
@@ -2333,17 +2348,12 @@ mod win {
         Ok(())
     }
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(super) enum EnumeratedKind {
-        Directory,
-        RegularFile,
-        Other,
-    }
-
     pub(super) struct EnumeratedEntry {
         pub name: OsString,
         pub identity: (u64, u64),
-        pub kind: EnumeratedKind,
+        /// The one kind enum: the enumerator and the platform-neutral `DirectoryEntry` classify
+        /// exactly the same three cases, so there is no second type to keep in step.
+        pub kind: DirectoryEntryKind,
         /// Raw `FILE_ID_BOTH_DIR_INFORMATION.LastWriteTime`: a FILETIME, i.e. 100-nanosecond
         /// ticks since 1601-01-01 UTC. Converted by `filetime_to_unix_seconds` before it
         /// reaches a `DirectoryEntry`; the renderer reads that value as Unix seconds.
@@ -2364,13 +2374,13 @@ mod win {
             .saturating_sub(FILETIME_EPOCH_OFFSET_SECONDS)
     }
 
-    fn enumerated_kind(attributes: u32) -> EnumeratedKind {
+    fn enumerated_kind(attributes: u32) -> DirectoryEntryKind {
         if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            EnumeratedKind::Other
+            DirectoryEntryKind::Other
         } else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
-            EnumeratedKind::Directory
+            DirectoryEntryKind::Directory
         } else {
-            EnumeratedKind::RegularFile
+            DirectoryEntryKind::RegularFile
         }
     }
 
@@ -2441,13 +2451,25 @@ mod win {
         }
     }
 
-    pub(super) fn enumerate_directory(dir: &File) -> Result<Vec<EnumeratedEntry>, Error> {
+    /// Reads one directory to exhaustion through `NtQueryDirectoryFile`. `cancellation` is
+    /// observed once per page, before the kernel is asked for the next one, so a cancelled
+    /// listing stops after at most one outstanding page instead of after the whole directory.
+    /// The accumulated `Vec` is bounded by the number of entries in that single directory —
+    /// this never recurses; `remove_windows_tree_at` and `collect_tree_entries` own the depth
+    /// bound — which is the same bound the unix `walk_directory` result carries.
+    pub(super) fn enumerate_directory(
+        dir: &File,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<EnumeratedEntry>, Error> {
         let volume = opened_file_identity(dir)?.0;
         let mut restart_scan = true;
         let mut buffer_len = DIRECTORY_ENUMERATION_START_BYTES;
         let mut overflow_retries = 0_u8;
         let mut entries = Vec::new();
         loop {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancellation);
+            }
             // `FILE_ID_BOTH_DIR_INFORMATION` has 8-byte alignment and NT lays every
             // entry out 8-aligned relative to the buffer start, so the buffer itself
             // must be 8-aligned: a `Vec<u8>` only guarantees alignment 1, and forming
@@ -2513,7 +2535,7 @@ mod win {
         if cancellation.is_cancelled() {
             return Err(Error::Cancellation);
         }
-        let enumerated = enumerate_directory(dir)?;
+        let enumerated = enumerate_directory(dir, cancellation)?;
         let mut result = Vec::with_capacity(enumerated.len());
         for entry in enumerated {
             if cancellation.is_cancelled() {
@@ -2527,11 +2549,7 @@ mod win {
                 // A junction carries FILE_ATTRIBUTE_DIRECTORY as well; `enumerated_kind`
                 // reads the reparse bit first, so it arrives here as `Other` and the listing
                 // skips it exactly as unix skips a symlink.
-                kind: match entry.kind {
-                    EnumeratedKind::Directory => DirectoryEntryKind::Directory,
-                    EnumeratedKind::RegularFile => DirectoryEntryKind::RegularFile,
-                    EnumeratedKind::Other => DirectoryEntryKind::Other,
-                },
+                kind: entry.kind,
                 // The composed (volume serial, FileId) tuple, not a raw FileId: it has to equal
                 // `opened_file_identity` on the same child or every later confirmation fails.
                 identity: entry.identity,
@@ -2544,7 +2562,6 @@ mod win {
         Ok(result)
     }
 
-    #[allow(dead_code)]
     pub(super) fn open_writable_parent(path: &Path) -> Result<File, Error> {
         open_directory_path(path.parent().unwrap_or_else(|| Path::new(".")), true)
     }
@@ -2638,7 +2655,6 @@ mod win {
         Ok(opened)
     }
 
-    #[allow(dead_code)]
     pub(super) fn create_regular_at(
         parent: &File,
         name: &OsStr,
@@ -2662,7 +2678,6 @@ mod win {
         Ok((created, identity))
     }
 
-    #[allow(dead_code)]
     pub(super) fn open_verified_parent(
         path: &Path,
         expected: (u64, u64),
@@ -2723,7 +2738,6 @@ mod win {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub(super) fn rename_optional_regular_at(
         source_parent: &File,
         source: &OsStr,
@@ -2815,17 +2829,20 @@ mod win {
                 "directory cleanup entry changed concurrently".into(),
             ));
         }
-        for entry in enumerate_directory(&child)? {
+        // B4 scopes cancellation to the single-directory listing read: a half-cancelled
+        // recursive unlink would leave a partially removed tree behind, so the removal walk
+        // enumerates with a token that is never cancelled.
+        for entry in enumerate_directory(&child, &CancellationToken::new())? {
             match entry.kind {
-                EnumeratedKind::Other => {
+                DirectoryEntryKind::Other => {
                     return Err(Error::InvalidInput(
                         "directory cleanup rejects links and special files".into(),
                     ));
                 }
-                EnumeratedKind::RegularFile => {
+                DirectoryEntryKind::RegularFile => {
                     remove_regular_child(&child, &entry, removed_entries)?;
                 }
-                EnumeratedKind::Directory => {
+                DirectoryEntryKind::Directory => {
                     remove_windows_tree_at(
                         &child,
                         &entry.name,
@@ -3134,7 +3151,7 @@ mod win {
         let child_access = if writable {
             DIRECTORY_ACCESS
         } else {
-            DIRECTORY_READ_ACCESS
+            READ_ONLY_ACCESS
         };
         for component in components {
             let Component::Normal(name) = component else {
@@ -3204,8 +3221,14 @@ pub(crate) use unix::{
 };
 #[cfg(unix)]
 pub(crate) use unix::{raw_mode_from, raw_stat_identity, MAX_REMOVE_TREE_DEPTH};
+// Not stale, and deliberately not a blanket allow: on Windows every *production* consumer of the
+// depth bound lives inside `mod win` itself, because `fs.rs`'s `MAX_ARCHIVE_PATH_COMPONENTS` is
+// still `#[cfg(unix)]` (archive extraction is not ported). The re-export keeps one crate-level
+// spelling of the bound on both targets, and the test build — where
+// `recursive_delete_refuses_more_than_the_maximum_depth` reads it — is left unsuppressed, so it
+// still goes red if that last consumer disappears.
 #[cfg(windows)]
-#[allow(unused_imports)]
+#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use win::MAX_REMOVE_TREE_DEPTH;
 
 pub fn atomic_replace_with_precommit<F, P>(
@@ -3260,7 +3283,6 @@ where
 /// supplied, is checked immediately before the namespace mutation; it is the identity captured
 /// by the path authority when the opaque workspace capability was issued.
 #[cfg(windows)]
-#[allow(dead_code)]
 pub(crate) fn open_verified_parent(
     path: &Path,
     expected: (u64, u64),
@@ -3521,7 +3543,6 @@ pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u
 }
 
 #[cfg(windows)]
-#[allow(dead_code)]
 pub(crate) fn create_regular_at(parent: &File, name: &OsStr) -> Result<(File, (u64, u64)), Error> {
     win::create_regular_at(parent, name)
 }
@@ -3607,7 +3628,6 @@ pub(crate) fn rename_optional_regular_at(
 }
 
 #[cfg(windows)]
-#[allow(dead_code)]
 pub(crate) fn rename_optional_regular_at(
     source_parent: &File,
     source: &OsStr,
@@ -3825,6 +3845,19 @@ mod tests {
         path::PathBuf,
         sync::{Arc, Mutex},
     };
+
+    /// The module's dual-cfg parent pair, so a test that needs only `std::fs` plus a retained
+    /// parent handle runs on both targets instead of being gated to unix by its fixture.
+    fn test_parent(path: &std::path::Path) -> File {
+        #[cfg(unix)]
+        {
+            File::open(path).expect("open parent")
+        }
+        #[cfg(windows)]
+        {
+            windows_test_parent(path)
+        }
+    }
 
     #[cfg(unix)]
     fn inode(path: &std::path::Path) -> (u64, u64) {
@@ -4609,11 +4642,10 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn remove_entry_at_refuses_invalid_leaf_names() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let parent = File::open(temp.path()).expect("open parent");
+        let parent = test_parent(temp.path());
         for name in ["", "nested/file"] {
             assert!(matches!(
                 remove_entry_at(&parent, OsStr::new(name), (0, 0), false),
@@ -4622,7 +4654,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn remove_entry_at_does_not_unlink_outside_parent() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -4630,8 +4661,9 @@ mod tests {
         let outside = temp.path().join("outside");
         std::fs::create_dir(&root).expect("root");
         std::fs::write(&outside, b"outside").expect("outside");
-        let parent = File::open(&root).expect("open parent");
-        let expected = inode(&outside);
+        let parent = test_parent(&root);
+        let expected = entry_identity_at(&test_parent(temp.path()), OsStr::new("outside"), false)
+            .expect("outside identity");
 
         for name in [OsStr::new("../outside"), outside.as_os_str()] {
             assert!(matches!(
@@ -4704,7 +4736,58 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[test]
+    fn directory_enumeration_returns_every_entry_across_several_pages() {
+        // F4. The Windows read pulls `FILE_ID_BOTH_DIR_INFORMATION` records out of an
+        // 8192-byte buffer one `NtQueryDirectoryFile` page at a time and continues until
+        // `STATUS_NO_MORE_FILES`. A record is ~104 bytes plus the UTF-16 name, so a real
+        // workspace of a few dozen PGNs with sidecars already needs a second call — yet every
+        // Windows-executing listing test used at most six entries, which fits the first page.
+        // Replacing the continuation with a `break` after page one reddened nothing, and the
+        // product symptom would be a silently truncated Files page. The fixture needs only
+        // `std::fs` plus a parent handle, so it runs on both targets.
+        const ENTRIES: usize = 256;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut expected = Vec::with_capacity(ENTRIES);
+        for index in 0..ENTRIES {
+            let name = format!("multi-page-enumeration-fixture-{index:04}.pgn");
+            std::fs::write(temp.path().join(&name), b"pgn").expect("fixture entry");
+            expected.push(name);
+        }
+        let parent = test_parent(temp.path());
+
+        let listed = read_directory_entries_at(&parent, &CancellationToken::new(), &mut |_| true)
+            .expect("listing");
+
+        let mut names = listed
+            .iter()
+            .map(|entry| entry.name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        expected.sort();
+        assert_eq!(
+            names, expected,
+            "every entry must survive the page continuation"
+        );
+        assert!(
+            listed
+                .iter()
+                .all(|entry| entry.kind == DirectoryEntryKind::RegularFile),
+            "a page boundary must not corrupt the entry classification"
+        );
+        let mut identities = listed
+            .iter()
+            .map(|entry| entry.identity)
+            .collect::<Vec<_>>();
+        identities.sort_unstable();
+        identities.dedup();
+        assert_eq!(
+            identities.len(),
+            ENTRIES,
+            "a page boundary must not corrupt or duplicate the composed identity"
+        );
+    }
+
     #[test]
     fn recursive_delete_descends_through_nested_directories() {
         // `recursive_delete_rejects_symlink_children_without_traversing_them` does reach the
@@ -4726,15 +4809,15 @@ mod tests {
         std::fs::write(middle.join("middle.pgn"), b"middle").expect("middle file");
         std::fs::write(deepest.join("deepest.pgn"), b"deepest").expect("deepest file");
         std::fs::write(root.join("sibling.pgn"), b"sibling").expect("sibling file");
-        let parent = std::fs::File::open(&root).expect("parent FD");
+        let parent = test_parent(&root);
+        // Un-gated since F5: the Windows walk (`remove_windows_tree_at` / `remove_regular_child`)
+        // executed in no test on any platform, so reverting its child-before-parent unlink order
+        // or its depth bound reddened only a source-text pin.
+        let expected =
+            entry_identity_at(&parent, std::ffi::OsStr::new("victim"), true).expect("identity");
 
-        remove_entry_at(
-            &parent,
-            std::ffi::OsStr::new("victim"),
-            inode(&victim),
-            true,
-        )
-        .expect("recursive delete");
+        remove_entry_at(&parent, std::ffi::OsStr::new("victim"), expected, true)
+            .expect("recursive delete");
 
         assert!(!victim.exists(), "the whole subtree is gone");
         assert_eq!(
@@ -5324,14 +5407,14 @@ mod tests {
         assert!(unix::mount_crossing(&root, &dev).expect("devfs mount evidence"));
     }
 
-    #[cfg(unix)]
     fn removal_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, (u64, u64), File) {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join("root");
         let victim = root.join("victim");
         std::fs::create_dir_all(&victim).expect("victim");
-        let expected = inode(&victim);
-        let parent = File::open(&root).expect("parent FD");
+        let parent = test_parent(&root);
+        let expected =
+            entry_identity_at(&parent, OsStr::new("victim"), true).expect("victim identity");
         (temp, root, victim, expected, parent)
     }
 
@@ -5822,12 +5905,14 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn recursive_delete_refuses_more_than_the_maximum_depth() {
+        // Un-gated since F5. It also drives the `removed_entries == 0` arm of the partial-removal
+        // split on both platforms: the bound is hit before anything has been unlinked, so the
+        // caller must see the plain `ResourceLimit`, not an `Error::PartialRemoval`.
         let (_temp, _root, victim, expected, parent) = removal_fixture();
         let mut current = victim.clone();
-        for level in 1..unix::MAX_REMOVE_TREE_DEPTH {
+        for level in 1..MAX_REMOVE_TREE_DEPTH {
             current = current.join(format!("level-{level}"));
             std::fs::create_dir(&current).expect("nested directory");
         }
@@ -5836,7 +5921,7 @@ mod tests {
         let error = remove_entry_at(&parent, OsStr::new("victim"), expected, true)
             .expect_err("depth must be bounded");
 
-        assert!(matches!(error, Error::ResourceLimit(_)));
+        assert!(matches!(error, Error::ResourceLimit(_)), "{error:?}");
         assert!(boundary.is_file(), "the refused entry survives");
     }
 
@@ -6946,6 +7031,46 @@ mod tests {
             .find(|entry| entry.name == OsStr::new("real"))
             .expect("the real directory must be listed");
         assert_eq!(real.kind, DirectoryEntryKind::Directory);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_recursive_delete_refuses_a_junction_child_without_traversing_it() {
+        // The Windows counterpart of `recursive_delete_rejects_symlink_children_without_
+        // traversing_them`, which has to stay `#[cfg(unix)]` because it creates a symlink.
+        // A junction is FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT: classified on
+        // the directory bit the walk would descend it and delete another directory's contents,
+        // so `enumerated_kind` reports `Other` and the removal fails closed exactly as unix does.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        let victim = root.join("victim");
+        std::fs::create_dir(&root).expect("root");
+        std::fs::create_dir(&outside).expect("outside");
+        std::fs::create_dir(&victim).expect("victim");
+        std::fs::write(outside.join("keep"), b"outside").expect("outside file");
+        let status = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(victim.join("link"))
+            .arg(&outside)
+            .status()
+            .expect("mklink must run");
+        assert!(status.success(), "mklink /J failed: {status}");
+        let parent = test_parent(&root);
+        let expected = entry_identity_at(&parent, OsStr::new("victim"), true).expect("identity");
+
+        let error = remove_entry_at(&parent, OsStr::new("victim"), expected, true)
+            .expect_err("a junction child must be refused");
+
+        assert!(matches!(error, Error::InvalidInput(_)), "{error:?}");
+        assert_eq!(
+            std::fs::read(outside.join("keep")).expect("outside intact"),
+            b"outside",
+            "the descent never followed the junction"
+        );
+        assert!(victim.exists(), "the refusal removes nothing");
     }
 
     #[cfg(windows)]

@@ -157,14 +157,16 @@ fn metadata_from(
         .map_err(|error| Error::InvalidInput(format!("invalid PGN metadata: {error}")))
 }
 
-fn listed_mtime(entry: &DirectoryEntry) -> Result<i64, Error> {
-    if entry.modified_seconds < 0 {
-        return Err(Error::InvalidInput(format!(
-            "invalid modification time: {}",
-            entry.modified_seconds
-        )));
-    }
-    Ok(entry.modified_seconds)
+/// The listed modification time, in Unix seconds, exactly as the enumerator reported it.
+///
+/// A pre-1970 timestamp is legitimately negative on both platforms: unix `st_mtime` is signed,
+/// and the Windows `LastWriteTime` FILETIME converts below the epoch through
+/// `filetime_to_unix_seconds`, which `windows_filetime_ticks_become_unix_seconds` asserts. The
+/// renderer reads `WorkspaceEntry.lastModified` as a plain number of Unix seconds and renders a
+/// negative one as the date it is, so rejecting it here failed the *whole* workspace listing over
+/// one old file rather than listing it.
+fn listed_mtime(entry: &DirectoryEntry) -> i64 {
+    entry.modified_seconds
 }
 
 fn timestamp(path: &Path) -> Result<i64, Error> {
@@ -358,7 +360,7 @@ fn collect_tree_entries(
             let mut child_components = components.clone();
             child_components.push(entry.name.clone());
             if is_directory {
-                let last_modified = listed_mtime(&entry)?;
+                let last_modified = listed_mtime(&entry);
                 let child = dir.open_child_directory(&entry)?;
                 let children = walk(&child, child_components.clone(), depth + 1, token)?;
                 if token.is_cancelled() {
@@ -374,7 +376,7 @@ fn collect_tree_entries(
                 });
             } else {
                 let name = display.trim_end_matches(".pgn").to_string();
-                let last_modified = listed_mtime(&entry)?;
+                let last_modified = listed_mtime(&entry);
                 let metadata = metadata_from(dir, &entry)?;
                 if token.is_cancelled() {
                     return Err(Error::Cancellation);
@@ -1367,6 +1369,30 @@ mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
     use tauri::Manager;
     use tempfile::TempDir;
+
+    #[test]
+    fn listed_mtime_passes_a_pre_1970_timestamp_through() {
+        // F2. `filetime_to_unix_seconds` legitimately returns a negative value for a Windows file
+        // whose `LastWriteTime` predates 1970, and unix `st_mtime` is signed for the same reason.
+        // Rejecting it here failed the whole workspace listing over one old file.
+        let entry = DirectoryEntry {
+            name: std::ffi::OsString::from("ancient.pgn"),
+            kind: DirectoryEntryKind::RegularFile,
+            identity: (1, 2),
+            modified_seconds: -11_644_473_600,
+        };
+        assert_eq!(listed_mtime(&entry), -11_644_473_600);
+        let epoch = DirectoryEntry {
+            modified_seconds: 0,
+            ..entry.clone()
+        };
+        assert_eq!(listed_mtime(&epoch), 0);
+        let recent = DirectoryEntry {
+            modified_seconds: 1_700_000_000,
+            ..entry
+        };
+        assert_eq!(listed_mtime(&recent), 1_700_000_000);
+    }
 
     #[derive(Clone, Copy, Debug)]
     enum QueuedWorkspaceCommand {
@@ -3966,7 +3992,12 @@ mod workspace_directory_enumeration_tests {
     }
 
     #[test]
-    fn collect_tree_entries_refuses_a_pre_epoch_listed_entry() {
+    fn collect_tree_entries_lists_a_pre_epoch_entry_with_its_negative_timestamp() {
+        // F2. `listed_mtime` used to reject a negative `modified_seconds`, which failed the whole
+        // workspace listing over one old file. Both platforms legitimately produce one: unix
+        // `st_mtime` is signed, and the Windows `LastWriteTime` FILETIME converts below the epoch
+        // through `filetime_to_unix_seconds`. The renderer reads `lastModified` as a plain number
+        // of Unix seconds, so a negative value is renderable and must be listed, not refused.
         let old = std::time::SystemTime::UNIX_EPOCH - Duration::from_secs(1);
 
         let (_directory, authority, workspace, root) = workspace_fixture();
@@ -3978,52 +4009,41 @@ mod workspace_directory_enumeration_tests {
             .unwrap()
             .set_modified(old)
             .unwrap();
-        let before = authority
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .persistent_snapshot_for_test();
-        assert!(matches!(
-            collect_tree_entries(&authority, &workspace, &CancellationToken::new()),
-            Err(Error::InvalidInput(_))
-        ));
-        assert_eq!(
-            authority
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .persistent_snapshot_for_test(),
-            before
-        );
+        let (entries, _) = collect_tree_entries(&authority, &workspace, &CancellationToken::new())
+            .expect("a pre-1970 PGN must be listed, not refused");
+        let listed = entries
+            .iter()
+            .find(|entry| entry.name == "old")
+            .expect("the pre-1970 PGN must appear in the tree");
+        assert_eq!(listed.kind, WorkspaceEntryKind::File);
+        assert_eq!(listed.last_modified, -1);
 
         let (_directory, authority, workspace, root) = workspace_fixture();
         let sub = root.join("sub");
         fs::create_dir(&sub).unwrap();
         fs::write(sub.join("a.pgn"), b"*").unwrap();
         fs::File::open(&sub).unwrap().set_modified(old).unwrap();
-        let before = authority
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .persistent_snapshot_for_test();
-        assert!(matches!(
-            collect_tree_entries(&authority, &workspace, &CancellationToken::new()),
-            Err(Error::InvalidInput(_))
-        ));
+        let (entries, _) = collect_tree_entries(&authority, &workspace, &CancellationToken::new())
+            .expect("a pre-1970 directory must be listed, not refused");
+        let listed = entries
+            .iter()
+            .find(|entry| entry.name == "sub")
+            .expect("the pre-1970 directory must appear in the tree");
+        assert_eq!(listed.kind, WorkspaceEntryKind::Directory);
+        assert_eq!(listed.last_modified, -1);
+        assert_eq!(listed.children.len(), 1);
+        assert_eq!(listed.children[0].name, "a");
         let after = authority
             .lock()
             .unwrap()
             .as_ref()
             .unwrap()
             .persistent_snapshot_for_test();
-        assert_eq!(after, before);
-        assert!(!after
+        assert!(after
             .iter()
             .any(|(name, _, _)| name == "sub" || name == "a"));
 
+        // A non-PGN entry stays skipped regardless of its timestamp.
         let (_directory, authority, workspace, root) = workspace_fixture();
         let notes = root.join("notes.txt");
         fs::write(&notes, b"notes").unwrap();
@@ -4033,7 +4053,9 @@ mod workspace_directory_enumeration_tests {
             .unwrap()
             .set_modified(old)
             .unwrap();
-        assert!(collect_tree_entries(&authority, &workspace, &CancellationToken::new()).is_ok());
+        let (entries, _) = collect_tree_entries(&authority, &workspace, &CancellationToken::new())
+            .expect("a non-PGN entry is skipped, not refused");
+        assert!(entries.is_empty(), "{entries:?}");
     }
 
     #[test]
