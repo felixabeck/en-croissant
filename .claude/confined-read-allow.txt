@@ -1,0 +1,4 @@
+src/
+src-tauri/
+scripts/
+e2e/
