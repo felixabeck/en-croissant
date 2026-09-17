@@ -9109,7 +9109,7 @@ visible in the first place.
 
 ### Windows component validation accepts an NTFS alternate data stream in a path leaf
 
-* **ID:** f-20260916-02 · **Status:** open · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
+* **ID:** f-20260916-02 · **Status:** handled · **Area:** native-fs · **Root:** non-linux-platform-port · **Entry:** build · **Blocked:** none
 * **Where:** `validate_components` (`src-tauri/src/infra/path_authority/mod.rs:3130-3153`) and `single_leaf` (`src-tauri/src/infra/fs.rs:1534-1541`); the consuming walk is `resolve_windows` (`src-tauri/src/infra/path_authority/resolved.rs:803`). Both function bodies are pinned byte-exactly by `check_helper` in `src-tauri/src/infra/platform_support.rs:1150-1170`.
 * **Defect:** `validate_components` rejects `/` and NUL only under `#[cfg(unix)]` and has no Windows branch, so a component such as `existing.db3:stream` passes validation. On Windows that names an NTFS alternate data stream rather than a child entry, so a renderer-supplied filename can address a different native object than the authority validated. `resolve_windows` opens the final child before any leaf-level check, so rejecting only in `single_leaf` would be too late.
 * **Why it matters:** the path authority exists to make a renderer-supplied name address exactly the object it was authorised for. Today the gap is unreachable because the Windows filesystem paths refuse first; it becomes reachable the moment the Windows port lands (`f-20260914-10`).
