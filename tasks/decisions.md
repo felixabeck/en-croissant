@@ -3267,3 +3267,24 @@ shape (`**Question:**` / `**Reason:**`); `record-decision` validates it.
   `success` before reading anything would have made that phase unreachable.
 * **Decided by:** build run f-20260917-02, session d3c37561, 2026-09-17 · **Superseded-by:** -
 <!-- ledger-meta {"command":"record-decision","effect_lines":20,"effect_sha256":"6e26534b6983d654d7cd93c320f6f6209326e8aeb309933fd2527485a285b2de","input_sha256":"675cf9ee04c8cd5b838f5f27cd49b2031fb862af0ebbeb0dadce7a5862e98a89","kind":"mutation-receipt","operation":"93e3711adc1c6f2c78d7252a136d0cb0431523b4edc15934c5a9383b6e4718de","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-10"],"target":"decisions-ledger","v":1} -->
+
+### d-20260917-11 — Should the DACL invariant test compare against production's own SID provider?
+
+* **Question:** Should the DACL invariant test compare against production's own SID provider?
+* **Governs:** f-20260917-02
+* **Chosen:** no. The test derives the SID through `process_user_sid_uncached`, deliberately going
+  around production's `OnceLock`, and additionally refuses four well-known wide SIDs by name —
+  CREATOR OWNER, World, Authenticated Users, Builtin Administrators — checks the
+  `SE_DACL_PROTECTED` control bit under a parent carrying an inheritable ACE, and applies the same
+  check to the installed target rather than only to the pre-install temporary.
+* **Rejected:** (a) comparing against production's cached provider, which proves only
+  self-consistency; (b) "not CREATOR OWNER plus a successful reopen", which an ACE for `Everyone`
+  or `Administrators` satisfies; (c) deleting the by-name refusals as unreachable after the
+  equality check, which a later review lens proposed at confidence 88.
+* **Reason:** (c) is wrong and that is the point of the design: the expected SID comes from the
+  same derivation production uses, so a derivation that itself returned a wide SID would satisfy
+  `EqualSid` and only the by-name loop would fire. The residual gap — a derivation returning some
+  *other* wrong SID that is not one of the four — is stated as a named limitation rather than
+  claimed closed, because no in-process oracle can catch a defect inside the shared sequence.
+* **Decided by:** build run f-20260917-02, session d3c37561, 2026-09-17 · **Superseded-by:** -
+<!-- ledger-meta {"command":"record-decision","effect_lines":19,"effect_sha256":"64ee2f9d785c7f44d0b93b85158edd809740a4a6190e23bd87b6e21edc5e69ab","input_sha256":"691e99988a9d6cf4edcc59bccb7dfd5662002a44d8f61e61f99a6de811d0a137","kind":"mutation-receipt","operation":"ca2416e3f55b4bfdba62ebdfe7a20ebf24f26096db9a3f8bd82553696f9a16b2","options":{"section":null},"request_id_sha256":null,"results":["d-20260917-11"],"target":"decisions-ledger","v":1} -->
