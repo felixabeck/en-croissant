@@ -14,7 +14,6 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-#[cfg(unix)]
 use super::canonical_binding;
 use super::{is_write_operation, opened_file_identity, DatabaseFileTarget, PathOperation};
 
@@ -471,7 +470,6 @@ impl ResolvedPath {
 
     /// Mints the repository carrier from the retained puzzle capability. This is a blocking
     /// filesystem operation and callers must construct it inside their blocking closure.
-    #[cfg(unix)]
     pub(crate) fn puzzle_database_target(&self) -> Result<DatabaseFileTarget, Error> {
         if !matches!(
             self.operation,
@@ -500,13 +498,6 @@ impl ResolvedPath {
         Ok(DatabaseFileTarget::assemble(parent, leaf, identity, path))
     }
 
-    #[cfg(not(unix))]
-    pub(crate) fn puzzle_database_target(&self) -> Result<DatabaseFileTarget, Error> {
-        Err(crate::infra::platform_support::unsupported(
-            "puzzle database targets",
-        ))
-    }
-
     /// Duplicate the already-authorized descriptor for SQLite. The caller owns
     /// this duplicate for the complete database connection lifetime, so a
     /// pathname swap cannot redirect SQLite after capability resolution.
@@ -519,13 +510,9 @@ impl ResolvedPath {
             .map_err(Error::from)
     }
 
-    /// Deletes only the same object that was opened during capability
-    /// resolution. Unix verifies the directory entry through the retained
-    /// parent descriptor immediately before `unlinkat`; as with every POSIX
-    /// pathname mutation, a race after that final kernel check cannot be
-    /// expressed as a compare-and-delete operation and is intentionally not
-    /// hidden from callers by a retry.
-    #[cfg(unix)]
+    /// Deletes only the same regular file that was opened during capability resolution. The
+    /// shared descriptor-relative primitive verifies the entry identity and performs the delete
+    /// relative to the retained parent on every supported platform.
     pub(crate) fn delete_puzzle_database(&self) -> Result<(), Error> {
         if self.operation != PathOperation::PuzzleDelete {
             return Err(Error::InvalidInput(
@@ -543,26 +530,14 @@ impl ResolvedPath {
             .leaf
             .as_ref()
             .ok_or_else(|| Error::Conflict("puzzle database leaf handle is unavailable".into()))?;
-        use rustix::fs::{self as rfs, AtFlags, FileType};
-        let stat = rfs::statat(parent, leaf, AtFlags::SYMLINK_NOFOLLOW)
-            .map_err(|error| Error::from(std::io::Error::from(error)))?;
-        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
-            || crate::infra::fs::raw_stat_identity(&stat) != expected
-        {
-            return Err(Error::Conflict(
-                "puzzle database changed before deletion".into(),
-            ));
-        }
-        rfs::unlinkat(parent, leaf, AtFlags::empty())
-            .map_err(|error| Error::from(std::io::Error::from(error)))?;
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    pub(crate) fn delete_puzzle_database(&self) -> Result<(), Error> {
-        Err(crate::infra::platform_support::unsupported(
-            "puzzle database deletion",
-        ))
+        crate::infra::fs::remove_entry_at(parent, leaf, expected, false).map_err(
+            |error| match error {
+                Error::Conflict(_) => {
+                    Error::Conflict("puzzle database changed before deletion".into())
+                }
+                error => error,
+            },
+        )
     }
 
     /// Marks exactly the authority-resolved engine file executable. Windows deliberately reports

@@ -1,5 +1,5 @@
 /*!
-Phase A refusal-pin proof record (2026-09-17).
+Phase A and Phase B refusal-pin proof records (2026-09-17).
 
 The refusal sites are pinned by the G and B rows below: 20 of the original 35,
 after `f-20260914-08` retired eleven by giving them real Windows bodies (the
@@ -14,7 +14,7 @@ require editing this verifier file itself, which push-review-policy section 2
 forbids as a staging route. Every green result below therefore means “green
 with those four helper pins argued, not staged”.
 
-G rows (each staged message names the listed file and signature):
+Phase A G rows (each staged message names the listed file and signature):
 `infra/path_authority/mod.rs::ensure_app_owned_default_dir`,
 `fs.rs::download_engine_archive`,
 `oauth.rs::authenticate`, `oauth.rs::migrate_legacy_lichess_token`,
@@ -22,7 +22,7 @@ G rows (each staged message names the listed file and signature):
 `fs.rs::set_file_as_executable_blocking`,
 `puzzle.rs::delete_puzzle_database`, `puzzle.rs::get_puzzle`.
 
-B rows (each staged message names the listed file and signature).
+Phase A B rows (each staged message names the listed file and signature).
 `file_workspace.rs`'s four rows — `mutation_target`, `register_created_entry`,
 `collect_tree_entries` and `paired_rename` — were retired when `f-20260914-08`
 ported them; `workspace_bodies_are_single_ungated_delegations` replaced them,
@@ -48,6 +48,11 @@ Phase A removes four B rows — `open_current`, `capability_directory`,
 and 9 guard rows**, counted from `body_rows()` and `guard_rows()` below. The
 guard rows are unchanged; the counts are recorded at this phase boundary
 rather than copied from the plan's final arithmetic.
+
+Phase B removes the two puzzle rows — `puzzle_database_target` and
+`delete_puzzle_database` — and the two puzzle guard rows, leaving **9 body rows
+and 7 guard rows**, counted from the arrays below. The positive row-absence
+assertion and its staged break are recorded below.
 
 Staged failure matrix. Every run used a detached disposable worktree copied
 from this phase, mutated production files only, and ran exactly:
@@ -143,6 +148,13 @@ repeating the 35 names six times.
     Message observed: `Phase A refusal rows or definitions are wrong: 11 body
     rows, 9 guard rows, ["infra/path_authority/mod.rs: pub(crate) fn
     capability_directory("]`. Exit status: 101.
+12. S-phase-b-row-absence — inserted
+    `let _staged = crate::infra::platform_support::unsupported("puzzle database targets");`
+    as the first statement of `puzzle_database_target` in the disposable copy.
+    Failing test: `phase_b_removed_rows_have_one_ungated_definition_without_refusals`.
+    Message observed: `Phase B refusal rows or definitions are wrong: 9 body
+    rows, 7 guard rows, ["infra/path_authority/resolved.rs: pub(crate) fn
+    puzzle_database_target("]`. Exit status: 101.
 
 No production whole-function rewrite was needed; all refusal messages remain
 byte-identical.
@@ -1173,23 +1185,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn phase_a_removed_rows_have_one_ungated_definition_without_refusals() {
-        let rows = [
-            ("infra/path_authority/mod.rs", "pub(crate) fn open_current("),
-            (
-                "infra/path_authority/mod.rs",
-                "pub(crate) fn capability_directory(",
-            ),
-            (
-                "infra/path_authority/mod.rs",
-                "pub(crate) fn create_database_child(",
-            ),
-            (
-                "infra/path_authority/mod.rs",
-                "pub(crate) fn database_file_target(",
-            ),
-        ];
+    fn assert_removed_rows_are_ungated(
+        phase: &str,
+        rows: &[(&str, &str)],
+        expected_body_rows: usize,
+        expected_guard_rows: usize,
+    ) {
         let mut failures = Vec::new();
         for (file, signature) in rows {
             let source = source_for(file);
@@ -1216,11 +1217,56 @@ mod tests {
             }
         }
         assert!(
-            failures.is_empty() && body_rows().len() == 11 && guard_rows().len() == 9,
-            "Phase A refusal rows or definitions are wrong: {} body rows, {} guard rows, {:?}",
+            failures.is_empty()
+                && body_rows().len() == expected_body_rows
+                && guard_rows().len() == expected_guard_rows,
+            "{phase} refusal rows or definitions are wrong: {} body rows, {} guard rows, {:?}",
             body_rows().len(),
             guard_rows().len(),
             failures
+        );
+    }
+
+    #[test]
+    fn phase_a_removed_rows_have_one_ungated_definition_without_refusals() {
+        assert_removed_rows_are_ungated(
+            "Phase A",
+            &[
+                ("infra/path_authority/mod.rs", "pub(crate) fn open_current("),
+                (
+                    "infra/path_authority/mod.rs",
+                    "pub(crate) fn capability_directory(",
+                ),
+                (
+                    "infra/path_authority/mod.rs",
+                    "pub(crate) fn create_database_child(",
+                ),
+                (
+                    "infra/path_authority/mod.rs",
+                    "pub(crate) fn database_file_target(",
+                ),
+            ],
+            9,
+            7,
+        );
+    }
+
+    #[test]
+    fn phase_b_removed_rows_have_one_ungated_definition_without_refusals() {
+        assert_removed_rows_are_ungated(
+            "Phase B",
+            &[
+                (
+                    "infra/path_authority/resolved.rs",
+                    "pub(crate) fn puzzle_database_target(",
+                ),
+                (
+                    "infra/path_authority/resolved.rs",
+                    "pub(crate) fn delete_puzzle_database(",
+                ),
+            ],
+            9,
+            7,
         );
     }
 
@@ -1585,18 +1631,6 @@ mod tests {
             },
             BodyRow {
                 file: "infra/path_authority/resolved.rs",
-                signature: "pub(crate) fn puzzle_database_target(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("puzzle database targets"),
-            },
-            BodyRow {
-                file: "infra/path_authority/resolved.rs",
-                signature: "pub(crate) fn delete_puzzle_database(",
-                form: BodyForm::Counterpart,
-                expected: ExpectedBody::Refusal("puzzle database deletion"),
-            },
-            BodyRow {
-                file: "infra/path_authority/resolved.rs",
                 signature: "pub(crate) fn mark_engine_executable(",
                 form: BodyForm::Counterpart,
                 expected: ExpectedBody::Refusal("engine executable mode"),
@@ -1755,20 +1789,6 @@ mod tests {
                 signature: "fn set_file_as_executable_blocking(",
                 operation: "engine executable mode",
                 effects: &[".lock("],
-                nested: false,
-            },
-            GuardRow {
-                file: "puzzle.rs",
-                signature: "pub async fn delete_puzzle_database(",
-                operation: "puzzle database deletion",
-                effects: &["state.operations.accept("],
-                nested: false,
-            },
-            GuardRow {
-                file: "puzzle.rs",
-                signature: "pub async fn get_puzzle(",
-                operation: "puzzle loading",
-                effects: &["resolve_puzzle("],
                 nested: false,
             },
             GuardRow {
@@ -2243,16 +2263,6 @@ mod tests {
             (
                 "infra/path_authority/resolved.rs",
                 "atomic archive installation",
-                "unsupported",
-            ),
-            (
-                "infra/path_authority/resolved.rs",
-                "puzzle database targets",
-                "unsupported",
-            ),
-            (
-                "infra/path_authority/resolved.rs",
-                "puzzle database deletion",
                 "unsupported",
             ),
             (

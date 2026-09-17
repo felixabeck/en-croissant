@@ -289,7 +289,6 @@ pub async fn get_puzzle(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Puzzle, Error> {
-    crate::infra::platform_support::off_unix_refusal("puzzle loading", cfg!(unix))?;
     let operation = crate::native_read_operation(ticket, &window, &state, "get_puzzle")?;
     let cancellation = operation.token();
     validate_ratings(min_rating, max_rating)?;
@@ -615,7 +614,6 @@ pub async fn delete_puzzle_database(
     file: crate::infra::path_authority::PathRef,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), Error> {
-    crate::infra::platform_support::off_unix_refusal("puzzle database deletion", cfg!(unix))?;
     let operation = state.operations.accept("delete_puzzle_database")?;
     let cancellation = operation.token();
     let state = state.inner().clone();
@@ -658,34 +656,43 @@ async fn delete_puzzle_database_resolved(
     let deleted_path = path.clone();
     let deletion_and_cleanup = BLOCKING_GATEWAY
         .spawn_cancellable(cancellation, move |token| {
-            let canonical_path = match puzzle_binding(&resolved) {
+            let (canonical_path, deletion_error) = match puzzle_binding(&resolved) {
                 Ok((target, _)) => {
                     let canonical_path = target.path().to_owned();
-                    repository.delete_exclusive_cancellable(&target, token, || {
-                        match resolved.delete_puzzle_database() {
-                            Ok(()) => Ok(()),
-                            Err(Error::Io(error))
-                                if error.kind() == std::io::ErrorKind::NotFound =>
-                            {
-                                Ok(())
+                    let deletion_error =
+                        match repository.delete_exclusive_cancellable(&target, token, || {
+                            match resolved.delete_puzzle_database() {
+                                Ok(()) => Ok(()),
+                                Err(Error::Io(error))
+                                    if error.kind() == std::io::ErrorKind::NotFound =>
+                                {
+                                    Ok(())
+                                }
+                                Err(error) => Err(error),
                             }
-                            Err(error) => Err(error),
-                        }
-                    })?;
-                    Some(canonical_path)
+                        }) {
+                            Ok(()) => None,
+                            Err(error @ Error::CommittedDurabilityUncertain(_)) => Some(error),
+                            Err(error) => return Err(error),
+                        };
+                    (Some(canonical_path), deletion_error)
                 }
                 Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                     if token.is_cancelled() {
                         return Err(Error::Cancellation);
                     }
-                    match resolved.delete_puzzle_database() {
+                    let deletion_error = match resolved.delete_puzzle_database() {
                         Ok(()) => Ok(()),
                         Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                             Ok(())
                         }
                         Err(error) => Err(error),
-                    }?;
-                    None
+                    };
+                    match deletion_error {
+                        Ok(()) => (None, None),
+                        Err(error @ Error::CommittedDurabilityUncertain(_)) => (None, Some(error)),
+                        Err(error) => return Err(error),
+                    }
                 }
                 Err(error) => return Err(error),
             };
@@ -698,10 +705,14 @@ async fn delete_puzzle_database_resolved(
                         .ok_or_else(|| Error::Conflict("path authority is not initialized".into()))?
                         .remove_puzzle_database(&file)
                 });
-            Ok::<(Result<(), Error>, Option<PathBuf>), Error>((cleanup, canonical_path))
+            Ok::<(Result<(), Error>, Option<PathBuf>, Option<Error>), Error>((
+                cleanup,
+                canonical_path,
+                deletion_error,
+            ))
         })
         .await;
-    let (registry_cleanup, canonical_path) = match deletion_and_cleanup {
+    let (registry_cleanup, canonical_path, deletion_error) = match deletion_and_cleanup {
         Ok(result) => result,
         Err(error) => return Err(error),
     };
@@ -711,6 +722,14 @@ async fn delete_puzzle_database_resolved(
         if canonical_path != deleted_path {
             cache.invalidate_database(&canonical_path);
         }
+    }
+    if let Some(deletion_error) = deletion_error {
+        if let Err(cleanup_error) = registry_cleanup {
+            log::warn!(
+                "puzzle database registry cleanup failed after durability uncertainty: {cleanup_error}"
+            );
+        }
+        return Err(deletion_error);
     }
     match registry_cleanup {
         Ok(()) => Ok(()),
@@ -1282,6 +1301,40 @@ mod tests {
         ));
 
         assert!(result.is_ok(), "ordinary deletion failed: {result:?}");
+        assert!(!path.exists());
+        assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
+        assert!(!authority_contains(&authority, &handle));
+    }
+
+    #[test]
+    fn command_flow_puzzle_delete_cleans_up_after_durability_uncertainty() {
+        let PuzzleDeletionFixture {
+            _directory,
+            path,
+            repository,
+            authority,
+            cache,
+            handle,
+            resolved,
+        } = puzzle_deletion_fixture("durability-uncertain-delete.db3");
+        crate::infra::fs::set_test_removal_injector(Some(Arc::new(
+            crate::infra::fs::RemovalFault(crate::infra::fs::RemovalFaultPoint::ParentSync),
+        )));
+        let result = tauri::async_runtime::block_on(delete_puzzle_database_resolved(
+            resolved,
+            path.clone(),
+            handle.clone(),
+            repository,
+            Arc::clone(&authority),
+            Arc::clone(&cache),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        crate::infra::fs::set_test_removal_injector(None);
+
+        assert!(matches!(
+            result,
+            Err(Error::CommittedDurabilityUncertain(_))
+        ));
         assert!(!path.exists());
         assert!(tauri::async_runtime::block_on(cache.lock()).key.is_none());
         assert!(!authority_contains(&authority, &handle));
